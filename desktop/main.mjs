@@ -19,9 +19,9 @@ import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
-import { answers, daemonBinary, dataFolder, localDaemon, remoteAccessSaved, saveRemoteAccess, waitForSocket } from './sidecar.mjs';
+import { answers, daemonBinary, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
-import { changeRemoteAccess } from './remoteSwitch.mjs';
+import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 
@@ -56,18 +56,14 @@ const bin = daemonBinary({ packaged: app.isPackaged, resourcesPath: process.reso
 /** The local daemon, once started or found. */
 let local = null;
 let starting = null;
-/** Set while the daemon on this Mac is stopping to start again with Remote access changed. */
-let restarting = null;
 
-/** Settings → Remote access, kept with the app's own settings. */
+/** The app's own settings. The old `remoteAccess` key is imported once, then deleted. */
 const desktopSettingsFile = () => path.join(app.getPath('userData'), 'desktop-settings.json');
-/** Read once the app is ready; the daemon serves `--remote` while it is on. */
-let remoteAccess = false;
 
 /** Whether the daemon can run as a LaunchAgent, which outlives the app (see launchAgent.mjs). */
 const agentMode = usesLaunchAgent({ packaged: app.isPackaged, dataDir });
-/** Whether the LaunchAgent should be the daemon right now: Remote access is on. */
-const agentWanted = () => agentMode && remoteAccess;
+/** On a packaged Mac the LaunchAgent always runs the daemon, phone connections on or off. */
+const agentWanted = () => agentMode;
 /** Where the agent's daemon writes its output: the app's logs folder. */
 const agentLogFile = () => path.join(app.getPath('logs'), 'apex-daemon.log');
 /** The daemon's `daemon.sock`, whichever way it was started. */
@@ -93,48 +89,36 @@ async function startAgent() {
   return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
 }
 
-/** Remove the LaunchAgent, so the daemon stops; wait until it has let go of the data folder. */
-async function stopAgent() {
-  const wasRunning = await removeAgent({ plistPath: agentPlistPath(), uid: process.getuid() });
-  if (wasRunning && !await waitForSocket(await socketFile(), { wanted: false })) {
-    throw new Error("The background apex-daemon didn't stop within 15 seconds.");
+/**
+ * Move `remoteAccess` out of the desktop settings once the daemon is up.
+ * Uses the socket already in hand. A failed call leaves the key, so the next
+ * launch tries again. Never calls `ensureLocal` from here.
+ */
+async function migrateRemoteAccess(socket) {
+  const file = desktopSettingsFile();
+  if (!hasRemoteAccessKey(file)) return;
+  try {
+    await importSavedRemoteAccess(file, (cmd, args) => callDaemon(socket, cmd, args));
+  } catch (error) {
+    console.warn(`apex-daemon: the old Remote access setting was left in place: ${error instanceof Error ? error.message : error}`);
   }
 }
 
-/** A daemon Deck can restart: one it started, or the LaunchAgent (launchctl restarts that one). */
-const restartable = (daemon) => daemon.owned || daemon.agent === true;
-
 /** The daemon on this Mac: the one Deck started if it's still running, else start or find one. */
 function ensureLocal() {
-  if (restarting) return restarting.then(() => ensureLocal());
   if (local?.owned && local.alive()) return Promise.resolve(local);
   // launchd keeps the agent's daemon up; windows reconnect to it by themselves.
   if (local?.agent && agentWanted()) return Promise.resolve(local);
   starting ??= (agentWanted()
     ? startAgent()
-    : localDaemon({ bin, dataDir, remote: remoteAccess, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }))
-    .then((daemon) => (local = daemon))
+    : localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }))
+    .then(async (daemon) => {
+      local = daemon;
+      await migrateRemoteAccess(daemon.socket);
+      return daemon;
+    })
     .finally(() => { starting = null; });
   return starting;
-}
-
-/**
- * Make this Mac's daemon match the Remote access setting, which is already
- * saved and set when this runs. The daemon Deck started is stopped; the
- * LaunchAgent is removed when Remote access is off, and started by
- * ensureLocal when it is on. A daemon Deck found running is left alone: it
- * keeps the flags it was started with. Windows reconnect by themselves.
- */
-async function restartLocal() {
-  if (starting) await starting.catch(() => {});
-  restarting ??= (async () => {
-    const old = local;
-    local = null;
-    if (old?.owned && old.alive()) await old.stop();
-    if (agentMode && !remoteAccess) await stopAgent();
-  })().finally(() => { restarting = null; });
-  await restarting;
-  return ensureLocal();
 }
 
 // ------------------------------------------------------------ hosts
@@ -285,7 +269,7 @@ ipcMain.handle('daemon:connect', async (event, hostId = LOCAL) => {
 ipcMain.on('daemon:send', (event, hostId, gen, line) => {
   if (!fromUi(event) || typeof line !== 'string') return;
   let frame; try { frame = JSON.parse(line); } catch { return; }
-  if (hostId !== LOCAL && ['session_save', 'settings_save', 'decision_key_save'].includes(frame.cmd)) {
+  if (hostId !== LOCAL && ['session_save', 'settings_save'].includes(frame.cmd)) {
     event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: 'App preferences are owned by This Mac.' }));
     return;
   }
@@ -356,8 +340,10 @@ app.whenReady().then(() => {
     void localVoice.shutdown();
   });
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
-    const entry=[...windows.values()].find(e=>e.win.webContents===contents);
+    const entry=[...windows.values(), ...popoutWindows.values()].find(e=>e.win.webContents===contents);
     const trusted=entry && [originOf(devUrl), 'app://deck'].includes(originOf(contents.getURL()));
+    // Copy buttons (worktree paths, thread Copy ›) write through navigator.clipboard, which asks here.
+    if(trusted&&permission==='clipboard-sanitized-write'){callback(true);return;}
     const audioOnly=permission==='media' && details.mediaTypes?.includes('audio') && !details.mediaTypes?.includes('video');
     if(!trusted||!audioOnly){callback(false);return;}
     if(process.platform==='darwin') void systemPreferences.askForMediaAccess('microphone').then(callback).catch(()=>callback(false));
@@ -372,26 +358,19 @@ handle('connection:current', async ({ host }) => {
   return { id: LOCAL, name: LOCAL_NAME, remote: false, owned: daemon?.owned ?? true };
 });
 
-/** Settings → Remote access: the saved switch, and whether Deck can restart the daemon (so can apply a change). */
+/** Settings → Phones: the daemon's live phone-connection switch. */
 handle('remote:get', async () => {
-  const daemon = await ensureLocal().catch(() => null);
-  return { on: remoteAccess, owned: daemon ? restartable(daemon) : true };
+  const daemon = await ensureLocal();
+  const info = await callDaemon(daemon.socket, 'remote_info', {});
+  return { on: info?.enabled === true, owned: true };
 });
 handle('remote:set', async (_entry, on) => {
-  const next = on === true;
-  if (next === remoteAccess) {
-    const daemon = await ensureLocal();
-    return { on: remoteAccess, owned: restartable(daemon) };
-  }
-  // A daemon that won't start with the change gets the old setting back, saved and running.
-  const daemon = await changeRemoteAccess({
-    from: remoteAccess,
-    to: next,
-    save: (value) => saveRemoteAccess(desktopSettingsFile(), value),
-    set: (value) => { remoteAccess = value; },
-    restart: restartLocal,
+  const daemon = await ensureLocal();
+  const info = await setPhoneConnections({
+    enabled: on === true,
+    call: (cmd, args) => callDaemon(daemon.socket, cmd, args),
   });
-  return { on: remoteAccess, owned: restartable(daemon) };
+  return { on: info?.enabled === true, owned: true };
 });
 
 handle('shell:pickPath', async ({ win }, kind, title) => {
@@ -919,16 +898,11 @@ app.whenReady().then(async () => {
     app.exit(0);
     return;
   }
-  remoteAccess = remoteAccessSaved(desktopSettingsFile());
   const { state, warnings } = loadHosts(hostsFile());
   hosts = state;
   warnings.forEach((warning) => console.warn(`hosts: ${warning}`));
   Menu.setApplicationMenu(menu());
-  // Remote access off but a LaunchAgent left from when it was on: stop it before the app starts its own daemon.
-  if (agentMode && !remoteAccess && fs.existsSync(agentPlistPath())) {
-    await stopAgent().catch((e) => console.warn(`launch agent: ${e.message}`));
-  }
-  // Started now rather than when a window asks, so paired phones can reach this Mac from the start.
+  // The LaunchAgent always runs on a packaged Mac. The daemon reads whether phone connections are on.
   if (agentWanted()) ensureLocal().catch((e) => console.warn(`apex-daemon: ${e.message}`));
   // Each window a step down from the one before, so none hides another.
   const first = createWindow(LOCAL);

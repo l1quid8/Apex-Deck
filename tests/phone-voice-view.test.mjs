@@ -67,3 +67,15 @@ test("mic and bar name agent", () => {
     "On call with Null · needs you",
   );
 });
+test("a Mac's voice is set up in the Mac app, never from the phone", () => {
+  const s = view("setup", {
+    machine: "MacBook Pro",
+    setup: { installed: false, setupInApp: true, downloadBytes: 0 },
+  }).setup;
+  assert.equal(
+    s.body,
+    "Set up voice once from the mic in the Deck app on MacBook Pro, then call from here. Calls in this machine's threads need it awake.",
+  );
+  assert.equal(s.button, null);
+  assert.equal(s.note, null);
+});

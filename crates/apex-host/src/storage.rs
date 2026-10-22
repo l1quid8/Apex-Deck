@@ -9,6 +9,19 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub struct SavedRoom {
     pub cwd: Option<String>,
     pub snapshot: RoomSnapshot,
+    #[serde(default)]
+    pub mounts: Vec<MountBoundary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MountBoundary {
+    pub seq: usize,
+    #[serde(default, rename = "changeCount")]
+    pub change_count: Option<usize>,
+    pub from: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One card's saved settings: src/interactiveAnswers/contract.ts `AnswerEntry`.
@@ -194,6 +207,24 @@ impl Store {
         self.read(&self.room_path(id))
     }
 
+    /// A worktree cannot be removed while any saved chat still points at it.
+    pub fn checkout_in_use(&self, target: &Path) -> Result<bool, String> {
+        let target = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+        let entries = match std::fs::read_dir(self.root.join("rooms")) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if path.extension().is_none_or(|ext| ext != "json") || stem.is_empty() || !stem.bytes().all(|b| b.is_ascii_hexdigit()) { continue; }
+            let Some(saved): Option<SavedRoom> = self.read(&path)? else { continue; };
+            if saved.cwd.as_ref().is_some_and(|cwd| Path::new(cwd).canonicalize().unwrap_or_else(|_| PathBuf::from(cwd)) == target) { return Ok(true); }
+        }
+        Ok(false)
+    }
+
     pub fn save_room(&self, id: &str, room: &SavedRoom) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         let previous = self.room(id)?.map(|saved| saved.snapshot.transcript.len()).unwrap_or(0);
@@ -353,7 +384,17 @@ impl Store {
         if std::fs::symlink_metadata(&path).is_ok() {
             return Err("Could not save fork: a thread with that id already exists".into());
         }
-        let mut fork = SavedRoom { cwd, snapshot: saved.snapshot.fork(upto.unwrap_or(saved.snapshot.transcript.len())) };
+        let snapshot = saved.snapshot.fork(upto.unwrap_or(saved.snapshot.transcript.len()));
+        let mounts = if cwd == saved.cwd {
+            saved.mounts.iter().map(|mount| {
+                let mut boundary = mount.clone();
+                // The fork keeps its current folder even when its history ends before a switch.
+                boundary.seq = boundary.seq.min(snapshot.transcript.len());
+                boundary.change_count = boundary.change_count.map(|count| count.min(snapshot.changes.len()));
+                boundary
+            }).collect()
+        } else { vec![] };
+        let mut fork = SavedRoom { mounts, cwd, snapshot };
         transform(&mut fork.snapshot)?;
         write_new(&path, &fork).map_err(|e| e.replace("Could not save", "Could not save fork"))?;
         // A fork keeps the thread's artifacts. Copied directly: the write lock is already held.
@@ -460,7 +501,7 @@ mod tests {
                 participant.speed = speed;
                 let mut snapshot = Room::new(vec![], RoomOptions::default()).snapshot();
                 snapshot.participants.push(participant);
-                Store::new(root.clone()).save_room("speed", &SavedRoom { cwd: None, snapshot }).unwrap();
+                Store::new(root.clone()).save_room("speed", &SavedRoom { mounts: vec![], cwd: None, snapshot }).unwrap();
                 let reopened = Store::new(root.clone()).room("speed").unwrap().unwrap();
                 assert_eq!(reopened.snapshot.participants[0].speed, speed);
             }
@@ -476,7 +517,7 @@ mod tests {
         store.save_session(&session).unwrap();
         let mut room = Room::new(vec![], RoomOptions::default());
         room.post_human("Keep this after restart", &|_| {}).await;
-        let saved = SavedRoom { cwd: Some("/tmp".into()), snapshot: room.snapshot() };
+        let saved = SavedRoom { mounts: vec![], cwd: Some("/tmp".into()), snapshot: room.snapshot() };
         store.save_room("chat-1", &saved).unwrap();
         store.save_room("chat-2", &saved).unwrap();
         drop(store);
@@ -496,7 +537,7 @@ mod tests {
         let store = Store::new(root.clone());
         let mut room = Room::new(vec![], RoomOptions::default());
         room.post_human("saved", &|_| {}).await;
-        store.save_room("src", &SavedRoom { cwd: Some("/tmp".into()), snapshot: room.snapshot() }).unwrap();
+        store.save_room("src", &SavedRoom { mounts: vec![], cwd: Some("/tmp".into()), snapshot: room.snapshot() }).unwrap();
         // Live room changes are deliberately not saved.
         room.post_human("live only", &|_| {}).await;
         store.fork_room("src", "dst", None, Some("/tmp".into())).unwrap();
@@ -536,7 +577,7 @@ mod tests {
 
         let mut room = Room::new(vec![], RoomOptions::default());
         room.post_human("saved", &|_| {}).await;
-        store.save_room("chat-1", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.save_room("chat-1", &SavedRoom { mounts: vec![], cwd: None, snapshot: room.snapshot() }).unwrap();
         store.fork_room("chat-1", "chat-2", None, None).unwrap();
         assert_eq!(store.artifacts("chat-2").unwrap().unwrap(), artifacts);
 
@@ -561,7 +602,7 @@ mod tests {
 
         let mut room = Room::new(vec![], RoomOptions::default());
         for _ in 0..4 { room.post_human("saved", &|_| {}).await; }
-        store.save_room("chat-1", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.save_room("chat-1", &SavedRoom { mounts: vec![], cwd: None, snapshot: room.snapshot() }).unwrap();
         store.fork_room("chat-1", "chat-2", None, None).unwrap();
         assert_eq!(store.answers("chat-2").unwrap(), store.answers("chat-1").unwrap());
 
@@ -577,16 +618,16 @@ mod tests {
         let store = Store::new(root.clone());
         let mut room = Room::new(vec![], RoomOptions::default());
         for _ in 0..3 { room.post_human("message", &|_| {}).await; }
-        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.save_room("source", &SavedRoom { mounts: vec![], cwd: None, snapshot: room.snapshot() }).unwrap();
         for seq in 0..3 { store.save_answer("source", &format!("{seq}:hosting"), "0a1b2c3d", serde_json::Map::new(), 0, 0).unwrap(); }
         store.fork_room("source", "short", Some(1), None).unwrap();
         assert_eq!(store.answers("short").unwrap().unwrap().cards.len(), 1);
         room.rewind(1);
-        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.save_room("source", &SavedRoom { mounts: vec![], cwd: None, snapshot: room.snapshot() }).unwrap();
         assert_eq!(store.answers("source").unwrap().unwrap().cards.len(), 1);
         assert!(store.save_answer("source", "2:hosting", "0a1b2c3d", serde_json::Map::new(), 0, 0).is_err(), "late settings for a removed message stay removed");
         room.clear();
-        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.save_room("source", &SavedRoom { mounts: vec![], cwd: None, snapshot: room.snapshot() }).unwrap();
         assert!(store.answers("source").unwrap().is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -604,7 +645,7 @@ mod tests {
     async fn saved_room_with(store: &Store, id: &str, messages: usize) -> Room {
         let mut room = Room::new(vec![], RoomOptions::default());
         for _ in 0..messages { room.post_human("message", &|_| {}).await; }
-        store.save_room(id, &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.save_room(id, &SavedRoom { mounts: vec![], cwd: None, snapshot: room.snapshot() }).unwrap();
         room
     }
 
@@ -650,7 +691,7 @@ mod tests {
         assert_eq!(store.steps_index("source").unwrap().unwrap().replies.len(), 2, "the source keeps its own");
 
         room.rewind(2);
-        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.save_room("source", &SavedRoom { mounts: vec![], cwd: None, snapshot: room.snapshot() }).unwrap();
         let source = store.steps_index("source").unwrap().unwrap();
         assert_eq!(source.replies.keys().copied().collect::<Vec<_>>(), vec![1]);
         assert_eq!(store.steps("source", 1).unwrap().unwrap(), reply_steps("null", 1, &["a"]));
@@ -660,7 +701,7 @@ mod tests {
         assert_eq!(store.steps("source", 3).unwrap().unwrap(), reply_steps("jigga", 3, &["d"]));
 
         room.clear();
-        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.save_room("source", &SavedRoom { mounts: vec![], cwd: None, snapshot: room.snapshot() }).unwrap();
         assert!(store.steps_index("source").unwrap().is_none());
         assert!(!store.steps_path("source").exists());
         std::fs::remove_dir_all(root).unwrap();
@@ -676,7 +717,7 @@ mod tests {
         assert!(!store.steps_path("chat-1").exists());
         assert!(!store.steps_index_path("chat-1").exists());
 
-        let saved = SavedRoom { cwd: None, snapshot: Room::new(vec![], RoomOptions::default()).snapshot() };
+        let saved = SavedRoom { mounts: vec![], cwd: None, snapshot: Room::new(vec![], RoomOptions::default()).snapshot() };
         store.save_steps("leftover", &reply_steps("null", 1, &["a"])).unwrap();
         std::fs::remove_file(store.steps_index_path("leftover")).unwrap();
         assert!(store.import_room("leftover", &saved).is_err(), "a leftover steps file keeps the id taken");

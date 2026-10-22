@@ -1,4 +1,4 @@
-// Settings → Paired devices: phones the daemon lets in from outside this
+// Settings → Phones: phones the daemon lets in from outside this
 // network, what each may do, and Revoke. Pairing them (QR) comes later; for
 // now `apex-daemon devices add` does it. These commands are local-only: the
 // daemon refuses them from a phone.

@@ -411,6 +411,23 @@ impl Invites {
         self.cancel(inv)
     }
 
+    /// Cancel every invitation that is still open or claimed. Claims in
+    /// flight end as cancelled. Approved invitations are left as they are.
+    pub fn cancel_open(&self) {
+        let mut invitations = self.invitations.lock().unwrap();
+        let mut any = false;
+        for invitation in invitations.values_mut() {
+            if matches!(invitation.state, State::Open | State::Claimed { .. }) {
+                invitation.end(PairError::Cancelled, Some(close::PAIR_DENIED));
+                any = true;
+            }
+        }
+        drop(invitations);
+        if any {
+            self.notify();
+        }
+    }
+
     /// Cancel the invitation (closing the sheet, or Deny): a claimed
     /// connection is closed with `PAIR_DENIED` at once. Cancelling twice is
     /// fine; an invitation already approved or otherwise over says why.

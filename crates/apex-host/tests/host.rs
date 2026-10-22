@@ -99,7 +99,8 @@ fn scripted(id: &str, lines: &[&str]) -> Value {
         persona: String::new(),
         access: Default::default(),
         effort: None,
-        auto_effort: false, speed: None,
+        speed: None,
+        voice: None,
         appearance: None, media: None
     })
     .unwrap()
@@ -136,7 +137,7 @@ fn forgetting_an_always_allowed_rule_returns_emits_and_persists() {
     let rule = json!({"by":"bot","kind":"command","title":"Run a command","what":"npm test","allowed_at":0,"risky":false});
     snapshot["allowed"] = json!([rule.clone()]);
     let store = apex_host::storage::Store::new(data.join("saved-chats-v1"));
-    store.save_room("r", &apex_host::storage::SavedRoom { cwd: None, snapshot: serde_json::from_value(snapshot).unwrap() }).unwrap();
+    store.save_room("r", &apex_host::storage::SavedRoom { mounts: vec![], cwd: None, snapshot: serde_json::from_value(snapshot).unwrap() }).unwrap();
 
     let host = Running::start(&data);
     let opened = host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[],"options":RoomOptions::default()}})).unwrap();
@@ -234,7 +235,8 @@ fn winding_down_stops_running_agents_and_keeps_their_chat() {
         persona: String::new(),
         access: Default::default(),
         effort: None,
-        auto_effort: false, speed: None,
+        speed: None,
+        voice: None,
         appearance: None, media: None
     })
     .unwrap();
@@ -287,7 +289,8 @@ fn opening_a_room_again_mid_turn_keeps_the_running_room() {
         persona: String::new(),
         access: Default::default(),
         effort: None,
-        auto_effort: false, speed: None,
+        speed: None,
+        voice: None,
         appearance: None, media: None
     })
     .unwrap();

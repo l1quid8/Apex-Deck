@@ -3236,23 +3236,33 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .settings-subhead { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 .settings-subhead h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.02em; }
 .settings-subhead p, .settings-note { margin: 0; font-size: 12px; color: var(--muted); }
-.remote-access input[role="switch"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.phones-status-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; font-size: 13px; }
+.phones-status-text small { font-size: 12px; color: var(--muted); }
+.settings-actions .phones-status-text span { margin-left: 0; font-size: 13px; color: var(--text); }
+.phones-advanced { margin-top: 12px; }
+.phones-advanced > summary { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--muted); }
+.phones-advanced[open] > summary { border-bottom: 1px solid var(--line); }
+.phones-advanced > .settings-row:first-of-type { border-top: 0; }
 .remote-addresses { align-items: flex-end; }
 .remote-addresses input { margin-top: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-.confirm.pair-sheet { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; gap: 10px; }
-.pair-code-area { display: flex; gap: 16px; align-items: stretch; }
-.pair-qr { flex: none; width: 220px; height: 220px; display: grid; place-items: center; border-radius: 8px; background: #fff; overflow: hidden; }
+.confirm.pair-sheet { width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; gap: 12px; }
+.pair-qr { align-self: center; flex: none; width: 260px; height: 260px; display: grid; place-items: center; border-radius: 10px; background: #fff; overflow: hidden; }
 .pair-qr svg { width: 100%; height: 100%; display: block; }
 .pair-qr .muted { color: #59636e; font-size: 12px; padding: 12px; text-align: center; }
-.pair-code-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.pair-countdown { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
-.pair-code-side small { font-size: 12px; }
-.pair-link { margin-top: auto; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; max-height: 72px; overflow: hidden; user-select: all; }
-.pair-code-side button { align-self: flex-start; }
-.pair-claim { display: flex; flex-direction: column; gap: 6px; }
-.pair-claim p { margin: 0; font-size: 13px; }
-.pair-claim-code { font-size: 30px; font-weight: 650; letter-spacing: 0.18em; }
-.pair-warning { color: var(--warn); }
+.pair-under-qr { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.pair-under-qr p { margin: 0; font-size: 12px; }
+.pair-timer { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pair-note { margin: 0; font-size: 12px; color: var(--muted); border-left: 2px solid var(--accent); padding-left: 10px; }
+.pair-note.warn { border-left-color: var(--warn); color: var(--text); }
+.pair-note.bad { border-left-color: var(--danger); color: var(--text); }
+.pair-claim { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0 4px; text-align: center; }
+.pair-claim p { margin: 0; font-size: 12px; }
+.pair-claim-phone { font-size: 14px; }
+.pair-claim-code { font-size: 34px; font-weight: 650; letter-spacing: 0.18em; font-variant-numeric: tabular-nums; }
+.pair-done { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--accent); display: grid; place-items: center; color: var(--accent); font-size: 22px; font-weight: 700; }
+.pair-scope-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 12px; }
+.confirm-actions.pair-actions { justify-content: space-between; align-items: center; }
+.pair-actions-right { display: flex; gap: 8px; }
 .pair-scope { margin: 4px 0 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .pair-scope:disabled { opacity: 0.55; }
 .pair-scope > label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
@@ -3993,6 +4003,8 @@ button.mod-status:hover { color: var(--text); }
 .plan-chip-x { width: 0; overflow: hidden; opacity: 0; font-size: .9em; transition: opacity .12s, width .12s; }
 .plan-chip:hover .plan-chip-x, .plan-chip:focus-visible .plan-chip-x { width: 1em; opacity: .8; }
 .approval-plan { max-height: 240px; overflow: auto; margin: 6px 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.approval-plan[data-expanded="true"] { max-height: none; overflow: visible; }
+.approval-plan-toggle { align-self: flex-start; margin-top: 6px; }
 
 /* Library: every picture the bots made. */
 .section-library { overflow: hidden; padding: 16px; }
@@ -4168,8 +4180,9 @@ button.mod-status:hover { color: var(--text); }
   background: var(--bg);
 }
 
-/* Only the empty rain screen extends beneath the composer. */
+/* Only the empty rain texture extends beneath the composer. */
 .thread-chat.thread-landing > .composer {
+  flex-shrink: 0;
   border-top: 0;
   background: transparent;
   /* The strip is a gutter, not a surface: let clicks beside the box fall
@@ -4182,9 +4195,14 @@ button.mod-status:hover { color: var(--text); }
 }
 
 .thread-chat.thread-landing .chat-body > .transcript {
-  margin-bottom: calc(-1 * var(--composer-h, 0px));
-  padding-bottom: calc(24px + var(--composer-h, 0px));
-  scroll-padding-bottom: calc(24px + var(--composer-h, 0px));
+  /* Keep welcome copy inside the available scrollport in short split panes.
+     The absolutely positioned landing texture extends beneath the composer. */
+  padding-bottom: 24px;
+  scroll-padding-bottom: 24px;
+}
+
+.thread-chat.thread-landing .transcript > .empty {
+  flex-shrink: 0;
 }
 
 .thread-chat > .composer,

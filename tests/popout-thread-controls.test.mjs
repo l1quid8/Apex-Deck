@@ -94,3 +94,11 @@ test("the bar keeps thread controls whole at narrow widths", () => {
   // Details sizing comes from Deck's .thread-details (320px in styles.css).
   assert.match(popout, /thread-details \$\{overlay \? "overlay" : "docked"\}/);
 });
+
+test("a popped thread's call uses the owner's call look, pause and voices, and saves back", () => {
+  const config = app.slice(app.indexOf("const chatConfigOf"), app.indexOf("const previewSourceOf"));
+  assert.match(config, /voice: settings\.voice/);
+  assert.match(popout, /voiceSettings=\{bundle\.voice\}/);
+  assert.match(popout, /onVoiceSettings=\{\(voice\) => send\(\{ type: "voice-settings", voice \}\)\}/);
+  assert.match(app, /action\.type === "voice-settings"\) \{\s*setSettings\(\(s\) => \(\{ \.\.\.s, voice: action\.voice \}\)\)/);
+});

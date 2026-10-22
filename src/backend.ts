@@ -47,8 +47,6 @@ export interface Backend {
   /** settings.json, beside the session file; settings.ts reads it. */
   settingsLoad(): Promise<unknown>;
   settingsSave(settings: unknown): Promise<void>;
-  decisionKeyStatus(): Promise<boolean>;
-  decisionKeySave(provider: string, key: string): Promise<void>;
   /** A thread's artifacts file, beside the thread; artifacts.ts reads it. Null when there is none. */
   artifactsLoad(room: string): Promise<unknown>;
   artifactsSave(room: string, artifacts: unknown): Promise<void>;
@@ -127,7 +125,7 @@ export interface Backend {
   worktreePrune(path: string): Promise<void>;
   roomPost(id: string, text: string, interactiveAnswers?: boolean): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
-  roomPostTo(id: string, text: string, targets: string[], routed?: boolean, interactiveAnswers?: boolean, voice?: { client_turn_id: string; max_bot_hops: 0 }): Promise<void>;
+  roomPostTo(id: string, text: string, targets: string[], interactiveAnswers?: boolean, voice?: { client_turn_id: string; max_bot_hops: 0 }): Promise<void>;
   /** Run participants on the transcript as it is, one after another, without
    *  posting anything. `hops` caps the rounds of bots answering bots that may
    *  follow: null keeps the room's limit (which itself may be unlimited),
@@ -216,7 +214,7 @@ export interface Backend {
   onMenu?(cb: (action: string) => void): Promise<Unlisten>;
   /** The machines this window can run on; the Electron app only. */
   hosts?: HostsApi;
-  /** Settings → Remote access for this Mac's daemon; the Electron app only. */
+  /** Settings → Phones' on/off for this Mac's daemon; the Electron app only. */
   remoteAccess?: RemoteAccessApi;
   browser?: BrowserApi;
   /** The shared simulated iPhone on this Mac. */
@@ -281,11 +279,11 @@ export interface PhoneApi {
   chatQueued(room: string): Promise<void>;
 }
 
-/** The Remote access switch, saved with the app's settings. `owned`: Deck started the daemon, so can restart it with the change. */
+/** Whether phones can connect, as the daemon reports it. `owned` is always true now; nothing restarts. */
 export interface RemoteAccessState { on: boolean; owned: boolean }
 export interface RemoteAccessApi {
   get(): Promise<RemoteAccessState>;
-  /** Save the switch and restart the daemon Deck started, with or without `--remote`. */
+  /** Turn phone connections on or off in the running daemon, which saves the choice. Nothing restarts. */
   set(on: boolean): Promise<RemoteAccessState>;
 }
 
@@ -630,8 +628,6 @@ function demoBackend(): Backend {
     sessionLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.session.v1") ?? "null"),
     sessionSave: async (session) => { localStorage.setItem("apex-deck.demo.session.v1", JSON.stringify(session)); },
     settingsLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.settings.v1") ?? "null"),
-    decisionKeyStatus: async () => false,
-    decisionKeySave: async () => { throw new Error("Credential storage requires a connected host."); },
     settingsSave: async (settings) => { localStorage.setItem("apex-deck.demo.settings.v1", JSON.stringify(settings)); },
     artifactsLoad: async (room) => JSON.parse(localStorage.getItem(`apex-deck.demo.artifacts.${room}`) ?? "null"),
     artifactsSave: async (room, artifacts) => { localStorage.setItem(`apex-deck.demo.artifacts.${room}`, JSON.stringify(artifacts)); },

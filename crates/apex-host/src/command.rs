@@ -23,8 +23,6 @@ pub enum Command {
     SessionSave { session: Value },
     SettingsLoad {},
     SettingsSave { settings: Value },
-    DecisionKeyStatus {},
-    DecisionKeySave { provider: String, key: String },
     ArtifactsLoad { room: String },
     ArtifactsSave { room: String, artifacts: Value },
     AnswersLoad { room: String },
@@ -102,6 +100,8 @@ pub enum Command {
     PtyResize { id: String, cols: u16, rows: u16 },
     PtyKill { id: String },
     RoomDiff { id: String },
+    RoomGitStatus { id: String },
+    RoomGitAction { id: String, action: crate::git_changes::Action },
     RoomFork { source: String, target: String, upto: Option<usize> },
     /// A thread's snapshot made into a new room here: a fork to this machine, or a thread moved before it started.
     /// With `replace`, a room already called `id` here is written over in one step and then closed, as when a thread that hasn't started moves to another folder.
@@ -120,11 +120,12 @@ pub enum Command {
     LibraryList {},
     LibraryRemove { file: String },
     LibraryRename { file: String, name: String },
+    RoomMount { id: String, cwd: String },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     RoomState { id: String },
     RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
     RoomTargets { id: String, text: String },
-    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default)] routed: bool, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize> },
+    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize> },
     VoiceCapabilities {},
     RoomStopRequest { id: String, participant: ParticipantId, #[serde(alias = "client_turn_id")] client_turn_id: String },
     RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
@@ -214,11 +215,6 @@ impl Host {
             SessionSave { session } => reply(self.session_save(session)?),
             SettingsLoad {} => reply(self.settings_load()?),
             SettingsSave { settings } => reply(self.settings_save(settings)?),
-            DecisionKeyStatus {} => {
-                let settings = self.settings_load()?.unwrap_or_default();
-                reply(tokio::task::spawn_blocking(move || crate::decision::key_available(&settings)).await.map_err(|_| "Credential lookup failed")?)
-            }
-            DecisionKeySave { provider, key } => reply(crate::decision::save_credential(&provider, &key)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
             AnswersLoad { room } => reply(self.answers_load(room)?),
@@ -337,6 +333,8 @@ impl Host {
             PtyResize { id, cols, rows } => reply(self.pty_resize(id, cols, rows)?),
             PtyKill { id } => { self.pty_kill(id); reply(()) },
             RoomDiff { id } => reply(self.room_diff(id).await?),
+            RoomGitStatus { id } => reply(self.room_git_status(id).await?),
+            RoomGitAction { id, action } => reply(self.room_git_action(id, action).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),
             RoomImport { id, snapshot, cwd, replace } => reply(self.room_import(id, snapshot, cwd, replace.unwrap_or(false))?),
             ExportThread { file_name, contents } => reply(self.export_thread(file_name, contents)?),
@@ -352,15 +350,16 @@ impl Host {
             LibraryList {} => reply(self.library_list()),
             LibraryRemove { file } => reply(self.library_remove(file)?),
             LibraryRename { file, name } => reply(self.library_rename(file, name)?),
+            RoomMount { id, cwd } => reply(self.room_mount(id, cwd)?),
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers } => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
-            RoomPostTo { id, text, targets, routed, interactive_answers, client_turn_id, max_bot_hops } => {
+            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops } => {
                 if let Some(request_id) = client_turn_id {
                     if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
                     reply(self.room_voice_post(id, text, targets[0].clone(), request_id).await?)
-                } else { reply(self.room_post_to_with_answer_guidance(id, text, targets, routed, interactive_answers, capability).await?) }
+                } else { reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?) }
             },
             VoiceCapabilities {} => reply(serde_json::json!({"voice_turn_correlation_v1": true})),
             RoomStopRequest { id, participant, client_turn_id } => reply(self.room_voice_stop(id, participant, client_turn_id)?),
@@ -479,7 +478,6 @@ mod tests {
 
     #[test]
     fn a_command_without_arguments_may_leave_them_out() {
-        assert!(Command::from_json(json!({ "cmd": "decision_key_status", "args": {} })).is_ok());
         assert!(matches!(Command::from_json(json!({ "cmd": "data_folder" })), Ok(Command::DataFolder {})));
         assert!(matches!(Command::from_json(json!({ "cmd": "data_folder", "args": {} })), Ok(Command::DataFolder {})));
     }
@@ -506,7 +504,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 151);
+        assert_eq!(names.len(), 152);
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));
@@ -523,7 +521,7 @@ mod tests {
         assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_set_plan".to_string()));
         assert!(names.contains(&"room_state".to_string()));
-        assert!(names.contains(&"decision_key_save".to_string()));
+        assert!(names.contains(&"room_mount".to_string()));
         assert!(names.contains(&"session_load".to_string()));
         assert!(names.contains(&"mod_env_get".to_string()));
         assert!(names.contains(&"monitor_list".to_string()));

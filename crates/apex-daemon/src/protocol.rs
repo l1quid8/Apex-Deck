@@ -69,9 +69,9 @@ pub struct Daemon {
     /// Pairing invitations handed out since this daemon started.
     #[cfg(feature = "remote")]
     pub invites: Arc<crate::pairing::invites::Invites>,
-    /// The iroh endpoint, once `serve --remote` started it.
+    /// The iroh endpoint, on or off while this daemon keeps running.
     #[cfg(feature = "remote")]
-    pub endpoint: std::sync::OnceLock<iroh::Endpoint>,
+    pub remote: crate::remote_control::RemoteController,
 }
 
 impl Daemon {
@@ -88,7 +88,7 @@ impl Daemon {
         host.start_personal_worker()?;
         Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
-            #[cfg(feature = "remote")] endpoint: Default::default(),
+            #[cfg(feature = "remote")] remote: crate::remote_control::RemoteController::serving(),
         }))
     }
 }
@@ -872,7 +872,7 @@ mod tests {
             host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices,
             gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
-            #[cfg(feature = "remote")] endpoint: Default::default(),
+            #[cfg(feature = "remote")] remote: Default::default(),
         };
         (Arc::new(daemon), data)
     }
@@ -955,11 +955,20 @@ mod tests {
         }
     }
 
+    /// What a welcome lists; phone voice calls only where this daemon can run the helper.
+    fn hello_capabilities() -> Value {
+        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "personal_assistant", "voice_turn_correlation_v1"]);
+        if crate::voice::platform_support().is_ok() {
+            caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
+        }
+        caps
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn hello_names_the_host_and_this_boot() {
         let mut client = connect(Trust::Local);
         let reply = client.hello().await;
-        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "personal_assistant", "voice_turn_correlation_v1"], "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } }));
+        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } }));
     }
 
     /// The fields a client reads from a welcome; the build ones may be missing from an older daemon.
@@ -1007,7 +1016,7 @@ mod tests {
 
         let mut back = connect_to(&daemon, Trust::Local);
         back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 1 } } })).await;
-        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "personal_assistant", "voice_turn_correlation_v1"], "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() }));
+        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 2, "event": "session-changed", "payload": { "version": 2 } }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 3, "event": "session-changed", "payload": { "version": 3 } }));
         // Then live events, with nothing doubled.
@@ -1614,7 +1623,7 @@ mod tests {
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
-            endpoint: Default::default(),
+            remote: Default::default(),
         });
         let (mut client, session) = connect_device(&restarted, &phone, 1 << 16);
         assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));
@@ -1661,6 +1670,7 @@ mod tests {
             json!({ "id": 1, "cmd": "pair_approve", "args": { "invitation": inv, "claim_id": inv } }),
             json!({ "id": 1, "cmd": "pair_cancel", "args": { "invitation": inv } }),
             json!({ "id": 1, "cmd": "remote_info", "args": {} }),
+            json!({ "id": 1, "cmd": "remote_set", "args": { "enabled": true } }),
             json!({ "id": 1, "cmd": "remote_advertise", "args": { "addrs": ["evil.example:1"] } }),
         ]
     }
@@ -1731,7 +1741,7 @@ mod tests {
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
-            endpoint: Default::default(),
+            remote: Default::default(),
         });
         let mut local = connect_to(&restarted, Trust::Local);
         local.hello().await;

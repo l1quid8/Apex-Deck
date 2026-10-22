@@ -467,8 +467,8 @@ pub fn resolve_model_target(
             persona: String::new(),
             access: Access::Read,
             effort,
-            auto_effort: false,
             speed: None,
+            voice: None,
             appearance: None,
             media: None,
         };
@@ -496,8 +496,8 @@ pub fn resolve_model_target(
             persona: String::new(),
             access: Access::Read,
             effort,
-            auto_effort: false,
             speed: None,
+            voice: None,
             appearance: None,
             media: None,
         };

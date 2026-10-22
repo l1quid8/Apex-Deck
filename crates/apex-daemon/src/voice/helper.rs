@@ -34,7 +34,12 @@ impl Helper for Process {
         })
     }
 }
-pub struct Python;
+/// Starts the embedded helper with the private runtime's Python: `cpu` on Linux servers, `mlx` on a Mac.
+pub struct Python {
+    pub engine: &'static str,
+}
+pub const CPU: Python = Python { engine: "cpu" };
+pub const MLX: Python = Python { engine: "mlx" };
 #[async_trait]
 impl Launch for Python {
     async fn launch(&self, version: &Path) -> Result<(Running, Box<dyn Helper>), String> {
@@ -69,7 +74,7 @@ impl Python {
         }
         let token = crate::identity::random_hex(32);
         let mut cmd = tokio::process::Command::new(version.join("python/bin/python3"));
-        cmd.args(["-I","-c","import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module(\"voice_sidecar.server\",run_name=\"__main__\")"]).arg(&app).arg("--root").arg(version).args(["--engine","cpu","--token-fd","0","--origin","apex-daemon"])
+        cmd.args(["-I","-c","import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module(\"voice_sidecar.server\",run_name=\"__main__\")"]).arg(&app).arg("--root").arg(version).args(["--engine",self.engine,"--token-fd","0","--origin","apex-daemon"])
  .env_clear().env("HOME",std::env::var_os("HOME").unwrap_or_default()).env("PATH","/usr/bin:/bin").env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1").env("HF_HOME",version.join("cache")).env("PYTHONNOUSERSITE","1").env("TOKENIZERS_PARALLELISM","false").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         #[cfg(target_os = "linux")]
         unsafe {
@@ -213,7 +218,7 @@ mod tests {
         let script=format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nread token\nprintf '%s' \"$token\" > '{}'\nprintf '%s\\n' '{{\"type\":\"ready\",\"port\":4321,\"protocolVersion\":1}}'\nexec sleep 30\n",root.join("argv").display(),root.join("token").display());
         std::fs::write(&python, script).unwrap();
         std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let (running, helper) = Python.launch(&root).await.unwrap();
+        let (running, helper) = CPU.launch(&root).await.unwrap();
         assert_eq!(running.port, 4321);
         assert_eq!(
             std::fs::read_to_string(root.join("token")).unwrap(),
@@ -240,6 +245,11 @@ mod tests {
             server
         );
         drop(helper);
+        let (_, helper) = MLX.launch(&root).await.unwrap();
+        assert!(std::fs::read_to_string(root.join("argv"))
+            .unwrap()
+            .contains("--engine\nmlx"));
+        drop(helper);
         let _ = std::fs::remove_dir_all(root);
     }
     #[cfg(unix)]
@@ -259,7 +269,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let result = Python
+        let result = CPU
             .launch_with_wait(&root, Duration::from_millis(100))
             .await;
         assert_eq!(

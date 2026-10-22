@@ -6,7 +6,7 @@ import { isWaitingForOwner, WAITING_FOR_OWNER } from '../src/roomRecovery.ts';
 // Run the recovery's actual entry updater without mounting the entire chat UI.
 const source = readFileSync(new URL('../src/ChatPane.tsx', import.meta.url), 'utf8');
 const updater = source.match(/setEntries\(old => (\[\.\.\.restored, .*\])\);/)[1];
-const restore = new Function('old', 'restored', `return ${updater};`);
+const restore = new Function('old', 'restored', 'mountNotice = []', `return ${updater};`);
 const notice = (key, text, source) => ({ kind: 'notice', notice: { key, text, tone: 'error', ...(source ? { source } : {}) } });
 
 test('successful chat retry removes load errors and preserves unrelated notices', () => {
@@ -43,4 +43,10 @@ test('an attached view waiting for Deck reads again quietly instead of stacking 
   assert.equal(missed.length, 1);
   // The Deck window's own view never waits: there a missing room is a real error.
   assert.equal(runFail(new Error(WAITING_FOR_OWNER), false).calls.length, 1);
+});
+
+
+test('room recovery replaces the old mount notice instead of duplicating it', () => {
+  const current=notice(3,'Now working in tree','mount');
+  assert.deepEqual(restore([notice(1,'Now working in old tree','mount')],[],[current]),[current]);
 });

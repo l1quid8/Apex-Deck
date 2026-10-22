@@ -58,7 +58,10 @@
 .ph-large { font-size: 30px; font-weight: 700; letter-spacing: -0.8px; line-height: 1.15; margin: 4px 0 0; display: flex; align-items: center; gap: 10px; }
 .ph-mark { display: block; width: 26px; height: 26px; flex: none; }
 .ph-head-actions { display: flex; align-items: center; margin-right: -4px; }
-.ph-back.ph-back { display: flex; align-items: center; gap: 7px; background: transparent; border: 0; padding: 0 8px 0 0; color: var(--mint); font-size: 15px; }
+.ph-back.ph-back { display: flex; align-items: center; gap: 0; min-height: 44px; background: transparent; border: 0; padding: 0 10px 0 0; color: var(--mint); font-size: 17px; letter-spacing: -0.2px; }
+.ph-back svg { margin-right: -4px; }
+/* In the header the chevron sits where a thread's does (13px in), so going back looks the same everywhere. */
+.ph-head > .ph-back.ph-back { margin-left: -16px; padding-left: 9px; }
 .ph-icon.ph-icon {
   min-width: 44px;
   padding: 8px;
@@ -85,8 +88,11 @@
 
 .ph-title-row { display: flex; align-items: center; justify-content: space-between; }
 .ph-title-row h2 { margin: 0; }
-.ph-intro { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 4px 0 18px !important; display: flex; align-items: center; flex-wrap: wrap; }
-.ph-section { font-size: 12px; letter-spacing: 0.4px; font-weight: 600; color: var(--muted); margin: 18px 4px 6px; text-transform: uppercase; }
+.ph-content > h2 { margin-left: 4px; }
+.ph-intro { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 4px 4px 18px !important; display: flex; align-items: center; flex-wrap: wrap; }
+.ph-section { display: flex; align-items: center; gap: 7px; min-height: 30px; margin: 20px 4px 4px; font-size: 14px; font-weight: 600; color: var(--muted); }
+.ph-section-action.ph-section-action { flex: none; min-height: 44px; margin: -8px -14px -8px auto; padding: 0 14px; border: 0; border-radius: 10px; background: transparent; color: var(--mint); font-size: 14px; font-weight: 600; }
+.ph-section-action:active { background: var(--panel-2); }
 .ph-foot { text-align: center; color: var(--muted); font-size: 12px; margin: 22px 0 !important; }
 
 .ph-group {
@@ -265,6 +271,29 @@
 .ph-tl .ph-tl-empty p { color: var(--muted); margin: 0 0 14px; }
 .ph-tl-empty + .ph-tl-machine { margin-top: 28px; }
 @media (prefers-reduced-motion: reduce) { .ph-tl-dot.work { animation: none; } .ph-tl-chev { transition: none; } }
+
+/* Agents, Code and Settings list the Threads way: plain rows with no box or lines, reaching both sides of the
+   screen, with text on the header's 20px edge. Boxed rows read as big buttons. */
+.ph-list { margin: 0 -16px; }
+.ph-list > .ph-srow.ph-srow, .ph-list > .ph-term-row { position: relative; min-height: 56px; gap: 12px; padding: 8px 18px 8px 20px; border: 0; border-radius: 0; }
+.ph-list > .ph-term-row { align-items: flex-start; } /* its age sits on the name's line, as in Threads */
+.ph-list > .ph-srow.ph-srow { padding-right: 14px; } /* its chevron lines up with a Threads project's */
+.ph-list > button:not(:disabled):active { background: var(--panel-2) !important; }
+.ph-list .ph-srow strong, .ph-list .ph-term-row-main b { font-size: 17px; font-weight: 400; letter-spacing: -0.35px; line-height: 1.4; }
+.ph-list .ph-srow small, .ph-list .ph-term-row-main small { margin-top: 1px; font-size: 14px; line-height: 1.4; }
+/* A terminal's state dot hangs in the margin, like a thread's. */
+.ph-list .ph-term-dot { position: absolute; left: 6px; top: 16px; width: 8px; height: 8px; }
+.ph-list .ph-term-age { font-size: 14px; line-height: 23.8px; }
+.ph-app .ph-list-note { margin: 2px 4px 12px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+/* An add row: mint words, like Threads' Pair and Retry. */
+.ph-list-add.ph-list-add { display: flex; align-items: center; width: 100%; min-height: 48px; padding: 12px 3px; border: 0; border-radius: 0; background: transparent; color: var(--mint); font-size: 16px; text-align: left; }
+.ph-list > .ph-list-add.ph-list-add { padding: 0 18px 0 20px; font-size: 17px; letter-spacing: -0.35px; }
+.ph-list-add:active { background: var(--panel-2); }
+/* iOS keeps :hover on the last button touched, and the Mac themes fill a hovered button, so a tapped tab, row or
+   heading stayed grey. Touch has no hover, so these keep their own background (a press still shows). */
+@media (hover: none) {
+  .ph-app :is(.ph-tabs button, .ph-list > button, .ph-tl-thread, .ph-tl-p, .ph-tl-archived, .ph-back, .ph-head .ph-icon, .ph-nav .ph-icon, .ph-nav-title, .ph-section-action, .ph-list-add, .ph-term-resume):hover:not(:active) { background-color: transparent; }
+}
 
 .ph-empty { padding: 44px 10px; text-align: center; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .ph-empty h3 { color: var(--text); margin: 10px 0 4px; }
@@ -509,7 +538,6 @@
 .ph-srow > svg { color: var(--muted); }
 .ph-srow-icon { display: flex; color: var(--mint); width: 24px; justify-content: center; flex: none; }
 .ph-tap { cursor: pointer; min-height: 44px; }
-.ph-inset.ph-inset { padding: 12px 14px; }
 
 .ph-card { background: var(--panel-2); border-radius: 14px; padding: 12px 14px; margin-bottom: 6px; font-size: 14px; }
 .ph-card p { overflow-wrap: anywhere; }
@@ -644,7 +672,7 @@
 .ph-model-typed label { display: flex; flex-direction: column; gap: 6px; }
 .ph-model-typed input { min-height: 40px; font-size: 16px; }
 .ph-turn-note { font-size: 13px; margin: 8px 4px 14px; }
-.ph-sheet-back-link { margin: 0 0 8px -6px; }
+.ph-sheet-back-link.ph-sheet-back-link { margin: 0 0 8px -8px; }
 
 /* Pull a bot pill down for its details: the chip follows the finger a little, over a small grab line. */
 .ph-crew-pill.ph-crew-pill { position: relative; touch-action: pan-x; flex-direction: column; justify-content: center; }
@@ -861,13 +889,72 @@
 .ph-undo.ph-undo-up { bottom: calc(136px + env(safe-area-inset-bottom)); }
 .ph-undo > span { flex: 1; min-width: 0; }
 .ph-undo button { background: transparent; border: 0; color: var(--mint); font-weight: 600; min-height: 44px; padding: 0 12px !important; }
-/* A held message opens its menu, so iOS's own text callout stays out of the way. */
-.ph-msg-hold,
-.ph-msg-hold * {
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
+/* The desktop's action buttons, with only Reply/Quote and Copy exposed until opened.
+   Keep the compact clock and all expanded tools on one line, yours mirrored at the right.
+   A touch screen shows the row all the time; a mouse shows it while the message is hovered, as on the desktop. */
+.ph-said { margin-bottom: 12px; }
+.ph-said > .ph-msg { margin-bottom: 2px; }
+.ph-said > .message-actions { flex-wrap: nowrap; gap: 0; }
+.ph-said.mine > .message-actions { justify-content: flex-end; text-align: end; }
+.ph-said :is(.message-primary-actions, .message-action-items) { flex: none; flex-wrap: nowrap; gap: 0; }
+.ph-said .message-action-items[hidden] { display: none; }
+.ph-said .message-time { flex: none; white-space: nowrap; text-wrap: nowrap; }
+.ph-said .message-time-compact { display: none; }
+.ph-said.mine .msg-action.quote svg { transform: scaleX(-1); }
+/* A thumb-sized tap with the desktop's look; the outer icons line up with the text above them. */
+.ph-said .msg-action { flex: none; min-height: 36px; height: 36px; width: 36px; min-width: 36px; padding: 0; }
+/* The smallest phones still fit every tool and the clock without shrinking the icons. */
+@container (max-width: 360px) {
+  .ph-said .msg-action { width: 32px; min-width: 32px; }
+  .ph-said .copied { font-size: 10px; }
 }
+/* At 320px the expanded bot row needs a shorter weekday clock and numeric year. */
+@container (max-width: 340px) {
+  .ph-said .message-time { padding: 0 3px; font-size: 11px; }
+  .ph-said .message-time-label { display: none; }
+  .ph-said .message-time-compact { display: inline; }
+}
+.ph-said:not(.mine) > .message-actions { margin-left: -9px; }
+.ph-said.mine > .message-actions { margin-right: -9px; }
+.ph-said .msg-action:active:not(:disabled) { background: var(--panel-2); }
+@media (hover: hover) {
+  .ph-said:hover .message-actions .msg-action, .ph-said:hover .message-time { opacity: 1; }
+}
+/* iOS keeps :hover on the last tapped button; the desktop's hover fill would stick. */
+@media (hover: none) {
+  .ph-app .msg-action:hover:not(:active):not([aria-pressed="true"]) { background-color: transparent; color: var(--muted); }
+}
+/* Retry and Revert ask under their message with the desktop's words, in the chat instead of floating. */
+.ph-said .goback-pop { position: static; width: auto; margin: 4px 0 6px; box-shadow: none; font-size: 13px; }
+.ph-app .goback-pop p { margin: 6px 0 0; }
+.ph-said .goback-pop strong { font-size: 13.5px; }
+.ph-said .goback-scope { flex-wrap: wrap; gap: 4px 14px; }
+.ph-said :is(.goback-scope, .goback-files) label { min-height: 36px; }
+.ph-said .goback-files { max-height: 220px; }
+.ph-said .goback-pop .row { gap: 8px; }
+.ph-said .goback-pop .row button { min-height: 40px; padding: 8px 14px; font-size: 14px; border-radius: 10px; }
+.ph-said .goback-pop .row .primary { background: var(--brand-gradient); color: var(--accent-ink); }
+
+/* Pinned for every model, under the bots: one line until it's opened. */
+.ph-pins { font-size: 13px; padding: 8px 16px; }
+.ph-pins .pins-label { padding: 4px 0; }
+.ph-pins .pins-list { max-height: 30vh; overflow-y: auto; }
+.ph-pins .pin .icon { min-height: 32px; min-width: 32px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 18px; }
+
+/* Quotes waiting above the box, as on the desktop. */
+.ph-quotes { margin: 6px 0; }
+.ph-quotes .quote-preview-head .ghost.small { min-height: 32px; padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+.ph-quotes .quote-clear-all { min-height: 32px; font-size: 13px; }
+.ph-quotes .quote-cancel { min-height: 36px; width: 36px; height: 36px; color: var(--muted); }
+.ph-quotes .hand-off-menu button { min-height: 40px; font-size: 14px; }
+
+/* Text picked in a message: the desktop's Add to chat / More details on the side iPhone's own Copy menu
+   leaves free, past the selection's handles. Placed in the phone frame, with thumb-sized taps. */
+.ph-app .selection-actions:is(.above, .below) { position: absolute; }
+.ph-app .selection-actions.above { transform: translate(-50%, calc(-100% - 14px)); }
+.ph-app .selection-actions.below { transform: translate(-50%, 14px); }
+.ph-app .selection-actions button { min-height: 36px; padding: 0 12px; font-size: 13px; }
+.ph-app .selection-actions button:active:not(:disabled) { background: var(--panel-2); }
 
 /* Section headings share project controls, with recovery actions alongside. */
 .ph-tl-heading { display: flex; align-items: center; margin-top: 14px; }
@@ -1146,28 +1233,25 @@
 
 .ph-term-root { display: flex; min-height: 100%; flex-direction: column; gap: 10px; color: var(--text); }
 .ph-term-root[hidden] { display: none; }
+/* The Code home flows like the other tabs, so its label margins collapse the same way. */
+.ph-term-root:not(.viewing):not([hidden]) { display: block; }
 /* An open terminal fills the page, so the keys sit on the tabs and the box gets every row left over. */
 .ph-content:has(> .ph-term-root.viewing:not([hidden])) { display: flex; flex-direction: column; }
-.ph-content:has(> .ph-term-root.viewing:not([hidden])) > .ph-intro { display: none; }
 .ph-term-root.viewing { flex: 1 1 0; min-height: 0; }
 /* While typing, the title rows step aside so the keyboard leaves the terminal some rows. */
-:root[data-keyboard] .ph-term-root.viewing > :is(.ph-term-back, .ph-term-title-row, .ph-term-project-button) { display: none; }
+:root[data-keyboard] .ph-term-root.viewing > :is(.ph-term-title-row, .ph-term-project-button) { display: none; }
 .ph-term-title { margin: 0; font-size: 29px; line-height: 1.15; font-weight: 700; letter-spacing: -.035em; }
-.ph-term-title-row { display: flex; align-items: center; justify-content: space-between; }
-.ph-term-title-row button, .ph-term-home-head button, .ph-term-back { border: 0; background: transparent; color: var(--mint); font: inherit; }
-.ph-term-project { margin: -5px 0 5px; color: var(--muted); font-size: 14px; }
-.ph-term-row { display: flex; align-items: center; gap: 11px; width: 100%; min-height: 58px; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: inherit; text-align: left; font: inherit; }
+.ph-term-title-row { display: flex; align-items: center; justify-content: space-between; margin-left: 4px; }
+.ph-term-title-row button { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; padding: 0; border: 0; background: transparent; color: var(--mint); }
+.ph-term-row { display: flex; align-items: center; gap: 11px; width: 100%; min-height: 58px; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; color: inherit; text-align: left; font: inherit; }
 .ph-term-row:last-child { border-bottom: 0; }
 .ph-term-row.disabled { color: var(--muted); }
 .ph-term-row-main { display: grid; min-width: 0; flex: 1; gap: 3px; }
 .ph-term-row-main b { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ph-term-row-main small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.ph-term-plain-icon { width: 22px; color: var(--muted); text-align: center; }
-.ph-term-later { display: flex; justify-content: space-between; padding: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
-.ph-term-later small, .ph-term-muted { color: var(--muted); font-size: 11px; }
-.ph-term-home-head { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 15px; }
-.ph-term-open-list, .ph-term-resume { padding: 0; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; text-align: left; }
-.ph-term-foot { margin: 4px 0 10px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.ph-term-muted { color: var(--muted); font-size: 12px; }
+.ph-term-resume.ph-term-resume { display: block; min-height: 44px; margin: 4px 0 0 4px; padding: 0; border: 0; background: transparent; color: var(--mint); font-size: 15px; text-align: left; }
+.ph-term-foot { margin: 4px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .ph-term-age { color: var(--muted); font-size: 10px; }
 .ph-term-dot { display: inline-block; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #7b8794; }
 .ph-term-dot.run { background: var(--mint); animation: ph-term-pulse 1.6s ease-in-out infinite; }
@@ -1177,11 +1261,10 @@
 @keyframes ph-term-pulse { 50% { opacity: .4; } }
 @media (prefers-reduced-motion: reduce) { .ph-term-dot.run { animation: none; } }
 @media (prefers-reduced-motion: reduce) { .ph-term-swipe { transition: none; } }
-.ph-term-back { align-self: flex-start; padding: 2px 0; font-size: 15px; }
-.ph-term-project-button { align-self: flex-start; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.ph-term-project-button { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
 .ph-term-project-button b { color: var(--text); font-weight: 600; }
 .ph-term-strip { display: flex; gap: 15px; min-height: 32px; overflow-x: auto; scrollbar-width: none; }
-.ph-term-strip button { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 3px 2px 5px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.ph-term-strip button { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 3px 2px 5px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .ph-term-strip button.selected { border-bottom-color: var(--mint); color: var(--text); }
 .ph-term-strip button.peek { color: var(--mint); }
 .ph-term-strip button small { color: var(--muted); font-size: 9px; }
@@ -1210,7 +1293,7 @@
 .ph-term-search { width: 100%; height: 40px; margin-bottom: 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); color: var(--text); font: inherit; }
 .ph-term-sheet mark { padding: 0 1px; border-radius: 2px; background: color-mix(in srgb, var(--amber) 35%, transparent); color: inherit; }
 .ph-term-sheet h4 { margin: 14px 2px 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
-.ph-term-action, .ph-term-new { display: block; width: 100%; min-height: 48px; padding: 12px 3px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; font: inherit; }
+.ph-term-action { display: block; width: 100%; min-height: 48px; padding: 12px 3px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; font: inherit; }
 .ph-term-action.danger { color: #ef6363; }
 .ph-term-notice { padding: 8px; border: 0; border-radius: 8px; background: var(--panel-2); color: var(--text); }
 .ph-term-root .ph-term-row { cursor: pointer; }

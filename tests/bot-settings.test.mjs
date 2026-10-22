@@ -15,11 +15,11 @@ test('Model switching and supported speed selections persist when the quick sele
     import {BotSettings} from '/src/BotSettings.tsx'; import '/src/styles.css';
     const root=createRoot(document.getElementById('test-root'));
     window.fixture={config:null,fail:false,saves:0,mount(tool,fail=false){
-      this.fail=fail; this.key=Math.random(); this.config={id:'bot',display_name:'Test',effort:null,backend:tool==='api'?{kind:'open_ai_compatible',base_url:'http://test',model:'last'}:{kind:'agent',tool,model:'last'}};
+      this.fail=fail; this.key=Math.random(); this.config={id:'bot',display_name:'Test',access:'read',effort:null,backend:tool==='api'?{kind:'open_ai_compatible',base_url:'http://test',model:'last'}:{kind:'agent',tool,model:'last'}};
       this.render();
     },render(){root.render(React.createElement(BotSettings,{key:this.key,config:this.config,roomId:'test',anchor:document.getElementById('anchor'),backend,save:async config=>{this.config=config;this.saves++;this.render();},close(){root.render(null);}}));}};
     const models=[{id:'first',label:'First model'},{id:'last',label:'Last model'}];
-    const backend={decisionKeyStatus:async()=>false,agentModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},apiModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},roomCreate:async()=>({participants:[window.fixture.config]})};
+    const backend={agentModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},apiModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},roomCreate:async()=>({participants:[window.fixture.config]})};
     window.ready=true;
   </script></body></html>`;
   // Each parallel test file gets its own dependency cache: Vite servers sharing
@@ -83,6 +83,22 @@ test('Model switching and supported speed selections persist when the quick sele
             await run(()=>{window.fixture.config=JSON.parse(JSON.stringify(window.fixture.config));window.fixture.key=Math.random();window.fixture.render();});
             await new Promise(r=>setTimeout(r,50));
             assert.equal(await run(()=>document.querySelector('.bot-speed [aria-checked="true"]')?.textContent),label,'reopened '+label+' for '+tool);
+          }
+        }
+        for(const tool of ['claude_code','codex','gemini','grok','muse','api']){
+          await win.webContents.executeJavaScript('window.fixture.mount('+JSON.stringify(tool)+')');
+          await wait(()=>document.querySelector('.model-select-trigger'));
+          const labels=await run(()=>Array.from(document.querySelectorAll('[aria-label="Access"] button')).map(b=>b.textContent));
+          assert.deepEqual(labels,['grok','muse'].includes(tool)?['Read-only','Edit','Full']:['Read-only','Ask','Edit','Full'],'access choices for '+tool);
+          for(const label of labels.slice().reverse()){
+            await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".bot-access button")).find(b=>b.textContent==='+JSON.stringify(label)+').click()');
+            await wait(()=>document.querySelector('[aria-label="Access"] [aria-checked="true"]'));
+            for(let i=0;i<100;i++){if(await run(()=>document.querySelector('[aria-label="Access"] [aria-checked="true"]').textContent)===label && await run(()=>!document.querySelector('fieldset').getAttribute('aria-busy')||document.querySelector('fieldset').getAttribute('aria-busy')==='false'))break;await new Promise(r=>setTimeout(r,20));}
+            const expected={'Read-only':'read',Ask:'ask',Edit:'edits',Full:'full'}[label];
+            assert.equal(await run(()=>window.fixture.config.access),expected,'saved access for '+tool);
+            await run(()=>{window.fixture.key=Math.random();window.fixture.render();});
+            await wait(()=>document.querySelector('[aria-label="Access"] [aria-checked="true"]'));
+            assert.equal(await run(()=>document.querySelector('[aria-label="Access"] [aria-checked="true"]').textContent),label,'access persists after reopen');
           }
         }
         console.log('Model selector Chromium checks passed'); app.exit(0);

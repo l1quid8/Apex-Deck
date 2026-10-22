@@ -28,7 +28,8 @@ impl ScriptedParticipant {
             persona: String::new(),
             access: Access::Read,
             effort: None,
-            auto_effort: false, speed: None,
+            speed: None,
+            voice: None,
             appearance: None, media: None
         })
     }

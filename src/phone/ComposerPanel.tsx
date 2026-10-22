@@ -98,7 +98,6 @@ export function ComposerPanel(props: ComposerPanelProps) {
       <header className="ph-composer-header" onPointerDown={(event) => { const target = event.target as HTMLElement; if (event.currentTarget === target || target.closest("h2")) startDrag(event); }} onPointerUp={dragEnd} onPointerCancel={() => setDragStart(null)}>
         <button ref={closeRef} type="button" className="ph-composer-close" aria-label="Close Add to message" onClick={props.onClose}><X size={20} /></button>
         <h2>Add to message</h2>
-        <button type="button" className="ph-composer-photos" onClick={() => pick("photos")}>Photos</button>
         <button type="button" className="ph-composer-grip" aria-label={detent === "compact" ? "Expand panel" : "Collapse panel"} onPointerDown={startDrag} onClick={() => { if (suppressGripClick.current) return; setDetent(detent === "compact" ? "expanded" : "compact"); }}><span /></button>
       </header>
       <div className="ph-composer-scroll">

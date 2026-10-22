@@ -4,13 +4,12 @@ export async function postFromPhone(
   paneId: string,
   text: string,
   to: string[],
-  manual: boolean | undefined,
   voice?: { requestId: string },
 ): Promise<void> {
   if (voice)
-    await backend.roomPostTo(paneId, text, to, false, false, {
+    await backend.roomPostTo(paneId, text, to, false, {
       client_turn_id: voice.requestId,
       max_bot_hops: 0,
     });
-  else await backend.roomPostTo(paneId, text, to, !manual);
+  else await backend.roomPostTo(paneId, text, to);
 }

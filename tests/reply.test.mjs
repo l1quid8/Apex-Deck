@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handOffChoices, handOffLabel, quoteFor, quoteLead, quoteTarget, replyText } from '../src/reply.ts';
+import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteLead, quoteTarget, replyText } from '../src/reply.ts';
 
 const bots = (...ids) => ids.map((id) => ({ id, display_name: id }));
 
@@ -94,4 +94,15 @@ test('preview and send agree when your own quote comes first', () => {
   ];
   assert.equal(quoteTarget('', quotes, bots('muck', 'null')), 'muck');
   assert.ok(replyText('', quotes, bots('muck', 'null')).startsWith('@muck '));
+});
+
+test('Add to chat quotes only the picked part, under the name of whoever wrote it', () => {
+  const reply = { seq: 4, speaker: { kind: 'bot', id: 'null' }, text: 'First part. Second part.' };
+  assert.deepEqual(partQuote(reply, 'Second part.', () => 'Null'), { id: 'null', name: 'Null', text: 'Second part.' });
+  assert.deepEqual(partQuote({ seq: 3, speaker: { kind: 'human' }, text: 'Run it all' }, 'Run it', () => '?'), { id: '', name: 'I', text: 'Run it' });
+});
+
+test('More details asks the bot that wrote the part to explain it', () => {
+  const quote = { id: 'null', name: 'Null', text: 'Use @jigga\'s plan.' };
+  assert.equal(moreDetailsText(quote, bots('null', 'jigga')), '@null Explain this part in more detail.\n\n> Null wrote:\n> Use ＠jigga\'s plan.');
 });

@@ -593,7 +593,7 @@ mod tests {
         missing.threads = vec!["nope".into()];
         assert!(f.host.monitor_assign(missing).unwrap_err().contains("isn't saved"));
 
-        f.host.store().save_room("other", &SavedRoom { cwd: Some("/somewhere/else".into()), snapshot: empty_snapshot() }).unwrap();
+        f.host.store().save_room("other", &SavedRoom { mounts: vec![], cwd: Some("/somewhere/else".into()), snapshot: empty_snapshot() }).unwrap();
         let mut foreign = assignment(&f);
         foreign.threads = vec!["other".into()];
         assert!(f.host.monitor_assign(foreign).unwrap_err().contains("different project"));
@@ -609,7 +609,7 @@ mod tests {
     fn assign_accepts_a_chat_from_the_same_folder() {
         let f = fixture("thread");
         let cwd = f.project.to_string_lossy().into_owned();
-        f.host.store().save_room("mine", &SavedRoom { cwd: Some(cwd), snapshot: empty_snapshot() }).unwrap();
+        f.host.store().save_room("mine", &SavedRoom { mounts: vec![], cwd: Some(cwd), snapshot: empty_snapshot() }).unwrap();
         let mut with_thread = assignment(&f);
         with_thread.threads = vec!["mine".into()];
         assert_eq!(f.host.monitor_assign(with_thread).unwrap().threads, vec!["mine".to_string()]);
@@ -876,7 +876,7 @@ mod tests {
             assert!(f.host.monitor_sources_update("w", cwd, host_id, conversation_id, vec!["README.md".into()], vec![], "add").is_err());
         }
         assert!(f.host.monitor_sources_update("w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id, vec!["../secret".into()], vec![], "add").is_err());
-        f.host.store().save_room("foreign", &SavedRoom { cwd: Some("/elsewhere".into()), snapshot: empty_snapshot() }).unwrap();
+        f.host.store().save_room("foreign", &SavedRoom { mounts: vec![], cwd: Some("/elsewhere".into()), snapshot: empty_snapshot() }).unwrap();
         assert!(f.host.monitor_sources_update("w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id, vec![], vec!["foreign".into()], "add").unwrap_err().contains("different project"));
         assert!(f.host.monitor_sources_update("w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id, vec![], vec![], "append").is_err());
     }
@@ -885,7 +885,7 @@ mod tests {
     fn save_sources_drops_a_chat_deleted_before_saving() {
         let f = fixture("sources-gone");
         let assigned = f.host.monitor_assign(assignment(&f)).unwrap();
-        f.host.store().save_room("live", &SavedRoom { cwd: Some(assigned.cwd.clone()), snapshot: empty_snapshot() }).unwrap();
+        f.host.store().save_room("live", &SavedRoom { mounts: vec![], cwd: Some(assigned.cwd.clone()), snapshot: empty_snapshot() }).unwrap();
         let (saved, removed) = f.host.monitor_sources_update_report(
             "w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id,
             vec![], vec!["gone".into(), "live".into()], "add",
@@ -899,7 +899,7 @@ mod tests {
     fn save_sources_drops_a_saved_chat_deleted_since() {
         let f = fixture("sources-stale");
         let assigned = f.host.monitor_assign(assignment(&f)).unwrap();
-        f.host.store().save_room("live", &SavedRoom { cwd: Some(assigned.cwd.clone()), snapshot: empty_snapshot() }).unwrap();
+        f.host.store().save_room("live", &SavedRoom { mounts: vec![], cwd: Some(assigned.cwd.clone()), snapshot: empty_snapshot() }).unwrap();
         f.host.monitor_sources_update(
             "w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id,
             vec![], vec!["live".into()], "add",
@@ -919,7 +919,7 @@ mod tests {
     fn save_sources_still_refuses_a_chat_from_another_folder() {
         let f = fixture("sources-foreign");
         let assigned = f.host.monitor_assign(assignment(&f)).unwrap();
-        f.host.store().save_room("foreign", &SavedRoom { cwd: Some("/elsewhere".into()), snapshot: empty_snapshot() }).unwrap();
+        f.host.store().save_room("foreign", &SavedRoom { mounts: vec![], cwd: Some("/elsewhere".into()), snapshot: empty_snapshot() }).unwrap();
         let err = f.host.monitor_sources_update_report(
             "w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id,
             vec![], vec!["gone".into(), "foreign".into()], "add",

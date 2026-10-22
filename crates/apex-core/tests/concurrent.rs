@@ -625,6 +625,7 @@ fn turn_settings_change_during_reply_preserves_current_turn_and_next_context() {
             let mut config = original.clone();
             config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("new-model".into()) };
             config.effort = Some("high".into());
+            config.access = apex_core::Access::Full;
             let replacement = Arc::new(SettingsReply { config });
             let room = runtime.room();
             {
@@ -632,6 +633,7 @@ fn turn_settings_change_during_reply_preserves_current_turn_and_next_context() {
                 assert!(room.replace_turn_settings(replacement));
                 assert_eq!(room.transcript()[0].text, "@null remember this");
                 assert_eq!(room.configs()[0].effort.as_deref(), Some("high"));
+                assert_eq!(room.configs()[0].access, apex_core::Access::Full);
             }
             release.send(()).unwrap();
             runtime.run(next, &sink).await;
@@ -657,16 +659,13 @@ impl Participant for SettingsReply {
 }
 
 #[test]
-fn active_settings_cannot_change_access_or_provider() {
+fn active_settings_cannot_change_persona_or_provider() {
     block_on(async {
         let mut config = ScriptedParticipant::new("null", &[]).config().clone();
         config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("old-model".into()) };
         let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(SettingsReply { config: config.clone() })], RoomOptions::default()));
         let room = runtime.room();
         let mut room = room.lock().await;
-        let mut changed = config.clone();
-        changed.access = apex_core::Access::Full;
-        assert!(!room.replace_turn_settings(Arc::new(SettingsReply { config: changed })));
         let mut changed = config.clone();
         changed.display_name = "Renamed".into();
         changed.persona = "Be someone else.".into();
@@ -692,87 +691,6 @@ fn a_rename_can_land_while_bots_are_replying() {
         assert!(room.replace_turn_settings(Arc::new(SettingsReply { config: renamed.clone() })));
         assert_eq!(room.configs()[0], renamed);
         assert_eq!(room.resolve_targets("@atlas go"), vec![ParticipantId::new("jigga")]);
-    });
-}
-
-struct HeldAdvice {
-    release: Mutex<Option<oneshot::Receiver<()>>>,
-}
-impl apex_core::decision::TurnAdvisor for HeldAdvice {
-    fn advise<'a>(&'a self, config: &'a ParticipantConfig, _: Vec<apex_core::Message>, _: Vec<ParticipantConfig>) -> futures::future::BoxFuture<'a, Option<String>> {
-        Box::pin(async move {
-            if !config.auto_effort { return None; }
-            let release = self.release.lock().unwrap().take();
-            if let Some(release) = release { let _ = release.await; }
-            Some("low".into())
-        })
-    }
-}
-
-#[test]
-fn fixed_bot_starts_and_can_edit_while_auto_is_waiting() {
-    block_on(async {
-        let base = ScriptedParticipant::new("auto", &["auto reply"]);
-        let mut config = base.config().clone();
-        config.auto_effort = true;
-        config.effort = Some("xhigh".into());
-        config.access = apex_core::Access::Full;
-        let auto = Arc::new(ScriptedParticipant::from_config(config));
-        let base = ScriptedParticipant::new("fixed", &["fixed reply"]);
-        let mut config = base.config().clone();
-        config.access = apex_core::Access::Full;
-        let fixed = Arc::new(ScriptedParticipant::from_config(config));
-        let room = ConcurrentRoom::new(Room::new(vec![auto.clone(), fixed.clone()], RoomOptions::default()));
-        let (release, ready) = oneshot::channel();
-        let advisor = Arc::new(HeldAdvice { release: Mutex::new(Some(ready)) });
-        let batch = room.begin_post("@all do the work", None, &|_| {}).await.unwrap().with_advisor(advisor);
-        let (started, fixed_started) = oneshot::channel();
-        let started = Mutex::new(Some(started));
-        let sink = |event| {
-            if matches!(event, RoomEvent::TurnStarted { id } if id.as_str() == "fixed") {
-                if let Some(started) = started.lock().unwrap().take() { let _ = started.send(()); }
-            }
-        };
-        let run = room.run(batch, &sink);
-        let check = async {
-            fixed_started.await.unwrap();
-            assert!(auto.requests().is_empty());
-            assert_eq!(fixed.requests()[0].access, Some(apex_core::Access::Full));
-            release.send(()).unwrap();
-        };
-        futures::join!(run, check);
-        assert_eq!(auto.requests()[0].effort_override.as_deref(), Some("low"));
-        assert_eq!(auto.config().effort.as_deref(), Some("xhigh"));
-        assert_eq!(fixed.requests()[0].effort_override, None);
-    });
-}
-
-#[test]
-fn stop_during_auto_wait_never_starts_the_old_reply() {
-    block_on(async {
-        let base = ScriptedParticipant::new("auto", &["must not run"]);
-        let mut config = base.config().clone();
-        config.auto_effort = true;
-        let auto = Arc::new(ScriptedParticipant::from_config(config));
-        let room = ConcurrentRoom::new(Room::new(vec![auto.clone()], RoomOptions::default()));
-        let (release, ready) = oneshot::channel();
-        let advisor = Arc::new(HeldAdvice { release: Mutex::new(Some(ready)) });
-        let batch = room.begin_post("@auto work", None, &|_| {}).await.unwrap().with_advisor(advisor);
-        let events = Mutex::new(Vec::new());
-        let sink = |event| events.lock().unwrap().push(event);
-        let mut run = Box::pin(room.run(batch, &sink));
-        use futures::FutureExt;
-        assert!(run.as_mut().now_or_never().is_none());
-        room.stop(None);
-        release.send(()).unwrap();
-        run.await;
-        assert!(auto.requests().is_empty());
-        assert!(!room.busy());
-        let events = events.lock().unwrap();
-        assert_eq!(events.as_slice(), &[
-            RoomEvent::ParticipantIdle { id: ParticipantId::new("auto") },
-            RoomEvent::Idle,
-        ]);
     });
 }
 
@@ -951,4 +869,35 @@ fn voice_cancel_only_its_ticket_and_keeps_terminal_canceled() {
   runtime.run(batch,&sink).await;
   assert!(runtime.begin_voice_post("go",ParticipantId::new("null"),"v2".into(),&sink).await.unwrap().is_none());
  });
+}
+
+#[test]
+fn queued_reader_upgraded_to_full_waits_for_other_rooms_checkout_lease() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    block_on(async {
+        let gate = apex_core::CheckoutWriteGate::new();
+        gate.restore_hold("other-room").unwrap();
+        let started = Arc::new(AtomicUsize::new(0));
+        let (release, rx) = oneshot::channel();
+        let config = ScriptedParticipant::new("reader", &[]).config().clone();
+        let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(Held { config: config.clone(), release: Mutex::new(Some(rx)), started: None, cleanup_error: false })], RoomOptions::default())).with_write_gate(gate.clone(), None);
+        let active = runtime.begin_post("@reader inspect", None, &|_| {}).await.unwrap();
+        let queued = runtime.begin_post("@reader next", None, &|_| {}).await.unwrap();
+        let active_run = runtime.run(active, &|_| {});
+        let queued_run = runtime.run(queued, &|_| {});
+        futures::pin_mut!(active_run, queued_run);
+        assert!(futures::poll!(&mut active_run).is_pending());
+        assert!(futures::poll!(&mut queued_run).is_pending());
+        let mut next = config;
+        next.access = apex_core::Access::Full;
+        assert!(runtime.room().lock().await.replace_turn_settings(Arc::new(Held { config: next, release: Mutex::new(None), started: Some(started.clone()), cleanup_error: false })));
+        release.send(()).unwrap();
+        active_run.await;
+        assert!(futures::poll!(&mut queued_run).is_pending(), "the upgraded writer must wait for checkout admission");
+        assert_eq!(started.load(Ordering::SeqCst), 0, "Full cannot execute under another room's lease");
+        assert_eq!(gate.queued(), 1);
+        gate.release("other-room");
+        queued_run.await;
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+    });
 }

@@ -12,7 +12,7 @@ export function libraryCaption(item: LibraryItem, withTime: boolean): string {
 export function libraryErrorLine(error: unknown, machine: string): string {
   const message = String((error as { message?: unknown } | null)?.message ?? error ?? "").trim();
   if (/full access|not allowed|\btier\b|refused/i.test(message)) {
-    return `The Library needs Full access to all threads on ${machine}. Change this phone's access in ${machine}'s Settings → Paired devices.`;
+    return `The Library needs Full access to all threads on ${machine}. Change this phone's access in ${machine}'s Settings → Phones.`;
   }
   return `Couldn't load the Library from ${machine}: ${message}`;
 }

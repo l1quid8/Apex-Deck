@@ -2,9 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import { Avatar } from "../Avatar";
 import { popoverTop } from "../floating.ts";
-import { CALL_LOOKS, callClock, callLine, readCallLook, voiceLabel, type CallLook, type WaveMode } from "./callView.ts";
+import { CALL_LOOKS, callClock, callLine, pickNote, pickRows, readCallLook, voiceLabel, type CallLook, type WaveMode } from "./callView.ts";
 import { voiceController, voiceRegistration, warmVoice } from "./coordinator.ts";
-import { DEFAULT_VOICE, preferenceFor, voicePreferenceKey } from "./settings.ts";
+import { chatVoice, preferenceFor, voiceFor, withChatPreference } from "./settings.ts";
 import type { VoiceCandidate, VoiceSettings } from "./types.ts";
 import "./voice.css";
 
@@ -51,6 +51,12 @@ export function useVoiceHint(props: Props): string | undefined {
   if (call.look === "pill") return call.line.hint;
   if (call.look === "bar") return "Type while you talk…";
   return undefined;
+}
+
+/** Whether a call is running in these candidates' thread, and its look: the composer's round button follows it. */
+export function useVoiceSlot(props: Props): { live: boolean; look: CallLook } {
+  const call = useCall(props);
+  return { live: call.live, look: call.look };
 }
 
 const Icon = {
@@ -195,21 +201,21 @@ const choose = (c: VoiceCandidate, active: boolean) => {
   void (active ? voiceController.switchAgent(c) : voiceController.start(c));
 };
 
-function PickMenu({ list, who, active, onDone }: { list: VoiceCandidate[]; who?: VoiceWho; active: boolean; onDone(): void }) {
-  const names = new Map<string, number>();
-  for (const c of list) names.set(c.name, (names.get(c.name) ?? 0) + 1);
+function PickMenu({ list, who, active, onDone, threadQuery }: { list: VoiceCandidate[]; who?: VoiceWho; active: boolean; onDone(): void; threadQuery?: string }) {
+  const choosingThread = threadQuery !== undefined;
   return (
     <>
-      <div className="voice-pop-head">Call who?</div>
-      {list.map((c) => (
-        <button type="button" role="menuitem" className="voice-pick-row" key={JSON.stringify(c)}
+      <div className="voice-pop-head">{choosingThread ? "Which thread?" : "Call who?"}</div>
+      {choosingThread && <p className="voice-pop-note">Heard “{threadQuery}”.</p>}
+      {pickRows(list, (c) => who?.(c.participantId).kind ?? "", choosingThread).map(({ candidate: c, detail }) => (
+        <button type="button" role="menuitem" className="voice-pick-row" key={JSON.stringify(c)} title={detail || undefined}
           onClick={() => { onDone(); choose(c, active); }}>
           <Who who={who} id={c.participantId} />
           <b>{c.name}</b>
-          <span>{names.get(c.name)! > 1 ? c.roomId : who?.(c.participantId).kind ?? ""}</span>
+          <span>{detail}</span>
         </button>
       ))}
-      <p className="voice-pop-note">During a call, say “call {list.find((c) => c.name)?.name ?? "Null"}” to switch.</p>
+      <p className="voice-pop-note">{pickNote(list, choosingThread)}</p>
     </>
   );
 }
@@ -222,14 +228,12 @@ function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; 
   const settings = r.settings;
   const profile = candidate?.profileId ?? scope.participantId;
   const preference = preferenceFor(settings, scope.hostId, profile, scope.roomId, scope.participantId);
+  // A voice picked here is for this chat only; "Default" follows the agent's form, then Settings.
+  const picked = chatVoice(settings, scope.hostId, profile, scope.roomId, scope.participantId);
+  const fallback = voiceFor(settings, scope.hostId, profile, undefined, undefined, candidate?.agentVoice);
+  const speaking = picked || fallback;
   const savePreference = (patch: Partial<typeof preference>) =>
-    r.save({
-      ...r.settings,
-      preferences: {
-        ...r.settings.preferences,
-        [voicePreferenceKey(scope.hostId, profile, scope.roomId, scope.participantId)]: { ...preference, ...patch },
-      },
-    });
+    r.save(withChatPreference(r.settings, scope.hostId, profile, scope.roomId, scope.participantId, patch));
   const look = readCallLook(settings.look);
   const here = candidates.filter((c) => c.hostId === scope.hostId && c.roomId === scope.roomId);
   return (
@@ -251,13 +255,14 @@ function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; 
       <label className="voice-set-row">
         <span>{name}'s voice</span>
         <span className="voice-voice">
-          <select value={preference.voice} disabled={!state.voices.length} onChange={(e) => savePreference({ voice: e.target.value })}>
-            {[...new Set([preference.voice || DEFAULT_VOICE, ...state.voices])].map((v) => (
+          <select value={picked} disabled={!state.voices.length} onChange={(e) => savePreference({ voice: e.target.value })}>
+            <option value="">Default · {voiceLabel(fallback)}</option>
+            {[...new Set([...(picked ? [picked] : []), ...state.voices])].map((v) => (
               <option key={v} value={v}>{voiceLabel(v)}</option>
             ))}
           </select>
           <button type="button" className="voice-callbtn boxed" aria-label="Preview voice" title="Preview voice"
-            disabled={!state.voices.includes(preference.voice)} onClick={() => voiceController.preview(preference.voice)}>
+            disabled={!state.voices.includes(speaking)} onClick={() => voiceController.preview(speaking)}>
             {Icon.play}
           </button>
         </span>
@@ -418,8 +423,8 @@ export function VoiceCallControls({ disabled = false, ...props }: Props & { disa
         </Popover>
       )}
       {menu && (
-        <Popover anchor={wrap} role="menu" className="voice-pick" label="Call who?" onClose={() => setPicking(false)}>
-          <PickMenu list={menu} who={who} active={active && here} onDone={() => setPicking(false)} />
+        <Popover anchor={wrap} role="menu" className="voice-pick" label={asking && state.threadQuery !== undefined ? "Which thread?" : "Call who?"} onClose={() => setPicking(false)}>
+          <PickMenu list={menu} who={who} active={active && here} onDone={() => setPicking(false)} threadQuery={asking ? state.threadQuery : undefined} />
         </Popover>
       )}
       {here && state.status === "setup" && (

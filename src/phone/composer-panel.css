@@ -1,18 +1,20 @@
 .ph-composer-backdrop { position: absolute; inset: 0; z-index: 30; display: flex; align-items: flex-end; background: rgb(0 0 0 / .42); }
-.ph-composer-panel { --composer-panel-height: 48%; width: 100%; height: var(--composer-panel-height); display: flex; flex-direction: column; overflow: hidden; padding: 0 16px calc(8px + env(safe-area-inset-bottom)); color: var(--text); background: var(--phone-sheet, var(--panel)); border: 1px solid var(--line); border-bottom: 0; border-radius: 24px 24px 0 0; box-shadow: 0 -8px 32px rgb(0 0 0 / .14); transition: height 180ms ease; }
-.ph-composer-panel.expanded { --composer-panel-height: 88%; }
-.ph-composer-header { position: relative; display: grid; grid-template-columns: 44px minmax(0,1fr) 64px; align-items: center; gap: 8px; flex: none; min-height: 92px; padding-top: 34px; touch-action: none; }
+/* Compact is as tall as what the panel holds, so no row is cut off at the bottom edge; past 88% it scrolls.
+   Expanded holds the full 88%. */
+.ph-composer-panel { width: 100%; max-height: 88%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0 16px calc(8px + env(safe-area-inset-bottom)); color: var(--text); background: var(--phone-sheet, var(--panel)); border: 1px solid var(--line); border-bottom: 0; border-radius: 24px 24px 0 0; box-shadow: 0 -8px 32px rgb(0 0 0 / .14); transition: min-height 180ms ease; }
+.ph-composer-panel.expanded { min-height: 88%; }
+.ph-composer-header { position: relative; display: grid; grid-template-columns: 44px minmax(0,1fr) 44px; align-items: center; gap: 8px; flex: none; min-height: 92px; padding-top: 34px; touch-action: none; }
 .ph-composer-header h2 { margin: 0; text-align: center; font-size: 17px; font-weight: 600; }
 .ph-composer-header button { min-width: 44px; min-height: 44px; border: 0; border-radius: 50%; color: var(--text); background: transparent; display: grid; place-items: center; }
 .ph-composer-close { justify-self: start; background: var(--panel-2) !important; }
-.ph-composer-photos { justify-self: end; font-size: 15px; color: var(--accent, var(--mint)) !important; }
 .ph-composer-grip { position: absolute; left: 50%; top: 0; transform: translateX(-50%); width: 64px; height: 44px !important; min-height: 44px !important; border-radius: 0 !important; touch-action: none; }
 .ph-composer-grip:hover, .ph-composer-grip:active { background: transparent !important; }
 .ph-composer-grip:focus-visible { outline: 2px solid var(--accent, var(--mint)); outline-offset: -3px; }
 .ph-composer-grip span { width: 36px; height: 5px; background: var(--muted); opacity: .55; border-radius: 4px; }
-.ph-composer-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 0 20px; }
+.ph-composer-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 0 20px; }
 .ph-composer-media { display: flex; gap: 12px; overflow-x: auto; padding: 0 0 14px; }
-.ph-composer-media-tile { flex: 0 0 104px; height: 98px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-radius: 16px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+/* Camera and Photos share the row; with previews beside them it scrolls sideways. */
+.ph-composer-media-tile { flex: 1 0 104px; height: 98px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-radius: 16px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
 .ph-composer-media-tile span { font-size: 29px; line-height: 1; color: var(--accent, var(--mint)); }
 .ph-composer-media-tile strong { font-size: 13px; }
 .ph-composer-preview { position: relative; flex: 0 0 98px; height: 98px; overflow: hidden; border-radius: 16px; background: var(--panel-2); }

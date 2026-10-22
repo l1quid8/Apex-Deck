@@ -258,8 +258,15 @@ impl Snapshots {
 
     /// Take a checkpoint for `thread` in `cwd`.
     pub fn take(&self, thread: &str, cwd: &Path, seq: usize, kind: Kind, by: Option<ParticipantId>) -> Result<Checkpoint, String> {
-        // One at a time: two bots starting together share the thread's index.
+        self.take_if_live(thread, cwd, seq, kind, by, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    /// A host room may retire while its background snapshot waits to start.
+    pub(crate) fn take_if_live(&self, thread: &str, cwd: &Path, seq: usize, kind: Kind, by: Option<ParticipantId>, retired: &std::sync::atomic::AtomicBool) -> Result<Checkpoint, String> {
+        // Check under the same lock as delete: a job either completes before
+        // Mount clears the old list, or observes retirement and writes nothing.
         let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
+        if retired.load(std::sync::atomic::Ordering::SeqCst) { return Err("The chat folder changed; discard the old snapshot.".into()); }
         let (tree, skipped) = self.write_tree(cwd, thread)?;
         let list = self.list_lock(thread); let _list = list.lock().unwrap();
         let mut file = self.load(thread);
@@ -497,6 +504,24 @@ mod tests {
     }
 
     fn bot() -> Option<ParticipantId> { Some(ParticipantId::new("jigga")) }
+
+    #[test]
+    fn retired_room_snapshot_cannot_replace_new_checkouts_history() {
+        let root = std::env::temp_dir().join(format!("apex-snapshot-retired-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let old = root.join("old"); let new = root.join("new");
+        std::fs::create_dir_all(&old).unwrap(); std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("old.txt"), "old checkout").unwrap();
+        std::fs::write(new.join("new.txt"), "new checkout").unwrap();
+        let snapshots = Snapshots::new(root.join("snapshots"));
+        snapshots.take("r", &new, 5, Kind::Open, None).unwrap();
+        let retired = std::sync::atomic::AtomicBool::new(true);
+        let late = snapshots.take_if_live("r", &old, 0, Kind::Open, None, &retired);
+        assert!(late.is_err(), "a queued job from the retired room must be discarded");
+        assert_eq!(snapshots.load("r").cwd, new.to_string_lossy());
+        assert_eq!(snapshots.load("r").checkpoints.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

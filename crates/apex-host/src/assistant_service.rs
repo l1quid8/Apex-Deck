@@ -871,7 +871,7 @@ impl Host {
         drop(_lease);
         let targets = workers.iter().map(ParticipantId::new).collect();
         let handle = self.handle(&child_id)?;
-        let batch = self.prepare_post(&child_id, &handle, &task_start_prompt(&task), Some(targets), false).await?;
+        let batch = self.prepare_post(&child_id, &handle, &task_start_prompt(&task), Some(targets)).await?;
         spawn_task_attempt(
             Arc::clone(self),
             task.id.clone(),
@@ -1059,7 +1059,7 @@ impl Host {
         let targets = workers.iter().map(ParticipantId::new).collect();
         let content = task_start_prompt(&task);
         let batch = self
-            .prepare_post(&child_id, &handle, &content, Some(targets), false)
+            .prepare_post(&child_id, &handle, &content, Some(targets))
             .await?;
         spawn_task_attempt(
             Arc::clone(self),
@@ -1379,7 +1379,7 @@ impl Host {
             for note in notes.iter().filter_map(Value::as_str) { content.push_str(&format!("\n\nAdditional human note for this task:\n{note}")); }
         }
         let batch = match self
-            .prepare_post(id, &handle, &content, Some(selected), false)
+            .prepare_post(id, &handle, &content, Some(selected))
             .await
         {
             Ok(batch) => batch.with_answer_guidance(answers, capability),
@@ -2812,7 +2812,8 @@ mod tests {
             persona: String::new(),
             access,
             effort: None,
-            auto_effort: false, speed: None,
+            speed: None,
+            voice: None,
             appearance: None,
             media: None,
         }
@@ -2946,7 +2947,7 @@ mod tests {
         f.host.room_create("reader".into(), vec![profile("read-bot", Backend::Scripted { lines: vec!["Reading continued.".into()] }, Access::Read)], RoomOptions::default(), Some(f.owner.cwd.clone())).unwrap();
         f.runtime.block_on(async {
             let _integration = f.host.assistant_apply.lock().await;
-            let dispatch = tokio::time::timeout(std::time::Duration::from_secs(2), f.host.room_post_to("reader".into(), "Read the project.".into(), vec![ParticipantId::new("read-bot")], false)).await;
+            let dispatch = tokio::time::timeout(std::time::Duration::from_secs(2), f.host.room_post_to("reader".into(), "Read the project.".into(), vec![ParticipantId::new("read-bot")])).await;
             assert!(matches!(dispatch, Ok(Ok(()))), "A read chat must remain available during task integration.");
             for _ in 0..100 {
                 if f.host.room_state("reader".into()).unwrap()["snapshot"]["transcript"].as_array().unwrap().iter().any(|message| message["text"] == "Reading continued.") { return; }
@@ -3002,7 +3003,7 @@ mod tests {
     fn routing_choices_use_saved_chat_workers_and_exclude_other_folders() {
         let f = fixture();
         let saved = f.host.store().room("parent").unwrap().unwrap();
-        f.host.store().save_room("elsewhere", &crate::storage::SavedRoom {
+        f.host.store().save_room("elsewhere", &crate::storage::SavedRoom { mounts: vec![],
             cwd: Some("/another/project".into()), snapshot: saved.snapshot,
         }).unwrap();
         f.host.store().save_session(&json!({
@@ -4115,7 +4116,7 @@ mod tests {
             for kind in ["post", "post_to", "turn"] {
                 let command = match kind {
                     "post" => crate::Command::RoomPost { id: child.clone(), text: "Continue with a calculator".into(), interactive_answers: answers },
-                    "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], routed: false, interactive_answers: answers, client_turn_id: None, max_bot_hops: None },
+                    "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], interactive_answers: answers, client_turn_id: None, max_bot_hops: None },
                     _ => crate::Command::RoomTurn { id: child.clone(), participants: vec![ParticipantId::new("null")], hops: Some(0), interactive_answers: answers },
                 };
                 f.runtime.block_on(f.host.call_with_client_capability(command, capability)).unwrap();

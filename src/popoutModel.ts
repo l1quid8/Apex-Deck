@@ -9,6 +9,7 @@ import type { ServerChoice } from "./PreviewPane";
 import type { LandingTextureSettings } from "./settings";
 import type { AppearanceValues } from "./themes";
 import type { Access, AgentInfo, Pane, ParticipantConfig, RoomOptions } from "./types";
+import type { VoiceSettings } from "./voice/types";
 
 export type PopoutKind = "pane" | "tab";
 
@@ -41,6 +42,8 @@ export interface ChatBundle {
   landingTexture: LandingTextureSettings;
   /** Settings → General "Run buttons on code blocks". */
   codeRunButtons: boolean;
+  /** Call look, pause and voices, so a popped thread's call matches the owner's. */
+  voice?: VoiceSettings;
 }
 
 /** How a fork the owner ran for a pop-out ended: the new thread's title, or why it failed. */
@@ -52,6 +55,8 @@ export interface ForkResult {
 
 /** What the owner hands the pop-out window so it can show the same item. */
 export interface PopoutSnapshot {
+  pendingMount?: string | null;
+  busyTurn?: boolean;
   kind: PopoutKind;
   /** Pane id when kind is pane, tab id when kind is tab. */
   id: string;
@@ -116,6 +121,8 @@ export interface TabSpot {
 
 /** What a pop-out asks its owner to do. Starts, closes and saves run in the owner, never in the pop-out. */
 export type PopoutAction =
+  | { type: "mount-worktree"; id: string; path: string }
+  | { type: "cancel-mount"; id: string }
   | { type: "restart-terminal" }
   | { type: "start-pane"; id: string }
   | { type: "show-pane"; id: string }
@@ -129,12 +136,16 @@ export type PopoutAction =
   | { type: "fork"; title: string; upto: number | null; at: number; requestId: string }
   /** "Always" in the steer prompt: the setting lives in the owner. */
   | { type: "confirm-steer"; confirm: boolean }
+  /** A call setting changed in the pop-out: the settings live in the owner. */
+  | { type: "voice-settings"; voice: VoiceSettings }
   /** Reading in the pop-out marks the thread read in the owner too. */
   | { type: "seen"; seq: number }
   | { type: "tab-url"; url: string };
 
 /** What the owner pushes to a pop-out while it is open: titles, selection, runs and rows. */
 export interface PopoutUpdate {
+  pendingMount?: string | null;
+  busyTurn?: boolean;
   title?: string;
   workspaceId?: string;
   activePaneId?: string;

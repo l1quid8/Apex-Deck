@@ -24,42 +24,6 @@
 .ph-voice-sheet p {
   line-height: 1.5;
 }
-.ph-voice-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  flex-wrap: wrap;
-  width: 100%;
-  padding: 16px 0;
-  border: 0;
-  border-bottom: 1px solid #ffffff12;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-}
-.ph-voice-row select {
-  margin-left: auto;
-  max-width: 60%;
-}
-.ph-voice-row input {
-  width: 100%;
-}
-.ph-voice-row small {
-  opacity: 0.6;
-}
-.ph-voice-actions {
-  display: flex;
-  gap: 20px;
-  padding: 16px 0;
-}
-.ph-voice-dot {
-  width: 7px;
-  height: 7px;
-  background: #85dfbf;
-  border-radius: 50%;
-  display: inline-block;
-  margin-right: 9px;
-}
 .ph-call-bar {
   position: fixed;
   bottom: calc(72px + env(safe-area-inset-bottom));
@@ -73,3 +37,80 @@
   color: #baf3dc;
   text-align: center;
 }
+/* Call looks, from mockups/phone-voice-call-controls-v2.html. --agent is the called bot's colour. */
+.ph-call-ico { width: 20px; height: 20px; }
+.ph-call-wave { display: inline-flex; align-items: center; gap: 2px; height: 18px; flex: none; color: var(--muted); }
+.ph-call-wave i { display: block; width: 3px; height: 4px; border-radius: 2px; background: currentColor; }
+.ph-call-wave[data-mode="bot"] { color: var(--agent); }
+.ph-call-wave[data-mode="bot"] i { animation: ph-call-bounce 0.9s ease-in-out infinite; }
+.ph-call-wave[data-mode="you"] { color: var(--text); }
+.ph-call-wave[data-mode="you"] i { animation: ph-call-bounce 1.3s ease-in-out infinite; }
+.ph-call-wave i:nth-child(1) { --h: 7px; animation-delay: -0.2s; }
+.ph-call-wave i:nth-child(2) { --h: 13px; animation-delay: -0.5s; }
+.ph-call-wave i:nth-child(3) { --h: 17px; animation-delay: -0.1s; }
+.ph-call-wave i:nth-child(4) { --h: 11px; animation-delay: -0.7s; }
+.ph-call-wave i:nth-child(5) { --h: 6px; animation-delay: -0.35s; }
+.ph-call-wave[data-mode="flat"] i { height: 3px; opacity: 0.45; }
+.ph-call-wave[data-mode="dots"] { gap: 3px; }
+.ph-call-wave[data-mode="dots"] i { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); animation: ph-call-dot 1.2s ease-in-out infinite; }
+.ph-call-wave[data-mode="dots"] i:nth-child(n + 4) { display: none; }
+.ph-call-wave[data-mode="dots"] i:nth-child(2) { animation-delay: 0.2s; }
+.ph-call-wave[data-mode="dots"] i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes ph-call-bounce { 0%, 100% { height: 4px; } 50% { height: var(--h); } }
+@keyframes ph-call-dot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ph-call-wave i, .ph-call-live { animation: none !important; } }
+.ph-call-timer { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; flex: none; }
+.ph-call-live { width: 8px; height: 8px; border-radius: 50%; background: #e0485f; box-shadow: 0 0 0 3px rgb(224 72 95 / 0.22); flex: none; animation: ph-call-dot 1.6s ease-in-out infinite; }
+.warn .ph-call-live { background: var(--amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 22%, transparent); }
+.ph-call-who { font-weight: 600; color: var(--agent); flex: none; }
+.ph-call-status { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.warn .ph-call-status, .ph-call-sheet-status.warn { color: var(--amber); }
+.muted .ph-call-status, .ph-call-sheet-status.muted { color: var(--danger); }
+.ph-app button.ph-call-round { width: 40px; height: 40px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 50%; display: inline-grid; place-items: center; background: var(--panel-2); color: var(--text); flex: none; }
+.ph-app button.ph-call-round[aria-pressed="true"] { background: color-mix(in srgb, var(--danger) 22%, transparent); color: var(--danger); }
+.ph-app button.ph-call-round.hang { background: #c4334a; color: #fff; }
+.ph-app button.ph-call-round.small { width: 32px; height: 32px; }
+.ph-app button.ph-call-round.small .ph-call-ico { width: 17px; height: 17px; }
+/* A: strip above the compose row */
+.ph-call-strip { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 6px 6px 6px 14px; border-radius: 24px; background: var(--panel); border: 1px solid var(--line); }
+.ph-app .ph-call-strip-tap { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; }
+.ph-call-strip .ph-call-timer { margin-right: 2px; }
+/* B: the mic grows into a pill; TL;DR steps aside while it's there */
+.ph-call-pill { display: flex; align-items: center; gap: 2px; align-self: flex-end; margin: 0 0 3px; padding: 3px; border-radius: 22px; background: var(--panel-2); flex: none; }
+.ph-app .ph-call-pill-mid { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; height: 32px; min-height: 0; border: 0; background: transparent; color: inherit; }
+.ph-input.ph-in-call > .tldr-pill { display: none; }
+/* C: capsule under the title, in place of the project line */
+.ph-call-capsule { display: inline-flex; align-items: center; gap: 8px; margin-top: 3px; padding: 3px 3px 3px 11px; border-radius: 999px; background: #000; border: 1px solid var(--line); max-width: 100%; }
+.ph-call-capsule-tap { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.ph-call-capsule .ph-call-status { font-size: 12.5px; }
+.ph-call-capsule .ph-call-timer { font-size: 12px; }
+.ph-nav-title.ph-has-capsule { display: flex; flex-direction: column; align-items: center; }
+.ph-app .ph-nav-title-tap { max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; }
+.ph-nav-title-tap:active { opacity: 0.6; }
+/* The call sheet: plain rows, no boxed rows on the phone */
+.ph-call-sheet-status { color: var(--muted); margin: 0 0 4px; }
+.ph-call-actions { display: flex; gap: 12px; margin: 4px 0 8px; }
+.ph-app .ph-call-actions button { flex: 1; min-height: 50px; border-radius: 14px; border: 0; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 600; font-size: 15px; background: var(--panel-2); color: var(--text); }
+.ph-app .ph-call-actions button.hang { background: #c4334a; color: #fff; }
+.ph-app .ph-call-actions button[aria-pressed="true"] { background: color-mix(in srgb, var(--danger) 22%, transparent); color: var(--danger); }
+.ph-call-set { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0; border-bottom: 1px solid #ffffff12; }
+.ph-call-set:last-of-type { border-bottom: 0; }
+.ph-call-set > span:first-child { color: var(--muted); }
+.ph-call-set.col { flex-direction: column; align-items: stretch; gap: 8px; }
+.ph-call-set.col input[type="range"] { width: 100%; accent-color: var(--brand-mint); }
+.ph-call-set b { color: var(--text); font-weight: 600; }
+.ph-call-seg { display: inline-flex; flex-wrap: wrap; padding: 2px; border-radius: 11px; background: var(--panel-2); }
+.ph-app .ph-call-seg button { min-height: 32px; padding: 4px 11px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+.ph-app .ph-call-seg button[aria-pressed="true"] { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px #0006; }
+.ph-call-swatch { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.ph-call-voice { display: inline-flex; align-items: center; gap: 8px; }
+.ph-call-voice select, .ph-call-set input[type="text"] { background: var(--panel-2); color: var(--text); border: 0; border-radius: 10px; padding: 7px 10px; }
+.ph-call-set input[type="text"] { width: 160px; }
+.ph-call-note { color: var(--muted); font-size: 12.5px; margin: 4px 0 18px !important; }
+.ph-app button.ph-call-pick { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 0; border-bottom: 1px solid #ffffff12; color: var(--text); }
+.ph-call-pick b { font-weight: 600; font-size: 16px; }
+.ph-call-pick .identicon { transform: scale(1.25); }
+.ph-app .ph-call-wide { width: 100%; min-height: 48px; margin-top: 10px; border-radius: 14px; border: 0; background: var(--panel-2); color: var(--text); font-weight: 600; }
+/* One round button: Send and the mic swap in place */
+.ph-input > .ph-send, .ph-input > .ph-call-mic { animation: ph-call-swap 0.14s ease-out; }
+@keyframes ph-call-swap { from { transform: scale(0.7); opacity: 0; } to { transform: none; opacity: 1; } }

@@ -47,3 +47,9 @@ test("changes still waiting on their reply (no later message yet) are dropped", 
   const out = turnFilesFor(messages, changes);
   assert.equal(out.size, 0);
 });
+
+test('failed old-checkout changes cannot attach to the next checkout reply at the same seq', () => {
+  const changes = [change(2,'opus','same.ts',9),change(3,'opus','same.ts',2)];
+  const out=turnFilesFor([human(0),bot(1,'opus'),human(2),bot(3,'opus')],changes,[{seq:2,changeCount:1,from:'/a',to:'/b'}]);
+  assert.deepEqual(out.get(3),[{path:'same.ts',added:2,removed:0}]);
+});

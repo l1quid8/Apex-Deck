@@ -9,9 +9,6 @@ import type { Access, ParticipantConfig, RoomOptions, TurnPolicy } from "./types
 import { isChipStyle, type ChipParts } from "./botChip.ts";
 import { accentHex, readAppearance, themeMode, type AppearanceSettings, type AppearanceValues } from "./themes.ts";
 
-export interface DecisionSettings { enabled: boolean; provider: "jev" | "openrouter" | "cloudflare"; accountId: string; }
-export const DEFAULT_DECISION: DecisionSettings = { enabled: false, provider: "jev", accountId: "" };
-
 /** The glyph field behind empty threads. Saved only after a user changes it; older files omit it. */
 export interface LandingTextureSettings {
   enabled: boolean;
@@ -55,7 +52,6 @@ export function effectiveLandingTexture(landing: LandingTextureSettings, appeara
 
 export interface AppSettings {
   voice?: VoiceSettings;
-  decision?: DecisionSettings;
   /** Saved only after a user changes Appearance; older settings files omit it. */
   appearance?: AppearanceSettings;
   /** Saved only after a user changes the landing texture; older settings files omit it. */
@@ -114,11 +110,6 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
   const chips = record(saved.botChips);
   const d = DEFAULT_SETTINGS;
   return {
-    ...(saved.decision ? { decision: {
-      enabled: record(saved.decision).enabled === true && ["jev", "openrouter", "cloudflare"].includes(String(record(saved.decision).provider)),
-      provider: (["jev", "openrouter", "cloudflare"].includes(String(record(saved.decision).provider)) ? record(saved.decision).provider : "jev") as DecisionSettings["provider"],
-      accountId: typeof record(saved.decision).accountId === "string" ? record(saved.decision).accountId as string : "",
-    } } : {}),
     ...(saved.voice ? {voice: readVoiceSettings(saved.voice)} : {}),
     version: 1,
     disabledProviders: strings(saved.disabledProviders) ?? strings(legacyDisabled) ?? [],

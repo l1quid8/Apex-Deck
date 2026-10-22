@@ -8,7 +8,6 @@ test("voice posts preserve correlation and prevent bot hops", async () => {
     "room",
     "hi",
     ["null"],
-    true,
     { requestId: "v1" },
   );
   assert.deepEqual(calls, [
@@ -17,19 +16,17 @@ test("voice posts preserve correlation and prevent bot hops", async () => {
       "hi",
       ["null"],
       false,
-      false,
       { client_turn_id: "v1", max_bot_hops: 0 },
     ],
   ]);
 });
-test("typed posts retain existing routing", async () => {
+test("typed posts go to the chosen bots", async () => {
   const calls = [];
   await postFromPhone(
     { roomPostTo: async (...a) => calls.push(a) },
     "room",
     "hi",
     ["null"],
-    false,
   );
-  assert.deepEqual(calls, [["room", "hi", ["null"], true]]);
+  assert.deepEqual(calls, [["room", "hi", ["null"]]]);
 });

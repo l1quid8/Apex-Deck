@@ -14,7 +14,7 @@ test("captions name the bot and date, and say A bot when no name is set", () => 
 
 test("a missing-access error gets the plain Full access line", () => {
   const line = libraryErrorLine(new Error("device is not allowed to read the library"), "Work MacBook");
-  assert.equal(line, "The Library needs Full access to all threads on Work MacBook. Change this phone's access in Work MacBook's Settings → Paired devices.");
+  assert.equal(line, "The Library needs Full access to all threads on Work MacBook. Change this phone's access in Work MacBook's Settings → Phones.");
   assert.equal(libraryErrorLine("needs Full access", "Work MacBook"), line);
   assert.equal(libraryErrorLine({ message: "request refused" }, "Work MacBook"), line);
 });

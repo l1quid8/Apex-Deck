@@ -46,12 +46,13 @@ export interface ParticipantConfig {
   /** How hard the model should think, in the backend's own words. Null leaves its default. */
   effort: string | null;
   /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */
-  auto_effort?: boolean;
   /** Standard or fast output (Codex, Claude Code, and the direct OpenAI API). Missing follows the tool's own setting. */
   speed?: Speed | null;
   appearance?: { seed: string; color: string } | null;
   /** Choices for a bot whose model makes pictures or videos (see media.ts). */
   media?: MediaSettings | null;
+  /** The voice it speaks with on calls. Missing uses the default voice from Settings. */
+  voice?: string | null;
 }
 
 /** A name and persona an AI wrote for a new agent from a short description (persona_draft). Nothing is saved until the person saves the form. */
@@ -201,6 +202,8 @@ export interface Compaction {
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  cwd?: string | null;
+  mounts?: import("./worktreeMount").MountBoundary[];
   recovery_seq?: number;
   snapshot: RoomSnapshot;
   active: string[];
@@ -346,6 +349,8 @@ export interface WorktreeList { root: string; items: Worktree[] }
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 
 export interface Pane {
+  /** This chat is mounted in another checkout of its project. */
+  mount?: string;
   id: string;
   workspaceId: string;
   kind: PaneKind;
@@ -380,6 +385,8 @@ export interface Pane {
 
 /** What a thread reports to App through ChatPane's `onStatus`. */
 export interface ThreadStatus {
+  /** Includes queued work and waits, not only visible streaming replies. */
+  busy?: boolean;
   /** The muted words in the pane head when no flag shows, e.g. "2 bots · replying". */
   text: string;
   /** Display names of bots producing a reply right now (not counting ones stopped on a card). */

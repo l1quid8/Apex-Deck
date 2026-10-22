@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { callLine, callClock, readCallLook, DEFAULT_CALL_LOOK } from "../src/voice/callView.ts";
+import { callLine, callClock, readCallLook, DEFAULT_CALL_LOOK, pickNote, pickRows } from "../src/voice/callView.ts";
 import { readVoiceSettings } from "../src/voice/settings.ts";
 
 const state = (patch) => ({ status: "listening", muted: false, voices: [], ...patch });
@@ -57,4 +57,37 @@ test("voice ids read as a name and accent", async () => {
   assert.equal(voiceLabel("bf_emma"), "Emma · UK");
   assert.equal(voiceLabel("custom"), "custom");
   assert.equal(voiceLabel("qx_odd"), "qx_odd");
+});
+
+test("composer button swaps mic and Send", async () => {
+  const { composerButton } = await import("../src/voice/callView.ts");
+  const b = (hasContent, canCall, live, look = "pill") => composerButton({ hasContent, canCall, live, look });
+  assert.deepEqual(b(false, true, false), { mic: true, send: false });
+  assert.deepEqual(b(true, true, false), { mic: false, send: true });
+  assert.deepEqual(b(false, false, false), { mic: false, send: true });
+  assert.deepEqual(b(true, false, false), { mic: false, send: true });
+  assert.deepEqual(b(false, true, true, "pill"), { mic: true, send: false });
+  assert.deepEqual(b(true, true, true, "pill"), { mic: true, send: true });
+  for (const look of ["bar", "capsule"]) {
+    assert.deepEqual(b(false, true, true, look), { mic: true, send: false });
+    assert.deepEqual(b(true, true, true, look), { mic: false, send: true });
+  }
+});
+
+test("Call who? names each agent's thread when the list spans threads", () => {
+  const jigga = { hostId: "h", roomId: "pane-1", participantId: "j", name: "Jigga", roomTitle: "Voice calls" };
+  const untitled = { ...jigga, roomId: "pane-2", roomTitle: "  " };
+  const nul = { ...jigga, participantId: "n", name: "Null" };
+  const kind = (c) => (c.name === "Null" ? "Codex" : "Claude");
+  assert.deepEqual(pickRows([jigga, untitled], kind).map((r) => r.detail), ["Voice calls", "Untitled thread"]);
+  assert.deepEqual(pickRows([jigga, nul], kind).map((r) => r.detail), ["Claude", "Codex"]);
+  assert.equal(pickNote([untitled, jigga]), "Say “call Jigga in Voice calls” to pick one hands-free.");
+  assert.equal(pickNote([jigga, nul]), "During a call, say “call Jigga” to switch.");
+});
+
+test("an uncertain thread choice labels even one candidate with its thread", () => {
+  const jigga = { hostId: "h", roomId: "pane-1", name: "Jigga", roomTitle: "Voice calls" };
+  assert.deepEqual(pickRows([jigga], () => "Claude", true).map((r) => r.detail), ["Voice calls"]);
+  assert.deepEqual(pickRows([{ ...jigga, roomTitle: " " }], () => "Claude", true).map((r) => r.detail), ["Untitled thread"]);
+  assert.equal(pickNote([jigga], true), "Say “call Jigga in Voice calls” to pick one hands-free.");
 });

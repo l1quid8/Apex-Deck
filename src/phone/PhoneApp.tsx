@@ -1,7 +1,10 @@
 import { createPhoneVoice, type PhoneVoice } from './phoneVoice.ts';
 import { postFromPhone } from './phonePost.ts';
 import { keepAwake } from './callScreen.ts';
-import { VoiceCall, PhoneCallBar } from './VoiceCall.tsx';
+import { VoiceCall, PhoneCallBar, PhoneCallCapsule, PhoneCallStrip, usePhoneCallSlot, type PhoneVoiceWho } from './VoiceCall.tsx';
+import { composerButton, type CallLook } from '../voice/callView.ts';
+import { Capacitor } from "@capacitor/core";
+import { App } from "@capacitor/app";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 import { botChangeGate, botSendGate } from "../phoneBots";
@@ -22,7 +25,7 @@ import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
 import { Markdown } from "../Markdown";
 import { SavedSteps, WorkSteps } from "../WorkSteps.tsx";
-import { createStepsIndexLoader, readReplySteps, rememberSteps, savedEntry } from "../workSteps.ts";
+import { createStepsIndexLoader, dropStepsFrom, readReplySteps, rememberSteps, savedEntry } from "../workSteps.ts";
 import { PreparingCard } from "../interactiveAnswers/AnswerCard.tsx";
 import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
 import { cardVersions } from "../interactiveAnswers/share.ts";
@@ -46,7 +49,7 @@ import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   apiModelChoices, apiProviderName, modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange, phoneSpeed,
-  canSeeNewThread, connectionKey, isPaired, loadRemoteMode, remoteModeKey, withHints,
+  canSeeNewThread, connectionKey, isPaired, withHints,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
@@ -55,19 +58,29 @@ import { ageWords, homeShort, hostTints, noteActive, sidebarSections, unarchiveT
 import { webSocketConnect } from "../daemon/webSocketLink";
 import { FinalError, type Connect } from "../daemon/client";
 import { irohConnect } from "../daemon/irohLink";
-import { remotePlugin, type RemoteMode, type Route } from "./remotePlugin";
-import { PairSheet, RemoteSettings } from "./PairSheet";
+import { remotePlugin, type Route } from "./remotePlugin";
+import { clearRemoteMode, defaultAddHow, PAIR_MACHINE_HINT, startAutomatic, whenAutomatic } from "./automatic";
+import { AddHowPicker } from "./AddHow";
+import { PairSheet } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
-import { ThreadList, useLongPress } from "./ThreadList";
-import { forkedPane, forkUpto, messagePreview } from "./messageFork";
+import { ThreadList } from "./ThreadList";
+import { forkedPane, forkUpto } from "./messageFork";
+import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
+import { PickedText } from "./PickedText";
+import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
+import { pinSource, pinText, responsePin } from "../messagePins";
+import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
+import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, readFolds } from "./threadListRules";
 import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
 import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
+import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, takeScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
+import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
 import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../roomRecovery";
 import { mergePhoneSessionChange } from "../sessionSync";
@@ -94,6 +107,8 @@ const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
 type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
 type Draft = { text: string; files: ComposerAttachment[] };
+/** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
+type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
 type Pending = { id: string; workspaceId: string };
 type Ask = { paneId: string; workspaceId: string };
 type SheetKind = "project" | "where" | "tools";
@@ -102,6 +117,8 @@ type Person = { id: string; display_name: string; look: { seed: string; color: s
 const NO_CUTS: PhoneCuts = {};
 /** An open working line shows a bot's latest steps; older ones fold into a count. */
 const MAX_STEPS_SHOWN = 6;
+/** How long a message's Copy reads "Copied", as on the desktop. */
+const COPIED_MS = 1500;
 type SavedStepsFor = { id: string; index: import("../types").StepsIndex | null };
 type Room = {
   id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
@@ -114,12 +131,14 @@ type Room = {
   plans: Partial<Record<AgentTool, PlanWindow[]>>;
   /** Tokens each bot has used in this thread, as saved with it and added to after each turn. */
   used: Record<string, TokenTotals>;
+  /** Pinned for every model in the thread; a pinned message keeps its seq. */
+  pins: string[];
 };
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
-  | { kind: "archived" } | { kind: "remove"; id: string } | { kind: "message"; seq: number };
+  | { kind: "archived" } | { kind: "remove"; id: string };
 type Browse = {
   hostId: string;
   path: string | null;
@@ -135,6 +154,9 @@ type Browse = {
 
 const emptyDraft = (): Draft => ({ text: "", files: [] });
 const words = (error: unknown) => String(error).replace(/^Error: /, "");
+const tabName = (tab: Tab) => tab[0].toUpperCase() + tab.slice(1);
+/** ageWords says "now" for under a minute, which takes no "ago". */
+const activeWords = (age: string) => age === "now" ? "Active now" : `Active ${age} ago`;
 const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 function toLink(status: HostConnection["status"]): LinkStatus {
@@ -217,6 +239,8 @@ export function PhoneApp() {
   });
   const [appearanceSaveError, setAppearanceSaveError] = useState(false);
   const settingsReturn = useRef<Tab>("threads");
+  /** Machines opens from Threads (Pair) or from Settings; its back button returns there. */
+  const machinesReturn = useRef<Tab>("threads");
   useLayoutEffect(() => applyPhoneTheme(document.documentElement, appearance.current.appearance), [appearance]);
   const changeAppearance = (next: AppearanceState) => {
     setAppearance(next);
@@ -226,19 +250,25 @@ export function PhoneApp() {
   const [machines, setMachines] = useState<Machine[]>(() => loadMachines(typeof localStorage === "undefined" ? null : localStorage.getItem(machinesKey())));
   const [hosts, setHosts] = useState<PhoneHost[]>([]);
   const plugin = useMemo(() => remotePlugin(), []);
-  const [mode, setMode] = useState<RemoteMode>(() => { try { return loadRemoteMode(localStorage.getItem(remoteModeKey())); } catch { return "automatic"; } });
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
-  /** Settles once the plugin is bound for the current mode; every iroh dial waits on it. */
-  const bound = useRef<Promise<unknown> | null>(null);
-  if (bound.current === null) bound.current = plugin ? plugin.setMode(mode).catch(() => {}) : Promise.resolve();
+  /** One Automatic setup for this launch. The old Direct only key is deleted, not read. */
+  const automaticReady = useRef<Promise<void> | null>(null);
+  if (automaticReady.current === null) {
+    try { clearRemoteMode(localStorage); } catch { /* storage may be unavailable; nothing is read back */ }
+    automaticReady.current = startAutomatic(plugin);
+  }
+  const ready = automaticReady.current;
   /** Direct or Relayed for each QR-paired machine that's connected. */
   const [routes, setRoutes] = useState<Record<string, Route | null>>({});
   /** The newest saved list, for addresses learned after a connection opened. */
   const machinesRef = useRef(machines);
   machinesRef.current = machines;
   const scanner = useMemo(() => qrScanner(), []);
-  const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string } | null>(null);
+  const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string; attempt: number } | null>(null);
+  const pairingRef = useRef(pairing);
+  pairingRef.current = pairing;
+  const attemptSeq = useRef(0);
+  const gateRef = useRef<PairingGate | null>(null);
+  const noticeRef = useRef<(message: string) => void>(() => {});
   const [tick, setTick] = useState(0);
   const [session, setSession] = useState<AppSession | null>(readSession);
   const sessionRef = useRef(session);
@@ -247,12 +277,25 @@ export function PhoneApp() {
   const sessionEventVersion = useRef(0);
   const phoneSaveTag = useRef(`phone-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
   const phoneSaveSeq = useRef(0);
-  /** An empty list at launch opens the camera once, from Add a machine. Machines clears it when it does. */
-  const [scanAtLaunch, setScanAtLaunch] = useState(() => scansAtLaunch(machines.length, Boolean(plugin && scanner)));
+  /** An empty list at launch opens the camera once, from Add a machine. On a phone, that waits until a launch link has been ruled out. */
+  const [scanAtLaunch, setScanAtLaunch] = useState(() => !Capacitor.isNativePlatform() && scansAtLaunch(machines.length, Boolean(plugin && scanner)));
   const [tab, setTab] = useState<Tab>(() => (scanAtLaunch ? "machines" : "threads"));
+  const linkResolve = useRef<((outcome: LinkOutcome) => void) | null>(null);
+  const linkSeq = useRef(0);
+  const [incomingLink, setIncomingLink] = useState<{ id: number; url: string; kind: "mac"; adding: true } | null>(null);
+  const pairFromLinkRef = useRef<(url: string) => Promise<LinkOutcome>>(async () => "failed");
+  pairFromLinkRef.current = (url) => new Promise((resolve) => {
+    linkResolve.current = resolve;
+    const route = routePairingLink();
+    setIncomingLink({ id: ++linkSeq.current, url, kind: route.kind, adding: route.adding });
+    setTab(route.tab);
+  });
   const [terminalSwitcherOpen, setTerminalSwitcherOpen] = useState(false);
   const [terminalResumeSignal, setTerminalResumeSignal] = useState(0);
   const [terminalNeedsAnswer, setTerminalNeedsAnswer] = useState(false);
+  /** A terminal is open on the Code tab, so the header shows ‹ Code; the back button bumps the home signal. */
+  const [terminalViewing, setTerminalViewing] = useState(false);
+  const [terminalHomeSignal, setTerminalHomeSignal] = useState(0);
   const codeHoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const codeHeld = useRef(false);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -268,6 +311,42 @@ export function PhoneApp() {
   const [folded, setFolded] = useState<Record<string, boolean>>(() => { try { return readFolds(localStorage.getItem(FOLDS_KEY)); } catch { return {}; } });
   useEffect(() => { try { localStorage.setItem(FOLDS_KEY, JSON.stringify(folded)); } catch { /* retain choices for this session */ } }, [folded]);
   const [notice, setNotice] = useState("");
+  noticeRef.current = setNotice;
+  if (gateRef.current === null) gateRef.current = createPairingGate((message) => noticeRef.current(message));
+  // Release the slot now. `close` is false when the error should stay on screen.
+  const settle = (outcome: LinkOutcome, close: boolean) => {
+    const current = pairingRef.current;
+    const resolve = linkResolve.current;
+    linkResolve.current = null;
+    if (current && gateRef.current) settlePairing(gateRef.current, current.link, outcome, resolve);
+    else if (resolve) resolve(outcome);
+    if (close) setPairing(null);
+  };
+  const endLink = (outcome: Exclude<LinkOutcome, "paired">) => settle(outcome, true);
+  // Listener first, then the launch link, before the camera is allowed to open.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const opened = openIncomingLinks({
+      addListener: (event, listener) => App.addListener(event, listener),
+      getLaunchUrl: () => App.getLaunchUrl(),
+    }, (url) => pairFromLinkRef.current(url), {
+      refuse: (message) => setNotice(message),
+      invalid: (message) => setNotice(message),
+      broken: (message) => setNotice(message),
+    }, gateRef.current!);
+    let live = true;
+    void opened.launch.then((url) => {
+      if (!live) return;
+      if (shouldAutoScan(url, machinesRef.current.length, Boolean(plugin && scanner))) {
+        setScanAtLaunch(true);
+        setTab("machines");
+      }
+    });
+    return () => {
+      live = false;
+      opened.close();
+    };
+  }, [plugin, scanner]);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [assistantWorkspaceId, setAssistantWorkspaceId] = useState<string | null>(null);
   const [personalOpen, setPersonalOpen] = useState(false);
@@ -306,6 +385,13 @@ export function PhoneApp() {
   /** Per thread: who was working when its machine dropped, with what they had written. Kept until each reply lands,
    *  through a reload or leaving the thread. */
   const [cuts, setCuts] = useState<Record<string, PhoneCuts>>({});
+  /** Per thread: messages quoted in the box, waiting to go with the next message, as on the desktop. */
+  const [quotes, setQuotes] = useState<Record<string, ReplyQuote[]>>({});
+  /** The Retry or Revert question open under a message. */
+  const [goingBack, setGoingBack] = useState<GoingBack | null>(null);
+  /** A pin or unpin is on its way; one at a time, as on the desktop. */
+  const [pinning, setPinning] = useState(false);
+  const pinPending = useRef(false);
   const [approvalStays, setApprovalStays] = useState<Record<string, boolean>>({});
   const [agents, setAgents] = useState<string[]>([]);
   const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
@@ -320,9 +406,9 @@ export function PhoneApp() {
   /** Each thread's messages waiting for a bot to finish, as on the desktop. They live on the phone while the app is open. */
   const queues = useRef(new Map<string, ParticipantQueues>());
   const [queued, setQueued] = useState<Record<string, { items: ParticipantMessage[]; paused: string[]; lost: boolean }>>({});
-  /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files.
+  /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files and quotes.
    *  `inBox` while Send is still waiting on it: the box keeps it until the machine has it or it is queued. */
-  const queuedDrafts = useRef(new Map<string, { draft: Draft; inBox: boolean; failed?: boolean }>());
+  const queuedDrafts = useRef(new Map<string, QueuedDraft>());
   /** The queued message whose Steer now is asking first. */
   const [steerAsk, setSteerAsk] = useState<number | null>(null);
   /** Files still being read into a draft; Send waits for them. */
@@ -340,16 +426,6 @@ export function PhoneApp() {
     try { localStorage.setItem(machinesKey(), saveMachines(machines)); } catch { /* the list lasts for this session */ }
   }, [machines]);
 
-  const changeMode = (next: RemoteMode) => {
-    if (next === modeRef.current) return;
-    setMode(next);
-    modeRef.current = next;
-    try { localStorage.setItem(remoteModeKey(), next); } catch { /* back to Automatic next launch */ }
-    // Binding again closes every iroh connection; each comes back on the next try.
-    bound.current = plugin ? plugin.setMode(next).catch(() => {}) : Promise.resolve();
-    void bound.current.then(() => hosts.forEach((host) => { if (isPaired(host.machine)) host.connection.retryNow(); }));
-  };
-
   useEffect(() => {
     const text = Object.fromEntries(Object.entries(drafts).map(([id, draft]) => [id, draft.text]));
     try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify(text)); } catch { /* navigation within the page still keeps it */ }
@@ -363,8 +439,8 @@ export function PhoneApp() {
         const saved = machinesRef.current.find((item) => item.id === machine.id);
         return saved && isPaired(saved) ? saved : machine;
       };
-      const dial = irohConnect(target, plugin, () => modeRef.current, (route) => setRoutes((all) => all[machine.id] === route ? all : { ...all, [machine.id]: route }));
-      return async () => { await bound.current; return dial(); };
+      const dial = irohConnect(target, plugin, (route) => setRoutes((all) => all[machine.id] === route ? all : { ...all, [machine.id]: route }));
+      return () => whenAutomatic(ready, dial);
     };
     const opened = machines.map((machine) => openPhoneHost(
       machine,
@@ -595,6 +671,8 @@ export function PhoneApp() {
   // The queue outlives renders, so it reads the machines and who is working as they are now.
   const hostsRef = useRef(hosts);
   hostsRef.current = hosts;
+  const voiceRoomsRef = useRef({ panes, workspaces });
+  voiceRoomsRef.current = { panes, workspaces };
   const participantsRef = useRef(new Map<string, {id:string;display_name:string;media?:unknown}[]>());
   const screenRef = useRef({hostId:openHostId,roomId:openPane?.id ?? '',shown:tab==='threads' && openId!==null});
   screenRef.current={hostId:openHostId,roomId:openPane?.id ?? '',shown:tab==='threads' && openId!==null};
@@ -603,18 +681,26 @@ export function PhoneApp() {
   if (!phoneVoiceRef.current) phoneVoiceRef.current=createPhoneVoice({
     host:id=> {const h=hostsRef.current.find(h=>h.machine.id===id); if(!h)return null;return {name:h.machine.name,backend:h.backend,voice:h.voice,canCall:()=>h.supports('voice_server_v1')&&h.access()?.tier!=='read_only',whenConnected:ms=>new Promise<void>((resolve,reject)=>{if(h.connection.get().status.kind==='connected'){resolve();return;}const timer=setTimeout(()=>{off();reject(Error(`Can't reach ${h.machine.name} right now.`));},ms);const off=h.connection.subscribe(()=>{if(h.connection.get().status.kind==='connected'){clearTimeout(timer);off();resolve();}});})};},
     queue:(host,room)=>queueFor(room,host),participants:(host,room)=>participantsRef.current.get(JSON.stringify([host,room]))??[],onScreen:(host,room)=>screenRef.current.shown&&screenRef.current.hostId===host&&screenRef.current.roomId===room,storage:localStorage,keepAwake,
+    roomTitle:(host,room)=>{
+      const current=voiceRoomsRef.current;
+      const pane=current.panes.find(p=>p.id===room);
+      const project=current.workspaces.find(w=>w.id===pane?.workspaceId);
+      return pane&&(pane.hostId??(project?workspaceHost(project):''))===host?pane.title:undefined;
+    },
   });
   const phoneVoice=phoneVoiceRef.current;
   useEffect(()=>{const left=()=>{if(document.hidden)phoneVoice.leftScreen();};document.addEventListener('visibilitychange',left);return()=>{document.removeEventListener('visibilitychange',left);phoneVoice.leftScreen();};},[phoneVoice]);
   useEffect(()=>{if(openPane&&openHostId)phoneVoice.threadOpened(openHostId,openPane.id);},[openPane?.id,openHostId]);
   const busyRef = useRef(busy);
   busyRef.current = busy;
-  /** Put a queued message back in its thread's box, with the files it was sent with. */
+  /** Put a queued message back in its thread's box, with the files and quotes it was sent with. */
   function takeBack(paneId: string, text: string) {
     const key = `${paneId}\u0000${text}`;
-    const back = queuedDrafts.current.get(key)?.draft ?? { text: splitTldr(text).text, files: [] };
+    const sent = queuedDrafts.current.get(key);
+    const back = sent?.draft ?? { text: splitTldr(text).text, files: [] };
     queuedDrafts.current.delete(key);
     setDrafts((all) => ({ ...all, [paneId]: giveBack(all[paneId] ?? emptyDraft(), back) }));
+    if (sent?.quotes.length) setQuotes((all) => ({ ...all, [paneId]: quotesBack(all[paneId] ?? [], sent.quotes) }));
   }
   /** A thread's queue, made the first time it is needed. A thread never changes machines once it has started. */
   function queueFor(paneId: string, hostId: string): ParticipantQueues {
@@ -632,10 +718,11 @@ export function PhoneApp() {
         const sticky = shown?.id === paneId ? queuedSticky(text, shown.participants, shown.policy, queue.items) : null;
         return sticky ?? backend().roomTargets(paneId, text);
       },
-      // Routed like a typed message unless it is a next step for the bot that offered it.
-      async (text, to, _kind, _hops, manual, voice) => {
+      async (text, to, kind, hops, voice) => {
+        // Retry asks the bot again on the chat as it is, posting nothing, as on the desktop.
+        if (kind === "turn") { await backend().roomTurn(paneId, to, hops ?? null); return; }
         const key = `${paneId}\u0000${text}`;
-        try { await postFromPhone(backend(), paneId, text, to, manual, voice); }
+        try { await postFromPhone(backend(), paneId, text, to, voice); }
         catch (error) {
           if (voice) { phoneVoice.failed(hostId,paneId,to[0],voice.requestId,error); throw error; }
           const sent = queuedDrafts.current.get(key);
@@ -694,7 +781,7 @@ export function PhoneApp() {
     const target = hostOf(workspace);
     const gate = newThreadGate(mac, target ?? undefined);
     if (!gate.ok) { setNotice(gate.reason); return; }
-    if (!canStartOn(workspaceHost(workspace))) { setNotice("Starting a thread needs Full access on its machine. Change this phone's level in that machine's Settings → Paired devices."); return; }
+    if (!canStartOn(workspaceHost(workspace))) { setNotice("Starting a thread needs Full access on its machine. Change this phone's level in that machine's Settings → Phones."); return; }
     const action = pressNewThread(pending ? { workspaceId: pending.workspaceId, text: draftFor(pending.id).text, files: draftFor(pending.id).files.length } : null, workspace.id);
     if (action === "blocked" && pending) { setNotice("Send or clear the draft you already started."); openThread(pending.id); return; }
     const id = action === "move" && pending ? pending.id : (pending?.workspaceId === workspace.id ? pending.id : `draft-${Date.now().toString(36)}`);
@@ -707,9 +794,10 @@ export function PhoneApp() {
   }
 
   // Saved steps per finished reply: the index says which replies have them; a reply's own steps load when its line is opened.
-  // The phone has no Retry, Revert or Clear chat, so nothing here has to forget steps when a thread is cut back.
+  // Retry and Revert cut a thread back, so they forget the steps from there and look again.
   const [savedSteps, setSavedSteps] = useState<SavedStepsFor | null>(null);
   const loadedSteps = useRef(new Map<number, import("../types").ReplySteps>());
+  const refreshSteps = useRef<() => void>(() => {});
   const openPaneRef = useRef<string | null>(null);
   openPaneRef.current = openPane?.id ?? null;
   useEffect(() => {
@@ -738,6 +826,7 @@ export function PhoneApp() {
         setSavedSteps({ id: paneId, index });
       },
     );
+    refreshSteps.current = () => { void stepsLoader.refresh(); };
     const settingsHeard = new Map<string, ParticipantConfig>();
     let rosterHeard: ParticipantConfig[] | null = null;
     const applyState = (state: RoomState) => {
@@ -762,6 +851,7 @@ export function PhoneApp() {
         fill: {},
         plans: {},
         used: state.snapshot.usage ?? {},
+        pins: state.snapshot.pins ?? [],
       });
     };
     const applyEvent = (event: RoomEvent) => {
@@ -810,7 +900,7 @@ export function PhoneApp() {
       stop = unlisten;
       void recovery.refresh();
     }).catch((error) => { if (live) setNotice(words(error)); });
-    return () => { live = false; recovery.dispose(); stop(); };
+    return () => { live = false; recovery.dispose(); stop(); refreshSteps.current = () => {}; };
     // Reloading follows the open thread and that machine's connection, not every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPane?.id, openWorkspace?.id, openLink?.status, openHostId, openPath]);
@@ -818,7 +908,8 @@ export function PhoneApp() {
   // Who the message as typed goes to: its @names, or the bots named last when it has none.
   // Asked again as the draft changes and after each message, since a send can change it.
   const [answerers, setAnswerers] = useState<{ paneId: string; ids: string[] } | null>(null);
-  const typed = openId ? draftFor(openId).text : "";
+  const quotedNow = openId ? quotes[openId] ?? [] : [];
+  const typed = openId ? (quotedNow.length ? outgoingText(draftFor(openId).text, quotedNow, room?.participants ?? []) : draftFor(openId).text) : "";
   useEffect(() => {
     if (!room || !openWorkspace) return;
     const host = phoneHost(openHostId);
@@ -836,7 +927,7 @@ export function PhoneApp() {
   }, [room?.id, room?.messages.length, openLink?.status, openHostId, typed, queued[room?.id ?? ""]?.items]);
 
   // A bot's details belong to the thread they were opened in.
-  useEffect(() => { setBotSheet(null); setSteerAsk(null); }, [openId]);
+  useEffect(() => { setBotSheet(null); setSteerAsk(null); setGoingBack(null); }, [openId]);
   // Steer now stops asking once its message has gone, been steered, or been taken back.
   const queuedIds = (openId ? queued[openId]?.items ?? [] : []).map((item) => item.id).join(",");
   useEffect(() => { setSteerAsk((asking) => asking !== null && queuedIds.split(",").includes(String(asking)) ? asking : null); }, [queuedIds]);
@@ -902,24 +993,27 @@ export function PhoneApp() {
       if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add one from Bots in the thread’s ⋯ menu."); return; }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
+      // Quotes go under the text, led by the bot they're handed to, as on the desktop.
+      const sentQuotes = quotes[id] ?? [];
       // TL;DR asks every bot for a short answer; the line rides on the message but never shows in the chat.
-      const body = withTldr(withAttachments(draft.text.trim(), paths), tldrOf(id));
+      const body = withTldr(withAttachments(outgoingText(draft.text, sentQuotes, participants), paths), tldrOf(id));
       // The room picks who answers, as on the desktop: whoever is @named, or whoever was named last.
       // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
       // This resolves once the machine has it, or once it is queued; until then the box keeps it.
       const key = `${sentPane.id}\u0000${body}`;
-      const entry: { draft: Draft; inBox: boolean; failed?: boolean } = { draft, inBox: true };
+      const entry: QueuedDraft = { draft, quotes: sentQuotes, inBox: true };
       queuedDrafts.current.set(key, entry);
       try { await queueFor(sentPane.id, host.machine.id).send(body); }
       catch (error) { queuedDrafts.current.delete(key); throw error; }
       finally { entry.inBox = false; }
       // Refused: it never left the box, and the notice says so.
       if (entry.failed) { queuedDrafts.current.delete(key); return; }
-      // Clear only what was sent; anything typed or attached while it was sending stays.
+      // Clear only what was sent; anything typed, attached or quoted while it was sending stays.
       setDrafts((all) => {
         const now = all[sentPane.id] ?? emptyDraft();
         return { ...all, [sentPane.id]: { text: now.text === draft.text ? "" : now.text, files: now.files.filter((file) => !draft.files.includes(file)) } };
       });
+      if (sentQuotes.length) setQuotes((all) => ({ ...all, [sentPane.id]: (all[sentPane.id] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
       setNotice("");
       // One save for the title and Recents, so the two can't overwrite each other.
       const title = transcriptLength === 0 || sentPane.title === "New thread" ? threadTitleFromMessage(draft.text) : "New thread";
@@ -1262,6 +1356,123 @@ export function PhoneApp() {
     }
   }
 
+  /** The open thread's machine when it can take a change from this phone; otherwise says why and gives null. */
+  function changeHost(what: string): PhoneHost | null {
+    const host = openLink ? phoneHost(openLink.id) : null;
+    if (!host || !openLink) { setNotice("This thread's machine isn't paired with this phone."); return null; }
+    if (openLink.status !== "online") { setNotice(downLine(openLink)); return null; }
+    if (!canSeeNewThread(host.access())) { setNotice(needsFull(what, openLink.name)); return null; }
+    return host;
+  }
+
+  /** Put a message on the clipboard; false when the phone couldn't. */
+  async function copyMessage(text: string) {
+    const ok = await writeClipboard(text, navigator.clipboard);
+    if (!ok) setNotice("The phone couldn't copy that message.");
+    return ok;
+  }
+
+  const nameIn = (id: string) => roomRef.current?.participants.find((p) => p.id === id)?.display_name ?? id;
+
+  /** Quote a message in the box, or the `part` of it picked for Add to chat. A TL;DR instruction rides on a sent message but never shows, so the quote leaves it out. */
+  function quoteMessage(paneId: string, message: Message, part?: string) {
+    const next = part === undefined ? quoteFor({ ...message, text: splitTldr(message.text).text }, nameIn) : partQuote(message, part, nameIn);
+    setQuotes((all) => ({ ...all, [paneId]: withQuote(all[paneId] ?? [], next) }));
+  }
+
+  /** More details: ask the bot that wrote a picked part to explain it, as on the desktop. It never sat in the box,
+   *  but one that can't be sent, or is taken back from the queue, goes into it with its quote. */
+  function explainPart(paneId: string, message: Message, part: string) {
+    const shown = roomRef.current;
+    if (!shown || shown.id !== paneId || shown.participants.length === 0 || !openLink) return;
+    if (openLink.status !== "online") { setNotice(downLine(openLink)); return; }
+    const quote = partQuote(message, part, nameIn);
+    const body = moreDetailsText(quote, shown.participants);
+    const key = `${paneId}\u0000${body}`;
+    queuedDrafts.current.set(key, { draft: { text: MORE_DETAILS, files: [] }, quotes: [quote], inBox: false });
+    stuckRef.current = true;
+    queueFor(paneId, openLink.id).send(body).catch((error) => { queuedDrafts.current.delete(key); setNotice(words(error)); });
+  }
+
+  /** Pin a message for every model, or unpin it. */
+  function togglePin(paneId: string, message: Message) {
+    const shown = roomRef.current;
+    if (!shown || shown.id !== paneId) return;
+    const index = shown.pins.findIndex((pin) => pinSource(pin) === message.seq);
+    if (index >= 0) { unpin(paneId, index); return; }
+    if (pinPending.current) return;
+    const host = changeHost("Pinning");
+    if (!host) return;
+    pinPending.current = true; setPinning(true);
+    void host.backend.roomPin(paneId, responsePin(message.seq, splitTldr(message.text).text))
+      .then((pins) => setRoom((current) => current && current.id === paneId ? { ...current, pins } : current))
+      .catch((error) => setNotice(`Could not pin: ${words(error)}`))
+      .finally(() => { pinPending.current = false; setPinning(false); });
+  }
+
+  function unpin(paneId: string, index: number) {
+    if (pinPending.current) return;
+    const host = changeHost("Unpinning");
+    if (!host) return;
+    pinPending.current = true; setPinning(true);
+    void host.backend.roomUnpin(paneId, index)
+      .then((pins) => setRoom((current) => current && current.id === paneId ? { ...current, pins } : current))
+      .catch((error) => setNotice(`Could not unpin: ${words(error)}`))
+      .finally(() => { pinPending.current = false; setPinning(false); });
+  }
+
+  /** Retry on a bot's reply, Revert on your message: delete from there and put this thread's files back. Asks first, as on the desktop. */
+  async function goBack(paneId: string, message: Message) {
+    const shown = roomRef.current;
+    if (!shown || shown.id !== paneId) return;
+    const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
+    if (Object.keys(shown.working).length > 0) { setNotice("Stop the bots first."); return; }
+    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    if (kind === "retry" && !shown.participants.some((p) => p.id === bot)) { setNotice(`${bot} isn't in this thread any more, so it can't answer again.`); return; }
+    const host = changeHost(kind === "retry" ? "Retry" : "Revert");
+    if (!host) return;
+    try {
+      const plan = await host.backend.roomRevertPlan(paneId, message.seq, bot);
+      const going: GoingBack = { paneId, kind, message, plan, scope: "both", ticked: initialFiles(plan) };
+      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack(going);
+      else await runGoBack(going);
+    } catch (error) {
+      setNotice(`Could not ${kind}: ${words(error)}`);
+    }
+  }
+
+  async function runGoBack(going: GoingBack) {
+    setGoingBack(null);
+    const { paneId, kind, message, plan, scope, ticked } = going;
+    const host = changeHost(kind === "retry" ? "Retry" : "Revert");
+    if (!host) return;
+    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
+    try {
+      const failed = await host.backend.roomRevert(paneId, message.seq, bot, request.chat, request.files);
+      if (request.chat) {
+        setSavedSteps((saved) => saved && saved.id === paneId ? { id: paneId, index: dropStepsFrom(saved.index, loadedSteps.current, message.seq) } : saved);
+        refreshSteps.current();
+        setRoom((current) => current && current.id === paneId ? cutBack(current, message.seq) : current);
+        // A reply that was cut off mid-way goes with the rest.
+        setCuts((all) => { if (!all[paneId]) return all; const next = { ...all }; delete next[paneId]; return next; });
+      }
+      const line = failedLine(failed) ?? putBackLine(request.files);
+      if (line) setNotice(line);
+      // Your message goes back in the box, unsent.
+      if (kind === "revert" && request.chat) setDrafts((all) => ({ ...all, [paneId]: { ...(all[paneId] ?? emptyDraft()), text: splitTldr(message.text).text } }));
+      if (kind === "retry" && bot) { stuckRef.current = true; queueFor(paneId, host.machine.id).turn([bot], null); }
+    } catch (error) {
+      setNotice(`Could not ${kind}: ${words(error)}`);
+    }
+  }
+
+  function answerGoBack(always: boolean) {
+    if (!goingBack) return;
+    if (always) saveGoBackAlways(goingBack.kind, true);
+    void runGoBack(goingBack);
+  }
+
   async function useFolder(path: string) {
     if (!browse) return;
     const browsing = browse;
@@ -1325,17 +1536,18 @@ export function PhoneApp() {
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
   const covered = composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
+  // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
+  const shownTab = tab === "machines" ? machinesReturn.current : tab;
+  const litTab = shownTab === "settings" || shownTab === "appearance" ? settingsReturn.current : shownTab;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
   useEffect(() => { if (botsStale) setMenu(null); }, [botsStale]);
-  const menuMessage = menu?.kind === "message" && room && openPane && room.id === openPane.id ? room.messages.find((message) => message.seq === menu.seq) ?? null : null;
-  // A message menu whose message can't be found (thread closed or its room not loaded) must not leave the screen covered.
-  const messageStale = menu?.kind === "message" && !menuMessage;
-  useEffect(() => { if (messageStale) setMenu(null); }, [messageStale]);
   const menuProject = menu?.kind === "project" ? workspaces.find((workspace) => workspace.id === menu.id) ?? null : null;
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
 
+  const callSlot = usePhoneCallSlot({ voice: phoneVoice, hostId: openHostId, roomId: openPane?.id ?? "" });
+  const callWho: PhoneVoiceWho = (id) => (room && openPane && room.id === openPane.id ? room.participants : []).find((p) => p.id === id)?.look;
   return (
     <div className="ph-app" data-rev={tick}>
       <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(_host,room)=>{setTab("threads");setOpenId(room);}} />
@@ -1343,21 +1555,27 @@ export function PhoneApp() {
         {!inChat && (
           <header className="ph-head" inert={covered}>
             {tab === "appearance"
-              ? <button type="button" className="ph-back" onClick={() => setTab("settings")}><ArrowLeft size={20} />Settings</button>
+              ? <BackButton label="Settings" onClick={() => setTab("settings")} />
               : tab === "settings"
-              ? <button type="button" className="ph-back" onClick={() => setTab(settingsReturn.current)}><ArrowLeft size={20} />{settingsReturn.current[0].toUpperCase() + settingsReturn.current.slice(1)}</button>
+              ? <BackButton label={tabName(settingsReturn.current)} onClick={() => setTab(settingsReturn.current)} />
               : tab === "machines"
-              ? <button type="button" className="ph-back" onClick={() => { setOpenId(null); setSheet(null); setTab("threads"); }}><ArrowLeft size={20} />Threads</button>
-              : <h1 className="ph-large"><img className="ph-mark" src="/branding/mark.svg" alt="" width="26" height="26" />{tab[0].toUpperCase() + tab.slice(1)}</h1>}
+              ? <BackButton label={tabName(machinesReturn.current)} onClick={() => { setOpenId(null); setSheet(null); setTab(machinesReturn.current); }} />
+              : tab === "code" && terminalViewing
+              ? <BackButton label="Code" onClick={() => setTerminalHomeSignal((n) => n + 1)} />
+              : <h1 className="ph-large"><img className="ph-mark" src="/branding/mark.svg" alt="" width="26" height="26" />{tabName(tab)}</h1>}
             <span className="ph-head-actions">
               {tab === "threads" && newAllowed && <button type="button" className="ph-icon" aria-label="New thread" onClick={() => { setQuery(""); setMenu({ kind: "new" }); }}><Plus size={22} /></button>}
-              {tab !== "settings" && tab !== "appearance" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
+              {/* Machines is part of Settings, so it has no way back into Settings of its own. */}
+              {tab !== "settings" && tab !== "appearance" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
         )}
         {inChat && openWorkspace && openLink ? (
           <ThreadView
-            call={openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : null}
+            call={openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
+            callSlot={callSlot}
+            callStrip={openPane ? <PhoneCallStrip voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
+            callCapsule={openPane ? <PhoneCallCapsule voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
             title={openPane?.title ?? "New thread"}
             draftThread={viewingPending}
             project={openWorkspace.name}
@@ -1417,7 +1635,27 @@ export function PhoneApp() {
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
             onMenu={() => { if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
-            onMessageMenu={viewingPending || openPane?.assistantTaskId ? undefined : (seq) => setMenu({ kind: "message", seq })}
+            pins={room && openPane && room.id === openPane.id ? room.pins : []}
+            pinning={pinning}
+            onUnpin={(index) => { if (openPane) unpin(openPane.id, index); }}
+            quotes={openId ? quotes[openId] ?? [] : []}
+            onQuotes={(next) => { if (openId) setQuotes((all) => ({ ...all, [openId]: next })); }}
+            actions={viewingPending || !openPane ? undefined : {
+              onQuote: (message, part) => quoteMessage(openPane.id, message, part),
+              onExplain: (message, part) => explainPart(openPane.id, message, part),
+              onCopy: copyMessage,
+              onPin: (message) => togglePin(openPane.id, message),
+              onGoBack: (message) => { void goBack(openPane.id, message); },
+              // A task's thread belongs to its assistant, so it has no Fork.
+              onFork: openPane.assistantTaskId ? undefined : (seq) => {
+                const hostId = workspaceHost(openWorkspace);
+                if (!canStartOn(hostId)) { setNotice(needsFull("Forking", linkOf(hostId)?.name ?? "this machine")); return; }
+                void forkFrom(openPane, seq);
+              },
+            }}
+            goingBack={goingBack}
+            onGoingBack={setGoingBack}
+            onAnswerGoBack={answerGoBack}
             onDraft={(text) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, text } }; })}
             onRemoveFile={(id) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
             onSend={() => { void send(); }}
@@ -1462,7 +1700,7 @@ export function PhoneApp() {
             onPick={newAllowed ? () => { setQuery(""); setMenu({ kind: "new" }); } : undefined}
             onThreadMenu={(id) => { if (!panes.find((pane) => pane.id === id)?.assistantTaskId) setMenu({ kind: "thread", id }); }}
             onProjectMenu={(id) => setMenu({ kind: "project", id })}
-            onMachines={() => setTab("machines")}
+            onMachines={() => { machinesReturn.current = "threads"; setTab("machines"); }}
             onRetry={(id) => phoneHost(id)?.connection.retryNow()}
             archived={sections.archived.length}
             onArchived={() => setMenu({ kind: "archived" })}
@@ -1471,9 +1709,9 @@ export function PhoneApp() {
           <main className="ph-content" inert={covered}>
             <h2>Settings</h2>
             <p className="ph-intro">Preferences for this phone.</p>
-            <div className="ph-group">
-              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={18} /></button>
-              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("machines")}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={18} /></button>
+            <div className="ph-list">
+              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
+              <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={15} /></button>
             </div>
           </main>
         ) : tab === "appearance" ? (
@@ -1489,11 +1727,17 @@ export function PhoneApp() {
             links={links}
             routes={routes}
             covered={covered}
-            remote={plugin && <RemoteSettings plugin={plugin} mode={mode} onMode={changeMode} onError={setNotice} />}
+            pairing={plugin !== null}
             scan={scanner ? scanner.scan : null}
             autoScan={scanAtLaunch}
             onAutoScan={() => setScanAtLaunch(false)}
-            onPair={setPairing}
+            incoming={incomingLink}
+            onIncomingHandled={() => setIncomingLink(null)}
+            onIncomingFailed={() => endLink("failed")}
+            onPair={(request) => setPairing({ ...request, attempt: ++attemptSeq.current })}
+            reserve={(link) => reserveLocal(gateRef.current!, link)}
+            adopt={(link) => takeScan(gateRef.current!, link)}
+            giveBack={(link) => gateRef.current!.release(link, "failed")}
             machineIcon={machineIcon}
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
             confirm={confirmUnpair}
@@ -1506,6 +1750,7 @@ export function PhoneApp() {
           />
         ) : (
           <SideTab tab={tab} link={openLink ?? mac ?? null} host={openLink ? phoneHost(openLink.id) : macHost} hosts={hosts} terminalCwd={openWorkspace?.path ?? workspaces.find((workspace) => workspaceHost(workspace) === (openLink ?? mac)?.id)?.path ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors} terminalSwitcherOpen={terminalSwitcherOpen} onTerminalSwitcherOpened={() => setTerminalSwitcherOpen(false)} terminalResumeSignal={terminalResumeSignal} onTerminalWaiting={setTerminalNeedsAnswer}
+            terminalHomeSignal={terminalHomeSignal} onTerminalViewing={setTerminalViewing}
             personal={personal} onPersonal={() => setPersonalOpen(true)}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
@@ -1514,7 +1759,7 @@ export function PhoneApp() {
               if (!workspace) return;
               const projectHost = phoneHost(workspaceHost(workspace));
               if (!projectHost) { setNotice(`Pair ${workspaceHost(workspace)} with this phone to open its project assistant.`); return; }
-              if (!canSeeNewThread(projectHost.access())) { setNotice(`Project assistant needs Full access on ${projectHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.`); return; }
+              if (!canSeeNewThread(projectHost.access())) { setNotice(`Project assistant needs Full access on ${projectHost.machine.name}. Change this phone's level in that machine's Settings → Phones.`); return; }
               setAssistantWorkspaceId(workspace.id);
             }}
             onShow={() => {
@@ -1525,7 +1770,7 @@ export function PhoneApp() {
         )}
         {!inChat && <nav className="ph-tabs" aria-label="Sections" inert={covered}>
           {([[Command, "Agents", "agents"], [Terminal, "Code", "code"], [MessageSquare, "Threads", "threads"], [Folder, "Library", "library"]] as const).map(([Icon, label, item]) => (
-            <button key={item} type="button" className={tab === item || (item === "threads" && tab === "machines") ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") setOpenId(null); }}>
+            <button key={item} type="button" className={litTab === item ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") setOpenId(null); }}>
               <Icon size={21} />{label}{item === "code" && terminalNeedsAnswer && <i className="ph-tabs-amber-dot" />}
             </button>
           ))}
@@ -1558,12 +1803,13 @@ export function PhoneApp() {
             onBack={() => setAssistantWorkspaceId(null)}
             onClose={() => setAssistantWorkspaceId(null)}
           /></div>
-          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.</p></section></div>)}
+          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Phones.</p></section></div>)}
         {pairing && plugin && (
-          <Sheet title={`Pair ${pairing.name}`} onClose={() => setPairing(null)}>
-            <PairSheet plugin={plugin} link={pairing.link} label="iPhone" onClose={() => setPairing(null)} onPaired={(paired) => {
+          <Sheet title={`Pair ${pairing.name}`} onClose={() => endLink("cancelled")}>
+            <PairSheet key={pairing.attempt} plugin={plugin} link={pairing.link} label="iPhone" ready={ready} onFailed={() => settle("failed", false)} onClose={(why) => endLink(why === "failed" ? "failed" : "cancelled")} onPaired={(paired) => {
               const made: PairedMachine = { id: pairing.id, name: pairing.name, kind: pairing.kind, transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now() };
               setMachines((list) => { try { return withPairedMachine(list, made); } catch (error) { setNotice(words(error)); return list; } });
+              settle("paired", false);
             }} />
           </Sheet>
         )}
@@ -1662,7 +1908,7 @@ export function PhoneApp() {
               <div className="ph-card">
                 <p><strong>{workspace?.name ?? "No project"}</strong>{link ? ` · ${link.name}` : ""}</p>
                 {workspace?.path && <p className="ph-path">{workspace.path}</p>}
-                <p className="ph-meta">{link && link.status !== "online" ? `${downLine(link)} · ` : ""}{menuPane.activeAt ? `Active ${ageWords(Date.now() - menuPane.activeAt)} ago` : "Not started"}</p>
+                <p className="ph-meta">{link && link.status !== "online" ? `${downLine(link)} · ` : ""}{menuPane.activeAt ? activeWords(ageWords(Date.now() - menuPane.activeAt)) : "Not started"}</p>
               </div>
               {menuPane.id === openId && room && room.id === openPane?.id && (
                 <button type="button" className="ph-srow ph-bots-menu" onClick={() => { setBotChange(null); setMenu({ kind: "bots", id: menuPane.id }); }}>
@@ -1771,7 +2017,7 @@ export function PhoneApp() {
                 </button>
               );
             })}
-            {!newAllowed && <p className="ph-sheet-text">{"Restoring needs Full access on your Mac. Change this phone's level in the Mac's Settings → Paired devices."}</p>}
+            {!newAllowed && <p className="ph-sheet-text">{"Restoring needs Full access on your Mac. Change this phone's level in the Mac's Settings → Phones."}</p>}
           </Sheet>
         )}
         {menu?.kind === "remove" && (() => {
@@ -1784,21 +2030,6 @@ export function PhoneApp() {
               <p className="ph-sheet-text">{asked.body}</p>
               <button type="button" className="danger ph-wide" onClick={() => removeProject(project.id)}>{asked.action}</button>
               <button type="button" className="ph-plain ph-wide" onClick={() => setMenu(null)}>Cancel</button>
-            </Sheet>
-          );
-        })()}
-        {menu?.kind === "message" && menuMessage && openPane && openWorkspace && (() => {
-          // A TL;DR instruction rides on a sent message but never shows in the chat, so the preview and the copy leave it out.
-          const shown = splitTldr(menuMessage.text).text;
-          const preview = messagePreview(shown);
-          const forkable = canStartOn(workspaceHost(openWorkspace));
-          return (
-            <Sheet title="Message" onClose={() => setMenu(null)}>
-              {preview && <p className="ph-sheet-text ph-quiet">{preview}</p>}
-              {forkable
-                ? <MenuRow label="Fork from here" detail="A new thread with the messages up to here. Nothing runs until you send." onClick={() => { setMenu(null); void forkFrom(openPane, menuMessage.seq); }} />
-                : <p className="ph-sheet-text">Forking needs Full access on {linkOf(workspaceHost(openWorkspace))?.name ?? "this machine"}. Change this phone's level in that machine's Settings → Paired devices.</p>}
-              <MenuRow label="Copy text" onClick={() => { void writeClipboard(shown, navigator.clipboard).then((ok) => setNotice(ok ? "Copied" : "The phone couldn't copy that message.")); setMenu(null); }} />
             </Sheet>
           );
         })()}
@@ -1823,6 +2054,11 @@ export function PhoneApp() {
       </div>
     </div>
   );
+}
+
+/** The phone's one back button: the iOS chevron, as in a thread's title bar, then where it goes. */
+function BackButton({ label, onClick, className }: { label: string; onClick(): void; className?: string }) {
+  return <button type="button" className={`ph-back${className ? ` ${className}` : ""}`} aria-label={`Back to ${label}`} onClick={onClick}><ChevronLeft size={26} />{label}</button>;
 }
 
 function Sheet({ title, onClose, children, variant }: { title: string; onClose(): void; children: ReactNode; variant?: "location" }) {
@@ -1939,7 +2175,7 @@ function BotSheet(props: {
   if (view === "models" && choices) {
     return (
       <Sheet title="Model" onClose={props.onClose}>
-        <button type="button" className="ph-back ph-sheet-back-link" onClick={() => setView("bot")}><ChevronLeft size={18} />{name}</button>
+        <BackButton className="ph-sheet-back-link" label={name} onClick={() => setView("bot")} />
         <div className="ph-group" role="menu" aria-label={`Model for ${name}`}>
           {tool && modelRow({ id: "" })}
           {model && !all.some((m) => m.id === model) && modelRow({ id: model })}
@@ -2038,7 +2274,11 @@ function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: s
 }
 
 function ThreadView(props: {
-  call?: ReactNode;
+  /** The mic beside Send and the call's sheet; `button` is false while the box shows Send in its place. */
+  call?: (button: boolean) => ReactNode;
+  callSlot: { live: boolean; look: CallLook; hint: string };
+  /** Look A's strip above the compose row, and look C's capsule under the title. Each draws only in its look. */
+  callStrip?: ReactNode; callCapsule?: ReactNode;
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
@@ -2067,8 +2307,24 @@ function ThreadView(props: {
   form: ReactNode; plan: boolean; onStopPlanning(): void;
   /** TL;DR mode: every bot is asked for a short answer. */
   tldr: boolean; onTldr(): void;
-  /** Holding a message opens its menu. Absent when nothing can be forked yet, as in an unsent new thread. */
-  onMessageMenu?(seq: number): void;
+  /** Pinned for every model in the thread; a pinned message's pin jumps to it. */
+  pins: string[]; pinning: boolean; onUnpin(index: number): void;
+  /** Messages quoted in the box, waiting to go with the next message. */
+  quotes: ReplyQuote[]; onQuotes(next: ReplyQuote[]): void;
+  /** The row under each message, as on the desktop. Absent in an unsent new thread. */
+  actions?: {
+    /** Quote the message, or only the `part` picked in it (Add to chat). */
+    onQuote(message: Message, part?: string): void;
+    /** More details on a part picked in a message. */
+    onExplain(message: Message, part: string): void;
+    onCopy(text: string): Promise<boolean>;
+    onPin(message: Message): void;
+    onGoBack(message: Message): void;
+    /** Absent where a thread can't be forked. */
+    onFork?: (seq: number) => void;
+  };
+  /** The Retry or Revert question open under a message. */
+  goingBack: GoingBack | null; onGoingBack(next: GoingBack | null): void; onAnswerGoBack(always: boolean): void;
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -2076,19 +2332,65 @@ function ThreadView(props: {
   const [typing, setTyping] = useState(false);
   const crew = crewOpen(props.crewShut, typing);
   const pill = usePillPress();
-  // Holding a message opens its menu. A tap that ends a hold must not also follow a link inside the message.
-  const press = useLongPress();
   // Cards show read-only on the phone for now, at their defaults.
   const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
-  const holdMessage = (seq: number) => {
-    if (!props.onMessageMenu) return {};
-    const bind = press.bind(() => props.onMessageMenu?.(seq));
-    return { ...bind, onContextMenuCapture: (event: { preventDefault(): void; stopPropagation(): void }) => {
+  // The message whose › (or ‹) is open, and the one whose Copy reads "Copied" for a moment, by seq.
+  const [messageMenu, setMessageMenu] = useState<number | null>(null);
+  const [copied, setCopied] = useState<number | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+  useEffect(() => { setMessageMenu(null); setCopied(null); }, [props.paneId]);
+  // A tap anywhere but a message's actions folds them, as a click away does on the desktop; so does Escape.
+  useEffect(() => {
+    if (messageMenu === null) return;
+    const away = (event: Event) => { if (!(event.target as Element).closest?.(".message-actions")) setMessageMenu(null); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
       event.stopPropagation();
-      bind.onContextMenu(event);
-    } };
+      chatRef.current?.querySelector<HTMLButtonElement>(`[data-message-more="${messageMenu}"]`)?.focus();
+      setMessageMenu(null);
+    };
+    window.addEventListener("pointerdown", away);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("pointerdown", away); window.removeEventListener("keydown", key, true); };
+  }, [messageMenu]);
+  // The Retry or Revert question opens under its message; bring it into view.
+  useEffect(() => {
+    if (props.goingBack) chatRef.current?.querySelector(".ph-goback")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [props.goingBack?.message.seq]);
+  // Send to ▾ over the quotes: who they're handed to.
+  const [handOffOpen, setHandOffOpen] = useState(false);
+  useEffect(() => { if (props.quotes.length === 0) setHandOffOpen(false); }, [props.quotes.length]);
+  const quoteTo = props.quotes.length ? quoteTarget(props.draft.text.trim(), props.quotes, props.participants) : null;
+  const copy = (seq: number, text: string) => {
+    void props.actions?.onCopy(text).then((ok) => {
+      if (!ok) return;
+      setCopied(seq);
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(null), COPIED_MS);
+    });
   };
-  const holdClass = props.onMessageMenu ? " ph-msg-hold" : "";
+  /** The row under a message and, when it is asking, its Retry or Revert question. */
+  const actionsFor = (message: Message, shown: string) => {
+    const actions = props.actions;
+    if (!actions) return null;
+    const going = props.goingBack && props.goingBack.paneId === props.paneId && props.goingBack.message.seq === message.seq ? props.goingBack : null;
+    const who = message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "";
+    return <>
+      <MessageActions message={message} now={now} who={who} shown={shown}
+        expanded={messageMenu === message.seq} onToggle={() => setMessageMenu((open) => open === message.seq ? null : message.seq)}
+        copied={copied === message.seq} onCopy={() => copy(message.seq, shown)}
+        onQuote={() => { actions.onQuote(message); inputRef.current?.focus(); }}
+        pinned={props.pins.some((pin) => pinSource(pin) === message.seq)} pinning={props.pinning} onPin={() => actions.onPin(message)}
+        busy={working.length > 0} onGoBack={() => actions.onGoBack(message)}
+        onFork={actions.onFork && (() => actions.onFork?.(message.seq))}
+        asking={going !== null} />
+      {going && <GoBackAsk going={going} who={who || "the bot"} nameOf={(id) => person(id).display_name}
+        onScope={(scope) => props.onGoingBack({ ...going, scope })}
+        onTick={(path) => props.onGoingBack({ ...going, ticked: going.ticked.includes(path) ? going.ticked.filter((p) => p !== path) : [...going.ticked, path] })}
+        onAnswer={props.onAnswerGoBack} onCancel={() => props.onGoingBack(null)} />}
+    </>;
+  };
   const tag = (id: string) => {
     const text = tagFromBar(props.draft.text, props.participants.find((p) => p.id === id), props.participants);
     props.onDraft(text);
@@ -2153,13 +2455,14 @@ function ThreadView(props: {
   }, [props.project, props.machine, props.started]);
   const lost = cut.filter(([id, part]) => !part.ended && !(id in props.working)).map(([id]) => id);
   const ended = cut.filter(([, part]) => part.ended).map(([id]) => id);
-  // The seconds count while anyone is working.
+  // Count working seconds and keep message dates current while idle or after sleep.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (working.length === 0) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
+    const refresh = () => setNow(Date.now());
+    refresh();
+    const timer = setInterval(refresh, working.length > 0 ? 1000 : 60000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
   }, [working.length > 0]);
   // Each bot's working line is one line until its chevron opens it: then its steps and the reply so far
   // show as they come in. Remembered per bot while the app is open, so a bot you watch stays open.
@@ -2171,6 +2474,10 @@ function ThreadView(props: {
     if (open) requestAnimationFrame(() => props.endRef.current?.scrollIntoView({ block: "end" }));
   };
   const person = (id: string) => props.participants.find((participant) => participant.id === id) ?? { id, display_name: id, look: legacyAppearance(id) };
+  const capsule = props.callSlot.live && props.callSlot.look === "capsule";
+  // One round button: the mic while the box is empty, Send once it has something.
+  const round = composerButton({ hasContent: props.draft.text.trim() !== "" || props.draft.files.length > 0, canCall: !!props.call, live: props.callSlot.live, look: props.callSlot.look });
+  const pillCall = props.callSlot.live && props.callSlot.look === "pill";
   const asking = (id: string) => props.approvals.some((card) => card.id === id);
   const by = (id: string, live = false) => {
     const who = person(id);
@@ -2181,7 +2488,15 @@ function ThreadView(props: {
       <header className="ph-nav" inert={props.covered}>
         <button type="button" className="ph-icon ph-nav-back" aria-label="Back to Threads" onClick={props.onBack}><ChevronLeft size={26} /></button>
         {/* Tap the title for project and machine, like the model picker in the ChatGPT app. */}
-        <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
+        {/* During a Top bar call the capsule takes the project line's place; its buttons can't sit inside the title button. */}
+        {capsule ? (
+          <div className="ph-nav-title ph-has-capsule">
+            <button type="button" className="ph-nav-title-tap" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
+              <h2>{props.draftThread ? "New thread" : props.title}</h2>
+            </button>
+            {props.callCapsule}
+          </div>
+        ) : <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
           <h2>{props.draftThread ? "New thread" : props.title}</h2>
           <p ref={contextRef} className="ph-context">
             {props.started ? <Lock size={11} /> : props.hostIcon}
@@ -2189,7 +2504,7 @@ function ThreadView(props: {
             {machineFits && <span className="ph-context-machine">· {props.machine}</span>}
             <ChevronDown size={12} />
           </p>
-        </button>
+        </button>}
         {!crew && props.participants.length > 0 && (
           <button type="button" className="ph-cluster" aria-label={`Show the bots: ${props.participants.map((p) => p.display_name).join(", ")}`} onClick={() => { inputRef.current?.blur(); props.onCrew(false); }}>
             {props.participants.slice(0, 3).map((participant) => (
@@ -2238,6 +2553,20 @@ function ThreadView(props: {
           <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the bots into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
         </div>
       )}
+      {/* Pinned for every model, folded to one line; a pin from a message jumps to it. */}
+      {props.pins.length > 0 && (
+        <details className="pins ph-pins" aria-label="Pinned for every model" inert={props.covered}>
+          <summary className="pins-label">Pinned <span>({props.pins.length})</span></summary>
+          <div className="pins-list">
+            {props.pins.map((pin, index) => <div className="pin" key={pin}>
+              {pinSource(pin) !== null
+                ? <button type="button" className="pin-text pin-jump" title={pinText(pin)} onClick={() => chatRef.current?.querySelector<HTMLElement>(`[data-seq="${pinSource(pin)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>{pinText(pin)}</button>
+                : <span className="pin-text" title={pin}>{pin}</span>}
+              <button type="button" className="icon small" aria-label={`Unpin ${pinText(pin)}`} disabled={props.pinning} onClick={() => props.onUnpin(index)}>×</button>
+            </div>)}
+          </div>
+        </details>
+      )}
       <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {!paused && props.link.mismatch && (
@@ -2263,20 +2592,25 @@ function ThreadView(props: {
             <p>{props.project} · {props.machine}{props.path && <><br />{props.path}</>}</p>
           </div>
         )}
+        {/* Each message, then its actions under it: a bot's at the left, yours at the right, as on the desktop. */}
         {props.messages.map((message) => message.speaker.kind === "human" ? (
-          <section key={message.seq} className={`ph-msg human${holdClass}`} {...holdMessage(message.seq)}>
-            <p>{splitTldr(message.text).text}</p>
+          <section key={message.seq} className="ph-said mine" data-seq={message.seq}>
+            <div className="ph-msg human"><p>{splitTldr(message.text).text}</p></div>
+            {actionsFor(message, splitTldr(message.text).text)}
           </section>
         ) : (
-          <section key={message.seq} className={`ph-msg${holdClass}`} {...holdMessage(message.seq)}>
-            {by(message.speaker.id)}
-            <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (!press.held.current && /^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
-              ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
-              : undefined)} /></div>
-            {(() => {
-              const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
-              return saved ? <SavedSteps key={`${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
-            })()}
+          <section key={message.seq} className="ph-said" data-seq={message.seq}>
+            <div className="ph-msg">
+              {by(message.speaker.id)}
+              <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
+                ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
+                : undefined)} /></div>
+              {(() => {
+                const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
+                return saved ? <SavedSteps key={`${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
+              })()}
+            </div>
+            {actionsFor(message, message.text)}
           </section>
         ))}
         {/* Cut off mid-reply: what it had written stays, dimmed, until its reply lands, even after a reload. */}
@@ -2363,11 +2697,51 @@ function ThreadView(props: {
         ))}
         <div ref={props.endRef} />
       </main>
+      {/* Text picked inside one message: the desktop's Add to chat and More details, clear of iPhone's own menu. */}
+      {props.actions && <PickedText key={props.paneId} chat={chatRef} covered={props.covered} canExplain={!paused && props.participants.length > 0}
+        onAdd={(seq, text) => {
+          const message = props.messages.find((m) => m.seq === seq);
+          if (!message) return;
+          props.actions?.onQuote(message, text);
+          inputRef.current?.focus();
+        }}
+        onExplain={(seq, text) => {
+          const message = props.messages.find((m) => m.seq === seq);
+          if (message) props.actions?.onExplain(message, text);
+        }} />}
       <form className={`ph-composer${props.plan ? " plan" : ""}${props.tldr ? " tldr" : ""}`} inert={props.covered} onSubmit={(event) => {
         event.preventDefault();
         if (props.tldr && props.gate.enabled && !props.sending && !props.attaching) wiggle(inputRef.current?.parentElement ?? null);
         props.onSend();
       }}>
+        {props.quotes.length > 0 && (
+          <div className="quote-preview ph-quotes">
+            <div className="quote-preview-head">
+              <span className="quote-count">{props.quotes.length === 1 ? "1 quote" : `${props.quotes.length} quotes`}</span>
+              <span className="quote-head-actions">
+                <span className="pane-menu-wrap hand-off">
+                  {/* These keep the keyboard as it is: the box keeps focus while you pick. */}
+                  <button type="button" className="ghost small" aria-haspopup="menu" aria-expanded={handOffOpen} onPointerDown={(event) => event.preventDefault()} onClick={() => setHandOffOpen((open) => !open)}>
+                    {handOffLabel(quoteTo, (id) => person(id).display_name)} ▾
+                  </button>
+                  {handOffOpen && <span className="pane-menu hand-off-menu" role="menu">
+                    {handOffChoices(quoteTo, props.participants.map((p) => ({ id: p.id, name: p.display_name }))).map((choice) => (
+                      <button type="button" role="menuitem" key={choice.to} onPointerDown={(event) => event.preventDefault()} onClick={() => { props.onQuotes(props.quotes.map((quote) => ({ ...quote, to: choice.to }))); setHandOffOpen(false); }}>{choice.label}</button>
+                    ))}
+                  </span>}
+                </span>
+                {props.quotes.length > 1 && <button type="button" className="quote-clear-all" onPointerDown={(event) => event.preventDefault()} onClick={() => props.onQuotes([])}>Clear all</button>}
+              </span>
+            </div>
+            <div className="quote-preview-list">{props.quotes.map((item, index) => (
+              <div className="quote-preview-row" key={`${item.id}:${item.name}:${index}`}>
+                <span className="quote-author" title={item.id ? item.name : "You"}>{item.id ? item.name : "You"}</span>
+                <blockquote>{item.text}</blockquote>
+                <button type="button" className="quote-cancel" aria-label={`Remove quote ${index + 1}`} onPointerDown={(event) => event.preventDefault()} onClick={() => props.onQuotes(props.quotes.filter((_, i) => i !== index))}>×</button>
+              </div>
+            ))}</div>
+          </div>
+        )}
         {props.draft.files.length > 0 && (
           <div className="ph-chips">
             {props.draft.files.map((file) => (
@@ -2392,15 +2766,16 @@ function ThreadView(props: {
             })}
           </div>
         )}
+        {props.callStrip}
         {/* One row, as in Messages: + for files and tools, then the message box. */}
         <div className="ph-compose-row">
           <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
             <Plus size={22} />
             {props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}
           </button>
-          <div className="ph-input">
+          <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
-              placeholder={props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
+              placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.quotes.length ? "e.g. Check this against the tests and say what breaks" : props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
               onChange={(event) => { props.onDraft(event.target.value); setCaret(event.target.selectionStart); }}
               onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
               onFocus={(event) => { setCaret(event.currentTarget.selectionStart); setTyping(true); }}
@@ -2409,8 +2784,8 @@ function ThreadView(props: {
               // Keep the keyboard up when it is: the box keeps focus.
               onPointerDown={(event) => event.preventDefault()}
               onClick={props.onTldr}><span aria-hidden="true">TL;</span><span aria-hidden="true">DR</span></button>
-            {props.call}
-            <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>
+            {props.call?.(round.mic)}
+            {round.send && <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>}
           </div>
         </div>
         {paused && <p className="ph-caption warn">{props.gate.reason}</p>}
@@ -2480,52 +2855,70 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 /** How a new machine is reached: its QR code, or an address and token typed in. */
 type AddHow = "qr" | "address";
 
-function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, autoScan, onAutoScan, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
+function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
-  /** The phone's remote-access settings, when the native plugin is there. */
-  remote: ReactNode;
+  /** The native plugin can pair from a QR code. */
+  pairing: boolean;
   /** The camera scanner, when there is one. */
   scan: (() => Promise<string>) | null;
   /** Open the camera now, as the first thing: no machine is saved yet. */
   autoScan: boolean;
   onAutoScan(): void;
+  /** A pairing link opened from outside this screen. Handed to pairWith as a Mac. */
+  incoming: { id: number; url: string; kind: "mac"; adding: true } | null;
+  /** The link has been handed to pairWith, so a later visit must not pair it again. */
+  onIncomingHandled(): void;
+  onIncomingFailed(): void;
+  /** Camera and paste take the same slot as a link. False leaves the open sheet where it is. */
+  reserve(link: string): boolean;
+  /** The open camera read a link. True only when that scan still holds the slot. */
+  adopt(link: string): boolean;
+  /** The slot was taken, then the link was rejected before a sheet opened. */
+  giveBack(link: string): void;
   onAdd(machine: DirectMachine): void; onPair(request: { link: string; kind: MachineKind; id: string; name: string }): void;
   onEdit(id: string, machine: Machine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
 }) {
   const hasMac = machines.some((machine) => machine.kind === "mac");
   const blank = (kind: MachineKind) => ({ name: "", url: "", token: "", kind, id: kind === "server" ? missing[0] ?? "" : "" });
   const [form, setForm] = useState(() => blank(hasMac ? "server" : "mac"));
-  const [how, setHow] = useState<AddHow>(remote ? "qr" : "address");
+  const [how, setHow] = useState<AddHow>(defaultAddHow(pairing));
   const [pasted, setPasted] = useState("");
   const [adding, setAdding] = useState(machines.length === 0);
   /** The machine being edited. Its form takes the place of its card. */
   const [editing, setEditing] = useState<string | null>(null);
   const [edit, setEdit] = useState(() => blank("mac"));
-  const pairWith = (link: string) => {
+  const pairWith = (link: string, over?: { kind: MachineKind }, held = false): boolean => {
+    const trimmed = link.trim();
+    // A link already holds the slot. Camera and paste take it here, or leave the open sheet alone.
+    if (!held && !reserve(trimmed)) return false;
+    const kind = over?.kind ?? form.kind;
     try {
-      const preview = parsePairingLink(link);
-      const name = form.name.trim() || preview.name;
+      const preview = parsePairingLink(trimmed);
+      const name = (over ? "" : form.name.trim()) || preview.name;
+      const id = kind === "mac" ? "local" : form.id.trim();
       // Checked now, so a bad name or id doesn't surface only after the machine approved.
-      withPairedMachine(machines, { id: form.kind === "mac" ? "local" : form.id.trim(), name, kind: form.kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
-      onPair({ link: link.trim(), kind: form.kind, id: form.kind === "mac" ? "local" : form.id.trim(), name });
+      withPairedMachine(machines, { id, name, kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
+      onPair({ link: trimmed, kind, id, name });
       setAdding(false);
       setPasted("");
-    } catch (error) { onError(words(error)); }
+      return true;
+    } catch (error) {
+      if (!held) giveBack(trimmed);
+      onError(words(error));
+      return false;
+    }
   };
-  const scanCode = () => {
-    if (!scan) return;
-    scan().then(pairWith, (error: unknown) => {
-      const why = words(error);
-      if (why === "cancelled") return;
-      onError(why === "denied" ? "Apex Deck can't use the camera. Allow it in Settings → Apex Deck, or paste the pairing link instead." : `Couldn't scan: ${why}`);
-    });
-  };
-  // Once per launch. If the person cancels, the Add a machine form just stays open.
+  // A link from any screen. Kind is taken from the link, not from whatever form was open.
   useEffect(() => {
-    if (!autoScan) return;
-    onAutoScan();
-    scanCode();
-  }, []);
+    if (!incoming) return;
+    const link = incoming;
+    onIncomingHandled();
+    setEditing(null);
+    setHow("qr");
+    setForm(blank(link.kind));
+    if (link.adding) setAdding(true);
+    if (!pairWith(link.url, { kind: link.kind }, true)) onIncomingFailed();
+  }, [incoming]);
   return (
     <main className="ph-content" inert={covered}>
       <h2>Machines</h2>
@@ -2590,15 +2983,12 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
             <button type="button" role="radio" aria-checked={form.kind === "mac"} disabled={hasMac} onClick={() => setForm({ ...form, kind: "mac", id: "" })}><Laptop size={16} />Mac</button>
             <button type="button" role="radio" aria-checked={form.kind === "server"} onClick={() => setForm({ ...form, kind: "server", id: form.id || missing[0] || "" })}><Globe size={16} />Server</button>
           </div>
-          {remote && <div className="ph-segment" role="radiogroup" aria-label="How">
-            <button type="button" role="radio" aria-checked={how === "qr"} onClick={() => setHow("qr")}>QR code</button>
-            <button type="button" role="radio" aria-checked={how === "address"} onClick={() => setHow("address")}>Address and token</button>
-          </div>}
+          <AddHowPicker pairing={pairing} how={how} onHow={setHow} />
           <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={how === "qr" ? "From the code" : form.kind === "mac" ? "Tyler's MacBook" : "Apex-Terminal"} required={how === "address"} autoCapitalize="words" /></label>
           {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
           {how === "qr" ? <>
-            <p className="ph-muted">On the machine, open Settings → Remote access and press Pair phone. On a server, run <code>apex-daemon pair</code>.</p>
-            {scan && <button type="button" className="primary ph-wide" onClick={scanCode}>Scan QR code</button>}
+            <p className="ph-muted">{PAIR_MACHINE_HINT} On a server, run <code>apex-daemon pair</code>.</p>
+            {scan && <ScanCodeButton scan={scan} reserve={reserve} adopt={adopt} giveBack={giveBack} onCode={(text) => pairWith(text, undefined, true)} onError={onError} auto={autoScan && !incoming} onAuto={onAutoScan} />}
             <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
           </> : <>
@@ -2609,26 +2999,26 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           {machines.length > 0 && <button type="button" className="ph-plain ph-wide" onClick={() => setAdding(false)}>Cancel</button>}
         </form>
       )}
-      {remote}
       <p className="ph-foot">{how === "qr" ? "Pairing keys stay in this phone's Keychain." : "The token works like a password. It stays on this phone."}</p>
     </main>
   );
 }
 
-function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, terminalSwitcherOpen, onTerminalSwitcherOpened, terminalResumeSignal, onTerminalWaiting, onAssistant, onShow, personal, onPersonal }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; hosts: PhoneHost[]; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; terminalSwitcherOpen: boolean; onTerminalSwitcherOpened(): void; terminalResumeSignal: number; onTerminalWaiting(waiting: boolean): void; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void }) {
+function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, terminalSwitcherOpen, onTerminalSwitcherOpened, terminalResumeSignal, onTerminalWaiting, terminalHomeSignal, onTerminalViewing, onAssistant, onShow, personal, onPersonal }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; hosts: PhoneHost[]; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; terminalSwitcherOpen: boolean; onTerminalSwitcherOpened(): void; terminalResumeSignal: number; onTerminalWaiting(waiting: boolean): void; terminalHomeSignal: number; onTerminalViewing(viewing: boolean): void; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
   // The Library lists every paired machine itself, so it doesn't follow one machine or wait on the Mac.
   if (tab === "library") return <main className="ph-content" inert={covered}>{library}</main>;
   const offline = !link || link.status !== "online";
   return (
     <main className="ph-content" inert={covered}>
-      {link && <p className="ph-intro"><i className={`ph-dot${link.status === "online" ? " on" : link.status === "offline" ? " off" : ""}`} />Follows {link.name}</p>}
+      {/* Code names its project and machine itself, so only Agents says which machine it follows. */}
+      {link && tab === "agents" && <p className="ph-intro"><i className={`ph-dot${link.status === "online" ? " on" : link.status === "offline" ? " off" : ""}`} />Follows {link.name}</p>}
       {!link && <div className="ph-empty"><h3>Pair a machine first</h3><p>Open Settings → Machines.</p></div>}
       {link && offline && <div className="ph-banner"><strong>{link.name} can't be reached</strong><p>{downLine(link)}</p></div>}
       {tab === "agents" && bots.length > 0 && <>
         <div className="ph-section">Your bots</div>
-        <div className="ph-group">{bots.map((bot) => (
-          <div key={bot.id} className="ph-srow ph-inset">
+        <div className="ph-list">{bots.map((bot) => (
+          <div key={bot.id} className="ph-srow">
             <Avatar seed={bot.look.seed} color={bot.look.color} working={bot.working !== null} />
             <span className="ph-grow"><strong>{bot.display_name}</strong><small className={bot.working ? "ph-mint" : bot.cutOff ? "ph-amber" : undefined}>{bot.working ? `Working in ${bot.working}` : bot.cutOff ?? bot.tool}</small></span>
           </div>
@@ -2636,7 +3026,7 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
       </>}
       {tab === "agents" && personal && <>
         <div className="ph-section">Your assistant</div>
-        <div className="ph-group">{(() => {
+        <div className="ph-list">{(() => {
           const waiting = personal.assistant?.tasks.filter((task) => task.status === "needsYou" && task.decision?.status === "open").length ?? 0;
           // Tasks that need you, plus delivered notices nobody has seen yet.
           const unseen = personal.assistant?.notices?.filter((notice) => notice.deliveredAt && !notice.seenAt).length ?? 0;
@@ -2644,17 +3034,16 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
           const usable = !!personal.assistant && !personal.offline;
           const detail = personal.problem ?? (personal.offline ? `${personal.hostName} can't be reached` : !personal.assistant ? `Set it up on ${personal.hostName} from the Mac` : needYou ? `${personal.hostName} · ${needYou} need${needYou === 1 ? "s" : ""} you` : `${personal.hostName} · Open conversation`);
           return <button type="button" className="ph-srow ph-project-assistant" disabled={!usable} onClick={onPersonal}>
-            <span className="ph-srow-icon ph-muted-icon"><MessageSquare size={18} /></span>
             <span className="ph-grow"><strong>{personal.name}</strong><small className={needYou ? "ph-amber" : undefined}>{detail}</small></span>
-            {usable && <ChevronRight size={16} />}
+            {usable && <ChevronRight size={15} />}
           </button>;
         })()}</div>
       </>}
       {tab === "agents" && <>
         <div className="ph-section">Project assistants</div>
         {assistantProjects.length === 0
-          ? <div className="ph-empty"><h3>No projects yet</h3><p>Add a project from Threads to set up ApexAgent.</p></div>
-          : <div className="ph-group">{assistantProjects.map(({ workspace, link: projectLink, allowed }) => {
+          ? <p className="ph-list-note">No projects yet. Add one from Threads to set up ApexAgent.</p>
+          : <div className="ph-list">{assistantProjects.map(({ workspace, link: projectLink, allowed }) => {
             const available = projectLink?.status === "online" && allowed;
             const error = assistantRegistryErrors[workspace.id];
             const detail = error ? `ApexAgent unavailable: ${error}`
@@ -2662,16 +3051,18 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
               : projectLink.status !== "online" ? downLine(projectLink)
                 : !allowed ? "Needs Full access on its machine" : `${projectLink.name} · Open project assistant`;
             return <button key={workspace.id} type="button" className="ph-srow ph-project-assistant" disabled={!available} onClick={() => onAssistant(workspace.id)}>
-              <span className="ph-srow-icon ph-muted-icon"><MessageSquare size={18} /></span>
               <span className="ph-grow"><strong>{workspace.name}</strong><small>{detail}</small></span>
-              {available && <ChevronRight size={16} />}
+              {available && <ChevronRight size={15} />}
             </button>;
           })}</div>}
       </>}
-      {link && !offline && tab === "agents" && (agents.length === 0
-        ? <div className="ph-empty"><h3>No coding agents found</h3><p>Nothing installed on {link.name} yet.</p></div>
-        : <><div className="ph-section">Installed on {link.name}</div><div className="ph-group">{agents.map((agent) => <div key={agent} className="ph-srow ph-inset"><span className="ph-srow-icon ph-muted-icon"><Terminal size={18} /></span><span className="ph-grow"><strong>{agent}</strong><small>Ready</small></span></div>)}</div></>)}
-      {link && <PhoneTerminal host={host} hosts={hosts} name={link.name} cwd={terminalCwd} hidden={tab !== "code"} openSwitcher={terminalSwitcherOpen} onSwitcherOpened={onTerminalSwitcherOpened} resumeSignal={terminalResumeSignal} onWaitingChange={onTerminalWaiting} />}
+      {link && !offline && tab === "agents" && <>
+        <div className="ph-section">Installed on {link.name}</div>
+        {agents.length === 0
+          ? <p className="ph-list-note">No coding agents found.</p>
+          : <div className="ph-list">{agents.map((agent) => <div key={agent} className="ph-srow"><span className="ph-grow"><strong>{agent}</strong><small>Ready</small></span></div>)}</div>}
+      </>}
+      {link && <PhoneTerminal host={host} hosts={hosts} name={link.name} cwd={terminalCwd} hidden={tab !== "code"} openSwitcher={terminalSwitcherOpen} onSwitcherOpened={onTerminalSwitcherOpened} resumeSignal={terminalResumeSignal} onWaitingChange={onTerminalWaiting} homeSignal={terminalHomeSignal} onViewingChange={onTerminalViewing} />}
     </main>
   );
 }

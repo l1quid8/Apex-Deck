@@ -30,11 +30,21 @@ use crate::owned_process::{OwnedChild, Registry};
 /// that keep working are never cut off; the person can still press Stop.
 const TURN_TIMEOUT: Duration = Duration::from_secs(900);
 
+/// Claude models without thinking levels (Haiku, Sonnet 4.5) take no effort flag.
+fn supports_effort_override(config: &ParticipantConfig) -> bool {
+    match &config.backend {
+        Backend::Agent { tool: AgentTool::Codex, .. } => true,
+        Backend::Agent { tool: AgentTool::ClaudeCode, model } => {
+            let model = model.as_deref().unwrap_or("").to_ascii_lowercase();
+            !model.contains("haiku") && !(model.contains("sonnet") && (model.contains("4-5") || model.contains("4.5")))
+        }
+        _ => false,
+    }
+}
+
 fn effective_turn_config(config: &ParticipantConfig, effort: Option<&str>) -> ParticipantConfig {
     let mut effective = config.clone();
-    if config.auto_effort && matches!(config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) && !apex_core::decision::supports_auto(config) {
-        effective.effort = None;
-    } else if apex_core::decision::supports_auto(config) {
+    if supports_effort_override(config) {
         if let Some(effort) = effort.filter(|level| ["low", "medium", "high"].contains(level)) { effective.effort = Some(effort.into()); }
     }
     effective
@@ -936,13 +946,8 @@ mod auto_tests {
         }
     }
     #[test]
-    fn a_fixed_unsupported_model_is_not_changed_by_auto() {
+    fn an_unsupported_model_is_not_changed_by_an_override() {
         let config: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"bot","display_name":"Bot","backend":{"kind":"agent","tool":"claude_code","model":"haiku"},"effort":"high"})).unwrap();
-        assert_eq!(effective_turn_config(&config, None), config);
-    }
-    #[test]
-    fn unsupported_claude_model_receives_no_effort_even_with_an_override() {
-        let config: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"bot","display_name":"Bot","backend":{"kind":"agent","tool":"claude_code","model":"haiku"},"effort":"high","auto_effort":true})).unwrap();
-        assert_eq!(effective_turn_config(&config, Some("low")).effort, None);
+        assert_eq!(effective_turn_config(&config, Some("low")), config);
     }
 }

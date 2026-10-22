@@ -1,3 +1,5 @@
+import { chatFolder } from "./worktreeMount";
+import { useWorktreeMount } from "./useWorktreeMount";
 import { canvasPanes } from "./canvasPanes.ts";
 import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceFamily, workspaceHost } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
@@ -235,6 +237,9 @@ export function App() {
   latest.current = { workspaces, panes };
   const setWorkspaces = useCallback((next: Workspace[] | ((old: Workspace[]) => Workspace[])) => setRecords(r => ({ ...r, workspaces: typeof next === "function" ? next(r.workspaces) : next })), []);
   const setPanes = useCallback((next: Pane[] | ((old: Pane[]) => Pane[])) => setRecords(r => ({ ...r, panes: typeof next === "function" ? next(r.panes) : next })), []);
+  const setChatFolder = useCallback((id: string, cwd: string) => setPanes(all => all.map(p => p.id === id && p.mount !== cwd ? {...p, mount:cwd} : p)), [setPanes]);
+  const mounts = useWorktreeMount({panes, workspaces, status:threadStatus, options:settings.newThread, setFolder:setChatFolder, error:message => toast(message)});
+
   const sessionRef = useRef<AppSession | null>(null);
   const [migrationNotice, setMigrationNotice] = useState("");
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
@@ -570,9 +575,7 @@ export function App() {
     void backend.hosts.list().then(hosts => Promise.allSettled(hosts.filter(h => h.remote && !sessionRef.current?.importedHostSessions?.includes(h.id)).map(async host => {
       try {
         const remote = prepareHostSession(await backend.machines!.legacySession(host.id));
-        const settings = await backend.machines!.legacySettings(host.id).catch(() => null) as { decision?: { enabled?: boolean } } | null;
         if (!alive) return;
-        if (settings?.decision?.enabled) setMigrationNotice(`${host.name}'s decision observer is enabled in its own settings. Deck's observer switch controls This Mac's threads only.`);
         setRecords(old => {
           const merged = mergeHostSession({ ...sessionRef.current!, ...old }, host.id, remote);
           merged.session.panes.filter(p => p.kind === "terminal").forEach(p => restored.current.add(p.id));
@@ -1250,7 +1253,7 @@ export function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const copyFromThread = (pane: Pane, kind: CopyKind) => {
     const { workspace, hostId } = hostOfPane(pane);
-    if (kind === "path") copyOut(folderCopyText(workspace?.path ?? "", hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh), "path");
+    if (kind === "path") copyOut(folderCopyText(chatFolder(pane, workspace), hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh), "path");
     else if (kind === "id") copyOut(pane.id, "id");
     else {
       // The thread builds its own text, open or closed; it stays where it is.
@@ -1285,6 +1288,7 @@ export function App() {
     chipParts: settings.botChips,
     landingTexture: effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance),
     codeRunButtons: settings.codeRunButtons,
+    voice: settings.voice,
   });
 
   /** A preview's source without the pane itself, for snapshots and updates. */
@@ -1316,7 +1320,7 @@ export function App() {
       ...(pane.kind === "terminal" && run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
       workspaceId: pane.workspaceId, hostId,
       ...(pane.agent ? { agent: pane.agent } : {}),
-      cwd: workspace?.path ?? "",
+      cwd: chatFolder(pane, workspace),
       ...(pane.kind === "chat" ? { chatConfig: chatConfigOf(workspace, hostId) } : {}),
       ...(pane.kind === "preview" ? {
         url: pane.url,
@@ -1360,7 +1364,7 @@ export function App() {
       kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance,
       ...(tab.url !== undefined ? { url: tab.url } : {}),
       workspaceId: workspace?.id, hostId,
-      cwd: workspace?.path ?? "",
+      cwd: chatFolder(selected, workspace),
       workspaceName: workspace?.name ?? "",
       chatConfig: chatConfigOf(workspace, hostId),
       ...(selected?.kind === "chat" ? { activeChatId: selected.id } : { activeChatId: null }),
@@ -1376,8 +1380,8 @@ export function App() {
   };
 
   /** The newest pop-outs and pane edits, for window events that arrive between renders. */
-  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, focusPane: (_pane: Pane) => {} });
-  popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents };
+  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id), focusPane: (_pane: Pane) => {} });
+  popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id) };
   /** The last patch pushed to each pop-out, so unchanged renders send nothing. */
   const lastSent = useRef(new Map<string, string>());
 
@@ -1409,7 +1413,13 @@ export function App() {
       const tabRec = paneRec ? undefined : live.poppedTabs.find((p) => p.token === token);
       const rec = paneRec ?? tabRec;
       if (!rec) return;
-      if (action.type === "restart-terminal" || action.type === "start-pane") {
+      if (action.type === "mount-worktree" || action.type === "cancel-mount") {
+        const pane = latest.current.panes.find(p => p.id === action.id && p.kind === "chat");
+        const workspace = latest.current.workspaces.find(w => w.id === pane?.workspaceId);
+        if (!pane || !workspace || (paneRec && paneRec.id !== pane.id)) return;
+        if (action.type === "cancel-mount") live.mounts.cancel(pane.id);
+        else { try { live.mounts.request(pane, action.path, live.hostBackend(workspaceHost(workspace))); } catch { /* connection view supplies the error */ } }
+      } else if (action.type === "restart-terminal" || action.type === "start-pane") {
         setStartRequests((all) => ({ ...all, [(action.type === "restart-terminal" ? rec.id : action.id)]: (all[action.type === "restart-terminal" ? rec.id : action.id] ?? 0) + 1 }));
       } else if (action.type === "show-pane") {
         const pane = latest.current.panes.find((p) => p.id === action.id);
@@ -1438,6 +1448,8 @@ export function App() {
         );
       } else if (action.type === "confirm-steer") {
         setSettings((s) => ({ ...s, confirmSteer: action.confirm }));
+      } else if (action.type === "voice-settings") {
+        setSettings((s) => ({ ...s, voice: action.voice }));
       } else if (action.type === "seen") {
         if (paneRec) live.onThreadSeen(paneRec.id, action.seq);
       } else if (action.type === "tab-url") {
@@ -1476,6 +1488,7 @@ export function App() {
       const { workspace, hostId } = hostOfPane(pane);
       push(rec.token, {
         title: pane.title,
+        cwd: chatFolder(pane, workspace),
         appearance,
         workspaceId: pane.workspaceId,
         ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
@@ -1493,7 +1506,7 @@ export function App() {
       if (tab.kind === "dashboard") patch.dashboardRows = dashboardRows;
       if (followWorkspace) {
         patch.workspaceId = followWorkspace.id;
-        patch.cwd = followWorkspace.path ?? "";
+        patch.cwd = chatFolder(selected, followWorkspace);
         patch.hostId = workspaceHost(followWorkspace);
         patch.workspaceName = followWorkspace.name;
         // The tasks owner travels as one bundle: workspace and conversation from the same push, never mixed.
@@ -1502,9 +1515,11 @@ export function App() {
         if (tab.kind === "details" || tab.kind === "tasks" || tab.kind === "artifacts") patch.chatConfig = chatConfigOf(followWorkspace, workspaceHost(followWorkspace));
       }
       patch.activeChatId = selected?.kind === "chat" ? selected.id : null;
+      patch.pendingMount = selected ? mounts.pending[selected.id]?.path ?? null : null;
+      patch.busyTurn = Boolean(selected && threadStatus[selected.id]?.busy);
       push(rec.token, patch);
     }
-  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, detailsTarget, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents, appearance]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, detailsTarget, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents, appearance, mounts.pending, threadStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A thread closed, archived or deleted here, or its project removed, takes its
   // pop-out with it. The record drops first, so the window's close restores nothing.
@@ -1542,7 +1557,7 @@ export function App() {
     else if (action === "start") setStartRequests(bump);
     else if (action === "popout") popOutPane(pane.id);
     else if (action === "copy_path") {
-      const path = workspaces.find((w) => w.id === pane.workspaceId)?.path;
+      const path = chatFolder(pane, workspaces.find((w) => w.id === pane.workspaceId));
       if (path) copyOut(path, "path");
     } else if (action === "copy_address") {
       if (pane.url) void writeClipboard(pane.url, navigator.clipboard).then((ok) => toast(ok ? "Copied the address." : "Couldn't reach the clipboard, so nothing was copied."));
@@ -1578,7 +1593,7 @@ export function App() {
     return items.map((item) => ({
       key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, keys: item.keys,
       submenu: item.action === "project" ? projectEntries(pane)
-        : item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(workspace?.path ?? "", ssh), id: pane.id })
+        : item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(chatFolder(pane, workspace), ssh), id: pane.id })
           .map((c) => ({ key: c.kind, label: c.label, side: c.side, disabled: c.disabled, reason: c.reason, onSelect: () => copyFromThread(pane, c.kind) })) : undefined,
       onSelect: item.submenu ? undefined : () => runPaneMenu(pane, item.action, from),
     }));
@@ -1959,7 +1974,7 @@ export function App() {
   };
   /** A thread's history and bots, read from where it runs now. */
   const snapshotOf = async (pane: Pane, workspace: Workspace) =>
-    (await loadRoomState(hostBackend(workspaceHost(workspace)), pane.id, [], settings.newThread, workspace.path)).snapshot;
+    (await loadRoomState(hostBackend(workspaceHost(workspace)), pane.id, [], settings.newThread, chatFolder(pane, workspace))).snapshot;
   /** Point a thread at another project: an unstarted one moves there, a started one asks first. */
   const choose = (pane: Pane, target: Workspace) => {
     const outcome = chooseOutcome(pane.workspaceId, target.id, startedOf(pane));
@@ -1978,7 +1993,7 @@ export function App() {
       await flushAnswerStores(hostBackend(fromHost), pane.id);
       const snapshot = await snapshotOf(pane, source);
       await placeThread({ from: hostBackend(fromHost), to: hostBackend(toHost), id: pane.id, snapshot, cwd: target.path, sameHost: fromHost === toHost, hostName: hostNameFor(toHost) });
-      setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, workspaceId: target.id } : p)));
+      setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, workspaceId: target.id, mount: undefined } : p)));
       setMoveAsk((ask) => (ask?.paneId === pane.id ? null : ask));
       setActiveWorkspace(target.id);
     } catch (error) {
@@ -2043,7 +2058,7 @@ export function App() {
     };
     const servers = hostList.filter((h) => h.remote);
     return {
-      project: { id: here.id, name: here.name, path: here.path, hostId, hostName: hostNameFor(hostId), tint: tint(hostId) },
+      project: { id: here.id, name: here.name, path: chatFolder(pane, here), hostId, hostName: hostNameFor(hostId), tint: tint(hostId) },
       started: startedOf(pane),
       picker: pickerRows(workspaces, panes, here.id, offlineHost).map((row) => ({ row, hostName: hostNameFor(row.hostId), tint: tint(row.hostId), twin: twinPath(row.workspace, workspaces) })),
       workRows: workInRows(workspaces, ["local", ...servers.map((h) => h.id)], here, offlineHost).map((r) => ({ ...r, hostName: hostNameFor(r.hostId), tint: tint(r.hostId), seen: seen(r.hostId) })),
@@ -2429,7 +2444,7 @@ export function App() {
         )}
 
         <main ref={canvasRef} className={`canvas section-${section}`} inert={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined} aria-hidden={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined}>
-          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} />}
+          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} voiceSettings={settings.voice} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
           {(section === "code" || section === "threads") && !current && (
@@ -2471,9 +2486,9 @@ export function App() {
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={attention[pane.id] ? attention[pane.id].note || label(attention[pane.id].kind) : status} />
                     {/* The project and its machine always stay; the title and status words give way first. */}
-                    {workspace && <span className="pane-ws" title={`${workspace.name}${((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? "" : ` on ${hostNameFor((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))}`}${((pane as Pane & { executionPath?: string }).executionPath ?? workspace.path) ? ` · ${(pane as Pane & { executionPath?: string }).executionPath ?? workspace.path}` : ""}`}>
+                    {workspace && <span className="pane-ws" title={`${workspace.name}${((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? "" : ` on ${hostNameFor((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))}`}${(chatFolder(pane, workspace)) ? ` · ${chatFolder(pane, workspace)}` : ""}`}>
                       <ProjectFolder tint={((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? undefined : tints.get((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))} size={12} />
-                      <span className="nm">{workspace.name}</span><span className="nm-short">{shortName(workspace.name)}</span>
+                      <span className="nm">{workspace.name}{pane.mount && pane.mount !== workspace.path ? ` · ${pane.mount.replace(/\\/g, "/").split("/").filter(Boolean).at(-1)}` : ""}</span><span className="nm-short">{shortName(workspace.name)}</span>
                     </span>}
                     <ThreadName className="pane-title" title={pane.title} onRename={title => { if ((pane as Pane & { assistantTaskId?: string }).assistantTaskId) setTaskPaneTitle(pane.id, title); else renamePane(pane.id, title); }} renameRequest={renameRequests[pane.id]} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
                     {paneBackend?.host && paneBackend.host.id !== "local" && <span className="pane-host" title={paneBackend.host.name}>
@@ -2525,7 +2540,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
@@ -2606,14 +2621,14 @@ export function App() {
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
                 let route: Backend | null = null;
                 try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
-                return <RightFilesTab root={workspace?.path || null} backend={route} threadId={pane?.kind === "chat" ? pane.id : null} paneId={pane?.kind === "chat" ? pane.id : null} local={workspace ? workspaceHost(workspace) === "local" : false} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
+                return <RightFilesTab root={chatFolder(pane, workspace) || null} backend={route} threadId={pane?.kind === "chat" ? pane.id : null} paneId={pane?.kind === "chat" ? pane.id : null} local={workspace ? workspaceHost(workspace) === "local" : false} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, chatFolder(pane, workspace) || null, false).catch(() => {}); }} />;
               },
               worktrees: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
                 let route: Backend | null = null;
                 try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
-                return <RightWorktreesTab root={workspace?.path || null} backend={route} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
+                return <RightWorktreesTab root={workspace?.path || null} backend={route} visible={visible} mounted={chatFolder(pane, workspace)} pendingMount={pane ? mounts.pending[pane.id]?.path : undefined} busyTurn={Boolean(pane && (threadStatus[pane.id]?.busy || threadStatus[pane.id]?.replying.length || threadStatus[pane.id]?.waiting.length))} onMount={pane?.kind === "chat" && route && !(pane as Pane & {assistantTaskId?:string}).assistantTaskId ? path => mounts.request(pane, path, route!) : undefined} onCancelMount={() => { if(pane) mounts.cancel(pane.id); }} onOpen={(path) => { if (route && workspace) void route.openTarget(path, chatFolder(pane, workspace) || null, false).catch(() => {}); }} />;
               },
               artifacts: (_tab, visible) => detailsTarget
                 ? <div ref={setArtifactsSlot} tabIndex={-1} className="right-artifacts-slot" hidden={!visible} />

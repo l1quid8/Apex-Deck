@@ -1,5 +1,5 @@
-// Pairing a phone from Settings → Paired devices → Pair phone, and the
-// Remote access section. The daemon's pairing commands are local-only; it
+// Pairing a phone from Settings → Phones → Pair phone, and that section's
+// phone-connections status. The daemon's pairing commands are local-only; it
 // refuses them from a phone. Its refusals carry a `reason` word, and this
 // file switches on that word, never on the text.
 //
@@ -69,32 +69,39 @@ export function endedWords(reason: string | null, err: string): string {
     case "stale_claim":
     case "changed": return "This phone was removed or let back in elsewhere while you were deciding, so nothing was changed. Start again.";
     case "used": return "This pairing code was already used. Start again for a new one.";
-    case "not_remote": return "Remote access is off, so no phone could reach this Mac. Turn it on in Settings → Remote access, then pair.";
+    case "not_remote": return "Phone connections are off. Turn them on in Settings → Phones.";
     default: return err;
   }
 }
 
-/** Shown when Deck can't turn Remote access on, because it didn't start the daemon. Same words as Settings → Remote access. */
-export const NOT_OWNED_WORDS = "Deck didn't start the background service that's running, so it keeps its own setting until it restarts. Start it with apex-daemon serve --remote to turn this on now.";
-
 /**
- * Make sure Remote access is on before a code is made, since no phone can
- * pair without it. Resolves with null when phones can reach this Mac, or with
+ * Make sure phone connections are on before a code is made, since no phone can
+ * pair without them. Resolves with null when phones can reach this Mac, or with
  * the words to show when they can't. `turningOn` runs only when the switch
- * has to be flipped.
+ * has to be flipped. A daemon Deck did not start is still asked: the switch
+ * is the daemon's, and turning it does not restart anything.
  */
 export async function ensureRemoteAccess(remote: RemoteAccessApi | undefined, turningOn: () => void): Promise<string | null> {
   if (!remote) return null;
   try {
     const access = await remote.get();
     if (access.on) return null;
-    if (!access.owned) return NOT_OWNED_WORDS;
     turningOn();
     const next = await remote.set(true);
-    return next.on ? null : "Remote access didn't turn on.";
+    return next.on ? null : "Couldn't turn on phone connections. Nothing else changed.";
   } catch (error) {
-    return wordsOf(error);
+    return `Couldn't turn on phone connections: ${wordsOf(error).replace(/\.$/, "")}. Nothing else changed.`;
   }
+}
+
+/** Settings → Phones' status line, with the button beside it and the line under it. */
+export interface PhonesStatus { line: string; action: "Turn off" | "Turn on" | null; note: string | null }
+
+/** What Settings → Phones says about phone connections. `phones`: how many are paired. */
+export function phonesStatus(on: boolean, phones: number): PhonesStatus {
+  if (on) return { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null };
+  if (phones > 0) return { line: "Phone connections are off.", action: "Turn on", note: "Paired phones stay saved but can't connect, even on the same Wi‑Fi." };
+  return { line: "Phone connections are off. Pairing turns them on.", action: null, note: null };
 }
 
 /** Time left on the invitation as m:ss, or "Expired". A part second counts as a second. */
@@ -111,6 +118,9 @@ export function revokedWarning(revokedAt: number | null, format: (ms: number) =>
   if (revokedAt == null) return null;
   return `This phone was removed on ${format(revokedAt)}. Approving lets it back in.`;
 }
+
+/** A 6-digit claim code as "673 149"; anything else as it came. */
+export const spacedCode = (code: string) => (/^\d{6}$/.test(code) ? `${code.slice(0, 3)} ${code.slice(3)}` : code);
 
 /** Copy the link, only when the person presses Copy. False when it couldn't. */
 export async function copyLink(link: string, clipboard: { writeText(text: string): Promise<void> } | undefined): Promise<boolean> {
@@ -174,20 +184,42 @@ interface Timers {
   clearTimer(id: unknown): void;
   /** How often to ask whether the claiming phone is still there. */
   pollMs?: number;
+  /** ms since the epoch; for the renewal limit. */
+  now?: () => number;
 }
 
 const realTimers: Timers = { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (id) => clearTimeout(id as ReturnType<typeof setTimeout>) };
+
+/** How long one Pair phone sheet keeps renewing its code, from when it opened. */
+export const RENEW_FOR_MS = 30 * 60 * 1000;
+
+/** The line under the QR: when the next code comes, or when this one ends for good. */
+export function timerText(expiresAt: number, renewUntil: number | null, now = Date.now()): string {
+  const renews = renewUntil !== null && expiresAt < renewUntil;
+  const left = countdownText(expiresAt, now);
+  if (left === "Expired") return renews ? "Making a new code…" : "Code expired";
+  return renews ? `New code in ${left}` : `Code expires in ${left}`;
+}
 
 /**
  * One Pair phone sheet: start an invitation, wait for a phone to claim it,
  * then Approve or Deny. While the approval waits it asks again every
  * `pollMs`, so a phone that leaves ends it. Closing cancels the invitation
  * unless the phone was already paired or turned away.
+ *
+ * With `renewUntil` (ms since the epoch), a code the daemon says expired
+ * with no phone on it is replaced by a new one with the same access, until
+ * then. The daemon decides: a claim that landed first comes back as a claim
+ * and is never renewed over. Each start is numbered; a reply to an older
+ * start, or one that lands after close, is cancelled and never shown.
+ * A wait that answers after close starts nothing: no new code, no timer.
  */
-export function pairingSession(api: PairingApi, onState: (state: PairState) => void, timers: Timers = realTimers) {
+export function pairingSession(api: PairingApi, onState: (state: PairState) => void, timers: Timers = realTimers, renewUntil: number | null = null) {
   const pollMs = timers.pollMs ?? 2000;
+  const now = timers.now ?? Date.now;
   let state: PairState = { kind: "idle" };
   let invite: PairInvitation | null = null;
+  let attempt = 0;
   let closed = false;
   let poll: unknown = null;
 
@@ -206,7 +238,7 @@ export function pairingSession(api: PairingApi, onState: (state: PairState) => v
     set({ kind: "ended", reason, words: endedWords(reason, wordsOf(error)) });
   };
   /** Whether the invitation may still be live on the daemon, so closing must cancel it. */
-  const live = () => invite !== null && (state.kind === "starting" || state.kind === "waiting" || state.kind === "claimed" || state.kind === "approving");
+  const live = () => invite !== null && (state.kind === "waiting" || state.kind === "claimed" || state.kind === "approving");
 
   const stillThere = () => {
     poll = null;
@@ -218,27 +250,37 @@ export function pairingSession(api: PairingApi, onState: (state: PairState) => v
     );
   };
 
+  const begin = (tier: Tier, threads: "all" | string[]) => {
+    const mine = ++attempt;
+    invite = null;
+    set({ kind: "starting" });
+    api.start(tier, threads).then((made) => {
+      if (closed || mine !== attempt) {
+        void api.cancel(made.invitation).catch(() => {});
+        return;
+      }
+      invite = made;
+      set({ kind: "waiting", invite: made });
+      api.wait(made.invitation).then(
+        (claim) => {
+          if (closed || state.kind !== "waiting" || invite !== made) return;
+          set({ kind: "claimed", invite: made, claim });
+          poll = timers.setTimer(stillThere, pollMs);
+        },
+        (error) => {
+          if (closed || state.kind !== "waiting" || invite !== made) return;
+          if (reasonOf(error) === "expired" && renewUntil !== null && now() < renewUntil) begin(tier, threads);
+          else end(error);
+        },
+      );
+    }, (error) => { if (mine === attempt) end(error); });
+  };
+
   return {
     get state() { return state; },
     start(tier: Tier, threads: "all" | string[]) {
       if (closed || state.kind !== "idle") return;
-      set({ kind: "starting" });
-      api.start(tier, threads).then((made) => {
-        invite = made;
-        if (closed) {
-          void api.cancel(made.invitation).catch(() => {});
-          return;
-        }
-        set({ kind: "waiting", invite: made });
-        api.wait(made.invitation).then(
-          (claim) => {
-            if (state.kind !== "waiting") return;
-            set({ kind: "claimed", invite: made, claim });
-            poll = timers.setTimer(stillThere, pollMs);
-          },
-          (error) => { if (state.kind === "waiting") end(error); },
-        );
-      }, end);
+      begin(tier, threads);
     },
     approve() {
       if (closed || state.kind !== "claimed") return;

@@ -7,8 +7,10 @@ import {
 } from "../voice/controller.ts";
 import { connectServerVoice } from "../voice/serverClient.ts";
 import { openVoiceAudio } from "../voice/audio.ts";
-import { preferenceFor, readVoiceSettings } from "../voice/settings.ts";
+import { preferenceFor, readVoiceSettings, voiceFor } from "../voice/settings.ts";
 import { createThreadVoiceBridge } from "../voice/threadBridge.ts";
+import { machineVoice, type PhoneTouched } from "./machineVoice.ts";
+import type { CallLook } from "../voice/callView.ts";
 import type {
   CallScope,
   ServerVoiceLink,
@@ -17,7 +19,8 @@ import type {
   VoiceSettings,
 } from "../voice/types.ts";
 export const PHONE_VOICE_KEY = "apex-deck.phone.voice.v1",
-  PHONE_VOICE_USED_KEY = "apex-deck.phone.voice.used.v1";
+  PHONE_VOICE_USED_KEY = "apex-deck.phone.voice.used.v1",
+  PHONE_VOICE_TOUCHED_KEY = "apex-deck.phone.voice.touched.v1";
 export interface PhoneVoiceHost {
   name: string;
   backend: Backend;
@@ -31,7 +34,8 @@ export interface PhoneVoiceDeps {
   participants(
     hostId: string,
     roomId: string,
-  ): readonly { id: string; display_name: string; media?: unknown }[];
+  ): readonly { id: string; display_name: string; media?: unknown; voice?: string | null }[];
+  roomTitle?(hostId: string, roomId: string): string | undefined;
   onScreen(hostId: string, roomId: string): boolean;
   storage: Pick<Storage, "getItem" | "setItem">;
   keepAwake(on: boolean): void;
@@ -43,8 +47,13 @@ export interface PhoneVoice {
   controller: VoiceController<ServerVoiceRuntime>;
   canCall(hostId: string): boolean;
   candidates(hostId: string, roomId: string): VoiceCandidate[];
+  /** The phone's own call settings. */
   settings(): VoiceSettings;
-  save(settings: VoiceSettings): void;
+  /** What a call in this machine's threads uses: the phone's choices over the machine's saved ones. */
+  settingsFor(hostId: string): VoiceSettings;
+  /** Save from the settings sheet. Fields that differ from `settingsFor(hostId)` become the phone's own. */
+  save(settings: VoiceSettings, hostId?: string): void;
+  look(hostId: string): CallLook;
   view(): { weak: boolean; attention: boolean };
   subscribe(fn: () => void): () => void;
   failed(
@@ -66,6 +75,15 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
     }
   };
   let settings = readVoiceSettings(read(PHONE_VOICE_KEY));
+  const rawTouched = read(PHONE_VOICE_TOUCHED_KEY);
+  const touched: PhoneTouched = {
+    silence: rawTouched?.silence === true,
+    look: rawTouched?.look === true,
+  };
+  const machines = new Map<string, VoiceSettings>(),
+    machineLoaded = new Map<string, number>();
+  const settingsFor = (hostId: string) =>
+    machineVoice(settings, machines.get(hostId) ?? null, touched, hostId);
   const rawUsed = read(PHONE_VOICE_USED_KEY);
   const used = new Set<string>(
     Array.isArray(rawUsed)
@@ -92,10 +110,13 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
       .map((p) => ({
         hostId,
         roomId,
+        roomTitle: deps.roomTitle?.(hostId, roomId),
         participantId: p.id,
         profileId: p.id,
         name: p.display_name,
-        aliases: preferenceFor(settings, hostId, p.id, roomId, p.id).aliases,
+        agentVoice: p.voice,
+        aliases: preferenceFor(settingsFor(hostId), hostId, p.id, roomId, p.id)
+          .aliases,
       }));
   const bridge = (scope: CallScope) => {
     const key = JSON.stringify([scope.hostId, scope.roomId, scope.participantId]);
@@ -173,14 +194,18 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
       },
       bridge,
       voice: (s) =>
-        preferenceFor(
-          settings,
+        voiceFor(
+          settingsFor(s.hostId),
           s.hostId,
           s.participantId,
           s.roomId,
           s.participantId,
-        ).voice,
-      silence: () => settings.silenceMs,
+          deps.participants(s.hostId, s.roomId).find((p) => p.id === s.participantId)?.voice,
+        ),
+      silence: () => {
+        const s = controller.getState().scope;
+        return (s ? settingsFor(s.hostId) : settings).silenceMs;
+      },
       focus: (s) => {
         if (!deps.onScreen(s.hostId, s.roomId)) {
           attention = true;
@@ -212,10 +237,16 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
     candidates,
     canCall: (id) => deps.host(id)?.canCall() ?? false,
     settings: () => settings,
-    save: (value) => {
+    settingsFor,
+    look: (hostId) => settingsFor(hostId).look,
+    save: (value, hostId) => {
+      const before = hostId ? settingsFor(hostId) : settings;
       settings = readVoiceSettings(value);
+      if (settings.silenceMs !== before.silenceMs) touched.silence = true;
+      if (settings.look !== before.look) touched.look = true;
       try {
         deps.storage.setItem(PHONE_VOICE_KEY, JSON.stringify(settings));
+        deps.storage.setItem(PHONE_VOICE_TOUCHED_KEY, JSON.stringify(touched));
       } catch {}
       changed();
     },
@@ -235,6 +266,20 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
         changed();
       }
       const now = (deps.now ?? Date.now)();
+      const h = deps.host(id);
+      // The machine's saved call settings (pause, look, voices). Reading them needs Full access; without it the phone keeps its own.
+      if (h?.backend.settingsLoad && (!machineLoaded.has(id) || now - machineLoaded.get(id)! >= 60000)) {
+        machineLoaded.set(id, now);
+        void h.backend
+          .settingsLoad()
+          .then((raw) => {
+            const voice = raw && typeof raw === "object" ? (raw as { voice?: unknown }).voice : undefined;
+            if (!voice) return;
+            machines.set(id, readVoiceSettings(voice));
+            changed();
+          })
+          .catch(() => {});
+      }
       if (used.has(id) && (!warm.has(id) || now - warm.get(id)! >= 60000)) {
         warm.set(id, now);
         void deps

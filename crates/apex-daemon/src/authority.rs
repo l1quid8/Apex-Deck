@@ -65,7 +65,8 @@ pub fn command_needs(command: &Command) -> Need {
         | PersonalConnectors {} | PersonalBrowserView {} | PersonalBrowserTakeOver { .. } | PersonalBrowserInput { .. } => full(Global),
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
         RoomState { id } => read(thread(id)),
-        RoomDiff { id } => read(thread(id)),
+        RoomDiff { id } | RoomGitStatus { id } => read(thread(id)),
+        RoomGitAction { .. } => full(Global),
         ArtifactsLoad { room } => read(thread(room)),
         AnswersLoad { room } => read(thread(room)),
         RoomSteps { room, .. } => read(thread(room)),
@@ -91,6 +92,7 @@ pub fn command_needs(command: &Command) -> Need {
         AnswerSave { room, .. } => chat(thread(room)),
 
         // Full, inside one thread.
+        RoomMount { id, .. } => full(thread(id)),
         RoomDelete { id } => full(thread(id)),
         RoomUpdateParticipant { id, .. } => full(thread(id)),
         RoomAddParticipant { id, .. } => full(thread(id)),
@@ -135,8 +137,6 @@ pub fn command_needs(command: &Command) -> Need {
         ExportThread { .. } => full(Global),
 
         // Never remote.
-        DecisionKeySave { .. } => Need::Never,
-        DecisionKeyStatus {} => Need::Never,
         DataFolder {} => Need::Never,
         EnvPresent { .. } => Need::Never,
         ApiKeyStatus { .. } | ApiKeySave { .. } | ApiKeyRemove { .. } => Need::Never,
@@ -299,6 +299,8 @@ mod tests {
             ("monitor_react", Some((Full, "global")), json!({ "workspaceId": "w", "messageId": "m1", "emoji": "👍", "enabled": true, "cwd": "/p", "hostId": "h", "conversationId": "c" })),
             ("room_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
             ("room_diff", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
+            ("room_git_status", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
+            ("room_git_action", Some((Full, "global")), json!({ "id": "mine", "action": { "kind": "checks", "expected": { "root": "/repo", "head": "abc", "tree": "tree", "branch": "feat/test", "target": "main", "targetHead": "base", "ahead": 1, "behind": 0, "files": [], "checksPassed": false, "clean": true } } })),
             ("artifacts_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
             ("answers_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
             ("room_steps", Some((ReadOnly, "thread")), json!({"room":"mine"})),
@@ -318,6 +320,7 @@ mod tests {
             ("room_answer", Some((Chat, "thread")), json!({ "id": "mine", "request": "r" })),
             ("room_set_plan", Some((Chat, "thread")), json!({ "id": "mine", "on": true })),
             ("save_attachment", Some((Chat, "thread")), json!({ "room": "mine", "name": "a", "data": "" })),
+            ("room_mount", Some((Full, "thread")), json!({ "id": "mine", "cwd": "/repo" })),
             ("room_delete", Some((Full, "thread")), json!({ "id": "mine" })),
             ("room_update_participant", Some((Full, "thread")), json!({ "id": "mine", "participant": participant })),
             ("room_add_participant", Some((Full, "thread")), json!({ "id": "mine", "participant": participant })),
@@ -374,8 +377,6 @@ mod tests {
             ("library_rename", Some((Full, "global")), json!({ "file": "a.png", "name": "New name" })),
             ("artifact_export", Some((Full, "global")), json!({ "name": "a", "contents": "x" })),
             ("export_thread", Some((Full, "global")), json!({ "fileName": "a.md", "contents": "x" })),
-            ("decision_key_save", None, json!({ "provider": "p", "key": "k" })),
-            ("decision_key_status", None, json!({})),
             ("data_folder", None, json!({})),
             ("env_present", None, json!({ "names": [] })),
             ("api_key_status", None, json!({ "names": [] })),

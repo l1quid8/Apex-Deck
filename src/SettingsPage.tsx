@@ -2,7 +2,7 @@
 // It takes the place of the deck until closed. Per-thread and per-bot
 // controls stay in thread details and the Agents tab.
 
-import { CHIP_STYLES, isChipStyle } from "./botChip";
+import { ChipStylePicker } from "./ChipStylePicker";
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { defaultAppearanceSettings } from "./themes";
@@ -10,24 +10,25 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
-import { DEFAULT_DECISION, DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
+import { CALL_VOICES, defaultVoiceOf, readVoiceSettings } from "./voice/settings";
+import { VoiceSampleButton } from "./voice/VoiceSampleButton";
+import { voiceLabel } from "./voice/callView";
+import { DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
 import { ModelGatewaySettings } from "./ModelGatewaySettings";
 import { gatewayOwner } from "./modelGateway";
 import { ModsSettings } from "./ModsSettings";
-import { PairedDevicesSettings } from "./PairedDevicesSettings";
-import { RemoteAccessSettings } from "./RemoteAccessSettings";
+import { PhonesSettings } from "./PhonesSettings";
 import { shortcutList } from "./shortcuts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "appearance" | "hosts" | "remote" | "devices" | "providers" | "gateway" | "threads" | "terminal" | "mods" | "shortcuts";
+export type SettingsSection = "general" | "appearance" | "hosts" | "phones" | "providers" | "gateway" | "threads" | "terminal" | "mods" | "shortcuts";
 
 const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
   { id: "hosts", label: "Hosts" },
-  { id: "remote", label: "Remote access" },
-  { id: "devices", label: "Paired devices" },
+  { id: "phones", label: "Phones" },
   { id: "providers", label: "Providers" },
   { id: "gateway", label: "Model gateway" },
   { id: "threads", label: "New threads" },
@@ -68,8 +69,8 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
     return () => window.removeEventListener("keydown", key);
   }, [onClose]);
 
-  // Hosts, remote access and paired devices only exist in the Electron app.
-  const SECTIONS = ALL_SECTIONS.filter(s => s.id !== "gateway" || gatewayOwner(backend)).filter((s) => (s.id !== "hosts" && s.id !== "devices" && s.id !== "remote") || (s.id === "remote" ? backend.remoteAccess : backend.hosts));
+  // Hosts and phones only exist in the Electron app.
+  const SECTIONS = ALL_SECTIONS.filter(s => s.id !== "gateway" || gatewayOwner(backend)).filter((s) => (s.id !== "hosts" && s.id !== "phones") || backend.hosts);
   const index = Math.max(0, SECTIONS.findIndex((s) => s.id === section));
   return <div className="settings">
     <aside className="settings-nav">
@@ -92,8 +93,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
         {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} settings={settings} onChange={onChange} />}
         {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onLandingTexture={(landingTexture) => onChange({ ...settings, landingTexture })} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
-        {section === "remote" && backend.remoteAccess && <RemoteAccessSettings backend={backend} remote={backend.remoteAccess} />}
-        {section === "devices" && backend.hosts && <PairedDevicesSettings backend={backend} />}
+        {section === "phones" && backend.hosts && <PhonesSettings backend={backend} />}
         {section === "gateway" && <ModelGatewaySettings backend={backend} />}
         {section === "providers" && <Providers settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} />}
         {section === "threads" && <Threads settings={settings} onChange={onChange} />}
@@ -108,8 +108,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
 const LEADS: Partial<Record<SettingsSection, string>> = {
   appearance: "Choose a skin, tune its surfaces, or bring one you made with AI. Changes apply to the whole deck.",
   hosts: "The machine this window runs its threads and terminals on: this Mac, or another one over SSH.",
-  remote: "Let phones you pair reach this Mac when they aren't on its network.",
-  devices: "Phones allowed to reach this machine from outside your network, and what each may do.",
+  phones: "Phones you pair with this Mac, whether they can connect, and what each may do.",
   gateway: "Share your model stack through an endpoint you control.",
   providers: "Choose which tools appear when adding terminals and bots.",
   mods: "Claude Code mods that Deck runs itself and draws in its own window, for every bot.",
@@ -138,6 +137,7 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
   useEffect(() => { backend.dataFolder().then(setFolder, () => setFolder("")); }, [backend]);
+  const voice = readVoiceSettings(settings.voice);
   return <div className="settings-card">
     <Row label="Theme" note={themeName}><button onClick={onAppearance}>Appearance…</button></Row>
     <Row label="Saved in" note={<span className="mono">{folder || "…"}</span>}>
@@ -153,6 +153,14 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
         <option value="open">Open the pane</option>
         <option value="notify">Just notify</option>
       </select>
+    </Row>
+    <Row label="Voice for calls" note="For agents with no voice of their own. Set one agent's voice in its form.">
+      <span className="voice-pick">
+        <select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={(e) => onChange({ ...settings, voice: { ...voice, defaultVoice: e.target.value } })}>
+          {[...new Set([defaultVoiceOf(voice), ...CALL_VOICES])].map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
+        </select>
+        <VoiceSampleButton voice={defaultVoiceOf(voice)} />
+      </span>
     </Row>
     <Row label="Remembered models" note={remembered === 0 ? "None yet. Model names you type in the bot form are offered again next time." : `Model names from ${remembered} ${remembered === 1 ? "provider" : "providers"}, offered again in the bot form.`}>
       <button disabled={remembered === 0} onClick={() => { forgetModels(); setRemembered(0); }}>Clear</button>
@@ -225,7 +233,6 @@ function Providers({ settings, onChange, agents, profiles, backend }: { settings
   }, [backend, names]);
   useEffect(() => { refresh(); }, [refresh]);
   return <>
-    <DecisionSettingsPanel settings={settings} onChange={onChange} backend={backend} />
     <div className="settings-card provider-grid">
       {rows.map((row) => <label key={row.key}>
         <input type="checkbox" checked={providerEnabled(row.key, disabled)} onChange={(e) => setDisabled(e.target.checked ? disabled.filter((id) => id !== row.key) : [...disabled, row.key])} />
@@ -276,14 +283,10 @@ function Threads({ settings, onChange }: { settings: AppSettings; onChange: (s: 
       <input type="checkbox" aria-label="Confirm before steering" checked={settings.confirmSteer} onChange={(e) => onChange({ ...settings, confirmSteer: e.target.checked })} />
     </Row>
     <div className="settings-subhead"><h3>Bot chips</h3><p>What each bot's chip under the message box shows. Compact styles keep details in the hover card and bot settings.</p></div>
-    <Row label="Chip style" note="Applies to all chats, including popped-out windows. Classic keeps the original look.">
-      <select aria-label="Chip style" value={settings.botChips.style ?? "classic"} onChange={(e) => {
-        const style = e.target.value;
-        if (isChipStyle(style)) onChange({ ...settings, botChips: { ...settings.botChips, style } });
-      }}>
-        {CHIP_STYLES.map(style => <option key={style.id} value={style.id}>{style.label}</option>)}
-      </select>
-    </Row>
+    <div className="settings-row chip-style-row">
+      <div className="settings-label"><strong>Chip style</strong><small>Applies to all chats, including popped-out windows. Hover a name to preview it; click to use it.</small></div>
+      <ChipStylePicker value={settings.botChips.style ?? "classic"} onChange={(style) => onChange({ ...settings, botChips: { ...settings.botChips, style } })} />
+    </div>
     <Row label="Show effort" note="How hard the bot thinks, such as high.">
       <input type="checkbox" aria-label="Show effort" checked={settings.botChips.effort} onChange={(e) => onChange({ ...settings, botChips: { ...settings.botChips, effort: e.target.checked } })} />
     </Row>
@@ -322,28 +325,5 @@ function Shortcuts() {
       {shortcutList(mac).map((s) => <div key={s.label} className="settings-row compact"><span>{s.label}</span><kbd>{s.keys}</kbd></div>)}
     </div>
     {!mac && <p className="settings-note">On macOS these use ⌘.</p>}
-  </>;
-}
-
-function DecisionSettingsPanel({ settings, onChange, backend }: { settings: AppSettings; onChange: (s: AppSettings) => void; backend: Backend }) {
-  const decision = settings.decision ?? DEFAULT_DECISION;
-  const [key, setKey] = useState("");
-  const [status, setStatus] = useState("");
-  const [saving, setSaving] = useState(false);
-  const change = (next: Partial<typeof decision>) => onChange({ ...settings, decision: { ...decision, ...next } });
-  return <>
-    <div className="settings-subhead"><h3>Decision observer · This Mac’s threads</h3><p>Jev or Clef suggests who should reply. Deck keeps its current routing. Enabling this sends recent room text to the selected provider; recommendations are saved in decisions.jsonl.</p></div>
-    <div className="settings-card">
-      <Row label="Observe unaddressed messages" note="Off by default. Explicit @mentions skip the observer."><input type="checkbox" aria-label="Enable decision observer" disabled={backend.demo} checked={decision.enabled} onChange={(e) => change({ enabled: e.target.checked })} /></Row>
-      <Row label="Decision provider"><select aria-label="Decision provider" value={decision.provider} disabled={saving || backend.demo} onChange={(e) => { setKey(""); setStatus(""); change({ provider: e.target.value as typeof decision.provider, enabled: false }); }}><option value="jev">TypeSafe / Jev</option><option value="openrouter">OpenRouter / Clef</option><option value="cloudflare">Cloudflare / Clef</option></select></Row>
-      {decision.provider === "cloudflare" && <Row label="Cloudflare account ID"><input aria-label="Cloudflare account ID" value={decision.accountId} onChange={(e) => change({ accountId: e.target.value })} /></Row>}
-      <Row label="API key" note="Saved in the host’s OS credential store, outside chat and settings files."><input type="password" aria-label="Decision API key" autoComplete="off" disabled={saving || backend.demo} value={key} onChange={(e) => setKey(e.target.value)} /></Row>
-      <Row label="Save credential" note={status || (backend.demo ? "Available in the desktop app." : "On remote hosts, the key is stored on that host.")}><button disabled={!key.trim() || saving || backend.demo} onClick={async () => {
-        setSaving(true); setStatus("");
-        try { await backend.decisionKeySave(decision.provider, key); setKey(""); setStatus("Key saved."); }
-        catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
-        finally { setSaving(false); }
-      }}>{saving ? "Saving…" : "Save key"}</button></Row>
-    </div>
   </>;
 }

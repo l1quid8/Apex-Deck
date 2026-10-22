@@ -1,7 +1,11 @@
-import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, type VoiceWho } from './voice/VoiceCallControls';
+import { changeFolder, type MountBoundary } from "./worktreeMount";
+import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
+import { VoiceSampleButton } from './voice/VoiceSampleButton';
+import { composerButton } from './voice/callView';
 import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
 import { createThreadVoiceBridge } from './voice/threadBridge';
-import { readVoiceSettings, preferenceFor } from './voice/settings';
+import { CALL_VOICES, defaultVoiceOf, readVoiceSettings, preferenceFor } from './voice/settings';
+import { voiceLabel } from './voice/callView';
 import type { VoiceSettings, VoiceTurn } from './voice/types';
 import { useHostConnection } from "./useHostConnection";
 import { ConnectionBanner } from "./ConnectionBanner";
@@ -77,6 +81,7 @@ import { recentFiles } from "./recentFiles.ts";
 export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown" | "copy_reply";
 import { DiffPanel } from "./DiffPanel";
 import { ChangedFilesStrip } from "./ChangedFilesStrip";
+import { GitChangesMenu, type GitMenuRequest } from "./GitChangesMenu";
 import { MAX_STEPS_SHOWN, SavedSteps, WorkSteps } from "./WorkSteps.tsx";
 import { applyStepEvent, createStepsIndexLoader, dropStepsFrom, emptyTurnSteps, readReplySteps, savedEntry, type TurnSteps } from "./workSteps.ts";
 import { turnFilesFor } from "./turnChanges";
@@ -89,7 +94,8 @@ import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.t
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
-import { handOffChoices, handOffLabel, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
@@ -125,6 +131,8 @@ interface Props {
   pane: Pane;
   /** The workspace folder. Command-line participants run here. */
   cwd: string;
+  onFolder?: (cwd: string) => void;
+  onWorktrees?: () => void;
   /** Which coding agents are installed, to enable their presets. */
   agents: AgentInfo[];
   backend: Backend;
@@ -197,7 +205,7 @@ interface Props {
 }
 
 /** A line in the transcript from the app. `action` adds Try again or Let them answer. */
-type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction; source?: "room-load" };
+type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction; source?: "room-load" | "mount" };
 /** Where `/compact` cut in: the models see `summary` instead of the messages above it. */
 type Summary = { by: string | null; summary: string; upto: number };
 /** An agent's context has just dropped to the low mark; shown once under its reply. */
@@ -305,7 +313,6 @@ interface Draft {
   model: string;
   /** Empty means the backend's own default. */
   effort: string;
-  auto_effort?: boolean;
   /** Empty follows the tool's own setting (Codex and Claude Code only). */
   speed?: Speed | "";
   baseUrl: string;
@@ -315,6 +322,8 @@ interface Draft {
   command: string;
   persona: string;
   access: Access;
+  /** Its voice on calls. Empty uses the default voice from Settings. */
+  voice?: string;
 }
 
 /** Whether the preset's form asks for an API key. */
@@ -368,7 +377,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", auto_effort: config.auto_effort ?? false, speed: config.speed ?? ("" as const), keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", speed: config.speed ?? ("" as const), voice: config.voice ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -400,7 +409,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, auto_effort: draft.auto_effort === true && levels.length > 0 && (preset?.agent?.tool === "codex" || preset?.agent?.tool === "claude_code"), ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.voice ? { voice: draft.voice } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -533,7 +542,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -630,13 +639,27 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** Which file to auto-expand in the changes panel after a strip file click. Null expands none. */
   const [focusPath, setFocusPath] = useState<string | null>(null);
   /** Files each bot reply changed, from the change events' author and round offset. Model-agnostic. */
-  const turnFiles = useMemo(() => turnFilesFor(messagesOf(entries), changes), [entries, changes]);
-  const openTurnDiff = (seq: number, path?: string) => {
-    const files = turnFiles.get(seq) ?? [];
-    setTurnPaths(files.map((file) => file.path));
-    setFocusPath(path ?? null);
-    details?.show("changes");
-    loadDiff();
+  const [mountHistory, setMountHistory] = useState<MountBoundary[]>([]);
+  const turnFiles = useMemo(() => turnFilesFor(messagesOf(entries), changes, mountHistory), [entries, changes, mountHistory]);
+  const currentPlace = useRef({backend,cwd});
+  // Keep an identity for each folder lifecycle, including a switch away and back.
+  if (currentPlace.current.backend !== backend || currentPlace.current.cwd !== cwd) currentPlace.current = {backend,cwd};
+  const folderChanged = useRef(onFolder); folderChanged.current = onFolder;
+  const [gitMenuRequest, setGitMenuRequest] = useState<GitMenuRequest | null>(null);
+  const [gitCardSeq, setGitCardSeq] = useState<number | null>(null);
+  const [gitCardTarget, setGitCardTarget] = useState<HTMLDivElement | null>(null);
+  const closeGitCard = useCallback(() => { setGitMenuRequest(null); setGitCardSeq(null); }, []);
+  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && turnFiles.get(entry.message.seq)?.length);
+  const latestGitSeq = latestGitReply?.kind === "message" ? latestGitReply.message.seq : null;
+  const openGitCard = (seq: number, paths: string[] | null) => {
+    setGitCardSeq(seq);
+    setGitMenuRequest(previous => ({ paths, nonce: (previous?.nonce ?? 0) + 1 }));
+  };
+  const openTurnDiff = (seq: number) => {
+    if (gitMenuRequest && gitCardSeq === seq) { closeGitCard(); return; }
+    const origin = changeFolder(mountHistory, seq, cwd);
+    setGitCardSeq(seq);
+    setGitMenuRequest(previous => ({paths: origin === cwd ? (turnFiles.get(seq) ?? []).map(file => file.path) : [], nonce:(previous?.nonce ?? 0)+1, ...(origin === cwd ? {} : {note:`These changes were made in ${origin.split(/[\\/]/).filter(Boolean).at(-1)}.`})}));
   };
   const [quickSettings, setQuickSettings] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [pendingSettings, setPendingSettings] = useState<Record<string, boolean>>({});
@@ -1158,6 +1181,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       apply: (state) => {
         if (!alive) return;
         const saved = state.snapshot;
+        setMountHistory(state.mounts ?? []);
+        if (state.cwd && state.cwd !== cwd) folderChanged.current?.(state.cwd);
+        closeGitCard();
         recoveredState = state;
         refreshSteps.current();
         messageNumbers.restore(saved.transcript);
@@ -1187,7 +1213,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
-        setEntries(old => [...restored, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load")]);
+        const mounted = state.mounts?.at(-1);
+        const mountNotice: Entry[] = mounted ? [{kind:"notice", notice:{key:noticeKey.current++, text:mounted.note ?? `Now working in ${mounted.to.split(/[\\/]/).filter(Boolean).at(-1)}.`, tone:"info", source:"mount"}}] : [];
+        setEntries(old => [...restored, ...mountNotice, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load" && e.notice.source !== "mount")]);
         // Open at "New since you looked" when replies came in after you last looked.
         const seen = seenList(saved.transcript);
         const from = firstUnseen(seen, lastSeenRef.current);
@@ -1243,7 +1271,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       forgetQuestions(pane.id);
       approvals.current?.(pane.id, null);
       // Attach mode only watches: closing the view must never close the owner's room.
-      if (!attach) backend.roomClose(pane.id).catch(() => {});
+      if (!attach && currentPlace.current.cwd === cwd && currentPlace.current.backend === backend) backend.roomClose(pane.id).catch(() => {});
     };
     // The room lives as long as the pane, where the pane runs. A thread that
     // hasn't started can be moved (App imports it there first), so it reopens.
@@ -1496,13 +1524,13 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
   };
 
-  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>>(async () => {});
-  dispatch.current = async (message, to, kind, hops, manual) => {
+  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
+  dispatch.current = async (message, to, kind, hops) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
     } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
-    else await backend.roomPostTo(pane.id, message, to, !manual);
+    else await backend.roomPostTo(pane.id, message, to);
   };
   // The queue lives as long as the pane; a thread moved before it started runs somewhere else, so it asks the current backend.
   const current = useRef(backend);
@@ -1514,9 +1542,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const voiceBridges = useRef(new Map<string, ReturnType<typeof createThreadVoiceBridge>>());
   const [turnQueue] = useState(() => new ParticipantQueues(
     async (message): Promise<string[]> => stickyFor(message, turnQueue.items) ?? current.current.roomTargets(pane.id, message),
-    async (message, to, kind, hops, manual, voice) => {
-      if (!voice) return dispatch.current(message, to, kind, hops, manual);
-      try { await current.current.roomPostTo(pane.id, message, to, false, false, {client_turn_id:voice.requestId,max_bot_hops:0}); }
+    async (message, to, kind, hops, voice) => {
+      if (!voice) return dispatch.current(message, to, kind, hops);
+      try { await current.current.roomPostTo(pane.id, message, to, false, {client_turn_id:voice.requestId,max_bot_hops:0}); }
       catch(error) { voiceBridges.current.get(to[0])?.fail(voice.requestId,error); throw error; }
     },
     id => current.current.roomStop(pane.id, id),
@@ -1533,9 +1561,11 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   }, [backend, turnQueue]);
   const voiceHost=backend.host?.id??'local';
   const voiceConfig=readVoiceSettings(voiceSettings);
-  const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
+  const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,agentVoice:p.voice,roomTitle:pane.title,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
   const voiceWho:VoiceWho=id=>{const p=participants.find(x=>x.id===id),look=appearance(id);return {...look,kind:p?.backend.kind==='agent'?AGENT_LABEL[p.backend.tool]:undefined};};
   const voiceHint=useVoiceHint({candidates:voiceCandidates,settings:voiceConfig});
+  const voiceSlot=useVoiceSlot({candidates:voiceCandidates,settings:voiceConfig});
+  const roundButton=composerButton({hasContent:!!text.trim()||sendable.length>0,canCall:!!window.apexDeck?.voice&&voiceCandidates.length>0,live:voiceSlot.live,look:voiceSlot.look});
   const voiceLive=useRef({ready,participants,voiceCandidates,voiceConfig,onVoiceSettings,onVoiceFocus});
   voiceLive.current={ready,participants,voiceCandidates,voiceConfig,onVoiceSettings,onVoiceFocus};
   useEffect(()=>{
@@ -1626,7 +1656,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
       .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
   };
-  const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2"/><circle cx="11" cy="2.5" r="1.2"/></svg>;
+  const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2" fill="currentColor"/><circle cx="11" cy="2.5" r="1.2" fill="currentColor"/></svg>;
   /** The message whose Copy reads "Copied" for a moment, by seq. */
   const [copied, setCopied] = useState<number | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -1672,7 +1702,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     const box = range.getBoundingClientRect();
     setPicked({ message, text, x: box.left + box.width / 2, y: box.top });
   };
-  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => ({ ...quoteFor(p.message, (id) => names.get(id) ?? id), text: p.text });
+  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => partQuote(p.message, p.text, (id) => names.get(id) ?? id);
   const addPicked = () => {
     if (!picked) return;
     const next = pickedQuote(picked);
@@ -1683,7 +1713,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   const explainPicked = () => {
     if (!picked || !ready || participants.length === 0) return;
-    const message = replyText("Explain this part in more detail.", pickedQuote(picked), participants);
+    const message = moreDetailsText(pickedQuote(picked), participants);
     setPicked(null);
     window.getSelection()?.removeAllRanges();
     stuck.current = true;
@@ -1692,26 +1722,33 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const retryIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
   const revertIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
   /** The Retry or Revert waiting on its confirmation. */
-  const [goingBack, setGoingBack] = useState<{ kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[] } | null>(null);
+  const [goingBack, setGoingBack] = useState<{ kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[]; place: { backend: Backend; cwd: string } } | null>(null);
+  useEffect(() => { setGoingBack(null); }, [backend, cwd]);
   /** Invalidates generated approval when Retry or Revert starts, before history or files can change. */
   const [goneBack, setGoneBack] = useState(0);
   /** Retry on a bot's reply, Revert on your message: delete from there, put this thread's files back. */
   const goBack = (message: Message) => {
+    if (!ready) return;
     if (busy) return notify("Stop the bots first.", "error");
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${names.get(bot ?? "") ?? bot} isn't in this thread any more, so it can't answer again.`, "error");
+    const origin = currentPlace.current;
     void backend.roomRevertPlan(pane.id, message.seq, bot).then((plan) => {
-      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan) });
+      if (currentPlace.current !== origin) return;
+      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan), place: origin });
       else runGoBack(kind, message, plan, "both", initialFiles(plan));
     }).catch((error) => notify(`Could not ${kind}: ${String(error)}`, "error"));
   };
   const runGoBack = (kind: GoBack, message: Message, plan: RevertPlan, scope: RevertScope, ticked: string[]) => {
+    if (!ready || currentPlace.current.backend !== backend || currentPlace.current.cwd !== cwd) return;
     setGoingBack(null);
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     setGoneBack((n) => n + 1);
+    const origin = currentPlace.current;
     void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+      if (currentPlace.current !== origin) return;
       if (request.chat) discardAnswerSettingsAfter(answerCurrent.current, message.seq);
       if (request.chat) messageNumbers.truncate(message.seq);
       if (request.chat) {
@@ -1732,6 +1769,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   const answerGoBack = (always: boolean) => {
     if (!goingBack) return;
+    if (goingBack.place !== currentPlace.current) { setGoingBack(null); return; }
     if (always) saveGoBackAlways(goingBack.kind, true);
     runGoBack(goingBack.kind, goingBack.message, goingBack.plan, goingBack.scope, goingBack.ticked);
   };
@@ -1892,7 +1930,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         setText(""); return exportAs(command.format);
 
       case "diff":
-        setText(""); setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); return;
+        setText(""); if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); } return;
       case "plan":
         setText(""); void setPlan(!planOn); return;
       case "image": {
@@ -2556,8 +2594,6 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     { label: "Typed before", options: typedBefore.map((m) => ({ value: m, text: m })) },
     ...agentGroups.map((g) => ({ label: g.label, options: g.models.map((m) => ({ value: m.id, text: m.label ? `${m.id}  ·  ${m.label}` : m.id })) })),
   ];
-  const [autoAvailable, setAutoAvailable] = useState(false);
-  useEffect(() => { if (!adding || (tool !== "codex" && tool !== "claude_code")) return; let active = true; backend.decisionKeyStatus().then(ok => { if (active) setAutoAvailable(ok); }).catch(() => {}); return () => { active = false; }; }, [adding, backend, tool]);
   const apiGroups = preset.api ? apiModelGroups(apiModels) : [];
   const chosenModel = findModel(preset.agent ? agentGroups : apiGroups, draft.model);
   const efforts = effortsFor(preset.efforts, preset.agent ? agentGroups : apiGroups, draft.model);
@@ -2602,7 +2638,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       startedAt: working[p.id].startedAt,
       heardAt: isCommandLine(p.backend) ? heard.current.get(p.id) ?? working[p.id].startedAt : null,
     }));
-  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), hasReply: transcriptFacts.hasReply, lastAt: transcriptFacts.lastAt, started };
+  const status: ThreadStatus = { busy: busy || turnQueue.active, ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), hasReply: transcriptFacts.hasReply, lastAt: transcriptFacts.lastAt, started };
   const statusKey = JSON.stringify(status);
   useEffect(() => { if (!profileMode) onStatus?.(pane.id, status); }, [statusKey]);
   // The title bar's + New agent opens the form here.
@@ -2852,13 +2888,12 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               <span className="hint">Runs once per turn in the workspace folder. The conversation is written to its standard input and its output becomes the reply.</span>
             </label>
           )}
-          {(tool === "codex" || tool === "claude_code") && <label className="check-label wide"><input type="checkbox" checked={draft.auto_effort ?? false} disabled={!efforts.length || (!draft.auto_effort && !autoAvailable)} onChange={event => set("auto_effort", event.target.checked)} /> Auto — trial logs picks; replies use the backup level.</label>}
           {preset.efforts.length > 0 && (
             <div className="wide effort-field">
-              <span className="field-title">{draft.auto_effort ? "Auto backup level" : "Reasoning effort"}</span>
+              <span className="field-title">Reasoning effort</span>
               {efforts.length > 0 ? (
                 <Segmented
-                  label={draft.auto_effort ? "Auto backup level" : "Reasoning effort"}
+                  label="Reasoning effort"
                   name="effort"
                   value={draft.effort}
                   onChange={(level) => set("effort", level.trim().toLowerCase())}
@@ -2907,6 +2942,19 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               <span className="hint">{accessNote}</span>
             </div>
           )}
+          <label className="voice-field">
+            Voice
+            <span className="voice-pick">
+              <select name="voice" value={draft.voice ?? ""} onChange={(e) => set("voice", e.target.value)}>
+                <option value="">Default · {voiceLabel(defaultVoiceOf(voiceConfig))}</option>
+                {[...new Set([...(draft.voice ? [draft.voice] : []), ...CALL_VOICES])].map((v) => (
+                  <option key={v} value={v}>{voiceLabel(v)}</option>
+                ))}
+              </select>
+              <VoiceSampleButton voice={draft.voice || defaultVoiceOf(voiceConfig)} />
+            </span>
+            <span className="hint">How it sounds on calls. Default follows Settings. Picking a voice during a call changes only that chat.</span>
+          </label>
           <PersonaDraft
             key={`persona:${editing ?? "new"}`}
             writers={personaWriters(
@@ -3303,7 +3351,6 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       </ul>}
     {removedNote && <p className="allowed-removed" role="status"><span aria-hidden="true">✓</span>{removedNote}</p>}
   </>;
-  const changedFiles = new Set(changes.map((c) => c.change.path)).size;
   const newArtifacts = unseenArtifacts > 0 && !liveView;
   // Labels hide on a crowded top line, so each button names itself for screen readers.
   const threadCounts = (
@@ -3311,9 +3358,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${liveView ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={liveView !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={toggleArtifacts}>
         <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
       </button>}
-      {changes.length > 0 && <button className="ghost small" aria-label={`Changes · ${changedFiles}`} title="Changes" onClick={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }}>
-        <ChangesIcon /><span className="count-label">Changes · </span>{changedFiles}
-      </button>}
+      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length} request={gitMenuRequest} target={gitCardTarget} canOpen={latestGitSeq !== null} onOpen={() => { if (latestGitSeq !== null) openGitCard(latestGitSeq, null); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
     </div>
   );
   // The bots sit in their own row under the message box.
@@ -3325,6 +3370,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         const levels = levelsFor(p.id);
         const shown = levelsShown(levels, chipParts, isLow);
         const queueCount = queued.filter(item => item.to.includes(p.id)).length;
+        const chipAccess = { read: 'Read-only', ask: 'Ask', edits: 'Edit', full: 'Full' }[p.access];
+        const hasAccess = p.backend.kind === 'agent' || p.backend.kind === 'open_ai_compatible';
+        const accessSummary = hasAccess ? ` · Access: ${chipAccess}${pendingSettings[p.id] ? ' · after this reply' : ''}` : '';
         const phase: string = working[p.id] ? working[p.id].phase : "idle";
         const stateLabel = `${p.display_name}: ${phase}${isLow(levels.context) ? ", context low" : ""}${isLow(levels.plan) ? ", plan low" : ""}${queueCount ? `, ${queueCount} queued` : ""}${editor === p.id ? ", editing" : ""}${lit.has(p.id) ? ", gets your message" : ""}`;
         return (
@@ -3338,12 +3386,12 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
         >
             <span data-editing={editor === p.id} className={lit.has(p.id) ? "chip to" : "chip"} style={{ "--who": color(p.id) } as CSSProperties}>
-              <button className="chip-name" aria-label={`${stateLabel} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open bot settings" : "mention bot"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
+              <button className="chip-name" aria-label={`${stateLabel}${accessSummary} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open bot settings" : "mention bot"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
                 if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
                   setCard(null);
                   setQuickSettings(quickSettings?.id === p.id ? null : { id: p.id, anchor: event.currentTarget });
                 } else mention(p);
-              }} title={`${stateLabel} · ${chipDescription(p, chipParts)}`}>
+              }} title={`${stateLabel}${accessSummary} · ${chipDescription(p, chipParts)}`}>
                 <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
                 <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
                 {(chipParts.style === "stack" || chipParts.style === "tiles") && (isLow(levels.context) || isLow(levels.plan)) && <span className="chip-low" title="Usage running low">low</span>}
@@ -3355,6 +3403,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 {queueCount > 0 && <span className="chip-meta chip-queued" title="Messages waiting for this bot">{queueCount}<span className="chip-queued-word"> queued</span></span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
                 <span className="chip-meta chip-description">{chipDescription(p, chipParts)}</span>
+                {hasAccess && <span className="chip-meta chip-access" title={`Access: ${chipAccess}${pendingSettings[p.id] ? ' · after this reply' : ''}`}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+                  {chipAccess}{pendingSettings[p.id] && <span>· after this reply</span>}
+                </span>}
                 {(shown.context !== null || shown.plan !== null) && (
                   <span className="chip-meta chip-levels">
                     {shown.context !== null && <span title="Context left">ctx {percent(shown.context)}%{isLow(shown.context) && <span className="usage-low"> low</span>}</span>}
@@ -3395,10 +3447,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
-        if (!saved && attach) { setFormError("This chat isn't open in Deck right now. Return it to Deck and try again."); return; }
+        if (!saved && attach) throw new Error("This chat isn't open in Deck right now. Return it to Deck and try again.");
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
         if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
@@ -3431,10 +3483,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       <div className="transcript" ref={scroller} onScroll={() => { setPicked(null); onTranscriptScroll(); }}
         onMouseUp={() => requestAnimationFrame(pickSelection)} onKeyUp={(e) => e.shiftKey && pickSelection()}
         onMouseDown={(e) => { if (!(e.target as Element).closest(".selection-actions")) setPicked(null); }}>
-        {picked && <span className="selection-actions" role="toolbar" aria-label="Selected text" style={{ left: picked.x, top: picked.y }}>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addPicked}>Add to chat</button>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={explainPicked} disabled={!ready || participants.length === 0}>More details</button>
-        </span>}
+        {picked && <SelectionActions x={picked.x} y={picked.y} canExplain={ready && participants.length > 0} onAdd={addPicked} onExplain={explainPicked} />}
         {landing && (
           <div className={`empty${quickAdd === "dock" ? " away" : ""}`}>
             <LandingTexture settings={landingTexture} />
@@ -3507,7 +3556,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 {(() => {
                   const files = turnFiles.get(entry.message.seq);
                   if (!files?.length) return null;
-                  return <ChangedFilesStrip files={files} onOpenFile={(path) => openTurnDiff(entry.message.seq, path)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />;
+                  return <><ChangedFilesStrip files={files} expanded={Boolean(gitMenuRequest && gitCardSeq === entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />{gitCardSeq === entry.message.seq && <div className="git-changes-slot" ref={setGitCardTarget} />}</>;
                 })()}
                 {(() => {
                   const seq = entry.message.seq;
@@ -3777,11 +3826,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           // Keep focus in the message box, so you can type straight after.
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
-          <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />
-          {!busy && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
-          {busy
-            ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) stopBots(); }}><StopSquare size={12} /></button>
-            : <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
+          {/* One round button: the mic while the box is empty, Send once it has something. Each reply keeps its own Stop, and Esc stops them all. */}
+          {roundButton.mic && <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />}
+          {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
+          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
@@ -3815,9 +3863,6 @@ function ArtifactsIcon() {
   return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6M9 14l-2 2 2 2m6-4 2 2-2 2" /></svg>;
 }
 
-function ChangesIcon() {
-  return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 4v8M8 8h8M8 18h8" /></svg>;
-}
 
 function PersonPlus() {
   return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4" /><path d="M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1M19 8v6M16 11h6" /></svg>;

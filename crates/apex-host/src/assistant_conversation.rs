@@ -11,7 +11,8 @@ mod tests {
             persona: String::new(),
             access: Access::Read,
             effort: None,
-            auto_effort: false, speed: None,
+            speed: None,
+            voice: None,
             appearance: None,
             media: media.then_some(Default::default()),
         }
@@ -682,7 +683,7 @@ mod tests {
     }
 
     fn saved_chat(cwd: &str, messages: Vec<(Speaker, String, Option<u64>)>) -> SavedRoom {
-        SavedRoom {
+        SavedRoom { mounts: vec![],
             cwd: Some(cwd.into()),
             snapshot: RoomSnapshot {
                 participants: vec![],

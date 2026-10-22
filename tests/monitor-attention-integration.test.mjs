@@ -1,3 +1,4 @@
+import {chatFolder, mountWorktree} from "../src/worktreeMount.ts";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -76,7 +77,7 @@ function appHarness() {
     machines: {
       get: id => backendForHost(id),
       connection: id => connectionFor(id ?? 'host-a'),
-      discover: async () => [], legacySession: async () => null, legacySettings: async () => null,
+      discover: async () => [], legacySession: async () => null,
     },
     hosts: { list: async () => [], references: async () => {} },
     detectAgents: async () => [], startupFolders: async () => [], sessionLoad: async () => session,
@@ -96,7 +97,11 @@ function appHarness() {
     useLayoutEffect(fn, deps) { hooks.useEffect(fn, deps); },
     useSyncExternalStore(_subscribe, get) { cursor++; return get(); },
   };
+  const mountSource = fsSync.readFileSync(new URL('../src/useWorktreeMount.ts', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '').replace('export function', 'function');
+  const mountCode = transform(mountSource, {transforms:['typescript']}).code;
+  const useWorktreeMount = new Function('useEffect','useRef','useState','mountWorktree',mountCode+';return useWorktreeMount;')(hooks.useEffect,hooks.useRef,hooks.useState,mountWorktree);
   const defaults = {
+    chatFolder, useWorktreeMount,
     getBackend: async () => backend,
     DEFAULT_SETTINGS: { disabledProviders: [], theme: 'dark' },
     readSettings: () => ({ disabledProviders: [] }),

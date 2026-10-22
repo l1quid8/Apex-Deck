@@ -39,6 +39,8 @@ pub struct VoiceStatus {
     pub busy: bool,
     pub download_bytes: u64,
     pub required_disk_bytes: u64,
+    /// The speech runtime is set up from the Deck app on this machine, never from a phone.
+    pub setup_in_app: bool,
 }
 #[derive(Clone)]
 pub struct Owner {
@@ -62,7 +64,14 @@ struct State {
     call: Option<Call>,
     epoch: u64,
 }
+/// Where the speech runtime comes from: this daemon downloads it (Linux servers),
+/// or the Mac app already installed it under `root/<version>` (a Mac).
+enum Mode {
+    Managed,
+    MacApp { version: String },
+}
 pub struct VoiceServer {
+    mode: Mode,
     pub(crate) root: PathBuf,
     pub(crate) manifest: manifest::Manifest,
     pub(crate) manifest_hash: String,
@@ -112,32 +121,63 @@ impl Drop for Lease {
         }
     }
 }
+pub const MAC_SETUP: &str =
+    "Set up voice once from the mic in the Deck app on this Mac, then call from your phone.";
+const MAC_MANIFEST: &str = include_str!("../../../../voice-sidecar/runtime-manifest.json");
 pub fn platform_support() -> Result<(), String> {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if cfg!(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )) {
         Ok(())
     } else if cfg!(target_os = "macos") {
-        Err("Phone calls to threads on this Mac aren't built yet. Use the mic in the Mac app, or call from a thread on your server.".into())
+        Err("Phone voice calls need an Apple Silicon Mac.".into())
     } else {
         Err("Phone voice calls need a Linux x86-64 server for now.".into())
     }
 }
 impl VoiceServer {
     pub fn new(data: &Path) -> Arc<Self> {
+        let deps = |launch: helper::Python| Deps {
+            fetch: Arc::new(install::Http),
+            run: Arc::new(install::Process),
+            free_bytes: Arc::new(free_bytes),
+            launch: Arc::new(launch),
+            idle: IDLE,
+        };
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            // The Mac app keeps its runtime in this fixed folder, whatever data folder the daemon uses.
+            if let (Some(home), Some(version)) = (
+                std::env::var_os("HOME"),
+                serde_json::from_str::<serde_json::Value>(MAC_MANIFEST)
+                    .ok()
+                    .and_then(|m| m["version"].as_str().map(str::to_owned)),
+            ) {
+                let root =
+                    PathBuf::from(home).join("Library/Application Support/dev.apexdeck.app/voice");
+                return Self::mac_app(&root, &version, deps(helper::MLX));
+            }
+        }
         Self::with(
             data,
             platform_support(),
             manifest::LINUX_X86_64,
-            Deps {
-                fetch: Arc::new(install::Http),
-                run: Arc::new(install::Process),
-                free_bytes: Arc::new(free_bytes),
-                launch: Arc::new(helper::Python),
-                idle: IDLE,
-            },
+            deps(helper::CPU),
         )
+    }
+    /// A Mac: calls run on the runtime the Mac app installed in `root/<version>`.
+    pub fn mac_app(root: &Path, version: &str, deps: Deps) -> Arc<Self> {
+        let server = Self::with(root, Ok(()), manifest::LINUX_X86_64, deps);
+        let mut server = Arc::into_inner(server).expect("new voice server");
+        server.root = root.to_path_buf();
+        server.mode = Mode::MacApp {
+            version: version.to_owned(),
+        };
+        Arc::new(server)
     }
     pub fn with(data: &Path, support: Result<(), String>, text: &str, deps: Deps) -> Arc<Self> {
         Arc::new(Self {
+            mode: Mode::Managed,
             root: data.join("voice-server"),
             manifest: manifest::parse(text).expect("valid embedded voice manifest"),
             manifest_hash: format!("{:x}", Sha256::digest(text.as_bytes())),
@@ -147,14 +187,24 @@ impl VoiceServer {
             launch_lock: tokio::sync::Mutex::new(()),
         })
     }
+    fn version_dir(&self) -> PathBuf {
+        match &self.mode {
+            Mode::Managed => self.root.join(&self.manifest.version),
+            Mode::MacApp { version } => self.root.join(version),
+        }
+    }
     fn installed(&self) -> bool {
-        std::fs::read(self.root.join(&self.manifest.version).join("complete.json"))
+        let complete = std::fs::read(self.version_dir().join("complete.json"))
             .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .is_some_and(|v| v["manifestSha256"] == self.manifest_hash)
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+        match &self.mode {
+            Mode::Managed => complete.is_some_and(|v| v["manifestSha256"] == self.manifest_hash),
+            Mode::MacApp { version } => complete.is_some_and(|v| v["version"] == version.as_str()),
+        }
     }
     pub fn status(&self) -> VoiceStatus {
         let s = self.state.lock().unwrap();
+        let mac = matches!(self.mode, Mode::MacApp { .. });
         VoiceStatus {
             supported: self.support.is_ok(),
             reason: self.support.clone().err(),
@@ -163,8 +213,13 @@ impl VoiceServer {
             failed: s.failed.clone(),
             running: s.running.is_some(),
             busy: s.call.is_some(),
-            download_bytes: self.manifest.download_bytes,
-            required_disk_bytes: self.manifest.required_disk_bytes,
+            download_bytes: if mac { 0 } else { self.manifest.download_bytes },
+            required_disk_bytes: if mac {
+                0
+            } else {
+                self.manifest.required_disk_bytes
+            },
+            setup_in_app: mac,
         }
     }
     pub(crate) fn progress(&self, p: Progress) {
@@ -172,6 +227,13 @@ impl VoiceServer {
     }
     pub fn install(self: &Arc<Self>) -> Result<(), String> {
         self.support.clone()?;
+        if matches!(self.mode, Mode::MacApp { .. }) {
+            return if self.installed() {
+                Ok(())
+            } else {
+                Err(MAC_SETUP.into())
+            };
+        }
         let mut s = self.state.lock().unwrap();
         if s.installing.is_some() {
             return Err("Voice setup is already running.".into());
@@ -221,11 +283,7 @@ impl VoiceServer {
                 return Ok(r.clone());
             }
         }
-        let (running, mut process) = self
-            .deps
-            .launch
-            .launch(&self.root.join(&self.manifest.version))
-            .await?;
+        let (running, mut process) = self.deps.launch.launch(&self.version_dir()).await?;
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         {
             let mut s = self.state.lock().unwrap();
@@ -612,6 +670,83 @@ mod tests {
         assert!(a.is_ok());
         assert!(b.is_ok());
         assert_eq!(t.launches.load(Ordering::Relaxed), 1);
+    }
+    struct LaunchAt(Mutex<Option<PathBuf>>);
+    #[async_trait]
+    impl Launch for LaunchAt {
+        async fn launch(&self, version: &Path) -> Result<(Running, Box<dyn Helper>), String> {
+            *self.0.lock().unwrap() = Some(version.to_path_buf());
+            Ok((
+                Running {
+                    port: 1,
+                    token: "secret".into(),
+                },
+                Box::new(HelperFake),
+            ))
+        }
+    }
+    fn mac(launch: Arc<dyn Launch>, fetch: Arc<Fake>) -> (Arc<VoiceServer>, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("voice-mac-{}", crate::identity::random_hex(8)));
+        std::fs::create_dir_all(&root).unwrap();
+        let server = VoiceServer::mac_app(
+            &root,
+            "2",
+            Deps {
+                fetch: fetch.clone(),
+                run: fetch,
+                free_bytes: Arc::new(|_| Ok(u64::MAX)),
+                launch,
+                idle: Duration::from_millis(20),
+            },
+        );
+        (server, root)
+    }
+    #[tokio::test]
+    async fn mac_app_installed_means_the_app_finished_setup() {
+        let t = Fixture::new(false, false, 1000);
+        let (server, root) = mac(Arc::new(LaunchFake(t.launches.clone())), t.fake.clone());
+        let s = server.status();
+        assert!(s.supported && !s.installed && s.setup_in_app);
+        assert_eq!((s.download_bytes, s.required_disk_bytes), (0, 0));
+        std::fs::create_dir_all(root.join("2")).unwrap();
+        std::fs::write(
+            root.join("2/complete.json"),
+            r#"{"version":"2","manifestHash":"x"}"#,
+        )
+        .unwrap();
+        assert!(server.status().installed);
+        std::fs::write(root.join("2/complete.json"), r#"{"version":"1"}"#).unwrap();
+        assert!(!server.status().installed);
+        let _ = std::fs::remove_dir_all(root);
+    }
+    #[tokio::test]
+    async fn mac_app_never_installs() {
+        let t = Fixture::new(false, false, 1000);
+        let (server, root) = mac(Arc::new(LaunchFake(t.launches.clone())), t.fake.clone());
+        assert_eq!(server.install().unwrap_err(), MAC_SETUP);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(t.fake.fetches.load(Ordering::Relaxed), 0);
+        assert!(server.status().installing.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+    #[tokio::test]
+    async fn mac_app_launches_the_installed_version() {
+        let t = Fixture::new(false, false, 1000);
+        let at = Arc::new(LaunchAt(Mutex::new(None)));
+        let (server, root) = mac(at.clone(), t.fake.clone());
+        assert!(server.acquire(owner(Some("a"))).await.is_err());
+        std::fs::create_dir_all(root.join("2")).unwrap();
+        std::fs::write(root.join("2/complete.json"), r#"{"version":"2"}"#).unwrap();
+        assert!(!server.status().busy);
+        let lease = server.acquire(owner(Some("a"))).await.unwrap();
+        assert_eq!(
+            at.0.lock().unwrap().as_deref(),
+            Some(root.join("2").as_path())
+        );
+        assert!(server.status().busy);
+        drop(lease);
+        let _ = std::fs::remove_dir_all(root);
     }
     #[test]
     fn different_manifest_is_not_installed() {

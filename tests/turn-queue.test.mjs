@@ -152,24 +152,12 @@ test('a new message after Stop goes straight out; queued ones still wait', async
   assert.deepEqual(sent, ['@jigga fresh']);
 });
 
-test('participant steering marks recipients manual while normal messages keep routing provenance', async () => {
-  const { ParticipantQueues } = await import('../src/turnQueue.ts');
-  const sent = [];
-  const q = new ParticipantQueues(async () => ['null'], async (...args) => { sent.push(args); }, async () => {}, () => {});
-  await q.send('ordinary');
-  q.idle('null');
-  await q.steer('null', 'manual');
-  await tick();
-  assert.equal(sent[0][4], undefined);
-  assert.equal(sent[1][4], true);
-});
-
 test('a next step goes to exactly the bot that suggested it, without working out targets', async () => {
   const { ParticipantQueues } = await import('../src/turnQueue.ts');
   const sent = []; let asked = 0;
-  const q = new ParticipantQueues(async () => { asked++; return ['null']; }, async (text, to, kind, hops, manual) => { sent.push({ text, to, kind, manual }); }, async () => {}, () => {});
+  const q = new ParticipantQueues(async () => { asked++; return ['null']; }, async (text, to, kind) => { sent.push({ text, to, kind }); }, async () => {}, () => {});
   await q.sendTo('commit it', ['jigga']);
-  assert.deepEqual(sent, [{ text: 'commit it', to: ['jigga'], kind: 'message', manual: true }]);
+  assert.deepEqual(sent, [{ text: 'commit it', to: ['jigga'], kind: 'message' }]);
   assert.equal(asked, 0);
 });
 

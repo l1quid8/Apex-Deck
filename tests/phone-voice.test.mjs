@@ -4,7 +4,7 @@ import { createPhoneVoice, PHONE_VOICE_KEY } from "../src/phone/phoneVoice.ts";
 import { ParticipantQueues } from "../src/turnQueue.ts";
 import { voicePreferenceKey } from "../src/voice/settings.ts";
 const tick = () => new Promise((r) => setImmediate(r));
-function fixture(storage = new Map()) {
+function fixture(storage = new Map(), options = {}) {
   let event,
     roomEvent,
     screen = true,
@@ -50,6 +50,7 @@ function fixture(storage = new Map()) {
     host: (id) => (id === "h" ? host : null),
     queue: () => q,
     participants: () => [{ id: "null", display_name: "Null" }],
+    roomTitle: options.roomTitle,
     onScreen: () => screen,
     storage: {
       getItem: (k) => storage.get(k) ?? null,
@@ -98,6 +99,18 @@ test("canCall requires eligible host", () => {
   f.host.canCall = () => false;
   assert.equal(f.voice.canCall("h"), false);
 });
+test("phone voice candidates carry the current title for their host and thread", () => {
+  let title = "Voice calls";
+  const f = fixture(new Map(), {
+    roomTitle: (hostId, roomId) => hostId === "h" && roomId === "r" ? title : undefined,
+  });
+  assert.equal(f.voice.candidates("h", "r")[0].roomTitle, "Voice calls");
+  title = "Voice call fixes";
+  assert.equal(f.voice.candidates("h", "r")[0].roomTitle, "Voice call fixes", "renames are read without recreating voice");
+  assert.equal(f.voice.candidates("h", "other")[0].roomTitle, undefined);
+  assert.equal(f.voice.candidates("other", "r")[0].roomTitle, undefined);
+  assert.equal(fixture().voice.candidates("h", "r")[0].roomTitle, undefined, "existing callers can omit title lookup");
+});
 test("call transcripts target chosen agent; leaving preserves turn and releases awake", async () => {
   const f = fixture();
   await f.voice.controller.start(f.scope);
@@ -107,7 +120,7 @@ test("call transcripts target chosen agent; leaving preserves turn and releases 
   await tick();
   assert.equal(f.posts[0][0], "check the build");
   assert.deepEqual(f.posts[0][1], ["null"]);
-  assert.ok(f.posts[0][5].requestId);
+  assert.ok(f.posts[0][4].requestId);
   f.voice.leftScreen();
   await tick();
   assert.equal(f.voice.controller.getState().status, "off");
@@ -153,7 +166,7 @@ test("offscreen approval marks attention without navigating; opening clears it",
   f.room({
     type: "voice_event",
     id: "null",
-    client_turn_id: f.posts[0][5].requestId,
+    client_turn_id: f.posts[0][4].requestId,
     event: { type: "approval_requested" },
   });
   assert.equal(f.voice.view().attention, true);
@@ -172,11 +185,34 @@ test("failed voice post ends its call with the error", async () => {
     "h",
     "r",
     "null",
-    f.posts[0][5].requestId,
+    f.posts[0][4].requestId,
     Error("post failed"),
   );
   await tick();
   assert.equal(f.voice.controller.getState().status, "error");
   assert.match(f.voice.controller.getState().error, /post failed/);
   assert.equal(f.stopped.length, 0);
+});
+test("the Mac's saved voices carry over; a settings load failure keeps phone settings", async () => {
+  const f = fixture();
+  f.host.backend.settingsLoad = async () => ({
+    voice: { silenceMs: 900, look: "capsule", preferences: { [voicePreferenceKey("local", "null", "r", "null")]: { voice: "bf_emma", aliases: [] } } },
+  });
+  f.voice.threadOpened("h", "r");
+  await tick();
+  assert.equal(f.voice.settingsFor("h").silenceMs, 900);
+  assert.equal(f.voice.settingsFor("h").look, "capsule");
+  await f.voice.controller.start(f.scope);
+  assert.equal(f.sent.find((m) => m.type === "start").voice, "bf_emma");
+  await f.voice.controller.end();
+  f.voice.save({ ...f.voice.settingsFor("h"), silenceMs: 200 }, "h");
+  assert.equal(f.voice.settingsFor("h").silenceMs, 200);
+  assert.equal(f.voice.settingsFor("h").look, "capsule");
+  const g = fixture();
+  g.host.backend.settingsLoad = async () => {
+    throw Error("Full access needed");
+  };
+  g.voice.threadOpened("h", "r");
+  await tick();
+  assert.deepEqual(g.voice.settingsFor("h"), g.voice.settings());
 });

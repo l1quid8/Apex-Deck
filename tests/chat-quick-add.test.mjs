@@ -215,9 +215,7 @@ test('the composer floats only on the empty landing screen', () => {
   const box = css.match(/\.thread-chat\.thread-landing > \.composer \{([^}]*)\}/)?.[1] ?? '';
   assert.match(box, /border-top: 0;/);
   assert.match(box, /background: transparent;/);
-  const scroll = css.match(/\.thread-chat\.thread-landing \.chat-body > \.transcript \{([^}]*)\}/)?.[1] ?? '';
-  assert.match(scroll, /margin-bottom: calc\(-1 \* var\(--composer-h, 0px\)\);/, 'the transcript runs on behind the composer');
-  assert.match(scroll, /padding-bottom: calc\(24px \+ var\(--composer-h, 0px\)\);/, 'the last message still clears it');
+  // Scrollport geometry is exercised in thread-landing-layout.test.mjs.
   const texture = fs.readFileSync(new URL('../src/landing/landing-texture.css', import.meta.url), 'utf8');
   assert.match(texture, /\.thread-chat\.thread-landing \.landing-texture-wrap \{ bottom: calc\(-1 \* var\(--composer-h, 0px\)\); \}/, 'the landing texture reaches under the composer');
 });

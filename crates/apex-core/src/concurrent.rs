@@ -57,7 +57,6 @@ pub struct TurnBatch {
     limit: Option<usize>,
     pending: Arc<AtomicUsize>,
     generations: HashMap<ParticipantId, u64>,
-    advisor: Option<Arc<dyn crate::decision::TurnAdvisor>>,
     write_owner: String,
     retained_owner: bool,
     retain_write_lease: Arc<AtomicBool>,
@@ -65,7 +64,6 @@ pub struct TurnBatch {
     generated_ui: GeneratedUiCapability,
 }
 impl TurnBatch {
-    pub fn with_advisor(mut self, advisor: Arc<dyn crate::decision::TurnAdvisor>) -> Self { self.advisor = Some(advisor); self }
     /// A client capability belongs to this chain, including queued turns and
     /// bot-to-bot hops. A concurrent client cannot overwrite it.
     pub fn with_answer_guidance(mut self, answers: Option<bool>, generated_ui: GeneratedUiCapability) -> Self {
@@ -89,6 +87,7 @@ pub trait TurnStartHook: Send + Sync {
 }
 #[derive(Clone)]
 pub struct ConcurrentRoom {
+    retired: Arc<AtomicBool>,
     room: Arc<AsyncMutex<Room>>,
     slots: Arc<Mutex<HashMap<ParticipantId, Arc<Slot>>>>,
     pending: Arc<AtomicUsize>,
@@ -105,6 +104,7 @@ impl ConcurrentRoom {
             room: Arc::new(AsyncMutex::new(room)),
             slots: Arc::default(),
             pending: Arc::default(),
+            retired: Arc::default(),
             editor: Arc::default(),
             write_gate: None,
             write_owner: None,
@@ -130,6 +130,19 @@ impl ConcurrentRoom {
     }
     pub fn busy(&self) -> bool {
         self.pending.load(Ordering::SeqCst) != 0
+    }
+    /// Retire only between turns, with persistence under the admission lock.
+    /// A stale handle cannot admit another post after this succeeds.
+    pub fn retire_if_idle<T>(&self, persist: impl FnOnce(&Room) -> Result<T, String>) -> Result<T, String> {
+        let room = self.room.try_lock().ok_or("room-busy: Wait for the current turn to finish.")?;
+        if self.busy() || !self.cleanup_holds.lock().unwrap().is_empty() { return Err("room-busy: Wait for the current turn to finish.".into()); }
+        if self.retired.load(Ordering::SeqCst) { return Err("The chat folder changed. Reopen the chat.".into()); }
+        let result = persist(&room)?;
+        self.retired.store(true, Ordering::SeqCst);
+        Ok(result)
+    }
+    fn check_open(&self) -> Result<(), String> {
+        if self.retired.load(Ordering::SeqCst) { Err("The chat folder changed. Reopen the chat.".into()) } else { Ok(()) }
     }
     /// Release a cleanup hold only after the caller has verified that every
     /// process owned by this participant has stopped. Durable task owners are
@@ -194,6 +207,7 @@ impl ConcurrentRoom {
         sink: Sink<'_>,
     ) -> Result<TurnBatch, String> {
         let mut room = self.room.lock().await;
+        self.check_open()?;
         let resolved = room.resolve_targets(text);
         let targets = targets.unwrap_or(resolved.clone());
         if targets.iter().any(|id| !room.has(id)) {
@@ -216,6 +230,7 @@ impl ConcurrentRoom {
     /// under the room lock. IDs are retained for this process lifetime (bounded).
     pub async fn begin_voice_post(&self, text: &str, id: ParticipantId, request_id: String, sink: Sink<'_>) -> Result<Option<TurnBatch>, String> {
         let mut room = self.room.lock().await;
+        self.check_open()?;
         if !room.has(&id) { return Err("voice recipient no longer exists".into()); }
         if request_id.is_empty() || request_id.len() > 128 || text.trim().is_empty() || text.len() > 32_000 { return Err("invalid voice request".into()); }
         let mut requests = self.voice_requests.lock().unwrap();
@@ -250,6 +265,7 @@ impl ConcurrentRoom {
     /// `Some(0)` buys exactly one reply each.
     pub async fn begin_turn(&self, ids: Vec<ParticipantId>, hops: Option<usize>) -> Result<TurnBatch, String> {
         let room = self.room.lock().await;
+        self.check_open()?;
         if ids.is_empty() {
             return Err("no one was named to answer".into());
         }
@@ -304,7 +320,6 @@ impl ConcurrentRoom {
             limit,
             pending: self.pending.clone(),
             generations,
-            advisor: None,
             write_owner: self.write_owner.clone().unwrap_or_else(|| format!("manual-{}", NEXT_WRITE_OWNER.fetch_add(1, Ordering::Relaxed))),
             retained_owner: self.write_owner.is_some(),
             retain_write_lease: Arc::default(),
@@ -332,8 +347,8 @@ impl ConcurrentRoom {
             let mut next = Vec::new();
             if batch.sequential {
                 for ticket in tickets {
-                    self.admit_writer(&ticket, &batch, &mut write_lease).await;
-                    next.extend(self.run_one(ticket, None, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
+                    let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, None).await;
+                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -343,6 +358,9 @@ impl ConcurrentRoom {
                     tickets
                         .iter()
                         .map(|ticket| {
+                            // A queued bot can change access before its previous turn ends.
+                            // Resolve its execution snapshot only after that FIFO wait.
+                            if ticket.previous.clone().now_or_never().is_none() { return None; }
                             room.request_for_capability(&ticket.id, batch.answers, batch.generated_ui).map(|(p, r)| {
                                 (p, r, room.transcript().len(), room.approvals_handle())
                             })
@@ -354,22 +372,22 @@ impl ConcurrentRoom {
                     // keep roster order and share this batch's lease, without
                     // competing for the room-local editor reservation.
                     let (writers, readers): (Vec<_>, Vec<_>) = tickets.into_iter().zip(prepared).enumerate()
-                        .partition(|(_, (_, prepared))| prepared.as_ref().is_some_and(|(participant, request, _, _)| {
+                        .partition(|(_, (_, prepared))| prepared.as_ref().is_none_or(|(participant, request, _, _)| {
                             request.access != Some(Access::Read)
                                 || (request.plan && participant.config().access != Access::Read)
                         }));
                     let write_turns = async {
                         let mut ids = Vec::new();
                         for (index, (ticket, prepared)) in writers {
-                            self.admit_writer(&ticket, &batch, &mut write_lease).await;
-                            ids.push((index, self.run_one(ticket, prepared, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await));
+                            let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, prepared).await;
+                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await));
                         }
                         ids
                     };
                     let read_turns = futures::future::join_all(readers.into_iter().map(|(index, (ticket, prepared))| {
                         let batch = &batch;
                         async move {
-                            (index, self.run_one(ticket, prepared, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await)
+                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await)
                         }
                     }));
                     let (mut results, readers) = futures::join!(write_turns, read_turns);
@@ -382,7 +400,7 @@ impl ConcurrentRoom {
                         tickets
                             .into_iter()
                             .zip(prepared)
-                            .map(|(t, p)| self.run_one(t, p, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui)),
+                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui)),
                     )
                     .await
                     {
@@ -427,23 +445,29 @@ impl ConcurrentRoom {
             sink(RoomEvent::Idle);
         }
     }
-    async fn admit_writer(&self, ticket: &Ticket, batch: &TurnBatch, lease: &mut Option<crate::WriteLease>) {
-        let Some(gate) = &self.write_gate else { return; };
-        if lease.is_some() { return; }
+    async fn admit_writer(&self, ticket: &Ticket, batch: &TurnBatch, lease: &mut Option<crate::WriteLease>, prepared: Option<Prepared>) -> Option<Prepared> {
+        let Some(gate) = &self.write_gate else { return prepared; };
         ticket.previous.clone().await;
         {
             let _slots = self.slots.lock().unwrap();
-            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) || ticket.origin.as_ref().is_some_and(|(_, stop)| stop.load(Ordering::SeqCst)) { return; }
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) || ticket.origin.as_ref().is_some_and(|(_, stop)| stop.load(Ordering::SeqCst)) { return prepared; }
             ticket.slot.stop.store(false, Ordering::SeqCst);
         }
-        let should_admit = {
-            let room = self.room.lock().await;
-            room.request_for(&ticket.id).is_some_and(|(participant, request)| {
-                request.access != Some(Access::Read)
-                    || (request.plan && participant.config().access != Access::Read)
-            })
+        // Admission and execution must use the same participant/access snapshot.
+        // Later settings replacements belong to a subsequent turn.
+        let prepared = match prepared {
+            Some(prepared) => Some(prepared),
+            None => {
+                let room = self.room.lock().await;
+                room.request_for_capability(&ticket.id, batch.answers, batch.generated_ui)
+                    .map(|(p, r)| (p, r, room.transcript().len(), room.approvals_handle()))
+            }
         };
-        if !should_admit { return; }
+        let should_admit = prepared.as_ref().is_some_and(|(participant, request, _, _)| {
+            request.access != Some(Access::Read)
+                || (request.plan && participant.config().access != Access::Read)
+        });
+        if lease.is_some() || !should_admit { return prepared; }
         let stop = ticket.origin.as_ref().map(|(_,stop)| stop.clone()).unwrap_or_else(|| ticket.slot.stop.clone());
         // Cancellation while queued removes the waiter; never reduce access to Read.
         let acquired = if batch.retained_owner {
@@ -456,12 +480,12 @@ impl ConcurrentRoom {
             Err(crate::WriteWaitError::Cancelled) => {},
             Err(crate::WriteWaitError::Occupied(_)) => unreachable!("acquisition queues behind its owner"),
         }
+        prepared
     }
     async fn run_one(
         &self,
         ticket: Ticket,
         prepared: Option<Prepared>,
-        advisor: Option<&dyn crate::decision::TurnAdvisor>,
         sink: Sink<'_>,
         retain_write_lease: Arc<AtomicBool>,
         write_owner: String,
@@ -521,14 +545,6 @@ impl ConcurrentRoom {
                 room.approvals_handle(),
             )
         };
-        if let Some(advisor) = advisor {
-            let (messages, roster) = { let room = self.room.lock().await; (room.transcript()[..shown.min(room.transcript().len())].to_vec(), room.configs()) };
-            request.effort_override = advisor.advise(participant.config(), messages, roster).await;
-            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) {
-                sink(RoomEvent::ParticipantIdle { id: ticket.id.clone() });
-                return Vec::new();
-            }
-        }
         let mut editor = {
             let mut held = self.editor.lock().unwrap();
             if request.access != Some(Access::Read) && held.is_none() {

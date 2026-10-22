@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod changes;
+pub mod git_changes;
 pub mod checkpoints;
 pub mod export;
 pub mod images;
@@ -41,6 +42,5 @@ pub use command::Command;
 pub use host::{Host, HostPaths};
 pub use apex_core::{ClientCapabilities, GeneratedUiCapability};
 
-mod decision;
 mod next_steps;
 mod step_buffers;
