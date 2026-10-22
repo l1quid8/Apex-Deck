@@ -124,7 +124,9 @@ Node inspector, and enables embedded ASAR integrity and ASAR-only loading.
 These fuses matter because JS startup validation runs too late to stop a
 preloaded script. See the [Electron fuse documentation](https://www.electronjs.org/docs/latest/tutorial/fuses).
 The installer reads all fuse wires from the copied signed framework and checks
-ASAR integrity metadata. Packaged UI DevTools are disabled and the menu item is
+ASAR integrity metadata. The audio-input entitlement preserves the existing voice capability under
+hardened runtime ([Apple documentation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input)).
+Packaged UI DevTools are disabled and the menu item is
 removed. Development builds retain their existing debugging controls.
 
 Packaged startup refuses code-loading/debug environment and command-line
