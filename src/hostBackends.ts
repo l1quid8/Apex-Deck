@@ -103,6 +103,7 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
             const cached = methods.get(key);
             if (cached?.source === value) return cached.wrapped;
             const wrapped = (...args: unknown[]) => {
+              if (key === "supports" && !known.has(hostId)) return false;
               if (!known.has(hostId)) return Promise.reject(new Error("This host was removed."));
               if (key === "call" && ["session_save", "settings_save"].includes(String(args[0]))) return Promise.reject(new Error("App preferences are owned by This Mac."));
               if (["roomPost", "roomPostTo", "roomTurn"].includes(key)) {

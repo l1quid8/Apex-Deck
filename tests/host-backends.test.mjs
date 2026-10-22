@@ -150,6 +150,17 @@ test('renaming a saved host reaches its live backend and its connection store', 
   assert.equal(idle.get().name, 'Renamed');
 });
 
+test('a retained removed-host capability reader returns false synchronously', () => {
+  const registry = mod.createHostBackends({ local: {}, hosts: [{ id: 'server', name: 'Server' }],
+    make: () => ({ backend: { supports: () => true }, connection: { get: () => ({ status: { kind: 'connected' } }) }, start: async () => {}, close() {} }) });
+  const supports = registry.get('server').supports;
+  assert.equal(supports('assistant_workspace_v4'), true);
+  registry.setHosts([]);
+  const result = supports('assistant_workspace_v4');
+  result?.catch?.(() => {});
+  assert.equal(result, false);
+});
+
 test('importing a thread onto an offline host is refused, not queued', async () => {
   const c = store.hostConnectionStore('at', 'AT'); let imports = 0;
   const registry = mod.createHostBackends({ local: {}, hosts: [{ id: 'at', name: 'AT' }], make: () => ({ backend: { roomImport: async () => imports++ }, connection: c, start: async () => {}, close() {} }) });
