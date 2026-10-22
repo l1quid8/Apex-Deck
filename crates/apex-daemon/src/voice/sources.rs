@@ -12,6 +12,10 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../../../../voice-sidecar/voice_sidecar/engines_cpu.py"),
     ),
     (
+        "made_up.py",
+        include_str!("../../../../voice-sidecar/voice_sidecar/made_up.py"),
+    ),
+    (
         "pieces.py",
         include_str!("../../../../voice-sidecar/voice_sidecar/pieces.py"),
     ),
