@@ -356,7 +356,7 @@ app.whenReady().then(() => {
     void localVoice.shutdown();
   });
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
-    const entry=[...windows.values()].find(e=>e.win.webContents===contents);
+    const entry=[...windows.values(), ...popoutWindows.values()].find(e=>e.win.webContents===contents);
     const trusted=entry && [originOf(devUrl), 'app://deck'].includes(originOf(contents.getURL()));
     const audioOnly=permission==='media' && details.mediaTypes?.includes('audio') && !details.mediaTypes?.includes('video');
     if(!trusted||!audioOnly){callback(false);return;}
