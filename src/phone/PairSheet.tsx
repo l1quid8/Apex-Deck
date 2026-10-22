@@ -1,20 +1,21 @@
-// Pairing with a machine by QR code, and the phone's remote-access settings.
+// Pairing with a machine by QR code.
 
 import { useEffect, useRef, useState } from "react";
 
-import { writeClipboard } from "../threadCopy";
 import { startPairing, type Paired, type PairState } from "./pairing";
-import type { RemoteMode, RemotePlugin } from "./remotePlugin";
+import type { RemotePlugin } from "./remotePlugin";
 
 /**
  * One pairing attempt, from dialing to the machine's Approve. The phone works
  * out the 6-digit code itself; the person checks it matches the machine's.
  * Closing the sheet cancels the attempt.
  */
-export function PairSheet({ plugin, link, label, onPaired, onClose }: {
+export function PairSheet({ plugin, link, label, ready, onPaired, onClose }: {
   plugin: RemotePlugin;
   link: string;
   label: string;
+  /** Settles once Automatic mode is set. Pairing waits, and shows the reason if it failed. */
+  ready: Promise<void>;
   onPaired(paired: Paired): void;
   onClose(): void;
 }) {
@@ -22,12 +23,20 @@ export function PairSheet({ plugin, link, label, onPaired, onClose }: {
   const paired = useRef(onPaired);
   paired.current = onPaired;
   useEffect(() => {
-    const attempt = startPairing(plugin, link, label, (next) => {
-      setState(next);
-      if (next.kind === "done") paired.current(next.paired);
+    let attempt: { cancel(): void } | null = null;
+    let live = true;
+    ready.then(() => {
+      if (!live) return;
+      attempt = startPairing(plugin, link, label, (next) => {
+        setState(next);
+        if (next.kind === "done") paired.current(next.paired);
+      });
+    }, (error: unknown) => {
+      if (!live) return;
+      setState({ kind: "failed", message: String(error).replace(/^Error: /, "") });
     });
-    return () => attempt.cancel();
-  }, [plugin, link, label]);
+    return () => { live = false; attempt?.cancel(); };
+  }, [plugin, link, label, ready]);
 
   if (state.kind === "dialing") return (
     <>
@@ -54,40 +63,5 @@ export function PairSheet({ plugin, link, label, onPaired, onClose }: {
       <p className="ph-sheet-text ph-red">{state.message}</p>
       <button type="button" className="primary ph-wide" onClick={onClose}>OK</button>
     </>
-  );
-}
-
-/** Automatic or Direct only, and this phone's ID for the relay's list. */
-export function RemoteSettings({ plugin, mode, onMode, onError }: {
-  plugin: RemotePlugin;
-  mode: RemoteMode;
-  onMode(mode: RemoteMode): void;
-  onError(message: string): void;
-}) {
-  const [id, setId] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    let live = true;
-    plugin.identity().then((value) => { if (live) setId(value); }, (error: unknown) => { if (live) onError(String(error).replace(/^Error: /, "")); });
-    return () => { live = false; };
-  }, [plugin, onError]);
-  return (
-    <div className="ph-group ph-padded">
-      <h3>Remote access</h3>
-      <div className="ph-segment" role="radiogroup" aria-label="Connection">
-        <button type="button" role="radio" aria-checked={mode === "automatic"} onClick={() => onMode("automatic")}>Automatic</button>
-        <button type="button" role="radio" aria-checked={mode === "direct"} onClick={() => onMode("direct")}>Direct only</button>
-      </div>
-      <p className="ph-muted">{mode === "automatic"
-        ? "Connects straight to each machine when it can, and through the Apex Deck relay when a network blocks that. The relay only passes along encrypted data."
-        : "Never uses the relay. A server with its port open works anywhere; a Mac at home needs a forwarded port on its router, or it's only reachable on the same Wi-Fi."}</p>
-      <p className="ph-label">This phone's ID</p>
-      <p className="ph-path">{id ?? "…"}</p>
-      <button type="button" className="ph-wide" disabled={!id} onClick={() => {
-        if (!id) return;
-        void writeClipboard(id).then((ok) => { setCopied(ok); if (!ok) onError("Couldn't copy. Select the ID and copy it by hand."); });
-      }}>{copied ? "Copied" : "Copy ID"}</button>
-      <small className="ph-muted">During the beta, pairing over cellular needs this ID on the relay's list. On the same Wi-Fi it doesn't.</small>
-    </div>
   );
 }
