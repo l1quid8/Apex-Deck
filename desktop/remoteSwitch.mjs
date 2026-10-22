@@ -1,4 +1,4 @@
-// Settings → Remote access talks to the running daemon. Turning phone
+// Settings → Phones talks to the running daemon. Turning phone
 // connections on or off is a `remote_set` on that daemon. Nothing restarts.
 //
 // The old `desktop-settings.json` key `remoteAccess` is imported once, and

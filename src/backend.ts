@@ -214,7 +214,7 @@ export interface Backend {
   onMenu?(cb: (action: string) => void): Promise<Unlisten>;
   /** The machines this window can run on; the Electron app only. */
   hosts?: HostsApi;
-  /** Settings → Remote access for this Mac's daemon; the Electron app only. */
+  /** Settings → Phones' on/off for this Mac's daemon; the Electron app only. */
   remoteAccess?: RemoteAccessApi;
   browser?: BrowserApi;
   /** The shared simulated iPhone on this Mac. */
@@ -279,11 +279,11 @@ export interface PhoneApi {
   chatQueued(room: string): Promise<void>;
 }
 
-/** The Remote access switch, saved with the app's settings. `owned`: Deck started the daemon, so can restart it with the change. */
+/** Whether phones can connect, as the daemon reports it. `owned` is always true now; nothing restarts. */
 export interface RemoteAccessState { on: boolean; owned: boolean }
 export interface RemoteAccessApi {
   get(): Promise<RemoteAccessState>;
-  /** Save the switch and restart the daemon Deck started, with or without `--remote`. */
+  /** Turn phone connections on or off in the running daemon, which saves the choice. Nothing restarts. */
   set(on: boolean): Promise<RemoteAccessState>;
 }
 

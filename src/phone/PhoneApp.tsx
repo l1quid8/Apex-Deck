@@ -750,7 +750,7 @@ export function PhoneApp() {
     const target = hostOf(workspace);
     const gate = newThreadGate(mac, target ?? undefined);
     if (!gate.ok) { setNotice(gate.reason); return; }
-    if (!canStartOn(workspaceHost(workspace))) { setNotice("Starting a thread needs Full access on its machine. Change this phone's level in that machine's Settings → Paired devices."); return; }
+    if (!canStartOn(workspaceHost(workspace))) { setNotice("Starting a thread needs Full access on its machine. Change this phone's level in that machine's Settings → Phones."); return; }
     const action = pressNewThread(pending ? { workspaceId: pending.workspaceId, text: draftFor(pending.id).text, files: draftFor(pending.id).files.length } : null, workspace.id);
     if (action === "blocked" && pending) { setNotice("Send or clear the draft you already started."); openThread(pending.id); return; }
     const id = action === "move" && pending ? pending.id : (pending?.workspaceId === workspace.id ? pending.id : `draft-${Date.now().toString(36)}`);
@@ -1588,7 +1588,7 @@ export function PhoneApp() {
               if (!workspace) return;
               const projectHost = phoneHost(workspaceHost(workspace));
               if (!projectHost) { setNotice(`Pair ${workspaceHost(workspace)} with this phone to open its project assistant.`); return; }
-              if (!canSeeNewThread(projectHost.access())) { setNotice(`Project assistant needs Full access on ${projectHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.`); return; }
+              if (!canSeeNewThread(projectHost.access())) { setNotice(`Project assistant needs Full access on ${projectHost.machine.name}. Change this phone's level in that machine's Settings → Phones.`); return; }
               setAssistantWorkspaceId(workspace.id);
             }}
             onShow={() => {
@@ -1632,7 +1632,7 @@ export function PhoneApp() {
             onBack={() => setAssistantWorkspaceId(null)}
             onClose={() => setAssistantWorkspaceId(null)}
           /></div>
-          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.</p></section></div>)}
+          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Phones.</p></section></div>)}
         {pairing && plugin && (
           <Sheet title={`Pair ${pairing.name}`} onClose={() => endLink("cancelled")}>
             <PairSheet key={pairing.attempt} plugin={plugin} link={pairing.link} label="iPhone" ready={ready} onFailed={() => settle("failed", false)} onClose={(why) => endLink(why === "failed" ? "failed" : "cancelled")} onPaired={(paired) => {
@@ -1846,7 +1846,7 @@ export function PhoneApp() {
                 </button>
               );
             })}
-            {!newAllowed && <p className="ph-sheet-text">{"Restoring needs Full access on your Mac. Change this phone's level in the Mac's Settings → Paired devices."}</p>}
+            {!newAllowed && <p className="ph-sheet-text">{"Restoring needs Full access on your Mac. Change this phone's level in the Mac's Settings → Phones."}</p>}
           </Sheet>
         )}
         {menu?.kind === "remove" && (() => {
@@ -1872,7 +1872,7 @@ export function PhoneApp() {
               {preview && <p className="ph-sheet-text ph-quiet">{preview}</p>}
               {forkable
                 ? <MenuRow label="Fork from here" detail="A new thread with the messages up to here. Nothing runs until you send." onClick={() => { setMenu(null); void forkFrom(openPane, menuMessage.seq); }} />
-                : <p className="ph-sheet-text">Forking needs Full access on {linkOf(workspaceHost(openWorkspace))?.name ?? "this machine"}. Change this phone's level in that machine's Settings → Paired devices.</p>}
+                : <p className="ph-sheet-text">Forking needs Full access on {linkOf(workspaceHost(openWorkspace))?.name ?? "this machine"}. Change this phone's level in that machine's Settings → Phones.</p>}
               <MenuRow label="Copy text" onClick={() => { void writeClipboard(shown, navigator.clipboard).then((ok) => setNotice(ok ? "Copied" : "The phone couldn't copy that message.")); setMenu(null); }} />
             </Sheet>
           );

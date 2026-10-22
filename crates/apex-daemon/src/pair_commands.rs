@@ -172,7 +172,7 @@ mod pairing {
     }
 
     /// The message when this daemon isn't serving remote access.
-    pub const NOT_REMOTE: &str = "Remote access is off, so no phone could reach this machine. Start the daemon with `apex-daemon serve --remote` (or turn on Remote access in Deck), then try again.";
+    pub const NOT_REMOTE: &str = "Phone connections are off, so no phone could reach this machine. Turn them on in Deck's Settings → Phones, or start the daemon with `apex-daemon serve --remote`, then try again.";
 
     async fn start(daemon: Arc<Daemon>, tier: Tier, threads: Threads) -> Result<Value, Refusal> {
         // The name lookup can run a process. Do it before taking the

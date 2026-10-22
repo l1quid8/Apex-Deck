@@ -3236,7 +3236,13 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .settings-subhead { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 .settings-subhead h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.02em; }
 .settings-subhead p, .settings-note { margin: 0; font-size: 12px; color: var(--muted); }
-.remote-access input[role="switch"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.phones-status-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; font-size: 13px; }
+.phones-status-text small { font-size: 12px; color: var(--muted); }
+.settings-actions .phones-status-text span { margin-left: 0; font-size: 13px; color: var(--text); }
+.phones-advanced { margin-top: 12px; }
+.phones-advanced > summary { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--muted); }
+.phones-advanced[open] > summary { border-bottom: 1px solid var(--line); }
+.phones-advanced > .settings-row:first-of-type { border-top: 0; }
 .remote-addresses { align-items: flex-end; }
 .remote-addresses input { margin-top: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .confirm.pair-sheet { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; gap: 10px; }

@@ -1,5 +1,5 @@
-// Pairing a phone from Settings → Paired devices → Pair phone, and the
-// Remote access section. The daemon's pairing commands are local-only; it
+// Pairing a phone from Settings → Phones → Pair phone, and that section's
+// phone-connections status. The daemon's pairing commands are local-only; it
 // refuses them from a phone. Its refusals carry a `reason` word, and this
 // file switches on that word, never on the text.
 //
@@ -69,7 +69,7 @@ export function endedWords(reason: string | null, err: string): string {
     case "stale_claim":
     case "changed": return "This phone was removed or let back in elsewhere while you were deciding, so nothing was changed. Start again.";
     case "used": return "This pairing code was already used. Start again for a new one.";
-    case "not_remote": return "Remote access is off, so no phone could reach this Mac. Turn it on in Settings → Remote access, then pair.";
+    case "not_remote": return "Phone connections are off. Turn them on in Settings → Phones.";
     default: return err;
   }
 }
@@ -88,10 +88,20 @@ export async function ensureRemoteAccess(remote: RemoteAccessApi | undefined, tu
     if (access.on) return null;
     turningOn();
     const next = await remote.set(true);
-    return next.on ? null : "Remote access didn't turn on.";
+    return next.on ? null : "Couldn't turn on phone connections. Nothing else changed.";
   } catch (error) {
-    return wordsOf(error);
+    return `Couldn't turn on phone connections: ${wordsOf(error).replace(/\.$/, "")}. Nothing else changed.`;
   }
+}
+
+/** Settings → Phones' status line, with the button beside it and the line under it. */
+export interface PhonesStatus { line: string; action: "Turn off" | "Turn on" | null; note: string | null }
+
+/** What Settings → Phones says about phone connections. `phones`: how many are paired. */
+export function phonesStatus(on: boolean, phones: number): PhonesStatus {
+  if (on) return { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null };
+  if (phones > 0) return { line: "Phone connections are off.", action: "Turn on", note: "Paired phones stay saved but can't connect, even on the same Wi‑Fi." };
+  return { line: "Phone connections are off. Pairing turns them on.", action: null, note: null };
 }
 
 /** Time left on the invitation as m:ss, or "Expired". A part second counts as a second. */

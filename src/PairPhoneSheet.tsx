@@ -8,12 +8,13 @@ import {
   type PairState,
 } from "./pairing";
 
-// Paired devices → Pair phone: a QR the phone scans, the same link to copy,
+// Phones → Pair phone: a QR the phone scans, the same link to copy,
 // and a 5-minute countdown. When a phone claims it, its name and code show
 // with Approve and Deny. Closing the sheet cancels the invitation.
 // Changing what the phone may do starts a new invitation, so the code
-// always carries the access shown. Remote access is turned on first when
-// it's off, since a phone can't pair without it.
+// always carries the access shown. Phone connections are turned on first
+// when they're off, since a phone can't pair without them. That is live in
+// the daemon; nothing restarts.
 
 export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backend; onClose: () => void; onPaired: (device: PairedDevice) => void }) {
   const api = useMemo(() => pairingApi(backend), [backend]);
@@ -26,6 +27,9 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
   const [turningOn, setTurningOn] = useState(false);
+  // Pairing turned connections on (say so), or couldn't (offer Try again).
+  const [turnedOn, setTurnedOn] = useState(false);
+  const [accessFailed, setAccessFailed] = useState(false);
   const session = useRef<ReturnType<typeof pairingSession> | null>(null);
   const close = useRef(onClose);
   close.current = onClose;
@@ -42,11 +46,13 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
     let current: ReturnType<typeof pairingSession> | null = null;
     let stopped = false;
     const timer = setTimeout(() => {
-      // Remote access first: a code made while it's off is refused.
-      void ensureRemoteAccess(backend.remoteAccess, () => setTurningOn(true)).then((problem) => {
+      // Connections first: a code made while they're off is refused.
+      let flipped = false;
+      void ensureRemoteAccess(backend.remoteAccess, () => { flipped = true; setTurningOn(true); }).then((problem) => {
         if (stopped) return;
         setTurningOn(false);
-        if (problem !== null) { setState({ kind: "ended", reason: null, words: problem }); return; }
+        if (problem !== null) { setAccessFailed(true); setState({ kind: "ended", reason: null, words: problem }); return; }
+        if (flipped) setTurnedOn(true);
         current = pairingSession(api, (next) => {
           setState(next);
           if (next.kind === "paired") paired.current(next.device);
@@ -56,6 +62,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
       });
     }, round === 0 && scope === "all" ? 0 : 300);
     setState({ kind: "starting" });
+    setAccessFailed(false);
     return () => {
       stopped = true;
       clearTimeout(timer);
@@ -99,7 +106,8 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
 
         {!claim && state.kind !== "paired" && state.kind !== "ended" && <>
           <p className="muted">Open Apex Deck on the phone and scan this code, or paste the link there.</p>
-          {turningOn && <p className="muted" role="status">Turning on Remote access so your phone can reach this Mac from anywhere…</p>}
+          {turningOn && <p className="muted" role="status">Turning on phone connections…</p>}
+          {turnedOn && <p className="muted" role="status">Turned on phone connections so your phone can reach this Mac. Nothing was restarted.</p>}
           <div className="pair-code-area">
             <div className="pair-qr" aria-busy={!qr}>
               {qr
@@ -125,7 +133,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
 
         {state.kind === "paired" && <div className="pair-claim">
           <p><strong>{state.device.label}</strong> is paired.</p>
-          <p className="muted">It can connect from anywhere while Remote access is on. Change its access or revoke it in Paired devices.</p>
+          <p className="muted">It has {tierLabel} on {threadsText(scope ?? "all").toLowerCase()}. Change it any time in Settings → Phones.</p>
         </div>}
 
         {state.kind === "ended" && <div className="pair-claim">
@@ -159,7 +167,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
             <button onClick={() => session.current?.deny()} disabled={state.kind !== "claimed"}>Deny</button>
             <button className="primary" onClick={() => session.current?.approve()} disabled={!canApprove(state)}>{state.kind === "approving" ? "Approving…" : "Approve"}</button>
           </>}
-          {(state.kind === "ended" || (invite && countdown === "Expired" && !claim)) && <button onClick={() => setRound((n) => n + 1)}>Start again</button>}
+          {(state.kind === "ended" || (invite && countdown === "Expired" && !claim)) && <button onClick={() => setRound((n) => n + 1)}>{accessFailed && state.kind === "ended" ? "Try again" : "Start again"}</button>}
           {!claim && <button onClick={onClose}>{state.kind === "paired" ? "Done" : "Cancel"}</button>}
         </div>
       </div>

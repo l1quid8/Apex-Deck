@@ -8,6 +8,8 @@ export interface Question {
   rows?: string[];
   /** The words on the button that goes ahead. */
   action: string;
+  /** The words on the button that keeps things as they are. */
+  cancel?: string;
   onConfirm: () => void;
 }
 
@@ -38,7 +40,7 @@ export function ConfirmDialog({ question, onCancel }: { question: Question; onCa
           </ul>
         )}
         <div className="confirm-actions">
-          <button ref={cancel} onClick={onCancel}>Cancel</button>
+          <button ref={cancel} onClick={onCancel}>{question.cancel ?? "Cancel"}</button>
           <button className="danger" onClick={() => { onCancel(); question.onConfirm(); }}>{question.action}</button>
         </div>
       </div>

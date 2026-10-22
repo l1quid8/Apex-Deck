@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   PAIR_DEFAULT_TIER, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
-  parseAddresses, qrSvgPath, reasonOf, revokedWarning,
+  parseAddresses, phonesStatus, qrSvgPath, reasonOf, revokedWarning,
 } from "../src/pairing.ts";
 
 const INVITE = { invitation: "inv-1", link: "apexdeck://pair?p=secret", expires_at: 1_000_000 };
@@ -91,7 +91,7 @@ test("refusals are told apart by their reason word, never their text", () => {
   assert.equal(reasonOf("text"), null);
   assert.match(endedWords("expired", "x"), /expired/i);
   assert.match(endedWords("phone_left", "x"), /disconnected/i);
-  assert.match(endedWords("not_remote", "x"), /Remote access/);
+  assert.equal(endedWords("not_remote", "x"), "Phone connections are off. Turn them on in Settings → Phones.");
   assert.equal(endedWords("registry", "The daemon's own words."), "The daemon's own words.");
 });
 
@@ -265,7 +265,7 @@ test("the threads a phone may be given are this Mac's chat threads", () => {
   assert.deepEqual(pairableThreads(null), []);
 });
 
-test("Pair phone turns Remote access on when it's off, and says why when it can't", async () => {
+test("Pair phone turns phone connections on when they're off, and says why when it can't", async () => {
   const calls = [];
   /** A fake switch: `state` is what get reads; `set` gives `result`, or throws it when it's an Error. */
   const remote = (state, result) => ({
@@ -286,7 +286,7 @@ test("Pair phone turns Remote access on when it's off, and says why when it can'
 
   calls.length = 0;
   const failed = await ensureRemoteAccess(remote({ on: false, owned: true }, new Error("The background service didn't start.")), turningOn);
-  assert.equal(failed, "The background service didn't start.", "the daemon's words are shown as they are");
+  assert.equal(failed, "Couldn't turn on phone connections: The background service didn't start. Nothing else changed.", "the daemon's words are shown inside the sentence");
   assert.equal(turned, 2);
 
   calls.length = 0;
@@ -294,7 +294,17 @@ test("Pair phone turns Remote access on when it's off, and says why when it can'
   assert.deepEqual(calls, ["get", ["set", true]], "a daemon Deck did not start is still switched on");
   assert.equal(turned, 3);
 
-  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: true }, { on: false, owned: true }), turningOn), "Remote access didn't turn on.");
-  assert.equal(await ensureRemoteAccess({ get: async () => { throw new Error("Deck can't reach its background service."); }, set: async () => null }, turningOn), "Deck can't reach its background service.");
+  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: true }, { on: false, owned: true }), turningOn), "Couldn't turn on phone connections. Nothing else changed.");
+  assert.equal(await ensureRemoteAccess({ get: async () => { throw new Error("Deck can't reach its background service."); }, set: async () => null }, turningOn), "Couldn't turn on phone connections: Deck can't reach its background service. Nothing else changed.");
   assert.equal(await ensureRemoteAccess(undefined, turningOn), null, "no switch in this app: nothing to turn on");
+});
+
+test("Settings → Phones says whether phones can connect, with the button that changes it", () => {
+  assert.deepEqual(phonesStatus(true, 1), { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null });
+  assert.deepEqual(phonesStatus(true, 0), { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null });
+  assert.deepEqual(phonesStatus(false, 2), {
+    line: "Phone connections are off.", action: "Turn on",
+    note: "Paired phones stay saved but can't connect, even on the same Wi‑Fi.",
+  }, "off with saved phones: they can't connect even on Wi-Fi, and Turn on is offered");
+  assert.deepEqual(phonesStatus(false, 0), { line: "Phone connections are off. Pairing turns them on.", action: null, note: null }, "off with none: no button, Pair phone does it");
 });

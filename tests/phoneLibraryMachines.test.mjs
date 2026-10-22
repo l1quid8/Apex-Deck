@@ -4,7 +4,7 @@ import { listPhoneLibrary, phoneLibraryNote } from "../src/phone/libraryMachines
 
 const picture = { file: "a.png", kind: "image", source: "chat", room: "t1", by: "Null", created: 100, path: "/lib/a.png" };
 const fullAccess = { tier: "full", threads: "all" };
-const denied = "The Library needs Full access to all threads on Work MacBook. Change this phone's access in Work MacBook's Settings → Paired devices.";
+const denied = "The Library needs Full access to all threads on Work MacBook. Change this phone's access in Work MacBook's Settings → Phones.";
 
 // A fake connection store: counts listeners so the tests can check each one was removed.
 function fakeConnection(kind) {

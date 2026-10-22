@@ -196,7 +196,7 @@ export async function startAgentDaemon({ socket, infoFile, uid, install, remove,
   await remove().catch(() => {});
   const seconds = Math.round(timeout / 1000);
   if (serving && info?.pid && info.pid !== pid) {
-    throw new Error(`Another apex-daemon (pid ${info.pid}) is using Deck's data folder, so the background service can't start. Quit it, then turn Remote access on again`);
+    throw new Error(`Another apex-daemon (pid ${info.pid}) is using Deck's data folder, so the background service can't start. Quit it, then open Deck again`);
   }
   throw new Error(`The background apex-daemon didn't start within ${seconds} seconds`);
 }

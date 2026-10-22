@@ -356,7 +356,7 @@ handle('connection:current', async ({ host }) => {
   return { id: LOCAL, name: LOCAL_NAME, remote: false, owned: daemon?.owned ?? true };
 });
 
-/** Settings → Remote access: the daemon's live phone-connection switch. */
+/** Settings → Phones: the daemon's live phone-connection switch. */
 handle('remote:get', async () => {
   const daemon = await ensureLocal();
   const info = await callDaemon(daemon.socket, 'remote_info', {});
