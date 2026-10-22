@@ -26,6 +26,7 @@ pub mod monitor_clock;
 pub mod persona_draft;
 pub mod personal;
 pub mod personal_settings;
+pub mod personal_workspace;
 pub mod personal_worker;
 pub mod events;
 pub mod quit;

@@ -45,6 +45,8 @@ pub(crate) fn now() -> u64 {
 pub struct PersonalDocument {
     pub version: u32,
     pub assistants: Vec<PersonalAssistant>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,6 +158,14 @@ pub struct QuietHours {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Look {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::personal_workspace::AvatarKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<crate::personal_workspace::AssistantAvatarAsset>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,6 +315,13 @@ pub struct PersonalAssistant {
     /// The machine this assistant lives on, from `<data>/host-id`.
     pub host_id: String,
     pub profile: Option<ParticipantConfig>,
+    #[serde(default)]
+    pub projects: Vec<crate::personal_workspace::AssistantProjectBinding>,
+    /// Explicit runtime saves opt into the versioned access ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_config_version: Option<u32>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
     /// Folders on this host its operations may run in.
     pub allowed_folders: Vec<String>,
     pub paused: bool,
@@ -886,7 +903,7 @@ impl crate::Host {
         let before = document.assistants.clone();
         let out = change(&mut document.assistants)?;
         if document.assistants != before {
-            self.store().save_personal(&PersonalDocument { version: document.version.max(1), assistants: document.assistants.clone() })?;
+            self.store().save_personal(&PersonalDocument { version: document.version.max(1), assistants: document.assistants.clone(), extra: document.extra.clone() })?;
             for (assistant, previous) in document.assistants.iter().map(|a| (a, before.iter().find(|b| b.id == a.id))) {
                 if previous != Some(assistant) {
                     self.emit_personal_changed(&assistant.id, assistant.revision);
@@ -952,6 +969,7 @@ impl crate::Host {
             let id = (n..).map(|n| format!("asst-{n}")).find(|id| !assistants.iter().any(|a| &a.id == id)).unwrap();
             let assistant = PersonalAssistant {
                 id, name: name.to_owned(), style: input.style.trim().to_owned(), host_id,
+                projects: vec![], workspace_config_version: None, extra: Default::default(),
                 profile: Some(input.profile), allowed_folders: vec![folder.to_string_lossy().into_owned()],
                 paused: false, revision: 1, created_at: at, counters: Counters::default(),
                 messages: vec![], events: vec![], tasks: vec![],

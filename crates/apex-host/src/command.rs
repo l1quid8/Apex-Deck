@@ -45,6 +45,7 @@ pub enum Command {
     PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
     PersonalScheduleCancel { assistant_id: String, request_id: String, schedule_id: String },
+    PersonalWorkspaceConfigure { #[serde(flatten)] input: crate::personal_workspace::Configure },
     PersonalConfigure { assistant_id: String, settings: crate::personal_settings::Settings },
     PersonalRuleAdd { assistant_id: String, text: String, class: crate::personal::ToolClass, mode: crate::personal::ActionMode },
     PersonalRuleRemove { assistant_id: String, rule_id: String },
@@ -243,6 +244,7 @@ impl Host {
             PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
             PersonalPause { assistant_id, request_id, paused } => reply(self.personal_pause(&assistant_id, &request_id, paused)?),
             PersonalScheduleCancel { assistant_id, request_id, schedule_id } => reply(self.personal_schedule_cancel(&assistant_id, &request_id, &schedule_id)?),
+            PersonalWorkspaceConfigure { input } => reply(self.personal_workspace_configure(input).await?),
             PersonalConfigure { assistant_id, settings } => reply(self.personal_configure(&assistant_id, settings)?),
             PersonalRuleAdd { assistant_id, text, class, mode } => reply(self.personal_rule_add(&assistant_id, &text, class, mode)?),
             PersonalRuleRemove { assistant_id, rule_id } => reply(self.personal_rule_remove(&assistant_id, &rule_id)?),
@@ -504,7 +506,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 152);
+        assert_eq!(names.len(), 153);
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));
@@ -512,6 +514,7 @@ mod tests {
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
         assert!(names.contains(&"room_steps".to_string()));
+        assert!(names.contains(&"personal_workspace_configure".to_string()));
         assert!(names.contains(&"personal_send".to_string()));
         assert!(names.contains(&"personal_react".to_string()));
         assert!(names.contains(&"monitor_react".to_string()));

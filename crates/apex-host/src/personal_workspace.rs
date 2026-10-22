@@ -1,0 +1,533 @@
+//! Versioned assistant-owned configuration. No machine grants or reusable
+//! profiles are changed by this transaction.
+use crate::{
+    personal::{Look, PersonalAssistant},
+    personal_settings::{self, Changed, Settings},
+    Host,
+};
+use apex_core::{Backend, ParticipantConfig};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::path::Path;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantRef {
+    pub host_id: String,
+    pub assistant_id: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectRef {
+    pub host_id: String,
+    pub workspace_id: String,
+    pub cwd: String,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectTools {
+    Ask,
+    Full,
+    Off,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantProjectBinding {
+    pub project: ProjectRef,
+    pub tools: ProjectTools,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AvatarKind {
+    Pixel,
+    Image,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantAvatarAsset {
+    pub asset_id: String,
+    pub sha256: String,
+    pub mime: AvatarMime,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AvatarMime {
+    #[serde(rename = "image/png")]
+    Png,
+}
+
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Configure {
+    pub assistant_id: String,
+    pub expected_revision: u64,
+    #[serde(default, deserialize_with = "present")]
+    pub settings: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    pub profile: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    pub projects: Option<Vec<AssistantProjectBinding>>,
+}
+
+fn identifier(value: &str) -> bool {
+    !value.is_empty() && value == value.trim() && !value.chars().any(char::is_control)
+}
+fn fields(value: &Value, allowed: &[&str]) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or("Configuration must be an object.")?;
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("Unsupported configuration field; credentials must stay in the host's credential store.".into());
+    }
+    Ok(())
+}
+fn parse_settings(value: Value) -> Result<Settings, String> {
+    fields(
+        &value,
+        &[
+            "name",
+            "style",
+            "look",
+            "timezone",
+            "utcOffsetMinutes",
+            "quietHours",
+            "modes",
+            "budget",
+            "privacy",
+            "contextBudgetChars",
+        ],
+    )?;
+    for (key, allowed) in [
+        ("modes", &["read", "write", "send", "spend"][..]),
+        ("budget", &["dailyLimitMicros", "unknownCostOk"][..]),
+        ("privacy", &["localOnly", "allowedEndpoints"][..]),
+        ("quietHours", &["start", "end"][..]),
+    ] {
+        if let Some(nested) = value.get(key).filter(|v| !v.is_null()) {
+            fields(nested, allowed)?;
+        }
+    }
+    for (key, field) in value.as_object().unwrap() {
+        if key != "quietHours" && field.is_null() {
+            return Err(format!("{key} cannot be null."));
+        }
+    }
+    if let Some(look) = value.get("look") {
+        fields(look, &["seed", "kind", "image", "color", "shape"])?;
+        if look.as_object().unwrap().values().any(Value::is_null) {
+            return Err("Avatar fields cannot be null.".into());
+        }
+    }
+    let settings: Settings = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    let mut validation = settings.clone();
+    validation.name = None;
+    personal_settings::validate_settings(&validation)?;
+    if settings.name.as_ref().is_some_and(|n| {
+        n.trim().is_empty() || n.trim().chars().count() > 64 || n.chars().any(char::is_control)
+    }) {
+        return Err("Give the assistant a name of up to 64 characters.".into());
+    }
+    Ok(settings)
+}
+fn parse_profile(value: Value) -> Result<ParticipantConfig, String> {
+    fields(
+        &value,
+        &[
+            "id",
+            "display_name",
+            "backend",
+            "persona",
+            "access",
+            "effort",
+            "speed",
+            "appearance",
+            "media",
+            "voice",
+        ],
+    )?;
+    let backend = &value["backend"];
+    match backend["kind"].as_str() {
+        Some("open_ai_compatible") => {
+            fields(backend, &["kind", "base_url", "model", "api_key_env"])?
+        }
+        Some("agent") => fields(backend, &["kind", "tool", "model"])?,
+        _ => return Err("Choose a compatible text provider configured on this host.".into()),
+    }
+    if let Some(appearance) = value.get("appearance").filter(|v| !v.is_null()) {
+        fields(appearance, &["seed", "color"])?;
+    }
+    let profile: ParticipantConfig = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    crate::monitor_check::monitor_profile_ok(&profile)?;
+
+    if !identifier(profile.id.as_str()) {
+        return Err("The profile needs a non-secret identifier.".into());
+    }
+    if let Backend::OpenAiCompatible {
+        base_url,
+        api_key_env,
+        model,
+    } = &profile.backend
+    {
+        let url = reqwest::Url::parse(base_url).map_err(|_| "The provider needs a valid URL.")?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("Provider URLs cannot contain credentials, queries or fragments.".into());
+        }
+        if !identifier(model) {
+            return Err("Select an offered text model.".into());
+        }
+        if let Some(name) = api_key_env {
+            if !apex_adapters::keys::valid_name(name) {
+                return Err(
+                    "Use a credential-store key identifier, never a raw credential.".into(),
+                );
+            }
+        }
+    }
+    Ok(profile)
+}
+fn same_provider(a: &ParticipantConfig, b: &ParticipantConfig) -> bool {
+    match (&a.backend, &b.backend) {
+        (
+            Backend::OpenAiCompatible {
+                base_url: a,
+                api_key_env: ak,
+                ..
+            },
+            Backend::OpenAiCompatible {
+                base_url: b,
+                api_key_env: bk,
+                ..
+            },
+        ) => a == b && ak == bk,
+        (Backend::Agent { tool: a, .. }, Backend::Agent { tool: b, .. }) => a == b,
+        _ => false,
+    }
+}
+fn merge_look(assistant: &PersonalAssistant, incoming: Look) -> Result<Look, String> {
+    let mut look = assistant.look.clone().unwrap_or_default();
+    if let Some(image) = &incoming.image {
+        if Some(image) != look.image.as_ref() {
+            return Err(
+                "New image selection requires the owner-checked avatar asset service.".into(),
+            );
+        }
+    }
+    if incoming
+        .seed
+        .as_ref()
+        .is_some_and(|s| !identifier(s) || s.len() > 256)
+    {
+        return Err("That avatar seed is invalid.".into());
+    }
+    if let Some(value) = incoming.seed {
+        look.seed = Some(value);
+    }
+    if let Some(value) = incoming.color {
+        if Some(&value) != look.color.as_ref()
+            && (value.len() != 7
+                || !value.starts_with('#')
+                || !value[1..].chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err("Choose an avatar color with six hexadecimal digits.".into());
+        }
+        look.color = Some(value);
+    }
+    if let Some(value) = incoming.shape {
+        look.shape = Some(value);
+    }
+    if let Some(value) = incoming.kind {
+        look.kind = Some(value);
+    }
+    if let Some(value) = incoming.image {
+        look.image = Some(value);
+    }
+    if look.seed.is_none() {
+        look.seed = Some(serde_json::to_string(&[&assistant.host_id, &assistant.id]).unwrap());
+    }
+    if look.kind == Some(AvatarKind::Image) && look.image.is_none() {
+        return Err("Choose an owned image asset before selecting an image avatar.".into());
+    }
+    Ok(look)
+}
+
+impl Host {
+    async fn workspace_profile(
+        &self,
+        assistant: &PersonalAssistant,
+        mut profile: ParticipantConfig,
+    ) -> Result<ParticipantConfig, String> {
+        if let Some(why) = crate::personal_worker::endpoint_refusal(assistant, &profile) {
+            return Err(why);
+        }
+        let profiles = self
+            .session()?
+            .and_then(|session| session.profiles)
+            .unwrap_or_default();
+        let configured = assistant
+            .profile
+            .iter()
+            .chain(
+                profiles
+                    .iter()
+                    .filter_map(|value| {
+                        serde_json::from_value::<ParticipantConfig>(value.clone()).ok()
+                    })
+                    .collect::<Vec<_>>()
+                    .iter(),
+            )
+            .any(|saved| same_provider(saved, &profile));
+        if !configured {
+            return Err("That provider is not configured on this assistant's host. Configure a reusable Agents profile first.".into());
+        }
+        let efforts = match &profile.backend {
+            Backend::OpenAiCompatible {
+                base_url,
+                api_key_env,
+                model,
+            } => {
+                if api_key_env
+                    .as_deref()
+                    .is_some_and(|name| apex_adapters::keys::lookup(name).is_none())
+                {
+                    return Err("The provider credential is missing on this host; the saved profile has been retained.".into());
+                }
+                let models = apex_adapters::list_models(base_url,api_key_env.as_deref()).await.map_err(|_|"Model discovery is unavailable on this host; the saved profile has been retained.")?;
+                let offered = models
+                    .into_iter()
+                    .find(|offered| offered.id == *model)
+                    .ok_or("That model is not offered by this host's configured provider.")?;
+                if offered.kind != apex_adapters::ModelKind::Text {
+                    return Err("Choose an offered text model.".into());
+                }
+                offered.efforts
+            }
+            Backend::Agent { tool, model } => {
+                let models = self.agent_models(*tool);
+                let offered=models.into_iter().find(|offered|Some(&offered.id)==model.as_ref()).ok_or("This agent's offered model capabilities are unavailable; the saved profile has been retained.")?;
+                offered.efforts
+            }
+            _ => return Err("This runtime is unsupported.".into()),
+        };
+        match efforts {
+            Some(levels) if !levels.is_empty() => {
+                if profile
+                    .effort
+                    .as_ref()
+                    .is_some_and(|effort| !levels.contains(effort))
+                {
+                    return Err(
+                        "That reasoning effort is not supported by the selected model.".into(),
+                    );
+                }
+            }
+            _ => profile.effort = None,
+        }
+        Ok(profile)
+    }
+
+    fn workspace_projects(
+        &self,
+        assistant: &PersonalAssistant,
+        projects: Vec<AssistantProjectBinding>,
+    ) -> Result<Vec<AssistantProjectBinding>, String> {
+        if projects.len() > 100 {
+            return Err("Too many project assignments.".into());
+        }
+        let local = self.local_host_id()?;
+        let workspaces = self
+            .session()?
+            .and_then(|s| s.workspaces)
+            .unwrap_or_default();
+        let mut canonical = Vec::new();
+        for mut binding in projects {
+            let project = &mut binding.project;
+            if !identifier(&project.host_id)
+                || !identifier(&project.workspace_id)
+                || !identifier(&project.cwd)
+                || !Path::new(&project.cwd).is_absolute()
+            {
+                return Err("The project identity is invalid.".into());
+            }
+            if project.host_id != local {
+                return Err("Remote project authority cannot be verified on this host yet. Assign the project only after its owning host can validate it.".into());
+            }
+            let cwd = Path::new(&project.cwd)
+                .canonicalize()
+                .map_err(|_| "The project folder is unavailable on its owning host.")?;
+            if !cwd.is_dir() {
+                return Err("The project must name an existing folder.".into());
+            }
+            let saved = workspaces
+                .iter()
+                .filter(|ws| ws["id"].as_str() == Some(&project.workspace_id))
+                .any(|ws| {
+                    (matches!(ws["hostId"].as_str(), None | Some("local"))
+                        || ws["hostId"].as_str() == Some(&local))
+                        && ws["path"]
+                            .as_str()
+                            .and_then(|path| Path::new(path).canonicalize().ok())
+                            .as_ref()
+                            == Some(&cwd)
+                });
+            let monitor = self.monitor_get(&project.workspace_id)?;
+            let monitored = monitor.as_ref().is_some_and(|m| {
+                (m.host_id == local || m.host_id == "local")
+                    && Path::new(&m.cwd).canonicalize().ok().as_ref() == Some(&cwd)
+            });
+            if !saved && !monitored {
+                return Err(
+                    "That workspace and folder do not identify a saved project on this host."
+                        .into(),
+                );
+            }
+            if !assistant
+                .allowed_folders
+                .iter()
+                .filter_map(|folder| Path::new(folder).canonicalize().ok())
+                .any(|folder| cwd.starts_with(folder))
+            {
+                return Err("That project has no existing folder grant for this assistant.".into());
+            }
+            project.cwd = cwd.to_string_lossy().into_owned();
+            if canonical
+                .iter()
+                .any(|b: &AssistantProjectBinding| b.project == *project)
+            {
+                return Err("The same project was assigned twice.".into());
+            }
+            canonical.push(binding);
+        }
+        for old in &assistant.projects {
+            if canonical
+                .iter()
+                .any(|b| b.project == old.project && b.tools == old.tools)
+            {
+                continue;
+            }
+            let personal_active = assistant.tasks.iter().any(|task| {
+                !matches!(
+                    task.status,
+                    crate::personal::TaskStatus::Done
+                        | crate::personal::TaskStatus::Cancelled
+                        | crate::personal::TaskStatus::Failed
+                ) && task
+                    .operation
+                    .as_ref()
+                    .is_some_and(|op| op.host == old.project.host_id && op.cwd == old.project.cwd)
+            });
+            let project_active = self
+                .assistant_tasks
+                .list(Some(&old.project.workspace_id))
+                .map_err(|e| e.to_string())?
+                .iter()
+                .any(|task| {
+                    (task.owner.host_id == old.project.host_id
+                        || (task.owner.host_id == "local" && old.project.host_id == local))
+                        && Path::new(&task.owner.cwd).canonicalize().ok()
+                            == Path::new(&old.project.cwd).canonicalize().ok()
+                        && (!matches!(
+                            task.status,
+                            crate::assistant_tasks::TaskStatus::Done
+                                | crate::assistant_tasks::TaskStatus::Cancelled
+                        ) || task
+                            .result_data
+                            .as_ref()
+                            .is_some_and(|data| data["leaseHeld"] == true))
+                });
+            if personal_active || project_active {
+                return Err(
+                    "Finish or cancel active project work before changing its assignment.".into(),
+                );
+            }
+        }
+        Ok(canonical)
+    }
+
+    pub async fn personal_workspace_configure(&self, input: Configure) -> Result<Changed, String> {
+        if !identifier(&input.assistant_id) {
+            return Err("The assistant identity is invalid.".into());
+        }
+        let snapshot = self.personal_get(&input.assistant_id)?;
+        if snapshot.revision != input.expected_revision {
+            return Err("The assistant changed. Refresh before saving this draft.".into());
+        }
+        let mut settings = input.settings.map(parse_settings).transpose()?;
+        let mut policy_snapshot = snapshot.clone();
+        if let Some(settings) = settings.clone() {
+            personal_settings::apply_settings(&mut policy_snapshot, settings)?;
+        }
+        let profile = match input.profile {
+            Some(value) => Some(
+                self.workspace_profile(&policy_snapshot, parse_profile(value)?)
+                    .await?,
+            ),
+            None => None,
+        };
+        self.change_personal(|assistants| {
+            let assistant = assistants
+                .iter_mut()
+                .find(|a| a.id == input.assistant_id)
+                .ok_or("That assistant does not exist on this host.")?;
+            if assistant.revision != input.expected_revision {
+                return Err("The assistant changed. Refresh before saving this draft.".into());
+            }
+            let before = assistant.clone();
+            let projects = input
+                .projects
+                .map(|projects| self.workspace_projects(assistant, projects))
+                .transpose()?;
+            if let Some(settings) = settings.as_mut() {
+                if let Some(look) = settings.look.take() {
+                    settings.look = Some(merge_look(assistant, look)?);
+                }
+            }
+            if let Some(settings) = settings {
+                personal_settings::apply_settings(assistant, settings)?;
+            }
+            // Legacy fallback is deterministic and persisted only by this explicit save.
+            if assistant
+                .look
+                .as_ref()
+                .and_then(|look| look.seed.as_ref())
+                .is_none()
+            {
+                assistant.look = Some(merge_look(assistant, Look::default())?);
+            }
+            if let Some(profile) = profile {
+                assistant.profile = Some(profile);
+                assistant.workspace_config_version = Some(4);
+            }
+            if let Some(projects) = projects {
+                assistant.projects = projects;
+            }
+            if *assistant != before {
+                assistant.revision += 1;
+            }
+            Ok(Changed {
+                assistant: assistant.clone(),
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn personal_workspace_accepts_existing_mixed_case_credential_references() {
+        let profile = serde_json::json!({"id":"profile","display_name":"Profile","backend":{"kind":"open_ai_compatible","base_url":"https://api.example.com/v1","model":"text","api_key_env":"Venice_api_key"}});
+        assert!(super::parse_profile(profile).is_ok());
+    }
+}

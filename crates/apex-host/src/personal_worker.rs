@@ -388,7 +388,7 @@ fn is_local(endpoint: &str) -> bool {
 }
 
 /// Why a model call to this profile isn't allowed, checked before sending.
-fn endpoint_refusal(assistant: &PersonalAssistant, profile: &ParticipantConfig) -> Option<String> {
+pub(crate) fn endpoint_refusal(assistant: &PersonalAssistant, profile: &ParticipantConfig) -> Option<String> {
     let host = endpoint(profile);
     if assistant.privacy.local_only && !is_local(&host) {
         return Some(format!("Local-only mode is on, and this assistant's model is at {host}, so nothing was sent."));
