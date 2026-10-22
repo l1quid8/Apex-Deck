@@ -48,7 +48,8 @@ export function projectIdentityKey(ref: ProjectRef): string {
   const hostId = field(ref, "hostId");
   const workspaceId = field(ref, "workspaceId");
   const cwd = field(ref, "cwd");
-  if (!cwd.startsWith("/")) throw new TypeError("Project cwd must be an absolute host-canonical path");
+  const absolute = cwd.startsWith("/") || /^[A-Za-z]:[\\/]/.test(cwd) || /^\\\\[^\\/]+\\[^\\/]+(?:\\|$)/.test(cwd);
+  if (!absolute) throw new TypeError("Project cwd must be an absolute host-canonical path");
   return JSON.stringify([hostId, workspaceId, cwd]);
 }
 

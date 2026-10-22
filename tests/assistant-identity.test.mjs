@@ -47,6 +47,16 @@ test('malformed project refs cannot resolve a project', () => {
   }
 });
 
+test('remote project keys preserve Windows absolute paths and reject drive-relative paths', () => {
+  const project = { hostId: 'windows-host', workspaceId: 'ws-1' };
+  for (const cwd of ['C:\\work\\repo', 'D:/work/repo', '\\\\server\\share\\repo', '\\\\?\\C:\\work\\repo']) {
+    assert.deepEqual(JSON.parse(projectIdentityKey({ ...project, cwd })), ['windows-host', 'ws-1', cwd]);
+  }
+  for (const cwd of ['C:work\\repo', '\\work\\repo', '\\\\server', '\\\\server\\', 'repo\\file']) {
+    assert.throws(() => projectIdentityKey({ ...project, cwd }), TypeError);
+  }
+});
+
 test('legacy appearance preserves saved color and shape and derives a host-qualified seed', () => {
   const look = { color: '#123456', shape: 'legacy-circle' };
   assert.deepEqual(assistantAppearance(ref, look), {
