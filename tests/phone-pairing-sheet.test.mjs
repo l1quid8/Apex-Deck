@@ -154,7 +154,7 @@ function fakePlugin(mode) {
   };
 }
 
-function mount(plugin, app, scan) {
+function mount(plugin, app, scan, { ready = automaticSet, failures = { count: 0 } } = {}) {
   const host = createHost();
   function Desk() {
     const [notice, setNotice] = useState("");
@@ -192,8 +192,9 @@ function mount(plugin, app, scan) {
         plugin,
         link: pairing.link,
         label: "iPhone",
-        ready: automaticSet,
+        ready,
         onFailed: () => {
+          failures.count += 1;
           linkResolve.current = settlePairing(gate.current, pairing.link, "failed", linkResolve.current);
         },
         onPaired: () => {
@@ -290,5 +291,33 @@ test("camera, paste and links share one sheet, and a failure can be retried whil
     assert.match(text(tree), /Reaching the machine/);
   } finally {
     retry.unmount();
+  }
+});
+
+test("a failed Automatic setup fails the sheet once, never dials, and frees the gate", async () => {
+  const plugin = fakePlugin(() => "hang");
+  const app = fakeApp();
+  const failures = { count: 0 };
+  const broken = { then(_ok, bad) { bad(new Error("Automatic mode could not be set")); } };
+  const desk = mount(plugin, app, { url: LINK_A }, { ready: broken, failures });
+  try {
+    desk.draw();
+    app.emit(LINK_A);
+    let tree = desk.draw();
+    await flush();
+    tree = desk.draw();
+    assert.match(text(tree), /Automatic mode could not be set/);
+    assert.deepEqual(plugin.calls, [], "pairing never starts");
+    assert.equal(failures.count, 1, "onFailed fires once");
+    assert.equal(button(tree, "OK").type, "button", "the error is still on screen");
+
+    app.emit(LINK_B);
+    await flush();
+    tree = desk.draw();
+    assert.doesNotMatch(text(tree), new RegExp(ALREADY_PAIRING), "the gate is free for another link");
+    assert.equal(failures.count, 2, "the new link's sheet failed on its own");
+    assert.deepEqual(plugin.calls, []);
+  } finally {
+    desk.unmount();
   }
 });
