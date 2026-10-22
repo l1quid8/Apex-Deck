@@ -42,10 +42,34 @@ An initial full test attempt encountered concurrent Electron dependency extracti
 - New generated-image attachment remains unavailable until Phase 6A. Existing image references and pixel fallback are preserved.
 - Until scoped delegation exists, any Off assignment blocks generic personal tools on that host; Ask assignments require approval for those tools. These broad restrictions avoid pretending that a command cannot reach another project merely because it starts in a different folder.
 
+## Phase 2: discovery, ownership and draft continuity
+
+Status: verified at `9d276ac`, including draft retention `4b3652a`, collection `eb4c5ce`, and negotiated capabilities `fe2aa21`/`4e30dee`.
+
+- Discovery collects every supported local/remote assistant without creating one. Durable authenticated host identity stays separate from transport aliases; offline records retain freshness and valid session selection survives refresh.
+- Sends, reactions, approvals, memory changes, runtime settings and attachments capture their original assistant and route. Revision and generation checks reject stale list/write outcomes. An assistant's versioned settings keep the editor's submitted revision rather than silently upgrading it.
+- Background bridges visit all linked assistants. Ownership is rechecked before each claim, execution, result and multi-step machine link, so a reconnect cannot deliver Alpha's output or grant to Beta merely because their local IDs match.
+- Push payloads include the durable host. Exact notifications wait for the right assistant, including offline/newly created identities; older list results cannot erase that target. Pending identities present an attributed read-only lane. Legacy hostless notifications never guess by repeated local ID.
+- Assistant-specific session drafts preserve text, quotes, task destination, attachment metadata and transcript position across switches. Pending uploads and late send outcomes remain in the original draft. These drafts are client-memory state, not a new lasting memory system or restart-persistence promise.
+- Old hosts retain safe legacy operations. Versioned configuration is sent only when the current handshake advertises `assistant_workspace_v4`; capability checks issue no mutation probe.
+
+Independent review reproduced and resolved two wrong-owner mutation paths (bridge result delivery and machine linking), route-rebinding/stale-list defects, exact-notification discovery races, and the removed-host synchronous capability contract. The final review found no unaddressed blocker in this phase.
+
+| Final gate | Result | Evidence |
+| --- | --- | --- |
+| `npm test` | 2,027 passed; zero failures/skips | `/tmp/apex-assistant-phase2-full.log`, 55.13 s |
+| `npx tsc --noEmit` | Passed | Parent-executed on clean `9d276ac` |
+| `cargo test -p apex-host personal_worker::push::tests` | 1 passed | `/tmp/apex-assistant-phase2-push.log`; fixture payload, no live APNs request |
+| Independent combined phase-2 checks | 105 passed | `/tmp/apex-assistant-baseline/task2-final-review.log` |
+| `git diff --check` | Passed | Clean source at the final gate |
+| Production Agents screen | Unchanged | Exact comparison with `4d40cc0` |
+
+An earlier full-suite attempt ran while draft regressions were deliberately RED: 2,012/2,014 passed with those two expected failures. A separate overlapping full attempt was canceled; neither is presented as a passing gate. The parent-owned final 2,027-test run above supersedes both. No development app launch, native UI smoke, production-data migration, installation, merge to main or release was performed.
+
 ## Remaining phase gates
 
 1. Phase 1 foundation passed as described above.
-2. Discover and select all durable assistants with owner-bound async operations and phone compatibility.
+2. Phase 2 passed: discovery, owner-bound operations, phone compatibility and per-assistant session drafts.
 3. Add versioned project notes, bounded authorized context and separate reviewed scratch promotion.
 4. Connect proposed personal handoffs to the existing coding executor with immutable ownership and receipts.
 5. Verify independent controls, retries and restart reconciliation.

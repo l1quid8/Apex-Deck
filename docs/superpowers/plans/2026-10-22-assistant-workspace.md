@@ -77,14 +77,14 @@ New names and RPCs below are implementation contracts, not already available API
 
 **Interfaces:** `usePersonalAssistants(options): { assistants: PersonalAssistantSummary[]; selected: AssistantRef | null; select(ref: AssistantRef): void; lane(ref: AssistantRef): PersonalLane | null; refresh(): Promise<void> }`; summary includes ref/name/look/offline/revision. Use existing `PersonalLane` operations with an immutable captured ref. Retain a compatibility adapter for phone callers until migrated in this task.
 
-- [ ] Add failing cases for two hosts both returning `asst-1`, multiple assistants on one host, unsupported/offline host, persisted selection, deleted selection and late replies after switching. Assert draft, attachment, reaction, approval, memory and machine-bridge arguments remain bound to their original identity.
-- [ ] Run `node --experimental-strip-types --test tests/personal-assistants.test.mjs tests/personal-bridge.test.mjs tests/personal-push.test.mjs` before implementing.
-- [ ] Replace first-host/first-record discovery with a collection keyed by AssistantRef. Support already-capable local and remote hosts without silently creating a local assistant. Deduplicate polling/bridge execution per identity; keep discovery active with assistant view closed.
-- [ ] Persist last valid selection in session state; use a visible existing fallback if an identity is removed, and retain offline identity rows with last-known freshness. Capture ref and request generation before async operations; update only that record on completion.
-- [ ] Route notification opens to their assistant ref and preserve the phone's existing conversation, push and command bridge behavior.
-- [ ] Run the same tests plus `npx tsc --noEmit`; commit scoped files.
+- [x] Add failing cases for two hosts both returning `asst-1`, multiple assistants on one host, unsupported/offline host, persisted selection, deleted selection and late replies after switching. Assert draft, attachment, reaction, approval, memory and machine-bridge arguments remain bound to their original identity.
+- [x] Run `node --experimental-strip-types --test tests/personal-assistants.test.mjs tests/personal-bridge.test.mjs tests/personal-push.test.mjs` before implementing.
+- [x] Replace first-host/first-record discovery with a collection keyed by AssistantRef. Support already-capable local and remote hosts without silently creating a local assistant. Deduplicate polling/bridge execution per identity; keep discovery active with assistant view closed.
+- [x] Persist last valid selection in session state; use a visible existing fallback if an identity is removed, and retain offline identity rows with last-known freshness. Capture ref and request generation before async operations; update only that record on completion.
+- [x] Route notification opens to their assistant ref and preserve the phone's existing conversation, push and command bridge behavior.
+- [x] Run the same tests plus `npx tsc --noEmit`; commit scoped files.
 
-**Deliverable:** Explicit, stable selection; changing the visible assistant never changes who owns an in-flight operation.
+**Deliverable:** Explicit, stable selection; changing the visible assistant never changes who owns an in-flight operation. Verified through `9d276ac`, including per-identity client-session draft retention; see [validation](../../assistant-workspace-validation.md).
 
 ### Task 3: Expose scoped project notes and inspectable memory operations
 
