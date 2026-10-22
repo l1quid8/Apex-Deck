@@ -1285,6 +1285,7 @@ export function App() {
     chipParts: settings.botChips,
     landingTexture: effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance),
     codeRunButtons: settings.codeRunButtons,
+    voice: settings.voice,
   });
 
   /** A preview's source without the pane itself, for snapshots and updates. */
@@ -1438,6 +1439,8 @@ export function App() {
         );
       } else if (action.type === "confirm-steer") {
         setSettings((s) => ({ ...s, confirmSteer: action.confirm }));
+      } else if (action.type === "voice-settings") {
+        setSettings((s) => ({ ...s, voice: action.voice }));
       } else if (action.type === "seen") {
         if (paneRec) live.onThreadSeen(paneRec.id, action.seq);
       } else if (action.type === "tab-url") {

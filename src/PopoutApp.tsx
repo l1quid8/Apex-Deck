@@ -409,6 +409,8 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
                 newBotAccess={bundle.newBotAccess}
                 confirmSteer={bundle.confirmSteer}
                 onConfirmSteer={(confirm) => send({ type: "confirm-steer", confirm })}
+                voiceSettings={bundle.voice}
+                onVoiceSettings={(voice) => send({ type: "voice-settings", voice })}
                 chipParts={bundle.chipParts}
                 landingTexture={bundle.landingTexture}
                 codeRunButtons={bundle.codeRunButtons}
