@@ -49,6 +49,15 @@ export function callLine(state: VoiceState, name: string): CallLine {
       return line("Listening", "Listening… or type here", "flat");
   }
 }
+/** The composer's one round button: the mic while the box is empty, Send once it has something.
+ *  In a Pill call the pill holds the mic's place, so Send shows beside it. */
+export function composerButton(input: { hasContent: boolean; canCall: boolean; live: boolean; look: CallLook }) {
+  const { hasContent, canCall, live, look } = input;
+  if (live && look === "pill") return { mic: true, send: hasContent };
+  if (live) return { mic: !hasContent, send: hasContent };
+  const mic = canCall && !hasContent;
+  return { mic, send: !mic };
+}
 export function callClock(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000)),
     h = Math.floor(s / 3600),

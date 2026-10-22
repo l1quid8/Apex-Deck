@@ -1,4 +1,5 @@
-import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, type VoiceWho } from './voice/VoiceCallControls';
+import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
+import { composerButton } from './voice/callView';
 import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
 import { createThreadVoiceBridge } from './voice/threadBridge';
 import { readVoiceSettings, preferenceFor } from './voice/settings';
@@ -1536,6 +1537,8 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
   const voiceWho:VoiceWho=id=>{const p=participants.find(x=>x.id===id),look=appearance(id);return {...look,kind:p?.backend.kind==='agent'?AGENT_LABEL[p.backend.tool]:undefined};};
   const voiceHint=useVoiceHint({candidates:voiceCandidates,settings:voiceConfig});
+  const voiceSlot=useVoiceSlot({candidates:voiceCandidates,settings:voiceConfig});
+  const roundButton=composerButton({hasContent:!!text.trim()||sendable.length>0,canCall:!!window.apexDeck?.voice&&voiceCandidates.length>0,live:voiceSlot.live,look:voiceSlot.look});
   const voiceLive=useRef({ready,participants,voiceCandidates,voiceConfig,onVoiceSettings,onVoiceFocus});
   voiceLive.current={ready,participants,voiceCandidates,voiceConfig,onVoiceSettings,onVoiceFocus};
   useEffect(()=>{
@@ -3777,11 +3780,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           // Keep focus in the message box, so you can type straight after.
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
-          <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />
-          {!busy && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
-          {busy
-            ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) stopBots(); }}><StopSquare size={12} /></button>
-            : <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
+          {/* One round button: the mic while the box is empty, Send once it has something. Each reply keeps its own Stop, and Esc stops them all. */}
+          {roundButton.mic && <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />}
+          {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
+          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}

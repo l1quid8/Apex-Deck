@@ -58,3 +58,18 @@ test("voice ids read as a name and accent", async () => {
   assert.equal(voiceLabel("custom"), "custom");
   assert.equal(voiceLabel("qx_odd"), "qx_odd");
 });
+
+test("composer button swaps mic and Send", async () => {
+  const { composerButton } = await import("../src/voice/callView.ts");
+  const b = (hasContent, canCall, live, look = "pill") => composerButton({ hasContent, canCall, live, look });
+  assert.deepEqual(b(false, true, false), { mic: true, send: false });
+  assert.deepEqual(b(true, true, false), { mic: false, send: true });
+  assert.deepEqual(b(false, false, false), { mic: false, send: true });
+  assert.deepEqual(b(true, false, false), { mic: false, send: true });
+  assert.deepEqual(b(false, true, true, "pill"), { mic: true, send: false });
+  assert.deepEqual(b(true, true, true, "pill"), { mic: true, send: true });
+  for (const look of ["bar", "capsule"]) {
+    assert.deepEqual(b(false, true, true, look), { mic: true, send: false });
+    assert.deepEqual(b(true, true, true, look), { mic: false, send: true });
+  }
+});

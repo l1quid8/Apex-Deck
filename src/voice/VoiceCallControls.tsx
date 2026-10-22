@@ -53,6 +53,12 @@ export function useVoiceHint(props: Props): string | undefined {
   return undefined;
 }
 
+/** Whether a call is running in these candidates' thread, and its look: the composer's round button follows it. */
+export function useVoiceSlot(props: Props): { live: boolean; look: CallLook } {
+  const call = useCall(props);
+  return { live: call.live, look: call.look };
+}
+
 const Icon = {
   mic: (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
