@@ -4168,8 +4168,9 @@ button.mod-status:hover { color: var(--text); }
   background: var(--bg);
 }
 
-/* Only the empty rain screen extends beneath the composer. */
+/* Only the empty rain texture extends beneath the composer. */
 .thread-chat.thread-landing > .composer {
+  flex-shrink: 0;
   border-top: 0;
   background: transparent;
   /* The strip is a gutter, not a surface: let clicks beside the box fall
@@ -4182,9 +4183,14 @@ button.mod-status:hover { color: var(--text); }
 }
 
 .thread-chat.thread-landing .chat-body > .transcript {
-  margin-bottom: calc(-1 * var(--composer-h, 0px));
-  padding-bottom: calc(24px + var(--composer-h, 0px));
-  scroll-padding-bottom: calc(24px + var(--composer-h, 0px));
+  /* Keep welcome copy inside the available scrollport in short split panes.
+     The absolutely positioned landing texture extends beneath the composer. */
+  padding-bottom: 24px;
+  scroll-padding-bottom: 24px;
+}
+
+.thread-chat.thread-landing .transcript > .empty {
+  flex-shrink: 0;
 }
 
 .thread-chat > .composer,
