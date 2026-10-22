@@ -49,15 +49,13 @@ impl RemoteController {
         if import && remote_settings::present(&daemon.data) {
             return Ok(state_value(guard.as_ref(), &daemon.data));
         }
+        // An explicit choice is always saved, even when the endpoint already
+        // matches: a saved "on" that failed to bind at boot, or `--remote`
+        // over a saved "off", must not come back on the next start.
         if enabled {
-            // On while on keeps this endpoint. An import still writes the file,
-            // because that file is the mark that migration finished.
-            if guard.is_some() && !import {
-                return Ok(state_value(guard.as_ref(), &daemon.data));
-            }
             self.enable(&mut guard, daemon, true, None).await
         } else {
-            disable(&mut guard, daemon, import).await
+            disable(&mut guard, daemon).await
         }
     }
 
@@ -131,18 +129,13 @@ impl RemoteController {
     }
 }
 
-/// Off. The file is saved before anything is cancelled or closed, except
-/// an import that finds the endpoint already off: that still writes the
-/// file so the migration mark exists.
-async fn disable(guard: &mut Option<Running>, daemon: &Arc<Daemon>, write_when_idle: bool) -> Result<Value, String> {
+/// Off. The file is saved first, even when the endpoint is already off.
+/// `Err` means the file is unchanged, so the endpoint and invitations stay.
+async fn disable(guard: &mut Option<Running>, daemon: &Arc<Daemon>) -> Result<Value, String> {
+    remote_settings::save(&daemon.data, false)?;
     if guard.is_none() {
-        if write_when_idle {
-            remote_settings::save(&daemon.data, false)?;
-        }
         return Ok(state_value(None, &daemon.data));
     }
-    // `Err` means the file is unchanged, so the endpoint and invitations stay.
-    remote_settings::save(&daemon.data, false)?;
     let Some(Running { endpoint, accept, .. }) = guard.take() else { unreachable!() };
     daemon.invites.cancel_open();
     accept.abort();
@@ -297,6 +290,45 @@ mod tests {
         assert_eq!(remote_settings::enabled(&data.0), Some(true), "a failed off save leaves the file");
         assert_eq!(daemon.remote.snapshot(&data.0).await["enabled"], true);
         assert!(daemon.invites.secret(&invite.inv, now_ms()).is_ok(), "the open invitation is untouched");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn off_is_saved_when_a_saved_on_never_bound() {
+        let data = crate::devices::tests::folder();
+        let daemon = daemon(&data.0);
+        // A saved "on" whose bind failed at boot: the file says on, the endpoint is off.
+        remote_settings::save(&data.0, true).unwrap();
+        assert_eq!(daemon.remote.snapshot(&data.0).await["enabled"], false);
+        let off = switched(&daemon, false, false).await.unwrap();
+        assert_eq!(off["enabled"], false);
+        assert_eq!(remote_settings::enabled(&data.0), Some(false), "the next start stays off");
+
+        remote_settings::fail_next_save(&data.0);
+        assert!(switched(&daemon, false, false).await.unwrap_err().contains("injected"));
+        assert_eq!(remote_settings::enabled(&data.0), Some(false));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_is_saved_over_remote_flag_without_replacing_the_endpoint() {
+        let data = crate::devices::tests::folder();
+        let daemon = daemon(&data.0);
+        // `--remote` over a saved "off": running, file still off.
+        remote_settings::save(&data.0, false).unwrap();
+        let booted = daemon.remote.boot(&daemon, None).await.unwrap();
+        assert_eq!(remote_settings::enabled(&data.0), Some(false), "boot writes nothing");
+        let endpoint = daemon.remote.with_running(|endpoint| endpoint.clone()).await.unwrap();
+
+        let on = switched(&daemon, true, false).await.unwrap();
+        assert_eq!(remote_settings::enabled(&data.0), Some(true), "the explicit on is saved");
+        assert_eq!(on["endpoint_id"], booted["endpoint_id"]);
+        assert!(!endpoint.is_closed(), "the running endpoint was kept, not replaced");
+        let still = daemon.remote.with_running(|current| current.clone()).await.unwrap();
+        assert_eq!(bound_port(&still), bound_port(&endpoint));
+
+        remote_settings::fail_next_save(&data.0);
+        assert!(switched(&daemon, true, false).await.unwrap_err().contains("injected"));
+        assert!(!endpoint.is_closed(), "a failed save while on leaves the endpoint");
+        assert_eq!(daemon.remote.snapshot(&data.0).await["enabled"], true);
     }
 
     #[tokio::test(flavor = "multi_thread")]
