@@ -81,7 +81,7 @@ export type HelperEvent = {
 };
 export type VoiceFrame = { channel: number } & ({ ctl: Record<string, unknown> } | { bin: string } | { rx: number } | { closed: string });
 export type ServerVoiceRuntime = { channel: number; protocolVersion: 1 };
-export type ServerVoiceStatus = { supported: boolean; reason?: string; installed: boolean; installing?: { stage: string; downloaded: number; total: number }; failed?: string; running: boolean; busy: boolean; downloadBytes: number; requiredDiskBytes: number };
+export type ServerVoiceStatus = { supported: boolean; reason?: string; installed: boolean; installing?: { stage: string; downloaded: number; total: number }; failed?: string; running: boolean; busy: boolean; downloadBytes: number; requiredDiskBytes: number; /** A Mac: its speech runtime is set up from the Deck app there, never from a phone. */ setupInApp?: boolean };
 export interface ServerVoiceLink {
   status(): Promise<ServerVoiceStatus>; install(): Promise<void>; cancelInstall(): Promise<void>;
   warm(room: string): Promise<void>; open(room: string): Promise<ServerVoiceRuntime>; close(channel: number, reason: string): Promise<void>;

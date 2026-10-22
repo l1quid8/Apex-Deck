@@ -43,7 +43,15 @@ export function voiceCallView(input: {
       ? `On call with ${agent}${attention ? " · needs you" : ""}`
       : null,
     setup:
-      setup && !setup.installed
+      setup && !setup.installed && setup.setupInApp
+        ? {
+            title: `Voice calls on ${machine}`,
+            body: `Set up voice once from the mic in the Deck app on ${machine}, then call from here. Calls in this machine's threads need it awake.`,
+            button: null,
+            progress: null,
+            note: null,
+          }
+        : setup && !setup.installed
         ? {
             title: `Voice calls on ${machine}`,
             body: `Calls in this machine's threads listen and speak on ${machine}, so they work with your Mac off. Setup downloads about ${voiceSize(setup.downloadBytes)} to ${machine} once.`,
