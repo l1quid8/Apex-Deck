@@ -180,3 +180,26 @@ test("failed voice post ends its call with the error", async () => {
   assert.match(f.voice.controller.getState().error, /post failed/);
   assert.equal(f.stopped.length, 0);
 });
+test("the Mac's saved voices carry over; a settings load failure keeps phone settings", async () => {
+  const f = fixture();
+  f.host.backend.settingsLoad = async () => ({
+    voice: { silenceMs: 900, look: "capsule", preferences: { [voicePreferenceKey("local", "null", "r", "null")]: { voice: "bf_emma", aliases: [] } } },
+  });
+  f.voice.threadOpened("h", "r");
+  await tick();
+  assert.equal(f.voice.settingsFor("h").silenceMs, 900);
+  assert.equal(f.voice.settingsFor("h").look, "capsule");
+  await f.voice.controller.start(f.scope);
+  assert.equal(f.sent.find((m) => m.type === "start").voice, "bf_emma");
+  await f.voice.controller.end();
+  f.voice.save({ ...f.voice.settingsFor("h"), silenceMs: 200 }, "h");
+  assert.equal(f.voice.settingsFor("h").silenceMs, 200);
+  assert.equal(f.voice.settingsFor("h").look, "capsule");
+  const g = fixture();
+  g.host.backend.settingsLoad = async () => {
+    throw Error("Full access needed");
+  };
+  g.voice.threadOpened("h", "r");
+  await tick();
+  assert.deepEqual(g.voice.settingsFor("h"), g.voice.settings());
+});

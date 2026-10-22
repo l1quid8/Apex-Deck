@@ -1,7 +1,8 @@
 import { createPhoneVoice, type PhoneVoice } from './phoneVoice.ts';
 import { postFromPhone } from './phonePost.ts';
 import { keepAwake } from './callScreen.ts';
-import { VoiceCall, PhoneCallBar } from './VoiceCall.tsx';
+import { VoiceCall, PhoneCallBar, PhoneCallCapsule, PhoneCallStrip, usePhoneCallSlot, type PhoneVoiceWho } from './VoiceCall.tsx';
+import { composerButton, type CallLook } from '../voice/callView.ts';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 import { botChangeGate, botSendGate } from "../phoneBots";
@@ -1336,6 +1337,8 @@ export function PhoneApp() {
   const menuProject = menu?.kind === "project" ? workspaces.find((workspace) => workspace.id === menu.id) ?? null : null;
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
 
+  const callSlot = usePhoneCallSlot({ voice: phoneVoice, hostId: openHostId, roomId: openPane?.id ?? "" });
+  const callWho: PhoneVoiceWho = (id) => (room && openPane && room.id === openPane.id ? room.participants : []).find((p) => p.id === id)?.look;
   return (
     <div className="ph-app" data-rev={tick}>
       <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(_host,room)=>{setTab("threads");setOpenId(room);}} />
@@ -1357,7 +1360,10 @@ export function PhoneApp() {
         )}
         {inChat && openWorkspace && openLink ? (
           <ThreadView
-            call={openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : null}
+            call={openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
+            callSlot={callSlot}
+            callStrip={openPane ? <PhoneCallStrip voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
+            callCapsule={openPane ? <PhoneCallCapsule voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
             title={openPane?.title ?? "New thread"}
             draftThread={viewingPending}
             project={openWorkspace.name}
@@ -2038,7 +2044,11 @@ function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: s
 }
 
 function ThreadView(props: {
-  call?: ReactNode;
+  /** The mic beside Send and the call's sheet; `button` is false while the box shows Send in its place. */
+  call?: (button: boolean) => ReactNode;
+  callSlot: { live: boolean; look: CallLook; hint: string };
+  /** Look A's strip above the compose row, and look C's capsule under the title. Each draws only in its look. */
+  callStrip?: ReactNode; callCapsule?: ReactNode;
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
@@ -2171,6 +2181,10 @@ function ThreadView(props: {
     if (open) requestAnimationFrame(() => props.endRef.current?.scrollIntoView({ block: "end" }));
   };
   const person = (id: string) => props.participants.find((participant) => participant.id === id) ?? { id, display_name: id, look: legacyAppearance(id) };
+  const capsule = props.callSlot.live && props.callSlot.look === "capsule";
+  // One round button: the mic while the box is empty, Send once it has something.
+  const round = composerButton({ hasContent: props.draft.text.trim() !== "" || props.draft.files.length > 0, canCall: !!props.call, live: props.callSlot.live, look: props.callSlot.look });
+  const pillCall = props.callSlot.live && props.callSlot.look === "pill";
   const asking = (id: string) => props.approvals.some((card) => card.id === id);
   const by = (id: string, live = false) => {
     const who = person(id);
@@ -2181,7 +2195,15 @@ function ThreadView(props: {
       <header className="ph-nav" inert={props.covered}>
         <button type="button" className="ph-icon ph-nav-back" aria-label="Back to Threads" onClick={props.onBack}><ChevronLeft size={26} /></button>
         {/* Tap the title for project and machine, like the model picker in the ChatGPT app. */}
-        <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
+        {/* During a Top bar call the capsule takes the project line's place; its buttons can't sit inside the title button. */}
+        {capsule ? (
+          <div className="ph-nav-title ph-has-capsule">
+            <button type="button" className="ph-nav-title-tap" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
+              <h2>{props.draftThread ? "New thread" : props.title}</h2>
+            </button>
+            {props.callCapsule}
+          </div>
+        ) : <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
           <h2>{props.draftThread ? "New thread" : props.title}</h2>
           <p ref={contextRef} className="ph-context">
             {props.started ? <Lock size={11} /> : props.hostIcon}
@@ -2189,7 +2211,7 @@ function ThreadView(props: {
             {machineFits && <span className="ph-context-machine">· {props.machine}</span>}
             <ChevronDown size={12} />
           </p>
-        </button>
+        </button>}
         {!crew && props.participants.length > 0 && (
           <button type="button" className="ph-cluster" aria-label={`Show the bots: ${props.participants.map((p) => p.display_name).join(", ")}`} onClick={() => { inputRef.current?.blur(); props.onCrew(false); }}>
             {props.participants.slice(0, 3).map((participant) => (
@@ -2392,15 +2414,16 @@ function ThreadView(props: {
             })}
           </div>
         )}
+        {props.callStrip}
         {/* One row, as in Messages: + for files and tools, then the message box. */}
         <div className="ph-compose-row">
           <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
             <Plus size={22} />
             {props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}
           </button>
-          <div className="ph-input">
+          <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
-              placeholder={props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
+              placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
               onChange={(event) => { props.onDraft(event.target.value); setCaret(event.target.selectionStart); }}
               onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
               onFocus={(event) => { setCaret(event.currentTarget.selectionStart); setTyping(true); }}
@@ -2409,8 +2432,8 @@ function ThreadView(props: {
               // Keep the keyboard up when it is: the box keeps focus.
               onPointerDown={(event) => event.preventDefault()}
               onClick={props.onTldr}><span aria-hidden="true">TL;</span><span aria-hidden="true">DR</span></button>
-            {props.call}
-            <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>
+            {props.call?.(round.mic)}
+            {round.send && <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>}
           </div>
         </div>
         {paused && <p className="ph-caption warn">{props.gate.reason}</p>}
