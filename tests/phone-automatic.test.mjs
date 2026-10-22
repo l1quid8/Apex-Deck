@@ -52,6 +52,42 @@ test("setup calls setMode automatic once, and a failure blocks connect and pair"
   assert.equal(phoneConnectionsMessage("native blew up"), "Couldn't set up phone connections: native blew up");
 });
 
+test("a setup failure is observed before anyone waits, and later waits still see it", async () => {
+  const { startAutomatic, whenAutomatic } = await import("../src/phone/automatic.ts");
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  try {
+    let rejectSetup;
+    const ready = startAutomatic({
+      setMode() {
+        return new Promise((_resolve, reject) => { rejectSetup = reject; });
+      },
+    });
+    await flush();
+    assert.deepEqual(unhandled, []);
+    rejectSetup(new Error("radio unavailable"));
+    await flush();
+    await flush();
+    assert.deepEqual(unhandled, [], "the rejection is observed with no caller waiting");
+    let acted = 0;
+    const go = () => { acted += 1; return "went"; };
+    for (let i = 0; i < 2; i += 1) {
+      await assert.rejects(whenAutomatic(ready, go), (error) => {
+        assert.ok(error instanceof FinalError);
+        assert.equal(error.message, "Couldn't set up phone connections: radio unavailable");
+        return true;
+      });
+    }
+    assert.equal(acted, 0);
+    await flush();
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("a successful setup lets connect and pair run, and no plugin skips setMode", async () => {
   const { startAutomatic, whenAutomatic } = await import("../src/phone/automatic.ts");
   let modes = [];

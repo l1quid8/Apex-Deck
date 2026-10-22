@@ -16,13 +16,20 @@ export function phoneConnectionsMessage(error: unknown): string {
   return `Couldn't set up phone connections: ${reason}`;
 }
 
-/** One `setMode("automatic")`. No plugin means there is nothing to set up. */
+/**
+ * One `setMode("automatic")`. No plugin means there is nothing to set up.
+ * A rejection is observed here, so a launch where nothing connects yet does
+ * not raise an unhandled rejection. Anyone who waits on the returned promise
+ * still sees that same rejection.
+ */
 export function startAutomatic(plugin: { setMode(mode: "automatic"): Promise<unknown> } | null): Promise<void> {
   if (!plugin) return Promise.resolve();
-  return plugin.setMode("automatic").then(
+  const ready = plugin.setMode("automatic").then(
     () => undefined,
     (error: unknown) => Promise.reject(new FinalError(phoneConnectionsMessage(error))),
   );
+  void ready.catch(() => {});
+  return ready;
 }
 
 /** QR pairing when the native plugin is there; an address and token otherwise. */
