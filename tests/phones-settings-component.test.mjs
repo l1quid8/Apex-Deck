@@ -27,10 +27,14 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
         if(cmd==='devices_list')return {version:1,devices:f.devices,revoked:[]};
         if(cmd==='devices_revoke'){f.devices=f.devices.filter(d=>d.endpointId!==args.id);return null;}
         if(cmd==='remote_info')return info();
+        if(cmd==='pair_start'){if(!f.on)throw Object.assign(Error('off'),{reason:'not_remote'});return {invitation:'inv'+f.count('pair_start'),link:'apexdeck://pair?p=sample',expires_at:Date.now()+300000};}
+        if(cmd==='pair_wait')return new Promise(()=>{});
+        if(cmd==='pair_cancel')return null;
         throw Error('unexpected '+cmd);},
+      sessionLoad:async()=>({workspaces:[],panes:[]}),
       remoteAccess:{
         get:async()=>{f.calls.push(['get']);return {on:f.on,owned:true};},
-        set:async on=>{f.calls.push(['set',on]);f.on=on;return {on,owned:true};}},
+        set:async on=>{f.calls.push(['set',on]);if(f.setFails)throw Error(f.setFails);f.on=on;return {on,owned:true};}},
       hosts:{},
     };
     window.ready=true;
@@ -112,6 +116,37 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
         await wait(()=>document.body.innerText.includes('No phones yet'),'revoked while off');
         await new Promise(r=>setTimeout(r,60));
         assert.equal(await run(()=>document.querySelector('[role=alertdialog]')),null,'no question while off');
+
+        // Pair phone while off: the sheet turns connections on, says so, and shows the code.
+        await click('Pair phone');
+        await wait(()=>document.querySelector('.pair-qr svg'),'QR after turning on');
+        assert.equal(await run(()=>window.fixture.on),true,'pairing turned connections on');
+        assert.match(await run(()=>document.querySelector('.pair-sheet').innerText),/Turned on phone connections so your phone can reach this Mac\. Nothing was restarted\./);
+        assert.equal(await run(()=>window.fixture.count('pair_start')),1);
+        await snap('pair-turned-on');
+        await click('Cancel');
+        await wait(()=>!document.querySelector('.pair-sheet'),'sheet closed');
+        assert.equal(await run(()=>window.fixture.count('pair_cancel')),1,'closing cancels the code');
+
+        // Off again, and turning on fails: the daemon's reason, no code, Try again.
+        await run(()=>{window.fixture.on=false;window.fixture.setFails='UDP port 41641 is in use by another app';window.fixture.mount();});
+        await wait(()=>document.querySelector('.phones-status-text')?.innerText.startsWith('Phone connections are off.'),'off before failing pair');
+        await click('Pair phone');
+        await wait(()=>document.querySelector('.pair-sheet [role=alert]'),'turn-on failure');
+        assert.equal(await run(()=>document.querySelector('.pair-sheet [role=alert]').textContent),"Couldn't turn on phone connections: UDP port 41641 is in use by another app. Nothing else changed.");
+        assert.equal(await run(()=>document.querySelector('.pair-qr')),null,'no code while connections are off');
+        assert.equal(await run(()=>window.fixture.count('pair_start')),1,'no new invitation was asked for');
+        assert.equal(await run(()=>[...document.querySelectorAll('.pair-sheet button')].some(b=>b.textContent==='Try again')),true);
+        await snap('pair-turn-on-failed');
+
+        // Try again once the port is free: on, said so, code shown.
+        await run(()=>{window.fixture.setFails='';});
+        await click('Try again');
+        await wait(()=>document.querySelector('.pair-qr svg'),'QR after Try again');
+        assert.equal(await run(()=>window.fixture.on),true);
+        assert.match(await run(()=>document.querySelector('.pair-sheet').innerText),/Turned on phone connections/);
+        assert.equal(await run(()=>window.fixture.count('pair_start')),2);
+        await click('Cancel');
 
         console.log('Phones settings Chromium checks passed'); app.exit(0);
       }catch(error){console.error(error.stack);app.exit(1);}
