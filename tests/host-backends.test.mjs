@@ -53,6 +53,21 @@ test('source edits reject offline rather than saving after reconnection', async 
   await guarded.call('monitor_sources_update', { workspaceId: 'p' });
   assert.equal(calls, 1);
 });
+
+test('versioned assistant settings reject disconnected writes without replaying after reconnect', async () => {
+  const connection = store.hostConnectionStore('server', 'Server');
+  const calls = [];
+  const guarded = mod.guardHostWrites({ call: async (...args) => { calls.push(args); return { saved: true }; } }, connection);
+  const args = { assistantId: 'asst-1', expectedRevision: 3, settings: { name: 'Null' } };
+  for (const status of [{ kind: 'idle' }, { kind: 'resync' }, { kind: 'reconnecting', attempt: 1 }]) {
+    connection.setStatus(status);
+    await assert.rejects(guarded.call('personal_workspace_configure', args), /nothing was queued/);
+  }
+  connection.setStatus({ kind: 'connected', hostId: 'server' });
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await guarded.call('personal_workspace_configure', args), { saved: true });
+  assert.deepEqual(calls, [['personal_workspace_configure', args]]);
+});
 test('stable host registry starts only requested hosts and keeps preferences on Mac',async()=>{
   assert.equal(typeof mod.createHostBackends,'function');
   const seen=[];let starts=0;
