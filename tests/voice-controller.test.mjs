@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createVoiceController } from "../src/voice/controller.ts";
 function fixture(options = {}) {
-  let helper, listener, drained, playing, disconnected;
+  let helper, listener, drained, playing, disconnected, helperAudio;
   const sent = [],
     posted = [],
     stopped = [],
@@ -49,8 +49,9 @@ function fixture(options = {}) {
         echoCancellation: true,
       };
     },
-    connect: async (_r, fn, _audio, failure) => {
+    connect: async (_r, fn, audio, failure) => {
       helper = fn;
+      helperAudio = audio;
       disconnected = failure;
       return {
         send: (m) => sent.push(m),
@@ -60,6 +61,7 @@ function fixture(options = {}) {
         },
       };
     },
+    playSample: options.playSample,
     candidates: () => options.candidates ?? [candidate],
     bridge: () => bridge,
     voice: () => "am_michael",
@@ -67,6 +69,7 @@ function fixture(options = {}) {
     focus: () => {},
   });
   return {
+    helperAudio: (pcm, gen = 0) => helperAudio(pcm, gen),
     c,
     scope,
     sent,
@@ -422,4 +425,117 @@ test("switching agents mid-call keeps the previous agent working", async () => {
     if (how === "spoken") assert.equal(f.posted.at(-1).scope.participantId, "b");
     await f.c.end();
   }
+});
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+function samplePlayer() {
+  const played = [];
+  let finish;
+  return {
+    played,
+    finish: () => finish(),
+    playSample: (pcm, rate) => {
+      played.push({ pcm, rate });
+      return { done: new Promise((r) => (finish = r)), stop: () => finish() };
+    },
+  };
+}
+test("a voice sample outside a call speaks once in that voice, plays, then frees the helper", async () => {
+  const p = samplePlayer();
+  const f = fixture({ playSample: p.playSample });
+  let started = false;
+  const done = f.c.sample("bf_emma", () => (started = true));
+  await tick();
+  const start = f.sent.find((m) => m.type === "start");
+  assert.equal(start.voice, "bf_emma");
+  assert.equal(f.c.getState().status, "off");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["bf_emma"] });
+  const speak = f.sent.find((m) => m.type === "speak");
+  assert.equal(speak.voice, "bf_emma");
+  assert.equal(speak.callId, start.callId);
+  f.helperAudio(new Int16Array([1, 2]));
+  f.helperAudio(new Int16Array([3]));
+  assert.deepEqual(f.sent.filter((m) => m.type === "playbackProgress").map((m) => m.bytes), [4, 2]);
+  f.event({ type: "audioEnd", callId: start.callId, generation: 0, segmentId: 1 });
+  assert.deepEqual([...p.played[0].pcm], [1, 2, 3]);
+  assert.equal(p.played[0].rate, 24000);
+  assert.equal(started, true);
+  assert.equal(f.runtimeStops.length, 0);
+  p.finish();
+  await done;
+  assert.equal(f.runtimeStops.length, 1);
+  assert.equal(f.c.getState().status, "off");
+});
+test("a voice sample the helper doesn't have fails plainly", async () => {
+  const f = fixture({ playSample: samplePlayer().playSample });
+  const done = f.c.sample("zz_nobody");
+  await tick();
+  const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["bf_emma"] });
+  await assert.rejects(done, /isn't installed/);
+  assert.equal(f.runtimeStops.length, 1);
+});
+test("a voice sample before calls are set up asks for setup without starting the helper", async () => {
+  let starts = 0;
+  const f = fixture({
+    playSample: samplePlayer().playSample,
+    status: { installed: false, supported: true },
+    start: async () => (starts++, { port: 1, token: "x", protocolVersion: 1 }),
+  });
+  await assert.rejects(f.c.sample("bf_emma"), /Set up calls first/);
+  assert.equal(starts, 0);
+});
+test("starting a call stops a playing sample and frees the helper first", async () => {
+  const p = samplePlayer();
+  const f = fixture({ playSample: p.playSample });
+  const done = f.c.sample("bf_emma");
+  await tick();
+  assert.equal(f.sent.filter((m) => m.type === "start").length, 1);
+  await f.c.start(f.scope);
+  await done;
+  assert.equal(f.runtimeStops.length, 1);
+  assert.ok(f.closeReasons.includes("sample done"));
+  const starts = f.sent.filter((m) => m.type === "start");
+  assert.equal(starts.length, 2);
+  assert.equal(starts[1].voice, "am_michael");
+  assert.notEqual(starts[1].callId, starts[0].callId);
+  assert.equal(f.c.getState().status, "warming");
+  await f.c.end();
+});
+test("during a call, a sample speaks through the call instead of opening the helper again", async () => {
+  const f = fixture({ playSample: samplePlayer().playSample });
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_michael", "bf_emma"] });
+  await f.c.sample("bf_emma");
+  const speak = f.sent.filter((m) => m.type === "speak").at(-1);
+  assert.equal(speak.voice, "bf_emma");
+  assert.equal(speak.callId, start.callId);
+  assert.equal(f.sent.filter((m) => m.type === "start").length, 1);
+  await f.c.end();
+});
+test("a call started while a sample is still loading frees the sample's helper before taking it", async () => {
+  let release;
+  const order = [];
+  const f = fixture({
+    playSample: samplePlayer().playSample,
+    start: () => {
+      order.push("start");
+      return order.length === 1
+        ? new Promise((r) => (release = () => r({ port: 1, token: "x", protocolVersion: 1 })))
+        : Promise.resolve({ port: 2, token: "y", protocolVersion: 1 });
+    },
+  });
+  const done = f.c.sample("bf_emma");
+  await tick();
+  const call = f.c.start(f.scope);
+  await tick();
+  assert.deepEqual(order, ["start"]);
+  release();
+  await done;
+  await call;
+  assert.deepEqual(f.runtimeStops.map((r) => r.port), [1]);
+  assert.deepEqual(order, ["start", "start"]);
+  assert.equal(f.sent.filter((m) => m.type === "start").length, 1);
+  await f.c.end();
 });

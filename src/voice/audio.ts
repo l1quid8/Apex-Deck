@@ -107,3 +107,33 @@ export async function openVoiceAudio(
     throw e;
   }
 }
+/** Plays one finished voice sample through the speakers. Never opens the mic. */
+export function playVoiceSample(pcm: Int16Array, sampleRate: number) {
+  const context = new AudioContext({ sampleRate });
+  const buffer = context.createBuffer(1, Math.max(1, pcm.length), sampleRate);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768;
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  source.connect(context.destination);
+  let stopped = false;
+  const done = new Promise<void>((resolve) => {
+    source.onended = () => resolve();
+  }).finally(() => void context.close());
+  void context.resume().then(() => {
+    if (!stopped) source.start();
+  });
+  return {
+    done,
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      try {
+        source.stop();
+      } catch {
+        // Not started yet.
+        source.onended?.(new Event("ended"));
+      }
+    },
+  };
+}

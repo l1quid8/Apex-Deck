@@ -1,4 +1,5 @@
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
+import { VoiceSampleButton } from './voice/VoiceSampleButton';
 import { composerButton } from './voice/callView';
 import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
 import { createThreadVoiceBridge } from './voice/threadBridge';
@@ -2912,12 +2913,15 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           )}
           <label className="voice-field">
             Voice
-            <select name="voice" value={draft.voice ?? ""} onChange={(e) => set("voice", e.target.value)}>
-              <option value="">Default · {voiceLabel(defaultVoiceOf(voiceConfig))}</option>
-              {[...new Set([...(draft.voice ? [draft.voice] : []), ...CALL_VOICES])].map((v) => (
-                <option key={v} value={v}>{voiceLabel(v)}</option>
-              ))}
-            </select>
+            <span className="voice-pick">
+              <select name="voice" value={draft.voice ?? ""} onChange={(e) => set("voice", e.target.value)}>
+                <option value="">Default · {voiceLabel(defaultVoiceOf(voiceConfig))}</option>
+                {[...new Set([...(draft.voice ? [draft.voice] : []), ...CALL_VOICES])].map((v) => (
+                  <option key={v} value={v}>{voiceLabel(v)}</option>
+                ))}
+              </select>
+              <VoiceSampleButton voice={draft.voice || defaultVoiceOf(voiceConfig)} />
+            </span>
             <span className="hint">How it sounds on calls. Default follows Settings. Picking a voice during a call changes only that chat.</span>
           </label>
           <PersonaDraft

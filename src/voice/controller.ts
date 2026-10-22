@@ -35,12 +35,16 @@ export interface VoiceDependencies<R = VoiceRuntime> {
     audio: (pcm: Int16Array, generation: number) => void,
     error: (e: Error) => void,
   ): Promise<LocalVoiceClient>;
+  /** Plays a finished voice sample through the speakers (no mic). */
+  playSample?(pcm: Int16Array, sampleRate: number): { done: Promise<void>; stop(): void };
   candidates(): VoiceCandidate[];
   bridge(scope: CallScope): ThreadVoiceBridge;
   voice(scope: CallScope): string;
   silence(): number;
   focus(scope: CallScope): void;
 }
+/** What a voice sample says, outside a call. */
+export const SAMPLE_TEXT = "Hi there. This is how I'll sound on a call.";
 const same = (a: CallScope, b: CallScope) =>
   a.hostId === b.hostId &&
   a.roomId === b.roomId &&
@@ -433,8 +437,111 @@ export function createVoiceController<R = VoiceRuntime>(
     else if (e.type === "error")
       error(Error(e.message ?? "Local voice failed"));
   }
+  // A voice sample outside a call borrows the helper for a few seconds. Only one
+  // connection fits, so a call stops the sample before it takes the helper.
+  let sampling: { stop(): Promise<void> } | undefined;
+  const stopSample = () => sampling?.stop() ?? Promise.resolve();
+  async function sample(voice: string, onPlay?: () => void): Promise<void> {
+    if (state.status !== "off" && state.status !== "error") {
+      preview(voice);
+      return;
+    }
+    await stopSample();
+    const play = deps.playSample;
+    if (!play) throw Error("Voice samples need the desktop app");
+    let stopped = false,
+      launching: Promise<R> | undefined,
+      helperClient: LocalVoiceClient | undefined,
+      player: { done: Promise<void>; stop(): void } | undefined,
+      timer: ReturnType<typeof setTimeout> | undefined,
+      settle: (e?: Error) => void = () => {};
+    const finished = new Promise<void>((resolve, reject) => {
+      settle = (e) => (e ? reject(e) : resolve());
+    });
+    let released: Promise<void> | undefined;
+    const finish = (e?: Error) =>
+      (released ??= (async () => {
+        stopped = true;
+        clearTimeout(timer);
+        helperClient?.close("sample done");
+        player?.stop();
+        if (sampling === me) sampling = undefined;
+        try {
+          // A stop mid-launch waits for it, so a call never inherits a helper this sample then lets go of.
+          const runtime = await launching?.catch(() => undefined);
+          if (runtime) await deps.runtime.stop(runtime);
+        } finally {
+          settle(e);
+        }
+      })());
+    const me = { stop: () => finish() };
+    sampling = me;
+    const id = "sample-" + crypto.randomUUID();
+    const pcm: Int16Array[] = [];
+    const send = (m: Record<string, unknown>) =>
+      helperClient?.send({ ...m, callId: id, generation: 0 });
+    const fail = (e: Error) => void finish(e);
+    try {
+      const status = await deps.runtime.status();
+      if (!status.supported)
+        throw Error(status.reason ?? "Local calls require Apple Silicon macOS");
+      if (!status.installed)
+        throw Error("Set up calls first. Start a call once to download the voices.");
+      if (stopped) return;
+      launching = deps.runtime.start();
+      const runtime = await launching;
+      if (stopped) return;
+      timer = setTimeout(() => fail(Error("The voice sample took too long")), 30000);
+      helperClient = await deps.connect(
+        runtime,
+        (e) => {
+          if (stopped || e.callId !== id) return;
+          if (e.type === "ready") {
+            if (!e.voices?.includes(voice)) fail(Error("That voice isn't installed"));
+            else
+              send({ type: "speak", requestId: "sample", segmentId: 1, text: SAMPLE_TEXT, voice });
+          } else if (e.type === "audioEnd") {
+            send({ type: "end" });
+            helperClient?.close("sample done");
+            helperClient = undefined;
+            const all = new Int16Array(pcm.reduce((n, p) => n + p.length, 0));
+            pcm.reduce((at, p) => (all.set(p, at), at + p.length), 0);
+            player = play(all, 24000);
+            onPlay?.();
+            player.done.then(() => finish(), (err) => fail(err instanceof Error ? err : Error(String(err))));
+          } else if (e.type === "error") fail(Error(e.message ?? "Local voice failed"));
+        },
+        (chunk) => {
+          if (stopped) return;
+          pcm.push(chunk);
+          send({ type: "playbackProgress", bytes: chunk.byteLength });
+        },
+        fail,
+      );
+      if (stopped) {
+        helperClient.close("sample stopped");
+        return;
+      }
+      send({ type: "start", voice, silenceMs: 100, nameHints: [] });
+    } catch (e) {
+      fail(e instanceof Error ? e : Error(String(e)));
+    }
+    return finished;
+  }
+  function preview(voice: string) {
+    if (!callId || !state.voices.includes(voice)) return;
+    stopAudio();
+    control({
+      type: "speak",
+      requestId: "preview",
+      segmentId: ++segment,
+      text: "Hello. This is the voice for this agent.",
+      voice,
+    });
+  }
   async function start(scope: CallScope) {
     await end("new call started");
+    await stopSample();
     cleanup = Promise.resolve();
     const myEpoch = ++epoch;
     set({ status: "warming", scope, startedAt: Date.now(), muted: false, error: undefined });
@@ -511,17 +618,9 @@ export function createVoiceController<R = VoiceRuntime>(
       // Muting only stops the mic; the agent keeps working and speaking.
       audio?.mute(value);
     },
-    preview(voice: string) {
-      if (!callId || !state.voices.includes(voice)) return;
-      stopAudio();
-      control({
-        type: "speak",
-        requestId: "preview",
-        segmentId: ++segment,
-        text: "Hello. This is the voice for this agent.",
-        voice,
-      });
-    },
+    preview,
+    sample,
+    stopSample,
   };
 }
 

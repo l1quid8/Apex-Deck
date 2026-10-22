@@ -11,6 +11,7 @@ import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
 import { CALL_VOICES, defaultVoiceOf, readVoiceSettings } from "./voice/settings";
+import { VoiceSampleButton } from "./voice/VoiceSampleButton";
 import { voiceLabel } from "./voice/callView";
 import { DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
@@ -154,9 +155,12 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
       </select>
     </Row>
     <Row label="Voice for calls" note="For agents with no voice of their own. Set one agent's voice in its form.">
-      <select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={(e) => onChange({ ...settings, voice: { ...voice, defaultVoice: e.target.value } })}>
-        {[...new Set([defaultVoiceOf(voice), ...CALL_VOICES])].map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
-      </select>
+      <span className="voice-pick">
+        <select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={(e) => onChange({ ...settings, voice: { ...voice, defaultVoice: e.target.value } })}>
+          {[...new Set([defaultVoiceOf(voice), ...CALL_VOICES])].map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
+        </select>
+        <VoiceSampleButton voice={defaultVoiceOf(voice)} />
+      </span>
     </Row>
     <Row label="Remembered models" note={remembered === 0 ? "None yet. Model names you type in the bot form are offered again next time." : `Model names from ${remembered} ${remembered === 1 ? "provider" : "providers"}, offered again in the bot form.`}>
       <button disabled={remembered === 0} onClick={() => { forgetModels(); setRemembered(0); }}>Clear</button>
