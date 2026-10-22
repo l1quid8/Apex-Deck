@@ -63,6 +63,19 @@ export function quoteFor(message: Message, nameOf: (id: string) => string): Repl
     : { id: "", name: "I", text: message.text };
 }
 
+/** Add to chat: the part of a message picked with the mouse or a finger, under the name of whoever wrote it. */
+export function partQuote(message: Message, part: string, nameOf: (id: string) => string): ReplyQuote {
+  return { ...quoteFor(message, nameOf), text: part };
+}
+
+/** What More details asks about a picked part. */
+export const MORE_DETAILS = "Explain this part in more detail.";
+
+/** More details: ask for a picked part to be explained, led by the bot that wrote it. */
+export function moreDetailsText(quote: ReplyQuote, people: readonly Mentionable[]): string {
+  return replyText(MORE_DETAILS, quote, people);
+}
+
 /** The choices in Send to ▾: every bot but the current lead, then Everyone. */
 export function handOffChoices(lead: string | null, bots: { id: string; name: string }[]): { to: string; label: string }[] {
   return [

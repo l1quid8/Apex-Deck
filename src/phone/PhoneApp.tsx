@@ -68,9 +68,10 @@ import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuatio
 import { ThreadList } from "./ThreadList";
 import { forkedPane, forkUpto } from "./messageFork";
 import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
-import { cutBack, needsFull, outgoingText, putBackLine, withQuote } from "./messageTools";
+import { PickedText } from "./PickedText";
+import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
 import { pinSource, pinText, responsePin } from "../messagePins";
-import { handOffChoices, handOffLabel, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
+import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, readFolds } from "./threadListRules";
 import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
@@ -106,6 +107,8 @@ const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
 type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
 type Draft = { text: string; files: ComposerAttachment[] };
+/** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
+type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
 type Pending = { id: string; workspaceId: string };
 type Ask = { paneId: string; workspaceId: string };
 type SheetKind = "project" | "where" | "tools";
@@ -403,9 +406,9 @@ export function PhoneApp() {
   /** Each thread's messages waiting for a bot to finish, as on the desktop. They live on the phone while the app is open. */
   const queues = useRef(new Map<string, ParticipantQueues>());
   const [queued, setQueued] = useState<Record<string, { items: ParticipantMessage[]; paused: string[]; lost: boolean }>>({});
-  /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files.
+  /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files and quotes.
    *  `inBox` while Send is still waiting on it: the box keeps it until the machine has it or it is queued. */
-  const queuedDrafts = useRef(new Map<string, { draft: Draft; inBox: boolean; failed?: boolean }>());
+  const queuedDrafts = useRef(new Map<string, QueuedDraft>());
   /** The queued message whose Steer now is asking first. */
   const [steerAsk, setSteerAsk] = useState<number | null>(null);
   /** Files still being read into a draft; Send waits for them. */
@@ -682,12 +685,14 @@ export function PhoneApp() {
   useEffect(()=>{if(openPane&&openHostId)phoneVoice.threadOpened(openHostId,openPane.id);},[openPane?.id,openHostId]);
   const busyRef = useRef(busy);
   busyRef.current = busy;
-  /** Put a queued message back in its thread's box, with the files it was sent with. */
+  /** Put a queued message back in its thread's box, with the files and quotes it was sent with. */
   function takeBack(paneId: string, text: string) {
     const key = `${paneId}\u0000${text}`;
-    const back = queuedDrafts.current.get(key)?.draft ?? { text: splitTldr(text).text, files: [] };
+    const sent = queuedDrafts.current.get(key);
+    const back = sent?.draft ?? { text: splitTldr(text).text, files: [] };
     queuedDrafts.current.delete(key);
     setDrafts((all) => ({ ...all, [paneId]: giveBack(all[paneId] ?? emptyDraft(), back) }));
+    if (sent?.quotes.length) setQuotes((all) => ({ ...all, [paneId]: quotesBack(all[paneId] ?? [], sent.quotes) }));
   }
   /** A thread's queue, made the first time it is needed. A thread never changes machines once it has started. */
   function queueFor(paneId: string, hostId: string): ParticipantQueues {
@@ -988,7 +993,7 @@ export function PhoneApp() {
       // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
       // This resolves once the machine has it, or once it is queued; until then the box keeps it.
       const key = `${sentPane.id}\u0000${body}`;
-      const entry: { draft: Draft; inBox: boolean; failed?: boolean } = { draft, inBox: true };
+      const entry: QueuedDraft = { draft, quotes: sentQuotes, inBox: true };
       queuedDrafts.current.set(key, entry);
       try { await queueFor(sentPane.id, host.machine.id).send(body); }
       catch (error) { queuedDrafts.current.delete(key); throw error; }
@@ -1359,10 +1364,26 @@ export function PhoneApp() {
     return ok;
   }
 
-  /** Quote a message in the box. A TL;DR instruction rides on a sent message but never shows, so the quote leaves it out. */
-  function quoteMessage(paneId: string, message: Message) {
-    const next = quoteFor({ ...message, text: splitTldr(message.text).text }, (id) => roomRef.current?.participants.find((p) => p.id === id)?.display_name ?? id);
+  const nameIn = (id: string) => roomRef.current?.participants.find((p) => p.id === id)?.display_name ?? id;
+
+  /** Quote a message in the box, or the `part` of it picked for Add to chat. A TL;DR instruction rides on a sent message but never shows, so the quote leaves it out. */
+  function quoteMessage(paneId: string, message: Message, part?: string) {
+    const next = part === undefined ? quoteFor({ ...message, text: splitTldr(message.text).text }, nameIn) : partQuote(message, part, nameIn);
     setQuotes((all) => ({ ...all, [paneId]: withQuote(all[paneId] ?? [], next) }));
+  }
+
+  /** More details: ask the bot that wrote a picked part to explain it, as on the desktop. It never sat in the box,
+   *  but one that can't be sent, or is taken back from the queue, goes into it with its quote. */
+  function explainPart(paneId: string, message: Message, part: string) {
+    const shown = roomRef.current;
+    if (!shown || shown.id !== paneId || shown.participants.length === 0 || !openLink) return;
+    if (openLink.status !== "online") { setNotice(downLine(openLink)); return; }
+    const quote = partQuote(message, part, nameIn);
+    const body = moreDetailsText(quote, shown.participants);
+    const key = `${paneId}\u0000${body}`;
+    queuedDrafts.current.set(key, { draft: { text: MORE_DETAILS, files: [] }, quotes: [quote], inBox: false });
+    stuckRef.current = true;
+    queueFor(paneId, openLink.id).send(body).catch((error) => { queuedDrafts.current.delete(key); setNotice(words(error)); });
   }
 
   /** Pin a message for every model, or unpin it. */
@@ -1612,7 +1633,8 @@ export function PhoneApp() {
             quotes={openId ? quotes[openId] ?? [] : []}
             onQuotes={(next) => { if (openId) setQuotes((all) => ({ ...all, [openId]: next })); }}
             actions={viewingPending || !openPane ? undefined : {
-              onQuote: (message) => quoteMessage(openPane.id, message),
+              onQuote: (message, part) => quoteMessage(openPane.id, message, part),
+              onExplain: (message, part) => explainPart(openPane.id, message, part),
               onCopy: copyMessage,
               onPin: (message) => togglePin(openPane.id, message),
               onGoBack: (message) => { void goBack(openPane.id, message); },
@@ -2283,7 +2305,10 @@ function ThreadView(props: {
   quotes: ReplyQuote[]; onQuotes(next: ReplyQuote[]): void;
   /** The row under each message, as on the desktop. Absent in an unsent new thread. */
   actions?: {
-    onQuote(message: Message): void;
+    /** Quote the message, or only the `part` picked in it (Add to chat). */
+    onQuote(message: Message, part?: string): void;
+    /** More details on a part picked in a message. */
+    onExplain(message: Message, part: string): void;
     onCopy(text: string): Promise<boolean>;
     onPin(message: Message): void;
     onGoBack(message: Message): void;
@@ -2663,6 +2688,18 @@ function ThreadView(props: {
         ))}
         <div ref={props.endRef} />
       </main>
+      {/* Text picked inside one message: the desktop's Add to chat and More details, clear of iPhone's own menu. */}
+      {props.actions && <PickedText key={props.paneId} chat={chatRef} covered={props.covered} canExplain={!paused && props.participants.length > 0}
+        onAdd={(seq, text) => {
+          const message = props.messages.find((m) => m.seq === seq);
+          if (!message) return;
+          props.actions?.onQuote(message, text);
+          inputRef.current?.focus();
+        }}
+        onExplain={(seq, text) => {
+          const message = props.messages.find((m) => m.seq === seq);
+          if (message) props.actions?.onExplain(message, text);
+        }} />}
       <form className={`ph-composer${props.plan ? " plan" : ""}${props.tldr ? " tldr" : ""}`} inert={props.covered} onSubmit={(event) => {
         event.preventDefault();
         if (props.tldr && props.gate.enabled && !props.sending && !props.attaching) wiggle(inputRef.current?.parentElement ?? null);

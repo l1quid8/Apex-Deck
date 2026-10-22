@@ -935,6 +935,14 @@
 .ph-quotes .quote-cancel { min-height: 36px; width: 36px; height: 36px; color: var(--muted); }
 .ph-quotes .hand-off-menu button { min-height: 40px; font-size: 14px; }
 
+/* Text picked in a message: the desktop's Add to chat / More details on the side iPhone's own Copy menu
+   leaves free, past the selection's handles. Placed in the phone frame, with thumb-sized taps. */
+.ph-app .selection-actions:is(.above, .below) { position: absolute; }
+.ph-app .selection-actions.above { transform: translate(-50%, calc(-100% - 14px)); }
+.ph-app .selection-actions.below { transform: translate(-50%, 14px); }
+.ph-app .selection-actions button { min-height: 36px; padding: 0 12px; font-size: 13px; }
+.ph-app .selection-actions button:active:not(:disabled) { background: var(--panel-2); }
+
 /* Section headings share project controls, with recovery actions alongside. */
 .ph-tl-heading { display: flex; align-items: center; margin-top: 14px; }
 .ph-tl-heading .ph-tl-section { flex: 1; min-width: 0; width: auto; color: var(--muted); font-size: 14px; }

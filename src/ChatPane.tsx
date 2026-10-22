@@ -90,7 +90,8 @@ import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.t
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
-import { handOffChoices, handOffLabel, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
@@ -1674,7 +1675,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     const box = range.getBoundingClientRect();
     setPicked({ message, text, x: box.left + box.width / 2, y: box.top });
   };
-  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => ({ ...quoteFor(p.message, (id) => names.get(id) ?? id), text: p.text });
+  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => partQuote(p.message, p.text, (id) => names.get(id) ?? id);
   const addPicked = () => {
     if (!picked) return;
     const next = pickedQuote(picked);
@@ -1685,7 +1686,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   const explainPicked = () => {
     if (!picked || !ready || participants.length === 0) return;
-    const message = replyText("Explain this part in more detail.", pickedQuote(picked), participants);
+    const message = moreDetailsText(pickedQuote(picked), participants);
     setPicked(null);
     window.getSelection()?.removeAllRanges();
     stuck.current = true;
@@ -3430,10 +3431,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       <div className="transcript" ref={scroller} onScroll={() => { setPicked(null); onTranscriptScroll(); }}
         onMouseUp={() => requestAnimationFrame(pickSelection)} onKeyUp={(e) => e.shiftKey && pickSelection()}
         onMouseDown={(e) => { if (!(e.target as Element).closest(".selection-actions")) setPicked(null); }}>
-        {picked && <span className="selection-actions" role="toolbar" aria-label="Selected text" style={{ left: picked.x, top: picked.y }}>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addPicked}>Add to chat</button>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={explainPicked} disabled={!ready || participants.length === 0}>More details</button>
-        </span>}
+        {picked && <SelectionActions x={picked.x} y={picked.y} canExplain={ready && participants.length > 0} onAdd={addPicked} onExplain={explainPicked} />}
         {landing && (
           <div className={`empty${quickAdd === "dock" ? " away" : ""}`}>
             <LandingTexture settings={landingTexture} />
