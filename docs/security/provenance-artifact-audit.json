@@ -1,0 +1,54 @@
+{
+  "sourceCommit": "04da0fcd519049a9b58dd114f2eb2a897353b465",
+  "artifact": "/Users/tylercaldwell/Downloads/apex-deck/release/provenance-boundary-review-0.8.2/mac-arm64/Apex Deck.app",
+  "signatureChecks": {
+    "app": {
+      "verify": "",
+      "details": "Executable=/Users/tylercaldwell/Downloads/apex-deck/release/provenance-boundary-review-0.8.2/mac-arm64/Apex Deck.app/Contents/MacOS/Apex Deck\nIdentifier=dev.apexdeck.app\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=444 flags=0x10000(runtime) hashes=3+7 location=embedded\nVersionPlatform=1\nVersionMin=851968\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=b1479594ee2dd4994f5cfab5240245d3ab62fb85\nCandidateCDHashFull sha256=b1479594ee2dd4994f5cfab5240245d3ab62fb8564a95d48a3a8000abe088d1b\nHash choices=sha256\nCMSDigest=b1479594ee2dd4994f5cfab5240245d3ab62fb8564a95d48a3a8000abe088d1b\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=16384\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=b1479594ee2dd4994f5cfab5240245d3ab62fb85\nSignature size=9048\nAuthority=Developer ID Application: Tyler Caldwell (75N5HW62JH)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Oct 22, 2026 at 2:56:43 PM\nInfo.plist entries=32\nTeamIdentifier=75N5HW62JH\nRuntime Version=26.5.0\nSealed Resources version=2 rules=13 files=30\nInternal requirements count=1 size=176\nTotal signatures=1\nChosen signature=1"
+    },
+    "Contents/Resources/bin/apex-daemon": {
+      "verify": "",
+      "details": "Executable=/Users/tylercaldwell/Downloads/apex-deck/release/provenance-boundary-review-0.8.2/mac-arm64/Apex Deck.app/Contents/Resources/bin/apex-daemon\nIdentifier=apex-daemon\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=75351 flags=0x10000(runtime) hashes=2344+7 location=embedded\nVersionPlatform=1\nVersionMin=851968\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=9e8fa94061603f5f7d2bd76e2004edefc5982762\nCandidateCDHashFull sha256=9e8fa94061603f5f7d2bd76e2004edefc59827621983a63ebf39b4599279bc86\nHash choices=sha256\nCMSDigest=9e8fa94061603f5f7d2bd76e2004edefc59827621983a63ebf39b4599279bc86\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=27410432\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=9e8fa94061603f5f7d2bd76e2004edefc5982762\nSignature size=9048\nAuthority=Developer ID Application: Tyler Caldwell (75N5HW62JH)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Oct 22, 2026 at 2:56:40 PM\nInfo.plist=not bound\nTeamIdentifier=75N5HW62JH\nRuntime Version=27.0.0\nSealed Resources=none\nInternal requirements count=1 size=172\nTotal signatures=1\nChosen signature=1"
+    },
+    "Contents/Resources/bin/apex-provenance": {
+      "verify": "",
+      "details": "Executable=/Users/tylercaldwell/Downloads/apex-deck/release/provenance-boundary-review-0.8.2/mac-arm64/Apex Deck.app/Contents/Resources/bin/apex-provenance\nIdentifier=apex-provenance\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=2267 flags=0x10000(runtime) hashes=60+7 location=embedded\nVersionPlatform=1\nVersionMin=851968\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=7969155caba23f9c3fcc0153ff731c730f57d3c6\nCandidateCDHashFull sha256=7969155caba23f9c3fcc0153ff731c730f57d3c696671baaaa03dce91c1f89f8\nHash choices=sha256\nCMSDigest=7969155caba23f9c3fcc0153ff731c730f57d3c696671baaaa03dce91c1f89f8\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=720896\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=7969155caba23f9c3fcc0153ff731c730f57d3c6\nSignature size=9048\nAuthority=Developer ID Application: Tyler Caldwell (75N5HW62JH)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Oct 22, 2026 at 2:56:40 PM\nInfo.plist=not bound\nTeamIdentifier=75N5HW62JH\nRuntime Version=27.0.0\nSealed Resources=none\nInternal requirements count=1 size=176\nTotal signatures=1\nChosen signature=1"
+    }
+  },
+  "entitlements": {
+    "com.apple.security.cs.allow-jit": true,
+    "com.apple.security.device.audio-input": true
+  },
+  "fuses": [
+    {
+      "offset": 157895428,
+      "version": 1,
+      "states": [
+        48,
+        48,
+        48,
+        48,
+        49,
+        49,
+        48,
+        49,
+        49
+      ]
+    }
+  ],
+  "asarIntegrity": {
+    "Resources/app.asar": {
+      "algorithm": "SHA256",
+      "hash": "3f76a078a5eccfd76ecc05681c7506491553ded97364befdd499f8ecc165781c"
+    }
+  },
+  "sha256": {
+    "Contents/Resources/app.asar": "2624f9be97365b548361f78594aad0b0f847e9ee6345a39c49f01e93b9715a7e",
+    "Contents/Resources/bin/apex-daemon": "0411c83313bfe2921f47ef753df257afefdac9fa5e7bf74aff784c896d5e10c7",
+    "Contents/Resources/bin/apex-provenance": "f486bf07c3a1afb99369bec761e46db9cea00d3850abf3a12741c7d73b23894f"
+  },
+  "installed": false,
+  "notarized": false,
+  "acceptance": "offline artifact checks only; native acceptance blocked",
+  "asarHeaderVerified": true
+}

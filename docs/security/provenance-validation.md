@@ -64,7 +64,16 @@ normal data directory before migration is ready.
 
 ## Review build
 
-A signed app candidate is being prepared under the normal release directory
-for offline signature/fuse/entitlement inspection. It is not installed or
-launched. Its precise source commit and artifact hashes will be recorded after
-packaging. A packaged artifact alone cannot pass the native installation gate.
+Built and signed source commit `04da0fcd519049a9b58dd114f2eb2a897353b465`:
+
+`/Users/tylercaldwell/Downloads/apex-deck/release/provenance-boundary-review-0.8.2/mac-arm64/Apex Deck.app`
+
+Offline checks passed: strict deep code-signature verification of the app and
+both bundled services; hardened runtime; only JIT and audio-input entitlements;
+RunAsNode, Node options and CLI inspector disabled; ASAR integrity and
+OnlyLoadAppFromAsar enabled. The actual archive header SHA256 matches the
+signed Info.plist. [Artifact audit and hashes](provenance-artifact-audit.json)
+records the exact artifact. It is signed but not notarized, installed or
+launched. This user-owned candidate must be copied into the protected location
+by the installer before the broker will accept it. A packaged artifact alone
+cannot pass the native installation gate.
