@@ -2,6 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bridgeConnect, toBase64, fromBase64, daemonTransport } from '../src/electronShell.ts';
 
+test('versioned assistant configuration requires the current advertised capability before transport send', async () => {
+  const advertised = new Set();
+  const calls = [];
+  const transport = daemonTransport({
+    call: async (...args) => { calls.push(args); return { saved: true }; },
+    on() {},
+    hasCapability: capability => advertised.has(capability),
+  });
+  const args = { assistantId: 'asst-1', expectedRevision: 7, settings: { name: 'Null' } };
+  assert.equal(transport.supports('assistant_workspace_v4'), false);
+  assert.throws(() => transport.call('personal_workspace_configure', args), /Update.*reconnect/i);
+  assert.deepEqual(calls, []);
+  advertised.add('assistant_workspace_v4');
+  assert.equal(transport.supports('assistant_workspace_v4'), true);
+  assert.deepEqual(await transport.call('personal_workspace_configure', args), { saved: true });
+  assert.deepEqual(calls, [['personal_workspace_configure', args]]);
+  advertised.clear();
+  assert.throws(() => transport.call('personal_workspace_configure', args), /Update.*reconnect/i);
+  assert.equal(calls.length, 1);
+  const legacy = daemonTransport({ call: async () => assert.fail('unsupported configuration must not be sent'), on() {} });
+  assert.equal(legacy.supports('assistant_workspace_v4'), false);
+  assert.throws(() => legacy.call('personal_workspace_configure', args), /Update.*reconnect/i);
+});
+
 test('base64 both ways, for files of any size', () => {
   const bytes = new Uint8Array(300_000).map((_, i) => (i * 7) % 256);
   const text = toBase64(bytes);

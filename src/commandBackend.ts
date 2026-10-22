@@ -9,6 +9,7 @@ import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListin
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
+  supports?(capability: string): boolean;
   call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   listen<T>(event: string, cb: (payload: T) => void): Promise<() => void>;
   saveAttachment(room: string, name: string, bytes: Uint8Array): Promise<string>;
@@ -25,6 +26,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
   return {
     demo: false,
     ...shell,
+    supports: capability => transport.supports?.(capability) === true,
     call,
     phone: {
       status: () => call<PhoneStatus>("phone_status"),

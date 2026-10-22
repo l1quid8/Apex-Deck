@@ -26,6 +26,8 @@ const demoKeys = new Set<string>();
 export type LibraryItem = { file: string; name?: string; kind: "image" | string; source: string; room: string; by?: string; created: number; path: string; bytes?: number };
 
 export interface Backend {
+  /** Features in this host's latest handshake. Missing means support is unknown. */
+  supports?(capability: string): boolean;
   /** Only the local desktop bridge may expose gateway administration. */
   gatewayAdmin?: boolean;
   host?: { id: string; name: string; connection: import("./hostConnections").HostConnectionStore };

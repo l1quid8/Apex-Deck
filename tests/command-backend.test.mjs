@@ -23,6 +23,20 @@ function stubShell() {
   return shell;
 }
 
+test('backend capability checks follow the current host without sending probe commands', () => {
+  const transport = recording();
+  const advertised = new Set();
+  transport.supports = capability => advertised.has(capability);
+  const backend = commandBackend(transport, stubShell());
+  assert.equal(backend.supports('assistant_workspace_v4'), false);
+  advertised.add('assistant_workspace_v4');
+  assert.equal(backend.supports('assistant_workspace_v4'), true);
+  advertised.clear();
+  assert.equal(backend.supports('assistant_workspace_v4'), false);
+  assert.deepEqual(transport.calls, []);
+  assert.equal(commandBackend(recording(), stubShell()).supports('assistant_workspace_v4'), false);
+});
+
 const options = { policy: 'mention', max_bot_hops: 3 };
 const participant = { id: 'p', display_name: 'P', backend: { kind: 'scripted', lines: [] } };
 const rule = { kind: 'command', command: 'ls' };
@@ -217,6 +231,6 @@ test('phone methods send the phone commands', async () => {
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });
