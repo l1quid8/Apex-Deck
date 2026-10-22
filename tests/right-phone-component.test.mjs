@@ -60,7 +60,7 @@ test('a phone that is on shows who has it, its buttons and the typing note', () 
   assert.match(html, /role="status" class="right-phone-state">Jigga is using the phone\. Tap the screen to take over\./);
   for (const label of ['Home', 'Lock', 'Turn off']) assert.match(html, new RegExp(`>${label}<`));
   assert.doesNotMatch(html, />Give back</);
-  assert.match(html, /Typing works while the screen is selected\. Plain keyboard characters only\./);
+  assert.match(html, /Typing and pasting work while the screen is selected\. Plain keyboard characters only\./);
   const mine = render({ visible: true, phone: fakePhone(), initial: on({ kind: 'human', secondsLeft: 7 }) });
   assert.match(mine, />Give back</);
   assert.match(mine, /You have the phone\. The bots get it back after 7s without a tap\./);
