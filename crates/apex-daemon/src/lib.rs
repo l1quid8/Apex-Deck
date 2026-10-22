@@ -24,6 +24,7 @@ pub mod protocol;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod remote_config;
+pub mod remote_settings;
 pub mod serve;
 pub mod signals;
 pub mod stdio;
