@@ -101,9 +101,6 @@ pub struct ParticipantConfig {
     /// example "low" or "high"). `None` leaves the backend's default.
     #[serde(default)]
     pub effort: Option<String>,
-    /// Auto keeps `effort` as its backup; omitted in old/fixed settings.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub auto_effort: bool,
     /// Standard or fast output, for tools that offer both. `None` leaves
     /// the tool's own setting (Codex's `service_tier`, for example).
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -544,7 +544,7 @@ impl Job<'_> {
 
 /// Nobody: a price quote is not a turn, so no message names it.
 fn quote_bot() -> ParticipantConfig {
-    ParticipantConfig { id: ParticipantId::new(""), display_name: String::new(), backend: apex_core::Backend::Scripted { lines: vec![] }, persona: String::new(), access: apex_core::Access::Read, effort: None, auto_effort: false, speed: None, appearance: None, media: None }
+    ParticipantConfig { id: ParticipantId::new(""), display_name: String::new(), backend: apex_core::Backend::Scripted { lines: vec![] }, persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, appearance: None, media: None }
 }
 
 /// What one video costs with these choices, from Venice's own quote.

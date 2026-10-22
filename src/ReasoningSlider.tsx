@@ -3,8 +3,7 @@ import { effortLabel } from './models';
 
 const label = (value: string, defaultLabel?: string) => value === 'xhigh' ? 'xHigh' : value ? effortLabel(value) : defaultLabel ? `Default (${effortLabel(defaultLabel)})` : 'Default';
 
-export function ReasoningSlider({ efforts, value, onCommit, title = "Reasoning", defaultLabel }: {
-  title?: string;
+export function ReasoningSlider({ efforts, value, onCommit, defaultLabel }: {
   efforts: string[];
   value: string;
   onCommit: (value: string) => void;
@@ -54,7 +53,7 @@ export function ReasoningSlider({ efforts, value, onCommit, title = "Reasoning",
     };
   });
   return <div className="effort-slider">
-    <div className="effort-heading">{title} <span className="effort-value">{efforts.length ? label(steps[stop], defaultLabel) : 'Not supported'}</span></div>
+    <div className="effort-heading">Reasoning <span className="effort-value">{efforts.length ? label(steps[stop], defaultLabel) : 'Not supported'}</span></div>
     <div className={`effort-control${gesture.current ? ' dragging' : ''}`} style={{ '--effort-position': `${efforts.length ? position / efforts.length * 100 : 0}%` } as CSSProperties}>
       <div className="effort-rail" aria-hidden="true"><div className="effort-fill" /><div className="effort-thumb" /></div>
       <input ref={input} type="range" aria-label="Reasoning" aria-valuetext={label(steps[stop], defaultLabel)} min={0} max={efforts.length} step="any" value={position} disabled={!efforts.length}

@@ -18,7 +18,7 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
         persona: String::new(),
         access: Access::Read,
         effort: None,
-        auto_effort: false, speed: None,
+        speed: None,
         appearance: None, media: None
     }
 }

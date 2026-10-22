@@ -135,8 +135,6 @@ pub fn command_needs(command: &Command) -> Need {
         ExportThread { .. } => full(Global),
 
         // Never remote.
-        DecisionKeySave { .. } => Need::Never,
-        DecisionKeyStatus {} => Need::Never,
         DataFolder {} => Need::Never,
         EnvPresent { .. } => Need::Never,
         ApiKeyStatus { .. } | ApiKeySave { .. } | ApiKeyRemove { .. } => Need::Never,
@@ -374,8 +372,6 @@ mod tests {
             ("library_rename", Some((Full, "global")), json!({ "file": "a.png", "name": "New name" })),
             ("artifact_export", Some((Full, "global")), json!({ "name": "a", "contents": "x" })),
             ("export_thread", Some((Full, "global")), json!({ "fileName": "a.md", "contents": "x" })),
-            ("decision_key_save", None, json!({ "provider": "p", "key": "k" })),
-            ("decision_key_status", None, json!({})),
             ("data_folder", None, json!({})),
             ("env_present", None, json!({ "names": [] })),
             ("api_key_status", None, json!({ "names": [] })),

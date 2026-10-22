@@ -5,7 +5,7 @@ import type { Mentionable } from "./slug.ts";
 /** "turn" runs bots on the transcript as it is and posts no text (see ParticipantQueues.turn). */
 export type TurnKind = "message" | "compact" | "turn";
 /** `hops` is set on "turn" items only: the cap on bot-to-bot rounds, null for the room's own. */
-export interface QueuedMessage { id: number; text: string; kind: TurnKind; hops?: number | null; manual?: boolean; voice?: {requestId:string; canceled?:()=>boolean} }
+export interface QueuedMessage { id: number; text: string; kind: TurnKind; hops?: number | null; voice?: {requestId:string; canceled?:()=>boolean} }
 export class TurnQueue {
   items: QueuedMessage[] = [];
   active = false;
@@ -65,11 +65,11 @@ export class ParticipantQueues {
   private draining = false;
   private rerun = false;
   private targets: (text: string) => Promise<string[]>;
-  private post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>;
+  private post: (text: string, to: string[], kind: TurnKind, hops?: number | null, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>;
   private stop: (id?: string) => Promise<void>;
   private changed: (items: ParticipantMessage[]) => void;
   private failed: (error: unknown) => void;
-  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true, retainFailed = true) {
+  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true, retainFailed = true) {
     this.targets = targets; this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
     this.available = available; this.retainFailed = retainFailed;
   }
@@ -99,7 +99,7 @@ export class ParticipantQueues {
       this.requireAvailable();
       if(voice?.canceled?.()) throw new Error("Voice turn canceled before dispatch");
       const id = ++this.serial;
-      this.items.push({ id, text, kind: "message", to, manual: true, ...(voice ? {voice}: {}) }); this.publish();
+      this.items.push({ id, text, kind: "message", to, ...(voice ? {voice}: {}) }); this.publish();
       await this.drain(); return id;
     });
     this.accepting = accepted.catch(() => {});
@@ -135,7 +135,7 @@ export class ParticipantQueues {
   async steer(id: string, text: string) {
     this.requireAvailable();
     this.paused.add(id);
-    this.items.unshift({id: ++this.serial, text, kind: "message", to: [id], manual: true}); this.publish();
+    this.items.unshift({id: ++this.serial, text, kind: "message", to: [id]}); this.publish();
     try { if (this.state[id] === "working") await this.stop(id); this.resume(id); }
     catch (error) { this.failed(error); }
   }
@@ -183,7 +183,7 @@ export class ParticipantQueues {
         item.to.forEach(id => { this.state[id] = "working"; });
         this.items = this.items.filter(x => x.id !== item.id); this.publish();
         try {
-          await this.post(item.text, item.to, item.kind, item.hops, item.manual, item.voice);
+          await this.post(item.text, item.to, item.kind, item.hops, item.voice);
           if (item.kind === "compact") { item.to.forEach(id => { this.state[id] = "idle"; }); this.publish(); }
         }
         catch (error) {

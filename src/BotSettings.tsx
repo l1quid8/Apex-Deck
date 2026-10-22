@@ -13,7 +13,7 @@ import { mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media
 import { dollars, mediaMenuLine, pictureLine, quoteFor } from './mediaPrice';
 
 /** What a save can carry. */
-type Change = { model?: string; effort?: string; auto_effort?: boolean; speed?: Speed | null; media?: MediaSettings };
+type Change = { model?: string; effort?: string; speed?: Speed | null; media?: MediaSettings };
 
 interface Props {
   config: ParticipantConfig;
@@ -39,8 +39,6 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const [discovery, setDiscovery] = useState<'loading' | 'ready' | 'empty'>('loading');
   const [model, setModel] = useState('model' in config.backend ? config.backend.model ?? '' : '');
   const [effort, setEffort] = useState(config.effort ?? '');
-  const [autoAvailable, setAutoAvailable] = useState(false);
-  useEffect(() => { if (tool !== 'codex' && tool !== 'claude_code') return; let active = true; backend.decisionKeyStatus().then(ok => { if (active) setAutoAvailable(ok); }).catch(() => {}); return () => { active = false; }; }, [backend, tool]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const saveRef = useRef(save);
@@ -201,7 +199,6 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     const normalizedEffort = nextEfforts.includes(nextEffort) ? nextEffort : '';
     // A model with no reasoning support explicitly clears the old level.
     if ('model' in sent && normalizedEffort !== nextEffort) sent.effort = normalizedEffort;
-    if (!nextEfforts.length) sent.auto_effort = false;
     touched.current = sent;
     requested.current = { model: nextModel, effort: normalizedEffort };
     const version = ++saveVersion.current;
@@ -211,7 +208,6 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       const left = { ...touched.current };
       if (left.model === sent.model) delete left.model;
       if (left.effort === sent.effort) delete left.effort;
-      if (left.auto_effort === sent.auto_effort) delete left.auto_effort;
       if (left.speed === sent.speed) delete left.speed;
       if (left.media === sent.media) delete left.media;
       touched.current = left;
@@ -294,10 +290,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
           document.body
         )}
       </div>
-      {(tool === 'codex' || tool === 'claude_code') && <label className="check-label"><input type="checkbox" checked={touched.current.auto_effort ?? config.auto_effort ?? false} disabled={!efforts.length || (!config.auto_effort && !autoAvailable)} onChange={event => { void apply({ auto_effort: event.target.checked }); }} /> Auto</label>}
-      {config.auto_effort && <p className="muted">Trial: Clef logs its pick. Replies use the backup below.</p>}
-      {!autoAvailable && (tool === 'codex' || tool === 'claude_code') && <p className="muted">Auto needs the decision observer switched on with a saved key.</p>}
-      {!mediaType && <ReasoningSlider title={config.auto_effort ? "Auto backup" : "Reasoning"} efforts={efforts} value={supportedEffort} defaultLabel={apiModel?.default_effort ?? undefined} onCommit={value => config.auto_effort ? (setEffort(value), void apply({ effort: value, auto_effort: true })) : commitEffort(value)} />}
+      {!mediaType && <ReasoningSlider efforts={efforts} value={supportedEffort} defaultLabel={apiModel?.default_effort ?? undefined} onCommit={commitEffort} />}
       {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}

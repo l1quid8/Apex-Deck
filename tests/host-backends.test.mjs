@@ -12,7 +12,7 @@ test('remote turns always carry card guidance without writing remote app prefere
   await backend.roomPost('r','hello');
   await backend.roomPostTo('r','hello',['bot']);
   await backend.roomTurn('r',['bot'],null);
-  assert.deepEqual(calls,[['post','r','hello',true],['postTo','r','hello',['bot'],false,true],['turn','r',['bot'],null,true]]);
+  assert.deepEqual(calls,[['post','r','hello',true],['postTo','r','hello',['bot'],true],['turn','r',['bot'],null,true]]);
 });
 
 test('local attachment readers stay stable across renders and check current connection state', async () => {

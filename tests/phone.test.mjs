@@ -167,13 +167,13 @@ test('the phone lets the room pick who answers, so @names and the last @name bot
   const calls = [];
   const backend = {
     roomTargets: async (id, text) => { calls.push(['targets', id, text]); return text.includes('@null') ? ['null'] : ['jigga']; },
-    roomPostTo: async (id, text, targets, routed) => { calls.push(['post', id, text, targets, routed]); },
+    roomPostTo: async (id, text, targets) => { calls.push(['post', id, text, targets]); },
   };
   assert.deepEqual(await postRouted(backend, 'pane-1', '@null look at this'), ['null']);
   assert.deepEqual(await postRouted(backend, 'pane-1', 'and again'), ['jigga']);
   assert.deepEqual(calls, [
-    ['targets', 'pane-1', '@null look at this'], ['post', 'pane-1', '@null look at this', ['null'], true],
-    ['targets', 'pane-1', 'and again'], ['post', 'pane-1', 'and again', ['jigga'], true],
+    ['targets', 'pane-1', '@null look at this'], ['post', 'pane-1', '@null look at this', ['null']],
+    ['targets', 'pane-1', 'and again'], ['post', 'pane-1', 'and again', ['jigga']],
   ]);
 });
 

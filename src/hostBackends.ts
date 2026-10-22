@@ -7,13 +7,12 @@ export interface HostBackends {
   connection(hostId?: string): HostConnectionStore;
   discover(hostId?: string): Promise<AgentInfo[]>;
   legacySession(hostId: string): Promise<unknown>;
-  legacySettings(hostId: string): Promise<unknown>;
   setHosts(hosts: HostEntry[]): void;
   dispose(hostId: string): void;
 }
 interface HostRuntime { backend: Backend; connection: HostConnectionStore; start(): Promise<unknown>; close(): void }
 const appMethods = new Set([
-  "sessionLoad", "sessionSave", "onSessionChanged", "settingsLoad", "settingsSave", "decisionKeySave",
+  "sessionLoad", "sessionSave", "onSessionChanged", "settingsLoad", "settingsSave",
   "flagAttention", "requestCriticalAttention", "onQuitRequested", "quitHeard", "quitApp",
   "exportThread", "exportPdf", "artifactSave", "artifactOpenExternal", "onMenu", "startupFolders",
 ]);
@@ -105,15 +104,14 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
             if (cached?.source === value) return cached.wrapped;
             const wrapped = (...args: unknown[]) => {
               if (!known.has(hostId)) return Promise.reject(new Error("This host was removed."));
-              if (key === "call" && ["session_save", "settings_save", "decision_key_save"].includes(String(args[0]))) return Promise.reject(new Error("App preferences are owned by This Mac."));
+              if (key === "call" && ["session_save", "settings_save"].includes(String(args[0]))) return Promise.reject(new Error("App preferences are owned by This Mac."));
               if (["roomPost", "roomPostTo", "roomTurn"].includes(key)) {
                 if (r.connection.get().status.kind !== "connected") return Promise.reject(new Error("Not connected to the host; nothing was queued."));
                 if (!known.has(hostId)) return Promise.reject(new Error("This host was removed."));
                 // Card guidance is always on: every turn carries it. Remote
                 // settings stay owned by the remote machine and other clients.
                 const next = [...args];
-                if (key === "roomPostTo") next[3] = args[3] ?? false;
-                next[key === "roomPost" ? 2 : key === "roomPostTo" ? 4 : 3] = true;
+                next[key === "roomPost" ? 2 : 3] = true;
                 return (value as (...args: unknown[]) => unknown).apply(source, next);
               }
               return (value as (...args: unknown[]) => unknown).apply(source, args);
@@ -141,7 +139,6 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
       catch (e) { c.setDiscovery?.("failed", []); throw e; }
     },
     async legacySession(hostId) { return (await connected(hostId)).backend.sessionLoad(); },
-    async legacySettings(hostId) { return (await connected(hostId)).backend.settingsLoad(); },
     setHosts(list) {
       known = new Map(list.filter(h => h.id !== "local").map(h => [h.id, h]));
       // A renamed server keeps its connection; only the name it shows changes.

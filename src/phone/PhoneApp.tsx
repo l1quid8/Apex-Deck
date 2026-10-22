@@ -633,10 +633,9 @@ export function PhoneApp() {
         const sticky = shown?.id === paneId ? queuedSticky(text, shown.participants, shown.policy, queue.items) : null;
         return sticky ?? backend().roomTargets(paneId, text);
       },
-      // Routed like a typed message unless it is a next step for the bot that offered it.
-      async (text, to, _kind, _hops, manual, voice) => {
+      async (text, to, _kind, _hops, voice) => {
         const key = `${paneId}\u0000${text}`;
-        try { await postFromPhone(backend(), paneId, text, to, manual, voice); }
+        try { await postFromPhone(backend(), paneId, text, to, voice); }
         catch (error) {
           if (voice) { phoneVoice.failed(hostId,paneId,to[0],voice.requestId,error); throw error; }
           const sent = queuedDrafts.current.get(key);

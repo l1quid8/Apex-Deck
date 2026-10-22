@@ -20,7 +20,6 @@ ring = "0.17"
 tokio-tungstenite = "0.28"
 trash = "5"
 
-keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

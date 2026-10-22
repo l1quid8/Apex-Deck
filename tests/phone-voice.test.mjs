@@ -107,7 +107,7 @@ test("call transcripts target chosen agent; leaving preserves turn and releases 
   await tick();
   assert.equal(f.posts[0][0], "check the build");
   assert.deepEqual(f.posts[0][1], ["null"]);
-  assert.ok(f.posts[0][5].requestId);
+  assert.ok(f.posts[0][4].requestId);
   f.voice.leftScreen();
   await tick();
   assert.equal(f.voice.controller.getState().status, "off");
@@ -153,7 +153,7 @@ test("offscreen approval marks attention without navigating; opening clears it",
   f.room({
     type: "voice_event",
     id: "null",
-    client_turn_id: f.posts[0][5].requestId,
+    client_turn_id: f.posts[0][4].requestId,
     event: { type: "approval_requested" },
   });
   assert.equal(f.voice.view().attention, true);
@@ -172,7 +172,7 @@ test("failed voice post ends its call with the error", async () => {
     "h",
     "r",
     "null",
-    f.posts[0][5].requestId,
+    f.posts[0][4].requestId,
     Error("post failed"),
   );
   await tick();

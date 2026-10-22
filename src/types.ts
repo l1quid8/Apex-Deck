@@ -46,7 +46,6 @@ export interface ParticipantConfig {
   /** How hard the model should think, in the backend's own words. Null leaves its default. */
   effort: string | null;
   /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */
-  auto_effort?: boolean;
   /** Standard or fast output (Codex, Claude Code, and the direct OpenAI API). Missing follows the tool's own setting. */
   speed?: Speed | null;
   appearance?: { seed: string; color: string } | null;

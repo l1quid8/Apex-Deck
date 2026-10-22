@@ -285,7 +285,7 @@ ipcMain.handle('daemon:connect', async (event, hostId = LOCAL) => {
 ipcMain.on('daemon:send', (event, hostId, gen, line) => {
   if (!fromUi(event) || typeof line !== 'string') return;
   let frame; try { frame = JSON.parse(line); } catch { return; }
-  if (hostId !== LOCAL && ['session_save', 'settings_save', 'decision_key_save'].includes(frame.cmd)) {
+  if (hostId !== LOCAL && ['session_save', 'settings_save'].includes(frame.cmd)) {
     event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: 'App preferences are owned by This Mac.' }));
     return;
   }

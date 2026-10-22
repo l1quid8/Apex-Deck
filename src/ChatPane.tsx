@@ -306,7 +306,6 @@ interface Draft {
   model: string;
   /** Empty means the backend's own default. */
   effort: string;
-  auto_effort?: boolean;
   /** Empty follows the tool's own setting (Codex and Claude Code only). */
   speed?: Speed | "";
   baseUrl: string;
@@ -369,7 +368,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", auto_effort: config.auto_effort ?? false, speed: config.speed ?? ("" as const), keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", speed: config.speed ?? ("" as const), keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -401,7 +400,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, auto_effort: draft.auto_effort === true && levels.length > 0 && (preset?.agent?.tool === "codex" || preset?.agent?.tool === "claude_code"), ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -1497,13 +1496,13 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
   };
 
-  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>>(async () => {});
-  dispatch.current = async (message, to, kind, hops, manual) => {
+  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
+  dispatch.current = async (message, to, kind, hops) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
     } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
-    else await backend.roomPostTo(pane.id, message, to, !manual);
+    else await backend.roomPostTo(pane.id, message, to);
   };
   // The queue lives as long as the pane; a thread moved before it started runs somewhere else, so it asks the current backend.
   const current = useRef(backend);
@@ -1515,9 +1514,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const voiceBridges = useRef(new Map<string, ReturnType<typeof createThreadVoiceBridge>>());
   const [turnQueue] = useState(() => new ParticipantQueues(
     async (message): Promise<string[]> => stickyFor(message, turnQueue.items) ?? current.current.roomTargets(pane.id, message),
-    async (message, to, kind, hops, manual, voice) => {
-      if (!voice) return dispatch.current(message, to, kind, hops, manual);
-      try { await current.current.roomPostTo(pane.id, message, to, false, false, {client_turn_id:voice.requestId,max_bot_hops:0}); }
+    async (message, to, kind, hops, voice) => {
+      if (!voice) return dispatch.current(message, to, kind, hops);
+      try { await current.current.roomPostTo(pane.id, message, to, false, {client_turn_id:voice.requestId,max_bot_hops:0}); }
       catch(error) { voiceBridges.current.get(to[0])?.fail(voice.requestId,error); throw error; }
     },
     id => current.current.roomStop(pane.id, id),
@@ -2559,8 +2558,6 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     { label: "Typed before", options: typedBefore.map((m) => ({ value: m, text: m })) },
     ...agentGroups.map((g) => ({ label: g.label, options: g.models.map((m) => ({ value: m.id, text: m.label ? `${m.id}  ·  ${m.label}` : m.id })) })),
   ];
-  const [autoAvailable, setAutoAvailable] = useState(false);
-  useEffect(() => { if (!adding || (tool !== "codex" && tool !== "claude_code")) return; let active = true; backend.decisionKeyStatus().then(ok => { if (active) setAutoAvailable(ok); }).catch(() => {}); return () => { active = false; }; }, [adding, backend, tool]);
   const apiGroups = preset.api ? apiModelGroups(apiModels) : [];
   const chosenModel = findModel(preset.agent ? agentGroups : apiGroups, draft.model);
   const efforts = effortsFor(preset.efforts, preset.agent ? agentGroups : apiGroups, draft.model);
@@ -2855,13 +2852,12 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               <span className="hint">Runs once per turn in the workspace folder. The conversation is written to its standard input and its output becomes the reply.</span>
             </label>
           )}
-          {(tool === "codex" || tool === "claude_code") && <label className="check-label wide"><input type="checkbox" checked={draft.auto_effort ?? false} disabled={!efforts.length || (!draft.auto_effort && !autoAvailable)} onChange={event => set("auto_effort", event.target.checked)} /> Auto — trial logs picks; replies use the backup level.</label>}
           {preset.efforts.length > 0 && (
             <div className="wide effort-field">
-              <span className="field-title">{draft.auto_effort ? "Auto backup level" : "Reasoning effort"}</span>
+              <span className="field-title">Reasoning effort</span>
               {efforts.length > 0 ? (
                 <Segmented
-                  label={draft.auto_effort ? "Auto backup level" : "Reasoning effort"}
+                  label="Reasoning effort"
                   name="effort"
                   value={draft.effort}
                   onChange={(level) => set("effort", level.trim().toLowerCase())}

@@ -570,9 +570,7 @@ export function App() {
     void backend.hosts.list().then(hosts => Promise.allSettled(hosts.filter(h => h.remote && !sessionRef.current?.importedHostSessions?.includes(h.id)).map(async host => {
       try {
         const remote = prepareHostSession(await backend.machines!.legacySession(host.id));
-        const settings = await backend.machines!.legacySettings(host.id).catch(() => null) as { decision?: { enabled?: boolean } } | null;
         if (!alive) return;
-        if (settings?.decision?.enabled) setMigrationNotice(`${host.name}'s decision observer is enabled in its own settings. Deck's observer switch controls This Mac's threads only.`);
         setRecords(old => {
           const merged = mergeHostSession({ ...sessionRef.current!, ...old }, host.id, remote);
           merged.session.panes.filter(p => p.kind === "terminal").forEach(p => restored.current.add(p.id));

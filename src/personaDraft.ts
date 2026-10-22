@@ -7,7 +7,7 @@ export interface PersonaWriter { key: string; label: string; logo: string; confi
 
 /** The writer runs read-only with none of its own character (the daemon enforces this too). */
 function asWriter(config: ParticipantConfig): ParticipantConfig {
-  return { ...config, persona: "", access: "read", auto_effort: false };
+  return { ...config, persona: "", access: "read" };
 }
 
 /** Installed, enabled coding agents on their default model, then saved chat agents whose provider is enabled. */

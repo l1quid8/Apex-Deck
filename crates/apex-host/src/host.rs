@@ -692,8 +692,8 @@ impl Host {
         }
     }
 
-    pub(crate) async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>, routed: bool) -> Result<TurnBatch, String> {
-        let observation_revision = handle.observation_revision.fetch_add(1, Ordering::SeqCst) + 1;
+    pub(crate) async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>) -> Result<TurnBatch, String> {
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         {
             let room = handle.room.lock().await;
             if let Some(cwd) = handle.context.cwd.clone() {
@@ -717,14 +717,7 @@ impl Host {
         let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         checkpoint_room(handle, &self.store, id).await?;
-        let mut snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
-        if let Some(index) = snapshot.transcript.iter().rposition(|m| matches!(m.speaker, apex_core::Speaker::Human)) {
-            snapshot.transcript.truncate(index + 1);
-        }
-        let routing = routed && matches!(apex_core::parse_mentions(text, &snapshot.participants), apex_core::MentionTarget::None);
-        let settings = self.settings_load().ok().flatten().unwrap_or_default();
-        let advisor = crate::decision::observer(&self.runtime, self.paths.data.clone(), id.to_string(), handle.clone(), snapshot, settings, observation_revision, routing);
-        Ok(batch.with_advisor(advisor))
+        Ok(batch)
     }
 
     pub(crate) async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
@@ -770,7 +763,7 @@ impl Host {
     pub(crate) async fn room_post_with_answer_guidance(self: &Arc<Self>, id: String, text: String, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), vec![], None, answers, capability).await? { return Ok(()); }
         let handle = self.handle(&id)?;
-        let batch = self.prepare_post(&id, &handle, &text, None, true).await?.with_answer_guidance(answers, capability);
+        let batch = self.prepare_post(&id, &handle, &text, None).await?.with_answer_guidance(answers, capability);
         self.run_batch(&id, &handle, batch).await
     }
 
@@ -779,14 +772,14 @@ impl Host {
     }
 
     /// Saves the human message once, then runs targets in the background.
-    pub async fn room_post_to(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, routed: bool) -> Result<(), String> {
-        self.room_post_to_with_answer_guidance(id, text, targets, routed, None, apex_core::GeneratedUiCapability::Unsupported).await
+    pub async fn room_post_to(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>) -> Result<(), String> {
+        self.room_post_to_with_answer_guidance(id, text, targets, None, apex_core::GeneratedUiCapability::Unsupported).await
     }
 
-    pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, routed: bool, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
+    pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None, answers, capability).await? { return Ok(()); }
         let handle = self.handle(&id)?;
-        let batch = self.prepare_post(&id, &handle, &text, Some(targets), routed).await?.with_answer_guidance(answers, capability);
+        let batch = self.prepare_post(&id, &handle, &text, Some(targets)).await?.with_answer_guidance(answers, capability);
         self.run_batch_in_background(id, handle, batch);
         Ok(())
     }
@@ -822,10 +815,7 @@ impl Host {
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(&id)?;
         let batch = handle.runtime.begin_turn(participants, hops).await?.with_answer_guidance(answers, capability);
-        let snapshot = handle.room.lock().await.snapshot();
-        let settings = self.settings_load().ok().flatten().unwrap_or_default();
-        let advisor = crate::decision::observer(&self.runtime, self.paths.data.clone(), id.clone(), handle.clone(), snapshot, settings, handle.observation_revision.load(Ordering::SeqCst), false);
-        self.run_batch_in_background(id, handle, batch.with_advisor(advisor));
+        self.run_batch_in_background(id, handle, batch);
         Ok(())
     }
 
@@ -1255,8 +1245,7 @@ impl Host {
     }
 
     /// Replace all the settings and tell every client.
-    pub fn settings_save(&self, mut settings: serde_json::Value) -> Result<(), String> {
-        crate::decision::save_key(&mut settings)?;
+    pub fn settings_save(&self, settings: serde_json::Value) -> Result<(), String> {
         let settings = Settings::from_value(settings)?;
         let settings = settings.to_value();
         self.store.save_settings(&settings)?;
@@ -2334,7 +2323,7 @@ mod host_tests {
             let verified = apex_core::GeneratedUiCapability::Verified;
             let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None };
             host.call_with_client_capability(post, verified).await.unwrap();
-            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], routed: false, interactive_answers: None, client_turn_id: None, max_bot_hops: None };
+            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None };
             host.call_with_client_capability(post_to, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
@@ -2524,7 +2513,7 @@ mod host_tests {
         apex_core::ParticipantConfig {
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
-            persona: String::new(), access: apex_core::Access::Read, effort: None, auto_effort: false, speed: None, appearance: None, media: None
+            persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, appearance: None, media: None
         }
     }
 
@@ -2546,7 +2535,7 @@ mod host_tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
-        runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "@null fix it".into(), vec![ParticipantId::new("null")], false)).unwrap();
+        runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "@null fix it".into(), vec![ParticipantId::new("null")])).unwrap();
         let steps = wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, .. })).expect("next steps arrive");
         assert_eq!(steps, RoomEvent::NextSteps { id: ParticipantId::new("null"), steps: vec![apex_core::NextStep { label: "Commit".into(), prompt: "commit it".into() }], pending: false });
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: true, .. })).is_some(), "a placeholder first");
@@ -2562,7 +2551,7 @@ mod host_tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
-        runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "@null go".into(), vec![ParticipantId::new("null")], false)).unwrap();
+        runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "@null go".into(), vec![ParticipantId::new("null")])).unwrap();
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::Idle)).is_some());
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { .. })).is_none());
@@ -2676,7 +2665,7 @@ mod host_tests {
 
     #[test]
     fn stopping_and_deleting_a_room_invalidate_in_flight_observations() {
-        let (host, _runtime, data) = host("decision-revision");
+        let (host, _runtime, data) = host("observation-revision");
         host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
         let handle = host.handle("r").unwrap();
         let revision = handle.observation_revision.load(Ordering::SeqCst);
@@ -2684,23 +2673,6 @@ mod host_tests {
         assert_ne!(revision, handle.observation_revision.load(Ordering::SeqCst));
         host.room_delete("r".into()).unwrap();
         assert!(handle.deleted.load(Ordering::SeqCst));
-        let _ = std::fs::remove_dir_all(data);
-    }
-
-    #[test]
-    fn decision_secret_never_reaches_settings_events_or_disk() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
-        let (host, _runtime, data) = host("decision-secret");
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&seen);
-        host.events().listen(move |event| sink.lock().unwrap().push(format!("{event:?}")));
-        _runtime.block_on(host.call(crate::command::Command::from_json(serde_json::json!({
-            "cmd":"decision_key_save", "args":{"provider":"jev", "key":"sentinel-secret"}
-        })).unwrap())).unwrap();
-        host.settings_save(serde_json::json!({"decisionApiKey":"discard-this-secret","decision":{"enabled":false,"provider":"jev"}})).unwrap();
-        assert!(!host.settings_load().unwrap().unwrap().to_string().contains("sentinel-secret"));
-        assert!(!seen.lock().unwrap().join("").contains("sentinel-secret"));
-        assert!(!host.settings_load().unwrap().unwrap().to_string().contains("discard-this-secret"));
         let _ = std::fs::remove_dir_all(data);
     }
 

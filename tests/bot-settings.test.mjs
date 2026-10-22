@@ -19,7 +19,7 @@ test('Model switching and supported speed selections persist when the quick sele
       this.render();
     },render(){root.render(React.createElement(BotSettings,{key:this.key,config:this.config,roomId:'test',anchor:document.getElementById('anchor'),backend,save:async config=>{this.config=config;this.saves++;this.render();},close(){root.render(null);}}));}};
     const models=[{id:'first',label:'First model'},{id:'last',label:'Last model'}];
-    const backend={decisionKeyStatus:async()=>false,agentModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},apiModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},roomCreate:async()=>({participants:[window.fixture.config]})};
+    const backend={agentModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},apiModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},roomCreate:async()=>({participants:[window.fixture.config]})};
     window.ready=true;
   </script></body></html>`;
   // Each parallel test file gets its own dependency cache: Vite servers sharing

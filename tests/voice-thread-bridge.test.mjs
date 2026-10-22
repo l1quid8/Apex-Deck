@@ -16,7 +16,7 @@ test("explicit queue preserves metadata and does not use group target resolution
   );
   await q.sendTo("hello", ["null"], { requestId: "v1" });
   assert.equal(targets, 0);
-  assert.equal(posted[0][5].requestId, "v1");
+  assert.equal(posted[0][4].requestId, "v1");
 });
 test("bridge speaks only matching correlated events and ignores replays", async () => {
   let listener;

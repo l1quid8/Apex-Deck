@@ -76,7 +76,7 @@ function appHarness() {
     machines: {
       get: id => backendForHost(id),
       connection: id => connectionFor(id ?? 'host-a'),
-      discover: async () => [], legacySession: async () => null, legacySettings: async () => null,
+      discover: async () => [], legacySession: async () => null,
     },
     hosts: { list: async () => [], references: async () => {} },
     detectAgents: async () => [], startupFolders: async () => [], sessionLoad: async () => session,

@@ -37,7 +37,6 @@ pub use view::{ClientCapabilities, GeneratedUiClientCapability, GeneratedUiCapab
 
 pub mod server_request;
 
-pub mod decision;
 pub mod next_steps;
 pub mod question;
 pub use next_steps::NextStep;
