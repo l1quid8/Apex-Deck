@@ -10,6 +10,8 @@ export type VoiceCandidate = CallScope & {
   aliases: string[];
   /** The voice set on the agent's form, if any. */
   agentVoice?: string | null;
+  /** The thread's title: tells apart same-named agents in different threads, on screen and by voice. */
+  roomTitle?: string;
 };
 export type VoiceTurn = {
   callId: string;

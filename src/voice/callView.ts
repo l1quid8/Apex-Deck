@@ -1,4 +1,4 @@
-import type { VoiceState } from "./types.ts";
+import type { VoiceCandidate, VoiceState } from "./types.ts";
 /** Where a running call shows: a bar over the chat box, the mic grown into a pill, or a capsule in the thread's top bar. */
 export type CallLook = "bar" | "pill" | "capsule";
 export const DEFAULT_CALL_LOOK: CallLook = "pill";
@@ -57,6 +57,20 @@ export function composerButton(input: { hasContent: boolean; canCall: boolean; l
   if (live) return { mic: !hasContent, send: hasContent };
   const mic = canCall && !hasContent;
   return { mic, send: !mic };
+}
+type PickCandidate = Pick<VoiceCandidate, "hostId" | "roomId" | "name" | "roomTitle">;
+const threadName = (c: PickCandidate) => c.roomTitle?.trim() || "Untitled thread";
+const spansThreads = (list: readonly PickCandidate[]) => new Set(list.map((c) => JSON.stringify([c.hostId, c.roomId]))).size > 1;
+/** Call who? rows: beside each name, its thread when the list spans threads, else the agent's kind. */
+export function pickRows<T extends PickCandidate>(list: readonly T[], kind: (c: T) => string) {
+  const threads = spansThreads(list);
+  return list.map((candidate) => ({ candidate, detail: threads ? threadName(candidate) : kind(candidate) }));
+}
+/** Call who?'s footnote: how to make the same pick by voice. */
+export function pickNote(list: readonly PickCandidate[]) {
+  const titled = spansThreads(list) ? list.find((c) => c.roomTitle?.trim()) : undefined;
+  if (titled) return `Say “call ${titled.name} in ${threadName(titled)}” to pick one hands-free.`;
+  return `During a call, say “call ${list.find((c) => c.name)?.name ?? "Null"}” to switch.`;
 }
 export function callClock(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000)),

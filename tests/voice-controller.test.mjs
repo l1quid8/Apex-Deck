@@ -403,6 +403,24 @@ test("ending during a delayed reconnect closes that runtime without closing a ne
   await f.c.end();
 });
 
+test("a spoken call reaches this chat's agent before same-named agents in other chats", async () => {
+  const nul = { hostId: "h", roomId: "r", participantId: "a", profileId: "a", name: "Null", aliases: [] };
+  const jigga = { hostId: "h", roomId: "r", participantId: "b", profileId: "b", name: "Jigga", aliases: [] };
+  const elsewhere = { ...jigga, roomId: "s", roomTitle: "Voice calls" };
+  const f = fixture({ candidates: [elsewhere, nul, jigga] });
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  const event = (e) => f.event({ callId: start.callId, ...e });
+  event({ type: "ready", generation: 0, voices: ["am_michael"] });
+  event({ type: "transcript", generation: 0, utteranceId: "u0", text: "Call Jigga, what's next?" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(f.c.getState().candidates, undefined);
+  assert.equal(f.c.getState().scope.roomId, "r");
+  assert.equal(f.c.getState().scope.participantId, "b");
+  assert.equal(f.posted.at(-1).text, "what's next?");
+  await f.c.end();
+});
+
 test("switching agents mid-call keeps the previous agent working", async () => {
   const nul = { hostId: "h", roomId: "r", participantId: "a", profileId: "a", name: "Null", aliases: [] };
   const jigga = { hostId: "h", roomId: "r", participantId: "b", profileId: "b", name: "Jigga", aliases: [] };
