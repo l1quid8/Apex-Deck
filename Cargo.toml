@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "crates/apex-daemon", "crates/apex-pairing"]
+members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "crates/apex-daemon", "crates/apex-pairing", "crates/apex-provenance"]
 
 [workspace.package]
 version = "0.8.2"

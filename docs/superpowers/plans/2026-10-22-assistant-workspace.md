@@ -108,6 +108,14 @@ New names and RPCs below are implementation contracts, not already available API
 
 **Deliverable:** Verified scoped notebook IDs/read results and versioned writes. 2,045 JavaScript tests and 727 Rust tests passed, with five existing explicitly ignored live/destructive checks. Independent source review found no remaining Important/Critical issue. Same-host-only authority, no production worker injection/promotion UI yet, and full main-pane migration in Task 6 are explicit phase boundaries; see [validation](../../assistant-workspace-validation.md).
 
+### Mandatory gate before Task 4
+
+The same-user `host.command` provenance hole invalidates any assumption that a
+local conversation record alone proves human origin. See
+[the protected provenance candidate](../../security/provenance-boundary.md).
+Task 4 remains blocked until installed native acceptance, legacy migration and
+the security review pass. Source/unit checks are not production acceptance.
+
 ### Task 4: Bridge personal plans into proposed coding tasks
 
 **Files:** Create host `assistant_delegation.rs` and `tests/assistant-lineage.test.mjs`; modify `personal_worker.rs`, `assistant_service.rs`, `assistant_tasks.rs`, `assistant_conversation.rs`, `events.rs`, `command.rs`, `src/assistantTaskModel.ts`, `src/assistantRegistry.ts`.

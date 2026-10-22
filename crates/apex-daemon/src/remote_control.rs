@@ -187,12 +187,12 @@ mod tests {
     use crate::devices::{now_ms, Devices, Threads, Tier};
     use crate::pairing::invites::{HostInfo, PairError};
     use crate::remote::{self, ALPN};
-    use apex_host::{Host, HostPaths};
+    use apex_host::HostPaths;
     use iroh::SecretKey;
     use std::net::UdpSocket;
 
     fn daemon(data: &Path) -> Arc<Daemon> {
-        let host = Host::new(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
+        let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
         Arc::new(Daemon {
             voice: crate::voice::VoiceServer::new(data),
             host,

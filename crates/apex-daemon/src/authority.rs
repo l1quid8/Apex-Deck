@@ -50,6 +50,7 @@ pub fn command_needs(command: &Command) -> Need {
     use Command::*;
     use Scope::{Global, GlobalRead};
     match command {
+        ProvenanceExecute { .. } => Need::Never, // Issued only for this Mac; never bypass paired-device scope.
         // Read-only.
         VoiceCapabilities {} => read(GlobalRead),
         SessionLoad {} => read(GlobalRead),
@@ -253,6 +254,7 @@ mod tests {
         let participant = json!({ "id": "null", "display_name": "Null", "backend": { "kind": "agent", "tool": "claude_code" } });
         let options = json!({ "policy": "mention", "max_bot_hops": 0 });
         vec![
+            ("provenance_execute", None, json!({"receipt":{"payload":"{}","signature":""}})),
             ("session_load", Some((ReadOnly, "global_read")), json!({})),
             ("monitor_list", Some((ReadOnly, "global")), json!({})),
             ("monitor_get", Some((ReadOnly, "global")), json!({ "workspaceId": "w" })),

@@ -956,7 +956,7 @@ impl Drop for InterruptIfUnfinished {
 impl ConversationStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ConversationError> {
         let path = path.as_ref().to_path_buf();
-        let mut document = match std::fs::read(&path) {
+        let mut document = match crate::authority_file::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
                 ConversationError::Storage(format!("Could not read ApexAgent conversations: {e}"))
             })?,
@@ -1146,18 +1146,7 @@ impl ConversationStore {
         let bytes = serde_json::to_vec(document).map_err(|e| {
             ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
         })?;
-        if let Some(parent) = self.inner.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
-            })?;
-        }
-        let temp = self.inner.path.with_extension("json.tmp");
-        std::fs::write(&temp, bytes).map_err(|e| {
-            ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
-        })?;
-        std::fs::rename(&temp, &self.inner.path).map_err(|e| {
-            ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
-        })
+        crate::authority_file::write(&self.inner.path,&bytes).map_err(|e|ConversationError::Storage(format!("Could not save protected conversations: {e}")))
     }
 }
 

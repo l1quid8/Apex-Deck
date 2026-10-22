@@ -541,7 +541,7 @@ mod tests {
         }
     }
     async fn call(host: &Arc<Host>, cmd: &str, args: Value) -> Result<Value, String> {
-        host.call(Command::from_json(json!({"cmd":cmd,"args":args}))?)
+        host.call_assuming_verified_ui_for_test(Command::from_json(json!({"cmd":cmd,"args":args}))?)
             .await
     }
 

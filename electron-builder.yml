@@ -32,6 +32,8 @@ extraResources:
     filter: ["**/*", "!**/__pycache__/**", "!tests/**", "!.venv/**"]
   - from: target/release/apex-daemon
     to: bin/apex-daemon
+  - from: target/release/apex-provenance
+    to: bin/apex-provenance
   - from: third_party/open-intelligent-ui/LICENSE
     to: third-party-notices/OpenIntelligentUI-MIT-LICENSE.txt
 mac:
@@ -43,6 +45,16 @@ mac:
   # A bare electron-builder run signs ad hoc; scripts/package-mac.mjs passes
   # the Developer ID identity instead when the keychain has one.
   identity: "-"
-  hardenedRuntime: false
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
 dmg:
   artifactName: Apex-Deck_${version}_${arch}.${ext}
+
+# These are flipped before signing. JS startup checks are only a second layer.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true

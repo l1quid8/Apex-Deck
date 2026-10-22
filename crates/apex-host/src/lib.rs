@@ -1,6 +1,9 @@
 //! The UI-free core of Apex Deck. The desktop shell and the daemon both
 //! drive it; neither owns any logic of its own.
 
+mod authority_file;
+#[cfg(feature="test-support")]
+pub mod test_support;
 pub mod agents;
 pub mod changes;
 pub mod git_changes;

@@ -461,14 +461,14 @@ pub mod pair_phone {
 mod tests {
     use super::*;
     use crate::devices::{Devices, Threads, Tier};
-    use apex_host::{Host, HostPaths};
+    use apex_host::HostPaths;
     use futures::{SinkExt, StreamExt};
     use iroh::endpoint::{ConnectionError, VarInt};
     use iroh::EndpointAddr;
     use std::time::Duration;
 
     async fn daemon(data: &Path) -> (Arc<Daemon>, Endpoint) {
-        let host = Host::new(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
+        let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
         let daemon = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(data), host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(), invites: Default::default(), remote: Default::default() });
         let endpoint = bind(key(data).unwrap(), None, 0).await.unwrap();
         tokio::spawn(accept(Arc::clone(&daemon), endpoint.clone()));

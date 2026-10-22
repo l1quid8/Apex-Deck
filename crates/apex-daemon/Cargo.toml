@@ -36,5 +36,6 @@ qrcode = { version = "0.14", default-features = false, optional = true }
 remote = ["dep:iroh", "dep:apex-pairing", "dep:qrcode"]
 
 [dev-dependencies]
+apex-host = { path = "../apex-host", features = ["test-support"] }
 apex-core = { path = "../apex-core" }
 tokio = { workspace = true, features = ["test-util"] }

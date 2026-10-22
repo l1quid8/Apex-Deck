@@ -2573,7 +2573,7 @@ mod host_tests {
         // The daemon runs each request on its own task.
         let (done, answered) = std::sync::mpsc::channel();
         let open = crate::Command::RoomCreate { id: "b".into(), participants: vec![], options: RoomOptions::default(), cwd: None };
-        { let host = Arc::clone(&host); runtime.spawn(async move { let _ = done.send(host.call(open).await.map(|_| ())); }); }
+        { let host = Arc::clone(&host); runtime.spawn(async move { let _ = done.send(host.call_assuming_verified_ui_for_test(open).await.map(|_| ())); }); }
         let answered = answered.recv_timeout(std::time::Duration::from_secs(10));
         let started_early = !bot.requests().is_empty();
         drop(taking);
@@ -2632,19 +2632,19 @@ mod host_tests {
             *host.handle("r").unwrap().room.lock().await = Room::new(vec![bot.clone()], RoomOptions::default());
             let verified = apex_core::GeneratedUiCapability::Verified;
             let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None };
-            host.call_with_client_capability(post, verified).await.unwrap();
+            host.call_with_client_capability_assuming_verified_ui_for_test(post, verified).await.unwrap();
             let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None };
-            host.call_with_client_capability(post_to, verified).await.unwrap();
+            host.call_with_client_capability_assuming_verified_ui_for_test(post_to, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
             }).await.unwrap();
             let retry = crate::Command::RoomTurn { id: "r".into(), participants: vec![ParticipantId::new("bot")], hops: Some(0), interactive_answers: None };
-            host.call_with_client_capability(retry, verified).await.unwrap();
+            host.call_with_client_capability_assuming_verified_ui_for_test(retry, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
             }).await.unwrap();
             let legacy = crate::Command::RoomPost { id: "r".into(), text: "phone follow-up".into(), interactive_answers: None };
-            host.call(legacy).await.unwrap();
+            host.call_assuming_verified_ui_for_test(legacy).await.unwrap();
             let requests = bot.requests();
             assert_eq!(requests.len(), 4);
             for request in &requests[..3] { assert!(request.system.contains("kind\":\"generated")); }
@@ -2768,7 +2768,7 @@ mod host_tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         host.events().listen(move |envelope| sink.lock().unwrap().push(serde_json::to_value(&envelope.event).unwrap()));
-        let update = |next: serde_json::Value| runtime.block_on(host.call(serde_json::from_value(serde_json::json!({"cmd":"room_update_participant","args":{"id":"r","participant":next,"base":base}})).unwrap())).unwrap();
+        let update = |next: serde_json::Value| runtime.block_on(host.call_assuming_verified_ui_for_test(serde_json::from_value(serde_json::json!({"cmd":"room_update_participant","args":{"id":"r","participant":next,"base":base}})).unwrap())).unwrap();
         let mut phone = base.clone(); phone["backend"]["model"] = "opus".into();
         update(phone);
         let mut desktop = base.clone(); desktop["effort"] = "low".into();

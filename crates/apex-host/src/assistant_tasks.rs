@@ -279,7 +279,7 @@ pub struct AssistantTasks {
 impl AssistantTasks {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskError> {
         let path = path.as_ref().to_path_buf();
-        let document = match std::fs::read(&path) {
+        let document = match crate::authority_file::read(&path) {
             Ok(bytes) => serde_json::from_slice::<Document>(&bytes).map_err(|e| {
                 TaskError::new(
                     TaskErrorKind::Storage,
@@ -1174,45 +1174,13 @@ fn save_mutation(
 }
 
 fn write_document(path: &Path, document: &Document) -> Result<(), TaskError> {
-    use std::io::Write;
     let bytes = serde_json::to_vec_pretty(document).map_err(|e| {
         TaskError::new(
             TaskErrorKind::Storage,
             format!("Could not encode assistant tasks: {e}"),
         )
     })?;
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent).map_err(|e| {
-        TaskError::new(
-            TaskErrorKind::Storage,
-            format!("Could not create assistant task storage: {e}"),
-        )
-    })?;
-    let temp = path.with_extension(format!("tasks-{}.tmp", std::process::id()));
-    let result = (|| -> std::io::Result<()> {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temp, path)?;
-        std::fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    result.map_err(|e| {
-        TaskError::new(
-            TaskErrorKind::Storage,
-            format!("Could not save assistant tasks: {e}"),
-        )
-    })
+    crate::authority_file::write(path,&bytes).map_err(|e|TaskError::new(TaskErrorKind::Storage,format!("Could not save protected assistant tasks: {e}")))
 }
 
 fn now_ms() -> u64 {

@@ -13,6 +13,14 @@ pub struct SavedRoom {
     pub mounts: Vec<MountBoundary>,
 }
 
+/// Permission-bearing snapshot fields live separately from editable transcript data.
+#[derive(Clone,Serialize,Deserialize)]
+struct RoomAuthority {
+    cwd:Option<String>,participants:Vec<apex_core::ParticipantConfig>,options:apex_core::RoomOptions,
+    allowed:Vec<apex_core::AllowedRule>,plan:bool,
+    #[serde(default)] mounts:Vec<MountBoundary>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MountBoundary {
     pub seq: usize,
@@ -182,20 +190,29 @@ impl Store {
 
     /// Personal assistants: their conversations, events, tasks and receipts.
     pub fn personal(&self) -> Result<Option<crate::personal::PersonalDocument>, String> {
-        self.read(&self.root.join("personal-assistants.json"))
+        let path=self.root.join("personal-assistants.json");
+        match crate::authority_file::read(&path){
+            Ok(bytes)=>serde_json::from_slice(&bytes).map(Some).map_err(|e|e.to_string()),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),
+            Err(e)=>Err(e.to_string()),
+        }
     }
 
     pub fn save_personal(&self, document: &crate::personal::PersonalDocument) -> Result<(), String> {
-        self.write(&self.root.join("personal-assistants.json"), document)
+        let bytes=serde_json::to_vec(document).map_err(|e|e.to_string())?;
+        crate::authority_file::write(&self.root.join("personal-assistants.json"),&bytes).map_err(|e|e.to_string())
     }
 
     /// Which remote assistants may run commands on this machine, and where.
     pub fn personal_machine(&self) -> Result<Option<crate::personal_settings::MachineAllows>, String> {
-        self.read(&self.root.join("personal-machine.json"))
+        match crate::authority_file::read(&self.root.join("personal-machine.json")) {
+            Ok(bytes)=>serde_json::from_slice(&bytes).map(Some).map_err(|e|e.to_string()),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(e)=>Err(e.to_string()),
+        }
     }
 
     pub fn save_personal_machine(&self, allows: &crate::personal_settings::MachineAllows) -> Result<(), String> {
-        self.write(&self.root.join("personal-machine.json"), allows)
+        crate::authority_file::write(&self.root.join("personal-machine.json"),&serde_json::to_vec(allows).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
     }
 
     /// The folder every saved file lives in.
@@ -204,7 +221,30 @@ impl Store {
     }
 
     pub fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
-        self.read(&self.room_path(id))
+        let Some(mut room):Option<SavedRoom>=self.read(&self.room_path(id))? else{return Ok(None)};
+        let authority=self.room_authorities()?;
+        let trusted:RoomAuthority=serde_json::from_value(authority.get(id).cloned().ok_or("This legacy room has no verified authority manifest. It requires explicit reauthorization; its original file was preserved.")?).map_err(|e|e.to_string())?;
+        room.cwd=trusted.cwd;
+        room.snapshot.participants=trusted.participants;
+        room.snapshot.options=trusted.options;
+        room.snapshot.allowed=trusted.allowed;
+        room.snapshot.plan=trusted.plan;
+        room.mounts=trusted.mounts;
+        Ok(Some(room))
+    }
+    fn room_authorities(&self)->Result<serde_json::Map<String,serde_json::Value>,String>{
+        let path=self.root.join("room-authority-v1.json");
+        match crate::authority_file::read(&path){
+            Ok(bytes)=>serde_json::from_slice(&bytes).map_err(|e|e.to_string()),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(Default::default()),
+            Err(e)=>Err(e.to_string()),
+        }
+    }
+    fn save_room_authority(&self,id:&str,room:&SavedRoom)->Result<(),String>{
+        let mut authorities=self.room_authorities()?;
+        let manifest=RoomAuthority{cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone()};
+        authorities.insert(id.into(),serde_json::to_value(manifest).map_err(|e|e.to_string())?);
+        crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
     }
 
     /// A worktree cannot be removed while any saved chat still points at it.
@@ -228,6 +268,7 @@ impl Store {
     pub fn save_room(&self, id: &str, room: &SavedRoom) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         let previous = self.room(id)?.map(|saved| saved.snapshot.transcript.len()).unwrap_or(0);
+        self.save_room_authority(id,room)?;
         self.write_held(&self.room_path(id), room)?;
         let upto = room.snapshot.transcript.len();
         if upto < previous || upto == 0 {
@@ -396,6 +437,7 @@ impl Store {
         } else { vec![] };
         let mut fork = SavedRoom { mounts, cwd, snapshot };
         transform(&mut fork.snapshot)?;
+        self.save_room_authority(target,&fork)?;
         write_new(&path, &fork).map_err(|e| e.replace("Could not save", "Could not save fork"))?;
         // A fork keeps the thread's artifacts. Copied directly: the write lock is already held.
         match std::fs::copy(self.artifacts_path(source), self.artifacts_path(target)) {
@@ -426,12 +468,17 @@ impl Store {
         if self.thread_paths(id)[1..].iter().any(|leftover| std::fs::symlink_metadata(leftover).is_ok()) {
             return Err("a thread with that id already exists".into());
         }
+        if std::fs::symlink_metadata(&path).is_ok(){return Err("a thread with that id already exists".into());}
+        self.save_room_authority(id,saved)?;
         write_new(&path, saved)?;
         std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
     }
 
     pub fn delete_room(&self, id: &str) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
+        let mut authorities=self.room_authorities()?;
+        authorities.remove(id);
+        crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         for path in self.thread_paths(id) {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
@@ -472,6 +519,22 @@ mod tests {
     fn temp() -> PathBuf {
         std::env::temp_dir().join(format!("apex-deck-storage-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))
+    }
+
+    #[test]
+    fn provenance_room_snapshot_cannot_forge_permissions_or_fallback_mounts() {
+        let root=temp();let store=Store::new(root.clone());
+        let saved=SavedRoom{cwd:Some("/trusted".into()),mounts:vec![],snapshot:Room::new(vec![],RoomOptions::default()).snapshot()};
+        store.save_room("r",&saved).unwrap();
+        let mut forged=saved.clone();forged.cwd=Some("/outside".into());
+        forged.snapshot.plan=true;
+        forged.snapshot.allowed.push(apex_core::AllowedRule{by:apex_core::ParticipantId::new("attacker"),kind:apex_core::ActionKind::Command,title:"Forged always allow".into(),what:"sh".into(),allowed_at:1,risky:false});
+        forged.mounts.push(MountBoundary{seq:0,change_count:None,from:"/outside".into(),to:"/trusted".into(),note:None});
+        std::fs::write(store.room_path("r"),serde_json::to_vec(&forged).unwrap()).unwrap();
+        let reopened=Store::new(root.clone()).room("r").unwrap().unwrap();
+        assert_eq!(reopened.cwd.as_deref(),Some("/trusted"));
+        assert!(reopened.mounts.is_empty());assert!(!reopened.snapshot.plan);assert!(reopened.snapshot.allowed.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

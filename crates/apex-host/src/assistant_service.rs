@@ -149,7 +149,7 @@ impl Host {
         }
         Ok(())
     }
-    pub async fn assistant_message(
+    pub(crate) async fn assistant_message(
         self: &Arc<Self>,
         input: AssistantMessageInput,
     ) -> Result<Value, String> {
@@ -157,7 +157,7 @@ impl Host {
             .await
     }
 
-    pub async fn assistant_message_with<F, Fut>(
+    pub(crate) async fn assistant_message_with<F, Fut>(
         self: &Arc<Self>,
         input: AssistantMessageInput,
         reason: F,
@@ -1506,7 +1506,7 @@ impl Host {
         Ok(())
     }
 
-    pub async fn assistant_task_action(
+    pub(crate) async fn assistant_task_action(
         self: &Arc<Self>,
         input: AssistantActionInput,
     ) -> Result<AssistantTask, String> {
@@ -4119,7 +4119,7 @@ mod tests {
                     "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], interactive_answers: answers, client_turn_id: None, max_bot_hops: None },
                     _ => crate::Command::RoomTurn { id: child.clone(), participants: vec![ParticipantId::new("null")], hops: Some(0), interactive_answers: answers },
                 };
-                f.runtime.block_on(f.host.call_with_client_capability(command, capability)).unwrap();
+                f.runtime.block_on(f.host.call_with_client_capability_assuming_verified_ui_for_test(command, capability)).unwrap();
                 assert_eq!(wait_for(&f, &task.id).status, TaskStatus::ReadyForReview);
                 let request = bot.requests().pop().unwrap();
                 let comparison = request.system.contains("kind\":\"comparison");

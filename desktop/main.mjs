@@ -23,12 +23,14 @@ import { answers, daemonBinary, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
+import { assertTrustedStartup, attestFrame, protectedCommands } from './provenance.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
 const dist = path.join(repo, 'dist');
 const env = process.env;
+assertTrustedStartup(app.isPackaged, process.argv, env);
 const smoke = env.APEX_DECK_SMOKE === '1';
 const devUrl = env.APEX_DECK_DEV_URL || '';
 /** Set for tests and the smoke run: the host's data folder. */
@@ -266,12 +268,26 @@ ipcMain.handle('daemon:connect', async (event, hostId = LOCAL) => {
   }
   return links.connect(contents.id, hostId);
 });
-ipcMain.on('daemon:send', (event, hostId, gen, line) => {
+ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
   if (!fromUi(event) || typeof line !== 'string') return;
   let frame; try { frame = JSON.parse(line); } catch { return; }
   if (hostId !== LOCAL && ['session_save', 'settings_save'].includes(frame.cmd)) {
     event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: 'App preferences are owned by This Mac.' }));
     return;
+  }
+  // Existing ordinary remote coding rooms keep their authenticated SSH route.
+  // Remote assistant authority is unavailable until its own broker is deployed.
+  if (protectedCommands.has(frame.cmd) && !(hostId !== LOCAL && frame.cmd.startsWith('room_'))) {
+    try {
+      if (hostId !== LOCAL) throw new Error('Protected assistant submissions currently require the installed UI on the same Mac as the project host.');
+      const folder = fs.realpathSync(await dataFolder(bin, dataDir));
+      const signed = await attestFrame(frame, { dataDir: folder });
+      if (event.sender.isDestroyed() || !fromUi(event)) return;
+      line = JSON.stringify(signed);
+    } catch (error) {
+      if (!event.sender.isDestroyed()) event.sender.send('daemon:line', hostId, gen, JSON.stringify({id:frame.id,err:error.message}));
+      return;
+    }
   }
   links.send(event.sender.id, hostId, gen, line);
 });
@@ -407,6 +423,7 @@ handle('shell:exportPdf', async (_entry, name, html) => {
   const win = new BrowserWindow({
     show: false,
     webPreferences: {
+      devTools: !app.isPackaged,
       partition,
       javascript: false,
       sandbox: true,
@@ -628,7 +645,7 @@ function menu() {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' },
+        { role: 'reload' }, ...(!app.isPackaged ? [{ role: 'toggleDevTools' }] : []), { type: 'separator' },
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' },
       ],
     },
@@ -658,6 +675,7 @@ function createWindow(host, beside) {
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     show: !smoke,
     webPreferences: {
+      devTools: !app.isPackaged,
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,
@@ -773,6 +791,7 @@ function createPopout(ownerEntry, snapshot, bounds) {
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     show: !smoke,
     webPreferences: {
+      devTools: !app.isPackaged,
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,

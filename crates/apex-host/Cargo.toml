@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+apex-provenance = { path = "../apex-provenance" }
 apex-core = { path = "../apex-core" }
 apex-adapters = { path = "../apex-adapters" }
 portable-pty = "0.9"
@@ -23,3 +24,7 @@ trash = "5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+# Explicit in-process fixtures only; no environment or CLI switch enables this.
+test-support = []

@@ -123,6 +123,7 @@ version = "0.8.2"
 dependencies = [
  "apex-adapters",
  "apex-core",
+ "apex-provenance",
  "base64 0.22.1",
  "futures",
  "libc",
@@ -143,6 +144,19 @@ version = "0.8.2"
 dependencies = [
  "base64 0.22.1",
  "hmac",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "apex-provenance"
+version = "0.8.2"
+dependencies = [
+ "base64 0.22.1",
+ "cc",
+ "libc",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.10.9",

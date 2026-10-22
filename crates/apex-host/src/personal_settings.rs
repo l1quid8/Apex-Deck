@@ -334,7 +334,7 @@ mod personal_workspace_tests {
     }
 
     async fn configure(host: &Arc<Host>, args: Value) -> Result<Value,String> {
-        host.call(Command::from_json(json!({"cmd":"personal_workspace_configure","args":args}))?).await
+        host.call_assuming_verified_ui_for_test(Command::from_json(json!({"cmd":"personal_workspace_configure","args":args}))?).await
     }
 
     #[tokio::test]

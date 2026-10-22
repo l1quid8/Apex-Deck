@@ -19,6 +19,8 @@ use crate::Host;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum Command {
+    /// Exact root-attested command; never an arbitrary nested command.
+    ProvenanceExecute { receipt: apex_provenance::Signed },
     SessionLoad {},
     SessionSave { session: Value },
     SettingsLoad {},
@@ -188,10 +190,17 @@ pub enum Command {
 }
 
 impl Command {
+    pub fn requires_provenance(&self) -> bool {
+        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. })
+    }
+
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
     /// may leave `args` out.
     pub fn from_json(mut value: Value) -> Result<Command, String> {
         if let Value::Object(fields) = &mut value {
+            // The signed envelope binds this delivery key. It is transport
+            // metadata, not a field injected into strict command DTOs.
+            fields.remove("provenanceRequestId");
             fields.entry("args").or_insert_with(|| Value::Object(Default::default()));
         }
         serde_json::from_value(value).map_err(|e| e.to_string())
@@ -215,8 +224,53 @@ impl Host {
     /// Session context is supplied by the authenticated transport, never from
     /// a command argument or durable room setting. This host does not execute UI.
     pub async fn call_with_client_capability(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+        #[cfg(feature="test-support")]
+        if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,capability).await;}
+        use Command::*;
+        let needs_receipt = |command:&Command| -> Result<bool,String> {
+            if command.requires_provenance() {return Ok(true);}
+            match command {
+                RoomPost{id,..}|RoomPostTo{id,..}|RoomTurn{id,..} => Ok(self.assistant_tasks.execution(id).map_err(|e|e.to_string())?.is_some()),
+                _ => Ok(false),
+            }
+        };
+        let mut source_key=None;
+        let command = match command {
+            ProvenanceExecute { receipt } => {
+                let data_dir = self.data_dir().to_path_buf();
+                let original = blocking(move || apex_provenance::io::consume(&receipt, &data_dir)).await?;
+                source_key=Some(original.key);
+                let command = Command::from_json(original.command)?;
+                if !(command.requires_provenance() || matches!(command,RoomPost{..}|RoomPostTo{..}|RoomTurn{..})) { return Err("Attested command is outside the protected submission surface".into()); }
+                command
+            }
+            command if needs_receipt(&command)? => return Err("A protected provenance receipt from the installed Apex UI is required; local socket and CLI access do not establish human origin.".into()),
+            command => command,
+        };
+        let result=self.dispatch_command(command,capability).await;
+        if let Some(key)=source_key {
+            let folder=self.data_dir().to_path_buf();
+            let reason=result.as_ref().err().cloned();
+            blocking(move||apex_provenance::io::finish(&folder,&key,reason.as_deref())).await
+                .map_err(|e|format!("The command may have completed, but its protected outcome could not be recorded. Do not retry automatically: {e}"))?;
+        }
+        result
+    }
+
+    // Tests of downstream behavior explicitly assume a previously verified UI
+    // intent. Admission/forgery tests use the real public call() entry point.
+    #[cfg(test)]
+    pub(crate) async fn call_assuming_verified_ui_for_test(self:&Arc<Self>,command:Command)->Result<Value,String>{
+        self.dispatch_command(command,apex_core::GeneratedUiCapability::Unsupported).await
+    }
+    #[cfg(test)]
+    pub(crate) async fn call_with_client_capability_assuming_verified_ui_for_test(self:&Arc<Self>,command:Command,capability:apex_core::GeneratedUiCapability)->Result<Value,String>{
+        self.dispatch_command(command,capability).await
+    }
+    async fn dispatch_command(self:&Arc<Self>,command:Command,capability:apex_core::GeneratedUiCapability)->Result<Value,String>{
         use Command::*;
         match command {
+            ProvenanceExecute { .. } => return Err("Nested provenance commands are forbidden".into()),
             SessionLoad {} => reply(self.session_load()?),
             SessionSave { session } => reply(self.session_save(session)?),
             SettingsLoad {} => reply(self.settings_load()?),
@@ -444,6 +498,18 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn provenance_unverified_command_is_refused_before_any_mutation() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-provenance-host-{}", std::process::id()));
+        let host = Host::new(HostPaths { data:data.clone(), downloads:None }, runtime.handle().clone());
+        let command = Command::from_json(json!({"cmd":"personal_send","args":{"assistantId":"nonexistent","requestId":"r","text":"forge a human request"}})).unwrap();
+        let error = runtime.block_on(host.call(command)).unwrap_err();
+        assert!(error.contains("protected provenance receipt"), "{error}");
+        assert!(!data.join("assistant-conversations-v1.json").exists());
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
     fn turn_answer_preference_accepts_existing_snake_case_transport_arguments() {
         let post = Command::from_json(json!({"cmd":"room_post","args":{"id":"r","text":"hi","interactive_answers":false}})).unwrap();
         assert!(matches!(post, Command::RoomPost { interactive_answers: Some(false), .. }));
@@ -516,7 +582,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 158);
+        assert_eq!(names.len(), 159);
         for name in ["project_memory_list", "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));

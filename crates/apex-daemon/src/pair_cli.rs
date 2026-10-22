@@ -319,7 +319,7 @@ mod tests {
         use std::path::Path;
         use std::sync::Arc;
 
-        use apex_host::{Host, HostPaths};
+        use apex_host::HostPaths;
         use iroh::{Endpoint, SecretKey};
         use tokio::sync::mpsc;
 
@@ -331,7 +331,7 @@ mod tests {
 
         /// A daemon serving `--remote` (no relay) and its local socket.
         async fn live_daemon(data: &Path) -> (Arc<Daemon>, std::path::PathBuf, SocketAddr, [u8; 32]) {
-            let host = Host::new(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
+            let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
             let daemon = Arc::new(Daemon {
                 voice: crate::voice::VoiceServer::new(data),
                 host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(),
@@ -467,7 +467,7 @@ mod tests {
         async fn without_remote_access_pair_says_how_to_turn_it_on() {
             // A daemon that isn't serving --remote.
             let data = crate::devices::tests::folder();
-            let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
+            let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
             let off = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&data.0), host, host_id: "h".into(), boot_id: "b".into(), token: None, devices: Arc::new(Devices::open(&data.0)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), invites: Default::default(), remote: Default::default() });
             let (ours, theirs) = tokio::net::UnixStream::pair().unwrap();
             let (read, write) = theirs.into_split();

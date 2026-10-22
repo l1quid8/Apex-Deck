@@ -1035,12 +1035,12 @@ impl crate::Host {
 
     /// Save the human's message and its event, then answer at once. The
     /// worker replies later.
-    pub fn personal_send(&self, id: &str, request_id: &str, text: &str) -> Result<Accepted, String> {
+    pub(crate) fn personal_send(&self, id: &str, request_id: &str, text: &str) -> Result<Accepted, String> {
         let text = message_text(text)?;
         self.personal_accept(id, request_id, EventSource::Human { text: text.clone() }, Some(text))
     }
 
-    pub fn personal_decide(&self, id: &str, request_id: &str, decision_id: &str, params_hash: &str, approve: bool) -> Result<Accepted, String> {
+    pub(crate) fn personal_decide(&self, id: &str, request_id: &str, decision_id: &str, params_hash: &str, approve: bool) -> Result<Accepted, String> {
         let source = EventSource::Decision { decision_id: decision_id.into(), params_hash: params_hash.into(), approve };
         self.personal_accept(id, request_id, source, None)
     }
