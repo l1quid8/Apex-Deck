@@ -47,7 +47,7 @@ import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   apiModelChoices, apiProviderName, modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange, phoneSpeed,
-  canSeeNewThread, connectionKey, isPaired, loadRemoteMode, remoteModeKey, withHints,
+  canSeeNewThread, connectionKey, isPaired, withHints,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
@@ -56,8 +56,10 @@ import { ageWords, homeShort, hostTints, noteActive, sidebarSections, unarchiveT
 import { webSocketConnect } from "../daemon/webSocketLink";
 import { FinalError, type Connect } from "../daemon/client";
 import { irohConnect } from "../daemon/irohLink";
-import { remotePlugin, type RemoteMode, type Route } from "./remotePlugin";
-import { PairSheet, RemoteSettings } from "./PairSheet";
+import { remotePlugin, type Route } from "./remotePlugin";
+import { clearRemoteMode, defaultAddHow, PAIR_MACHINE_HINT, startAutomatic, whenAutomatic } from "./automatic";
+import { AddHowPicker } from "./AddHow";
+import { PairSheet } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
@@ -232,12 +234,13 @@ export function PhoneApp() {
   const [machines, setMachines] = useState<Machine[]>(() => loadMachines(typeof localStorage === "undefined" ? null : localStorage.getItem(machinesKey())));
   const [hosts, setHosts] = useState<PhoneHost[]>([]);
   const plugin = useMemo(() => remotePlugin(), []);
-  const [mode, setMode] = useState<RemoteMode>(() => { try { return loadRemoteMode(localStorage.getItem(remoteModeKey())); } catch { return "automatic"; } });
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
-  /** Settles once the plugin is bound for the current mode; every iroh dial waits on it. */
-  const bound = useRef<Promise<unknown> | null>(null);
-  if (bound.current === null) bound.current = plugin ? plugin.setMode(mode).catch(() => {}) : Promise.resolve();
+  /** One Automatic setup for this launch. The old Direct only key is deleted, not read. */
+  const automaticReady = useRef<Promise<void> | null>(null);
+  if (automaticReady.current === null) {
+    try { clearRemoteMode(localStorage); } catch { /* storage may be unavailable; nothing is read back */ }
+    automaticReady.current = startAutomatic(plugin);
+  }
+  const ready = automaticReady.current;
   /** Direct or Relayed for each QR-paired machine that's connected. */
   const [routes, setRoutes] = useState<Record<string, Route | null>>({});
   /** The newest saved list, for addresses learned after a connection opened. */
@@ -349,16 +352,6 @@ export function PhoneApp() {
     try { localStorage.setItem(machinesKey(), saveMachines(machines)); } catch { /* the list lasts for this session */ }
   }, [machines]);
 
-  const changeMode = (next: RemoteMode) => {
-    if (next === modeRef.current) return;
-    setMode(next);
-    modeRef.current = next;
-    try { localStorage.setItem(remoteModeKey(), next); } catch { /* back to Automatic next launch */ }
-    // Binding again closes every iroh connection; each comes back on the next try.
-    bound.current = plugin ? plugin.setMode(next).catch(() => {}) : Promise.resolve();
-    void bound.current.then(() => hosts.forEach((host) => { if (isPaired(host.machine)) host.connection.retryNow(); }));
-  };
-
   useEffect(() => {
     const text = Object.fromEntries(Object.entries(drafts).map(([id, draft]) => [id, draft.text]));
     try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify(text)); } catch { /* navigation within the page still keeps it */ }
@@ -372,8 +365,8 @@ export function PhoneApp() {
         const saved = machinesRef.current.find((item) => item.id === machine.id);
         return saved && isPaired(saved) ? saved : machine;
       };
-      const dial = irohConnect(target, plugin, () => modeRef.current, (route) => setRoutes((all) => all[machine.id] === route ? all : { ...all, [machine.id]: route }));
-      return async () => { await bound.current; return dial(); };
+      const dial = irohConnect(target, plugin, (route) => setRoutes((all) => all[machine.id] === route ? all : { ...all, [machine.id]: route }));
+      return () => whenAutomatic(ready, dial);
     };
     const opened = machines.map((machine) => openPhoneHost(
       machine,
@@ -1508,7 +1501,8 @@ export function PhoneApp() {
             links={links}
             routes={routes}
             covered={covered}
-            remote={plugin && <RemoteSettings plugin={plugin} mode={mode} onMode={changeMode} onError={setNotice} />}
+            pairing={plugin !== null}
+            ready={ready}
             scan={scanner ? scanner.scan : null}
             autoScan={scanAtLaunch}
             onAutoScan={() => setScanAtLaunch(false)}
@@ -1581,7 +1575,7 @@ export function PhoneApp() {
           : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.</p></section></div>)}
         {pairing && plugin && (
           <Sheet title={`Pair ${pairing.name}`} onClose={() => setPairing(null)}>
-            <PairSheet plugin={plugin} link={pairing.link} label="iPhone" onClose={() => setPairing(null)} onPaired={(paired) => {
+            <PairSheet plugin={plugin} link={pairing.link} label="iPhone" ready={ready} onClose={() => setPairing(null)} onPaired={(paired) => {
               const made: PairedMachine = { id: pairing.id, name: pairing.name, kind: pairing.kind, transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now() };
               setMachines((list) => { try { return withPairedMachine(list, made); } catch (error) { setNotice(words(error)); return list; } });
             }} />
@@ -2522,10 +2516,12 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 /** How a new machine is reached: its QR code, or an address and token typed in. */
 type AddHow = "qr" | "address";
 
-function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, autoScan, onAutoScan, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
+function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, ready, scan, autoScan, onAutoScan, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
-  /** The phone's remote-access settings, when the native plugin is there. */
-  remote: ReactNode;
+  /** The native plugin can pair from a QR code. */
+  pairing: boolean;
+  /** Settles once Automatic mode is set. Pairing waits on it. */
+  ready: Promise<void>;
   /** The camera scanner, when there is one. */
   scan: (() => Promise<string>) | null;
   /** Open the camera now, as the first thing: no machine is saved yet. */
@@ -2537,14 +2533,14 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   const hasMac = machines.some((machine) => machine.kind === "mac");
   const blank = (kind: MachineKind) => ({ name: "", url: "", token: "", kind, id: kind === "server" ? missing[0] ?? "" : "" });
   const [form, setForm] = useState(() => blank(hasMac ? "server" : "mac"));
-  const [how, setHow] = useState<AddHow>(remote ? "qr" : "address");
+  const [how, setHow] = useState<AddHow>(defaultAddHow(pairing));
   const [pasted, setPasted] = useState("");
   const [adding, setAdding] = useState(machines.length === 0);
   /** The machine being edited. Its form takes the place of its card. */
   const [editing, setEditing] = useState<string | null>(null);
   const [edit, setEdit] = useState(() => blank("mac"));
   const pairWith = (link: string) => {
-    try {
+    void whenAutomatic(ready, () => {
       const preview = parsePairingLink(link);
       const name = form.name.trim() || preview.name;
       // Checked now, so a bad name or id doesn't surface only after the machine approved.
@@ -2552,7 +2548,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
       onPair({ link: link.trim(), kind: form.kind, id: form.kind === "mac" ? "local" : form.id.trim(), name });
       setAdding(false);
       setPasted("");
-    } catch (error) { onError(words(error)); }
+    }).catch((error: unknown) => onError(words(error)));
   };
   const scanCode = () => {
     if (!scan) return;
@@ -2632,14 +2628,11 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
             <button type="button" role="radio" aria-checked={form.kind === "mac"} disabled={hasMac} onClick={() => setForm({ ...form, kind: "mac", id: "" })}><Laptop size={16} />Mac</button>
             <button type="button" role="radio" aria-checked={form.kind === "server"} onClick={() => setForm({ ...form, kind: "server", id: form.id || missing[0] || "" })}><Globe size={16} />Server</button>
           </div>
-          {remote && <div className="ph-segment" role="radiogroup" aria-label="How">
-            <button type="button" role="radio" aria-checked={how === "qr"} onClick={() => setHow("qr")}>QR code</button>
-            <button type="button" role="radio" aria-checked={how === "address"} onClick={() => setHow("address")}>Address and token</button>
-          </div>}
+          <AddHowPicker pairing={pairing} how={how} onHow={setHow} />
           <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={how === "qr" ? "From the code" : form.kind === "mac" ? "Tyler's MacBook" : "Apex-Terminal"} required={how === "address"} autoCapitalize="words" /></label>
           {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
           {how === "qr" ? <>
-            <p className="ph-muted">On the machine, open Settings → Remote access and press Pair phone. On a server, run <code>apex-daemon pair</code>.</p>
+            <p className="ph-muted">{PAIR_MACHINE_HINT} On a server, run <code>apex-daemon pair</code>.</p>
             {scan && <button type="button" className="primary ph-wide" onClick={scanCode}>Scan QR code</button>}
             <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
@@ -2651,7 +2644,6 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           {machines.length > 0 && <button type="button" className="ph-plain ph-wide" onClick={() => setAdding(false)}>Cancel</button>}
         </form>
       )}
-      {remote}
       <p className="ph-foot">{how === "qr" ? "Pairing keys stay in this phone's Keychain." : "The token works like a password. It stays on this phone."}</p>
     </main>
   );

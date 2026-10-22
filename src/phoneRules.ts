@@ -263,17 +263,6 @@ export function saveMachines(list: Machine[]): string {
   return JSON.stringify(list);
 }
 
-const MODE_KEY = "apex-deck.phone.remote-mode.v1";
-
-export function remoteModeKey(): string {
-  return MODE_KEY;
-}
-
-/** Automatic unless Direct only was picked. */
-export function loadRemoteMode(raw: string | null): "automatic" | "direct" {
-  return raw === "direct" ? "direct" : "automatic";
-}
-
 /** Who answers is the room's call, as on the desktop: the bots @named, or the last ones named when nobody is. Returns who it went to. */
 export async function postRouted(
   backend: { roomTargets(id: string, text: string): Promise<string[]>; roomPostTo(id: string, text: string, targets: string[]): Promise<void> },
