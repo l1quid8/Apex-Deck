@@ -119,6 +119,9 @@ export function revokedWarning(revokedAt: number | null, format: (ms: number) =>
   return `This phone was removed on ${format(revokedAt)}. Approving lets it back in.`;
 }
 
+/** A 6-digit claim code as "673 149"; anything else as it came. */
+export const spacedCode = (code: string) => (/^\d{6}$/.test(code) ? `${code.slice(0, 3)} ${code.slice(3)}` : code);
+
 /** Copy the link, only when the person presses Copy. False when it couldn't. */
 export async function copyLink(link: string, clipboard: { writeText(text: string): Promise<void> } | undefined): Promise<boolean> {
   if (!clipboard) return false;
@@ -181,20 +184,41 @@ interface Timers {
   clearTimer(id: unknown): void;
   /** How often to ask whether the claiming phone is still there. */
   pollMs?: number;
+  /** ms since the epoch; for the renewal limit. */
+  now?: () => number;
 }
 
 const realTimers: Timers = { setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (id) => clearTimeout(id as ReturnType<typeof setTimeout>) };
+
+/** How long one Pair phone sheet keeps renewing its code, from when it opened. */
+export const RENEW_FOR_MS = 30 * 60 * 1000;
+
+/** The line under the QR: when the next code comes, or when this one ends for good. */
+export function timerText(expiresAt: number, renewUntil: number | null, now = Date.now()): string {
+  const renews = renewUntil !== null && expiresAt < renewUntil;
+  const left = countdownText(expiresAt, now);
+  if (left === "Expired") return renews ? "Making a new code…" : "Code expired";
+  return renews ? `New code in ${left}` : `Code expires in ${left}`;
+}
 
 /**
  * One Pair phone sheet: start an invitation, wait for a phone to claim it,
  * then Approve or Deny. While the approval waits it asks again every
  * `pollMs`, so a phone that leaves ends it. Closing cancels the invitation
  * unless the phone was already paired or turned away.
+ *
+ * With `renewUntil` (ms since the epoch), a code the daemon says expired
+ * with no phone on it is replaced by a new one with the same access, until
+ * then. The daemon decides: a claim that landed first comes back as a claim
+ * and is never renewed over. Each start is numbered; a reply to an older
+ * start, or one that lands after close, is cancelled and never shown.
  */
-export function pairingSession(api: PairingApi, onState: (state: PairState) => void, timers: Timers = realTimers) {
+export function pairingSession(api: PairingApi, onState: (state: PairState) => void, timers: Timers = realTimers, renewUntil: number | null = null) {
   const pollMs = timers.pollMs ?? 2000;
+  const now = timers.now ?? Date.now;
   let state: PairState = { kind: "idle" };
   let invite: PairInvitation | null = null;
+  let attempt = 0;
   let closed = false;
   let poll: unknown = null;
 
@@ -213,7 +237,7 @@ export function pairingSession(api: PairingApi, onState: (state: PairState) => v
     set({ kind: "ended", reason, words: endedWords(reason, wordsOf(error)) });
   };
   /** Whether the invitation may still be live on the daemon, so closing must cancel it. */
-  const live = () => invite !== null && (state.kind === "starting" || state.kind === "waiting" || state.kind === "claimed" || state.kind === "approving");
+  const live = () => invite !== null && (state.kind === "waiting" || state.kind === "claimed" || state.kind === "approving");
 
   const stillThere = () => {
     poll = null;
@@ -225,27 +249,37 @@ export function pairingSession(api: PairingApi, onState: (state: PairState) => v
     );
   };
 
+  const begin = (tier: Tier, threads: "all" | string[]) => {
+    const mine = ++attempt;
+    invite = null;
+    set({ kind: "starting" });
+    api.start(tier, threads).then((made) => {
+      if (closed || mine !== attempt) {
+        void api.cancel(made.invitation).catch(() => {});
+        return;
+      }
+      invite = made;
+      set({ kind: "waiting", invite: made });
+      api.wait(made.invitation).then(
+        (claim) => {
+          if (state.kind !== "waiting" || invite !== made) return;
+          set({ kind: "claimed", invite: made, claim });
+          poll = timers.setTimer(stillThere, pollMs);
+        },
+        (error) => {
+          if (state.kind !== "waiting" || invite !== made) return;
+          if (reasonOf(error) === "expired" && renewUntil !== null && now() < renewUntil) begin(tier, threads);
+          else end(error);
+        },
+      );
+    }, (error) => { if (mine === attempt) end(error); });
+  };
+
   return {
     get state() { return state; },
     start(tier: Tier, threads: "all" | string[]) {
       if (closed || state.kind !== "idle") return;
-      set({ kind: "starting" });
-      api.start(tier, threads).then((made) => {
-        invite = made;
-        if (closed) {
-          void api.cancel(made.invitation).catch(() => {});
-          return;
-        }
-        set({ kind: "waiting", invite: made });
-        api.wait(made.invitation).then(
-          (claim) => {
-            if (state.kind !== "waiting") return;
-            set({ kind: "claimed", invite: made, claim });
-            poll = timers.setTimer(stillThere, pollMs);
-          },
-          (error) => { if (state.kind === "waiting") end(error); },
-        );
-      }, end);
+      begin(tier, threads);
     },
     approve() {
       if (closed || state.kind !== "claimed") return;

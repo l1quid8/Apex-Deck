@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  PAIR_DEFAULT_TIER, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
-  parseAddresses, phonesStatus, qrSvgPath, reasonOf, revokedWarning,
+  PAIR_DEFAULT_TIER, RENEW_FOR_MS, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
+  parseAddresses, phonesStatus, qrSvgPath, reasonOf, revokedWarning, spacedCode, timerText,
 } from "../src/pairing.ts";
 
 const INVITE = { invitation: "inv-1", link: "apexdeck://pair?p=secret", expires_at: 1_000_000 };
@@ -307,4 +307,106 @@ test("Settings → Phones says whether phones can connect, with the button that 
     note: "Paired phones stay saved but can't connect, even on the same Wi‑Fi.",
   }, "off with saved phones: they can't connect even on Wi-Fi, and Turn on is offered");
   assert.deepEqual(phonesStatus(false, 0), { line: "Phone connections are off. Pairing turns them on.", action: null, note: null }, "off with none: no button, Pair phone does it");
+});
+
+// Auto-renew. The daemon's pair_wait answers "expired" only for a code no
+// phone claimed in time; a claim that landed first comes back as the claim.
+
+const INVITE_2 = { invitation: "inv-2", link: "apexdeck://pair?p=second", expires_at: 1_300_000 };
+const INVITE_3 = { invitation: "inv-3", link: "apexdeck://pair?p=third", expires_at: 1_600_000 };
+const clockTimers = (at) => ({ ...manualTimers(), now: () => at.now });
+
+test("a code that expires with no phone is renewed with the same access and threads", async () => {
+  const at = { now: 0 };
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [refused("expired"), never()] });
+  const states = [];
+  const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers(at), RENEW_FOR_MS);
+  session.start("read_only", ["t1", "t2"]);
+  await settle();
+  await settle();
+  const starts = daemon.sent.filter(([cmd]) => cmd === "pair_start");
+  assert.deepEqual(starts, [["pair_start", { tier: "read_only", threads: ["t1", "t2"] }], ["pair_start", { tier: "read_only", threads: ["t1", "t2"] }]]);
+  assert.equal(session.state.kind, "waiting");
+  assert.equal(session.state.invite.invitation, "inv-2");
+  assert.equal(states.some((s) => s.kind === "ended"), false, "renewing never shows an ended state");
+  session.close();
+  assert.deepEqual(daemon.sent.at(-1), ["pair_cancel", { invitation: "inv-2" }], "closing cancels the current code");
+});
+
+test("a claim that lands at the expiry instant shows the approval and is never renewed over", async () => {
+  // The daemon decided the claim came first: pair_wait answers the claim, not "expired".
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [CLAIM] });
+  const session = pairingSession(pairingApi(daemon.backend), () => {}, clockTimers({ now: INVITE.expires_at }), RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  assert.equal(session.state.kind, "claimed");
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 1, "no new code");
+});
+
+test("a claimed code that then expires ends; it is not renewed", async () => {
+  const timers = clockTimers({ now: 0 });
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [CLAIM, refused("expired")] });
+  const session = pairingSession(pairingApi(daemon.backend), () => {}, timers, RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  timers.runAll();
+  await settle();
+  assert.deepEqual([session.state.kind, session.state.reason], ["ended", "expired"]);
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 1);
+});
+
+test("closing during a renewal cancels the new code when it lands, and shows nothing more", async () => {
+  let second;
+  const daemon = fakeDaemon({ pair_start: [INVITE, new Promise((r) => { second = r; })], pair_wait: [refused("expired")] });
+  const states = [];
+  const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers({ now: 0 }), RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  assert.equal(session.state.kind, "starting", "renewal in flight");
+  session.close();
+  assert.equal(daemon.cmds().includes("pair_cancel"), false, "the expired code needs no cancel");
+  second(INVITE_2);
+  await settle();
+  assert.deepEqual(daemon.sent.at(-1), ["pair_cancel", { invitation: "inv-2" }], "the stale reply's code is cancelled");
+  assert.equal(states.at(-1).kind, "starting", "the stale reply is never shown");
+});
+
+test("renewals stop once the sheet has been open 30 minutes", async () => {
+  const at = { now: 0 };
+  let secondExpires;
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2, INVITE_3], pair_wait: [refused("expired"), new Promise((_, no) => { secondExpires = no; })] });
+  const session = pairingSession(pairingApi(daemon.backend), () => {}, clockTimers(at), RENEW_FOR_MS);
+  at.now = RENEW_FOR_MS - 1;
+  session.start("chat", "all");
+  await settle();
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 2, "renewed just before the limit");
+  assert.equal(session.state.invite.invitation, "inv-2");
+  at.now = RENEW_FOR_MS;
+  secondExpires(refused("expired"));
+  await settle();
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 2, "not after it");
+  assert.deepEqual([session.state.kind, session.state.reason], ["ended", "expired"]);
+  assert.equal(session.state.words, "This pairing code expired. Start again for a new one.");
+});
+
+test("without a renewal limit an expired code ends, as before", async () => {
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [refused("expired")] });
+  const session = pairingSession(pairingApi(daemon.backend), () => {}, manualTimers());
+  session.start("chat", "all");
+  await settle();
+  assert.deepEqual([session.state.kind, session.state.reason], ["ended", "expired"]);
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 1);
+});
+
+test("the line under the QR says when the next code comes, or when the last one ends", () => {
+  assert.equal(timerText(300_000, RENEW_FOR_MS, 48_000), "New code in 4:12");
+  assert.equal(timerText(RENEW_FOR_MS + 1, RENEW_FOR_MS, RENEW_FOR_MS - 60_000), "Code expires in 1:01");
+  assert.equal(timerText(300_000, null, 0), "Code expires in 5:00");
+  assert.equal(timerText(300_000, RENEW_FOR_MS, 300_000), "Making a new code…");
+  assert.equal(timerText(RENEW_FOR_MS + 1, RENEW_FOR_MS, RENEW_FOR_MS + 1), "Code expired");
+});
+
+test("a 6-digit claim code is shown in two groups of three", () => {
+  assert.equal(spacedCode("673149"), "673 149");
+  assert.equal(spacedCode("4821"), "4821");
 });
