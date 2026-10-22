@@ -342,6 +342,8 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
     const entry=[...windows.values(), ...popoutWindows.values()].find(e=>e.win.webContents===contents);
     const trusted=entry && [originOf(devUrl), 'app://deck'].includes(originOf(contents.getURL()));
+    // Copy buttons (worktree paths, thread Copy ›) write through navigator.clipboard, which asks here.
+    if(trusted&&permission==='clipboard-sanitized-write'){callback(true);return;}
     const audioOnly=permission==='media' && details.mediaTypes?.includes('audio') && !details.mediaTypes?.includes('video');
     if(!trusted||!audioOnly){callback(false);return;}
     if(process.platform==='darwin') void systemPreferences.askForMediaAccess('microphone').then(callback).catch(()=>callback(false));
