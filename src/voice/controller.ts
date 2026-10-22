@@ -122,11 +122,24 @@ export function createVoiceController<R = VoiceRuntime>(
     active?.unlisten();
     active = undefined;
   }
+  // A reply you talked over. It is only cancelled once your next words turn
+  // out to be a new message for the same agent; switching agents or ending
+  // the call leaves it running.
+  let interrupted: typeof active;
   function cancel() {
-    const a = active;
+    const a = active ?? interrupted;
     detach();
+    interrupted = undefined;
     if (a) cleanup = cleanup.then(() => a.bridge.cancel(a.id));
     return cleanup;
+  }
+  function interrupt() {
+    if (active) interrupted = active;
+    detach();
+  }
+  function release() {
+    detach();
+    interrupted = undefined;
   }
   async function end(reason = "ended by user") {
     // Every call end is logged with its reason so drops can be traced.
@@ -146,7 +159,7 @@ export function createVoiceController<R = VoiceRuntime>(
     generation++;
     // Ending a call only stops the audio. The agent keeps working and its
     // reply still lands in the thread.
-    detach();
+    release();
     const stopping = cleanup;
     set({
       status: "off",
@@ -320,6 +333,11 @@ export function createVoiceController<R = VoiceRuntime>(
       if (!text) return;
     }
     if (!text.trim()) return;
+    if (interrupted) {
+      const g = generation;
+      await cancel();
+      if (g !== generation || currentCall !== callId || !callId) return;
+    }
     const scope = state.scope!;
     const bridge = deps.bridge(scope);
     const id = crypto.randomUUID();
@@ -353,7 +371,9 @@ export function createVoiceController<R = VoiceRuntime>(
   async function switchAgent(scope: CallScope) {
     if (!callId) return start(scope);
     stopAudio(true);
-    await cancel();
+    // Switching only moves the call. The previous agent keeps working and its
+    // reply still lands in the thread.
+    release();
     if (!callId) return;
     set({
       scope,
@@ -401,7 +421,7 @@ export function createVoiceController<R = VoiceRuntime>(
       });
     } else if (e.type === "speechStart" && !state.muted) {
       stopAudio();
-      void cancel().catch((err) => error(Error(String(err))));
+      interrupt();
       set({ status: "hearing" });
     } else if (e.type === "transcript" && !state.muted) {
       const id = (e as HelperEvent & { utteranceId: string }).utteranceId;

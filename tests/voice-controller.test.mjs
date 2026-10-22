@@ -60,7 +60,7 @@ function fixture(options = {}) {
         },
       };
     },
-    candidates: () => [candidate],
+    candidates: () => options.candidates ?? [candidate],
     bridge: () => bridge,
     voice: () => "am_michael",
     silence: () => 700,
@@ -117,7 +117,12 @@ test("call default off, transcript once, matching reply, interruption, end", asy
   assert.equal(f.sent.filter((m) => m.type === "speak").length, 0);
   f.event({ type: "speechStart", callId: start.callId, generation: 0 });
   await new Promise((r) => setTimeout(r, 0));
+  // Talking over the agent only cancels once the new words are a message.
+  assert.equal(f.stopped.length, 0);
+  f.event({ ...t, generation: 1, utteranceId: "u2", text: "Never mind that" });
+  await new Promise((r) => setTimeout(r, 0));
   assert.equal(f.stopped.length, 1);
+  assert.equal(f.posted.length, 2);
   await f.c.end();
   assert.equal(f.c.getState().status, "off");
   assert.equal(f.closed, 1);
@@ -187,6 +192,7 @@ test("repeated interruption drops old transcript waiting on cleanup", async () =
   event("transcript", 1, { utteranceId: "u1", text: "stale second" });
   event("speechStart", 1);
   event("transcript", 2, { utteranceId: "u2", text: "replacement third" });
+  await new Promise((r) => setTimeout(r, 0));
   release();
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(
@@ -391,4 +397,29 @@ test("ending during a delayed reconnect closes that runtime without closing a ne
   assert.deepEqual(f.runtimeStops, [first, second]);
   assert.notEqual(f.c.getState().status, "off");
   await f.c.end();
+});
+
+test("switching agents mid-call keeps the previous agent working", async () => {
+  const nul = { hostId: "h", roomId: "r", participantId: "a", profileId: "a", name: "Null", aliases: [] };
+  const jigga = { hostId: "h", roomId: "r", participantId: "b", profileId: "b", name: "Jigga", aliases: [] };
+  for (const how of ["spoken", "menu"]) {
+    const f = fixture({ candidates: [nul, jigga] });
+    await f.c.start(f.scope);
+    const start = f.sent.find((m) => m.type === "start");
+    const event = (e) => f.event({ callId: start.callId, ...e });
+    event({ type: "ready", generation: 0, voices: ["am_michael"] });
+    event({ type: "transcript", generation: 0, utteranceId: "u0", text: "check the build" });
+    await new Promise((r) => setImmediate(r));
+    if (how === "spoken") {
+      event({ type: "speechStart", generation: 0 });
+      event({ type: "transcript", generation: 1, utteranceId: "u1", text: "Call Jigga, what's next?" });
+    } else {
+      await f.c.switchAgent({ hostId: "h", roomId: "r", participantId: "b" });
+    }
+    await new Promise((r) => setImmediate(r));
+    assert.equal(f.stopped.length, 0, how);
+    assert.equal(f.c.getState().scope.participantId, "b", how);
+    if (how === "spoken") assert.equal(f.posted.at(-1).scope.participantId, "b");
+    await f.c.end();
+  }
 });
