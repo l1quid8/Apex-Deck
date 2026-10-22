@@ -52,7 +52,9 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
   const [error, setError] = useState("");
   /** Always allow is hovered or focused, so its scope line shows. */
   const [previewing, setPreviewing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const scopeId = useId();
+  const planId = useId();
   const preview = (on: boolean) => () => setPreviewing(on);
   const decide = (answer: Answer) => {
     if (pending.current || answered !== null || disabled || (action.expires_at != null && action.expires_at <= Date.now())) return;
@@ -61,14 +63,19 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
     void sendApprovalAnswer(answer, onDecide, setAnswered).catch(error => setError(`Could not send your answer: ${String(error)}`)).finally(() => { pending.current = false; });
   };
   return (
-    <div className="approval" role="group" aria-label={`Allow or deny: ${action.title}`} data-request={request} data-by={by} data-answered={answered !== null ? "" : undefined}>
+    <div className={`approval${action.kind === "plan" ? " approval-plan-card" : ""}`} role="group" aria-label={`Allow or deny: ${action.title}`} data-request={request} data-by={by} data-answered={answered !== null ? "" : undefined}>
       <div className="approval-head">
         <span className="approval-host" title={hostName}>Runs on {hostName}</span>
         <span className="approval-kind">{kindLabel(action)}</span>
         <strong>{action.title}</strong>
+        {action.kind === "plan" && (
+          <button type="button" className="ghost approval-plan-toggle" aria-expanded={expanded} aria-controls={planId} onClick={() => setExpanded(value => !value)}>
+            {expanded ? "Collapse plan" : "Expand plan"}
+          </button>
+        )}
       </div>
       {action.kind === "edit" ? <Diff text={action.detail} />
-        : action.kind === "plan" ? <div className="approval-plan"><Markdown text={action.detail} onOpen={() => {}} /></div>
+        : action.kind === "plan" ? <div id={planId} className="approval-plan" data-expanded={expanded} tabIndex={0} role="region" aria-label="Plan details"><Markdown text={action.detail} onOpen={() => {}} /></div>
         : <pre className="approval-detail">{action.detail}</pre>}
       <div className="approval-actions">
         {choicesFor(action).map((answer) => {
