@@ -84,3 +84,10 @@ test("Call who? names each agent's thread when the list spans threads", () => {
   assert.equal(pickNote([untitled, jigga]), "Say “call Jigga in Voice calls” to pick one hands-free.");
   assert.equal(pickNote([jigga, nul]), "During a call, say “call Jigga” to switch.");
 });
+
+test("an uncertain thread choice labels even one candidate with its thread", () => {
+  const jigga = { hostId: "h", roomId: "pane-1", name: "Jigga", roomTitle: "Voice calls" };
+  assert.deepEqual(pickRows([jigga], () => "Claude", true).map((r) => r.detail), ["Voice calls"]);
+  assert.deepEqual(pickRows([{ ...jigga, roomTitle: " " }], () => "Claude", true).map((r) => r.detail), ["Untitled thread"]);
+  assert.equal(pickNote([jigga], true), "Say “call Jigga in Voice calls” to pick one hands-free.");
+});

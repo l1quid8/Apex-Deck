@@ -161,6 +161,7 @@ export function createVoiceController<R = VoiceRuntime>(
     client?.close(reason);
     client = undefined;
     generation++;
+    pendingSwitchText = "";
     // Ending a call only stops the audio. The agent keeps working and its
     // reply still lands in the thread.
     release();
@@ -172,6 +173,7 @@ export function createVoiceController<R = VoiceRuntime>(
       reconnecting: false,
       muted: false,
       candidates: undefined,
+      threadQuery: undefined,
       error: undefined,
     });
     // Audio ends immediately. Cleanup remains awaited before a subsequent dispatch.
@@ -293,7 +295,7 @@ export function createVoiceController<R = VoiceRuntime>(
       set({ status: "listening" });
     }
   }
-  async function submit(text: string, utteranceId: string) {
+  async function submit(text: string, utteranceId: string, route = true) {
     const currentEpoch = epoch,
       currentGeneration = generation,
       currentCall = callId;
@@ -304,37 +306,79 @@ export function createVoiceController<R = VoiceRuntime>(
       currentCall !== callId ||
       !callId ||
       !state.scope ||
-      state.muted
+      (route && state.muted)
     )
       return;
-    const parsed = resolveCallCommand(
+    const choices = state.candidates;
+    const heldText = pendingSwitchText;
+    let parsed = route ? resolveCallCommand(
       text,
       deps.candidates().filter((c) => c.hostId === state.scope!.hostId),
       state.scope,
-    );
+    ) : { kind: "text" as const, text };
+    if (choices?.length && parsed.kind === "text") {
+      const answer = text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+      if (["cancel", "never mind", "nevermind", "no"].includes(answer)) {
+        pendingSwitchText = "";
+        stopAudio(true);
+        set({ status: "listening", candidates: undefined, threadQuery: undefined, error: undefined });
+        return;
+      }
+      const matching = choices.filter((c) =>
+        c.roomTitle?.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim() === answer,
+      );
+      const pick = answer === "yes" && choices.length === 1 ? choices : matching;
+      if (pick.length === 1 && deps.candidates().some((c) => same(c, pick[0]))) {
+        parsed = { kind: "switch", candidate: pick[0], text: "" };
+      } else {
+        set({ status: "needs-attention" });
+        say("Say a thread name from the list, or say cancel.", crypto.randomUUID());
+        return;
+      }
+    }
     if (parsed.kind === "end") {
       await end("spoken stop phrase");
       return;
     }
     if (parsed.kind === "unknown") {
+      pendingSwitchText = "";
       set({
         status: "needs-attention",
+        candidates: undefined,
+        threadQuery: undefined,
         error: "No matching agent. Choose a recipient.",
       });
       return;
     }
     if (parsed.kind === "ambiguous") {
       pendingSwitchText = parsed.text;
+      const titles = [...new Set(parsed.candidates.map((c) => c.roomTitle?.trim() || "Untitled thread"))];
+      const single = parsed.candidates.length === 1;
+      const question = parsed.threadQuery !== undefined
+        ? single ? `Did you mean “${titles[0]}”?` : "Which thread did you mean?"
+        : "Choose which agent to call.";
       set({
         status: "needs-attention",
         candidates: parsed.candidates,
-        error: "Choose which agent to call.",
+        threadQuery: parsed.threadQuery,
+        error: question,
       });
+      if (parsed.threadQuery !== undefined) {
+        const options = !single ? titles.slice(0, 3).join(", ") + ". " : "";
+        const instructions = !single && titles.length === 1
+          ? "Several open threads share that title. Choose one from the list, or say cancel."
+          : `Say ${single ? "yes or " : ""}the thread name, or say cancel.`;
+        say(`${question} ${options}${instructions}`, crypto.randomUUID());
+      }
       return;
     }
     if (parsed.kind === "switch") {
+      // A spoken choice consumes the held request exactly once. A replacement
+      // command with its own message takes precedence over the previous request.
+      const held = choices?.some((c) => same(c, parsed.candidate)) ? heldText : "";
+      pendingSwitchText = "";
       await switchAgent(parsed.candidate);
-      text = parsed.text;
+      text = parsed.text || held;
       if (!text) return;
     }
     if (!text.trim()) return;
@@ -375,6 +419,12 @@ export function createVoiceController<R = VoiceRuntime>(
   }
   async function switchAgent(scope: CallScope) {
     if (!callId) return start(scope);
+    if (state.candidates?.some((c) => same(c, scope)) && !deps.candidates().some((c) => same(c, scope))) {
+      set({ status: "needs-attention", error: "That thread is no longer available. Choose another thread." });
+      return;
+    }
+    const pending = state.candidates?.some((c) => same(c, scope)) ? pendingSwitchText : "";
+    pendingSwitchText = "";
     stopAudio(true);
     // Switching only moves the call. The previous agent keeps working and its
     // reply still lands in the thread.
@@ -384,13 +434,12 @@ export function createVoiceController<R = VoiceRuntime>(
       scope,
       status: "listening",
       candidates: undefined,
+      threadQuery: undefined,
       error: undefined,
     });
     deps.focus(scope);
-    if (pendingSwitchText) {
-      const text = pendingSwitchText;
-      pendingSwitchText = "";
-      await submit(text, crypto.randomUUID());
+    if (pending) {
+      await submit(pending, crypto.randomUUID(), false);
     }
   }
   function helper(e: HelperEvent) {
@@ -575,12 +624,12 @@ export function createVoiceController<R = VoiceRuntime>(
         },
         (id) => {
           control({ type: "playbackComplete", segmentId: id });
-          if (callId && !active) set({ status: "listening" });
+          if (callId && !active) set({ status: state.candidates?.length ? "needs-attention" : "listening" });
         },
         () => {
           if (callId) {
             if (playbackRequest) sinceSubmit("playback-start", playbackRequest);
-            set({ status: "speaking" });
+            set({ status: state.candidates?.length ? "needs-attention" : "speaking" });
           }
         },
         error,

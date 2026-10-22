@@ -671,6 +671,8 @@ export function PhoneApp() {
   // The queue outlives renders, so it reads the machines and who is working as they are now.
   const hostsRef = useRef(hosts);
   hostsRef.current = hosts;
+  const voiceRoomsRef = useRef({ panes, workspaces });
+  voiceRoomsRef.current = { panes, workspaces };
   const participantsRef = useRef(new Map<string, {id:string;display_name:string;media?:unknown}[]>());
   const screenRef = useRef({hostId:openHostId,roomId:openPane?.id ?? '',shown:tab==='threads' && openId!==null});
   screenRef.current={hostId:openHostId,roomId:openPane?.id ?? '',shown:tab==='threads' && openId!==null};
@@ -679,6 +681,12 @@ export function PhoneApp() {
   if (!phoneVoiceRef.current) phoneVoiceRef.current=createPhoneVoice({
     host:id=> {const h=hostsRef.current.find(h=>h.machine.id===id); if(!h)return null;return {name:h.machine.name,backend:h.backend,voice:h.voice,canCall:()=>h.supports('voice_server_v1')&&h.access()?.tier!=='read_only',whenConnected:ms=>new Promise<void>((resolve,reject)=>{if(h.connection.get().status.kind==='connected'){resolve();return;}const timer=setTimeout(()=>{off();reject(Error(`Can't reach ${h.machine.name} right now.`));},ms);const off=h.connection.subscribe(()=>{if(h.connection.get().status.kind==='connected'){clearTimeout(timer);off();resolve();}});})};},
     queue:(host,room)=>queueFor(room,host),participants:(host,room)=>participantsRef.current.get(JSON.stringify([host,room]))??[],onScreen:(host,room)=>screenRef.current.shown&&screenRef.current.hostId===host&&screenRef.current.roomId===room,storage:localStorage,keepAwake,
+    roomTitle:(host,room)=>{
+      const current=voiceRoomsRef.current;
+      const pane=current.panes.find(p=>p.id===room);
+      const project=current.workspaces.find(w=>w.id===pane?.workspaceId);
+      return pane&&(pane.hostId??(project?workspaceHost(project):''))===host?pane.title:undefined;
+    },
   });
   const phoneVoice=phoneVoiceRef.current;
   useEffect(()=>{const left=()=>{if(document.hidden)phoneVoice.leftScreen();};document.addEventListener('visibilitychange',left);return()=>{document.removeEventListener('visibilitychange',left);phoneVoice.leftScreen();};},[phoneVoice]);

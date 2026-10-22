@@ -3,7 +3,7 @@ import { useEffect, useState, useSyncExternalStore, type CSSProperties, type Rea
 import { Avatar } from "../Avatar";
 import type { PhoneVoice } from "./phoneVoice.ts";
 import type { ServerVoiceLink, ServerVoiceStatus, VoiceCandidate } from "../voice/types.ts";
-import { CALL_LOOKS, callClock, callLine, voiceLabel, type CallLook, type WaveMode } from "../voice/callView.ts";
+import { CALL_LOOKS, callClock, callLine, pickNote, pickRows, voiceLabel, type CallLook, type WaveMode } from "../voice/callView.ts";
 import { chatVoice, preferenceFor, voiceFor, withChatPreference } from "../voice/settings.ts";
 import { voiceCallView } from "./voiceCallView.ts";
 import "./voice-call.css";
@@ -175,6 +175,9 @@ export function VoiceCall(props: Base & {
   const [setup, setSetup] = useState<ServerVoiceStatus>();
   const [problem, setProblem] = useState("");
   const { state, live, candidates } = call;
+  const choices = call.here && state.candidates?.length ? state.candidates : undefined;
+  const threadQuery = choices ? state.threadQuery : undefined;
+  const choosingThread = threadQuery !== undefined;
   const addressed = props.addressed?.length === 1 ? candidates.find((c) => c.participantId === props.addressed![0]) : undefined;
   const pick = call.candidate ?? addressed ?? (candidates.length === 1 ? candidates[0] : undefined);
   const view = voiceCallView({ state, agent: pick?.name ?? "", machine, ...voice.view(), setup: live ? undefined : setup, canSetUp });
@@ -192,6 +195,9 @@ export function VoiceCall(props: Base & {
   useEffect(() => {
     if (call.here && state.status === "setup") void refresh().then(() => setOpen("setup"));
   }, [call.here, state.status]);
+  useEffect(() => {
+    if (choices) setOpen("settings");
+  }, [choices]);
   // A call already running in another thread on this machine moves here, as saying "call Jigga" would.
   const elsewhere = !call.here && !!state.scope && !LIVE_OFF.includes(state.status);
   const start = async (c: VoiceCandidate) => {
@@ -243,9 +249,10 @@ export function VoiceCall(props: Base & {
     const fallback = voiceFor(s, c.hostId, c.profileId, undefined, undefined, c.agentVoice);
     const voices = [...new Set([...(picked ? [picked] : []), ...state.voices])];
     sheet = (
-      <Sheet title={`Call with ${c.name}`} onClose={close}>
+      <Sheet title={choosingThread ? "Which thread?" : `Call with ${c.name}`} onClose={close}>
         <div className="ph-voice-sheet">
           {problem && <p role="alert">{problem}</p>}
+          {choosingThread && <p className="ph-call-note">Heard “{threadQuery}”.</p>}
           <p className={`ph-call-sheet-status${tone(call)}`} role="status">{call.line.hint}</p>
           <div className="ph-call-actions">
             <button type="button" aria-pressed={state.muted} onClick={() => voice.controller.mute(!state.muted)}>
@@ -253,19 +260,21 @@ export function VoiceCall(props: Base & {
             </button>
             <button type="button" className="hang" onClick={() => { close(); void voice.controller.end(); }}>{Ico.hang}End call</button>
           </div>
-          {(state.candidates?.length ? state.candidates : candidates).length > 1 && (
+          {(choices || candidates.length > 1) && (
             <div className="ph-call-set">
-              <span>Talking to</span>
+              <span>{choosingThread ? "Choose a thread" : "Talking to"}</span>
               <span className="ph-call-seg">
-                {(state.candidates?.length ? state.candidates : candidates).map((x) => (
-                  <button type="button" key={JSON.stringify([x.hostId, x.roomId, x.participantId])} aria-pressed={x.participantId === c.participantId && x.hostId === c.hostId}
-                    onClick={() => void voice.controller.switchAgent(x).catch((e) => setProblem(String(e)))}>
-                    <i className="ph-call-swatch" style={{ "--c": who?.(x.participantId)?.color ?? "var(--muted)" } as CSSProperties} />{x.name}
+                {pickRows(choices ?? candidates, () => "", choosingThread).map(({ candidate: x, detail }) => (
+                  <button type="button" key={JSON.stringify([x.hostId, x.roomId, x.participantId])} title={detail || undefined}
+                    aria-pressed={x.participantId === c.participantId && x.hostId === c.hostId && x.roomId === c.roomId}
+                    onClick={() => { if (choices) close(); void voice.controller.switchAgent(x).catch((e) => setProblem(String(e))); }}>
+                    <i className="ph-call-swatch" style={{ "--c": who?.(x.participantId)?.color ?? "var(--muted)" } as CSSProperties} />{x.name}{detail && ` · ${detail}`}
                   </button>
                 ))}
               </span>
             </div>
           )}
+          {choices && <p className="ph-call-note">{pickNote(choices, choosingThread)}</p>}
           <label className="ph-call-set">
             <span>{c.name}'s voice</span>
             <span className="ph-call-voice">
