@@ -27,14 +27,21 @@ function measureRows() {
 
 test("phone tools and timestamp share one line, including expanded and Copied states", { timeout: 150000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "phone-action-layout-"));
+  const now = new Date(2026, 9, 22, 10).getTime();
   const rows = [];
-  for (const mine of [false, true]) for (const expanded of [false, true]) for (const copied of [false, true]) {
-    const message = { seq: rows.length, speaker: mine ? { kind: "human" } : { kind: "bot", id: "null" }, text: "A message.", at: new Date(2026, 8, 30, 12, 59).getTime() };
+  for (const [date, at] of [
+    ["today", new Date(2026, 9, 22, 12, 59).getTime()],
+    ["this-week", new Date(2026, 9, 21, 12, 59).getTime()],
+    ["older", new Date(2026, 8, 30, 12, 59).getTime()],
+    ["last-year", new Date(2025, 8, 30, 12, 59).getTime()],
+    ["last-year-dec", new Date(2025, 11, 30, 12, 59).getTime()],
+  ]) for (const mine of [false, true]) for (const expanded of [false, true]) for (const copied of [false, true]) {
+    const message = { seq: rows.length, speaker: mine ? { kind: "human" } : { kind: "bot", id: "null" }, text: "A message.", at };
     const actions = renderToStaticMarkup(React.createElement(MessageActions, {
-      message, who: "Null", shown: message.text, expanded, copied, onToggle: noop, onCopy: noop, onQuote: noop,
+      message, now, who: "Null", shown: message.text, expanded, copied, onToggle: noop, onCopy: noop, onQuote: noop,
       pinned: true, pinning: false, onPin: noop, busy: false, onGoBack: noop, onFork: noop, asking: false,
     }));
-    rows.push(`<div class="ph-said${mine ? " mine" : ""}" data-case="${mine ? "human" : "bot"} ${expanded ? "open" : "closed"} ${copied ? "copied" : "copy"}"><div class="ph-msg">A message.</div>${actions}</div>`);
+    rows.push(`<div class="ph-said${mine ? " mine" : ""}" data-case="${mine ? "human" : "bot"} ${expanded ? "open" : "closed"} ${copied ? "copied" : "copy"} ${date}"><div class="ph-msg">A message.</div>${actions}</div>`);
   }
   const html = `<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div class="ph-app"><div class="phone-frame"><div class="ph-content ph-chat">${rows.join("")}</div></div></div><script type="module">import '/src/styles.css'; import '/src/glass-theme.css'; import '/src/clay-theme.css'; import '/src/phone/phone.css'; import '/src/phone/phone-themes.css'; window.ready = true;</script></body></html>`;
   const server = await createServer({
@@ -60,7 +67,7 @@ test("phone tools and timestamp share one line, including expanded and Copied st
           await win.loadURL(${JSON.stringify(url)});
           for(let i=0;i<200 && !await run('!!window.ready');i++) await new Promise(r=>setTimeout(r,20));
           assert.equal(await run('!!window.ready'),true,'fixture renders');
-          for(const width of [320,360,375,402,440]){
+          for(const width of [320,340,341,360,361,375,402,440]){
             win.setContentSize(width,1000);
             await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
             const rows=await run('('+${JSON.stringify(measureRows.toString())}+')()');

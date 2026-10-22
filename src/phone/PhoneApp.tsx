@@ -2369,7 +2369,7 @@ function ThreadView(props: {
     const going = props.goingBack && props.goingBack.paneId === props.paneId && props.goingBack.message.seq === message.seq ? props.goingBack : null;
     const who = message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "";
     return <>
-      <MessageActions message={message} who={who} shown={shown}
+      <MessageActions message={message} now={now} who={who} shown={shown}
         expanded={messageMenu === message.seq} onToggle={() => setMessageMenu((open) => open === message.seq ? null : message.seq)}
         copied={copied === message.seq} onCopy={() => copy(message.seq, shown)}
         onQuote={() => { actions.onQuote(message); inputRef.current?.focus(); }}
@@ -2447,13 +2447,14 @@ function ThreadView(props: {
   }, [props.project, props.machine, props.started]);
   const lost = cut.filter(([id, part]) => !part.ended && !(id in props.working)).map(([id]) => id);
   const ended = cut.filter(([, part]) => part.ended).map(([id]) => id);
-  // The seconds count while anyone is working.
+  // Count working seconds and keep message dates current while idle or after sleep.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (working.length === 0) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
+    const refresh = () => setNow(Date.now());
+    refresh();
+    const timer = setInterval(refresh, working.length > 0 ? 1000 : 60000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
   }, [working.length > 0]);
   // Each bot's working line is one line until its chevron opens it: then its steps and the reply so far
   // show as they come in. Remembered per bot while the app is open, so a bot you watch stays open.

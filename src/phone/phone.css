@@ -899,6 +899,7 @@
 .ph-said :is(.message-primary-actions, .message-action-items) { flex: none; flex-wrap: nowrap; gap: 0; }
 .ph-said .message-action-items[hidden] { display: none; }
 .ph-said .message-time { flex: none; white-space: nowrap; text-wrap: nowrap; }
+.ph-said .message-time-compact { display: none; }
 .ph-said.mine .msg-action.quote svg { transform: scaleX(-1); }
 /* A thumb-sized tap with the desktop's look; the outer icons line up with the text above them. */
 .ph-said .msg-action { flex: none; min-height: 36px; height: 36px; width: 36px; min-width: 36px; padding: 0; }
@@ -906,6 +907,12 @@
 @container (max-width: 360px) {
   .ph-said .msg-action { width: 32px; min-width: 32px; }
   .ph-said .copied { font-size: 10px; }
+}
+/* At 320px the expanded bot row needs a shorter weekday clock and numeric year. */
+@container (max-width: 340px) {
+  .ph-said .message-time { padding: 0 3px; font-size: 11px; }
+  .ph-said .message-time-label { display: none; }
+  .ph-said .message-time-compact { display: inline; }
 }
 .ph-said:not(.mine) > .message-actions { margin-left: -9px; }
 .ph-said.mine > .message-actions { margin-right: -9px; }

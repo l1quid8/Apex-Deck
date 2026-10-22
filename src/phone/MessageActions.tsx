@@ -1,6 +1,6 @@
 // The desktop's message buttons, with only Quote/Reply and Copy exposed on the phone.
 // The chevron reveals Read aloud, Pin, Retry/Revert and Fork, in the desktop's order.
-// Your row mirrors a bot's. A compact clock keeps the time on the same line.
+// Your row mirrors a bot's. A compact date keeps the time on the same line.
 // Touch screens show it all the time; a mouse shows it while the message is hovered.
 
 import type { Message, RevertPlan } from "../types";
@@ -13,8 +13,27 @@ const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="tr
 const retryIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 const revertIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 
+/** Local calendar days, as in messageTime; rounded to allow for daylight saving. */
+function phoneMessageTime(when: Date, now: number, compact = false): string {
+  const clock = new Date(now);
+  const midnight = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const days = Math.round((midnight(clock) - midnight(when)) / 86_400_000);
+  const time = when.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  if (days === 0) return time;
+  if (days > 0 && days < 7) {
+    const weekday = when.toLocaleDateString("en-US", { weekday: "short" });
+    return `${weekday} ${compact ? time.replace(" AM", "a").replace(" PM", "p") : time}`;
+  }
+  const differentYear = when.getFullYear() !== clock.getFullYear();
+  return when.toLocaleDateString("en-US", {
+    month: compact && differentYear ? "numeric" : "short", day: "numeric",
+    ...(differentYear ? { year: compact ? "2-digit" : "numeric" } as const : {}),
+  });
+}
+
 export function MessageActions(props: {
   message: Message;
+  now?: number;
   /** The bot's name, for Quote's label. */
   who: string;
   /** What the bubble shows, which Read aloud reads. */
@@ -45,8 +64,12 @@ export function MessageActions(props: {
     </svg>
   </button>;
   const when = message.at === undefined ? null : new Date(message.at);
+  const now = props.now ?? Date.now();
   const stamp = when === null ? null
-    : <time key="time" className="message-time" dateTime={when.toISOString()} title={when.toLocaleString()} aria-label={when.toLocaleString()}>{when.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</time>;
+    : <time key="time" className="message-time" dateTime={when.toISOString()} title={when.toLocaleString()} aria-label={when.toLocaleString()}>
+      <span className="message-time-label">{phoneMessageTime(when, now)}</span>
+      <span className="message-time-compact" aria-hidden="true">{phoneMessageTime(when, now, true)}</span>
+    </time>;
   const primary = [
     <button key="quote" type="button" className="msg-action quote" title="Quote" onClick={props.onQuote}
       aria-label={mine ? "Quote your message" : `Quote response from ${props.who}`}>

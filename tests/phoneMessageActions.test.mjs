@@ -11,11 +11,12 @@ const { renderToStaticMarkup } = await import("react-dom/server");
 const { MessageActions, GoBackAsk } = await import("../src/phone/MessageActions.tsx");
 
 const at = new Date(2026, 9, 21, 15, 4).getTime();
+const now = new Date(2026, 9, 22, 10).getTime();
 const bot = { seq: 4, speaker: { kind: "bot", id: "null" }, text: "Done. Tests pass.", at };
 const mine = { seq: 3, speaker: { kind: "human" }, text: "Run the tests", at };
 const noop = () => {};
 const row = (message, over = {}) => renderToStaticMarkup(React.createElement(MessageActions, {
-  message, who: "Null", shown: message.text, expanded: false, onToggle: noop, copied: false, onCopy: noop, onQuote: noop,
+  message, now, who: "Null", shown: message.text, expanded: false, onToggle: noop, copied: false, onCopy: noop, onQuote: noop,
   pinned: false, pinning: false, onPin: noop, busy: false, onGoBack: noop, onFork: noop, asking: false, ...over,
 }));
 /** Each control in the row, in order, by its distinguishing class. */
@@ -71,11 +72,44 @@ test("an older message without a time has no time", () => {
   assert.deepEqual(order(row(old)), ["quote", "copy", "action-disclosure"]);
 });
 
-test("the phone shows a compact clock with the complete date available to assistive tools", () => {
-  for (const message of [bot, mine, { ...bot, at: new Date(2026, 8, 30, 15, 4).getTime() }]) {
-    for (const expanded of [false, true]) {
-      assert.match(row(message, { expanded }), /<time[^>]*aria-label="[^"]+"[^>]*>3:04 PM<\/time>/);
+test("phone timestamps distinguish today, this week and older dates using the supplied clock", () => {
+  const cases = [
+    [new Date(2026, 9, 22, 0, 4), "12:04 AM"],
+    [new Date(2026, 9, 21, 12, 59), "Wed 12:59 PM"],
+    [new Date(2026, 9, 16, 15, 4), "Fri 3:04 PM"],
+    [new Date(2026, 9, 15, 15, 4), "Oct 15"],
+    [new Date(2026, 8, 30, 15, 4), "Sep 30"],
+    [new Date(2025, 8, 30, 15, 4), "Sep 30, 2025"],
+  ];
+  for (const [when, expected] of cases) {
+    for (const message of [bot, mine]) for (const expanded of [false, true]) {
+      const html = row({ ...message, at: when.getTime() }, { expanded });
+      assert.ok(html.includes(`<span class="message-time-label">${expected}</span>`), html);
+      assert.ok(html.includes(`dateTime="${when.toISOString()}"`));
+      assert.ok(html.includes(`aria-label="${when.toLocaleString()}"`));
     }
+  }
+});
+
+test("phone weekdays use calendar dates across midnight, year boundaries and DST", () => {
+  for (const [when, clock, expected] of [
+    [new Date(2026, 9, 21, 23, 59), new Date(2026, 9, 22, 0, 1), "Wed 11:59 PM"],
+    [new Date(2025, 11, 31, 12, 59), new Date(2026, 0, 1, 10), "Wed 12:59 PM"],
+    [new Date(2026, 2, 3, 23, 59), new Date(2026, 2, 10, 0, 1), "Mar 3"],
+    [new Date(2026, 9, 27, 23, 59), new Date(2026, 10, 2, 0, 1), "Tue 11:59 PM"],
+  ]) {
+    assert.ok(row({ ...bot, at: when.getTime() }, { now: clock.getTime() }).includes(`<span class="message-time-label">${expected}</span>`));
+  }
+});
+
+test("the narrow phone timestamp preserves the weekday and distinguishes older years", () => {
+  for (const [when, expected] of [
+    [new Date(2026, 9, 21, 12, 59), "Wed 12:59p"],
+    [new Date(2026, 9, 21, 0, 59), "Wed 12:59a"],
+    [new Date(2026, 8, 30, 12, 59), "Sep 30"],
+    [new Date(2025, 8, 30, 12, 59), "9/30/25"],
+  ]) {
+    assert.ok(row({ ...bot, at: when.getTime() }).includes(`<span class="message-time-compact" aria-hidden="true">${expected}</span>`));
   }
 });
 
