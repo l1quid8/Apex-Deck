@@ -81,3 +81,12 @@ test('bridge cannot deliver original command output to a replacement host after 
 test('linking cannot mutate a replacement assistant host after local allowance completes',async()=>{
  const f=fixture(), allowed=defer();let owner='alpha';f.routes.a.host.connection.get=()=>({status:{kind:'connected',hostId:owner}});await f.collection.refresh();f.handlers['local:personal_machine_allow']=()=>allowed.promise;const work=f.collection.lane(ref('alpha')).linkThisMac('/folder');owner='beta';allowed.resolve({hostId:'mac',folder:'/folder'});await assert.rejects(work,/identity|offline/i);assert.equal(f.calls.some(([,cmd])=>cmd==='personal_machine_link'),false);
 });
+test('an exact push for an assistant created since the last poll selects it after authoritative discovery',async()=>{
+ const f=fixture();await f.collection.refresh();f.collection.openNotification({notification:{data:{hostId:'beta',assistantId:'asst-2'}}});f.lists.b.push(record('beta','asst-2'));await f.collection.refresh();assert.deepEqual(f.collection.snapshot().selected,ref('beta','asst-2'));
+});
+test('an older in-flight list cannot discard a newer exact notification target',async()=>{
+ const f=fixture();await f.collection.refresh();const old=defer();f.handlers['b:personal_list']=()=>old.promise;const work=f.collection.refresh();f.collection.openNotification({notification:{data:{hostId:'beta',assistantId:'asst-2'}}});old.resolve([record('beta')]);await work;delete f.handlers['b:personal_list'];f.lists.b.push(record('beta','asst-2'));await f.collection.refresh();assert.deepEqual(f.collection.snapshot().selected,ref('beta','asst-2'));
+});
+test('an unseen exact notification presents an attributed pending lane with no writable fallback',async()=>{
+ const f=fixture();await f.collection.refresh();f.collection.openNotification({notification:{data:{hostId:'beta',assistantId:'asst-2'}}});const waiting=f.collection.pendingLane();assert.equal(waiting.assistant,null);assert.equal(waiting.offline,true);assert.deepEqual(waiting.ref,ref('beta','asst-2'));await assert.rejects(waiting.send('never to mac'),/waiting/i);assert.equal(f.calls.some(([,cmd])=>cmd==='personal_send'),false);f.collection.select(ref('alpha'));assert.equal(f.collection.pendingLane(),null);
+});

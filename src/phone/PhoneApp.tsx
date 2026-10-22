@@ -1787,7 +1787,7 @@ export function PhoneApp() {
             <button type="button" aria-label="Dismiss" onClick={() => setNotice("")}><X size={16} /></button>
           </div>
         )}
-        {personalOpen && personal?.assistant && <div className="apex-agent-backdrop">
+        {personalOpen && (personal?.assistant || personal?.problem) && <div className="apex-agent-backdrop">
           <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That ApexAgent lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
             if (laneId !== 'personal' || !personal?.assistant || personal.offline) throw new Error('The personal assistant host is unavailable.');
             return personal.saveAttachment(name, bytes);

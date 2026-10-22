@@ -173,5 +173,5 @@ export async function runMachineBridge({ local, vps, assistantId, assistantHostI
 /** Compatibility view over the single collection; discovery, push and bridges are shared. */
 export function usePersonalAssistant(options: PersonalAssistantsOptions): PersonalLane | null {
   const collection = usePersonalAssistants(options);
-  return collection.selected ? collection.lane(collection.selected) : collection.emptyLane();
+  return collection.pendingLane() ?? (collection.selected ? collection.lane(collection.selected) : collection.emptyLane());
 }

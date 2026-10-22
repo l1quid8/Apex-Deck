@@ -17,7 +17,7 @@ export type PersonalAssistantSummary = {
   ref: AssistantRef; name: string; hostName: string; look?: AssistantLook;
   offline: boolean; revision: number; lastSeen: number;
 };
-type HostState = { routeHostId: string; hostId?: string; name: string; state: "ready" | "empty" | "offline" | "unsupported" | "error"; problem?: string };
+type HostState = { routeHostId: string; hostId?: string; name: string; state: "ready" | "empty" | "offline" | "unsupported" | "error"; listedAfter?: number; problem?: string };
 type Row = { ref: AssistantRef; routeHostId: string; route: Backend; assistant: PersonalAssistantRecord; epoch: number; written: number; lastSeen: number };
 const selectionKey = "apex.personal-assistant.selection.v1";
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -30,7 +30,7 @@ export class PersonalAssistantsCollection {
   private selected: AssistantRef | null = null;
   private saved: AssistantRef | null = null;
   private pendingNotification: AssistantRef | null = null;
-  private discovered = false;
+  private pendingAfter = 0;
   private listeners = new Set<() => void>();
   private polls = new Map<string, number>();
   private clock = 0;
@@ -55,8 +55,12 @@ export class PersonalAssistantsCollection {
     if (this.pendingNotification) {
       const pending = this.rows.get(assistantIdentityKey(this.pendingNotification));
       if (pending) { this.selected = { ...pending.ref }; this.persist(this.selected); this.pendingNotification = null; }
-      else if ([...this.hosts.values()].some(host => host.hostId === this.pendingNotification?.hostId && (host.state === "ready" || host.state === "empty"))
-        || (this.hosts.size === this.options.hosts.length && [...this.hosts.values()].every(host => host.state === "ready" || host.state === "empty"))) this.pendingNotification = null;
+      else {
+        const hosts = this.options.hosts.map(host => this.hosts.get(host.id));
+        const authoritative = (host: HostState | undefined) => !!host && (host.listedAfter ?? -1) >= this.pendingAfter && (host.state === "ready" || host.state === "empty");
+        if (hosts.some(host => authoritative(host) && host?.hostId === this.pendingNotification?.hostId)
+          || (hosts.length > 0 && hosts.every(authoritative))) this.pendingNotification = null;
+      }
     }
     if (this.selected && this.rows.has(assistantIdentityKey(this.selected))) return;
     const desired = this.saved && this.rows.get(assistantIdentityKey(this.saved));
@@ -95,7 +99,7 @@ export class PersonalAssistantsCollection {
     const options = this.options;
     await Promise.all(options.hosts.map(async host => {
       const ticket = (this.polls.get(host.id) ?? 0) + 1; this.polls.set(host.id, ticket);
-      const started = this.clock;
+      const started = ++this.clock;
       let route: Backend | undefined;
       const current = () => {
         try { return this.polls.get(host.id) === ticket && this.options.hosts.some(h => h.id === host.id) && (!route || this.options.hostBackend(host.id) === route); }
@@ -121,7 +125,7 @@ export class PersonalAssistantsCollection {
           const rebound = old && (old.route !== route || old.routeHostId !== host.id);
           this.rows.set(key, { ref, routeHostId: host.id, route, assistant: old && old.assistant.revision >= assistant.revision ? old.assistant : assistant, epoch: !rebound && old ? old.epoch : ++this.clock, written: old?.written ?? 0, lastSeen: Date.now() });
         }
-        this.hosts.set(host.id, { routeHostId: host.id, hostId, name: host.name, state: list.length ? "ready" : "empty" });
+        this.hosts.set(host.id, { routeHostId: host.id, hostId, name: host.name, state: list.length ? "ready" : "empty", listedAfter: started });
         if (!host.remote) this.localHostId = hostId;
       } catch (error) {
         if (!current()) return;
@@ -129,7 +133,7 @@ export class PersonalAssistantsCollection {
         this.hosts.set(host.id, { routeHostId: host.id, name: host.name, state: unsupported ? "unsupported" : "error", problem: unsupported ? "Update this machine's service to use personal assistants." : message(error) });
       }
     }));
-    this.discovered = true; this.choose(); this.emit();
+    this.choose(); this.emit();
     if (this.token) await this.registerPushToken(this.token);
   };
   private captured(ref: AssistantRef) {
@@ -275,11 +279,20 @@ export class PersonalAssistantsCollection {
         const candidate = { hostId: info.hostId, assistantId: info.assistantId };
         const row = this.rows.get(assistantIdentityKey(candidate));
         if (row) { ref = { ...row.ref }; this.select(ref); }
-        else if (!this.discovered) this.pendingNotification = candidate;
+        else { this.pendingNotification = candidate; this.pendingAfter = ++this.clock; this.emit(); }
       } catch { /* Malformed notifications open the current safe view. */ }
     }
     // Legacy notifications have no host owner; opening the current safe view never guesses by id.
     this.options.onOpen?.(ref); return ref;
+  };
+  /** A notification for an unseen identity never presents another assistant as its writable destination. */
+  pendingLane = (): PersonalLane | null => {
+    const ref = this.pendingNotification;
+    if (!ref) return null;
+    const problem = "Waiting for the assistant from this notification. Its machine has not confirmed this identity yet.";
+    const unavailable = async (): Promise<never> => { throw new Error(problem); };
+    return { ref: { ...ref }, draftKey: assistantIdentityKey(ref), attachmentKey: assistantIdentityKey(ref), name: "Assistant", hostName: [...this.hosts.values()].find(host => host.hostId === ref.hostId)?.name ?? ref.hostId,
+      assistant: null, offline: true, problem, send: unavailable, react: unavailable, saveAttachment: unavailable, pickFolder: unavailable, decide: unavailable, cancel: unavailable };
   };
   syncTimezones = async () => {
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone, utcOffsetMinutes = -new Date().getTimezoneOffset();
@@ -331,5 +344,5 @@ export function usePersonalAssistants(options: PersonalAssistantsOptions) {
     pushStarted.current = true;
     void plugin.requestPermissions().then(permission => permission.receive === "granted" ? plugin.register() : undefined).catch(error => console.warn(`Notifications: ${message(error)}`));
   }, [options.device, snapshot.assistants.length]);
-  return { ...snapshot, select: collection.select, lane: collection.lane, refresh: collection.refresh, emptyLane: collection.emptyLane };
+  return { ...snapshot, select: collection.select, lane: collection.lane, refresh: collection.refresh, emptyLane: collection.emptyLane, pendingLane: collection.pendingLane };
 }
