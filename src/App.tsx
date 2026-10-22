@@ -73,13 +73,15 @@ import { unsavedEditName } from "./unsavedEdits";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
-import { workingFor } from "./composerStatus";
+import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
 import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
+import type { DashboardDestination } from "./dashboardModel";
+import { placeDashboardPane } from "./dashboardNavigation";
 import { RightBrowser } from "./RightBrowser";
 import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
@@ -88,7 +90,7 @@ import { closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, sav
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
-/** A pane counts as working if it produced output this recently. */
+/** A terminal counts as working if it produced output this recently. */
 const WORKING_WINDOW_MS = 1500;
 
 let counter = 0;
@@ -648,7 +650,7 @@ export function App() {
     if (next !== activeWorkspace) setActiveWorkspace(next);
   }, [workspaces, activeWorkspace]);
 
-  // Re-render once a second so status dots fall back to idle.
+  // Re-render once a second so terminal status dots fall back to idle.
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(timer);
@@ -707,11 +709,12 @@ export function App() {
 
   const statusOf = (pane: Pane): PaneStatus => {
     if (pane.kind === "preview") return "idle";
-    const working = Date.now() - (lastOutput.current.get(pane.id) ?? 0) < WORKING_WINDOW_MS;
     // A stopped or exited terminal reads "exited": it never asks before closing.
-    if (pane.kind === "terminal") return terminalStatus(runs[pane.id], attention[pane.id]?.kind ?? null, working);
-    if (attention[pane.id]) return attention[pane.id].kind;
-    return working ? "working" : "idle";
+    if (pane.kind === "terminal") {
+      const working = Date.now() - (lastOutput.current.get(pane.id) ?? 0) < WORKING_WINDOW_MS;
+      return terminalStatus(runs[pane.id], attention[pane.id]?.kind ?? null, working);
+    }
+    return threadPaneStatus(threadStatus[pane.id], attention[pane.id]);
   };
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
@@ -760,9 +763,21 @@ export function App() {
     onDropOutside: (id, x, y) => popOutPane(id, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 }),
   });
   /** The side panel's Dashboard rows, shared with popped-out dashboards. */
+  const dashboardPanes = (targetSection: "code" | "threads") => canvasPanes(viewPanes, workspaces, deleting, targetSection).filter((pane) => !poppedIds.has(pane.id));
+  const dashboardTrees = {
+    code: sync(layouts[layoutKey(null, "code")] ?? null, dashboardPanes("code").map((pane) => pane.id)),
+    threads: sync(layouts[layoutKey(null, "threads")] ?? null, dashboardPanes("threads").map((pane) => pane.id)),
+  };
+  const dashboardTree = (targetSection: "code" | "threads") => dashboardTrees[targetSection];
   const dashboardRows = listed.filter((pane) => pane.kind === "chat" || pane.kind === "terminal").map((pane) => {
     const projectNeeds = listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "needs_input");
-    return { id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "", ready: attention[pane.id]?.kind === "done", readyCount: listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "done").length, needsCount: attention[pane.id]?.kind === "needs_input" ? projectNeeds.length : undefined, needsDetails: projectNeeds.map((candidate) => `${candidate.title}: ${attention[candidate.id]?.note ?? "Needs your response"}`).join("; ") };
+    const inDeckReason = poppedIds.has(pane.id) ? "Close its external pane to return it to Deck." : deleting.has(pane.id) ? "This item is being deleted." : undefined;
+    const targets = leafIds(dashboardTree(paneSection(pane))).flatMap((id, index) => {
+      const target = listed.find((candidate) => candidate.id === id);
+      return target && id !== pane.id ? [{ id, title: `Pane ${index + 1} · ${target.title}` }] : [];
+    });
+    const externalReason = inDeckReason || popoutRefusal(pane) || (!window.apexDeck?.popout ? "Pop-outs need the Deck app." : undefined);
+    return { id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "", ready: attention[pane.id]?.kind === "done", readyCount: listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "done").length, needsCount: attention[pane.id]?.kind === "needs_input" ? projectNeeds.length : undefined, needsDetails: projectNeeds.map((candidate) => `${candidate.title}: ${attention[candidate.id]?.note ?? "Needs your response"}`).join("; "), navigation: { targets, inDeckReason, externalReason } };
   });
 
   /** Rearrange the panes in view into one of the ready-made layouts. */
@@ -1347,7 +1362,7 @@ export function App() {
       } : {}),
     };
     const sourceKey = layoutKey(null, paneSection(pane));
-    const takeout = takePaneOut(layouts[sourceKey] ?? null, pane.workspaceId, paneId);
+    const takeout = takePaneOut(dashboardTree(paneSection(pane)), pane.workspaceId, paneId);
     return bridge.open(snapshot, bounds).then(({ token }) => {
       setLayouts((all) => {
         const next = { ...all };
@@ -1400,7 +1415,7 @@ export function App() {
   }, popOutPane, popOutTab, error => toast(`Could not restore external windows: ${String(error)}`));
 
   /** The newest pop-outs and pane edits, for window events that arrive between renders. */
-  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id), focusPane: (_pane: Pane) => {} });
+  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id), focusPane: (_pane: Pane) => {}, openDashboard: (_id: string, _destination?: DashboardDestination) => {} });
   popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id) };
   /** The last patch pushed to each pop-out, so unchanged renders send nothing. */
   const lastSent = useRef(new Map<string, string>());
@@ -1441,6 +1456,8 @@ export function App() {
         else { try { live.mounts.request(pane, action.path, live.hostBackend(workspaceHost(workspace))); } catch { /* connection view supplies the error */ } }
       } else if (action.type === "restart-terminal" || action.type === "start-pane") {
         setStartRequests((all) => ({ ...all, [(action.type === "restart-terminal" ? rec.id : action.id)]: (all[action.type === "restart-terminal" ? rec.id : action.id] ?? 0) + 1 }));
+      } else if (action.type === "dashboard-open") {
+        if (tabRec?.tab.kind === "dashboard") live.openDashboard(action.id, action.destination);
       } else if (action.type === "show-pane") {
         const pane = latest.current.panes.find((p) => p.id === action.id);
         if (pane) live.focusPane(pane);
@@ -2170,6 +2187,23 @@ export function App() {
   };
   // Window events for pop-outs arrive between renders; they need the newest focus.
   popoutLive.current.focusPane = focusPane;
+  const openDashboard = (id: string, destination?: DashboardDestination) => {
+    const pane = listed.find((item) => item.id === id && (item.kind === "chat" || item.kind === "terminal"));
+    if (!pane || deleting.has(id)) return;
+    if (!destination) { focusPane(pane); return; }
+    if (poppedIds.has(id)) { toast("Close its external pane to return it to Deck."); return; }
+    if (destination.kind === "external") { popOutPane(id); return; }
+    if (destination.kind !== "new" && destination.kind !== "pane") return;
+    const targetSection = paneSection(pane);
+    const next = dashboardTree(targetSection);
+    const targetId = destination.kind === "pane" ? destination.paneId : undefined;
+    if (destination.kind === "pane" && (!targetId || !leafIds(next).includes(targetId))) { toast("That pane is no longer available."); return; }
+    const placed = placeDashboardPane(next, pane.id, targetId);
+    setLayouts((all) => ({ ...all, [layoutKey(null, targetSection)]: placed }));
+    focusPane(pane);
+    setMaximized(null);
+  };
+  popoutLive.current.openDashboard = openDashboard;
 
   // Where the deck starts, for things that expand to the full window (the
   // Preview pane, the artifacts panel). Kept current as the title bar wraps.
@@ -2624,7 +2658,7 @@ export function App() {
           />}
           <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}${sidePanelFull ? " full" : ""}`} style={sidePanelFull ? undefined : { width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
             <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} onPopout={(tabId) => popOutTab(tabId)} onPopoutDragOut={(tabId, x, y) => popOutTab(tabId, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 })} taskAttention={{ count: sectionFlags.agents.count, details: sectionFlags.agents.rows.map((row) => row.title).join("\n") || "ApexAgent tasks are waiting for your response" }} bodies={{
-              dashboard: () => <RightDashboard rows={dashboardRows} onOpen={(id) => { const pane = listed.find((item) => item.id === id); if (pane) focusPane(pane); }} />,
+              dashboard: (_tab, visible) => <RightDashboard rows={dashboardRows} onOpen={openDashboard} visible={visible && detailsOpen} />,
               tasks: () => {
                 const selected = listed.find((pane) => pane.id === focusedPane);
                 const workspaceId = selected?.workspaceId ?? activeWorkspace;
@@ -2632,7 +2666,7 @@ export function App() {
                 if (!monitor) return <p className="muted right-panel-empty">Pick a project with ApexAgent tasks.</p>;
                 let route: Backend;
                 try { route = hostBackend(monitor.hostId); } catch { return <p className="muted right-panel-empty">This project machine is unavailable.</p>; }
-                return <ApexAgentTasks key={`side:${monitor.workspaceId}:${monitor.hostId}:${monitor.cwd}:${monitor.conversationId}`} backend={route} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? "Project", label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
+                return <ApexAgentTasks key={`side:${monitor.workspaceId}:${monitor.hostId}:${monitor.cwd}:${monitor.conversationId}`} backend={route} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="sidebar" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? "Project", label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
               },
               browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
