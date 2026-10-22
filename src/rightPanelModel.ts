@@ -73,7 +73,7 @@ export function moveTab(s: RightPanelState, id: string, toIndex: number): RightP
 }
 
 /** Read a saved panel, repairing anything missing, unknown, repeated or over the cap. */
-export function parsePanel(raw: string | null): RightPanelState {
+export function parsePanel(raw: string | null, externalTabIds: readonly string[] = []): RightPanelState {
   const base = defaultPanel();
   let parsed: unknown;
   try { parsed = raw ? JSON.parse(raw) : null; } catch { return base; }
@@ -89,8 +89,10 @@ export function parsePanel(raw: string | null): RightPanelState {
     seen.add(tab.id);
     kept.push({ id: tab.id, kind: tab.kind as TabKind, usedAt: typeof tab.usedAt === "number" ? tab.usedAt : 0, ...(typeof tab.url === "string" ? { url: tab.url } : {}) });
   }
-  const browsers = kept.filter((t) => t.kind === "browser").sort((a, b) => b.usedAt - a.usedAt).slice(0, BROWSER_CAP).map((t) => t.id);
-  const tabs = [fixedTab("dashboard"), fixedTab("tasks"), ...kept.filter((t) => t.kind !== "browser" || browsers.includes(t.id))];
+  // External browsers have their own windows and do not use the docked slots.
+  const external = new Set(externalTabIds);
+  const browsers = kept.filter((t) => t.kind === "browser" && !external.has(t.id)).sort((a, b) => b.usedAt - a.usedAt).slice(0, BROWSER_CAP).map((t) => t.id);
+  const tabs = [fixedTab("dashboard"), fixedTab("tasks"), ...kept.filter((t) => t.kind !== "browser" || external.has(t.id) || browsers.includes(t.id))];
   const active = typeof p.active === "string" && tabs.some((t) => t.id === p.active) ? p.active : "dashboard";
   return { open: p.open === true, full: p.full === true, tabs, active };
 }

@@ -24,6 +24,7 @@ import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, sta
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
+import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
@@ -727,8 +728,10 @@ function createWindow(host, beside) {
   return entry;
 }
 
-/** Every pop-out window by BrowserWindow id: `{ win, browser, ownerId, token }`. Kept apart from `windows`: pop-outs never save, never count for the badge, and never ask before quitting. */
+/** External views stay separate from Deck owners, badges and quit prompts. */
 const popoutWindows = new Map();
+const popoutLayout = new PopoutLayoutStore(path.join(app.getPath('userData'), 'popout-layout.json'));
+let popoutLayoutRestored = false;
 /** What the owner handed each pop-out, by token from its `?popout=` query. */
 const popoutSnapshots = new Map();
 
@@ -740,7 +743,7 @@ function popoutBounds(ownerEntry, bounds) {
   const wanted = bounds && Number.isFinite(bounds.width) && Number.isFinite(bounds.height) && bounds.width > 0 && bounds.height > 0
     ? { x: Math.round(bounds.x ?? 0), y: Math.round(bounds.y ?? 0), width: Math.round(bounds.width), height: Math.round(bounds.height) }
     : null;
-  if (wanted) return wanted;
+  if (wanted) return fitPopoutBounds(wanted, [screen.getPrimaryDisplay(), ...screen.getAllDisplays()].map(d => d.workArea));
   const owner = !ownerEntry.win.isDestroyed() ? ownerEntry.win.getBounds() : null;
   const displays = screen.getAllDisplays();
   const here = owner ? screen.getDisplayMatching(owner) : screen.getPrimaryDisplay();
@@ -764,7 +767,8 @@ function createPopout(ownerEntry, snapshot, bounds) {
     throw new Error('That pop-out has nothing to show.');
   }
   const token = crypto.randomBytes(16).toString('hex');
-  const at = popoutBounds(ownerEntry, bounds);
+  const saved = popoutLayout.get(snapshot.kind, snapshot.id);
+  const at = popoutBounds(ownerEntry, bounds ?? saved?.bounds);
   const win = new BrowserWindow({
     ...at,
     minWidth: 360,
@@ -797,6 +801,8 @@ function createPopout(ownerEntry, snapshot, bounds) {
   const ownerId = ownerEntry.win.id;
   popoutWindows.set(win.id, { win, browser, ownerId, token, role: 'popout' });
   popoutSnapshots.set(token, snapshot);
+  trackPopoutWindow(win, snapshot, popoutLayout, () => gate.confirmed || ownerEntry.win.isDestroyed());
+  if (!bounds && saved?.maximized) win.maximize();
   win.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     if ((details.isMainFrame ?? mainFrame) && !(details.isSameDocument ?? inPlace)) browser.hideAll();
   });
@@ -839,6 +845,11 @@ function closePopoutsOf(ownerId) {
 handle('popout:open', async (entry, snapshot, bounds) => {
   if (entry.role === 'popout') throw new Error('A pop-out cannot open another window.');
   return { token: createPopout(entry, snapshot, bounds) };
+});
+handle('popout:restore', async (entry, available) => {
+  if (entry.role === 'popout' || popoutLayoutRestored) return [];
+  popoutLayoutRestored = true;
+  return popoutLayout.restore(available ?? {});
 });
 handle('popout:snapshot', async (_entry, token) => {
   if (!validToken(token)) throw new Error('That pop-out has nothing to show.');

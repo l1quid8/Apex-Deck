@@ -74,6 +74,7 @@ export interface DeckBridge {
     onShortcut(cb: (press: KeyboardEventInit) => void): () => void;
   };
   popout?: {
+    restore(available: { panes: string[]; tabs: string[] }): Promise<{ kind: "pane" | "tab"; id: string }[]>;
     open(snapshot: PopoutSnapshot, bounds?: { x: number; y: number; width: number; height: number }): Promise<{ token: string }>;
     snapshot(token: string): Promise<PopoutSnapshot>;
     close(token: string): Promise<void>;
