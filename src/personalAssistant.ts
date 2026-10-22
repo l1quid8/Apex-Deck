@@ -4,6 +4,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Backend, HostEntry } from "./backend";
+import type { ParticipantConfig } from "./types";
+import type { AssistantLook, AssistantProjectBinding } from "./assistantIdentity.ts";
 import { unsupported as isUnsupportedCommand } from "./threadMove.ts";
 
 export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[] };
@@ -39,7 +41,7 @@ export type Notice = { id: string; text: string; taskId?: string; urgent: boolea
 export type CostEntry = { at: number; purpose: "reply" | "helper" | "summary" | "check"; kind: "text" | "image" | "audio" | "video" | "tool"; source: "reported" | "estimated" | "unknown"; micros?: number; inputTokens?: number; outputTokens?: number; bytesOut: number; endpoint: string };
 export type StandingRule = { id: string; text: string; class: ToolClass; mode: ActionMode; createdAt: number };
 export type PersonalSettings = {
-  name: string; style: string; look?: { color?: string; shape?: string };
+  name: string; style: string; look?: AssistantLook;
   timezone: string; quietHours?: { start: string; end: string };
   modes: Record<ToolClass, ActionMode>;
   budget: { dailyLimitMicros?: number; unknownCostOk?: boolean };
@@ -49,6 +51,10 @@ export type PersonalSettings = {
 };
 export type PersonalAssistantRecord = PersonalSettings & {
   id: string; hostId: string; allowedFolders: string[]; paused?: boolean; revision: number;
+  /** Assistant-owned snapshot; changing it never edits a reusable Agents profile. */
+  profile: ParticipantConfig | null;
+  /** Missing on older hosts; assignments do not create machine/folder grants. */
+  projects?: AssistantProjectBinding[];
   messages: PersonalMessage[]; tasks: PersonalTask[];
   rules?: StandingRule[]; facts?: Fact[]; schedules?: Schedule[]; notices?: Notice[]; costs?: CostEntry[];
   machines?: { hostId: string; name: string; folder: string; lastSeen?: number }[];
