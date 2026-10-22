@@ -25,7 +25,7 @@ import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
 import { Markdown } from "../Markdown";
 import { SavedSteps, WorkSteps } from "../WorkSteps.tsx";
-import { createStepsIndexLoader, readReplySteps, rememberSteps, savedEntry } from "../workSteps.ts";
+import { createStepsIndexLoader, dropStepsFrom, readReplySteps, rememberSteps, savedEntry } from "../workSteps.ts";
 import { PreparingCard } from "../interactiveAnswers/AnswerCard.tsx";
 import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
 import { cardVersions } from "../interactiveAnswers/share.ts";
@@ -65,8 +65,14 @@ import { PairSheet } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
-import { ThreadList, useLongPress } from "./ThreadList";
-import { forkedPane, forkUpto, messagePreview } from "./messageFork";
+import { ThreadList } from "./ThreadList";
+import { forkedPane, forkUpto } from "./messageFork";
+import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
+import { PickedText } from "./PickedText";
+import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
+import { pinSource, pinText, responsePin } from "../messagePins";
+import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
+import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, readFolds } from "./threadListRules";
 import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
@@ -101,6 +107,8 @@ const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
 type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
 type Draft = { text: string; files: ComposerAttachment[] };
+/** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
+type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
 type Pending = { id: string; workspaceId: string };
 type Ask = { paneId: string; workspaceId: string };
 type SheetKind = "project" | "where" | "tools";
@@ -109,6 +117,8 @@ type Person = { id: string; display_name: string; look: { seed: string; color: s
 const NO_CUTS: PhoneCuts = {};
 /** An open working line shows a bot's latest steps; older ones fold into a count. */
 const MAX_STEPS_SHOWN = 6;
+/** How long a message's Copy reads "Copied", as on the desktop. */
+const COPIED_MS = 1500;
 type SavedStepsFor = { id: string; index: import("../types").StepsIndex | null };
 type Room = {
   id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
@@ -121,12 +131,14 @@ type Room = {
   plans: Partial<Record<AgentTool, PlanWindow[]>>;
   /** Tokens each bot has used in this thread, as saved with it and added to after each turn. */
   used: Record<string, TokenTotals>;
+  /** Pinned for every model in the thread; a pinned message keeps its seq. */
+  pins: string[];
 };
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
-  | { kind: "archived" } | { kind: "remove"; id: string } | { kind: "message"; seq: number };
+  | { kind: "archived" } | { kind: "remove"; id: string };
 type Browse = {
   hostId: string;
   path: string | null;
@@ -373,6 +385,13 @@ export function PhoneApp() {
   /** Per thread: who was working when its machine dropped, with what they had written. Kept until each reply lands,
    *  through a reload or leaving the thread. */
   const [cuts, setCuts] = useState<Record<string, PhoneCuts>>({});
+  /** Per thread: messages quoted in the box, waiting to go with the next message, as on the desktop. */
+  const [quotes, setQuotes] = useState<Record<string, ReplyQuote[]>>({});
+  /** The Retry or Revert question open under a message. */
+  const [goingBack, setGoingBack] = useState<GoingBack | null>(null);
+  /** A pin or unpin is on its way; one at a time, as on the desktop. */
+  const [pinning, setPinning] = useState(false);
+  const pinPending = useRef(false);
   const [approvalStays, setApprovalStays] = useState<Record<string, boolean>>({});
   const [agents, setAgents] = useState<string[]>([]);
   const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
@@ -387,9 +406,9 @@ export function PhoneApp() {
   /** Each thread's messages waiting for a bot to finish, as on the desktop. They live on the phone while the app is open. */
   const queues = useRef(new Map<string, ParticipantQueues>());
   const [queued, setQueued] = useState<Record<string, { items: ParticipantMessage[]; paused: string[]; lost: boolean }>>({});
-  /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files.
+  /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files and quotes.
    *  `inBox` while Send is still waiting on it: the box keeps it until the machine has it or it is queued. */
-  const queuedDrafts = useRef(new Map<string, { draft: Draft; inBox: boolean; failed?: boolean }>());
+  const queuedDrafts = useRef(new Map<string, QueuedDraft>());
   /** The queued message whose Steer now is asking first. */
   const [steerAsk, setSteerAsk] = useState<number | null>(null);
   /** Files still being read into a draft; Send waits for them. */
@@ -666,12 +685,14 @@ export function PhoneApp() {
   useEffect(()=>{if(openPane&&openHostId)phoneVoice.threadOpened(openHostId,openPane.id);},[openPane?.id,openHostId]);
   const busyRef = useRef(busy);
   busyRef.current = busy;
-  /** Put a queued message back in its thread's box, with the files it was sent with. */
+  /** Put a queued message back in its thread's box, with the files and quotes it was sent with. */
   function takeBack(paneId: string, text: string) {
     const key = `${paneId}\u0000${text}`;
-    const back = queuedDrafts.current.get(key)?.draft ?? { text: splitTldr(text).text, files: [] };
+    const sent = queuedDrafts.current.get(key);
+    const back = sent?.draft ?? { text: splitTldr(text).text, files: [] };
     queuedDrafts.current.delete(key);
     setDrafts((all) => ({ ...all, [paneId]: giveBack(all[paneId] ?? emptyDraft(), back) }));
+    if (sent?.quotes.length) setQuotes((all) => ({ ...all, [paneId]: quotesBack(all[paneId] ?? [], sent.quotes) }));
   }
   /** A thread's queue, made the first time it is needed. A thread never changes machines once it has started. */
   function queueFor(paneId: string, hostId: string): ParticipantQueues {
@@ -689,7 +710,9 @@ export function PhoneApp() {
         const sticky = shown?.id === paneId ? queuedSticky(text, shown.participants, shown.policy, queue.items) : null;
         return sticky ?? backend().roomTargets(paneId, text);
       },
-      async (text, to, _kind, _hops, voice) => {
+      async (text, to, kind, hops, voice) => {
+        // Retry asks the bot again on the chat as it is, posting nothing, as on the desktop.
+        if (kind === "turn") { await backend().roomTurn(paneId, to, hops ?? null); return; }
         const key = `${paneId}\u0000${text}`;
         try { await postFromPhone(backend(), paneId, text, to, voice); }
         catch (error) {
@@ -763,9 +786,10 @@ export function PhoneApp() {
   }
 
   // Saved steps per finished reply: the index says which replies have them; a reply's own steps load when its line is opened.
-  // The phone has no Retry, Revert or Clear chat, so nothing here has to forget steps when a thread is cut back.
+  // Retry and Revert cut a thread back, so they forget the steps from there and look again.
   const [savedSteps, setSavedSteps] = useState<SavedStepsFor | null>(null);
   const loadedSteps = useRef(new Map<number, import("../types").ReplySteps>());
+  const refreshSteps = useRef<() => void>(() => {});
   const openPaneRef = useRef<string | null>(null);
   openPaneRef.current = openPane?.id ?? null;
   useEffect(() => {
@@ -794,6 +818,7 @@ export function PhoneApp() {
         setSavedSteps({ id: paneId, index });
       },
     );
+    refreshSteps.current = () => { void stepsLoader.refresh(); };
     const settingsHeard = new Map<string, ParticipantConfig>();
     let rosterHeard: ParticipantConfig[] | null = null;
     const applyState = (state: RoomState) => {
@@ -818,6 +843,7 @@ export function PhoneApp() {
         fill: {},
         plans: {},
         used: state.snapshot.usage ?? {},
+        pins: state.snapshot.pins ?? [],
       });
     };
     const applyEvent = (event: RoomEvent) => {
@@ -866,7 +892,7 @@ export function PhoneApp() {
       stop = unlisten;
       void recovery.refresh();
     }).catch((error) => { if (live) setNotice(words(error)); });
-    return () => { live = false; recovery.dispose(); stop(); };
+    return () => { live = false; recovery.dispose(); stop(); refreshSteps.current = () => {}; };
     // Reloading follows the open thread and that machine's connection, not every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPane?.id, openWorkspace?.id, openLink?.status, openHostId, openPath]);
@@ -874,7 +900,8 @@ export function PhoneApp() {
   // Who the message as typed goes to: its @names, or the bots named last when it has none.
   // Asked again as the draft changes and after each message, since a send can change it.
   const [answerers, setAnswerers] = useState<{ paneId: string; ids: string[] } | null>(null);
-  const typed = openId ? draftFor(openId).text : "";
+  const quotedNow = openId ? quotes[openId] ?? [] : [];
+  const typed = openId ? (quotedNow.length ? outgoingText(draftFor(openId).text, quotedNow, room?.participants ?? []) : draftFor(openId).text) : "";
   useEffect(() => {
     if (!room || !openWorkspace) return;
     const host = phoneHost(openHostId);
@@ -892,7 +919,7 @@ export function PhoneApp() {
   }, [room?.id, room?.messages.length, openLink?.status, openHostId, typed, queued[room?.id ?? ""]?.items]);
 
   // A bot's details belong to the thread they were opened in.
-  useEffect(() => { setBotSheet(null); setSteerAsk(null); }, [openId]);
+  useEffect(() => { setBotSheet(null); setSteerAsk(null); setGoingBack(null); }, [openId]);
   // Steer now stops asking once its message has gone, been steered, or been taken back.
   const queuedIds = (openId ? queued[openId]?.items ?? [] : []).map((item) => item.id).join(",");
   useEffect(() => { setSteerAsk((asking) => asking !== null && queuedIds.split(",").includes(String(asking)) ? asking : null); }, [queuedIds]);
@@ -958,24 +985,27 @@ export function PhoneApp() {
       if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add one from Bots in the thread’s ⋯ menu."); return; }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
+      // Quotes go under the text, led by the bot they're handed to, as on the desktop.
+      const sentQuotes = quotes[id] ?? [];
       // TL;DR asks every bot for a short answer; the line rides on the message but never shows in the chat.
-      const body = withTldr(withAttachments(draft.text.trim(), paths), tldrOf(id));
+      const body = withTldr(withAttachments(outgoingText(draft.text, sentQuotes, participants), paths), tldrOf(id));
       // The room picks who answers, as on the desktop: whoever is @named, or whoever was named last.
       // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
       // This resolves once the machine has it, or once it is queued; until then the box keeps it.
       const key = `${sentPane.id}\u0000${body}`;
-      const entry: { draft: Draft; inBox: boolean; failed?: boolean } = { draft, inBox: true };
+      const entry: QueuedDraft = { draft, quotes: sentQuotes, inBox: true };
       queuedDrafts.current.set(key, entry);
       try { await queueFor(sentPane.id, host.machine.id).send(body); }
       catch (error) { queuedDrafts.current.delete(key); throw error; }
       finally { entry.inBox = false; }
       // Refused: it never left the box, and the notice says so.
       if (entry.failed) { queuedDrafts.current.delete(key); return; }
-      // Clear only what was sent; anything typed or attached while it was sending stays.
+      // Clear only what was sent; anything typed, attached or quoted while it was sending stays.
       setDrafts((all) => {
         const now = all[sentPane.id] ?? emptyDraft();
         return { ...all, [sentPane.id]: { text: now.text === draft.text ? "" : now.text, files: now.files.filter((file) => !draft.files.includes(file)) } };
       });
+      if (sentQuotes.length) setQuotes((all) => ({ ...all, [sentPane.id]: (all[sentPane.id] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
       setNotice("");
       // One save for the title and Recents, so the two can't overwrite each other.
       const title = transcriptLength === 0 || sentPane.title === "New thread" ? threadTitleFromMessage(draft.text) : "New thread";
@@ -1318,6 +1348,123 @@ export function PhoneApp() {
     }
   }
 
+  /** The open thread's machine when it can take a change from this phone; otherwise says why and gives null. */
+  function changeHost(what: string): PhoneHost | null {
+    const host = openLink ? phoneHost(openLink.id) : null;
+    if (!host || !openLink) { setNotice("This thread's machine isn't paired with this phone."); return null; }
+    if (openLink.status !== "online") { setNotice(downLine(openLink)); return null; }
+    if (!canSeeNewThread(host.access())) { setNotice(needsFull(what, openLink.name)); return null; }
+    return host;
+  }
+
+  /** Put a message on the clipboard; false when the phone couldn't. */
+  async function copyMessage(text: string) {
+    const ok = await writeClipboard(text, navigator.clipboard);
+    if (!ok) setNotice("The phone couldn't copy that message.");
+    return ok;
+  }
+
+  const nameIn = (id: string) => roomRef.current?.participants.find((p) => p.id === id)?.display_name ?? id;
+
+  /** Quote a message in the box, or the `part` of it picked for Add to chat. A TL;DR instruction rides on a sent message but never shows, so the quote leaves it out. */
+  function quoteMessage(paneId: string, message: Message, part?: string) {
+    const next = part === undefined ? quoteFor({ ...message, text: splitTldr(message.text).text }, nameIn) : partQuote(message, part, nameIn);
+    setQuotes((all) => ({ ...all, [paneId]: withQuote(all[paneId] ?? [], next) }));
+  }
+
+  /** More details: ask the bot that wrote a picked part to explain it, as on the desktop. It never sat in the box,
+   *  but one that can't be sent, or is taken back from the queue, goes into it with its quote. */
+  function explainPart(paneId: string, message: Message, part: string) {
+    const shown = roomRef.current;
+    if (!shown || shown.id !== paneId || shown.participants.length === 0 || !openLink) return;
+    if (openLink.status !== "online") { setNotice(downLine(openLink)); return; }
+    const quote = partQuote(message, part, nameIn);
+    const body = moreDetailsText(quote, shown.participants);
+    const key = `${paneId}\u0000${body}`;
+    queuedDrafts.current.set(key, { draft: { text: MORE_DETAILS, files: [] }, quotes: [quote], inBox: false });
+    stuckRef.current = true;
+    queueFor(paneId, openLink.id).send(body).catch((error) => { queuedDrafts.current.delete(key); setNotice(words(error)); });
+  }
+
+  /** Pin a message for every model, or unpin it. */
+  function togglePin(paneId: string, message: Message) {
+    const shown = roomRef.current;
+    if (!shown || shown.id !== paneId) return;
+    const index = shown.pins.findIndex((pin) => pinSource(pin) === message.seq);
+    if (index >= 0) { unpin(paneId, index); return; }
+    if (pinPending.current) return;
+    const host = changeHost("Pinning");
+    if (!host) return;
+    pinPending.current = true; setPinning(true);
+    void host.backend.roomPin(paneId, responsePin(message.seq, splitTldr(message.text).text))
+      .then((pins) => setRoom((current) => current && current.id === paneId ? { ...current, pins } : current))
+      .catch((error) => setNotice(`Could not pin: ${words(error)}`))
+      .finally(() => { pinPending.current = false; setPinning(false); });
+  }
+
+  function unpin(paneId: string, index: number) {
+    if (pinPending.current) return;
+    const host = changeHost("Unpinning");
+    if (!host) return;
+    pinPending.current = true; setPinning(true);
+    void host.backend.roomUnpin(paneId, index)
+      .then((pins) => setRoom((current) => current && current.id === paneId ? { ...current, pins } : current))
+      .catch((error) => setNotice(`Could not unpin: ${words(error)}`))
+      .finally(() => { pinPending.current = false; setPinning(false); });
+  }
+
+  /** Retry on a bot's reply, Revert on your message: delete from there and put this thread's files back. Asks first, as on the desktop. */
+  async function goBack(paneId: string, message: Message) {
+    const shown = roomRef.current;
+    if (!shown || shown.id !== paneId) return;
+    const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
+    if (Object.keys(shown.working).length > 0) { setNotice("Stop the bots first."); return; }
+    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    if (kind === "retry" && !shown.participants.some((p) => p.id === bot)) { setNotice(`${bot} isn't in this thread any more, so it can't answer again.`); return; }
+    const host = changeHost(kind === "retry" ? "Retry" : "Revert");
+    if (!host) return;
+    try {
+      const plan = await host.backend.roomRevertPlan(paneId, message.seq, bot);
+      const going: GoingBack = { paneId, kind, message, plan, scope: "both", ticked: initialFiles(plan) };
+      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack(going);
+      else await runGoBack(going);
+    } catch (error) {
+      setNotice(`Could not ${kind}: ${words(error)}`);
+    }
+  }
+
+  async function runGoBack(going: GoingBack) {
+    setGoingBack(null);
+    const { paneId, kind, message, plan, scope, ticked } = going;
+    const host = changeHost(kind === "retry" ? "Retry" : "Revert");
+    if (!host) return;
+    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
+    try {
+      const failed = await host.backend.roomRevert(paneId, message.seq, bot, request.chat, request.files);
+      if (request.chat) {
+        setSavedSteps((saved) => saved && saved.id === paneId ? { id: paneId, index: dropStepsFrom(saved.index, loadedSteps.current, message.seq) } : saved);
+        refreshSteps.current();
+        setRoom((current) => current && current.id === paneId ? cutBack(current, message.seq) : current);
+        // A reply that was cut off mid-way goes with the rest.
+        setCuts((all) => { if (!all[paneId]) return all; const next = { ...all }; delete next[paneId]; return next; });
+      }
+      const line = failedLine(failed) ?? putBackLine(request.files);
+      if (line) setNotice(line);
+      // Your message goes back in the box, unsent.
+      if (kind === "revert" && request.chat) setDrafts((all) => ({ ...all, [paneId]: { ...(all[paneId] ?? emptyDraft()), text: splitTldr(message.text).text } }));
+      if (kind === "retry" && bot) { stuckRef.current = true; queueFor(paneId, host.machine.id).turn([bot], null); }
+    } catch (error) {
+      setNotice(`Could not ${kind}: ${words(error)}`);
+    }
+  }
+
+  function answerGoBack(always: boolean) {
+    if (!goingBack) return;
+    if (always) saveGoBackAlways(goingBack.kind, true);
+    void runGoBack(goingBack);
+  }
+
   async function useFolder(path: string) {
     if (!browse) return;
     const browsing = browse;
@@ -1388,10 +1535,6 @@ export function PhoneApp() {
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
   useEffect(() => { if (botsStale) setMenu(null); }, [botsStale]);
-  const menuMessage = menu?.kind === "message" && room && openPane && room.id === openPane.id ? room.messages.find((message) => message.seq === menu.seq) ?? null : null;
-  // A message menu whose message can't be found (thread closed or its room not loaded) must not leave the screen covered.
-  const messageStale = menu?.kind === "message" && !menuMessage;
-  useEffect(() => { if (messageStale) setMenu(null); }, [messageStale]);
   const menuProject = menu?.kind === "project" ? workspaces.find((workspace) => workspace.id === menu.id) ?? null : null;
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
 
@@ -1484,7 +1627,27 @@ export function PhoneApp() {
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
             onMenu={() => { if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
-            onMessageMenu={viewingPending || openPane?.assistantTaskId ? undefined : (seq) => setMenu({ kind: "message", seq })}
+            pins={room && openPane && room.id === openPane.id ? room.pins : []}
+            pinning={pinning}
+            onUnpin={(index) => { if (openPane) unpin(openPane.id, index); }}
+            quotes={openId ? quotes[openId] ?? [] : []}
+            onQuotes={(next) => { if (openId) setQuotes((all) => ({ ...all, [openId]: next })); }}
+            actions={viewingPending || !openPane ? undefined : {
+              onQuote: (message, part) => quoteMessage(openPane.id, message, part),
+              onExplain: (message, part) => explainPart(openPane.id, message, part),
+              onCopy: copyMessage,
+              onPin: (message) => togglePin(openPane.id, message),
+              onGoBack: (message) => { void goBack(openPane.id, message); },
+              // A task's thread belongs to its assistant, so it has no Fork.
+              onFork: openPane.assistantTaskId ? undefined : (seq) => {
+                const hostId = workspaceHost(openWorkspace);
+                if (!canStartOn(hostId)) { setNotice(needsFull("Forking", linkOf(hostId)?.name ?? "this machine")); return; }
+                void forkFrom(openPane, seq);
+              },
+            }}
+            goingBack={goingBack}
+            onGoingBack={setGoingBack}
+            onAnswerGoBack={answerGoBack}
             onDraft={(text) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, text } }; })}
             onRemoveFile={(id) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
             onSend={() => { void send(); }}
@@ -1862,21 +2025,6 @@ export function PhoneApp() {
             </Sheet>
           );
         })()}
-        {menu?.kind === "message" && menuMessage && openPane && openWorkspace && (() => {
-          // A TL;DR instruction rides on a sent message but never shows in the chat, so the preview and the copy leave it out.
-          const shown = splitTldr(menuMessage.text).text;
-          const preview = messagePreview(shown);
-          const forkable = canStartOn(workspaceHost(openWorkspace));
-          return (
-            <Sheet title="Message" onClose={() => setMenu(null)}>
-              {preview && <p className="ph-sheet-text ph-quiet">{preview}</p>}
-              {forkable
-                ? <MenuRow label="Fork from here" detail="A new thread with the messages up to here. Nothing runs until you send." onClick={() => { setMenu(null); void forkFrom(openPane, menuMessage.seq); }} />
-                : <p className="ph-sheet-text">Forking needs Full access on {linkOf(workspaceHost(openWorkspace))?.name ?? "this machine"}. Change this phone's level in that machine's Settings → Phones.</p>}
-              <MenuRow label="Copy text" onClick={() => { void writeClipboard(shown, navigator.clipboard).then((ok) => setNotice(ok ? "Copied" : "The phone couldn't copy that message.")); setMenu(null); }} />
-            </Sheet>
-          );
-        })()}
         {browse && (
           <Sheet title="Choose a folder" onClose={() => setBrowse(null)}>
             <p className="ph-sheet-text">{browse.projectName ? `For ${browse.projectName} on ${linkOf(browse.hostId)?.name ?? browse.hostId}.` : `New project on ${linkOf(browse.hostId)?.name ?? browse.hostId}.`}{browse.macCopy ? ` This is a separate copy from ${mac?.name ?? "your Mac"}'s. Nothing is copied over.` : ""}</p>
@@ -2151,8 +2299,24 @@ function ThreadView(props: {
   form: ReactNode; plan: boolean; onStopPlanning(): void;
   /** TL;DR mode: every bot is asked for a short answer. */
   tldr: boolean; onTldr(): void;
-  /** Holding a message opens its menu. Absent when nothing can be forked yet, as in an unsent new thread. */
-  onMessageMenu?(seq: number): void;
+  /** Pinned for every model in the thread; a pinned message's pin jumps to it. */
+  pins: string[]; pinning: boolean; onUnpin(index: number): void;
+  /** Messages quoted in the box, waiting to go with the next message. */
+  quotes: ReplyQuote[]; onQuotes(next: ReplyQuote[]): void;
+  /** The row under each message, as on the desktop. Absent in an unsent new thread. */
+  actions?: {
+    /** Quote the message, or only the `part` picked in it (Add to chat). */
+    onQuote(message: Message, part?: string): void;
+    /** More details on a part picked in a message. */
+    onExplain(message: Message, part: string): void;
+    onCopy(text: string): Promise<boolean>;
+    onPin(message: Message): void;
+    onGoBack(message: Message): void;
+    /** Absent where a thread can't be forked. */
+    onFork?: (seq: number) => void;
+  };
+  /** The Retry or Revert question open under a message. */
+  goingBack: GoingBack | null; onGoingBack(next: GoingBack | null): void; onAnswerGoBack(always: boolean): void;
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -2160,19 +2324,65 @@ function ThreadView(props: {
   const [typing, setTyping] = useState(false);
   const crew = crewOpen(props.crewShut, typing);
   const pill = usePillPress();
-  // Holding a message opens its menu. A tap that ends a hold must not also follow a link inside the message.
-  const press = useLongPress();
   // Cards show read-only on the phone for now, at their defaults.
   const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
-  const holdMessage = (seq: number) => {
-    if (!props.onMessageMenu) return {};
-    const bind = press.bind(() => props.onMessageMenu?.(seq));
-    return { ...bind, onContextMenuCapture: (event: { preventDefault(): void; stopPropagation(): void }) => {
+  // The message whose › (or ‹) is open, and the one whose Copy reads "Copied" for a moment, by seq.
+  const [messageMenu, setMessageMenu] = useState<number | null>(null);
+  const [copied, setCopied] = useState<number | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+  useEffect(() => { setMessageMenu(null); setCopied(null); }, [props.paneId]);
+  // A tap anywhere but a message's actions folds them, as a click away does on the desktop; so does Escape.
+  useEffect(() => {
+    if (messageMenu === null) return;
+    const away = (event: Event) => { if (!(event.target as Element).closest?.(".message-actions")) setMessageMenu(null); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
       event.stopPropagation();
-      bind.onContextMenu(event);
-    } };
+      chatRef.current?.querySelector<HTMLButtonElement>(`[data-message-more="${messageMenu}"]`)?.focus();
+      setMessageMenu(null);
+    };
+    window.addEventListener("pointerdown", away);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("pointerdown", away); window.removeEventListener("keydown", key, true); };
+  }, [messageMenu]);
+  // The Retry or Revert question opens under its message; bring it into view.
+  useEffect(() => {
+    if (props.goingBack) chatRef.current?.querySelector(".ph-goback")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [props.goingBack?.message.seq]);
+  // Send to ▾ over the quotes: who they're handed to.
+  const [handOffOpen, setHandOffOpen] = useState(false);
+  useEffect(() => { if (props.quotes.length === 0) setHandOffOpen(false); }, [props.quotes.length]);
+  const quoteTo = props.quotes.length ? quoteTarget(props.draft.text.trim(), props.quotes, props.participants) : null;
+  const copy = (seq: number, text: string) => {
+    void props.actions?.onCopy(text).then((ok) => {
+      if (!ok) return;
+      setCopied(seq);
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(null), COPIED_MS);
+    });
   };
-  const holdClass = props.onMessageMenu ? " ph-msg-hold" : "";
+  /** The row under a message and, when it is asking, its Retry or Revert question. */
+  const actionsFor = (message: Message, shown: string) => {
+    const actions = props.actions;
+    if (!actions) return null;
+    const going = props.goingBack && props.goingBack.paneId === props.paneId && props.goingBack.message.seq === message.seq ? props.goingBack : null;
+    const who = message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "";
+    return <>
+      <MessageActions message={message} who={who} shown={shown}
+        expanded={messageMenu === message.seq} onToggle={() => setMessageMenu((open) => open === message.seq ? null : message.seq)}
+        copied={copied === message.seq} onCopy={() => copy(message.seq, shown)}
+        onQuote={() => { actions.onQuote(message); inputRef.current?.focus(); }}
+        pinned={props.pins.some((pin) => pinSource(pin) === message.seq)} pinning={props.pinning} onPin={() => actions.onPin(message)}
+        busy={working.length > 0} onGoBack={() => actions.onGoBack(message)}
+        onFork={actions.onFork && (() => actions.onFork?.(message.seq))}
+        asking={going !== null} />
+      {going && <GoBackAsk going={going} who={who || "the bot"} nameOf={(id) => person(id).display_name}
+        onScope={(scope) => props.onGoingBack({ ...going, scope })}
+        onTick={(path) => props.onGoingBack({ ...going, ticked: going.ticked.includes(path) ? going.ticked.filter((p) => p !== path) : [...going.ticked, path] })}
+        onAnswer={props.onAnswerGoBack} onCancel={() => props.onGoingBack(null)} />}
+    </>;
+  };
   const tag = (id: string) => {
     const text = tagFromBar(props.draft.text, props.participants.find((p) => p.id === id), props.participants);
     props.onDraft(text);
@@ -2334,6 +2544,20 @@ function ThreadView(props: {
           <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the bots into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
         </div>
       )}
+      {/* Pinned for every model, folded to one line; a pin from a message jumps to it. */}
+      {props.pins.length > 0 && (
+        <details className="pins ph-pins" aria-label="Pinned for every model" inert={props.covered}>
+          <summary className="pins-label">Pinned <span>({props.pins.length})</span></summary>
+          <div className="pins-list">
+            {props.pins.map((pin, index) => <div className="pin" key={pin}>
+              {pinSource(pin) !== null
+                ? <button type="button" className="pin-text pin-jump" title={pinText(pin)} onClick={() => chatRef.current?.querySelector<HTMLElement>(`[data-seq="${pinSource(pin)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>{pinText(pin)}</button>
+                : <span className="pin-text" title={pin}>{pin}</span>}
+              <button type="button" className="icon small" aria-label={`Unpin ${pinText(pin)}`} disabled={props.pinning} onClick={() => props.onUnpin(index)}>×</button>
+            </div>)}
+          </div>
+        </details>
+      )}
       <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {!paused && props.link.mismatch && (
@@ -2359,20 +2583,25 @@ function ThreadView(props: {
             <p>{props.project} · {props.machine}{props.path && <><br />{props.path}</>}</p>
           </div>
         )}
+        {/* Each message, then its actions under it: a bot's at the left, yours at the right, as on the desktop. */}
         {props.messages.map((message) => message.speaker.kind === "human" ? (
-          <section key={message.seq} className={`ph-msg human${holdClass}`} {...holdMessage(message.seq)}>
-            <p>{splitTldr(message.text).text}</p>
+          <section key={message.seq} className="ph-said mine" data-seq={message.seq}>
+            <div className="ph-msg human"><p>{splitTldr(message.text).text}</p></div>
+            {actionsFor(message, splitTldr(message.text).text)}
           </section>
         ) : (
-          <section key={message.seq} className={`ph-msg${holdClass}`} {...holdMessage(message.seq)}>
-            {by(message.speaker.id)}
-            <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (!press.held.current && /^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
-              ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
-              : undefined)} /></div>
-            {(() => {
-              const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
-              return saved ? <SavedSteps key={`${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
-            })()}
+          <section key={message.seq} className="ph-said" data-seq={message.seq}>
+            <div className="ph-msg">
+              {by(message.speaker.id)}
+              <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
+                ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
+                : undefined)} /></div>
+              {(() => {
+                const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
+                return saved ? <SavedSteps key={`${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
+              })()}
+            </div>
+            {actionsFor(message, message.text)}
           </section>
         ))}
         {/* Cut off mid-reply: what it had written stays, dimmed, until its reply lands, even after a reload. */}
@@ -2459,11 +2688,51 @@ function ThreadView(props: {
         ))}
         <div ref={props.endRef} />
       </main>
+      {/* Text picked inside one message: the desktop's Add to chat and More details, clear of iPhone's own menu. */}
+      {props.actions && <PickedText key={props.paneId} chat={chatRef} covered={props.covered} canExplain={!paused && props.participants.length > 0}
+        onAdd={(seq, text) => {
+          const message = props.messages.find((m) => m.seq === seq);
+          if (!message) return;
+          props.actions?.onQuote(message, text);
+          inputRef.current?.focus();
+        }}
+        onExplain={(seq, text) => {
+          const message = props.messages.find((m) => m.seq === seq);
+          if (message) props.actions?.onExplain(message, text);
+        }} />}
       <form className={`ph-composer${props.plan ? " plan" : ""}${props.tldr ? " tldr" : ""}`} inert={props.covered} onSubmit={(event) => {
         event.preventDefault();
         if (props.tldr && props.gate.enabled && !props.sending && !props.attaching) wiggle(inputRef.current?.parentElement ?? null);
         props.onSend();
       }}>
+        {props.quotes.length > 0 && (
+          <div className="quote-preview ph-quotes">
+            <div className="quote-preview-head">
+              <span className="quote-count">{props.quotes.length === 1 ? "1 quote" : `${props.quotes.length} quotes`}</span>
+              <span className="quote-head-actions">
+                <span className="pane-menu-wrap hand-off">
+                  {/* These keep the keyboard as it is: the box keeps focus while you pick. */}
+                  <button type="button" className="ghost small" aria-haspopup="menu" aria-expanded={handOffOpen} onPointerDown={(event) => event.preventDefault()} onClick={() => setHandOffOpen((open) => !open)}>
+                    {handOffLabel(quoteTo, (id) => person(id).display_name)} ▾
+                  </button>
+                  {handOffOpen && <span className="pane-menu hand-off-menu" role="menu">
+                    {handOffChoices(quoteTo, props.participants.map((p) => ({ id: p.id, name: p.display_name }))).map((choice) => (
+                      <button type="button" role="menuitem" key={choice.to} onPointerDown={(event) => event.preventDefault()} onClick={() => { props.onQuotes(props.quotes.map((quote) => ({ ...quote, to: choice.to }))); setHandOffOpen(false); }}>{choice.label}</button>
+                    ))}
+                  </span>}
+                </span>
+                {props.quotes.length > 1 && <button type="button" className="quote-clear-all" onPointerDown={(event) => event.preventDefault()} onClick={() => props.onQuotes([])}>Clear all</button>}
+              </span>
+            </div>
+            <div className="quote-preview-list">{props.quotes.map((item, index) => (
+              <div className="quote-preview-row" key={`${item.id}:${item.name}:${index}`}>
+                <span className="quote-author" title={item.id ? item.name : "You"}>{item.id ? item.name : "You"}</span>
+                <blockquote>{item.text}</blockquote>
+                <button type="button" className="quote-cancel" aria-label={`Remove quote ${index + 1}`} onPointerDown={(event) => event.preventDefault()} onClick={() => props.onQuotes(props.quotes.filter((_, i) => i !== index))}>×</button>
+              </div>
+            ))}</div>
+          </div>
+        )}
         {props.draft.files.length > 0 && (
           <div className="ph-chips">
             {props.draft.files.map((file) => (
@@ -2497,7 +2766,7 @@ function ThreadView(props: {
           </button>
           <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
-              placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
+              placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.quotes.length ? "e.g. Check this against the tests and say what breaks" : props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
               onChange={(event) => { props.onDraft(event.target.value); setCaret(event.target.selectionStart); }}
               onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
               onFocus={(event) => { setCaret(event.currentTarget.selectionStart); setTyping(true); }}

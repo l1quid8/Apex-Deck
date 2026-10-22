@@ -889,13 +889,59 @@
 .ph-undo.ph-undo-up { bottom: calc(136px + env(safe-area-inset-bottom)); }
 .ph-undo > span { flex: 1; min-width: 0; }
 .ph-undo button { background: transparent; border: 0; color: var(--mint); font-weight: 600; min-height: 44px; padding: 0 12px !important; }
-/* A held message opens its menu, so iOS's own text callout stays out of the way. */
-.ph-msg-hold,
-.ph-msg-hold * {
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
+/* Each message with the desktop's action row under it (Quote, Copy, Read aloud, Pin, › for Retry and Fork,
+   the time), drawn by the desktop's own rules: a bot's row at the left, yours mirrored at the right.
+   A touch screen shows the row all the time; a mouse shows it while the message is hovered, as on the desktop. */
+.ph-said { margin-bottom: 12px; }
+.ph-said > .ph-msg { margin-bottom: 2px; }
+.ph-said > .message-actions { flex-wrap: wrap; }
+.ph-said.mine > .message-actions { justify-content: flex-end; text-align: end; }
+.ph-said :is(.message-primary-actions, .message-action-items) { flex-wrap: wrap; }
+.ph-said .message-time { text-wrap: balance; }
+.ph-said.mine .msg-action.quote svg { transform: scaleX(-1); }
+/* A thumb-sized tap with the desktop's look; the outer icons line up with the text above them. */
+.ph-said .msg-action { min-height: 36px; height: 36px; min-width: 36px; }
+.ph-said:not(.mine) > .message-actions { margin-left: -9px; }
+.ph-said.mine > .message-actions { margin-right: -9px; }
+.ph-said .msg-action:active:not(:disabled) { background: var(--panel-2); }
+@media (hover: hover) {
+  .ph-said:hover .message-actions .msg-action, .ph-said:hover .message-time { opacity: 1; }
 }
+/* iOS keeps :hover on the last tapped button; the desktop's hover fill would stick. */
+@media (hover: none) {
+  .ph-app .msg-action:hover:not(:active):not([aria-pressed="true"]) { background-color: transparent; color: var(--muted); }
+}
+/* Retry and Revert ask under their message with the desktop's words, in the chat instead of floating. */
+.ph-said .goback-pop { position: static; width: auto; margin: 4px 0 6px; box-shadow: none; font-size: 13px; }
+.ph-app .goback-pop p { margin: 6px 0 0; }
+.ph-said .goback-pop strong { font-size: 13.5px; }
+.ph-said .goback-scope { flex-wrap: wrap; gap: 4px 14px; }
+.ph-said :is(.goback-scope, .goback-files) label { min-height: 36px; }
+.ph-said .goback-files { max-height: 220px; }
+.ph-said .goback-pop .row { gap: 8px; }
+.ph-said .goback-pop .row button { min-height: 40px; padding: 8px 14px; font-size: 14px; border-radius: 10px; }
+.ph-said .goback-pop .row .primary { background: var(--brand-gradient); color: var(--accent-ink); }
+
+/* Pinned for every model, under the bots: one line until it's opened. */
+.ph-pins { font-size: 13px; padding: 8px 16px; }
+.ph-pins .pins-label { padding: 4px 0; }
+.ph-pins .pins-list { max-height: 30vh; overflow-y: auto; }
+.ph-pins .pin .icon { min-height: 32px; min-width: 32px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 18px; }
+
+/* Quotes waiting above the box, as on the desktop. */
+.ph-quotes { margin: 6px 0; }
+.ph-quotes .quote-preview-head .ghost.small { min-height: 32px; padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+.ph-quotes .quote-clear-all { min-height: 32px; font-size: 13px; }
+.ph-quotes .quote-cancel { min-height: 36px; width: 36px; height: 36px; color: var(--muted); }
+.ph-quotes .hand-off-menu button { min-height: 40px; font-size: 14px; }
+
+/* Text picked in a message: the desktop's Add to chat / More details on the side iPhone's own Copy menu
+   leaves free, past the selection's handles. Placed in the phone frame, with thumb-sized taps. */
+.ph-app .selection-actions:is(.above, .below) { position: absolute; }
+.ph-app .selection-actions.above { transform: translate(-50%, calc(-100% - 14px)); }
+.ph-app .selection-actions.below { transform: translate(-50%, 14px); }
+.ph-app .selection-actions button { min-height: 36px; padding: 0 12px; font-size: 13px; }
+.ph-app .selection-actions button:active:not(:disabled) { background: var(--panel-2); }
 
 /* Section headings share project controls, with recovery actions alongside. */
 .ph-tl-heading { display: flex; align-items: center; margin-top: 14px; }

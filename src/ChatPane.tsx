@@ -91,7 +91,8 @@ import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.t
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
-import { handOffChoices, handOffLabel, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
@@ -1631,7 +1632,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
       .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
   };
-  const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2"/><circle cx="11" cy="2.5" r="1.2"/></svg>;
+  const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2" fill="currentColor"/><circle cx="11" cy="2.5" r="1.2" fill="currentColor"/></svg>;
   /** The message whose Copy reads "Copied" for a moment, by seq. */
   const [copied, setCopied] = useState<number | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -1677,7 +1678,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     const box = range.getBoundingClientRect();
     setPicked({ message, text, x: box.left + box.width / 2, y: box.top });
   };
-  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => ({ ...quoteFor(p.message, (id) => names.get(id) ?? id), text: p.text });
+  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => partQuote(p.message, p.text, (id) => names.get(id) ?? id);
   const addPicked = () => {
     if (!picked) return;
     const next = pickedQuote(picked);
@@ -1688,7 +1689,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   const explainPicked = () => {
     if (!picked || !ready || participants.length === 0) return;
-    const message = replyText("Explain this part in more detail.", pickedQuote(picked), participants);
+    const message = moreDetailsText(pickedQuote(picked), participants);
     setPicked(null);
     window.getSelection()?.removeAllRanges();
     stuck.current = true;
@@ -3450,10 +3451,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       <div className="transcript" ref={scroller} onScroll={() => { setPicked(null); onTranscriptScroll(); }}
         onMouseUp={() => requestAnimationFrame(pickSelection)} onKeyUp={(e) => e.shiftKey && pickSelection()}
         onMouseDown={(e) => { if (!(e.target as Element).closest(".selection-actions")) setPicked(null); }}>
-        {picked && <span className="selection-actions" role="toolbar" aria-label="Selected text" style={{ left: picked.x, top: picked.y }}>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addPicked}>Add to chat</button>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={explainPicked} disabled={!ready || participants.length === 0}>More details</button>
-        </span>}
+        {picked && <SelectionActions x={picked.x} y={picked.y} canExplain={ready && participants.length > 0} onAdd={addPicked} onExplain={explainPicked} />}
         {landing && (
           <div className={`empty${quickAdd === "dock" ? " away" : ""}`}>
             <LandingTexture settings={landingTexture} />
