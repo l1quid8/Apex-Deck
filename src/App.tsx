@@ -1920,7 +1920,7 @@ export function App() {
     if (hostId === "local" || !backend?.machines) return false;
     try { return dotState(backend.machines.connection(hostId).get().status) === "off"; } catch { return true; }
   };
-  // The personal assistant on its durable host; polled only while the conversation is open.
+  // Discover every durable personal assistant; discovery and bridges stay active while closed.
   const personal = usePersonalAssistant({ hosts: hostList, hostBackend, offlineHost, open: apexAgentAllOpen, bridge: true });
   const reactToAssistant = async (workspaceId: string, messageId: string, emoji: string, enabled: boolean) => {
     if (workspaceId === 'personal') {
@@ -2551,7 +2551,7 @@ export function App() {
           </div>
         </main>
         {!apexWorkspace && apexAgentAllOpen && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label="ApexAgent">
-          <ApexAgentAll workspaces={workspaces.filter((workspace) => !workspace.hidden)} monitors={assistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={reactToAssistant} saveAttachment={saveAssistantAttachment} pickAttachmentFolder={pickAssistantAttachmentFolder} onSetUp={openApexAgentProject} filterWorkspaceId={apexAgentFilter} onClearFilter={() => setApexAgentFilter(null)} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)}
+          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={workspaces.filter((workspace) => !workspace.hidden)} monitors={assistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={reactToAssistant} saveAttachment={saveAssistantAttachment} pickAttachmentFolder={pickAssistantAttachmentFolder} onSetUp={openApexAgentProject} filterWorkspaceId={apexAgentFilter} onClearFilter={() => setApexAgentFilter(null)} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)}
             offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence} onOverview={replyAcrossProjects} overviewEntries={visibleOverviewEntries(overviewEntries, assistantMonitors)} personal={personal}
             taskContext={assistantTaskContext && assistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
             tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, assistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>

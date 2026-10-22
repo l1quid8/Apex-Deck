@@ -43,6 +43,10 @@ fn token(config: &Apns, now_secs: u64) -> Result<String, String> {
     Ok(format!("{input}.{}", b64(signature.as_ref())))
 }
 
+fn notice_payload(host_id: &str, assistant_id: &str, name: &str, body: &str) -> serde_json::Value {
+    json!({ "aps": { "alert": { "title": name, "body": body }, "sound": "default" }, "hostId": host_id, "assistantId": assistant_id })
+}
+
 impl Host {
     /// Push delivered notices to every phone registered with their assistant.
     pub(crate) async fn personal_push(&self, notices: Vec<(String, Notice)>) {
@@ -70,7 +74,7 @@ impl Host {
             // Local-only: nothing the assistant wrote leaves for Apple's servers.
             let body: String = if assistant.privacy.local_only { "New update from your assistant.".into() } else { body.chars().take(240).collect() };
             for device in &assistant.push_devices {
-                let payload = json!({ "aps": { "alert": { "title": assistant.name, "body": body }, "sound": "default" }, "assistantId": id });
+                let payload = notice_payload(&assistant.host_id, &id, &assistant.name, &body);
                 let sent = client.post(format!("{base}/3/device/{}", device.token))
                     .header("authorization", format!("bearer {jwt}"))
                     .header("apns-topic", &config.topic)
@@ -83,5 +87,18 @@ impl Host {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn notice_payload_routes_same_assistant_id_to_its_durable_host() {
+        let payload = super::notice_payload("alpha", "asst-1", "Helper", "Update");
+        assert_eq!(payload["hostId"], "alpha");
+        assert_eq!(payload["assistantId"], "asst-1");
+        assert_eq!(payload["aps"]["alert"]["body"], "Update");
+        let other = super::notice_payload("beta", "asst-1", "Helper", "Update");
+        assert_ne!(payload["hostId"], other["hostId"]);
     }
 }

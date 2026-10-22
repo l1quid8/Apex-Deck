@@ -5,8 +5,9 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { transform } = require('sucrase');
-const source = fs.readFileSync(new URL('../src/personalAssistant.ts', import.meta.url), 'utf8');
-const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), { transforms: ['typescript'] }).code;
+import { PersonalAssistantsCollection } from '../src/usePersonalAssistants.ts';
+const source = fs.readFileSync(new URL('../src/usePersonalAssistants.ts', import.meta.url), 'utf8').split('export function usePersonalAssistants')[1];
+const compiled = transform('function usePersonalAssistants' + source, { transforms: ['typescript'] }).code;
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 /** Runs the real hook: state persists between renders, and effects re-run only when their dependencies change, as in React. */
@@ -27,7 +28,7 @@ function harness(args) {
     const changed = !prev || !deps || deps.some((dep, k) => !Object.is(dep, prev.deps[k]));
     if (changed) { prev?.cleanup?.(); effects[i] = { deps, cleanup: effect() }; }
   };
-  const hook = new Function('useState', 'useRef', 'useCallback', 'useEffect', `${compiled}\nreturn usePersonalAssistant;`)(useState, useRef, useCallback, useEffect);
+  const hook = new Function('useState', 'useRef', 'useCallback', 'useEffect', 'PersonalAssistantsCollection', `${compiled}\nreturn usePersonalAssistants;`)(useState, useRef, useCallback, useEffect, PersonalAssistantsCollection);
   return { render() { cursor = 0; return hook(args); } };
 }
 
@@ -45,6 +46,7 @@ test('the phone asks for notifications once, sends its token to the assistant ho
   const assistant = { id: 'asst-1', name: 'Assistant', hostId: 'vps', revision: 1, messages: [], tasks: [], timezone: 'UTC' };
   const calls = [];
   const backend = {
+    host: { connection: { get: () => ({ status: { kind: 'connected', hostId: 'vps' } }) } },
     call: async (cmd, args) => {
       calls.push([cmd, args]);
       if (cmd === 'personal_list') return [assistant];

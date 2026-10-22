@@ -2,11 +2,10 @@
 // read its record and send it events; the host owns every task, approval
 // and receipt (crates/apex-host/src/personal.rs).
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { Backend, HostEntry } from "./backend";
+import { usePersonalAssistants, type PersonalAssistantsOptions } from "./usePersonalAssistants.ts";
+import type { Backend } from "./backend";
 import type { ParticipantConfig } from "./types";
 import type { AssistantLook, AssistantProjectBinding } from "./assistantIdentity.ts";
-import { unsupported as isUnsupportedCommand } from "./threadMove.ts";
 
 export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[] };
 export type ToolClass = "read" | "write" | "send" | "spend";
@@ -60,8 +59,20 @@ export type PersonalAssistantRecord = PersonalSettings & {
   machines?: { hostId: string; name: string; folder: string; lastSeen?: number }[];
 };
 
+/** Versioned transaction: callers retain the revision from their editor draft. */
+export type PersonalWorkspaceConfigure = {
+  expectedRevision: number;
+  settings?: Partial<PersonalSettings>;
+  profile?: ParticipantConfig;
+  projects?: AssistantProjectBinding[];
+};
+
 /** What the ApexAgent conversation needs to show and talk to the personal assistant. */
 export type PersonalLane = {
+  /** Host-qualified keys for composer drafts and attachment ownership. */
+  ref?: import("./assistantIdentity.ts").AssistantRef;
+  draftKey?: string;
+  attachmentKey?: string;
   name: string;
   hostName: string;
   assistant: PersonalAssistantRecord | null;
@@ -79,6 +90,8 @@ export type PersonalLane = {
   pause?(paused: boolean): Promise<void>;
   /** Change name, style, modes, quiet hours, budget or privacy. Only what's given changes. */
   configure?(settings: Partial<PersonalSettings>): Promise<void>;
+  /** Only available when the authenticated route advertises assistant_workspace_v4. */
+  configureWorkspace?(configuration: PersonalWorkspaceConfigure): Promise<void>;
   addRule?(text: string, cls: ToolClass, mode: ActionMode): Promise<void>;
   removeRule?(ruleId: string): Promise<void>;
   remember?(text: string): Promise<void>;
@@ -118,37 +131,28 @@ export const requestId = (device: string) => `${device}:${Date.now().toString(36
 export const ASSISTANT_PROFILE = { id: "personal-assistant", display_name: "Assistant", backend: { kind: "agent", tool: "claude_code" } };
 export const ASSISTANT_FOLDER = "~/apex-assistant-slice";
 
-type PushPlugin = {
-  requestPermissions(): Promise<{ receive: string }>;
-  register(): Promise<void>;
-  addListener(event: string, callback: (data: unknown) => void): Promise<{ remove(): Promise<void> | void }>;
-};
-/** The Capacitor push plugin, present only inside the phone app. */
-const pushPlugin = (device: string): PushPlugin | undefined => {
-  if (device !== "phone") return undefined;
-  return (globalThis as unknown as { Capacitor?: { Plugins?: { PushNotifications?: PushPlugin } } }).Capacitor?.Plugins?.PushNotifications;
-};
-
-const unsupported = (error: unknown) => /unknown variant|personal_list/i.test(String(error instanceof Error ? error.message : error));
-
 type Allow = { hostId: string; assistantId: string; assistantHostId: string; folder: string };
 type CommandResult = { exitCode: number; output: string };
 
 /** Lets this Mac run the assistant's commands in one folder. The Mac allows it, then the assistant's host records the link. */
-export async function linkThisMacOn({ local, vps, assistantId, assistantHostId, folder }: {
-  local: Backend; vps: Backend; assistantId: string; assistantHostId: string; folder: string;
+export async function linkThisMacOn({ local, vps, assistantId, assistantHostId, folder, assertOwner = () => {} }: {
+  local: Backend; vps: Backend; assistantId: string; assistantHostId: string; folder: string; assertOwner?: () => void;
 }): Promise<{ hostId: string; assistant: PersonalAssistantRecord }> {
+  assertOwner();
   const allow = await local.call<Allow>("personal_machine_allow", { assistantId, assistantHostId, folder });
+  assertOwner();
   const linked = await vps.call<{ assistant: PersonalAssistantRecord }>("personal_machine_link", { assistantId, hostId: allow.hostId, name: "Mac", folder: allow.folder });
   return { hostId: allow.hostId, assistant: linked.assistant };
 }
 
 /** One pass: take the operations the host hands this Mac, run each here, and post each result once. */
-export async function runMachineBridge({ local, vps, assistantId, assistantHostId, localHostId, warn = (message: string) => console.warn(message) }: {
-  local: Backend; vps: Backend; assistantId: string; assistantHostId: string; localHostId: string; warn?: (message: string) => void;
+export async function runMachineBridge({ local, vps, assistantId, assistantHostId, localHostId, assertOwner = () => {}, warn = (message: string) => console.warn(message) }: {
+  local: Backend; vps: Backend; assistantId: string; assistantHostId: string; localHostId: string; assertOwner?: () => void; warn?: (message: string) => void;
 }): Promise<number> {
+  assertOwner();
   const ops = await vps.call<RemoteOp[]>("personal_machine_claim", { assistantId, hostId: localHostId });
   for (const op of ops) {
+    assertOwner();
     let outcome: { exitCode: number; output: string } | { error: string };
     try {
       const result = await local.call<CommandResult>("personal_execute_local", { assistantId, assistantHostId, operation: op.operation });
@@ -156,6 +160,7 @@ export async function runMachineBridge({ local, vps, assistantId, assistantHostI
     } catch (error) {
       outcome = { error: error instanceof Error ? error.message : String(error) };
     }
+    assertOwner();
     try {
       await vps.call("personal_machine_result", { assistantId, hostId: localHostId, taskId: op.taskId, opId: op.opId, ...outcome });
     } catch (error) {
@@ -165,199 +170,8 @@ export async function runMachineBridge({ local, vps, assistantId, assistantHostI
   return ops.length;
 }
 
-/** Find the assistant on the first remote host that has one, and keep it fresh while the conversation is open.
- *  With `bridge` (the Mac), also run the commands the assistant hands this Mac, whether or not the popup is open. */
-export function usePersonalAssistant({ hosts, hostBackend, offlineHost, open, device = "mac", bridge = false, onOpen }: {
-  hosts: Pick<HostEntry, "id" | "name" | "remote">[]; hostBackend: (hostId: string) => Backend; offlineHost: (hostId: string) => boolean; open: boolean; device?: string; bridge?: boolean;
-  /** The phone: a tap on an assistant notification opens the assistant. */
-  onOpen?: () => void;
-}): PersonalLane | null {
-  const remote = hosts.filter((host) => host.remote);
-  const local = hosts.find((host) => !host.remote);
-  const [found, setFound] = useState<{ hostId: string; assistant: PersonalAssistantRecord | null; problem?: string } | null>(null);
-  const [localHostId, setLocalHostId] = useState<string | undefined>(undefined);
-  const generation = useRef(0);
-  const hostKey = remote.map((host) => host.id).join("|");
-  const localKey = local?.id ?? "";
-  // App passes new functions every render; the poll reads the latest ones.
-  const latest = useRef({ remote, hostBackend, offlineHost, hosts });
-  latest.current = { remote, hostBackend, offlineHost, hosts };
-  const latestFound = useRef(found);
-  latestFound.current = found;
-  const latestLocalId = useRef(localHostId);
-  latestLocalId.current = localHostId;
-  const bridgeBusy = useRef(false);
-  // The host stores the zone it was given; a fresh or UTC record is corrected once per mount, errors ignored.
-  const zoneSynced = useRef(false);
-  const syncZone = (hostId: string, assistant: PersonalAssistantRecord) => {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const offset = -new Date().getTimezoneOffset();
-    if (zoneSynced.current || zone === "UTC") return;
-    if (assistant.utcOffsetMinutes === offset && assistant.timezone !== "UTC") return;
-    zoneSynced.current = true;
-    latest.current.hostBackend(hostId).call<{ assistant: PersonalAssistantRecord }>("personal_configure", { assistantId: assistant.id, settings: { timezone: zone, utcOffsetMinutes: offset } })
-      .then((result) => { if (result?.assistant) setFound({ hostId, assistant: result.assistant }); })
-      .catch(() => {});
-  };
-  const refresh = useCallback(async () => {
-    const mine = ++generation.current;
-    const { remote, hostBackend } = latest.current;
-    let fallback: { hostId: string; assistant: null; problem?: string } | null = null;
-    for (const host of remote) {
-      try {
-        const list = await hostBackend(host.id).call<PersonalAssistantRecord[]>("personal_list", {});
-        if (mine !== generation.current) return;
-        if (list.length) { setFound({ hostId: host.id, assistant: list[0] }); syncZone(host.id, list[0]); return; }
-        fallback ??= { hostId: host.id, assistant: null };
-      } catch (error) {
-        if (mine !== generation.current) return;
-        fallback ??= { hostId: host.id, assistant: null, problem: unsupported(error) ? "This machine's service is too old for the personal assistant. Update it first." : String(error instanceof Error ? error.message : error) };
-      }
-    }
-    if (mine === generation.current) setFound(fallback);
-  }, []);
-  useEffect(() => {
-    if (!open) return;
-    void refresh();
-    const timer = setInterval(() => void refresh(), 2500);
-    return () => clearInterval(timer);
-  }, [open, refresh, hostKey]);
-  // On the Mac: learn this Mac's host id from the allowances it already has, once.
-  useEffect(() => {
-    if (!bridge || !localKey) return;
-    let cancelled = false;
-    latest.current.hostBackend(localKey).call<{ allows: { hostId: string }[] }>("personal_machine_allowed", {})
-      .then((result) => { const first = result?.allows?.[0]; if (first && !cancelled) setLocalHostId(first.hostId); })
-      .catch((error) => console.warn(`Could not read this Mac's links: ${String(error)}`));
-    return () => { cancelled = true; };
-  }, [bridge, localKey]);
-  // The phone: push notifications for the assistant. Asked once per mount; the token goes to the assistant's host.
-  const pushStarted = useRef(false);
-  const latestOpen = useRef(onOpen);
-  latestOpen.current = onOpen;
-  const assistantKey = found?.assistant?.id ?? "";
-  useEffect(() => {
-    const plugin = pushPlugin(device);
-    if (!plugin) return;
-    const handles: Promise<{ remove(): Promise<void> | void }>[] = [
-      plugin.addListener("registration", (data) => {
-        const token = (data as { value?: string }).value;
-        const current = latestFound.current;
-        if (!token || !current?.assistant) return;
-        latest.current.hostBackend(current.hostId).call("personal_push_register", { assistantId: current.assistant.id, token }).catch(() => undefined);
-      }),
-      plugin.addListener("pushNotificationActionPerformed", () => latestOpen.current?.()),
-    ];
-    return () => { for (const handle of handles) void handle.then((item) => item.remove()).catch(() => undefined); };
-  }, [device]);
-  useEffect(() => {
-    const plugin = pushPlugin(device);
-    if (!plugin || !assistantKey || pushStarted.current) return;
-    pushStarted.current = true;
-    void (async () => {
-      try {
-        const permission = await plugin.requestPermissions();
-        if (permission.receive === "granted") await plugin.register();
-      } catch (error) {
-        console.warn(`Notifications: ${String(error)}`);
-      }
-    })();
-  }, [device, assistantKey]);
-  // Every 5 s on the Mac, whether or not the conversation is open: run what the assistant hands this Mac.
-  useEffect(() => {
-    if (!bridge) return;
-    const tick = async () => {
-      const current = latestFound.current;
-      const mac = latestLocalId.current;
-      const mine = latest.current.hosts.find((host) => !host.remote);
-      if (bridgeBusy.current || !mac || !mine || !current?.assistant) return;
-      if (!current.assistant.machines?.some((machine) => machine.hostId === mac)) return;
-      if (latest.current.offlineHost(current.hostId)) return;
-      bridgeBusy.current = true;
-      try {
-        await runMachineBridge({
-          local: latest.current.hostBackend(mine.id), vps: latest.current.hostBackend(current.hostId),
-          assistantId: current.assistant.id, assistantHostId: current.hostId, localHostId: mac,
-        });
-      } catch (error) {
-        console.warn(`Machine bridge: ${String(error)}`);
-      } finally {
-        bridgeBusy.current = false;
-      }
-    };
-    const timer = setInterval(() => void tick(), 5000);
-    return () => clearInterval(timer);
-  }, [bridge]);
-  if (!found) return null;
-  const host = remote.find((item) => item.id === found.hostId);
-  if (!host) return null;
-  const route = () => hostBackend(host.id);
-  const id = found.assistant?.id;
-  const after = async (work: Promise<{ assistant: PersonalAssistantRecord }>) => {
-    const { assistant } = await work;
-    setFound({ hostId: host.id, assistant });
-  };
-  const need = () => { if (!id) throw new Error("Set up the assistant first."); return id; };
-  return {
-    name: found.assistant?.name ?? "Assistant",
-    hostName: host.name,
-    assistant: found.assistant,
-    offline: offlineHost(host.id),
-    problem: found.problem,
-    setUp: found.assistant || found.problem ? undefined : async () => {
-      const assistant = await route().call<PersonalAssistantRecord>("personal_create", { name: "Assistant", folder: ASSISTANT_FOLDER, profile: ASSISTANT_PROFILE });
-      setFound({ hostId: host.id, assistant });
-    },
-    send: (text) => after(route().call("personal_send", { assistantId: need(), requestId: requestId(device), text })),
-    react: async (messageId, emoji, enabled) => {
-      let result: { assistant: PersonalAssistantRecord };
-      try { result = await route().call("personal_react", { assistantId: need(), messageId, emoji, enabled }); }
-      catch (error) {
-        if (isUnsupportedCommand(error, "personal_react")) throw new Error("This host does not support saved ApexAgent reactions. Update its service to use reactions here.");
-        throw error;
-      }
-      if (!result?.assistant || result.assistant.id !== id) throw new Error("The assistant did not confirm that reaction was saved.");
-      setFound({ hostId: host.id, assistant: result.assistant });
-    },
-    saveAttachment: async (name, bytes) => {
-      const assistantId = need();
-      const saved = await route().saveAttachment(assistantId, name, bytes);
-      if (latestFound.current?.hostId !== host.id || latestFound.current.assistant?.id !== assistantId) throw new Error("The personal assistant changed while saving the attachment.");
-      return saved;
-    },
-    pickFolder: async () => {
-      const assistantId = need();
-      const path = await route().pickFolder();
-      if (!path) return null;
-      const saved = await route().copyAttachment(assistantId, path);
-      if (latestFound.current?.hostId !== host.id || latestFound.current.assistant?.id !== assistantId) throw new Error("The personal assistant changed while copying the folder.");
-      return saved;
-    },
-    decide: (decisionId, paramsHash, approve) => after(route().call("personal_decide", { assistantId: need(), requestId: requestId(device), decisionId, paramsHash, approve })),
-    cancel: (taskId) => after(route().call("personal_cancel", { assistantId: need(), requestId: requestId(device), taskId })),
-    pause: (paused) => after(route().call("personal_pause", { assistantId: need(), requestId: requestId(device), paused })),
-    configure: (settings) => after(route().call("personal_configure", { assistantId: need(), settings })),
-    addRule: (text, cls, mode) => after(route().call("personal_rule_add", { assistantId: need(), text, class: cls, mode })),
-    removeRule: (ruleId) => after(route().call("personal_rule_remove", { assistantId: need(), ruleId })),
-    remember: (text) => after(route().call("personal_memory_add", { assistantId: need(), text })),
-    correctFact: (factId, text) => after(route().call("personal_memory_correct", { assistantId: need(), factId, text })),
-    forgetFact: (factId) => after(route().call("personal_memory_forget", { assistantId: need(), factId })),
-    cancelSchedule: (scheduleId) => after(route().call("personal_schedule_cancel", { assistantId: need(), requestId: requestId(device), scheduleId })),
-    seeNotices: () => after(route().call("personal_notices_seen", { assistantId: need(), upTo: Date.now() })),
-    localHostId,
-    linkThisMac: async (folder) => {
-      const mine = latest.current.hosts.find((item) => !item.remote);
-      if (!mine) throw new Error("This Mac's Deck isn't running.");
-      const linked = await linkThisMacOn({ local: latest.current.hostBackend(mine.id), vps: route(), assistantId: need(), assistantHostId: host.id, folder });
-      setLocalHostId(linked.hostId);
-      setFound({ hostId: host.id, assistant: linked.assistant });
-    },
-    unlinkMachine: (hostId) => after(route().call("personal_machine_unlink", { assistantId: need(), hostId })),
-    connectors: () => route().call<ConnectorState[]>("personal_connectors", {}),
-    saveKey: async (name, value) => { await route().call("api_key_save", { name, key: value }); },
-    removeKey: async (name) => { await route().call("api_key_remove", { name }); },
-    browserView: () => route().call<BrowserView>("personal_browser_view", {}),
-    browserTakeOver: (on) => route().call<BrowserView>("personal_browser_take_over", { on }),
-    browserInput: (input) => route().call<BrowserView>("personal_browser_input", { input }),
-  };
+/** Compatibility view over the single collection; discovery, push and bridges are shared. */
+export function usePersonalAssistant(options: PersonalAssistantsOptions): PersonalLane | null {
+  const collection = usePersonalAssistants(options);
+  return collection.selected ? collection.lane(collection.selected) : collection.emptyLane();
 }

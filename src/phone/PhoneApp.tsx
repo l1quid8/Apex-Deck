@@ -607,7 +607,7 @@ export function PhoneApp() {
   const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
   const openLink = linkOf(openHostId) ?? hostOf(openWorkspace);
   const assistantWorkspace = workspaces.find((workspace) => workspace.id === assistantWorkspaceId) ?? null;
-  // The personal assistant lives on one machine (the VPS); the phone only reads it and sends it events.
+  // One collection discovers all paired machines; notifications select their exact durable owner.
   const personal = usePersonalAssistant({
     hosts: hosts.map((host) => ({ id: host.machine.id, name: host.machine.name, remote: true })),
     hostBackend: (id) => { const host = phoneHost(id); if (!host) throw new Error("That machine isn't paired with this phone."); return host.backend; },
@@ -1788,7 +1788,7 @@ export function PhoneApp() {
           </div>
         )}
         {personalOpen && personal?.assistant && <div className="apex-agent-backdrop">
-          <ApexAgentAll workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That ApexAgent lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
+          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That ApexAgent lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
             if (laneId !== 'personal' || !personal?.assistant || personal.offline) throw new Error('The personal assistant host is unavailable.');
             return personal.saveAttachment(name, bytes);
           }} pickFolderUnavailableReason="Folder selection is unavailable on this phone." onSetUp={() => {}} onClose={() => setPersonalOpen(false)} />
