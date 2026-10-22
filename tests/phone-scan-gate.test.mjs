@@ -180,3 +180,61 @@ test("a link is refused while the camera control is open, and the scan still pai
     await act(async () => { root.unmount(); });
   }
 });
+
+test("a cancelled scan, a denied camera and a code that isn't a pairing link each give the slot back", async () => {
+  const { createElement, act } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { ScanCodeButton } = await import("../src/phone/ScanCodeButton.tsx");
+  const { createPairingGate, openIncomingLinks, reserveLocal, takeScan } = await import("../src/phone/incomingLinks.ts");
+  const { RELAY } = await import("../src/phone/pairing.ts");
+
+  const wire = { v: 1, host: "ef".repeat(32), name: "Tyler's Mac Studio", relay: RELAY, addrs: [], inv: "BwcHBwcHBwcHBwcHBwcHBw", secret: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk", exp: 1_800_000_300 };
+  const link = `apexdeck://pair?p=${Buffer.from(JSON.stringify(wire)).toString("base64url")}`;
+  const cases = [
+    { name: "cancelled", finish: (scan) => scan.reject(new Error("cancelled")), notice: null },
+    { name: "denied", finish: (scan) => scan.reject(new Error("denied")), notice: /can't use the camera/ },
+    { name: "not a pairing link", finish: (scan) => scan.resolve("https://example.com/menu"), notice: null },
+  ];
+
+  for (const { name, finish, notice } of cases) {
+    const notices = [];
+    const gate = createPairingGate((message) => notices.push(message));
+    const started = [];
+    let listener;
+    const app = {
+      emit(url) { listener?.({ url }); },
+      addListener(_event, cb) {
+        listener = cb;
+        return Promise.resolve({ async remove() { if (listener === cb) listener = null; } });
+      },
+      getLaunchUrl() { return Promise.resolve(undefined); },
+    };
+    const opened = openIncomingLinks(app, async (url) => { started.push(url); return "cancelled"; }, { refuse() {}, invalid() {}, broken() {} }, gate);
+    let pending;
+    const root = createRoot(document.body);
+    const props = {
+      scan: () => new Promise((resolve, reject) => { pending = { resolve, reject }; }),
+      reserve: (held) => reserveLocal(gate, held),
+      adopt: (text) => takeScan(gate, text),
+      giveBack: (text) => gate.release(text, "failed"),
+      // Machines' pairWith answers false for text that isn't a pairing link.
+      onCode: (text) => text.startsWith("apexdeck://pair?"),
+      onError: (message) => notices.push(message),
+    };
+    try {
+      await act(async () => { root.render(createElement(ScanCodeButton, props)); });
+      await click(findButton(document.body, "Scan QR code"));
+      assert.ok(pending, `${name}: scan() is in flight`);
+      await act(async () => { finish(pending); });
+      await new Promise((resolve) => setImmediate(resolve));
+      if (notice) assert.match(notices.at(-1) ?? "", notice, `${name}: the reason is shown`);
+      else assert.deepEqual(notices, [], `${name}: nothing is shown`);
+      app.emit(link);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(started, [link], `${name}: a link can pair once the camera gave the slot back`);
+    } finally {
+      opened.close();
+      await act(async () => { root.unmount(); });
+    }
+  }
+});
