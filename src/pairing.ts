@@ -212,6 +212,7 @@ export function timerText(expiresAt: number, renewUntil: number | null, now = Da
  * then. The daemon decides: a claim that landed first comes back as a claim
  * and is never renewed over. Each start is numbered; a reply to an older
  * start, or one that lands after close, is cancelled and never shown.
+ * A wait that answers after close starts nothing: no new code, no timer.
  */
 export function pairingSession(api: PairingApi, onState: (state: PairState) => void, timers: Timers = realTimers, renewUntil: number | null = null) {
   const pollMs = timers.pollMs ?? 2000;
@@ -262,12 +263,12 @@ export function pairingSession(api: PairingApi, onState: (state: PairState) => v
       set({ kind: "waiting", invite: made });
       api.wait(made.invitation).then(
         (claim) => {
-          if (state.kind !== "waiting" || invite !== made) return;
+          if (closed || state.kind !== "waiting" || invite !== made) return;
           set({ kind: "claimed", invite: made, claim });
           poll = timers.setTimer(stillThere, pollMs);
         },
         (error) => {
-          if (state.kind !== "waiting" || invite !== made) return;
+          if (closed || state.kind !== "waiting" || invite !== made) return;
           if (reasonOf(error) === "expired" && renewUntil !== null && now() < renewUntil) begin(tier, threads);
           else end(error);
         },

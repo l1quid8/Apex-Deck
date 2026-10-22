@@ -371,6 +371,37 @@ test("closing during a renewal cancels the new code when it lands, and shows not
   assert.equal(states.at(-1).kind, "starting", "the stale reply is never shown");
 });
 
+test("a code that expires after the sheet closes is not renewed", async () => {
+  let expire;
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [new Promise((_, no) => { expire = no; })] });
+  const states = [];
+  const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers({ now: 0 }), RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  session.close();
+  const shown = states.length;
+  expire(refused("expired"));
+  await settle();
+  assert.deepEqual(daemon.cmds(), ["pair_start", "pair_wait", "pair_cancel"], "no new code once closed");
+  assert.equal(states.length, shown, "nothing more is shown");
+});
+
+test("a claim that lands after the sheet closes is not shown and sets no timer", async () => {
+  let claimed;
+  const timers = clockTimers({ now: 0 });
+  const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: [new Promise((r) => { claimed = r; })] });
+  const states = [];
+  const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), timers, RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  session.close();
+  const shown = states.length;
+  claimed(CLAIM);
+  await settle();
+  assert.equal(timers.pending(), 0, "no still-there check is scheduled");
+  assert.equal(states.length, shown, "nothing more is shown");
+});
+
 test("renewals stop once the sheet has been open 30 minutes", async () => {
   const at = { now: 0 };
   let secondExpires;
