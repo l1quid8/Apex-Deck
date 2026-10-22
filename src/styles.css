@@ -4003,6 +4003,8 @@ button.mod-status:hover { color: var(--text); }
 .plan-chip-x { width: 0; overflow: hidden; opacity: 0; font-size: .9em; transition: opacity .12s, width .12s; }
 .plan-chip:hover .plan-chip-x, .plan-chip:focus-visible .plan-chip-x { width: 1em; opacity: .8; }
 .approval-plan { max-height: 240px; overflow: auto; margin: 6px 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.approval-plan[data-expanded="true"] { max-height: none; overflow: visible; }
+.approval-plan-toggle { align-self: flex-start; margin-top: 6px; }
 
 /* Library: every picture the bots made. */
 .section-library { overflow: hidden; padding: 16px; }
