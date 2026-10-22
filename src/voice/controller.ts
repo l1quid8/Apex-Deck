@@ -443,10 +443,9 @@ export function createVoiceController<R = VoiceRuntime>(
   const stopSample = () => sampling?.stop() ?? Promise.resolve();
   async function sample(voice: string, onPlay?: () => void): Promise<void> {
     if (state.status !== "off" && state.status !== "error") {
-      preview(voice);
-      return;
+      throw Error("Use the call’s preview button while a call is active.");
     }
-    await stopSample();
+    const previous = sampling;
     const play = deps.playSample;
     if (!play) throw Error("Voice samples need the desktop app");
     let stopped = false,
@@ -465,12 +464,13 @@ export function createVoiceController<R = VoiceRuntime>(
         clearTimeout(timer);
         helperClient?.close("sample done");
         player?.stop();
-        if (sampling === me) sampling = undefined;
         try {
           // A stop mid-launch waits for it, so a call never inherits a helper this sample then lets go of.
+          await previous?.stop();
           const runtime = await launching?.catch(() => undefined);
           if (runtime) await deps.runtime.stop(runtime);
         } finally {
+          if (sampling === me) sampling = undefined;
           settle(e);
         }
       })());
@@ -482,15 +482,19 @@ export function createVoiceController<R = VoiceRuntime>(
       helperClient?.send({ ...m, callId: id, generation: 0 });
     const fail = (e: Error) => void finish(e);
     try {
+      await previous?.stop();
+      if (stopped) return finished;
+      if (state.status !== "off" && state.status !== "error")
+        throw Error("Use the call’s preview button while a call is active.");
       const status = await deps.runtime.status();
       if (!status.supported)
         throw Error(status.reason ?? "Local calls require Apple Silicon macOS");
       if (!status.installed)
         throw Error("Set up calls first. Start a call once to download the voices.");
-      if (stopped) return;
+      if (stopped) return finished;
       launching = deps.runtime.start();
       const runtime = await launching;
-      if (stopped) return;
+      if (stopped) return finished;
       timer = setTimeout(() => fail(Error("The voice sample took too long")), 30000);
       helperClient = await deps.connect(
         runtime,
@@ -520,7 +524,7 @@ export function createVoiceController<R = VoiceRuntime>(
       );
       if (stopped) {
         helperClient.close("sample stopped");
-        return;
+        return finished;
       }
       send({ type: "start", voice, silenceMs: 100, nameHints: [] });
     } catch (e) {

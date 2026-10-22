@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { voiceLabel } from "./callView.ts";
 import { voiceController, warmVoice } from "./coordinator.ts";
 import "./voice.css";
@@ -16,6 +16,9 @@ const stop = (
 
 /** Plays a short line in one voice, so it can be heard before it's picked. */
 export function VoiceSampleButton({ voice }: { voice: string }) {
+  const call = useSyncExternalStore(voiceController.subscribe, voiceController.getState, voiceController.getState);
+  const inCall = call.status !== "off" && call.status !== "error";
+  const unavailable = "Use the call’s preview button while a call is active.";
   const [phase, setPhase] = useState<"idle" | "loading" | "playing">("idle");
   const [error, setError] = useState("");
   const run = useRef(0);
@@ -27,6 +30,7 @@ export function VoiceSampleButton({ voice }: { voice: string }) {
     if (busy.current) void voiceController.stopSample();
   }, []);
   const click = () => {
+    if (inCall) return;
     if (phase !== "idle") {
       void voiceController.stopSample();
       return;
@@ -42,12 +46,12 @@ export function VoiceSampleButton({ voice }: { voice: string }) {
   const label = phase === "idle" ? `Play a sample of ${voiceLabel(voice)}` : "Stop the sample";
   return (
     <span className="voice-sample">
-      <button type="button" className="voice-sample-btn" aria-label={label} title={label} onClick={click}
-        onPointerEnter={warmVoice} onFocus={warmVoice}>
+      <button type="button" className="voice-sample-btn" aria-label={label} title={inCall ? unavailable : label} disabled={inCall} onClick={click}
+        onPointerEnter={inCall ? undefined : warmVoice} onFocus={inCall ? undefined : warmVoice}>
         {phase === "idle" ? play : stop}
       </button>
       <span className={"voice-sample-note" + (error ? " error" : "")} role="status">
-        {error || (phase === "loading" ? "Loading voice…" : "")}
+        {inCall ? unavailable : error || (phase === "loading" ? "Loading voice…" : "")}
       </span>
     </span>
   );

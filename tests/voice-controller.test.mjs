@@ -33,6 +33,7 @@ function fixture(options = {}) {
         (async () => ({ port: 1, token: "x", protocolVersion: 1 })),
       stop: async (runtime) => {
         runtimeStops.push(runtime);
+        await options.stop?.(runtime);
       },
     },
     openAudio: async (_frame, onDrain, onPlay) => {
@@ -502,16 +503,17 @@ test("starting a call stops a playing sample and frees the helper first", async 
   assert.equal(f.c.getState().status, "warming");
   await f.c.end();
 });
-test("during a call, a sample speaks through the call instead of opening the helper again", async () => {
+test("settings samples during a call fail visibly and leave in-call preview available", async () => {
   const f = fixture({ playSample: samplePlayer().playSample });
   await f.c.start(f.scope);
   const start = f.sent.find((m) => m.type === "start");
   f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_michael", "bf_emma"] });
-  await f.c.sample("bf_emma");
-  const speak = f.sent.filter((m) => m.type === "speak").at(-1);
-  assert.equal(speak.voice, "bf_emma");
-  assert.equal(speak.callId, start.callId);
-  assert.equal(f.sent.filter((m) => m.type === "start").length, 1);
+  for (const voice of ["bf_emma", "zz_nobody"]) {
+    await assert.rejects(f.c.sample(voice), /call.*preview/i);
+  }
+  assert.equal(f.sent.filter((m) => m.type === "speak").length, 0);
+  f.c.preview("bf_emma");
+  assert.equal(f.sent.filter((m) => m.type === "speak").at(-1).voice, "bf_emma");
   await f.c.end();
 });
 test("a call started while a sample is still loading frees the sample's helper before taking it", async () => {
@@ -538,4 +540,81 @@ test("a call started while a sample is still loading frees the sample's helper b
   assert.deepEqual(order, ["start", "start"]);
   assert.equal(f.sent.filter((m) => m.type === "start").length, 1);
   await f.c.end();
+});
+
+test("stop during sample loading keeps cleanup tracked until runtime release completes", async () => {
+  let launch, release;
+  let starts = 0;
+  const f = fixture({
+    playSample: samplePlayer().playSample,
+    start: () => ++starts === 1
+      ? new Promise((r) => { launch = r; })
+      : Promise.resolve({ port: 2, token: "call", protocolVersion: 1 }),
+    stop: () => new Promise((r) => { release = r; }),
+  });
+  const sample = f.c.sample("bf_emma");
+  await tick();
+  const stop = f.c.stopSample();
+  const call = f.c.start(f.scope);
+  await tick();
+  assert.equal(starts, 1);
+  launch({ port: 1, token: "sample", protocolVersion: 1 });
+  await tick();
+  assert.equal(starts, 1);
+  release();
+  await Promise.all([sample, stop, call]);
+  assert.equal(starts, 2);
+  assert.equal(f.c.getState().status, "warming");
+  const end = f.c.end();
+  await tick();
+  release();
+  await end;
+});
+
+test("two immediate sample requests cancel the first before acquiring the runtime", async () => {
+  let starts = 0;
+  const f = fixture({
+    playSample: samplePlayer().playSample,
+    start: async () => ({ port: ++starts, token: "sample", protocolVersion: 1 }),
+  });
+  const first = f.c.sample("bf_emma");
+  const second = f.c.sample("am_michael");
+  await tick();
+  await f.c.stopSample();
+  await Promise.all([first, second]);
+  assert.equal(starts, 1);
+  assert.equal(f.runtimeStops.length, 1);
+});
+
+test("a call also waits for cleanup of a sample superseded by a second sample", async () => {
+  let launch;
+  let starts = 0;
+  const f = fixture({
+    playSample: samplePlayer().playSample,
+    start: () => ++starts === 1
+      ? new Promise((r) => { launch = r; })
+      : Promise.resolve({ port: 2, token: "call", protocolVersion: 1 }),
+  });
+  const first = f.c.sample("bf_emma");
+  await tick();
+  const second = f.c.sample("am_michael");
+  const call = f.c.start(f.scope);
+  await tick();
+  assert.equal(starts, 1);
+  launch({ port: 1, token: "sample", protocolVersion: 1 });
+  await Promise.all([first, second, call]);
+  assert.equal(starts, 2);
+  assert.deepEqual(f.runtimeStops.map((r) => r.port), [1]);
+  await f.c.end();
+});
+
+test("speaker startup failure reaches the sample caller and releases the runtime", async () => {
+  const f = fixture({ playSample: () => ({ done: Promise.reject(Error("speakers unavailable")), stop() {} }) });
+  const sample = f.c.sample("bf_emma");
+  const rejected = assert.rejects(sample, /speakers unavailable/);
+  await tick();
+  const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "audioEnd", callId: start.callId, generation: 0, segmentId: 1 });
+  await rejected;
+  assert.equal(f.runtimeStops.length, 1);
 });

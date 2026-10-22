@@ -110,18 +110,24 @@ export async function openVoiceAudio(
 /** Plays one finished voice sample through the speakers. Never opens the mic. */
 export function playVoiceSample(pcm: Int16Array, sampleRate: number) {
   const context = new AudioContext({ sampleRate });
-  const buffer = context.createBuffer(1, Math.max(1, pcm.length), sampleRate);
-  const channel = buffer.getChannelData(0);
-  for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768;
-  const source = context.createBufferSource();
-  source.buffer = buffer;
-  source.connect(context.destination);
   let stopped = false;
-  const done = new Promise<void>((resolve) => {
+  let source: AudioBufferSourceNode | undefined;
+  let complete: () => void = () => {};
+  const done = new Promise<void>((resolve, reject) => {
+    complete = resolve;
+    // Promise construction also captures synchronous setup failures.
+    const buffer = context.createBuffer(1, Math.max(1, pcm.length), sampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768;
+    source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
     source.onended = () => resolve();
-  }).finally(() => void context.close());
-  void context.resume().then(() => {
-    if (!stopped) source.start();
+    void context.resume().then(() => {
+      if (!stopped) source!.start();
+    }).catch(reject);
+  }).finally(async () => {
+    await context.close();
   });
   return {
     done,
@@ -129,11 +135,12 @@ export function playVoiceSample(pcm: Int16Array, sampleRate: number) {
       if (stopped) return;
       stopped = true;
       try {
-        source.stop();
+        source?.stop();
       } catch {
         // Not started yet.
-        source.onended?.(new Event("ended"));
       }
+      // Stopping before resume resolves need not emit an ended event.
+      complete();
     },
   };
 }
