@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { callLine, callClock, readCallLook, DEFAULT_CALL_LOOK } from "../src/voice/callView.ts";
+import { callLine, callClock, readCallLook, DEFAULT_CALL_LOOK, pickNote, pickRows } from "../src/voice/callView.ts";
 import { readVoiceSettings } from "../src/voice/settings.ts";
 
 const state = (patch) => ({ status: "listening", muted: false, voices: [], ...patch });
@@ -72,4 +72,15 @@ test("composer button swaps mic and Send", async () => {
     assert.deepEqual(b(false, true, true, look), { mic: true, send: false });
     assert.deepEqual(b(true, true, true, look), { mic: false, send: true });
   }
+});
+
+test("Call who? names each agent's thread when the list spans threads", () => {
+  const jigga = { hostId: "h", roomId: "pane-1", participantId: "j", name: "Jigga", roomTitle: "Voice calls" };
+  const untitled = { ...jigga, roomId: "pane-2", roomTitle: "  " };
+  const nul = { ...jigga, participantId: "n", name: "Null" };
+  const kind = (c) => (c.name === "Null" ? "Codex" : "Claude");
+  assert.deepEqual(pickRows([jigga, untitled], kind).map((r) => r.detail), ["Voice calls", "Untitled thread"]);
+  assert.deepEqual(pickRows([jigga, nul], kind).map((r) => r.detail), ["Claude", "Codex"]);
+  assert.equal(pickNote([untitled, jigga]), "Say “call Jigga in Voice calls” to pick one hands-free.");
+  assert.equal(pickNote([jigga, nul]), "During a call, say “call Jigga” to switch.");
 });

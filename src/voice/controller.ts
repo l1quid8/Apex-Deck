@@ -306,6 +306,7 @@ export function createVoiceController<R = VoiceRuntime>(
     const parsed = resolveCallCommand(
       text,
       deps.candidates().filter((c) => c.hostId === state.scope!.hostId),
+      state.scope,
     );
     if (parsed.kind === "end") {
       await end("spoken stop phrase");

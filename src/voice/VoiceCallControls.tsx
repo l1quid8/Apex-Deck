@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import { Avatar } from "../Avatar";
 import { popoverTop } from "../floating.ts";
-import { CALL_LOOKS, callClock, callLine, readCallLook, voiceLabel, type CallLook, type WaveMode } from "./callView.ts";
+import { CALL_LOOKS, callClock, callLine, pickNote, pickRows, readCallLook, voiceLabel, type CallLook, type WaveMode } from "./callView.ts";
 import { voiceController, voiceRegistration, warmVoice } from "./coordinator.ts";
 import { chatVoice, preferenceFor, voiceFor, withChatPreference } from "./settings.ts";
 import type { VoiceCandidate, VoiceSettings } from "./types.ts";
@@ -202,20 +202,18 @@ const choose = (c: VoiceCandidate, active: boolean) => {
 };
 
 function PickMenu({ list, who, active, onDone }: { list: VoiceCandidate[]; who?: VoiceWho; active: boolean; onDone(): void }) {
-  const names = new Map<string, number>();
-  for (const c of list) names.set(c.name, (names.get(c.name) ?? 0) + 1);
   return (
     <>
       <div className="voice-pop-head">Call who?</div>
-      {list.map((c) => (
-        <button type="button" role="menuitem" className="voice-pick-row" key={JSON.stringify(c)}
+      {pickRows(list, (c) => who?.(c.participantId).kind ?? "").map(({ candidate: c, detail }) => (
+        <button type="button" role="menuitem" className="voice-pick-row" key={JSON.stringify(c)} title={detail || undefined}
           onClick={() => { onDone(); choose(c, active); }}>
           <Who who={who} id={c.participantId} />
           <b>{c.name}</b>
-          <span>{names.get(c.name)! > 1 ? c.roomId : who?.(c.participantId).kind ?? ""}</span>
+          <span>{detail}</span>
         </button>
       ))}
-      <p className="voice-pop-note">During a call, say “call {list.find((c) => c.name)?.name ?? "Null"}” to switch.</p>
+      <p className="voice-pop-note">{pickNote(list)}</p>
     </>
   );
 }
