@@ -225,8 +225,8 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
     void copyText(skinPrompt(request), "AI prompt copied. Paste it into your AI tool to get a skin file.");
   };
   const gallery = [
-    ...BUILTIN_SKINS.map((preset) => ({ id: `builtin-${preset.id}`, name: preset.name, note: preset.note, skin: asSkin(preset.name, preset.appearance) })),
-    ...saved.map((skin, index) => ({ id: `saved-${index}-${skin.name}`, name: skin.name, note: "Saved skin", skin })),
+    ...BUILTIN_SKINS.map((preset) => ({ id: `builtin-${preset.id}`, name: preset.name, note: preset.note, skin: asSkin(preset.name, preset.appearance), savedIndex: null })),
+    ...saved.map((skin, index) => ({ id: `saved-${index}-${skin.name}`, name: skin.name, note: "Saved skin", skin, savedIndex: index })),
   ];
   // One tile at most: prefer the tile whose name and values both match, so a saved skin
   // that copies a built-in's values doesn't light up next to it.
@@ -262,10 +262,16 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
     <section className="appearance-section" aria-labelledby="appearance-skins-title">
       <div className="appearance-section-heading"><div><h3 id="appearance-skins-title">Skins</h3><p>Choose a starting point or return to a skin you saved.</p></div></div>
       <div className="appearance-gallery" role="group" aria-label="Appearance skins">
-        {gallery.map(({ id, name, note, skin }) => {
-          return <button key={id} type="button" className="appearance-skin" aria-pressed={id === selectedId} onClick={() => apply(skin)}>
-            <SkinPreview skin={skin} /><strong>{name}</strong><small>{note}</small>
-          </button>;
+        {gallery.map(({ id, name, note, skin, savedIndex }) => {
+          return <div key={id} className="appearance-skin-tile">
+            <button type="button" className="appearance-skin" aria-pressed={id === selectedId} onClick={() => apply(skin)}>
+              <SkinPreview skin={skin} /><strong>{name}</strong><small>{note}</small>
+            </button>
+            {savedIndex !== null && <button type="button" className="appearance-skin-delete" aria-label={`Delete skin ${name}`} onClick={() => {
+              onChange({ ...value, saved: saved.filter((_, index) => index !== savedIndex) });
+              setNotice({ text: `${name} deleted from your saved skins. Your current appearance is unchanged.` });
+            }}>Delete</button>}
+          </div>;
         })}
       </div>
     </section>
