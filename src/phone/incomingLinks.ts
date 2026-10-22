@@ -7,6 +7,9 @@ import { parsePairingLink, scansAtLaunch } from "./pairing.ts";
 
 export const ALREADY_PAIRING = "Already pairing; finish or cancel that first.";
 
+/** Occupies the one slot while the camera is open and no link is known yet. Not a pairing link. */
+export const CAMERA_HOLD = "\0camera";
+
 export type LinkOutcome = "paired" | "cancelled" | "failed";
 
 /** What `claim` decided. "same" and "paired" stay quiet; "busy" already told the person. */
@@ -15,6 +18,12 @@ export type PairSlot = "started" | "same" | "busy" | "paired";
 export interface PairingGate {
   /** Take the one in-flight slot, or report why this attempt cannot. */
   claim(url: string): PairSlot;
+  /**
+   * Turn a hold (the open camera) into the link it read, without a gap
+   * another attempt could take. Does nothing when this hold is not the one
+   * in flight.
+   */
+  adopt(from: string, url: string): PairSlot;
   /** Remember a link that paired without touching whatever attempt is in flight now. */
   remember(url: string): void;
   /** Free the slot when this url still holds it. "paired" is remembered for the session. */
@@ -39,6 +48,15 @@ export function createPairingGate(refuse: (message: string) => void): PairingGat
       inFlight = url;
       return "started";
     },
+    adopt(from: string, url: string): PairSlot {
+      if (inFlight !== from) return "busy";
+      if (paired.has(url)) {
+        inFlight = null;
+        return "paired";
+      }
+      inFlight = url;
+      return "started";
+    },
     remember(url: string) {
       paired.add(url);
     },
@@ -52,6 +70,20 @@ export function createPairingGate(refuse: (message: string) => void): PairingGat
 /** Camera and paste. True only when this call took the slot. */
 export function reserveLocal(gate: PairingGate, url: string): boolean {
   return gate.claim(url) === "started";
+}
+
+/** Take the slot before the camera opens. False when something is already pairing. */
+export function holdCamera(gate: PairingGate): boolean {
+  return gate.claim(CAMERA_HOLD) === "started";
+}
+
+/**
+ * The scan finished with `url`. The camera hold becomes that link, still one
+ * slot. False when this scan no longer holds the slot, or the link already
+ * paired this session (the hold is released in that case).
+ */
+export function takeScan(gate: PairingGate, url: string): boolean {
+  return gate.adopt(CAMERA_HOLD, url) === "started";
 }
 
 /**

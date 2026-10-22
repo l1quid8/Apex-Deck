@@ -71,7 +71,8 @@ import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
 import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
-import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
+import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, takeScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
+import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
 import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../roomRecovery";
 import { mergePhoneSessionChange } from "../sessionSync";
@@ -1558,6 +1559,7 @@ export function PhoneApp() {
             onIncomingFailed={() => endLink("failed")}
             onPair={(request) => setPairing({ ...request, attempt: ++attemptSeq.current })}
             reserve={(link) => reserveLocal(gateRef.current!, link)}
+            adopt={(link) => takeScan(gateRef.current!, link)}
             giveBack={(link) => gateRef.current!.release(link, "failed")}
             machineIcon={machineIcon}
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
@@ -2563,7 +2565,7 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 /** How a new machine is reached: its QR code, or an address and token typed in. */
 type AddHow = "qr" | "address";
 
-function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
+function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
   /** The phone's remote-access settings, when the native plugin is there. */
   remote: ReactNode;
@@ -2579,6 +2581,8 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   onIncomingFailed(): void;
   /** Camera and paste take the same slot as a link. False leaves the open sheet where it is. */
   reserve(link: string): boolean;
+  /** The open camera read a link. True only when that scan still holds the slot. */
+  adopt(link: string): boolean;
   /** The slot was taken, then the link was rejected before a sheet opened. */
   giveBack(link: string): void;
   onAdd(machine: DirectMachine): void; onPair(request: { link: string; kind: MachineKind; id: string; name: string }): void;
@@ -2614,22 +2618,6 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
       return false;
     }
   };
-  const scanCode = () => {
-    if (!scan) return;
-    scan().then(pairWith, (error: unknown) => {
-      const why = words(error);
-      if (why === "cancelled") return;
-      onError(why === "denied" ? "Apex Deck can't use the camera. Allow it in Settings → Apex Deck, or paste the pairing link instead." : `Couldn't scan: ${why}`);
-    });
-  };
-  // Once per launch, including when the camera has to wait until a launch link is ruled out.
-  const openedScanner = useRef(false);
-  useEffect(() => {
-    if (!autoScan || incoming || openedScanner.current) return;
-    openedScanner.current = true;
-    onAutoScan();
-    scanCode();
-  }, [autoScan, incoming]);
   // A link from any screen. Kind is taken from the link, not from whatever form was open.
   useEffect(() => {
     if (!incoming) return;
@@ -2713,7 +2701,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
           {how === "qr" ? <>
             <p className="ph-muted">On the machine, open Settings → Remote access and press Pair phone. On a server, run <code>apex-daemon pair</code>.</p>
-            {scan && <button type="button" className="primary ph-wide" onClick={scanCode}>Scan QR code</button>}
+            {scan && <ScanCodeButton scan={scan} reserve={reserve} adopt={adopt} giveBack={giveBack} onCode={(text) => pairWith(text, undefined, true)} onError={onError} auto={autoScan && !incoming} onAuto={onAutoScan} />}
             <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
           </> : <>

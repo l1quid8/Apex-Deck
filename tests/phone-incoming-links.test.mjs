@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALREADY_PAIRING, createPairingGate, listenerFailure, openIncomingLinks, reserveLocal, routePairingLink, shouldAutoScan } from "../src/phone/incomingLinks.ts";
+import { ALREADY_PAIRING, createPairingGate, holdCamera, listenerFailure, openIncomingLinks, reserveLocal, routePairingLink, shouldAutoScan, takeScan } from "../src/phone/incomingLinks.ts";
 import { RELAY } from "../src/phone/pairing.ts";
 
 const HOST = "ab".repeat(32);
@@ -219,6 +219,32 @@ test("camera and links share one gate, in both directions", async () => {
   release("cancelled");
   await flush();
   assert.equal(reserveLocal(gate, pasted), true);
+  opened.close();
+});
+
+test("an incoming link while the camera scan is unresolved is refused, and the scan carries on", async () => {
+  const app = fakeApp();
+  const refused = [];
+  const gate = createPairingGate((message) => refused.push(message));
+  const started = [];
+  const opened = openIncomingLinks(app, async (url) => {
+    started.push(url);
+    return "cancelled";
+  }, { refuse() {}, invalid() {}, broken() {} }, gate);
+  assert.equal(holdCamera(gate), true);
+  const scanned = link({ name: "Scanned Mac" });
+  app.emit(OTHER);
+  await flush();
+  assert.deepEqual(started, [], "the link does not start while the camera is open");
+  assert.deepEqual(refused, [ALREADY_PAIRING]);
+  assert.equal(takeScan(gate, scanned), true, "the scan result keeps the slot");
+  app.emit(OTHER);
+  await flush();
+  assert.deepEqual(started, []);
+  gate.release(scanned, "cancelled");
+  app.emit(OTHER);
+  await flush();
+  assert.deepEqual(started, [OTHER], "a cancelled scan lets the next link through");
   opened.close();
 });
 
