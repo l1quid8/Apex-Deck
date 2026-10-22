@@ -11,21 +11,30 @@ import type { RemoteMode, RemotePlugin } from "./remotePlugin";
  * out the 6-digit code itself; the person checks it matches the machine's.
  * Closing the sheet cancels the attempt.
  */
-export function PairSheet({ plugin, link, label, onPaired, onClose }: {
+export function PairSheet({ plugin, link, label, onPaired, onFailed, onClose }: {
   plugin: RemotePlugin;
   link: string;
   label: string;
   onPaired(paired: Paired): void;
+  /** The attempt failed. The error stays on screen; OK only dismisses it. */
+  onFailed(): void;
   /** "done" is the success button. "failed" is the error button. Anything else is a cancel. */
   onClose(why: "cancelled" | "failed" | "done"): void;
 }) {
   const [state, setState] = useState<PairState>({ kind: "dialing" });
   const paired = useRef(onPaired);
   paired.current = onPaired;
+  const failed = useRef(onFailed);
+  failed.current = onFailed;
   useEffect(() => {
+    let reported = false;
     const attempt = startPairing(plugin, link, label, (next) => {
       setState(next);
       if (next.kind === "done") paired.current(next.paired);
+      if (next.kind === "failed" && !reported) {
+        reported = true;
+        failed.current();
+      }
     });
     return () => attempt.cancel();
   }, [plugin, link, label]);

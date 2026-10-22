@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALREADY_PAIRING, openIncomingLinks, routePairingLink, shouldAutoScan } from "../src/phone/incomingLinks.ts";
+import { ALREADY_PAIRING, createPairingGate, listenerFailure, openIncomingLinks, reserveLocal, routePairingLink, shouldAutoScan } from "../src/phone/incomingLinks.ts";
 import { RELAY } from "../src/phone/pairing.ts";
 
 const HOST = "ab".repeat(32);
@@ -190,6 +190,61 @@ test("a malformed link uses the existing not-ours words and does not start pairi
   app.emit(link());
   await flush();
   assert.deepEqual(run.started, [link()]);
+});
+
+test("camera and links share one gate, in both directions", async () => {
+  const app = fakeApp();
+  const refused = [];
+  const gate = createPairingGate((message) => refused.push(message));
+  const started = [];
+  let release;
+  const opened = openIncomingLinks(app, (url) => {
+    started.push(url);
+    return new Promise((resolve) => { release = resolve; });
+  }, { refuse() { refused.push("from hooks"); }, invalid() {}, broken() {} }, gate);
+  const scanned = link();
+  assert.equal(reserveLocal(gate, scanned), true);
+  app.emit(OTHER);
+  await flush();
+  assert.deepEqual(started, [], "a link during a camera attempt does not start");
+  assert.deepEqual(refused, [ALREADY_PAIRING]);
+  gate.release(scanned, "cancelled");
+  app.emit(OTHER);
+  await flush();
+  assert.deepEqual(started, [OTHER]);
+  const pasted = link({ name: "Pasted Mac" });
+  assert.equal(reserveLocal(gate, pasted), false, "paste during a link attempt does not take the slot");
+  assert.deepEqual(refused, [ALREADY_PAIRING, ALREADY_PAIRING]);
+  assert.deepEqual(started, [OTHER]);
+  release("cancelled");
+  await flush();
+  assert.equal(reserveLocal(gate, pasted), true);
+  opened.close();
+});
+
+test("a listener that fails to register is reported, and the launch link is still read", async () => {
+  const refused = [];
+  const broken = [];
+  const hooks = { refuse() {}, invalid() {}, broken(message) { broken.push(message); } };
+  const sync = fakeApp();
+  sync.addListener = () => { throw new Error("no bridge"); };
+  openIncomingLinks(sync, async () => "cancelled", hooks);
+  assert.deepEqual(sync.calls, ["launch"]);
+  assert.deepEqual(broken, [listenerFailure(new Error("no bridge"))]);
+
+  const asyncApp = fakeApp();
+  asyncApp.addListener = () => Promise.reject(new Error("bridge missing"));
+  openIncomingLinks(asyncApp, async () => "cancelled", {
+    refuse(message) { refused.push(message); },
+    invalid() {},
+    broken(message) { broken.push(message); },
+  });
+  await flush();
+  assert.deepEqual(broken, [
+    "Pairing links aren't being received: no bridge",
+    "Pairing links aren't being received: bridge missing",
+  ]);
+  assert.deepEqual(refused, []);
 });
 
 test("an expired link uses the existing expired words", async () => {

@@ -71,7 +71,7 @@ import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
 import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
-import { openIncomingLinks, routePairingLink, shouldAutoScan, type LinkOutcome } from "./incomingLinks";
+import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
 import { qrScanner } from "./remotePlugin";
 import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../roomRecovery";
 import { mergePhoneSessionChange } from "../sessionSync";
@@ -242,7 +242,12 @@ export function PhoneApp() {
   const machinesRef = useRef(machines);
   machinesRef.current = machines;
   const scanner = useMemo(() => qrScanner(), []);
-  const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string } | null>(null);
+  const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string; attempt: number } | null>(null);
+  const pairingRef = useRef(pairing);
+  pairingRef.current = pairing;
+  const attemptSeq = useRef(0);
+  const gateRef = useRef<PairingGate | null>(null);
+  const noticeRef = useRef<(message: string) => void>(() => {});
   const [tick, setTick] = useState(0);
   const [session, setSession] = useState<AppSession | null>(readSession);
   const sessionRef = useRef(session);
@@ -282,12 +287,18 @@ export function PhoneApp() {
   const [folded, setFolded] = useState<Record<string, boolean>>(() => { try { return readFolds(localStorage.getItem(FOLDS_KEY)); } catch { return {}; } });
   useEffect(() => { try { localStorage.setItem(FOLDS_KEY, JSON.stringify(folded)); } catch { /* retain choices for this session */ } }, [folded]);
   const [notice, setNotice] = useState("");
-  const endLink = (outcome: Exclude<LinkOutcome, "paired">) => {
+  noticeRef.current = setNotice;
+  if (gateRef.current === null) gateRef.current = createPairingGate((message) => noticeRef.current(message));
+  // Release the slot now. `close` is false when the error should stay on screen.
+  const settle = (outcome: LinkOutcome, close: boolean) => {
+    const current = pairingRef.current;
     const resolve = linkResolve.current;
     linkResolve.current = null;
-    if (resolve) resolve(outcome);
-    setPairing(null);
+    if (current && gateRef.current) settlePairing(gateRef.current, current.link, outcome, resolve);
+    else if (resolve) resolve(outcome);
+    if (close) setPairing(null);
   };
+  const endLink = (outcome: Exclude<LinkOutcome, "paired">) => settle(outcome, true);
   // Listener first, then the launch link, before the camera is allowed to open.
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
@@ -297,7 +308,8 @@ export function PhoneApp() {
     }, (url) => pairFromLinkRef.current(url), {
       refuse: (message) => setNotice(message),
       invalid: (message) => setNotice(message),
-    });
+      broken: (message) => setNotice(message),
+    }, gateRef.current!);
     let live = true;
     void opened.launch.then((url) => {
       if (!live) return;
@@ -1544,7 +1556,9 @@ export function PhoneApp() {
             incoming={incomingLink}
             onIncomingHandled={() => setIncomingLink(null)}
             onIncomingFailed={() => endLink("failed")}
-            onPair={setPairing}
+            onPair={(request) => setPairing({ ...request, attempt: ++attemptSeq.current })}
+            reserve={(link) => reserveLocal(gateRef.current!, link)}
+            giveBack={(link) => gateRef.current!.release(link, "failed")}
             machineIcon={machineIcon}
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
             confirm={confirmUnpair}
@@ -1612,12 +1626,10 @@ export function PhoneApp() {
           : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.</p></section></div>)}
         {pairing && plugin && (
           <Sheet title={`Pair ${pairing.name}`} onClose={() => endLink("cancelled")}>
-            <PairSheet plugin={plugin} link={pairing.link} label="iPhone" onClose={(why) => endLink(why === "failed" ? "failed" : "cancelled")} onPaired={(paired) => {
+            <PairSheet key={pairing.attempt} plugin={plugin} link={pairing.link} label="iPhone" onFailed={() => settle("failed", false)} onClose={(why) => endLink(why === "failed" ? "failed" : "cancelled")} onPaired={(paired) => {
               const made: PairedMachine = { id: pairing.id, name: pairing.name, kind: pairing.kind, transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now() };
               setMachines((list) => { try { return withPairedMachine(list, made); } catch (error) { setNotice(words(error)); return list; } });
-              const resolve = linkResolve.current;
-              linkResolve.current = null;
-              if (resolve) resolve("paired");
+              settle("paired", false);
             }} />
           </Sheet>
         )}
@@ -2551,7 +2563,7 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 /** How a new machine is reached: its QR code, or an address and token typed in. */
 type AddHow = "qr" | "address";
 
-function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
+function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
   /** The phone's remote-access settings, when the native plugin is there. */
   remote: ReactNode;
@@ -2565,6 +2577,10 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   /** The link has been handed to pairWith, so a later visit must not pair it again. */
   onIncomingHandled(): void;
   onIncomingFailed(): void;
+  /** Camera and paste take the same slot as a link. False leaves the open sheet where it is. */
+  reserve(link: string): boolean;
+  /** The slot was taken, then the link was rejected before a sheet opened. */
+  giveBack(link: string): void;
   onAdd(machine: DirectMachine): void; onPair(request: { link: string; kind: MachineKind; id: string; name: string }): void;
   onEdit(id: string, machine: Machine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
 }) {
@@ -2577,19 +2593,26 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   /** The machine being edited. Its form takes the place of its card. */
   const [editing, setEditing] = useState<string | null>(null);
   const [edit, setEdit] = useState(() => blank("mac"));
-  const pairWith = (link: string, over?: { kind: MachineKind }): boolean => {
+  const pairWith = (link: string, over?: { kind: MachineKind }, held = false): boolean => {
+    const trimmed = link.trim();
+    // A link already holds the slot. Camera and paste take it here, or leave the open sheet alone.
+    if (!held && !reserve(trimmed)) return false;
     const kind = over?.kind ?? form.kind;
     try {
-      const preview = parsePairingLink(link);
+      const preview = parsePairingLink(trimmed);
       const name = (over ? "" : form.name.trim()) || preview.name;
       const id = kind === "mac" ? "local" : form.id.trim();
       // Checked now, so a bad name or id doesn't surface only after the machine approved.
       withPairedMachine(machines, { id, name, kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
-      onPair({ link: link.trim(), kind, id, name });
+      onPair({ link: trimmed, kind, id, name });
       setAdding(false);
       setPasted("");
       return true;
-    } catch (error) { onError(words(error)); return false; }
+    } catch (error) {
+      if (!held) giveBack(trimmed);
+      onError(words(error));
+      return false;
+    }
   };
   const scanCode = () => {
     if (!scan) return;
@@ -2616,7 +2639,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
     setHow("qr");
     setForm(blank(link.kind));
     if (link.adding) setAdding(true);
-    if (!pairWith(link.url, { kind: link.kind })) onIncomingFailed();
+    if (!pairWith(link.url, { kind: link.kind }, true)) onIncomingFailed();
   }, [incoming]);
   return (
     <main className="ph-content" inert={covered}>
