@@ -103,16 +103,6 @@ pub async fn bind(key: SecretKey, relay: Option<&str>, port: u16) -> Result<Endp
     builder.bind().await.map_err(|e| format!("could not start remote access on UDP port {port}: {e}"))
 }
 
-/// Start remote access: bind, save the port, and say how to reach us.
-pub async fn start(data: &Path, flag: Option<u16>) -> Result<(Endpoint, Value), String> {
-    let endpoint = bind(key(data)?, Some(RELAY), port(data, flag)).await?;
-    let bound = endpoint.bound_sockets().iter().map(|a| a.port()).find(|p| *p != 0).unwrap_or(0);
-    // Keeps the advertised addresses saved beside it.
-    crate::remote_config::save_port(data, bound)?;
-    let info = json!({ "endpoint_id": endpoint.id().to_string(), "port": bound, "relay": RELAY, "advertise": crate::remote_config::advertised(data) });
-    Ok((endpoint, info))
-}
-
 /// Accept connections until the endpoint closes.
 pub async fn accept(daemon: Arc<Daemon>, endpoint: Endpoint) {
     let host = endpoint.id();
@@ -479,7 +469,7 @@ mod tests {
 
     async fn daemon(data: &Path) -> (Arc<Daemon>, Endpoint) {
         let host = Host::new(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(data), host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(), invites: Default::default(), endpoint: Default::default() });
+        let daemon = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(data), host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(), invites: Default::default(), remote: Default::default() });
         let endpoint = bind(key(data).unwrap(), None, 0).await.unwrap();
         tokio::spawn(accept(Arc::clone(&daemon), endpoint.clone()));
         (daemon, endpoint)

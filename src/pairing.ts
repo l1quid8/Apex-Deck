@@ -74,21 +74,18 @@ export function endedWords(reason: string | null, err: string): string {
   }
 }
 
-/** Shown when Deck can't turn Remote access on, because it didn't start the daemon. Same words as Settings → Remote access. */
-export const NOT_OWNED_WORDS = "Deck didn't start the background service that's running, so it keeps its own setting until it restarts. Start it with apex-daemon serve --remote to turn this on now.";
-
 /**
- * Make sure Remote access is on before a code is made, since no phone can
- * pair without it. Resolves with null when phones can reach this Mac, or with
+ * Make sure phone connections are on before a code is made, since no phone can
+ * pair without them. Resolves with null when phones can reach this Mac, or with
  * the words to show when they can't. `turningOn` runs only when the switch
- * has to be flipped.
+ * has to be flipped. A daemon Deck did not start is still asked: the switch
+ * is the daemon's, and turning it does not restart anything.
  */
 export async function ensureRemoteAccess(remote: RemoteAccessApi | undefined, turningOn: () => void): Promise<string | null> {
   if (!remote) return null;
   try {
     const access = await remote.get();
     if (access.on) return null;
-    if (!access.owned) return NOT_OWNED_WORDS;
     turningOn();
     const next = await remote.set(true);
     return next.on ? null : "Remote access didn't turn on.";

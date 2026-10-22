@@ -69,9 +69,9 @@ pub struct Daemon {
     /// Pairing invitations handed out since this daemon started.
     #[cfg(feature = "remote")]
     pub invites: Arc<crate::pairing::invites::Invites>,
-    /// The iroh endpoint, once `serve --remote` started it.
+    /// The iroh endpoint, on or off while this daemon keeps running.
     #[cfg(feature = "remote")]
-    pub endpoint: std::sync::OnceLock<iroh::Endpoint>,
+    pub remote: crate::remote_control::RemoteController,
 }
 
 impl Daemon {
@@ -88,7 +88,7 @@ impl Daemon {
         host.start_personal_worker()?;
         Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
-            #[cfg(feature = "remote")] endpoint: Default::default(),
+            #[cfg(feature = "remote")] remote: crate::remote_control::RemoteController::serving(),
         }))
     }
 }
@@ -872,7 +872,7 @@ mod tests {
             host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices,
             gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
-            #[cfg(feature = "remote")] endpoint: Default::default(),
+            #[cfg(feature = "remote")] remote: Default::default(),
         };
         (Arc::new(daemon), data)
     }
@@ -1623,7 +1623,7 @@ mod tests {
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
-            endpoint: Default::default(),
+            remote: Default::default(),
         });
         let (mut client, session) = connect_device(&restarted, &phone, 1 << 16);
         assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));
@@ -1670,6 +1670,7 @@ mod tests {
             json!({ "id": 1, "cmd": "pair_approve", "args": { "invitation": inv, "claim_id": inv } }),
             json!({ "id": 1, "cmd": "pair_cancel", "args": { "invitation": inv } }),
             json!({ "id": 1, "cmd": "remote_info", "args": {} }),
+            json!({ "id": 1, "cmd": "remote_set", "args": { "enabled": true } }),
             json!({ "id": 1, "cmd": "remote_advertise", "args": { "addrs": ["evil.example:1"] } }),
         ]
     }
@@ -1740,7 +1741,7 @@ mod tests {
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
-            endpoint: Default::default(),
+            remote: Default::default(),
         });
         let mut local = connect_to(&restarted, Trust::Local);
         local.hello().await;

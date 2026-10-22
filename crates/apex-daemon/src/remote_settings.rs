@@ -21,6 +21,23 @@ pub fn enabled(data: &Path) -> Option<bool> {
     }
 }
 
+/// Whether `remote-settings.json` is already in the data folder.
+/// An import is applied only when this is false, so a later import cannot
+/// overwrite a setting the daemon has saved.
+pub fn present(data: &Path) -> bool {
+    data.join(FILE).is_file()
+}
+
+/// The next `save` into `data` fails before the rename. The file is unchanged.
+/// Keyed by folder, because the save may run on another runtime thread.
+#[cfg(test)]
+pub fn fail_next_save(data: &Path) {
+    FAIL_SAVE.lock().unwrap().insert(data.to_path_buf());
+}
+
+#[cfg(test)]
+static FAIL_SAVE: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 /// Save the setting. The write is a temp file renamed into place.
 ///
 /// `Err` means the file is unchanged. 1b's controller relies on exactly that.
@@ -28,6 +45,10 @@ pub fn enabled(data: &Path) -> Option<bool> {
 /// setting. The folder sync after it only protects against power loss, so a
 /// sync failure is logged and still returned as `Ok`.
 pub fn save(data: &Path, on: bool) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_SAVE.lock().unwrap().remove(data) {
+        return Err(format!("could not write {FILE}: injected failure"));
+    }
     files::write_private_then(
         &data.join(FILE),
         &format!("{}\n", json!({ "enabled": on })),

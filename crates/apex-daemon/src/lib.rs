@@ -23,6 +23,8 @@ pub mod phone_cli;
 pub mod protocol;
 #[cfg(feature = "remote")]
 pub mod remote;
+#[cfg(feature = "remote")]
+pub mod remote_control;
 pub mod remote_config;
 pub mod remote_settings;
 pub mod serve;

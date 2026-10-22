@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  PAIR_DEFAULT_TIER, NOT_OWNED_WORDS, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
+  PAIR_DEFAULT_TIER, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
   parseAddresses, qrSvgPath, reasonOf, revokedWarning,
 } from "../src/pairing.ts";
 
@@ -290,9 +290,9 @@ test("Pair phone turns Remote access on when it's off, and says why when it can'
   assert.equal(turned, 2);
 
   calls.length = 0;
-  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: false }, { on: true, owned: false }), turningOn), NOT_OWNED_WORDS);
-  assert.deepEqual(calls, ["get"], "not owned: nothing is tried");
-  assert.equal(turned, 2);
+  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: false }, { on: true, owned: false }), turningOn), null);
+  assert.deepEqual(calls, ["get", ["set", true]], "a daemon Deck did not start is still switched on");
+  assert.equal(turned, 3);
 
   assert.equal(await ensureRemoteAccess(remote({ on: false, owned: true }, { on: false, owned: true }), turningOn), "Remote access didn't turn on.");
   assert.equal(await ensureRemoteAccess({ get: async () => { throw new Error("Deck can't reach its background service."); }, set: async () => null }, turningOn), "Deck can't reach its background service.");

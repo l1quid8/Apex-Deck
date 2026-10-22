@@ -129,11 +129,18 @@ async fn start_remote(daemon: &Arc<Daemon>, data: &Path, options: &ServeOptions)
     if !crate::remote_settings::enabled_at_boot(data, options.remote) {
         return Ok(serde_json::Value::Null);
     }
-    let (endpoint, info) = crate::remote::start(data, options.remote_port).await?;
-    // `pair_start` and `remote_info` read it from here.
-    let _ = daemon.endpoint.set(endpoint.clone());
-    tokio::spawn(crate::remote::accept(Arc::clone(daemon), endpoint));
-    Ok(info)
+    // `--remote` and a saved "on" both bind without rewriting the file.
+    match daemon.remote.boot(daemon, options.remote_port).await {
+        Ok(info) => Ok(info),
+        Err(error) if options.remote => Err(error),
+        // A saved "on" that can't bind (a busy port) must not keep the daemon,
+        // and every bot under it, from starting. It stays saved as on, so the
+        // next boot or a Turn on from Settings tries again.
+        Err(error) => {
+            eprintln!("apex-daemon: phone connections stayed off: {error}");
+            Ok(serde_json::Value::Null)
+        }
+    }
 }
 
 #[cfg(not(feature = "remote"))]

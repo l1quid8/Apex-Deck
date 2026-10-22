@@ -4,16 +4,14 @@ import type { Backend, RemoteAccessApi, RemoteAccessState } from "./backend";
 import { pairingApi, parseAddresses, type RemoteInfo } from "./pairing";
 
 // Settings → Remote access: whether paired phones may reach this Mac from
-// anywhere (the daemon serves `--remote`), its endpoint ID and UDP port, and
-// addresses to put in new pairing codes for a direct connection.
-
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// anywhere. The daemon turns that on and off while it keeps running. Also
+// its endpoint ID, UDP port, and addresses for a direct connection.
 
 export function RemoteAccessSettings({ backend, remote }: { backend: Backend; remote: RemoteAccessApi }) {
   const api = useMemo(() => pairingApi(backend), [backend]);
   const [access, setAccess] = useState<RemoteAccessState | null>(null);
   const [info, setInfo] = useState<RemoteInfo | null>(null);
-  const [restarting, setRestarting] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [addresses, setAddresses] = useState("");
   const [savedNote, setSavedNote] = useState("");
   const [problem, setProblem] = useState("");
@@ -25,35 +23,20 @@ export function RemoteAccessSettings({ backend, remote }: { backend: Backend; re
     api.info().then(showInfo, fail);
   }, [api, remote]);
 
-  /** After a restart the window reconnects by itself; ask until the daemon answers with the new state. */
-  const settle = async (on: boolean) => {
-    for (let i = 0; i < 40; i++) {
-      try {
-        const next = await api.info();
-        if (next.enabled === on || i >= 39) { showInfo(next); return; }
-      } catch {
-        // Still reconnecting.
-      }
-      await wait(500);
-    }
-  };
-
   const toggle = async (on: boolean) => {
     setProblem("");
     setSavedNote("");
-    setRestarting(true);
+    setBusy(true);
     try {
       const next = await remote.set(on);
       setAccess(next);
-      if (next.owned) await settle(on);
-      else api.info().then(showInfo, () => {});
+      showInfo(await api.info());
     } catch (e) {
-      // The old setting was put back; show it, and the daemon's words.
       fail(e);
       remote.get().then(setAccess, () => {});
       api.info().then(showInfo, () => {});
     } finally {
-      setRestarting(false);
+      setBusy(false);
     }
   };
 
@@ -72,19 +55,17 @@ export function RemoteAccessSettings({ backend, remote }: { backend: Backend; re
   };
 
   const on = access?.on ?? false;
-  const mismatch = access !== null && info !== null && !restarting && info.enabled !== access.on;
+  const mismatch = access !== null && info !== null && !busy && info.enabled !== access.on;
   const changed = info ? addresses.trim() !== info.advertise.join(", ") : addresses.trim() !== "";
   return (
     <div className="settings-card remote-access">
       <div className="settings-row">
         <div className="settings-label">
           <strong>Allow paired phones to connect from anywhere</strong>
-          <small>Off by default. When on, phones you pair reach this Mac over the internet through Apex's relay, or directly when they can. Only phones you approve get in. Changing this restarts Deck's background service; open threads reconnect by themselves.</small>
-          {restarting && <small className="muted" role="status">Restarting the background service…</small>}
-          {mismatch && !access?.owned && <small className="muted" role="status">Deck didn't start the background service that's running, so it keeps its own setting until it restarts. Start it with <span className="mono">apex-daemon serve --remote</span> to turn this on now.</small>}
-          {mismatch && access?.owned && <small className="error" role="alert">The background service is running with Remote access {info?.enabled ? "on" : "off"}.</small>}
+          <small>Off by default. When on, phones you pair reach this Mac over the internet through Apex's relay, or directly when they can. Only phones you approve get in. Changing this leaves the background service running.</small>
+          {mismatch && <small className="error" role="alert">Phone connections are {info?.enabled ? "on" : "off"} in the background service.</small>}
         </div>
-        <input type="checkbox" role="switch" aria-label="Allow paired phones to connect from anywhere" disabled={access === null || restarting} checked={on} onChange={(e) => void toggle(e.target.checked)} />
+        <input type="checkbox" role="switch" aria-label="Allow paired phones to connect from anywhere" disabled={access === null || busy} checked={on} onChange={(e) => void toggle(e.target.checked)} />
       </div>
       <div className="settings-row">
         <div className="settings-label">
