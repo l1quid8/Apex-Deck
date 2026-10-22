@@ -122,12 +122,14 @@ fn run() -> Result<(), String> {
     }
     let journal_path = root.join("journal.json");
     let mut journal: Journal = if journal_path.exists() {
-        serde_json::from_slice(&root_file_limit(&journal_path, JOURNAL_BYTES)?)
-            .map_err(|e| e.to_string())?
+        Journal::open(
+            &root_file_limit(&journal_path, JOURNAL_BYTES)?,
+            key.public_key().as_ref(),
+        )?
     } else {
         Journal::new()
     };
-    journal.validate()?;
+    journal.validate(key.public_key().as_ref())?;
     if Path::new(SOCKET).exists() {
         if UnixStream::connect(SOCKET).is_ok() {
             return Err("Another provenance broker is running".into());
@@ -153,6 +155,9 @@ fn run() -> Result<(), String> {
                 .as_str()
                 .ok_or("Missing data directory")?;
             let mut next = journal.clone();
+            if request["op"] != "read" {
+                next.compact_if_due(&key, COMPACT_AT)?;
+            }
             let payload = match request["op"].as_str() {
                 Some("issue") => {
                     let receipt = next.issue(uid, folder, request["command"].clone(), trusted)?;
@@ -220,7 +225,11 @@ fn run() -> Result<(), String> {
                     "Signed response exceeds framing limit; transaction was not committed".into(),
                 );
             }
-            let bytes = serde_json::to_vec(&next).map_err(|e| e.to_string())?;
+            let mut bytes = serde_json::to_vec(&next).map_err(|e| e.to_string())?;
+            if bytes.len() > JOURNAL_BYTES && request["op"] != "read" {
+                next.compact(&key)?;
+                bytes = serde_json::to_vec(&next).map_err(|e| e.to_string())?;
+            }
             if bytes.len() > JOURNAL_BYTES {
                 return Err("Protected journal is full; transaction was not committed".into());
             }

@@ -2,8 +2,8 @@
 pub mod io;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use ring::{
-    rand::SystemRandom,
-    signature::{Ed25519KeyPair, UnparsedPublicKey, ED25519},
+    rand::{SecureRandom, SystemRandom},
+    signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,6 +14,12 @@ pub const ROOT: &str = "/Library/Application Support/Apex Deck Provenance";
 pub const SOCKET: &str = "/var/run/dev.apexdeck.provenance.sock";
 pub const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub const JOURNAL_BYTES: usize = 128 * 1024 * 1024;
+pub const COMPACT_AT: usize = 75_000;
+// Signatures use the same bounded verifier as receipts. This conservative cap
+// keeps a checkpoint below MAX_BYTES; capacity always fails closed, never evicts.
+pub const MAX_CHECKPOINT_CLAIMS: usize = 200_000;
+pub const ORPHAN_GRACE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+pub const UNCLAIMED_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 pub const DOMAIN: &str = "apex-provenance-v1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,6 +29,10 @@ pub struct Receipt {
     pub data_dir: String,
     pub command: Value,
     pub key: String,
+    // Absent on legacy receipts. Exact retries reuse the original token;
+    // renewal after expiry cannot revive an older signed receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuance_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,13 +46,41 @@ struct Entry {
     claimed: bool,
     #[serde(default)]
     outcome: Option<Value>,
+    #[serde(default)]
+    issued_at: u64,
+    #[serde(default)]
+    claimed_at: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckpointPayload {
+    pub domain: String,
+    pub kind: String,
+    pub generation: u64,
+    pub claims: BTreeMap<String, u64>,
+    pub folded: u64,
+    pub resolved: u64,
+    pub orphaned: u64,
+    pub expired: u64,
+}
+// Deliberately no Deserialize on Journal: all persisted loads must pass open().
+#[derive(Debug, Clone, Serialize)]
 pub struct Journal {
+    version: u32,
+    entries: BTreeMap<String, Entry>,
+    documents: BTreeMap<String, ProtectedDocument>,
+    checkpoint: Option<Signed>,
+    #[serde(skip)]
+    claims: BTreeMap<String, u64>,
+}
+#[derive(Deserialize)]
+struct StoredJournal {
     version: u32,
     entries: BTreeMap<String, Entry>,
     #[serde(default)]
     documents: BTreeMap<String, ProtectedDocument>,
+    #[serde(default)]
+    checkpoint: Option<Signed>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProtectedDocument {
@@ -55,8 +93,138 @@ impl Journal {
             version: 1,
             entries: BTreeMap::new(),
             documents: BTreeMap::new(),
+            checkpoint: None,
+            claims: BTreeMap::new(),
         }
     }
+    pub fn open(bytes: &[u8], public_key: &[u8]) -> Result<Self, String> {
+        if bytes.len() > JOURNAL_BYTES {
+            return Err("Protected journal exceeds size limit".into());
+        }
+        let stored: StoredJournal = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let mut journal = Self {
+            version: stored.version,
+            entries: stored.entries,
+            documents: stored.documents,
+            checkpoint: stored.checkpoint,
+            claims: BTreeMap::new(),
+        };
+        journal.validate(public_key)?;
+        Ok(journal)
+    }
+
+    fn checkpoint_payload(&self, public_key: &[u8]) -> Result<Option<CheckpointPayload>, String> {
+        self.checkpoint
+            .as_ref()
+            .map(|signed| {
+                let payload: CheckpointPayload =
+                    serde_json::from_value(verify(public_key, signed)?)
+                        .map_err(|e| e.to_string())?;
+                if payload.domain != DOMAIN
+                    || payload.kind != "checkpoint"
+                    || payload.generation == 0
+                    || payload.claims.len() > MAX_CHECKPOINT_CLAIMS
+                    || payload.claims.keys().any(|k| {
+                        k.len() != 64
+                            || !k
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+                    || payload
+                        .resolved
+                        .checked_add(payload.orphaned)
+                        .and_then(|n| n.checked_add(payload.expired))
+                        != Some(payload.folded)
+                    || payload.resolved.checked_add(payload.orphaned)
+                        != Some(payload.claims.len() as u64)
+                {
+                    return Err("Invalid protected checkpoint".into());
+                }
+                Ok(payload)
+            })
+            .transpose()
+    }
+
+    pub fn compact_if_due(&mut self, key: &Ed25519KeyPair, at: usize) -> Result<bool, String> {
+        if self.entries.len() < at {
+            return Ok(false);
+        }
+        let before = self.entries.len();
+        self.compact(key)?;
+        Ok(self.entries.len() < before)
+    }
+
+    /// Only commit after the signature and size checks succeed. The broker
+    /// persists the entire candidate journal atomically before acknowledging it.
+    pub fn compact(&mut self, key: &Ed25519KeyPair) -> Result<(), String> {
+        self.validate(key.public_key().as_ref())?;
+        let previous = self.checkpoint_payload(key.public_key().as_ref())?;
+        let mut payload = previous.unwrap_or(CheckpointPayload {
+            domain: DOMAIN.into(),
+            kind: "checkpoint".into(),
+            generation: 0,
+            claims: BTreeMap::new(),
+            folded: 0,
+            resolved: 0,
+            orphaned: 0,
+            expired: 0,
+        });
+        let now = now_ms();
+        let mut removed = Vec::new();
+        for (id, entry) in &self.entries {
+            let counter = if entry.claimed && entry.outcome.is_some() {
+                payload.claims.insert(id.clone(), entry.claimed_at);
+                &mut payload.resolved
+            } else if entry.claimed
+                && entry.claimed_at != 0
+                && now.saturating_sub(entry.claimed_at) > ORPHAN_GRACE_MS
+            {
+                payload.claims.insert(id.clone(), entry.claimed_at);
+                &mut payload.orphaned
+            } else if !entry.claimed
+                && entry.issued_at != 0
+                && now.saturating_sub(entry.issued_at) > UNCLAIMED_TTL_MS
+            {
+                &mut payload.expired
+            } else {
+                continue;
+            };
+            *counter = counter
+                .checked_add(1)
+                .ok_or("Checkpoint counter exhausted")?;
+            payload.folded = payload
+                .folded
+                .checked_add(1)
+                .ok_or("Checkpoint counter exhausted")?;
+            removed.push(id.clone());
+        }
+        if removed.is_empty() {
+            return Ok(());
+        }
+        if payload.claims.len() > MAX_CHECKPOINT_CLAIMS {
+            return Err("Protected checkpoint capacity reached; no claims were evicted".into());
+        }
+        payload.generation = payload
+            .generation
+            .checked_add(1)
+            .ok_or("Checkpoint generation exhausted")?;
+        let signed = sign(
+            key,
+            &serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+        )?;
+        if signed.payload.len() > MAX_BYTES {
+            return Err(
+                "Protected checkpoint exceeds signature size limit; no claims were evicted".into(),
+            );
+        }
+        for id in removed {
+            self.entries.remove(&id);
+        }
+        self.claims = payload.claims;
+        self.checkpoint = Some(signed);
+        Ok(())
+    }
+
     pub fn read_document(
         &self,
         uid: u32,
@@ -117,6 +285,11 @@ impl Journal {
         {
             return Err("Invalid execution outcome".into());
         }
+        if self.claims.contains_key(key) {
+            return Err(
+                "Submission was archived after its execution window; outcome not recorded".into(),
+            );
+        }
         let entry = self.entries.get_mut(key).ok_or("Unknown submission")?;
         if entry.receipt.uid != uid || entry.receipt.data_dir != data_dir || !entry.claimed {
             return Err("Submission was not claimed by this scope".into());
@@ -129,11 +302,18 @@ impl Journal {
         entry.outcome = Some(outcome.clone());
         Ok(outcome)
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&mut self, public_key: &[u8]) -> Result<(), String> {
         if self.version != 1 {
             return Err("Unsupported protected journal version".into());
         }
+        let claims = self
+            .checkpoint_payload(public_key)?
+            .map(|p| p.claims)
+            .unwrap_or_default();
         for (key, entry) in &self.entries {
+            if claims.contains_key(key) || (!entry.claimed && entry.outcome.is_some()) {
+                return Err("Invalid live/checkpoint state".into());
+            }
             if *key
                 != command_key(
                     entry.receipt.uid,
@@ -145,6 +325,7 @@ impl Journal {
                 return Err("Invalid protected journal entry".into());
             }
         }
+        self.claims = claims;
         Ok(())
     }
     pub fn issue(
@@ -164,27 +345,46 @@ impl Journal {
             return Err("Invalid data directory".into());
         }
         let key = command_key(uid, data_dir, &command)?;
+        if self.claims.contains_key(&key) {
+            return Err("Submission ID was already consumed; retry with a new request ID".into());
+        }
+        let now = now_ms();
+        if let Some(old) = self.entries.get(&key) {
+            if old.receipt.uid != uid
+                || old.receipt.data_dir != data_dir
+                || old.receipt.command != command
+            {
+                return Err("Submission ID conflicts with protected original content".into());
+            }
+            if old.claimed
+                || old.issued_at == 0
+                || now.saturating_sub(old.issued_at) <= UNCLAIMED_TTL_MS
+            {
+                return Ok(old.receipt.clone());
+            }
+        }
+        if self.entries.len() >= 100_000 && !self.entries.contains_key(&key) {
+            return Err("Protected journal capacity reached; no records were evicted".into());
+        }
+        let mut token = [0u8; 16];
+        SystemRandom::new()
+            .fill(&mut token)
+            .map_err(|_| "Could not generate issuance token")?;
         let receipt = Receipt {
             uid,
             data_dir: data_dir.into(),
             command,
             key: key.clone(),
+            issuance_id: Some(B64.encode(token)),
         };
-        if let Some(old) = self.entries.get(&key) {
-            if old.receipt != receipt {
-                return Err("Submission ID conflicts with protected original content".into());
-            }
-            return Ok(old.receipt.clone());
-        }
-        if self.entries.len() >= 100_000 {
-            return Err("Protected journal capacity reached; no records were evicted".into());
-        }
         self.entries.insert(
             key,
             Entry {
                 receipt: receipt.clone(),
                 claimed: false,
                 outcome: None,
+                issued_at: now,
+                claimed_at: 0,
             },
         );
         Ok(receipt)
@@ -202,6 +402,9 @@ impl Journal {
         if nonce.len() != 32 || !nonce.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err("Invalid claim challenge".into());
         }
+        if self.claims.contains_key(&receipt.key) {
+            return Err("Submission already consumed; execution outcome may be uncertain. Do not retry automatically.".into());
+        }
         let entry = self
             .entries
             .get_mut(&receipt.key)
@@ -212,9 +415,22 @@ impl Journal {
         if entry.claimed {
             return Err("Submission already consumed; execution outcome may be uncertain. Do not retry automatically.".into());
         }
+        if entry.issued_at != 0 && now_ms().saturating_sub(entry.issued_at) > UNCLAIMED_TTL_MS {
+            return Err(
+                "Submission expired before it was claimed; request a fresh issuance".into(),
+            );
+        }
         entry.claimed = true;
+        entry.claimed_at = now_ms();
         Ok(json!({"domain":DOMAIN,"kind":"claim","nonce":nonce,"receipt":receipt}))
     }
+}
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> {
     if !data_dir.starts_with('/')
@@ -353,6 +569,345 @@ mod tests {
         json!({"cmd":"assistant_message","args":{"requestId":"r1","workspaceId":"p1","hostId":"h1","conversationId":"c1","cwd":"/project","text":text}})
     }
 
+    const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+    fn claimed(journal: &mut Journal) -> Receipt {
+        let receipt = journal.issue(501, "/data", command("hello"), true).unwrap();
+        journal.claim(501, "/data", &receipt, NONCE).unwrap();
+        receipt
+    }
+
+    #[test]
+    fn compaction_preserves_claim_set_and_rejects_replay() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        journal
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                true,
+            )
+            .unwrap();
+        journal.compact(&key).unwrap();
+        assert!(journal.entries.is_empty());
+        let mut restored = Journal::open(
+            &serde_json::to_vec(&journal).unwrap(),
+            key.public_key().as_ref(),
+        )
+        .unwrap();
+        assert!(restored
+            .claim(501, "/data", &receipt, NONCE)
+            .unwrap_err()
+            .contains("already consumed"));
+        // Repeated compaction must retain previous claims too.
+        restored.compact(&key).unwrap();
+        assert!(restored.claim(501, "/data", &receipt, NONCE).is_err());
+    }
+
+    #[test]
+    fn compaction_never_reissues_a_consumed_submission() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        journal
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"rejected"}),
+                true,
+            )
+            .unwrap();
+        journal.compact(&key).unwrap();
+        assert!(journal
+            .issue(501, "/data", command("hello"), true)
+            .unwrap_err()
+            .contains("already consumed"));
+        assert!(journal
+            .issue(501, "/data", command("changed"), true)
+            .is_err());
+        let mut other = command("new");
+        other["args"]["requestId"] = json!("r2");
+        assert!(journal.issue(501, "/data", other, true).is_ok());
+    }
+
+    #[test]
+    fn compaction_leaves_live_unclaimed_receipts_claimable() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = journal.issue(501, "/data", command("hello"), true).unwrap();
+        assert!(journal.entries[&receipt.key].issued_at > 0);
+        journal.compact(&key).unwrap();
+        journal.claim(501, "/data", &receipt, NONCE).unwrap();
+    }
+
+    #[test]
+    fn compaction_does_not_fold_recent_unresolved_claims() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        assert!(journal.entries[&receipt.key].claimed_at > 0);
+        journal.compact(&key).unwrap();
+        journal
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                true,
+            )
+            .unwrap();
+        // Legacy unknown-age claims must also remain finishable.
+        let mut legacy = Journal::new();
+        let r = claimed(&mut legacy);
+        legacy.entries.get_mut(&r.key).unwrap().claimed_at = 0;
+        legacy.compact(&key).unwrap();
+        legacy
+            .finish(501, "/data", &r.key, json!({"status":"succeeded"}), true)
+            .unwrap();
+    }
+
+    #[test]
+    fn archived_submission_finish_is_reported_not_silently_dropped() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        journal.entries.get_mut(&receipt.key).unwrap().claimed_at = 1;
+        journal.compact(&key).unwrap();
+        assert!(journal
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                true
+            )
+            .unwrap_err()
+            .contains("archived"));
+        assert!(journal
+            .claim(501, "/data", &receipt, NONCE)
+            .unwrap_err()
+            .contains("already consumed"));
+    }
+
+    #[test]
+    fn checkpoint_signature_is_verified_on_load() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        journal
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                true,
+            )
+            .unwrap();
+        journal.compact(&key).unwrap();
+        let bytes = serde_json::to_vec(&journal).unwrap();
+        assert!(Journal::open(&bytes, new_key().unwrap().public_key().as_ref()).is_err());
+        let mut altered: Value = serde_json::from_slice(&bytes).unwrap();
+        altered["checkpoint"]["payload"] = json!(altered["checkpoint"]["payload"]
+            .as_str()
+            .unwrap()
+            .replace("checkpoint", "tampered"));
+        assert!(Journal::open(
+            &serde_json::to_vec(&altered).unwrap(),
+            key.public_key().as_ref()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn expired_unclaimed_receipt_fails_closed_and_can_be_reissued() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = journal.issue(501, "/data", command("hello"), true).unwrap();
+        journal.entries.get_mut(&receipt.key).unwrap().issued_at = 1;
+        journal.compact(&key).unwrap();
+        assert!(journal.claim(501, "/data", &receipt, NONCE).is_err());
+        let fresh = journal.issue(501, "/data", command("hello"), true).unwrap();
+        assert_ne!(fresh, receipt);
+        assert!(journal.claim(501, "/data", &receipt, NONCE).is_err());
+        journal.claim(501, "/data", &fresh, NONCE).unwrap();
+    }
+
+    #[test]
+    fn compact_if_due_is_testable_with_a_low_threshold() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        journal
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                true,
+            )
+            .unwrap();
+        assert!(!journal.compact_if_due(&key, 2).unwrap());
+        assert!(journal.compact_if_due(&key, 1).unwrap());
+        assert!(journal.entries.is_empty());
+        assert!(journal.issue(501, "/data", command("hello"), true).is_err());
+    }
+
+    #[test]
+    fn legacy_journal_without_checkpoint_or_timestamps_remains_usable() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        let mut value = serde_json::to_value(&journal).unwrap();
+        value.as_object_mut().unwrap().remove("checkpoint");
+        let entry = value["entries"][&receipt.key].as_object_mut().unwrap();
+        entry.remove("issued_at");
+        entry.remove("claimed_at");
+        entry
+            .get_mut("receipt")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("issuanceId");
+        let mut receipt = receipt;
+        receipt.issuance_id = None;
+        let mut restored = Journal::open(
+            &serde_json::to_vec(&value).unwrap(),
+            key.public_key().as_ref(),
+        )
+        .unwrap();
+        restored.compact(&key).unwrap();
+        restored
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                true,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn signed_malformed_checkpoint_and_live_overlap_are_rejected() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        let entry = journal.entries[&receipt.key].clone();
+        journal
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                true,
+            )
+            .unwrap();
+        journal.compact(&key).unwrap();
+        let original = journal.checkpoint.clone().unwrap();
+        for field in ["domain", "kind", "generation", "resolved"] {
+            let mut payload = verify(key.public_key().as_ref(), &original).unwrap();
+            payload[field] = match field {
+                "domain" | "kind" => json!("wrong"),
+                _ => json!(0),
+            };
+            journal.checkpoint = Some(sign(&key, &payload).unwrap());
+            assert!(Journal::open(
+                &serde_json::to_vec(&journal).unwrap(),
+                key.public_key().as_ref()
+            )
+            .is_err());
+        }
+        journal.checkpoint = Some(original);
+        journal.entries.insert(receipt.key, entry);
+        assert!(Journal::open(
+            &serde_json::to_vec(&journal).unwrap(),
+            key.public_key().as_ref()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn compaction_relieves_the_live_entry_limit_without_forgetting_claims() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let first = claimed(&mut journal);
+        journal
+            .finish(
+                501,
+                "/data",
+                &first.key,
+                json!({"status":"succeeded"}),
+                true,
+            )
+            .unwrap();
+        for i in 1..100_000 {
+            let mut c = command("hello");
+            c["args"]["requestId"] = json!(format!("request-{i}"));
+            journal.issue(501, "/data", c, true).unwrap();
+        }
+        let mut extra = command("extra");
+        extra["args"]["requestId"] = json!("extra");
+        assert!(journal.issue(501, "/data", extra.clone(), true).is_err());
+        assert!(journal.compact_if_due(&key, COMPACT_AT).unwrap());
+        journal.issue(501, "/data", extra, true).unwrap();
+        assert!(journal
+            .claim(501, "/data", &first, NONCE)
+            .unwrap_err()
+            .contains("already consumed"));
+    }
+
+    #[test]
+    fn expiry_is_enforced_without_reaching_compaction_threshold() {
+        let mut journal = Journal::new();
+        let receipt = journal.issue(501, "/data", command("hello"), true).unwrap();
+        journal.entries.get_mut(&receipt.key).unwrap().issued_at = 1;
+        assert!(journal
+            .claim(501, "/data", &receipt, NONCE)
+            .unwrap_err()
+            .contains("expired"));
+        let renewed = journal.issue(501, "/data", command("hello"), true).unwrap();
+        assert_ne!(renewed, receipt);
+        assert!(journal.claim(501, "/data", &receipt, NONCE).is_err());
+        journal.claim(501, "/data", &renewed, NONCE).unwrap();
+    }
+
+    #[test]
+    fn failed_compaction_preserves_the_live_journal() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        journal
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                true,
+            )
+            .unwrap();
+        journal.checkpoint = Some(
+            sign(
+                &key,
+                &json!({
+                    "domain": DOMAIN, "kind":"checkpoint", "generation": u64::MAX,
+                    "claims":{}, "folded":0, "resolved":0, "orphaned":0, "expired":0
+                }),
+            )
+            .unwrap(),
+        );
+        let before = serde_json::to_vec(&journal).unwrap();
+        assert!(journal.compact(&key).is_err());
+        assert_eq!(serde_json::to_vec(&journal).unwrap(), before);
+        assert!(journal
+            .claim(501, "/data", &receipt, NONCE)
+            .unwrap_err()
+            .contains("already consumed"));
+    }
+
     #[test]
     fn stale_approval_rejection_is_durable_and_cannot_be_rewritten() {
         let mut journal = Journal::new();
@@ -367,8 +922,11 @@ mod tests {
         journal
             .finish(501, "/data", &receipt.key, outcome.clone(), true)
             .unwrap();
-        let mut restored: Journal =
-            serde_json::from_slice(&serde_json::to_vec(&journal).unwrap()).unwrap();
+        let mut restored: Journal = Journal::open(
+            &serde_json::to_vec(&journal).unwrap(),
+            new_key().unwrap().public_key().as_ref(),
+        )
+        .unwrap();
         assert_eq!(
             restored
                 .finish(501, "/data", &receipt.key, outcome, true)
@@ -395,8 +953,7 @@ mod tests {
         }
         let bytes = serde_json::to_vec(&journal).unwrap();
         assert!(bytes.len() > 1024 * 1024 && bytes.len() < JOURNAL_BYTES);
-        let restored: Journal = serde_json::from_slice(&bytes).unwrap();
-        restored.validate().unwrap();
+        let restored = Journal::open(&bytes, new_key().unwrap().public_key().as_ref()).unwrap();
         assert_eq!(restored.entries.len(), 32);
     }
 
@@ -463,8 +1020,11 @@ mod tests {
                 true,
             )
             .unwrap();
-        let restored: Journal =
-            serde_json::from_slice(&serde_json::to_vec(&journal).unwrap()).unwrap();
+        let restored: Journal = Journal::open(
+            &serde_json::to_vec(&journal).unwrap(),
+            new_key().unwrap().public_key().as_ref(),
+        )
+        .unwrap();
         assert_eq!(
             restored
                 .read_document(501, "/data", "personal-assistants.json", true)
@@ -503,8 +1063,11 @@ mod tests {
         journal
             .claim(501, "/data", &receipt, "0123456789abcdef0123456789abcdef")
             .unwrap();
-        let mut restored: Journal =
-            serde_json::from_slice(&serde_json::to_vec(&journal).unwrap()).unwrap();
+        let mut restored: Journal = Journal::open(
+            &serde_json::to_vec(&journal).unwrap(),
+            new_key().unwrap().public_key().as_ref(),
+        )
+        .unwrap();
         assert!(restored
             .claim(501, "/data", &receipt, "fedcba9876543210fedcba9876543210")
             .is_err());
