@@ -441,6 +441,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
                 | "assistant-conversations-v1.json"
                 | "room-authority-v1.json"
                 | "personal-machine.json"
+                | "project-memory-v1.json"
         )
     {
         return Err("Not a protected ledger name".into());
@@ -1123,5 +1124,29 @@ mod tests {
                 )
                 .is_err());
         }
+    }
+
+    #[test]
+    fn project_memory_is_an_accepted_protected_ledger_name() {
+        assert!(document_key(501, "/data", "project-memory-v1.json").is_ok());
+    }
+
+    #[test]
+    fn project_memory_ledger_name_is_exactly_scoped() {
+        // Near-misses and traversal must not be accepted as the same ledger.
+        for name in [
+            "project-memory-v2.json",
+            "project-memory-v1.json.bak",
+            "../project-memory-v1.json",
+            "Project-Memory-v1.json",
+            "",
+        ] {
+            assert!(
+                document_key(501, "/data", name).is_err(),
+                "accepted protected ledger name: {name}"
+            );
+        }
+        // The data directory must still be absolute.
+        assert!(document_key(501, "relative", "project-memory-v1.json").is_err());
     }
 }

@@ -27,16 +27,23 @@ fn local_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let temp = path.with_extension(format!("authority-{}.pending", std::process::id()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(temp, path)?;
-    std::fs::File::open(path.parent().unwrap())?.sync_all()
+    let result = (|| -> io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)?;
+        std::fs::File::open(path.parent().unwrap())?.sync_all()
+    })();
+    if result.is_err() {
+        // A failed write must not leave an uncommitted temp file behind.
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 #[cfg(test)]
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {

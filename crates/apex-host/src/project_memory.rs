@@ -206,7 +206,9 @@ pub struct ProjectMemory {
 impl ProjectMemory {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskError> {
         let path = path.as_ref().to_path_buf();
-        let document = match std::fs::read(&path) {
+        // Authority-bearing: production reads only the root broker. A same-user
+        // process editing this JSON on disk is not authoritative, by design.
+        let document = match crate::authority_file::read(&path) {
             Ok(bytes) => serde_json::from_slice::<Document>(&bytes)
                 .map_err(|e| storage(format!("Could not read project memory: {e}")))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Document {
@@ -842,41 +844,11 @@ fn require_current_receipt(
 }
 
 fn write_document(path: &Path, document: &Document) -> Result<(), TaskError> {
-    use std::io::Write;
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let bytes = serde_json::to_vec_pretty(document)
         .map_err(|e| storage(format!("Could not encode project memory: {e}")))?;
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent)
-        .map_err(|e| storage(format!("Could not create project memory storage: {e}")))?;
-    let temp = path.with_extension(format!(
-        "memory-{}-{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let result = (|| -> std::io::Result<()> {
-        let parent_directory = std::fs::File::open(parent)?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temp, path)?;
-        parent_directory.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result.map_err(|e| storage(format!("Could not save project memory: {e}")))
+    // Routed through the root broker like every other authority-bearing ledger.
+    crate::authority_file::write(path, &bytes)
+        .map_err(|e| storage(format!("Could not save project memory: {e}")))
 }
 
 #[cfg(test)]
