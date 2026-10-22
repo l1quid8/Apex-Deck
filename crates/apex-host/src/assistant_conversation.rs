@@ -995,6 +995,21 @@ impl ConversationStore {
         Ok(store)
     }
 
+    /// Start empty when the root broker cannot serve this UI, or when the
+    /// installed build is not the one the broker pinned. See
+    /// `ProjectMemory::unavailable` for why startup degrades instead of failing.
+    pub fn unavailable(path: impl AsRef<Path>) -> Self {
+        Self {
+            inner: Arc::new(StoreInner {
+                path: path.as_ref().to_path_buf(),
+                document: Mutex::new(ConversationDocument {
+                    version: 1,
+                    ..Default::default()
+                }),
+            }),
+        }
+    }
+
     /// Start a bound request once. A recovered request runs again only when
     /// the caller explicitly sets `retry_interrupted`.
     pub fn begin(

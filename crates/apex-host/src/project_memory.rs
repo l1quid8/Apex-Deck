@@ -228,6 +228,26 @@ impl ProjectMemory {
         })
     }
 
+    /// Start empty when the root broker cannot serve this UI, or when the
+    /// installed build is not the one the broker pinned.
+    ///
+    /// A host that refuses to start is worse than a host with no notes: the
+    /// window stays on its splash screen with nothing to act on. Reads return
+    /// empty and writes stay closed, because `authority_file::write` refuses a
+    /// ledger that was never read. The broker keeps the real records, so
+    /// nothing is discarded and a later re-pin brings them back.
+    pub fn unavailable(path: impl AsRef<Path>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                path: path.as_ref().to_path_buf(),
+                document: Mutex::new(Document {
+                    version: 1,
+                    ..Document::default()
+                }),
+            }),
+        }
+    }
+
     /// All project history, including expired/superseded/deleted metadata.
     /// Use `current` for context retrieval. Forgotten records contain no text.
     pub fn list(&self, project: &ProjectRef, _now: u64) -> Result<Vec<ProjectNote>, TaskError> {

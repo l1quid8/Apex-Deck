@@ -171,9 +171,43 @@ impl Host {
 
     pub fn try_new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Result<Arc<Host>, String> {
         crate::storage::prepare_private_root(&paths.data)?;
-        let assistant_tasks = crate::assistant_tasks::AssistantTasks::open(paths.data.join("assistant-tasks-v1.json")).map_err(|e| e.to_string())?;
-        let project_memory = crate::project_memory::ProjectMemory::open(paths.data.join("project-memory-v1.json")).map_err(|e| e.to_string())?;
-        let assistant_conversations = crate::assistant_conversation::ConversationStore::open(paths.data.join("assistant-conversations-v1.json")).map_err(|e| e.to_string())?;
+        // A protected ledger the broker will not serve must not stop the app
+        // from starting. Failing here leaves the window on its splash screen
+        // with nothing to act on, which is worse than an empty ledger: reads
+        // return nothing, and writes stay closed because `authority_file::write`
+        // refuses a ledger that was never read. The broker keeps the real
+        // records, so installing or re-pinning this build brings them back.
+        let mut unavailable: Option<String> = None;
+        let tasks_path = paths.data.join("assistant-tasks-v1.json");
+        let assistant_tasks = match crate::assistant_tasks::AssistantTasks::open(&tasks_path) {
+            Ok(tasks) => tasks,
+            Err(error) => {
+                unavailable.get_or_insert_with(|| error.to_string());
+                crate::assistant_tasks::AssistantTasks::unavailable(&tasks_path)
+            }
+        };
+        let memory_path = paths.data.join("project-memory-v1.json");
+        let project_memory = match crate::project_memory::ProjectMemory::open(&memory_path) {
+            Ok(memory) => memory,
+            Err(error) => {
+                unavailable.get_or_insert_with(|| error.to_string());
+                crate::project_memory::ProjectMemory::unavailable(&memory_path)
+            }
+        };
+        let conversations_path = paths.data.join("assistant-conversations-v1.json");
+        let assistant_conversations =
+            match crate::assistant_conversation::ConversationStore::open(&conversations_path) {
+                Ok(conversations) => conversations,
+                Err(error) => {
+                    unavailable.get_or_insert_with(|| error.to_string());
+                    crate::assistant_conversation::ConversationStore::unavailable(&conversations_path)
+                }
+            };
+        if let Some(reason) = unavailable {
+            eprintln!(
+                "[apex-deck] protected ledgers unavailable ({reason}); starting with empty ledgers. Install or re-pin the provenance broker for this build."
+            );
+        }
         let store = Store::new(paths.data.join("saved-chats-v1"));
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
         let compacting = Arc::clone(&snapshots);

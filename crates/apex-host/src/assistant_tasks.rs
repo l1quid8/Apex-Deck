@@ -313,6 +313,21 @@ impl AssistantTasks {
         Ok(store)
     }
 
+    /// Start empty when the root broker cannot serve this UI, or when the
+    /// installed build is not the one the broker pinned. See
+    /// `ProjectMemory::unavailable` for why startup degrades instead of failing.
+    pub fn unavailable(path: impl AsRef<Path>) -> Self {
+        Self {
+            inner: std::sync::Arc::new(Inner {
+                path: path.as_ref().to_path_buf(),
+                document: Mutex::new(Document {
+                    version: 1,
+                    ..Document::default()
+                }),
+            }),
+        }
+    }
+
     pub fn list(&self, workspace_id: Option<&str>) -> Result<Vec<AssistantTask>, TaskError> {
         let document = self.inner.document.lock().unwrap();
         Ok(document
