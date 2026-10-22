@@ -38,6 +38,9 @@
 }
 :root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app .ph-tabs button.on svg { color: var(--accent); }
 :root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app .ph-msg { margin-bottom: calc(18px * var(--deck-density, 1)); }
+/* A finished message has its actions under it, so the space goes under those. */
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app .ph-said > .ph-msg { margin-bottom: 2px; }
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app .ph-said { margin-bottom: calc(12px * var(--deck-density, 1)); }
 :root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app .ph-item { padding-block: max(8px, calc(11px * var(--deck-density, 1))); }
 /* Clay on the phone: solid warm surfaces (no blur) and serif bot replies.
    The shared clay-theme.css already remaps --panel/--text/--accent. */

@@ -29,10 +29,12 @@ test('failed shutdown rejects removal instead of silently removing saved rows', 
   await assert.rejects(stopProjectPanes([{id:'a',kind:'chat'}], {roomClose: async () => { throw Error('offline'); }}, () => {}), /offline/);
 });
 
-test('message context menus capture link holds before the rich text link menu', () => {
+test('messages have no hold menu, as on the desktop: their actions sit under them and their text stays selectable', () => {
   const source = readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url), 'utf8');
-  assert.match(source, /onContextMenuCapture/);
-  assert.match(source, /event\.stopPropagation\(\)/);
+  const css = readFileSync(new URL('../src/phone/phone.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /onMessageMenu|kind: "message"/);
+  assert.match(source, /<MessageActions /);
+  assert.doesNotMatch(css, /ph-msg-hold/);
 });
 
 test('retired phone queues reject pending sends and cannot drain on idle or resume', async () => {
