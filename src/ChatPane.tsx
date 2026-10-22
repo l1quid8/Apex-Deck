@@ -3324,6 +3324,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         const levels = levelsFor(p.id);
         const shown = levelsShown(levels, chipParts, isLow);
         const queueCount = queued.filter(item => item.to.includes(p.id)).length;
+        const chipAccess = { read: 'Read-only', ask: 'Ask', edits: 'Edit', full: 'Full' }[p.access];
+        const hasAccess = p.backend.kind === 'agent' || p.backend.kind === 'open_ai_compatible';
+        const accessSummary = hasAccess ? ` · Access: ${chipAccess}${pendingSettings[p.id] ? ' · after this reply' : ''}` : '';
         const phase: string = working[p.id] ? working[p.id].phase : "idle";
         const stateLabel = `${p.display_name}: ${phase}${isLow(levels.context) ? ", context low" : ""}${isLow(levels.plan) ? ", plan low" : ""}${queueCount ? `, ${queueCount} queued` : ""}${editor === p.id ? ", editing" : ""}${lit.has(p.id) ? ", gets your message" : ""}`;
         return (
@@ -3337,12 +3340,12 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
         >
             <span data-editing={editor === p.id} className={lit.has(p.id) ? "chip to" : "chip"} style={{ "--who": color(p.id) } as CSSProperties}>
-              <button className="chip-name" aria-label={`${stateLabel} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open bot settings" : "mention bot"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
+              <button className="chip-name" aria-label={`${stateLabel}${accessSummary} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open bot settings" : "mention bot"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
                 if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
                   setCard(null);
                   setQuickSettings(quickSettings?.id === p.id ? null : { id: p.id, anchor: event.currentTarget });
                 } else mention(p);
-              }} title={`${stateLabel} · ${chipDescription(p, chipParts)}`}>
+              }} title={`${stateLabel}${accessSummary} · ${chipDescription(p, chipParts)}`}>
                 <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
                 <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
                 {(chipParts.style === "stack" || chipParts.style === "tiles") && (isLow(levels.context) || isLow(levels.plan)) && <span className="chip-low" title="Usage running low">low</span>}
@@ -3354,6 +3357,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 {queueCount > 0 && <span className="chip-meta chip-queued" title="Messages waiting for this bot">{queueCount}<span className="chip-queued-word"> queued</span></span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
                 <span className="chip-meta chip-description">{chipDescription(p, chipParts)}</span>
+                {hasAccess && <span className="chip-meta chip-access" title={`Access: ${chipAccess}${pendingSettings[p.id] ? ' · after this reply' : ''}`}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+                  {chipAccess}{pendingSettings[p.id] && <span>· after this reply</span>}
+                </span>}
                 {(shown.context !== null || shown.plan !== null) && (
                   <span className="chip-meta chip-levels">
                     {shown.context !== null && <span title="Context left">ctx {percent(shown.context)}%{isLow(shown.context) && <span className="usage-low"> low</span>}</span>}
@@ -3394,10 +3401,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
-        if (!saved && attach) { setFormError("This chat isn't open in Deck right now. Return it to Deck and try again."); return; }
+        if (!saved && attach) throw new Error("This chat isn't open in Deck right now. Return it to Deck and try again.");
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
         if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));

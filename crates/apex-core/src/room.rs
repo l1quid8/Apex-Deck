@@ -507,7 +507,7 @@ impl Room {
         }
     }
 
-    /// Replace only name/model/effort/speed while active turns retain their cloned instance.
+    /// Replace only name/model/effort/speed/access while active turns retain their cloned instance.
     /// The name may change so an Agents-tab rename reaches a chat that is busy.
     pub fn replace_turn_settings(&mut self, participant: Arc<dyn Participant>) -> bool {
         let next = participant.config();
@@ -516,6 +516,7 @@ impl Room {
         permitted.display_name = next.display_name.clone();
         permitted.effort = next.effort.clone();
         permitted.speed = next.speed;
+        permitted.access = next.access;
         match (&mut permitted.backend, &next.backend) {
             (crate::Backend::Agent { model, .. }, crate::Backend::Agent { model: new, .. }) => *model = new.clone(),
             (crate::Backend::OpenAiCompatible { model, .. }, crate::Backend::OpenAiCompatible { model: new, .. }) => *model = new.clone(),

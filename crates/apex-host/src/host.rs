@@ -949,7 +949,7 @@ impl Host {
         let replacement = apex_adapters::build(next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
-                return Err("Only the name, model, reasoning and speed can change while models are replying".into());
+                return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
             }
         } else { room.replace_participant(replacement); }
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));

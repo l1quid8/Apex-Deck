@@ -329,8 +329,8 @@ impl ConcurrentRoom {
             let mut next = Vec::new();
             if batch.sequential {
                 for ticket in tickets {
-                    self.admit_writer(&ticket, &batch, &mut write_lease).await;
-                    next.extend(self.run_one(ticket, None, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
+                    let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, None).await;
+                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -340,6 +340,9 @@ impl ConcurrentRoom {
                     tickets
                         .iter()
                         .map(|ticket| {
+                            // A queued bot can change access before its previous turn ends.
+                            // Resolve its execution snapshot only after that FIFO wait.
+                            if ticket.previous.clone().now_or_never().is_none() { return None; }
                             room.request_for_capability(&ticket.id, batch.answers, batch.generated_ui).map(|(p, r)| {
                                 (p, r, room.transcript().len(), room.approvals_handle())
                             })
@@ -351,14 +354,14 @@ impl ConcurrentRoom {
                     // keep roster order and share this batch's lease, without
                     // competing for the room-local editor reservation.
                     let (writers, readers): (Vec<_>, Vec<_>) = tickets.into_iter().zip(prepared).enumerate()
-                        .partition(|(_, (_, prepared))| prepared.as_ref().is_some_and(|(participant, request, _, _)| {
+                        .partition(|(_, (_, prepared))| prepared.as_ref().is_none_or(|(participant, request, _, _)| {
                             request.access != Some(Access::Read)
                                 || (request.plan && participant.config().access != Access::Read)
                         }));
                     let write_turns = async {
                         let mut ids = Vec::new();
                         for (index, (ticket, prepared)) in writers {
-                            self.admit_writer(&ticket, &batch, &mut write_lease).await;
+                            let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, prepared).await;
                             ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await));
                         }
                         ids
@@ -424,23 +427,29 @@ impl ConcurrentRoom {
             sink(RoomEvent::Idle);
         }
     }
-    async fn admit_writer(&self, ticket: &Ticket, batch: &TurnBatch, lease: &mut Option<crate::WriteLease>) {
-        let Some(gate) = &self.write_gate else { return; };
-        if lease.is_some() { return; }
+    async fn admit_writer(&self, ticket: &Ticket, batch: &TurnBatch, lease: &mut Option<crate::WriteLease>, prepared: Option<Prepared>) -> Option<Prepared> {
+        let Some(gate) = &self.write_gate else { return prepared; };
         ticket.previous.clone().await;
         {
             let _slots = self.slots.lock().unwrap();
-            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) || ticket.origin.as_ref().is_some_and(|(_, stop)| stop.load(Ordering::SeqCst)) { return; }
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) || ticket.origin.as_ref().is_some_and(|(_, stop)| stop.load(Ordering::SeqCst)) { return prepared; }
             ticket.slot.stop.store(false, Ordering::SeqCst);
         }
-        let should_admit = {
-            let room = self.room.lock().await;
-            room.request_for(&ticket.id).is_some_and(|(participant, request)| {
-                request.access != Some(Access::Read)
-                    || (request.plan && participant.config().access != Access::Read)
-            })
+        // Admission and execution must use the same participant/access snapshot.
+        // Later settings replacements belong to a subsequent turn.
+        let prepared = match prepared {
+            Some(prepared) => Some(prepared),
+            None => {
+                let room = self.room.lock().await;
+                room.request_for_capability(&ticket.id, batch.answers, batch.generated_ui)
+                    .map(|(p, r)| (p, r, room.transcript().len(), room.approvals_handle()))
+            }
         };
-        if !should_admit { return; }
+        let should_admit = prepared.as_ref().is_some_and(|(participant, request, _, _)| {
+            request.access != Some(Access::Read)
+                || (request.plan && participant.config().access != Access::Read)
+        });
+        if lease.is_some() || !should_admit { return prepared; }
         let stop = ticket.origin.as_ref().map(|(_,stop)| stop.clone()).unwrap_or_else(|| ticket.slot.stop.clone());
         // Cancellation while queued removes the waiter; never reduce access to Read.
         let acquired = if batch.retained_owner {
@@ -453,6 +462,7 @@ impl ConcurrentRoom {
             Err(crate::WriteWaitError::Cancelled) => {},
             Err(crate::WriteWaitError::Occupied(_)) => unreachable!("acquisition queues behind its owner"),
         }
+        prepared
     }
     async fn run_one(
         &self,

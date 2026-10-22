@@ -180,9 +180,9 @@ pub fn agent_command_in(
                 // Claude's planning mode changes nothing until the person
                 // agrees to start the work (claude_session.rs).
                 _ if plan => push(&["--permission-mode", "plan"]),
-                // Without a way to ask for approval, edits and commands are
-                // refused anyway; denying the tools makes that explicit.
-                Access::Read => push(&["--disallowedTools", "Edit,Write,NotebookEdit,Bash"]),
+                // Allow built-in reads outside the project without prompting,
+                // retaining write/command denials and separate MCP approvals.
+                Access::Read => push(&["--allowedTools", "Read,Glob,Grep", "--disallowedTools", "Edit,Write,NotebookEdit,Bash"]),
                 // A two-way conversation in which each edit and command is
                 // put to the person first; see claude_session.rs.
                 Access::Ask => push(&["--permission-mode", "default"]),
@@ -374,10 +374,18 @@ mod tests {
     }
 
     #[test]
+    fn claude_read_only_allows_reads_without_bypassing_write_permissions() {
+        let (_, args) = agent_command(AgentTool::ClaudeCode, None, None, Access::Read);
+        assert!(args.windows(2).any(|a| a == ["--allowedTools", "Read,Glob,Grep"]));
+        assert!(args.windows(2).any(|a| a == ["--disallowedTools", "Edit,Write,NotebookEdit,Bash"]));
+        assert!(!args.iter().any(|a| a == "bypassPermissions"));
+    }
+
+    #[test]
     fn claude_code_commands() {
         assert_eq!(
             line(AgentTool::ClaudeCode, None, Access::Read),
-            "claude -p --output-format stream-json --verbose --include-partial-messages --disallowedTools Edit,Write,NotebookEdit,Bash"
+            "claude -p --output-format stream-json --verbose --include-partial-messages --allowedTools Read,Glob,Grep --disallowedTools Edit,Write,NotebookEdit,Bash"
         );
         assert_eq!(
             line(AgentTool::ClaudeCode, Some("opus"), Access::Edits),
@@ -459,7 +467,7 @@ mod tests {
     #[test]
     fn effort_is_passed_in_each_tools_own_way() {
         let (_, claude) = agent_command(AgentTool::ClaudeCode, Some("opus"), Some("xhigh"), Access::Read);
-        assert_eq!(&claude[..claude.len() - 6], &["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", "opus", "--effort", "xhigh", "--disallowedTools", "Edit,Write,NotebookEdit,Bash"]);
+        assert_eq!(&claude[..claude.len() - 6], &["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", "opus", "--effort", "xhigh", "--allowedTools", "Read,Glob,Grep", "--disallowedTools", "Edit,Write,NotebookEdit,Bash"]);
 
         let (_, codex) = agent_command(AgentTool::Codex, None, Some(" high "), Access::Read);
         assert_eq!(

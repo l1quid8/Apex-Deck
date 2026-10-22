@@ -2,7 +2,7 @@ import { menuPlacement, popoverTop } from './floating';
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
-import type { ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } from './types';
+import type { Access, ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } from './types';
 import { Segmented } from './AgentPicker';
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from './speed';
 import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortsFor, findModel, modelGroups } from './models';
@@ -13,7 +13,7 @@ import { mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media
 import { dollars, mediaMenuLine, pictureLine, quoteFor } from './mediaPrice';
 
 /** What a save can carry. */
-type Change = { model?: string; effort?: string; speed?: Speed | null; media?: MediaSettings };
+type Change = { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings };
 
 interface Props {
   config: ParticipantConfig;
@@ -26,8 +26,9 @@ interface Props {
   avatar?: ReactNode;
   /** Context and plan bars, shown under the name. */
   meters?: ReactNode;
+  accessPending?: boolean;
 }
-export function BotSettings({ config, roomId, anchor, backend, save, close, avatar, meters }: Props) {
+export function BotSettings({ config, roomId, anchor, backend, save, close, avatar, meters, accessPending = false }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const api = config.backend.kind === 'open_ai_compatible' ? config.backend : null;
@@ -209,11 +210,12 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       if (left.model === sent.model) delete left.model;
       if (left.effort === sent.effort) delete left.effort;
       if (left.speed === sent.speed) delete left.speed;
+      if (left.access === sent.access) delete left.access;
       if (left.media === sent.media) delete left.media;
       touched.current = left;
       setSettled(n => n + 1);
     }
-    catch (error) { if (version === saveVersion.current) { setError(String(error)); requested.current = { model: '\0', effort: '\0' }; } }
+    catch (error) { if (version === saveVersion.current) { setError(String(error)); delete touched.current.access; setSettled(n => n + 1); requested.current = { model: '\0', effort: '\0' }; } }
     if (version === saveVersion.current) setSaving(false);
   };
   useEffect(() => {
@@ -241,6 +243,13 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
         spec.needs_image ? 'Needs a picture: attach one with your message.' : spec.image_model ? 'Attach a picture to animate it.' : '']
     ).filter(Boolean).map(line => <span key={line}>{line}<br /></span>)}</p>
   </> : null;
+  const access = touched.current.access ?? config.access;
+  const accessOptions: { value: Access; text: string; title: string }[] = [
+    { value: 'read', text: 'Read-only', title: 'Read files. No edits or commands.' },
+    ...(!(tool === 'grok' || tool === 'muse') ? [{ value: 'ask' as const, text: 'Ask', title: 'Ask before edits and commands.' }] : []),
+    { value: 'edits', text: 'Edit', title: 'Edit files; ask before commands where supported.' },
+    { value: 'full', text: 'Full', title: 'Full access.' },
+  ];
   const commitEffort = (value: string) => {
     setEffort(value);
     if (value !== requested.current.effort || model !== requested.current.model) void apply({ effort: value });
@@ -292,6 +301,10 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       </div>
       {!mediaType && <ReasoningSlider efforts={efforts} value={supportedEffort} defaultLabel={apiModel?.default_effort ?? undefined} onCommit={commitEffort} />}
       {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
+      {(tool || api) && <>
+        <div className="bot-access"><span className="model-select-label">Access</span><Segmented label="Access" name="quick-bot-access" options={accessOptions} value={access} onChange={access => { void apply({ access }); }} /></div>
+        <p className="muted bot-access-note" role="status">{accessOptions.find(option => option.value === access)?.title} {accessPending ? 'Applies after this reply.' : 'Same setting as this bot’s settings page.'}</p>
+      </>}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}
       {note && <p className="muted">{note}</p>}

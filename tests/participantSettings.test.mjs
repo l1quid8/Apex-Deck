@@ -30,3 +30,14 @@ test('speed is saved when picked and removed when set back to Default', () => {
   assert.equal('speed' in applyTurnChange(fast, { speed: null }), false);
   assert.equal(applyTurnChange(fast, { effort: 'high' }).speed, 'fast', 'a reasoning change keeps the speed');
 });
+
+test('access picks persist without overwriting another clients model or persona', () => {
+  const current = { ...bot, persona: 'Updated elsewhere', backend: { ...bot.backend, model: 'updated-model' } };
+  const full = applyTurnChange(current, { access: 'full' });
+  assert.equal(full.access, 'full');
+  assert.equal(full.backend.model, 'updated-model');
+  assert.equal(full.persona, 'Updated elsewhere');
+  assert.equal(applyTurnChange(full, { access: 'read' }).access, 'read');
+  assert.equal(applyTurnChange(full, { effort: 'high' }).access, 'full');
+  assert.equal(bot.access, 'read');
+});
