@@ -38,30 +38,6 @@ export const serveArgs = (dataDir, { remote = false } = {}) =>
   withDataDir(['serve', '--exit-on-stdin-close', ...(remote ? ['--remote'] : [])], dataDir);
 export const dataDirArgs = (dataDir) => withDataDir(['data-dir'], dataDir);
 
-/** Settings → Remote access, kept in `file` (the app's own settings); off unless saved as on. */
-export function remoteAccessSaved(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'))?.remoteAccess === true;
-  } catch {
-    return false;
-  }
-}
-
-/** Save the Remote access switch, keeping anything else in `file`. */
-export function saveRemoteAccess(file, on) {
-  let saved = {};
-  try {
-    const read = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (read && typeof read === 'object' && !Array.isArray(read)) saved = read;
-  } catch {
-    // Missing or unreadable: start again.
-  }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify({ ...saved, version: 1, remoteAccess: Boolean(on) }, null, 2)}\n`);
-  fs.renameSync(temp, file);
-}
-
 /** The folder the daemon would use. */
 export function dataFolder(bin, dataDir) {
   return new Promise((resolve, reject) => {

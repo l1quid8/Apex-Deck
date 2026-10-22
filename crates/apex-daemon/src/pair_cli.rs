@@ -330,17 +330,17 @@ mod tests {
         use crate::remote::{self, close, pair_phone::pair_dial};
 
         /// A daemon serving `--remote` (no relay) and its local socket.
-        async fn live_daemon(data: &Path) -> (Arc<Daemon>, std::path::PathBuf, SocketAddr) {
+        async fn live_daemon(data: &Path) -> (Arc<Daemon>, std::path::PathBuf, SocketAddr, [u8; 32]) {
             let host = Host::new(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
             let daemon = Arc::new(Daemon {
                 voice: crate::voice::VoiceServer::new(data),
                 host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(),
-                invites: Default::default(), endpoint: Default::default(),
+                invites: Default::default(), remote: Default::default(),
             });
             let endpoint: Endpoint = remote::bind(remote::key(data).unwrap(), None, 0).await.unwrap();
             let port = endpoint.bound_sockets().iter().map(|a| a.port()).find(|p| *p != 0).unwrap();
-            daemon.endpoint.set(endpoint.clone()).unwrap();
-            tokio::spawn(remote::accept(Arc::clone(&daemon), endpoint));
+            let endpoint_id = *endpoint.id().as_bytes();
+            daemon.remote.attach(Arc::clone(&daemon), endpoint).await;
             let socket = data.join(serve::SOCKET);
             let listener = tokio::net::UnixListener::bind(&socket).unwrap();
             let serving = Arc::clone(&daemon);
@@ -351,7 +351,7 @@ mod tests {
                     tokio::spawn(protocol::serve(Arc::clone(&serving), Trust::Local, input, output));
                 }
             });
-            (daemon, socket, SocketAddr::from(([127, 0, 0, 1], port)))
+            (daemon, socket, SocketAddr::from(([127, 0, 0, 1], port)), endpoint_id)
         }
 
         /// What the CLI prints, line by line.
@@ -414,13 +414,13 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn a_phone_that_claims_is_paired_when_the_terminal_says_y() {
             let data = crate::devices::tests::folder();
-            let (daemon, socket, at) = live_daemon(&data.0).await;
+            let (daemon, socket, at, endpoint_id) = live_daemon(&data.0).await;
             remote_config::set_advertised(&data.0, &["myhome.ddns.net:41641".into()]).unwrap();
             let (_never, interrupted) = tokio::sync::oneshot::channel();
             let options = PairOptions { tier: Tier::Full, threads: Some(vec!["r1".into()]) };
             let (cli, mut screen) = run_cli(&socket, options, "y\n", interrupted).await;
             let invite = link_from(&mut screen).await;
-            assert_eq!(&invite.host, daemon.endpoint.get().unwrap().id().as_bytes());
+            assert_eq!(&invite.host, &endpoint_id);
             assert_eq!(invite.relay, remote::RELAY);
             assert!(invite.addrs.contains(&"myhome.ddns.net:41641".to_string()), "{:?}", invite.addrs);
 
@@ -438,7 +438,7 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn anything_but_y_denies_the_phone() {
             let data = crate::devices::tests::folder();
-            let (daemon, socket, at) = live_daemon(&data.0).await;
+            let (daemon, socket, at, _endpoint_id) = live_daemon(&data.0).await;
             let (_never, interrupted) = tokio::sync::oneshot::channel();
             let (cli, mut screen) = run_cli(&socket, PairOptions { tier: Tier::Chat, threads: None }, "\n", interrupted).await;
             let invite = link_from(&mut screen).await;
@@ -452,7 +452,7 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn ctrl_c_cancels_the_invitation() {
             let data = crate::devices::tests::folder();
-            let (daemon, socket, at) = live_daemon(&data.0).await;
+            let (daemon, socket, at, _endpoint_id) = live_daemon(&data.0).await;
             let (interrupt, interrupted) = tokio::sync::oneshot::channel();
             let (cli, mut screen) = run_cli(&socket, PairOptions { tier: Tier::Chat, threads: None }, "y\n", interrupted).await;
             let invite = link_from(&mut screen).await;
@@ -468,7 +468,7 @@ mod tests {
             // A daemon that isn't serving --remote.
             let data = crate::devices::tests::folder();
             let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
-            let off = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&data.0), host, host_id: "h".into(), boot_id: "b".into(), token: None, devices: Arc::new(Devices::open(&data.0)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), invites: Default::default(), endpoint: Default::default() });
+            let off = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&data.0), host, host_id: "h".into(), boot_id: "b".into(), token: None, devices: Arc::new(Devices::open(&data.0)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), invites: Default::default(), remote: Default::default() });
             let (ours, theirs) = tokio::net::UnixStream::pair().unwrap();
             let (read, write) = theirs.into_split();
             let (input, output) = protocol::lines(read, write);

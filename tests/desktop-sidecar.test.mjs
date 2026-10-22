@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { daemonBinary, serveArgs, dataDirArgs, developmentDataDir, developmentHostDataDir, remoteAccessSaved, saveRemoteAccess, waitForSocket } from '../desktop/sidecar.mjs';
+import { daemonBinary, serveArgs, dataDirArgs, developmentDataDir, developmentHostDataDir, waitForSocket } from '../desktop/sidecar.mjs';
 
 test('waitForSocket resolves once something listens, and again once it has stopped', async () => {
   const dir = fs.mkdtempSync('/tmp/deck-wait-');
@@ -51,26 +51,6 @@ test('with remote access on, serve adds --remote; off, it does not', () => {
   assert.deepEqual(serveArgs('/tmp/d', { remote: true }), ['serve', '--exit-on-stdin-close', '--remote', '--data-dir', '/tmp/d']);
   assert.deepEqual(serveArgs(undefined, { remote: true }), ['serve', '--exit-on-stdin-close', '--remote']);
   assert.deepEqual(serveArgs('/tmp/d', { remote: false }), ['serve', '--exit-on-stdin-close', '--data-dir', '/tmp/d']);
-});
-
-test('the Remote access switch is saved, defaults to off, and survives a bad file', async () => {
-  const fs = await import('node:fs');
-  const os = await import('node:os');
-  const path = await import('node:path');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-remote-'));
-  const file = path.join(dir, 'desktop-settings.json');
-  assert.equal(remoteAccessSaved(file), false);
-  saveRemoteAccess(file, true);
-  assert.equal(remoteAccessSaved(file), true);
-  saveRemoteAccess(file, false);
-  assert.equal(remoteAccessSaved(file), false);
-  fs.writeFileSync(file, '{not json');
-  assert.equal(remoteAccessSaved(file), false);
-  fs.writeFileSync(file, JSON.stringify({ version: 1, remoteAccess: 'yes', other: 1 }));
-  assert.equal(remoteAccessSaved(file), false);
-  saveRemoteAccess(file, true);
-  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).other, 1, 'other keys are kept');
-  fs.rmSync(dir, { recursive: true });
 });
 
 test('every script that builds the daemon for the desktop builds it with remote access', async () => {
