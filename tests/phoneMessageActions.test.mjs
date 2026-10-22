@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { register } from "node:module";
 
-// The phone's row under each message is the desktop's (ChatPane's messageActions): same buttons,
-// labels, order and classes. tests/message-actions-narrow.test.mjs holds the desktop's markup.
+// The phone keeps the desktop's buttons, labels, order and classes, with only Quote/Reply
+// and Copy exposed until the chevron opens. tests/message-actions-narrow.test.mjs covers desktop.
 
 register(new URL("./helpers/tsx-loader.mjs", import.meta.url), { parentURL: import.meta.url });
 const React = await import("react");
@@ -19,18 +19,18 @@ const row = (message, over = {}) => renderToStaticMarkup(React.createElement(Mes
   pinned: false, pinning: false, onPin: noop, busy: false, onGoBack: noop, onFork: noop, asking: false, ...over,
 }));
 /** Each control in the row, in order, by its distinguishing class. */
-const order = (html) => [...html.matchAll(/<(?:button|time)[^>]*class="([^"]+)"/g)].map((m) => m[1].replace("msg-action ", ""));
+const order = (html) => [...html.replace(/<span class="message-action-items" hidden="">[\s\S]*?<\/span>/g, "").matchAll(/<(?:button|time)[^>]*class="([^"]+)"/g)].map((m) => m[1].replace("msg-action ", ""));
 
-test("a bot's row: Quote, Copy, Read aloud, Pin, then the chevron and the time", () => {
-  assert.deepEqual(order(row(bot)), ["quote", "copy", "read-aloud", "pin-action", "action-disclosure", "message-time"]);
+test("a bot's collapsed row exposes only Quote and Copy beside the chevron and time", () => {
+  assert.deepEqual(order(row(bot)), ["quote", "copy", "action-disclosure", "message-time"]);
 });
 
-test("a bot's chevron opens Retry and Fork before itself", () => {
+test("a bot's chevron opens Read aloud, Pin, Retry and Fork before itself", () => {
   assert.deepEqual(order(row(bot, { expanded: true })), ["quote", "copy", "read-aloud", "pin-action", "retry", "fork", "action-disclosure", "message-time"]);
 });
 
-test("your row mirrors it: the time, the chevron, then Pin, Copy and Reply, with no Read aloud", () => {
-  assert.deepEqual(order(row(mine)), ["message-time", "action-disclosure", "pin-action", "copy", "quote"]);
+test("your collapsed row mirrors it with only Copy and Reply, even for a pinned message", () => {
+  assert.deepEqual(order(row(mine, { pinned: true })), ["message-time", "action-disclosure", "copy", "quote"]);
   assert.deepEqual(order(row(mine, { expanded: true })), ["message-time", "action-disclosure", "fork", "revert", "pin-action", "copy", "quote"]);
 });
 
@@ -68,7 +68,15 @@ test("no Fork where a thread can't be forked", () => {
 
 test("an older message without a time has no time", () => {
   const { at: _, ...old } = bot;
-  assert.deepEqual(order(row(old)), ["quote", "copy", "read-aloud", "pin-action", "action-disclosure"]);
+  assert.deepEqual(order(row(old)), ["quote", "copy", "action-disclosure"]);
+});
+
+test("the phone shows a compact clock with the complete date available to assistive tools", () => {
+  for (const message of [bot, mine, { ...bot, at: new Date(2026, 8, 30, 15, 4).getTime() }]) {
+    for (const expanded of [false, true]) {
+      assert.match(row(message, { expanded }), /<time[^>]*aria-label="[^"]+"[^>]*>3:04 PM<\/time>/);
+    }
+  }
 });
 
 test("the row stays in view while its chevron or question is open", () => {

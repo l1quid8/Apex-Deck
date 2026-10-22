@@ -1,13 +1,12 @@
-// The row under each message, as on the desktop (ChatPane's messageActions): the same buttons,
-// icons, labels, order and class names, so the desktop stylesheet draws it the same.
-// A bot's row: Quote, Copy, Read aloud, Pin, then › for Retry and Fork, then the time.
-// Your row mirrors it: the time, ‹ for Fork and Revert, then Pin, Copy and Reply.
+// The desktop's message buttons, with only Quote/Reply and Copy exposed on the phone.
+// The chevron reveals Read aloud, Pin, Retry/Revert and Fork, in the desktop's order.
+// Your row mirrors a bot's. A compact clock keeps the time on the same line.
 // Touch screens show it all the time; a mouse shows it while the message is hovered.
 
 import type { Message, RevertPlan } from "../types";
 import { DeckIcon } from "../DeckIcon";
 import { ReadAloudAction } from "../ReadAloudAction";
-import { actionChevron, messageTime } from "../messageActions";
+import { actionChevron } from "../messageActions";
 import { goBackTitle, type GoBack, type RevertScope } from "../revertConfirm";
 
 const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2" fill="currentColor"/><circle cx="11" cy="2.5" r="1.2" fill="currentColor"/></svg>;
@@ -45,8 +44,9 @@ export function MessageActions(props: {
       <path d={actionChevron(message.speaker.kind, props.expanded) === "‹" ? "M15 6 9 12l6 6" : "m9 6 6 6-6 6"} />
     </svg>
   </button>;
-  const stamp = message.at === undefined ? null
-    : <time key="time" className="message-time" dateTime={new Date(message.at).toISOString()} title={new Date(message.at).toLocaleString()}>{messageTime(message.at)}</time>;
+  const when = message.at === undefined ? null : new Date(message.at);
+  const stamp = when === null ? null
+    : <time key="time" className="message-time" dateTime={when.toISOString()} title={when.toLocaleString()} aria-label={when.toLocaleString()}>{when.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</time>;
   const primary = [
     <button key="quote" type="button" className="msg-action quote" title="Quote" onClick={props.onQuote}
       aria-label={mine ? "Quote your message" : `Quote response from ${props.who}`}>
@@ -55,12 +55,12 @@ export function MessageActions(props: {
     <button key="copy" type="button" className="msg-action copy" title="Copy" aria-label={props.copied ? "Copied" : "Copy message"} onClick={props.onCopy}>
       {props.copied ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}
     </button>,
+  ];
+  const extra = [
     !mine && <ReadAloudAction key="read-aloud" text={props.shown} />,
     <button key="pin" type="button" className="msg-action pin-action" title={pinLabel} aria-label={pinLabel} aria-pressed={props.pinned} disabled={props.pinning} onClick={props.onPin}>
       <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={props.pinned ? "currentColor" : "none"}/><path d="M12 16v6" /></svg>
     </button>,
-  ];
-  const extra = [
     <button key="goback" type="button" className={`msg-action ${goBackKind}`} disabled={props.busy} aria-label={goBackLabel} title={goBackHint} onClick={props.onGoBack}>{goBackKind === "retry" ? retryIcon : revertIcon}</button>,
     props.onFork && <button key="fork" type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={props.onFork}>{forkIcon}</button>,
   ];
@@ -69,9 +69,10 @@ export function MessageActions(props: {
   return <span className={`message-actions collapsed-actions${held ? " held" : ""}`}>
     {mine && stamp}
     {mine && disclosure}
-    {mine && props.expanded && <span className="message-action-items">{ordered(extra)}</span>}
+    {/* Keep Read aloud mounted while folded so closing the row doesn't stop playback. */}
+    {mine && <span className="message-action-items" hidden={!props.expanded}>{ordered(extra)}</span>}
     <span className="message-primary-actions">{ordered(primary)}</span>
-    {!mine && props.expanded && <span className="message-action-items">{extra}</span>}
+    {!mine && <span className="message-action-items" hidden={!props.expanded}>{extra}</span>}
     {!mine && disclosure}
     {!mine && stamp}
   </span>;

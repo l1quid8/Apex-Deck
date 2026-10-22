@@ -889,18 +889,24 @@
 .ph-undo.ph-undo-up { bottom: calc(136px + env(safe-area-inset-bottom)); }
 .ph-undo > span { flex: 1; min-width: 0; }
 .ph-undo button { background: transparent; border: 0; color: var(--mint); font-weight: 600; min-height: 44px; padding: 0 12px !important; }
-/* Each message with the desktop's action row under it (Quote, Copy, Read aloud, Pin, › for Retry and Fork,
-   the time), drawn by the desktop's own rules: a bot's row at the left, yours mirrored at the right.
+/* The desktop's action buttons, with only Reply/Quote and Copy exposed until opened.
+   Keep the compact clock and all expanded tools on one line, yours mirrored at the right.
    A touch screen shows the row all the time; a mouse shows it while the message is hovered, as on the desktop. */
 .ph-said { margin-bottom: 12px; }
 .ph-said > .ph-msg { margin-bottom: 2px; }
-.ph-said > .message-actions { flex-wrap: wrap; }
+.ph-said > .message-actions { flex-wrap: nowrap; gap: 0; }
 .ph-said.mine > .message-actions { justify-content: flex-end; text-align: end; }
-.ph-said :is(.message-primary-actions, .message-action-items) { flex-wrap: wrap; }
-.ph-said .message-time { text-wrap: balance; }
+.ph-said :is(.message-primary-actions, .message-action-items) { flex: none; flex-wrap: nowrap; gap: 0; }
+.ph-said .message-action-items[hidden] { display: none; }
+.ph-said .message-time { flex: none; white-space: nowrap; text-wrap: nowrap; }
 .ph-said.mine .msg-action.quote svg { transform: scaleX(-1); }
 /* A thumb-sized tap with the desktop's look; the outer icons line up with the text above them. */
-.ph-said .msg-action { min-height: 36px; height: 36px; min-width: 36px; }
+.ph-said .msg-action { flex: none; min-height: 36px; height: 36px; width: 36px; min-width: 36px; padding: 0; }
+/* The smallest phones still fit every tool and the clock without shrinking the icons. */
+@container (max-width: 360px) {
+  .ph-said .msg-action { width: 32px; min-width: 32px; }
+  .ph-said .copied { font-size: 10px; }
+}
 .ph-said:not(.mine) > .message-actions { margin-left: -9px; }
 .ph-said.mine > .message-actions { margin-right: -9px; }
 .ph-said .msg-action:active:not(:disabled) { background: var(--panel-2); }
