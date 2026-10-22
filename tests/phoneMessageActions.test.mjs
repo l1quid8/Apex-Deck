@@ -74,7 +74,7 @@ test("an older message without a time has no time", () => {
 
 test("phone timestamps distinguish today, this week and older dates using the supplied clock", () => {
   const cases = [
-    [new Date(2026, 9, 22, 0, 4), "12:04 AM"],
+    [new Date(2026, 9, 22, 0, 4), "Thu 12:04 AM"],
     [new Date(2026, 9, 21, 12, 59), "Wed 12:59 PM"],
     [new Date(2026, 9, 16, 15, 4), "Fri 3:04 PM"],
     [new Date(2026, 9, 15, 15, 4), "Oct 15"],
@@ -104,6 +104,8 @@ test("phone weekdays use calendar dates across midnight, year boundaries and DST
 
 test("the narrow phone timestamp preserves the weekday and distinguishes older years", () => {
   for (const [when, expected] of [
+    [new Date(2026, 9, 22, 12, 59), "Thu 12:59p"],
+    [new Date(2026, 9, 22, 0, 4), "Thu 12:04a"],
     [new Date(2026, 9, 21, 12, 59), "Wed 12:59p"],
     [new Date(2026, 9, 21, 0, 59), "Wed 12:59a"],
     [new Date(2026, 8, 30, 12, 59), "Sep 30"],

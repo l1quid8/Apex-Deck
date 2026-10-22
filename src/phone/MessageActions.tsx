@@ -19,8 +19,7 @@ function phoneMessageTime(when: Date, now: number, compact = false): string {
   const midnight = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
   const days = Math.round((midnight(clock) - midnight(when)) / 86_400_000);
   const time = when.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  if (days === 0) return time;
-  if (days > 0 && days < 7) {
+  if (days >= 0 && days < 7) {
     const weekday = when.toLocaleDateString("en-US", { weekday: "short" });
     return `${weekday} ${compact ? time.replace(" AM", "a").replace(" PM", "p") : time}`;
   }
