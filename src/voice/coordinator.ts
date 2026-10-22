@@ -1,5 +1,5 @@
 import { createVoiceController, type VoiceController } from "./controller.ts";
-import { openVoiceAudio } from "./audio.ts";
+import { openVoiceAudio, playVoiceSample } from "./audio.ts";
 import { connectLocalVoice } from "./localClient.ts";
 import { readVoiceSettings, voiceFor } from "./settings.ts";
 import type {
@@ -43,6 +43,7 @@ export const voiceController: VoiceController = createVoiceController({
     stop: () => runtime().stop(),
   },
   openAudio: openVoiceAudio,
+  playSample: playVoiceSample,
   connect: connectLocalVoice,
   candidates: () => [...registry.values()].flatMap((r) => r.candidates),
   bridge: (scope) => lookup(scope).bridge(scope.participantId),
