@@ -113,3 +113,10 @@ export function assistantProjectCanvasDestination(workspace:Workspace,panes:read
  const pane=candidates.find(item=>item.id===focusedPane)??recentThreads.map(id=>candidates.find(item=>item.id===id)).find(item=>!!item)??candidates[0]??null;
  return {workspaceId:workspace.id,pane,focusedPane:pane?.id??null,maximized:pane?.id??null,picking:!pane,section:'threads' as const};
 }
+
+/** A task's worker link targets one exact pane, never the global multi-project canvas. */
+export function assistantWorkerThreadDestination(workspace:Workspace,threadId:string,panes:readonly Pane[],unavailable:ReadonlySet<string>=new Set()) {
+ if(workspace.hidden)return null;
+ const pane=panes.find(item=>item.id===threadId&&item.workspaceId===workspace.id&&item.kind==='chat'&&!item.archived&&!unavailable.has(item.id));
+ return pane?assistantProjectCanvasDestination(workspace,[pane],pane.id,[],unavailable):null;
+}

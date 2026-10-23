@@ -1845,7 +1845,7 @@ impl Host {
                         input.revision,
                         &input.owner,
                         TaskStatus::Applying,
-                        None,
+                        task.result.clone(),
                     )
                     .map_err(|e| e.to_string())?;
                 self.assistant_changed(&input.owner.workspace_id);
@@ -3536,6 +3536,8 @@ mod tests {
         assert!(f.runtime.block_on(f.host.room_update_participant(child.clone(), worker)).is_err());
         let done = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput { task_id:task.id, revision:task.revision, owner:f.owner.clone(), action:"review".into(), mode:None, text:None, destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None })).unwrap();
         assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.result.as_deref(),Some("The requested change is complete."));
+        assert_eq!(f.host.assistant_tasks.get(&done.id).unwrap().unwrap().result,done.result);
         assert!(!f.root.join(".git").exists());
     }
 

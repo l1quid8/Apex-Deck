@@ -102,3 +102,9 @@ test('opening an empty project clears foreign focus and shows its picker without
  const closed={id:'closed',workspaceId:'qa',kind:'chat',title:'Saved',closed:true};assert.equal(workspaceModel.assistantProjectCanvasDestination(workspace,[closed],'foreign',[]).pane,closed);
  assert.throws(()=>workspaceModel.assistantProjectCanvasDestination({...workspace,hidden:true},panes,null,[]),/unavailable/);
 });
+
+test('worker thread route isolates the exact task pane and rejects foreign or unavailable pane identities',()=>{
+ const workspace={id:'qa',name:'QA',path:'/qa'},foreign={id:'old-thread',workspaceId:'apex-deck',kind:'chat',title:'Apex Dot'},other={id:'qa-other',workspaceId:'qa',kind:'chat',title:'Other QA'},worker={id:'execution-task-4',workspaceId:'qa',kind:'chat',title:'Task 4',closed:true};
+ const result=workspaceModel.assistantWorkerThreadDestination(workspace,worker.id,[foreign,other,worker]);assert.equal(result.pane,worker);assert.equal(result.focusedPane,worker.id);assert.equal(result.maximized,worker.id);assert.equal(result.picking,false);assert.equal(result.workspaceId,'qa');
+ assert.equal(workspaceModel.assistantWorkerThreadDestination(workspace,foreign.id,[foreign,other,worker]),null);assert.equal(workspaceModel.assistantWorkerThreadDestination(workspace,worker.id,[worker],new Set([worker.id])),null);assert.equal(workspaceModel.assistantWorkerThreadDestination({...workspace,hidden:true},worker.id,[worker]),null);
+});
