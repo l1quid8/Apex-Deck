@@ -32,7 +32,7 @@ import { ApexAgentAll } from "./ApexAgentAll";
 import { usePersonalAssistants } from "./usePersonalAssistants";
 import { AssistantWorkspace, AssistantEditor } from "./AssistantWorkspace";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
-import { rosterMessage, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
+import { rosterMessage, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import "./apex-agent-dock.css";
 import { LibraryView } from "./lazyViews";
@@ -166,6 +166,7 @@ const TOAST_MS = 4000;
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
   const [mainView, setMainView] = useState<MainView>({kind:"workspace"});
+  const [assistantProjectAliases,setAssistantProjectAliases]=useState<Record<string,{route:Backend;project:ProjectRef}>>({});
   const [creatingAssistant, setCreatingAssistant] = useState(false);
   const [creationHost, setCreationHost] = useState("local");
   /** Bumped by the title bar's + New agent button. */
@@ -1899,11 +1900,18 @@ export function App() {
   const authenticatedProjectHost = (routeHostId:string):string|undefined => {
     try { const status=hostBackend(routeHostId).host?.connection.get().status;return status?.kind==='connected'?status.hostId:undefined; } catch { return undefined; }
   };
-  const canonicalProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
+  const snapshotProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
     const hostId=authenticatedProjectHost(workspaceHost(workspace));
     const entry=Object.values(currentAssistantRegistry.owners).find(entry=>entry.owner.workspaceId===workspace.id&&entry.owner.cwd===workspace.path&&entry.owner.hostId===workspaceHost(workspace));
     const project=(entry as {snapshot?:{project?:ProjectRef}}|undefined)?.snapshot?.project;
     return project&&project.hostId===hostId&&project.workspaceId===workspace.id?project:undefined;
+  };
+  const projectAliasKey=(workspace:Workspace,hostId:string)=>JSON.stringify([hostId,workspaceHost(workspace),workspace.id,workspace.path]);
+  const canonicalProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
+    const snapshot=snapshotProjectForWorkspace(workspace);if(snapshot)return snapshot;
+    const hostId=authenticatedProjectHost(workspaceHost(workspace));if(!hostId)return;
+    const alias=assistantProjectAliases[projectAliasKey(workspace,hostId)];
+    try {return alias?.route===hostBackend(workspaceHost(workspace))?alias.project:undefined;}catch{return undefined;}
   };
   const projectUnavailable = (project:ProjectRef):string|undefined => resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) ? undefined : 'This exact project is unavailable. Reconnect its machine or restore its assigned folder.';
   const openAssistantProject = (project:ProjectRef) => {
@@ -1912,6 +1920,22 @@ export function App() {
   };
   const navigateAssistant = (section:AssistantSection) => setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
+  // Only ambiguous assignments need an owning-host folder read; no global scan or polling.
+  const aliasCandidates=assignedProjects.flatMap(binding=>workspaces.filter(workspace=>!workspace.hidden&&workspace.id===binding.project.workspaceId&&workspace.path!==binding.project.cwd&&authenticatedProjectHost(workspaceHost(workspace))===binding.project.hostId&&!snapshotProjectForWorkspace(workspace)).map(workspace=>({workspace,project:binding.project})));
+  const aliasCandidatesKey=JSON.stringify(aliasCandidates.map(({workspace,project})=>[projectAliasKey(workspace,project.hostId),project.cwd]));
+  useEffect(()=>{
+    let active=true;let cursor=0;
+    const resolveNext=async()=>{
+      while(active&&cursor<aliasCandidates.length){
+        const {workspace,project}=aliasCandidates[cursor++];let route:Backend;try{route=hostBackend(workspaceHost(workspace));}catch{continue;}
+        const current=()=>active&&hostBackend(workspaceHost(workspace))===route&&latest.current.workspaces.some(w=>w.id===workspace.id&&w.path===workspace.path&&workspaceHost(w)===workspaceHost(workspace)&&!w.hidden);
+        const canonical=await resolveAssistantProjectFolder(project,workspace,route,current);
+        if(canonical&&active)setAssistantProjectAliases(before=>({...before,[projectAliasKey(workspace,project.hostId)]:{route,project:canonical}}));
+      }
+    };
+    void Promise.all(Array.from({length:Math.min(4,aliasCandidates.length)},resolveNext));
+    return()=>{active=false;};
+  },[backend,hostList,aliasCandidatesKey]);
   const scopedAssistantWorkspaces = workspaces.filter(workspace=>assignedProjects.some(binding=>resolveAssistantProject(binding.project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace)===workspace));
   const scopedAssistantMonitors = assistantMonitors.filter(monitor=>scopedAssistantWorkspaces.some(workspace=>workspace.id===monitor.workspaceId && workspace.path===monitor.cwd && workspaceHost(workspace)===monitor.hostId));
   // Migrate callers of the former widget destination into the main canvas.

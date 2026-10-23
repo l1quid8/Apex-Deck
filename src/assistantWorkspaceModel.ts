@@ -1,3 +1,4 @@
+import type { Backend } from './backend.ts';
 import type { AssistantRef, ProjectRef } from './assistantIdentity.ts';
 import type { ParticipantConfig, ModelChoice, Workspace } from './types.ts';
 export type AssistantSection = 'conversation' | 'projects' | 'activity' | 'memory' | 'settings';
@@ -55,4 +56,15 @@ export function resolveAssistantProject(project:ProjectRef,workspaces:readonly W
 }
 export function assistantSettingsSaved(view:MainView,owner:AssistantRef):MainView {
  return view.kind==='assistant'&&view.section==='settings'&&view.assistant.hostId===owner.hostId&&view.assistant.assistantId===owner.assistantId ? {kind:'assistant',assistant:view.assistant,section:'conversation'} : view;
+}
+
+/** A read-only owning-host listing may prove an alias. It never rewrites the binding.
+ * Caller also revalidates the captured route and raw workspace against live state. */
+export async function resolveAssistantProjectFolder(project:ProjectRef,workspace:Workspace,backend:Pick<Backend,'host'|'listFolder'>,current:()=>boolean):Promise<ProjectRef|null> {
+ const bound=()=>{const status=backend.host?.connection.get().status;return current()&&status?.kind==='connected'&&status.hostId===project.hostId;};
+ try {
+  if(workspace.hidden||workspace.id!==project.workspaceId||!bound())return null;
+  const folder=await backend.listFolder(workspace.path);
+  return bound()&&folder.path===project.cwd?{...project}:null;
+ } catch {return null;}
 }

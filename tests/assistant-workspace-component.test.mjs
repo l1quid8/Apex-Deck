@@ -46,7 +46,7 @@ test('missing credentials and unavailable models block saving the existing recor
 });
 test('creation and Settings share ordered controls and create durable pixel/runtime fields only on Create',async()=>{
  const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});let tree=await h.ready();assert.ok(text(tree).indexOf('AI model')<text(tree).indexOf('Access'));assert.ok(text(tree).indexOf('Access')<text(tree).indexOf('Avatar'));assert.equal(created.length,0);
- input(tree,'Assistant name').props.onChange({target:{value:'Teammate'}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);assert.equal(created[0].workspaceVersion,4);assert.equal(created[0].profile.access,'full');assert.match(created[0].look.color,/^#[\da-f]{6}$/);assert.ok(created[0].look.seed);
+ input(tree,'Assistant name').props.onChange({target:{value:'Teammate'}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);assert.equal(created[0].workspaceVersion,4);assert.equal(typeof created[0].avatarDraftId,'string');assert.equal(created[0].avatarGenerationId,undefined);assert.equal(created[0].avatarAssetId,undefined);assert.equal(created[0].profile.access,'full');assert.match(created[0].look.color,/^#[\da-f]{6}$/);assert.ok(created[0].look.seed);
  const current=await mount().ready();assert.ok(text(current).indexOf('Connected context')>text(current).indexOf('Access'));assert.ok(text(current).indexOf('Skills & tools')<text(current).indexOf('Avatar'));
 });
 test('a conflict changes no draft fields and retains the captured revision for explicit retry',async()=>{
@@ -88,7 +88,7 @@ test('project links pass the complete identity and explain unavailable exact des
 });
 
 test('conflict refresh updates only the expected revision and preserves the complete draft for retry',async()=>{
- const requests=[];let conflict=true;const h=mount({backend:{call:async(cmd,args)=>{assert.equal(cmd,'personal_get');assert.equal(args.assistantId,'a');return {...record,revision:9,name:'Remote name'};}},lane:{configureWorkspace:async value=>{requests.push(value);if(conflict)throw new Error('Revision conflict; refresh and retry');}}});
+ const requests=[];let conflict=true;const h=mount({backend:{call:async(cmd,args)=>{assert.equal(cmd,'personal_get');assert.equal(args.assistantId,'a');return {...record,revision:9,name:'Remote name'};}},lane:{configureWorkspace:async value=>{requests.push(value);if(conflict)throw new Error('The assistant changed. Refresh before saving this draft.');}}});
  await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'Keep my draft'}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);
  const refresh=find(h.render(),n=>n.type==='button'&&text(n).includes('Refresh revision'));assert.ok(refresh);await refresh.props.onClick();await tick();assert.equal(input(h.render(),'Assistant name').props.value,'Keep my draft');assert.equal(input(h.render(),'Project tools').props.value,'full');conflict=false;await submit(h);assert.equal(requests[1].expectedRevision,9);assert.equal(requests[1].settings.name,'Keep my draft');
 });

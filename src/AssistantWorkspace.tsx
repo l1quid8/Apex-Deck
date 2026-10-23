@@ -20,7 +20,7 @@ type EditorProps = { backend:Backend; profiles:ParticipantConfig[]; disabledProv
 export function AssistantEditor({backend,profiles,disabledProviders=[],lane,hostId,projects,onCreate,onSaved,onCommitted}:EditorProps) {
  const [original] = useState(lane?.assistant ?? null);
  const lifetime=useRef(0);
- useEffect(()=>{lifetime.current++;return()=>{lifetime.current++;};},[hostId,lane?.assistant?.id]);
+ useEffect(()=>{lifetime.current++;return()=>{lifetime.current++;};},[backend,hostId,lane?.assistant?.id]);
  const [savedBase,setSavedBase]=useState(original);
  const [expectedRevision,setExpectedRevision]=useState(original?.revision);
  const [conflict,setConflict]=useState(false);
@@ -86,16 +86,18 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
     await lane.configureWorkspace(configuration);
    } else {
     if(!onCreate)throw new Error('Creation is unavailable on this machine.');
-    created=await onCreate({workspaceVersion:4,name:name.trim(),folder:'~/apex-assistant',profile,look:appearance,projects:bindings,...(avatar?.kind==='image'?{avatarDraftId:draftId,avatarGenerationId:avatar.generationId,avatarAssetId:avatar.assetId}:{})});
+    created=await onCreate({workspaceVersion:4,name:name.trim(),folder:'~/apex-assistant',profile,look:appearance,projects:bindings,avatarDraftId:draftId,...(avatar?.kind==='image'?{avatarGenerationId:avatar.generationId,avatarAssetId:avatar.assetId}:{})});
    }
    onCommitted?.();
    if(lifetime.current===token)onSaved?.(created||undefined);
-  }catch(e){if(lifetime.current===token){const message=e instanceof Error?e.message:String(e);setError(message);setConflict(/revision|conflict|stale/i.test(message));}}finally{if(lifetime.current===token)setBusy(false);}
+  }catch(e){if(lifetime.current===token){const message=e instanceof Error?e.message:String(e);setError(message);setConflict(/revision|conflict|stale|assistant changed.*refresh/i.test(message));}}finally{if(lifetime.current===token)setBusy(false);}
  };
  const refreshRevision=async()=>{
   if(!original||busy)return;const token=lifetime.current;setBusy(true);
   try {
    const current=await backend.call<PersonalAssistantRecord>('personal_get',{assistantId:original.id});
+   const status=backend.host?.connection.get().status;
+   if(backend.host&&(status?.kind!=='connected'||status.hostId!==hostId))throw new Error('The assistant machine identity changed. Reconnect before refreshing.');
    if(current.id!==original.id||current.hostId!==hostId||!Number.isSafeInteger(current.revision))throw new Error('The refreshed assistant owner could not be verified.');
    if(lifetime.current===token){setExpectedRevision(current.revision);setSavedBase(current);setConflict(false);setError('Revision refreshed. Your draft is preserved; review it and Save to retry.');}
   }catch(e){if(lifetime.current===token)setError(e instanceof Error?e.message:String(e));}finally{if(lifetime.current===token)setBusy(false);}

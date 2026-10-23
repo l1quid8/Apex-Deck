@@ -46,3 +46,13 @@ test('canonical project metadata reconciles host path aliases without accepting 
  const w={id:'w',hostId:'route',path:'/tmp/p',name:'P'},p={hostId:'host',workspaceId:'w',cwd:'/private/tmp/p'};const host=()=> 'host';const resolve=(metadata)=>workspaceModel.resolveAssistantProject(p,[w],host,()=>metadata);
  assert.equal(resolve(p),w);assert.equal(resolve({...p,hostId:'other'}),null);assert.equal(resolve({...p,workspaceId:'other'}),null);assert.equal(resolve({...p,cwd:'/elsewhere'}),null);assert.equal(workspaceModel.resolveAssistantProject(p,[w],()=>undefined,()=>p),null);
 });
+
+test('host folder read proves an ambiguous binding and rejects late path or authenticated identity changes',async()=>{
+ const resolve=workspaceModel.resolveAssistantProjectFolder;assert.equal(typeof resolve,'function');const project={hostId:'host',workspaceId:'w',cwd:'/private/tmp/p'},workspace={id:'w',hostId:'route',path:'/tmp/p',name:'P'};let status={kind:'connected',hostId:'host'};let finish;let calls=0;let current=true;
+ const backend={host:{connection:{get:()=>({status})}},listFolder:path=>{assert.equal(path,'/tmp/p');calls++;return new Promise(r=>{finish=r;});}};
+ let pending=resolve(project,workspace,backend,()=>current);finish({path:'/private/tmp/p'});assert.deepEqual(await pending,project);
+ pending=resolve(project,workspace,backend,()=>current);current=false;finish({path:'/private/tmp/p'});assert.equal(await pending,null);
+ current=true;pending=resolve(project,workspace,backend,()=>current);status={kind:'connected',hostId:'other'};finish({path:'/private/tmp/p'});assert.equal(await pending,null);
+ status={kind:'connected',hostId:'host'};pending=resolve(project,workspace,backend,()=>current);finish({path:'/different'});assert.equal(await pending,null);
+ assert.equal(await resolve({...project,hostId:'other'},workspace,backend,()=>true),null);assert.equal(calls,4);
+});
