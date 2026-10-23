@@ -103,3 +103,16 @@ test('cached CLI models cannot make a missing installation ready',async()=>{
 test('unproven changed folders retain their saved assignment and cannot add a duplicate binding',async()=>{
  const assigned={project:{hostId:'mac',workspaceId:'w',cwd:'/private/tmp/p'},tools:'ask'};const h=mount({projects:[{id:'w',path:'/tmp/p',name:'P'}],lane:{assistant:{...record,projects:[assigned]}}});const tree=await h.ready();assert.equal(find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);assert.match(text(tree),/folder.*verified/i);await submit(h);assert.deepEqual(h.calls[0].projects,[assigned]);
 });
+
+test('creation exposes an explicit folder boundary and later Settings can assign a project inside it',async()=>{
+ for(const hostId of ['mac','remote-host']){
+  const created=[];const h=mount({lane:undefined,hostId,onCreate:async value=>{created.push(value);}});let tree=await h.ready();const folder=input(tree,'Allowed project folder');assert.ok(folder);assert.equal(folder.props.value,'~/apex-assistant');assert.match(text(tree),/selected machine/i);
+  input(tree,'Assistant name').props.onChange({target:{value:'Project teammate'}});folder.props.onChange({target:{value:' /Users/me/Downloads/work '}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);assert.equal(created[0].folder,'/Users/me/Downloads/work');assert.deepEqual(created[0].projects,[]);
+  const settings=mount({hostId,lane:{assistant:{...record,hostId,allowedFolders:[created[0].folder],projects:[]}},projects:[{id:'existing',name:'Existing project',path:'/Users/me/Downloads/work/existing'}]});tree=await settings.ready();const choice=find(tree,n=>n.type==='input'&&n.props.type==='checkbox');assert.equal(choice.props.disabled,false);choice.props.onChange({target:{checked:true}});await submit(settings);assert.deepEqual(settings.calls[0].projects,[{project:{hostId,workspaceId:'existing',cwd:'/Users/me/Downloads/work/existing'},tools:'ask'}]);assert.equal(settings.calls[0].settings.folder,undefined);
+ }
+});
+test('blank, relative and control-character folder boundaries block creation without changing the default scope',async()=>{
+ const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'Teammate'}});
+ for(const folder of ['', 'relative/project','~somebody/project','/projects/\u0000invalid']){input(h.render(),'Allowed project folder').props.onChange({target:{value:folder}});await submit(h);assert.equal(created.length,0);assert.match(text(h.render()),/full path|home-relative/i);}
+ input(h.render(),'Allowed project folder').props.onChange({target:{value:'~/Documents/work'}});await submit(h);assert.equal(created[0].folder,'~/Documents/work');
+});
