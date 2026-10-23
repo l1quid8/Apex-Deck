@@ -520,10 +520,6 @@ pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
             let before = expected.clone();
             let now = tokio::task::spawn_blocking(move || {
                 let now = current(&work, &before)?;
-                if !now.clean {
-                    return Err("Commit or resolve all working changes first.".into());
-                }
-                clean(Path::new(&now.root))?;
                 Ok::<_, String>(now)
             })
             .await
@@ -539,7 +535,6 @@ pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
             let checked = now.clone();
             tokio::task::spawn_blocking(move || {
                 current(&work, &checked)?;
-                clean(Path::new(&checked.root))?;
                 remember_check(&checked);
                 Ok::<_, String>(())
             })

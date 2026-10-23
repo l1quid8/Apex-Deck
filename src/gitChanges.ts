@@ -22,7 +22,7 @@ export function gitGates(state: Pick<GitState, 'branch' | 'target' | 'ahead' | '
   const branch = Boolean(state.branch && state.target && state.branch !== state.target && state.ahead > 0);
   return {
     pr: branch,
-    checks: state.clean && !state.checksPassed,
-    merge: branch && state.clean && state.checksPassed && state.behind === 0,
+    checks: !state.checksPassed,
+    merge: branch && state.checksPassed && state.behind === 0,
   };
 }
