@@ -16,16 +16,33 @@ The complete checks passed: 2,134 JS, 1,310 Rust with 8 existing ignored, the
 `/tmp/apex-gate-security-{npm,cargo,production}.log`. The additional skipped-bot
 count/result assertion also passed in a focused run after the full suite.
 
-The second P1 remains open: an editable `owner.lock` does not prevent another
-pinned daemon, and an old room handle can write back revoked authority using a
-fresh broker revision. The correction is specified in
-[the protected host ownership plan](../../superpowers/plans/2026-10-22-protected-host-ownership.md).
-Implementation and independent review are still required; source tests alone
-will not establish the installed duplicate-daemon boundary.
+The second P1 is source-fixed and independently approved in `636e4ef`: an
+editable `owner.lock` cannot be the adversarial singleton. Stable root-owned
+lock inodes now protect both canonical ledger folder scopes; the Host retains
+their exclusive kernel locks and protected IO requires live guards. A missing
+broker still permits startup without authority. Observed contention is fatal,
+and a failed initial ledger read after ownership succeeds now aborts startup
+before recovery instead of combining empty task ownership with readable rooms.
+That additional review finding was reproduced RED and fixed GREEN.
+
+Final default Rust: **1,331 passed, 0 failed, 8 existing ignored**. Separate
+feature-off production crate: **3 passed**. JavaScript: **2,134 passed**.
+TypeScript, whitespace and shell syntax passed. Logs:
+`/tmp/host-ownership-rust-final.log`, `/tmp/host-ownership-production-final.log`,
+`/tmp/host-ownership-js.log`. The earlier in-progress Rust run was interrupted
+for the startup fix and superseded by this complete final run.
+
+Independent exact-commit security/spec/quality review approved `636e4ef` with
+no remaining concrete P1/P2 in the scoped fix, including active-work lifetime.
+See [the ownership plan](../../superpowers/plans/2026-10-22-protected-host-ownership.md)
+for the contract and local `.superpowers/sdd/2026-10-22-protected-host-ownership/`
+for the implementation report and review ledger. These are source/fixture
+checks; signed installed duplicate-daemon, `owner.lock` replacement with a live
+client, and actual broker-restart acceptance remain required.
 
 G2b's remaining UI work remains assigned to @deepgeek from `ae792dce`; mention
 @null with the scoped commit and results. It need not absorb this host fix.
-No main merge, build, installation, re-pin, import or new installed acceptance
+No main merge, release build, installation, re-pin, import or new installed acceptance
 run occurred during this follow-up. Use [INSTALL-CHECKPOINT.md](INSTALL-CHECKPOINT.md)
 before preparing the candidate; the release directory belongs to a different
 shared checkout and the old finish-install script is unsuitable.

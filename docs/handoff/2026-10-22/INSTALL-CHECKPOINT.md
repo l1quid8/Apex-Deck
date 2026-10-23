@@ -1,9 +1,10 @@
 # Gate install checkpoint
 
 This is a preparation record, not authorization to replace the running app or
-reset protected authority. G2b completion, the stale multi-daemon authority fix,
-and review of both security fixes remain prerequisites. Tasks 4–8 remain gated
-by the installed checks in INTEGRATION.md.
+reset protected authority. Both source security fixes are independently reviewed;
+G2b completion and installed ownership/migration acceptance remain prerequisites
+for closing the gate. Tasks 4–8 remain gated by the installed checks in
+INTEGRATION.md.
 
 ## Select the reviewed source
 
@@ -52,6 +53,14 @@ protected records. Resolve and review how existing keys/journal will be carried
 forward before running the reset; never assume this authority is empty. Do not
 use `--yes` to bypass the administrator's explicit decision. Any restoration must
 keep the private key, public key and journal together, with the new build pins.
+
+The host-ownership fix also introduces root-owned `host-locks/` inodes whose
+identity must survive broker restart and ordinary upgrades. Preserve them when
+carrying authority forward. The current reset script removes that directory as
+well; it must never run while any host holding those locks is alive. Replacing a
+locked inode would let a new host lock a different inode for the same scope.
+Stop and verify every authority-serving host before any administrator-approved
+reset, or use a separately reviewed update procedure that retains those inodes.
 
 After installation and the reviewed authority update, compare explicitly against
 the selected candidate rather than the verifier's optional default build:
