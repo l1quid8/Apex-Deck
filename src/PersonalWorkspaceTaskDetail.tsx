@@ -3,7 +3,7 @@ import { personalTaskForRow, type WorkspaceTaskRow } from './workspaceTasks.ts';
 import { TASK_STATUS, type PersonalLane } from './personalAssistant.ts';
 
 /** The lane is resolved by the row's immutable AssistantRef, never by view selection. */
-export function PersonalWorkspaceTaskDetail({ row, lane }: { row: WorkspaceTaskRow; lane: PersonalLane | null }) {
+export function PersonalWorkspaceTaskDetail({ row, lane }: { row: WorkspaceTaskRow; lane: Pick<PersonalLane, 'assistant' | 'offline' | 'decide' | 'cancel'> | null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const task = personalTaskForRow(row, lane?.assistant ?? null);

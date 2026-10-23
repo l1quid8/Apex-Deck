@@ -8,6 +8,7 @@ export interface PersonalTaskSource {
   tasks: readonly PersonalTask[];
   offline: boolean;
   observedAt: number;
+  routeHostId?: string;
 }
 export interface ProjectTaskSource {
   project: ProjectRef;
@@ -34,6 +35,7 @@ export interface WorkspaceTaskRow {
   projectName: string;
   owner: AssistantTaskOwner | null;
   revision: number | null;
+  routeHostId: string;
 }
 export type WorkspaceTaskFilters = { assistant?: AssistantRef | 'unassigned' | null; project?: ProjectRef | null; query?: string; group?: WorkspaceTaskRow['group'] | 'all' };
 export type WorkspaceTaskRoute = { source: 'project'; owner: AssistantTaskOwner; taskId: string; revision: number } | { source: 'personal'; assistant: AssistantRef; taskId: string };
@@ -72,15 +74,16 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
       rows.set(key, { key, source: 'project', assistant, project: source.project, taskId: task.id, title: task.originalRequest || task.brief,
         status: task.status, updatedAt: task.updatedAtMs, observedAt: source.observedAt, offline: source.offline, group: group(task.status),
         assistantName: assistant ? names.get(assistantIdentityKey(assistant)) ?? assistant.assistantId : 'Unassigned', projectName: source.name,
-        owner: task.owner, revision: task.revision });
+        owner: task.owner, revision: task.revision, routeHostId: source.owner.hostId });
     }
   }
   for (const source of personalSnapshots) {
     for (const task of source.tasks) {
       const key = workspaceTaskKey('personal', source.assistant, task.id);
       rows.set(key, { key, source: 'personal', assistant: source.assistant, project: null, taskId: task.id, title: task.goal,
-        status: task.status, updatedAt: task.updatedAt, observedAt: source.observedAt, offline: source.offline, group: group(task.status),
-        assistantName: source.name, projectName: 'Personal', owner: null, revision: null });
+        status: task.status, updatedAt: task.updatedAt, observedAt: source.observedAt, offline: source.offline,
+        group: task.status === 'needsYou' && task.decision?.status === 'open' ? 'waiting' : ['queued', 'running', 'waiting', 'blocked', 'needsYou'].includes(task.status) ? 'working' : 'done',
+        assistantName: source.name, projectName: 'Personal', owner: null, revision: null, routeHostId: source.routeHostId ?? source.assistant.hostId });
     }
   }
   return [...rows.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key));

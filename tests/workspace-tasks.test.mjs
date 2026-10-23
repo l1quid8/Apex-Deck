@@ -67,3 +67,11 @@ test('personal task detail refuses a same-ID task from another assistant or host
   assert.equal(personalTaskForRow(row,{...record,hostId:'h2'}),null);
   assert.equal(personalTaskForRow(row,{...record,tasks:[]}),null);
 });
+test('personal timer/dependency waits stay working while an open approval needs the human',()=>{
+  const rows=collectWorkspaceTasks([personal(assistant(),{tasks:[
+    {id:'timer',goal:'Scheduled wait',status:'waiting',wait:{kind:'timer',at:999},updatedAt:100,receipts:[]},
+    {id:'approval',goal:'Approval',status:'needsYou',decision:{status:'open'},updatedAt:100,receipts:[]},
+  ]})],[]);
+  assert.equal(rows.find(row=>row.taskId==='timer').group,'working');
+  assert.equal(rows.find(row=>row.taskId==='approval').group,'waiting');
+});
