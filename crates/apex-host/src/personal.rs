@@ -883,6 +883,12 @@ pub struct CreateInput {
     pub style: String,
     pub folder: String,
     pub profile: ParticipantConfig,
+    #[serde(default)] pub workspace_version: Option<u32>,
+    #[serde(default)] pub look: Option<Look>,
+    #[serde(default)] pub projects: Option<Vec<crate::personal_workspace::AssistantProjectBinding>>,
+    #[serde(default)] pub avatar_draft_id: Option<String>,
+    #[serde(default)] pub avatar_generation_id: Option<String>,
+    #[serde(default)] pub avatar_asset_id: Option<String>,
 }
 
 impl crate::Host {
@@ -1004,7 +1010,18 @@ impl crate::Host {
         let folder = folder.canonicalize().map_err(|e| format!("Could not open the assistant's folder: {e}"))?;
         let host_id = self.local_host_id()?;
         let at = now();
-        self.change_personal(|assistants| {
+        if input.workspace_version.is_some_and(|v|v!=4) { return Err("Unsupported assistant creation version.".into()) }
+        let triple = (&input.avatar_draft_id, &input.avatar_generation_id, &input.avatar_asset_id);
+        let selection = match triple {
+            (Some(_),Some(generation_id),Some(asset_id))=>Some(crate::assistant_avatar::Selection::Image{generation_id:generation_id.clone(),asset_id:asset_id.clone()}),
+            (None,None,None)=>None,
+            _=>return Err("Apply a complete avatar candidate before creating the assistant.".into())
+        };
+        let owner=crate::assistant_avatar::Owner::Creation{host_id:host_id.clone(),draft_id:input.avatar_draft_id.clone().unwrap_or_else(||"pixel-create".into())};
+        self.with_avatar_selection(owner, selection, |image| self.change_personal(|assistants| {
+            if let Some(draft) = input.avatar_draft_id.as_ref() {
+                if assistants.iter().any(|a|a.extra.get("avatarCreationDraftId").and_then(serde_json::Value::as_str)==Some(draft.as_str())) {return Err("This avatar creation draft was already attached. Refresh the assistant list.".into())}
+            }
             let n = assistants.len() + 1;
             let id = (n..).map(|n| format!("asst-{n}")).find(|id| !assistants.iter().any(|a| &a.id == id)).unwrap();
             let assistant = PersonalAssistant {
@@ -1019,6 +1036,11 @@ impl crate::Host {
                 machines: vec![], push_devices: vec![],
             };
             let mut assistant = assistant;
+            if let Some(mut look) = input.look { if image.is_some() && (look.image.is_none() || look.image == image) {look.image=None;look.kind=None;} assistant.look = Some(crate::personal_workspace::merge_look(&assistant,look)?); }
+            if let Some(projects) = input.projects { assistant.projects = self.workspace_projects(&assistant,projects)?; }
+            if let Some(image) = image {let look=assistant.look.get_or_insert_with(Look::default);look.kind=Some(crate::personal_workspace::AvatarKind::Image);look.image=Some(image);}
+            if let Some(draft)=input.avatar_draft_id {assistant.costs.extend(self.avatar_creation_costs_locked(&draft)?);assistant.extra.insert("avatarCreationDraftId".into(),serde_json::Value::String(draft));}
+            assistant.workspace_config_version=input.workspace_version;
             // It introduces itself and says what it can do, the way Dot does.
             let intro = format!(
                 "Hi, I'm {name}. I live on this server, so I keep working when your phone and Mac are closed. \
@@ -1030,7 +1052,7 @@ impl crate::Host {
             assistant.post("assistant", "chat", intro, None, None, at);
             assistants.push(assistant.clone());
             Ok(assistant)
-        })
+        }))
     }
 
     fn personal_accept(&self, id: &str, request: &str, source: EventSource, human_line: Option<String>) -> Result<Accepted, String> {

@@ -58,6 +58,11 @@ pub enum Command {
     PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
     PersonalScheduleCancel { assistant_id: String, request_id: String, schedule_id: String },
+    PersonalAvatarOptions { owner: crate::assistant_avatar::Owner },
+    PersonalAvatarGenerate { #[serde(flatten)] input: crate::assistant_avatar::Generate },
+    PersonalAvatarStatus { owner: crate::assistant_avatar::Owner, generation_id: String },
+    PersonalAvatarCancel { owner: crate::assistant_avatar::Owner, generation_id: String },
+    PersonalAvatarAsset { assistant_id: Option<String>, owner: Option<crate::assistant_avatar::Owner>, generation_id: Option<String>, asset_id: String, sha256: String },
     PersonalWorkspaceConfigure { #[serde(flatten)] input: crate::personal_workspace::Configure },
     PersonalConfigure { assistant_id: String, settings: crate::personal_settings::Settings },
     PersonalRuleAdd { assistant_id: String, text: String, class: crate::personal::ToolClass, mode: crate::personal::ActionMode },
@@ -197,7 +202,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -311,7 +316,12 @@ impl Host {
             }
             PersonalList {} => reply(self.personal_list()?),
             PersonalGet { assistant_id } => reply(self.personal_get(&assistant_id)?),
-            PersonalCreate { input } => {
+            PersonalCreate { mut input } => {
+                if input.workspace_version == Some(4) {
+                    // Validate the complete runtime selection before any durable insertion.
+                    let snapshot: crate::personal::PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"creation-validation","hostId":self.local_host_id()?,"name":input.name,"style":"","profile":null,"allowedFolders":[],"paused":false,"revision":0,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).map_err(|e|e.to_string())?;
+                    input.profile=self.workspace_profile(&snapshot,crate::personal_workspace::parse_profile(serde_json::to_value(input.profile).map_err(|e|e.to_string())?)?).await?;
+                }
                 let host = Arc::clone(self);
                 reply(blocking(move || host.personal_create(input)).await?)
             }
@@ -326,6 +336,11 @@ impl Host {
             ProjectMemoryForget { input } => reply(self.project_memory_forget(input)?),
             ProjectMemoryStage { input } => reply(self.project_memory_stage(input)?),
             ProjectMemoryPromote { input } => reply(self.project_memory_promote(input)?),
+            PersonalAvatarOptions { owner } => reply(self.personal_avatar_options(owner).await?),
+            PersonalAvatarGenerate { input } => reply(self.personal_avatar_generate(input).await?),
+            PersonalAvatarStatus { owner, generation_id } => reply(self.personal_avatar_status(owner, generation_id)?),
+            PersonalAvatarCancel { owner, generation_id } => reply(self.personal_avatar_cancel(owner, generation_id)?),
+            PersonalAvatarAsset { assistant_id, owner, generation_id, asset_id, sha256 } => self.personal_avatar_asset(assistant_id, owner, generation_id, asset_id, sha256),
             PersonalWorkspaceConfigure { input } => reply(self.personal_workspace_configure(input).await?),
             PersonalConfigure { assistant_id, settings } => reply(self.personal_configure(&assistant_id, settings)?),
             PersonalRuleAdd { assistant_id, text, class, mode } => reply(self.personal_rule_add(&assistant_id, &text, class, mode)?),

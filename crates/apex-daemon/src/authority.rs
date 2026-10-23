@@ -59,7 +59,7 @@ pub fn command_needs(command: &Command) -> Need {
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
         ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
-        | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalPause { .. }
+        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalPause { .. }
         | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
@@ -274,6 +274,11 @@ mod tests {
             ("monitor_pause", Some((Full, "global")), json!({ "workspaceId": "w", "paused": true })),
             ("personal_list", Some((Full, "global")), json!({})),
             ("personal_get", Some((Full, "global")), json!({ "assistantId": "asst-1" })),
+            ("personal_avatar_options", Some((Full, "global")), json!({"owner":{"kind":"creation","hostId":"h","draftId":"d"}})),
+            ("personal_avatar_generate", Some((Full, "global")), json!({"owner":{"kind":"creation","hostId":"h","draftId":"d"},"generationId":"g","editorToken":"e","providerProfileId":"p","modelId":"m","prompt":"robot"})),
+            ("personal_avatar_status", Some((Full, "global")), json!({"owner":{"kind":"creation","hostId":"h","draftId":"d"},"generationId":"g"})),
+            ("personal_avatar_cancel", Some((Full, "global")), json!({"owner":{"kind":"creation","hostId":"h","draftId":"d"},"generationId":"g"})),
+            ("personal_avatar_asset", Some((Full, "global")), json!({"assistantId":"a","assetId":"x","sha256":"hash"})),
             ("personal_create", Some((Full, "global")), json!({ "name": "A", "folder": "/tmp/a", "profile": participant })),
             ("personal_send", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r1", "text": "hi" })),
             ("personal_react", Some((Full, "global")), json!({ "assistantId": "asst-1", "messageId": "m1", "emoji": "👍", "enabled": true })),

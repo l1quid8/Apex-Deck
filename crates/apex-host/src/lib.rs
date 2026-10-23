@@ -32,6 +32,7 @@ pub mod persona_draft;
 pub mod personal;
 pub mod personal_settings;
 pub mod personal_workspace;
+pub mod assistant_avatar;
 pub mod project_memory;
 mod memory_lifecycle;
 pub mod project_memory_service;

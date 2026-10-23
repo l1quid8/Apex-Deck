@@ -74,6 +74,8 @@ pub struct Configure {
     pub profile: Option<Value>,
     #[serde(default, deserialize_with = "present")]
     pub projects: Option<Vec<AssistantProjectBinding>>,
+    #[serde(default)]
+    pub avatar: Option<crate::assistant_avatar::Selection>,
 }
 
 fn identifier(value: &str) -> bool {
@@ -136,7 +138,7 @@ fn parse_settings(value: Value) -> Result<Settings, String> {
     }
     Ok(settings)
 }
-fn parse_profile(value: Value) -> Result<ParticipantConfig, String> {
+pub(crate) fn parse_profile(value: Value) -> Result<ParticipantConfig, String> {
     fields(
         &value,
         &[
@@ -216,7 +218,7 @@ pub(crate) fn same_provider(a: &ParticipantConfig, b: &ParticipantConfig) -> boo
         _ => false,
     }
 }
-fn merge_look(assistant: &PersonalAssistant, incoming: Look) -> Result<Look, String> {
+pub(crate) fn merge_look(assistant: &PersonalAssistant, incoming: Look) -> Result<Look, String> {
     let mut look = assistant.look.clone().unwrap_or_default();
     if let Some(image) = &incoming.image {
         if Some(image) != look.image.as_ref() {
@@ -264,7 +266,7 @@ fn merge_look(assistant: &PersonalAssistant, incoming: Look) -> Result<Look, Str
 }
 
 impl Host {
-    async fn workspace_profile(
+    pub(crate) async fn workspace_profile(
         &self,
         assistant: &PersonalAssistant,
         mut profile: ParticipantConfig,
@@ -396,7 +398,7 @@ impl Host {
         Ok(binding)
     }
 
-    fn workspace_projects(
+    pub(crate) fn workspace_projects(
         &self,
         assistant: &PersonalAssistant,
         projects: Vec<AssistantProjectBinding>,
@@ -483,7 +485,9 @@ impl Host {
             ),
             None => None,
         };
-        self.change_personal(|assistants| {
+        let owner = crate::assistant_avatar::Owner::Assistant { assistant: AssistantRef { host_id: snapshot.host_id.clone(), assistant_id: snapshot.id.clone() } };
+        let reset = matches!(input.avatar, Some(crate::assistant_avatar::Selection::Pixel));
+        self.with_avatar_selection(owner, input.avatar, |image| self.change_personal(|assistants| {
             let assistant = assistants
                 .iter_mut()
                 .find(|a| a.id == input.assistant_id)
@@ -497,7 +501,8 @@ impl Host {
                 .map(|projects| self.workspace_projects(assistant, projects))
                 .transpose()?;
             if let Some(settings) = settings.as_mut() {
-                if let Some(look) = settings.look.take() {
+                if let Some(mut look) = settings.look.take() {
+                    if image.is_some() && (look.image.is_none() || look.image == image) {look.image=None;look.kind=None;}
                     settings.look = Some(merge_look(assistant, look)?);
                 }
             }
@@ -513,6 +518,11 @@ impl Host {
             {
                 assistant.look = Some(merge_look(assistant, Look::default())?);
             }
+            if reset || image.is_some() {
+                let look = assistant.look.get_or_insert_with(Look::default);
+                look.kind = Some(if image.is_some() { AvatarKind::Image } else { AvatarKind::Pixel });
+                look.image = image;
+            }
             if let Some(profile) = profile {
                 assistant.profile = Some(profile);
                 assistant.workspace_config_version = Some(4);
@@ -526,7 +536,7 @@ impl Host {
             Ok(Changed {
                 assistant: assistant.clone(),
             })
-        })
+        }))
     }
 }
 

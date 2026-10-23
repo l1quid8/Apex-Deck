@@ -467,6 +467,8 @@ pub fn protected(name: &str) -> bool {
             | "personal_create"
             | "personal_configure"
             | "personal_workspace_configure"
+            | "personal_avatar_generate"
+            | "personal_avatar_cancel"
             | "personal_rule_add"
             | "personal_rule_remove"
             | "personal_machine_link"

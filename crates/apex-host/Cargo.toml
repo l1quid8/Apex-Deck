@@ -16,6 +16,7 @@ tokio.workspace = true
 futures.workspace = true
 reqwest = { version = "0.13", features = ["json", "stream", "query", "form"] }
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 sha2 = "0.10"
 ring = "0.17"
 tokio-tungstenite = "0.28"

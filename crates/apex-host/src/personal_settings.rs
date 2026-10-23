@@ -115,7 +115,16 @@ impl crate::Host {
 
     pub fn personal_configure(&self, id: &str, settings: Settings) -> Result<Changed, String> {
         validate_settings(&settings)?;
-        self.changed(id, |assistant| apply_settings(assistant, settings))
+        self.changed(id, |assistant| {
+            if let Some(look) = &settings.look {
+                let saved = assistant.look.as_ref().and_then(|look|look.image.as_ref());
+                if look.image.as_ref().is_some_and(|image|Some(image)!=saved)
+                    || (look.kind==Some(crate::personal_workspace::AvatarKind::Image) && saved.is_none()) {
+                    return Err("New image selection requires the owner-checked avatar asset service.".into());
+                }
+            }
+            apply_settings(assistant, settings)
+        })
     }
 
     /// A standing rule only ever makes the assistant more careful.

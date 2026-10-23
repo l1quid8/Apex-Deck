@@ -109,7 +109,7 @@ impl Fixture {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let host = open(&root);
         let profile = serde_json::from_value(serde_json::json!({"id":"pa","display_name":"Assistant","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"text"}})).unwrap();
-        let assistant = host.personal_create(CreateInput { name: "Apex".into(), style: String::new(), folder: root.join("slice").to_string_lossy().into(), profile }).unwrap();
+        let assistant = host.personal_create(CreateInput { name: "Apex".into(), style: String::new(), folder: root.join("slice").to_string_lossy().into(), profile, workspace_version:None,look:None,projects:None,avatar_draft_id:None,avatar_generation_id:None,avatar_asset_id:None }).unwrap();
         // The slice's checks are about approvals, so reads ask here too, and
         // the introduction is cleared so counts start at zero.
         host.change_assistant(&assistant.id, |a| { a.modes.read = crate::personal::ActionMode::Ask; a.messages.clear(); Ok(()) }).unwrap();

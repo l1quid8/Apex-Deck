@@ -40,7 +40,7 @@ export type Fact = {
 };
 export type Schedule = { id: string; goal: string; argv: string[]; everyMs?: number; dailyAt?: string; nextAt?: number; status: "proposed" | "active" | "cancelled"; createdAt: number; lastTaskId?: string; runs: number; paramsHash: string; decision?: PersonalDecision };
 export type Notice = { id: string; text: string; taskId?: string; urgent: boolean; at: number; deliverAt: number; deliveredAt?: number; seenAt?: number; fingerprint: string };
-export type CostEntry = { at: number; purpose: "reply" | "helper" | "summary" | "check"; kind: "text" | "image" | "audio" | "video" | "tool"; source: "reported" | "estimated" | "unknown"; micros?: number; inputTokens?: number; outputTokens?: number; bytesOut: number; endpoint: string };
+export type CostEntry = { at: number; purpose: "reply" | "helper" | "summary" | "check" | "avatar"; kind: "text" | "image" | "audio" | "video" | "tool"; source: "reported" | "estimated" | "unknown"; micros?: number; inputTokens?: number; outputTokens?: number; bytesOut: number; endpoint: string };
 export type StandingRule = { id: string; text: string; class: ToolClass; mode: ActionMode; createdAt: number };
 export type PersonalSettings = {
   name: string; style: string; look?: AssistantLook;
