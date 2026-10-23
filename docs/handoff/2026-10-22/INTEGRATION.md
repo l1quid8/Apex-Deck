@@ -1,7 +1,8 @@
 # Gate integration status
 
 Branch: `fix/assistant-workspace-integration` in the existing assistant-workspace
-worktree. The primary checkout and installed apps are unchanged.
+worktree. No integration changes were made in the primary checkout or installed
+apps; other work continues in the primary checkout independently.
 
 ## Integrated source
 
@@ -81,9 +82,18 @@ Commands and temporary logs (logs may expire):
 - `TMPDIR=/tmp cargo test -p apex-host-production-check -- --test-threads=2`:
   `/tmp/apex-integration-production.log`
 
-Installed acceptance must be rerun from committed source, then repeated after
-the reviewed candidate is installed and re-pinned. The rolled-back installation
-is a baseline, not acceptance of this source. A green LaunchAgent path alone
-does not close the gate: the signed UI-issued write/import, preserved data,
-Full access, ordinary remote coding, and native CLI evidence are still required.
-Tasks 4–8 remain gated until those checks and the security review are complete.
+Installed acceptance reran from clean commit `542f10c2267d3a0cd31b60fb2e9fbc5ffeed5183`
+at 2026-10-23 04:59Z: **23 PASS / 1 FAIL / 8 SKIP**. Evidence:
+`target/acceptance-provenance/evidence-20261023T045910Z.json` (ignored; not
+committed). Its source/hash stamp was checked against that checkout and the
+actual script bytes. The sole failure remains `launchagent.daemon-path`, pointing
+at `/Applications/Apex Deck.app/Contents/Resources/bin/apex-daemon`. Both tamper
+startup log guards passed. The isolated folder was removed and the existing
+broker remained running. This final documentation update changes no tested code.
+
+Repeat acceptance after the reviewed candidate is installed and re-pinned. The
+rolled-back installation is a baseline, not acceptance of this source. A green
+LaunchAgent path alone does not close the gate: the signed UI-issued write/import,
+preserved data, Full access, ordinary remote coding, and native CLI evidence are
+still required. Tasks 4–8 remain gated until those checks and the security review
+are complete.
