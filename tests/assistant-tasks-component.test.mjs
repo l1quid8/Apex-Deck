@@ -767,3 +767,14 @@ test('task Pause and Resume send exact-owner controls and require explicit retry
   assert.equal(button(tree,'Retry task').props.disabled,false);
   h.unmount();
 });
+
+test('owned task responses show the named assistant while retaining the worker identity',async()=>{
+ const ref={hostId:'host-a',assistantId:'named-1'};
+ const named=task({lineage:{assistant:ref,project:{hostId:'host-a',workspaceId:owner.workspaceId,cwd:owner.cwd}}});
+ const backend={demo:false,call:async command=>command==='assistant_tasks_list'?snapshot([named]):null};
+ const h=harness(backend,{assistantIdentity:{ref,name:'Apex Assistant'},taskView:{display:'tasks',selectedKey:taskViewModule.projectTaskKey(owner.hostId,owner.workspaceId,'task-1'),report(){},openTask(){}}});h.render();await tick();let tree=h.render();openDetail(tree);tree=h.render();
+ assert.match(textOf(tree),/Apex Assistant\s+·\s+Task response/);
+ assert.match(textOf(tree),/Worker: Claude/);
+ h.setProps({assistantIdentity:{ref,name:'Renamed Assistant'}});tree=h.render();assert.match(textOf(tree),/Renamed Assistant\s+·\s+Task response/);assert.doesNotMatch(textOf(tree),/Apex Assistant\s+·\s+Task response/);
+ h.setProps({assistantIdentity:{ref:{...ref,assistantId:'other'},name:'Other Assistant'}});tree=h.render();assert.doesNotMatch(textOf(tree),/Other Assistant\s+·\s+Task response/);h.unmount();
+});

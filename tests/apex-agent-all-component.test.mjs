@@ -971,3 +971,9 @@ test('embedded conversation delegates navigation to the workspace shell without 
  assert.equal(find(tree,n=>n.type===PersonalPanelsStub),null);
  assert.ok(find(tree,n=>n.type==='textarea'));
 });
+
+test('named assistant conversation and composer announce the saved identity',()=>{
+ const {lane}=personalLane([],[]);lane.name='Apex Assistant';const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[]});const tree=h.render();
+ assert.equal(find(tree,n=>n.props?.role==='region').props['aria-label'],'Apex Assistant');
+ assert.equal(find(tree,n=>n.type==='textarea').props['aria-label'],'Message Apex Assistant');
+});

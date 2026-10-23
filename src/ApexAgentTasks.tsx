@@ -1,15 +1,18 @@
+import type { ReactNode } from 'react';
+import type { AssistantRef } from './assistantIdentity';
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Backend } from './backend.ts';
 import { TaskViewContext, projectTaskGroup, projectTaskKey, type TaskSummary } from './apexAgentTaskView.ts';
 import type { Pane, ParticipantConfig, Question } from './types.ts';
 import type { ProjectMonitor } from './apexAgentModel.ts';
-import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, shouldSuggestArchive, taskDisplayStatus, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
+import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, taskBelongsToAssistant, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, shouldSuggestArchive, taskDisplayStatus, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
 import { LegacyBadge } from './LegacyImportScreen';
 import { subscribeToImports } from './legacyImportRefresh.ts';
 import './assistant-tasks.css';
 
 type Action = 'pause' | 'resume' | 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'review' | 'archive' | 'reconcile' | 'note' | 'resume_budget';
 type Props = {
+  assistantIdentity?: {ref:AssistantRef;name:string;avatar?:ReactNode};
   onSelectTask?: (task: AssistantTask, send: (text: string) => Promise<void>) => void;
   /** A task left the conversation (dismissed), so any reply context pointing at it should close. */
   onTaskClosed?: (taskId: string) => void;
@@ -28,7 +31,6 @@ type Props = {
 };
 
 /** Shown when ApexAgent proposed no chat that can run this task. The human answers in the main conversation. */
-const NO_CHAT_NOTE = "ApexAgent didn't pick a chat for this. Reply to it with which chat to use.";
 const objectText = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 const taskFinal = (status: string) => isTerminalTask(status);
 const formatBytes = (bytes: number): string => bytes < 1024 * 1024 ? `${Math.max(0, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -70,7 +72,10 @@ function verificationLabel(task: AssistantTask): string {
 }
 const modeLabel = (mode: AssistantTask['mode']): string => mode === 'read_only' ? 'Read only' : mode === 'in_place' ? 'In place' : 'Separate copy';
 
-export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, focused, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery, view = 'conversation' }: Props) {
+export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, focused, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery, assistantIdentity, view = 'conversation' }: Props) {
+  const namedOwner = (task:AssistantTask) => assistantIdentity && taskBelongsToAssistant(task,assistantIdentity.ref) ? assistantIdentity : undefined;
+  const taskAssistantName = (task:AssistantTask) => namedOwner(task)?.name ?? 'ApexAgent';
+  const noChatNote = (task:AssistantTask) => `${taskAssistantName(task)} didn't pick a chat for this. Reply to it with which chat to use.`;
   const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
   const [receipt, setReceipt] = useState<{ requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'legacy' | 'unknown' | 'unchecked'; taskId?: string | null } | null>(null);
@@ -316,7 +321,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const sendTaskText = async (task: AssistantTask, text: string): Promise<boolean> => {
     if (task.status === 'needs_clarification') {
       const destination = proposedDestination(task);
-      if (!destination) { setError(NO_CHAT_NOTE); return false; }
+      if (!destination) { setError(noChatNote(task)); return false; }
       return act(task, 'clarify', { text, destination, newWorkerProfiles: destination.newThread ? workerProfiles.filter((profile) => destination.workers.includes(profile.id)) : [], mode: task.mode });
     }
     if (task.status === 'ready_for_review') {
@@ -448,6 +453,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       const hasReviewData = hasReviewMaterial(task);
       const currentReviewVisible = hasReviewData && visibleReviewRevision[task.id] === task.revision;
       return <article className={`assistant-task-card status-${task.status}`} key={task.id}>
+        {namedOwner(task) && <div className="assistant-task-response-identity">{namedOwner(task)?.avatar}<strong>{taskAssistantName(task)} · {task.result?.trim() ? 'Task response' : 'Delegated work'}</strong></div>}
         {taskDetailView && <h2 className="assistant-task-title" id={`assistant-task-title-${task.id}`} tabIndex={-1} ref={titleRef}>{oneLine(task.originalRequest)}</h2>}
         <header><div><span className="assistant-task-status">{taskDisplayStatus(task)}</span>{task.legacy && <LegacyBadge />}<span className="assistant-task-meta">Revision {task.revision} · {task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'}</span></div><span className="assistant-task-usage">{taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</span></header>
         <div className="assistant-task-detail-scroll" ref={detailScrollRef}>
@@ -460,7 +466,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         {typeof (resultData as { batchId?: unknown }).batchId === 'string' && <p className="assistant-task-muted">From your cross-project plan</p>}
         <details><summary>Original request and brief</summary><p className="assistant-task-original"><strong>Original request</strong>{task.originalRequest}</p><p className="assistant-task-brief"><strong>Brief</strong>{task.brief}</p></details>
         {taskDetailView && (task.status === 'proposed' || task.status === 'needs_clarification') && <p className="assistant-task-plan"><strong>Plan</strong> {task.brief}</p>}
-        {taskDetailView && task.status === 'needs_clarification' && <p className="assistant-task-warning">{proposedDestination(task) ? 'ApexAgent has a question before it starts. Its question is in the conversation; answer it below.' : "ApexAgent didn't pick a chat for this. Say which chat to use below, or Dismiss it."}</p>}
+        {taskDetailView && task.status === 'needs_clarification' && <p className="assistant-task-warning">{proposedDestination(task) ? `${taskAssistantName(task)} has a question before it starts. Its question is in the conversation; answer it below.` : `${taskAssistantName(task)} didn't pick a chat for this. Say which chat to use below, or Dismiss it.`}</p>}
         {task.status === 'proposed' && <dl className="assistant-task-proposal" aria-label="Proposed destination">
           <div><dt>Worker</dt><dd>{workerLabel(task, profiles)}</dd></div>
           <div><dt>Destination chat</dt><dd>{task.destination ? (task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId ?? 'Needs clarification') : 'Needs clarification'}</dd></div>
@@ -490,7 +496,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         {task.mode === 'isolated' && taskFinal(task.status) && !archivedExecutions.has(task.id) && <div className="assistant-task-actions">{shouldSuggestArchive(task) && <p className="assistant-task-warning">This terminal worktree is over 14 days old. Archive it to save disk space; the task result and history will remain available.</p>}<button type="button" disabled={busy} onClick={() => void act(task, 'archive')}>Archive isolated worktree</button><span className="assistant-task-muted">Removes the owned worktree and keeps this task’s result and history.</span></div>}
         {task.mode === 'isolated' && archivedExecutions.has(task.id) && <p className="assistant-task-muted">Isolated worktree archived{typeof resultData.worktreeDiskBytes === 'number' ? ` · saved worktree size ${formatBytes(resultData.worktreeDiskBytes)}` : ''}. Task result and history are retained.</p>}
         {taskDetailView && task.status === 'needs_clarification' && <div className="assistant-task-reply">
-          <label><span>{"Answer ApexAgent's question"}</span><textarea rows={2} value={draftText(task.id, 'answer')} onChange={(event) => setDraft(task.id, 'answer', event.target.value)} /></label>
+          <label><span>{`Answer ${taskAssistantName(task)}'s question`}</span><textarea rows={2} value={draftText(task.id, 'answer')} onChange={(event) => setDraft(task.id, 'answer', event.target.value)} /></label>
           <button type="button" disabled={busy || !draftText(task.id, 'answer').trim()} onClick={() => void sendDraft(task, 'answer')}>Send answer</button>
         </div>}
         {taskDetailView && task.status === 'ready_for_review' && <div className="assistant-task-reply">
@@ -519,7 +525,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
           {task.status === 'needs_clarification' && <button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button>}
           {task.status === 'proposed' && (proposal
             ? <><button type="button" disabled={busy || task.desiredState === 'paused'} onClick={() => void approveProposal(task, proposal)}>Approve task</button><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>
-            : <><p className="assistant-task-warning">{NO_CHAT_NOTE}</p><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>)}
+            : <><p className="assistant-task-warning">{noChatNote(task)}</p><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>)}
           {task.status === 'needs_you' && <><button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker thread</button>{task.mode === 'isolated' && task.attempts.length === 0 && <button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry worker startup</button>}<button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
           {(task.status === 'queued' || task.status === 'running' || task.status === 'applying') && !canReconcileTask(task) && <button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button>}
           {task.legacy && (task.status === 'failed' || task.status === 'interrupted' || task.status === 'needs_you')
