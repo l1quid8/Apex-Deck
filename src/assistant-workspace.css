@@ -60,3 +60,6 @@
 .assistant-workspace-subview[hidden]{display:none}.assistant-workspace .assistant-thread-composer[hidden]{display:none}
 
 .assistant-archived-list{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}.assistant-archived-list>summary{cursor:pointer}.assistant-archived-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0}.assistant-archived-row small{display:block;color:var(--muted)}
+
+/* Pending approvals, errors and activity use the same fill-only card treatment. */
+.assistant-workspace :is(.assistant-task-waits,.apex-agent-needs-you,.apex-agent-check-failed,.apex-agent-helper,.assistant-activity-item),.assistant-workspace .apex-agent-task-history ol{border-left:0!important}
