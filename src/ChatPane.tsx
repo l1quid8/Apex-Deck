@@ -63,7 +63,7 @@ import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
 import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
 import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
-import { usePlans } from "./plans";
+import { planOf, usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { HexColorPicker } from "./HexColorPicker";
 import { afterRound, type Attention, type Signal } from "./attention";
@@ -455,6 +455,12 @@ function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
   return b?.kind === "agent" ? b.tool : null;
 }
 
+/** The model an agent runs on, for a provider that reads a model's own quota group. */
+function planModel(config: ParticipantConfig | undefined): string | null {
+  const b = config?.backend;
+  return b?.kind === "agent" ? b.model : null;
+}
+
 /** One custom provider account: its address and the name its key is saved under. */
 function accountOf(config: ParticipantConfig | undefined): { key: string; baseUrl: string; keyEnv: string | null } | null {
   const b = config?.backend;
@@ -658,6 +664,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const openGitCard = (seq: number, paths: string[] | null) => {
     setGitCardSeq(seq);
     setGitMenuRequest(previous => ({ paths, nonce: (previous?.nonce ?? 0) + 1 }));
+  };
+  const openStandaloneGitCard = () => {
+    setGitCardSeq(-1);
+    setGitMenuRequest(previous => ({ paths: null, nonce: (previous?.nonce ?? 0) + 1 }));
   };
   const openTurnDiff = (seq: number) => {
     if (gitMenuRequest && gitCardSeq === seq) { closeGitCard(); return; }
@@ -2700,13 +2710,14 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     void turnQueue.halt(id);
     if (warning) notify(`Stopped. ${warning}`, "info");
   };
+  /** The plan a bot shows: its own model's group when the provider reads one
+   *  apart (Gemini's Argon), otherwise the account's figure. */
+  const planStateOf = (p: ParticipantConfig | undefined) => planOf(plans, planProvider(p), planModel(p));
   const levelsFor = (id: string): Levels => {
-    const provider = planProvider(configOf(id));
-    return { context: makesMedia(configOf(id)) ? null : contextLevel(contextFill[id]), plan: provider ? planLevel(plans[provider]?.windows, Date.now() / 1000) : null };
+    return { context: makesMedia(configOf(id)) ? null : contextLevel(contextFill[id]), plan: planLevel(planStateOf(configOf(id))?.windows, Date.now() / 1000) };
   };
   const refillsFor = (id: string): Refills => {
-    const provider = planProvider(configOf(id));
-    return { context: compactions, plan: provider ? (plans[provider]?.resets ?? 0) : 0 };
+    return { context: compactions, plan: planStateOf(configOf(id))?.resets ?? 0 };
   };
   /** Only each agent's newest reply shows live levels; older ones stay as they were drawn. */
   const newestReply = new Map<string, number>();
@@ -2718,7 +2729,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** The quick menu's Resets row for `p`'s provider, when it has granted any. */
   const resetsFor = (p: ParticipantConfig | undefined) => {
     const provider = planProvider(p);
-    const state = provider ? plans[provider] : undefined;
+    const state = planStateOf(p);
     if (!provider || !state?.credits || !backend.roomPlanReset || accountOf(p)) return null;
     const spend = backend.roomPlanReset;
     return <QuickResets credits={state.credits} windows={state.windows} provider={AGENT_LABEL[provider]} use={(credit) => {
@@ -2733,13 +2744,15 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const usageCard = (p: ParticipantConfig, at?: { left: number; bottom: number } | null) => {
     const fill = contextFill[p.id];
     const provider = planProvider(p);
-    const windows = provider ? plans[provider]?.windows : undefined;
+    const state = planStateOf(p);
+    const windows = state?.windows;
     const plan = windows ? planLine(windows, new Date()) : null;
     const reports = (p.backend.kind === "agent" && p.backend.tool !== "grok") || p.backend.kind === "open_ai_compatible";
     const account = accountOf(p);
     const left = account ? balances[account.key] : undefined;
     const spent = spendLine(used[p.id], dollars);
-    const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
+    // Bots showing the same figure: one model's own group, or the account's own.
+    const sharing = state ? participants.filter((other) => planStateOf(other) === state).length : 0;
     return (
       <div ref={at ? cardBox : undefined} className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
         {!makesMedia(p) && <div className="usage-row">
@@ -3376,7 +3389,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${liveView ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={liveView !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={toggleArtifacts}>
         <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
       </button>}
-      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length} request={gitMenuRequest} target={gitCardTarget} canOpen={latestGitSeq !== null} onOpen={() => { if (latestGitSeq !== null) openGitCard(latestGitSeq, null); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
+      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length} request={gitMenuRequest} target={gitCardTarget} canOpen={true} onOpen={() => { if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else openStandaloneGitCard(); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
     </div>
   );
   // The bots sit in their own row under the message box.
@@ -3465,7 +3478,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
         if (!saved && attach) throw new Error("This chat isn't open in Deck right now. Return it to Deck and try again.");
@@ -3693,6 +3706,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
             </div>
           </div>;
         })}
+        {gitCardSeq === -1 && <div className="git-changes-slot git-changes-slot-standalone" ref={setGitCardTarget} />}
       </div>
       {!profileMode && (unread > 0 || cardsAway.length > 0) && <div className="transcript-pills">
         {cardsAway.length > 0 && <button type="button" className="transcript-pill" onClick={() => showCard(cardsAway[0].request)}>

@@ -563,21 +563,25 @@ impl Host {
 
     /// Read the plan usage of each provider in `configs` that can report it
     /// outside a turn, and send it to the chat as a `plan_usage` event.
-    /// Runs in the background; it asks no model anything.
+    /// Runs in the background; it asks no model anything. A provider can put a
+    /// model in a quota group of its own, so each model is read separately.
     fn read_plans(self: &Arc<Self>, room: &str, configs: &[ParticipantConfig], context: &BuildContext) {
-        let mut tools: Vec<AgentTool> = Vec::new();
+        let mut reads: Vec<(AgentTool, Option<String>)> = Vec::new();
         for config in configs {
-            if let apex_core::Backend::Agent { tool, .. } = config.backend {
-                if !tools.contains(&tool) {
-                    tools.push(tool);
+            if let apex_core::Backend::Agent { tool, model } = &config.backend {
+                let read = (*tool, model.clone());
+                if !reads.contains(&read) {
+                    reads.push(read);
                 }
             }
         }
-        for tool in tools {
+        for (tool, model) in reads {
             let (host, room, context) = (Arc::clone(self), room.to_string(), context.clone());
             self.runtime.spawn(async move {
-                if let Some(plan) = apex_adapters::plan_usage(tool, &context).await {
-                    host.room_event(&room, RoomEvent::plan(&plan));
+                if let Some(plan) = apex_adapters::plan_usage(tool, model.as_deref(), &context).await {
+                    // The model rides along so a chat with two models of one
+                    // provider shows each its own group.
+                    host.room_event(&room, RoomEvent::plan_for(&plan, model));
                 }
             });
         }

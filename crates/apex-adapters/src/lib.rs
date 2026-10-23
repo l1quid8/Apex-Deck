@@ -136,7 +136,11 @@ pub fn build_without_tools(config: ParticipantConfig, context: &BuildContext) ->
 /// the login that CLI saved. Every chat shares one answer per provider, so
 /// opening several at once reads only once, and a failed read is logged
 /// once and not retried until its wait is over.
-pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanUsage> {
+///
+/// `model` is the model the bot is set to. A provider can put a model in a
+/// small quota group of its own (Antigravity's Argon), so the answer for one
+/// model is not the answer for another, and each model keeps its own answer.
+pub async fn plan_usage(tool: AgentTool, model: Option<&str>, context: &BuildContext) -> Option<PlanUsage> {
     let name = match tool {
         AgentTool::ClaudeCode => "Claude",
         AgentTool::Codex => "Codex",
@@ -151,11 +155,11 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
             AgentTool::ClaudeCode => claude_usage::read_plan().await,
             AgentTool::Codex => read_codex_plan(context).await.map_err(|why| plan_cache::Failure::new(why, plan_cache::Failure::SHORT)),
             AgentTool::Grok => grok_usage::read_plan().await,
-            AgentTool::Gemini => gemini_usage::read_plan(context.path.as_deref()).await,
+            AgentTool::Gemini => gemini_usage::read_plan(context.path.as_deref(), model).await,
             AgentTool::Muse => unreachable!("answered from the last turn above"),
         }
     };
-    plan_cache::get(tool, read)
+    plan_cache::get(tool, model, read)
         .await
         .map_err(|failure| {
             let wait = failure.wait.as_secs();

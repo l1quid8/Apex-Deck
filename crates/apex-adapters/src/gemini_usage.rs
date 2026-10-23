@@ -17,16 +17,18 @@ const QUOTA: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUser
 
 /// Read Gemini's plan usage. When Antigravity (`agy` or `antigravity`) is used,
 /// reads directly from `agy -p /usage --output-format json`. Otherwise reads
-/// with the login the Gemini CLI saved.
-pub(crate) async fn read_plan(path: Option<&str>) -> Result<PlanUsage, Failure> {
+/// with the login the Gemini CLI saved. `model` is the model the bot is set
+/// to; the reply groups quotas per model family, and a model with its own
+/// small group (`gemini-4-argon`) is spent long before the family one is.
+pub(crate) async fn read_plan(path: Option<&str>, model: Option<&str>) -> Result<PlanUsage, Failure> {
     let program = crate::presets::resolve_gemini_program(path);
     if program == "agy" || program == "antigravity" {
-        return read_agy_plan(program, path).await;
+        return read_agy_plan(program, path, model).await;
     }
     read_legacy_plan().await
 }
 
-async fn read_agy_plan(program: &str, path: Option<&str>) -> Result<PlanUsage, Failure> {
+async fn read_agy_plan(program: &str, path: Option<&str>, model: Option<&str>) -> Result<PlanUsage, Failure> {
     let short = |why: String| Failure::new(why, Failure::SHORT);
     let mut command = tokio::process::Command::new(program);
     command.args(["-p", "/usage", "--output-format", "json"]);
@@ -50,15 +52,17 @@ async fn read_agy_plan(program: &str, path: Option<&str>) -> Result<PlanUsage, F
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(stdout.trim())
         .map_err(|e| short(format!("could not parse `{program}` usage JSON: {e}")))?;
-    parse_agy_usage(&json).ok_or_else(|| short("the reply had no usage windows".into()))
+    parse_agy_usage(&json, model).ok_or_else(|| short("the reply had no usage windows".into()))
 }
 
-/// Parse Antigravity's JSON response for the `/usage` command.
-pub(crate) fn parse_agy_usage(json: &Value) -> Option<PlanUsage> {
+/// Parse Antigravity's JSON response for the `/usage` command. The reply lists
+/// the account's quota groups, one per family of models; `model` picks the
+/// group that model draws from, so a bot on `gemini-4-argon` reads the Argon
+/// weekly bucket rather than the Gemini family bucket it shares with Flash.
+pub(crate) fn parse_agy_usage(json: &Value, model: Option<&str>) -> Option<PlanUsage> {
     let groups = json["command"]["data"]["groups"].as_array()?;
-    let gemini_group = groups.iter().find(|g| {
-        g["name"].as_str().map_or(false, |n| n.contains("Gemini"))
-    })?;
+
+    let gemini_group = group_for_model(groups, model)?;
     let buckets = gemini_group["buckets"].as_array()?;
     let mut windows: Vec<PlanWindow> = Vec::new();
     for bucket in buckets {
@@ -87,6 +91,47 @@ pub(crate) fn parse_agy_usage(json: &Value) -> Option<PlanUsage> {
         partial: false,
         reset_credits: None,
     })
+}
+
+/// The group `model` draws from. Group names are prose ("Gemini 4 Argon",
+/// "Gemini Models"), model names are ids (`gemini-4-argon`), so the match is
+/// on words with the vendor name dropped: the group whose remaining words all
+/// appear in the model id, the most specific one first. A model that names no
+/// group of its own (`gemini-3.8-flash`, or no model at all) reads the family
+/// group, which is what every model used to read.
+fn group_for_model<'a>(groups: &'a [Value], model: Option<&str>) -> Option<&'a Value> {
+    let model_words = model.map(words).unwrap_or_default();
+    if !model_words.is_empty() {
+        let mut best: Option<(usize, &Value)> = None;
+        for group in groups {
+            let Some(name) = group["name"].as_str() else { continue };
+            let wanted: Vec<String> = words(name).into_iter().filter(|w| w != VENDOR_WORD).collect();
+            if wanted.is_empty() || !wanted.iter().all(|w| model_words.contains(w)) {
+                continue;
+            }
+            if best.is_none_or(|(words_matched, _)| wanted.len() > words_matched) {
+                best = Some((wanted.len(), group));
+            }
+        }
+        if let Some((_, group)) = best {
+            return Some(group);
+        }
+    }
+    groups.iter().find(|g| g["name"].as_str().is_some_and(|n| n.contains("Gemini")))
+}
+
+/// Every Gemini model id starts with it, and several group names do too, so it
+/// says nothing about which group a model belongs to.
+const VENDOR_WORD: &str = "gemini";
+
+/// A name as lowercase words: "Gemini 4 Argon" and "gemini-4-argon" both give
+/// the same set.
+fn words(name: &str) -> Vec<String> {
+    name.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 async fn read_legacy_plan() -> Result<PlanUsage, Failure> {
@@ -262,7 +307,7 @@ mod tests {
                 }
             }
         });
-        let plan = parse_agy_usage(&usage).unwrap();
+        let plan = parse_agy_usage(&usage, None).unwrap();
         assert_eq!(plan.provider, AgentTool::Gemini);
         assert_eq!(plan.windows.len(), 2);
         assert_eq!(plan.windows[0].name, "seven_day");
@@ -273,5 +318,52 @@ mod tests {
         assert_eq!(plan.windows[1].used_percent, 26);
         assert_eq!(plan.windows[1].window_minutes, Some(300));
         assert!(plan.windows[1].resets_at.is_some());
+    }
+
+    /// `agy -p /usage --output-format json` on 2026-10-23: the Gemini family
+    /// bucket was nearly full while the separate Argon bucket was empty. The
+    /// account was not out of Gemini; it was out of Argon.
+    const AGY_USAGE: &str = include_str!("../tests/fixtures/gemini_usage/agy_usage.json");
+
+    fn recorded() -> Value {
+        serde_json::from_str(AGY_USAGE).unwrap()
+    }
+
+    #[test]
+    fn a_model_in_its_own_group_reads_that_group() {
+        let plan = parse_agy_usage(&recorded(), Some("gemini-4-argon")).unwrap();
+        assert_eq!(plan.windows.len(), 1, "Argon has one weekly bucket of its own");
+        assert_eq!(plan.windows[0].name, "seven_day");
+        assert_eq!(plan.windows[0].used_percent, 100, "Argon was at 0% left");
+        assert_eq!(plan.windows[0].window_minutes, Some(10_080));
+        assert_eq!(plan.windows[0].resets_at, Some(1_792_829_128));
+        // A versioned id of the same model reads the same group.
+        let preview = parse_agy_usage(&recorded(), Some("gemini-4-argon-preview")).unwrap();
+        assert_eq!(preview, plan);
+    }
+
+    #[test]
+    fn a_model_of_the_family_group_reads_the_family_group() {
+        let plan = parse_agy_usage(&recorded(), Some("gemini-3.8-flash")).unwrap();
+        assert_eq!(plan.windows.len(), 2);
+        assert_eq!(plan.windows[0].used_percent, 2, "0.981 left rounds to 2% used");
+        assert_eq!(plan.windows[1].used_percent, 0);
+        // No model at all keeps the family group, as every read used to.
+        assert_eq!(parse_agy_usage(&recorded(), None).unwrap(), plan);
+        assert_eq!(parse_agy_usage(&recorded(), Some("  ")).unwrap(), plan);
+    }
+
+    #[test]
+    fn other_providers_groups_are_never_picked_for_a_gemini_model() {
+        let groups = json!({
+            "command": { "data": { "groups": [
+                { "name": "Claude and GPT models", "buckets": [] },
+                { "name": "Gemini Models", "buckets": [{ "id": "gemini-weekly", "window": "weekly", "remaining_fraction": 1.0 }] }
+            ] } }
+        });
+        let plan = parse_agy_usage(&groups, Some("gemini-2.5-pro")).unwrap();
+        assert_eq!(plan.windows.len(), 1);
+        assert_eq!(plan.windows[0].used_percent, 0);
+        assert!(parse_agy_usage(&json!({ "command": { "data": { "groups": [] } } }), Some("gemini-4-argon")).is_none());
     }
 }
