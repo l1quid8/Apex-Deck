@@ -22,6 +22,8 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Part
   return {
     supports: capability => client.hasCapability?.(capability) === true,
     call: (cmd, args) => {
+      if (cmd.startsWith("personal_avatar_") && client.hasCapability?.("assistant_avatar_generation_v1") !== true)
+        throw new Error("This host does not support assistant avatar generation. Update the service, then reconnect.");
       if (cmd === "personal_workspace_configure" && client.hasCapability?.("assistant_workspace_v4") !== true)
         throw new Error("This host’s Apex Deck service does not advertise assistant workspace settings support. Update the service on the assistant machine, then reconnect.");
       if (cmd.startsWith("assistant_")) client.requireCapability?.("assistant_delegation", "ApexAgent delegation");

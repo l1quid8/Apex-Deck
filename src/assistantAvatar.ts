@@ -7,14 +7,14 @@ export type AvatarOption = {providerProfileId:string;modelId:string;label:string
 export type AvatarEditorState = {owner:AvatarDraftOwner;editorToken:string;generationId?:string;status:'idle'|'pending'|'preview'|'error'|'cancelled';candidate?:AssistantAvatarAsset;selection?:AvatarSelection;error?:string};
 export const avatarOwnerKey=(o:AvatarDraftOwner)=>JSON.stringify(o.kind==='assistant'?['assistant',o.assistant.hostId,o.assistant.assistantId]:['creation',o.hostId,o.draftId]);
 export function createAvatarEditor(owner:AvatarDraftOwner,editorToken:string):AvatarEditorState{return {owner,editorToken,status:'idle'};}
-export type AvatarEditorEvent={type:'generate';generationId:string;editorToken:string}|{type:'result';job:AvatarJob}|{type:'apply'}|{type:'cancel'}|{type:'pixel'};
+export type AvatarEditorEvent={type:'generate';generationId:string;editorToken:string}|{type:'result';job:AvatarJob}|{type:'apply'}|{type:'cancel';discardSelection?:boolean}|{type:'pixel'};
 export function reduceAvatarEditor(s:AvatarEditorState,e:AvatarEditorEvent):AvatarEditorState{
  switch(e.type){
  case 'generate':return {...s,generationId:e.generationId,editorToken:e.editorToken,status:'pending',candidate:undefined,error:undefined};
  case 'result':if(s.status!=='pending'||avatarOwnerKey(s.owner)!==avatarOwnerKey(e.job.owner)||s.generationId!==e.job.generationId||s.editorToken!==e.job.editorToken)return s;
  return {...s,status:e.job.state,candidate:e.job.state==='preview'?e.job.candidate:undefined,error:e.job.error};
  case 'apply':return s.status==='preview'&&s.candidate&&s.generationId?{...s,selection:{kind:'image',generationId:s.generationId,assetId:s.candidate.assetId}}:s;
- case 'cancel':return {...s,status:'cancelled',candidate:undefined};
+ case 'cancel':return {...s,status:'cancelled',candidate:undefined,selection:e.discardSelection?undefined:s.selection};
  case 'pixel':return {...s,status:'idle',candidate:undefined,selection:{kind:'pixel'}};
  }
 }

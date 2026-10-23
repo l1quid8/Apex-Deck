@@ -23,8 +23,9 @@ export function Avatar({ seed, color, size = "md", working = false, levels, refi
   const cells = useMemo(() => identiconCells(seed), [seed]);
   const refilling = useRefill(refills);
   const frame = useScramble(scramble);
+  const [failedImage, setFailedImage] = useState<string>();
   const imageUrl = useAvatarImage(assistant, image, avatarApi);
-  if (imageUrl) return <span className={`identicon identicon-${size}${working ? " working" : ""}`} style={{ "--who": color, display:"inline-block", overflow:"hidden" } as CSSProperties} aria-hidden="true"><img src={imageUrl} style={{width:"100%",height:"100%",objectFit:"cover"}} onError={event=>{event.currentTarget.style.display="none";}} /></span>;
+  if (imageUrl && failedImage !== imageUrl) return <span className={`identicon identicon-${size}${working ? " working" : ""}`} style={{ "--who": color, display:"inline-block", overflow:"hidden" } as CSSProperties} aria-hidden="true"><img src={imageUrl} style={{width:"100%",height:"100%",objectFit:"cover"}} onError={()=>setFailedImage(imageUrl)} /></span>;
   if (!levels) {
     return (
       <span className={`identicon identicon-${size}${working ? " working" : ""}`} style={{ "--who": color } as CSSProperties} aria-hidden="true">

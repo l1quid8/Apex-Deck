@@ -27,3 +27,8 @@ test('creation drafts and duplicate host-local ids have distinct owner keys',()=
  assert.notEqual(avatarOwnerKey(owner),avatarOwnerKey({...owner,assistant:{...owner.assistant,hostId:'other'}}));
  assert.notEqual(avatarOwnerKey({kind:'creation',hostId:'a',draftId:'one'}),avatarOwnerKey({kind:'creation',hostId:'a',draftId:'two'}));
 });
+test('paid generation and cancel require trusted UI provenance',async()=>{
+ const {protectedCommands}=await import('../desktop/provenance.mjs');
+ assert.equal(protectedCommands.has('personal_avatar_generate'),true);
+ assert.equal(protectedCommands.has('personal_avatar_cancel'),true);
+});
