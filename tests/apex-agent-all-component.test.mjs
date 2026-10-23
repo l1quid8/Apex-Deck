@@ -25,6 +25,7 @@ const projects = [{ id: 'mobile', name: 'Mobile launch' }, { id: 'billing', name
 
 // Stands in for the panels component: the harness only checks which panel was asked for.
 const MarkdownStub = () => null;
+const LandingTextureStub = (props) => ({ type: LandingTextureStub, props, children: [] });
 const LegacyBadgeStub = () => null;
 const PersonalPanelsStub = (props) => ({ type: PersonalPanelsStub, props, children: [] });
 const PersonalCallStub = (props) => ({ type: PersonalCallStub, props, children: [] });
@@ -43,7 +44,7 @@ function harness(props, { effects = false } = {}) {
     useEffect(fn, deps) { const i = cursor++; if (effects && (!effectDeps[i] || deps.some((v, j) => v !== effectDeps[i][j]))) { queuedEffects.push(fn); effectDeps[i] = deps; } },
     useCallback(fn) { cursor++; return fn; },
   };
-  const component = new Function('assistantComposerDraftFor', 'useAssistantComposerDraftState', 'React', 'Markdown', 'LegacyBadge', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'withoutLaneMentions', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(assistantComposerDraftFor, draftHookFor(hooks), React, MarkdownStub, LegacyBadgeStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
+  const component = new Function('assistantComposerDraftFor', 'useAssistantComposerDraftState', 'React', 'Markdown', 'LegacyBadge', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'withoutLaneMentions', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', 'LandingTexture', `${compiled}\nreturn ApexAgentAll;`)(assistantComposerDraftFor, draftHookFor(hooks), React, MarkdownStub, LegacyBadgeStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTextureStub);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, flushEffects() { queuedEffects.splice(0).forEach(fn => fn()); }, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
@@ -994,4 +995,32 @@ test('embedded task details keep the composer and offer a way back to chat', () 
  const back=find(tree,n=>n.props?.className==='assistant-chat-back');assert.equal(textOf(back),'‹ Chat');
  back.props.onClick();tree=h.render();assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null);
  assert.ok(find(tree,n=>n.props?.className==='apex-agent-task-link'),'transcript is back');
+});
+
+const rain={enabled:true,mode:'rainbow',color:'#3def91',rainbowSpeed:1,rippleShape:'diamond'};
+test('a new teammate opens on the rain empty state with its name', () => {
+ const {lane}=personalLane([],[]);lane.name='Fidelity QA';const key='first-run-owner';
+ const tree=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[],landingTexture:rain}).render();
+ const first=find(tree,n=>n.props?.className==='assistant-first-run');assert.ok(first);
+ assert.equal(find(first,n=>n.type===LandingTextureStub).props.settings,rain);
+ assert.match(textOf(first),/New teammate/);assert.match(textOf(first),/Fidelity QA is ready\./);
+ assert.match(textOf(first),/Tell it what to own\. It plans the work, runs your agents in its projects, and brings results back here\./);
+ assert.equal(find(tree,n=>n.type==='textarea').props.placeholder,'Give Fidelity QA its first brief');
+});
+test('a suggestion fills the composer and never sends', () => {
+ const {lane,calls}=personalLane([],[]);const key='first-run-suggest';
+ const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[],landingTexture:rain});
+ const suggestions=collectAll(h.render(),n=>n.type==='button'&&n.props?.className==='assistant-first-run-suggestion');
+ assert.deepEqual(suggestions.map(textOf),['Review this project and tell me what to fix first.','Run the tests every morning and tell me what broke.','Check each new branch before I merge it.']);
+ suggestions[1].props.onClick();const tree=h.render();
+ assert.equal(find(tree,n=>n.type==='textarea').props.value,'Run the tests every morning and tell me what broke.');
+ assert.equal(calls.length,0);assert.equal(h.replies.length,0);
+});
+test('the first message replaces the empty state', () => {
+ const {lane}=personalLane([],[pm('pm-1','human','chat',1,'Hello')]);const key='first-run-done';
+ const tree=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[],landingTexture:rain}).render();
+ assert.equal(find(tree,n=>n.props?.className==='assistant-first-run'),null);
+});
+test('LandingTexture listens on the new-teammate surface', () => {
+ assert.match(fs.readFileSync(new URL('../src/landing/LandingTexture.tsx', import.meta.url),'utf8'),/\.assistant-first-run/);
 });

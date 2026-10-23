@@ -126,7 +126,7 @@
   background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
   border-color: color-mix(in srgb, var(--accent) 38%, transparent);
 }
-:root[data-deck-theme="clay"] .empty h3 {
+:root[data-deck-theme="clay"] :is(.empty h3, .assistant-first-run .empty-title) {
   font-family: var(--deck-font-reading);
   font-size: 22px;
   font-weight: 500;

@@ -33,7 +33,7 @@ export function LandingTexture({ settings }: { settings: LandingTextureSettings 
     // Cached threads can mount under display:none, where offsetParent is null.
     // Choose the surface structurally so listeners still cover the rain when
     // that thread is revealed, rather than staying on the small welcome block.
-    const host = wrap.closest<HTMLElement>(".chat-body, .agents-empty") ?? wrap.parentElement;
+    const host = wrap.closest<HTMLElement>(".chat-body, .agents-empty, .assistant-first-run") ?? wrap.parentElement;
     if (!host) return;
     const renderer = createLandingRenderer(canvas, settingsRef.current);
     if (!renderer) return;
