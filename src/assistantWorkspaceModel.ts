@@ -1,5 +1,5 @@
 import type { Backend } from './backend.ts';
-import type { AssistantRef, ProjectRef } from './assistantIdentity.ts';
+import { projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
 import type { ParticipantConfig, ModelChoice, Workspace } from './types.ts';
 export type AssistantSection = 'conversation' | 'projects' | 'activity' | 'memory' | 'settings';
 export type MainView = { kind: 'workspace' } | { kind: 'assistant'; assistant: AssistantRef; section: AssistantSection; previousSections?: AssistantSection[] };
@@ -67,4 +67,16 @@ export async function resolveAssistantProjectFolder(project:ProjectRef,workspace
   const folder=await backend.listFolder(workspace.path);
   return bound()&&folder.path===project.cwd?{...project}:null;
  } catch {return null;}
+}
+
+/** Discover an unassigned workspace through its authenticated owning host.
+ * A coordinator/task snapshot is not needed merely to offer an assignment. */
+export async function discoverAssistantProjectFolder(workspace:Workspace,hostId:string,backend:Pick<Backend,'host'|'listFolder'>,current:()=>boolean):Promise<ProjectRef|null> {
+ const bound=()=>{const status=backend.host?.connection.get().status;return current()&&status?.kind==='connected'&&status.hostId===hostId;};
+ if(workspace.hidden||!bound())return null;
+ const folder=await backend.listFolder(workspace.path);
+ if(!bound())return null;
+ const project={hostId,workspaceId:workspace.id,cwd:folder.path};
+ projectIdentityKey(project);
+ return project;
 }

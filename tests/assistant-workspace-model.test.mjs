@@ -56,3 +56,15 @@ test('host folder read proves an ambiguous binding and rejects late path or auth
  status={kind:'connected',hostId:'host'};pending=resolve(project,workspace,backend,()=>current);finish({path:'/different'});assert.equal(await pending,null);
  assert.equal(await resolve({...project,hostId:'other'},workspace,backend,()=>true),null);assert.equal(calls,4);
 });
+
+test('fresh unassigned projects are canonicalized by their authenticated host without a task snapshot or coordinator',async()=>{
+ const workspace={id:'fresh-project',hostId:'local',path:'/Users/tylercaldwell/apex-assistant/fidelity-qa',name:'fidelity-qa'};
+ const reads=[];let status={kind:'connected',hostId:'mac-host'};let current=true;let finish;
+ const backend={host:{connection:{get:()=>({status})}},listFolder:path=>{reads.push(path);return new Promise(resolve=>{finish=resolve;});}};
+ let pending=workspaceModel.discoverAssistantProjectFolder(workspace,'mac-host',backend,()=>current);finish({path:workspace.path});
+ assert.deepEqual(await pending,{hostId:'mac-host',workspaceId:workspace.id,cwd:workspace.path});assert.deepEqual(reads,[workspace.path]);
+ pending=workspaceModel.discoverAssistantProjectFolder(workspace,'mac-host',backend,()=>current);current=false;finish({path:workspace.path});assert.equal(await pending,null);
+ current=true;pending=workspaceModel.discoverAssistantProjectFolder(workspace,'mac-host',backend,()=>current);status={kind:'connected',hostId:'replacement-host'};finish({path:workspace.path});assert.equal(await pending,null);
+ status={kind:'connected',hostId:'mac-host'};pending=workspaceModel.discoverAssistantProjectFolder(workspace,'mac-host',backend,()=>current);finish({path:'relative/path'});await assert.rejects(pending,/absolute/);
+ assert.equal(await workspaceModel.discoverAssistantProjectFolder({...workspace,hidden:true},'mac-host',backend,()=>true),null);
+});

@@ -71,3 +71,17 @@ test('assigned project can be removed before any delegation or task snapshot; ho
   find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();
   assert.deepEqual(saved,[{expectedRevision:record.revision,projects:[]}]);assert.ok(!h.calls.some(call=>call.cmd==='assistant_tasks_list'||call.cmd==='personal_project_delegate_ui'));
 });
+
+test('fresh discovered folder inside existing grants is assignable before its first coordinator or task',async()=>{
+  const qa={hostId:'host',workspaceId:'fresh-qa',cwd:'/Users/tylercaldwell/apex-assistant/fidelity-qa'};
+  const saved=[];const h=harness({lane:{assistant:{...record,projects:[],allowedFolders:['/Users/tylercaldwell/apex-assistant']},name:'Fidelity QA',offline:false,configureWorkspace:async input=>saved.push(input)},projects:[],availableProjects:[{project,name:'apex-deck'},{project:qa,name:'fidelity-qa'}]});
+  let tree=h.render();await tick();tree=h.render();button(tree,'Assign projects').props.onClick();tree=h.render();
+  let dialog=find(tree,node=>node.props.role==='dialog');const outside=find(dialog,node=>node.type==='label'&&text(node).includes('apex-deck'));assert.equal(find(outside,node=>node.type==='input').props.disabled,true);
+  const qaLabel=find(dialog,node=>node.type==='label'&&text(node).includes('fidelity-qa'));const checkbox=find(qaLabel,node=>node.type==='input');assert.equal(checkbox.props.disabled,false);checkbox.props.onChange({target:{checked:true}});tree=h.render();
+  find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();
+  assert.deepEqual(saved,[{expectedRevision:record.revision,projects:[{project:qa,tools:'ask'}]}]);assert.equal(h.calls.length,0);
+});
+
+test('unverified candidates remain visible with exact folder failure and cannot be assigned',async()=>{
+  const h=harness({lane:{assistant:record,name:'Ada',offline:false,configureWorkspace:async()=>{}},unavailableProjects:[{id:'unavailable-project',name:'fidelity-qa',path:'/work/fidelity-qa',problem:'Folder permission denied.'}]});let tree=h.render();await tick();tree=h.render();button(tree,'Assign projects').props.onClick();tree=h.render();const dialog=find(tree,node=>node.props.role==='dialog');const label=find(dialog,node=>node.type==='label'&&text(node).includes('fidelity-qa'));assert.equal(find(label,node=>node.type==='input').props.disabled,true);assert.match(text(dialog),/Folder permission denied/);
+});

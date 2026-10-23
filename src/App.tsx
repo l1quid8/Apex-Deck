@@ -34,7 +34,7 @@ import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
-import { rosterMessage, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
+import { rosterMessage, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import "./apex-agent-dock.css";
 import { LibraryView } from "./lazyViews";
@@ -169,6 +169,7 @@ export function App() {
   const [section, setSection] = useState<AppSection>("threads");
   const [mainView, setMainView] = useState<MainView>({kind:"workspace"});
   const [assistantProjectAliases,setAssistantProjectAliases]=useState<Record<string,{route:Backend;project:ProjectRef}>>({});
+  const [assistantProjectDiscoveryProblems,setAssistantProjectDiscoveryProblems]=useState<Record<string,string>>({});
   const [creatingAssistant, setCreatingAssistant] = useState(false);
   const [assistantNotebookProject,setAssistantNotebookProject]=useState<ProjectRef>();
   const [creationHost, setCreationHost] = useState("local");
@@ -1944,6 +1945,34 @@ export function App() {
     void Promise.all(Array.from({length:Math.min(4,aliasCandidates.length)},resolveNext));
     return()=>{active=false;};
   },[backend,hostList,aliasCandidatesKey]);
+  // Assignment discovery is a read-only folder check, independent of task
+  // coordinators. Fresh projects must be assignable before their first task.
+  const assignmentHostId=mainView.kind==='assistant'?mainView.assistant.hostId:undefined;
+  const discoverAssignmentProjects=mainView.kind==='assistant'&&(mainView.section==='projects'||mainView.section==='settings');
+  const assignmentWorkspaces=workspaces.filter(workspace=>!workspace.hidden&&workspaceHost(workspace)===assistantHost?.routeHostId);
+  const assignmentDiscoveryKey=JSON.stringify([assignmentHostId,assistantHost?.routeHostId,assignmentWorkspaces.map(workspace=>[workspace.id,workspace.path,authenticatedProjectHost(workspaceHost(workspace))])]);
+  useEffect(()=>{
+    if(!discoverAssignmentProjects||!assistantHost||!assignmentHostId)return;
+    let active=true;let cursor=0;
+    const candidates=assignmentWorkspaces.filter(workspace=>!canonicalProjectForWorkspace(workspace));
+    const resolveNext=async()=>{
+      while(active&&cursor<candidates.length){
+        const workspace=candidates[cursor++];const hostId=assignmentHostId;let route:Backend;
+        try{route=hostBackend(workspaceHost(workspace));}catch{continue;}
+        const key=projectAliasKey(workspace,hostId);
+        const current=()=>active&&hostBackend(workspaceHost(workspace))===route&&latest.current.workspaces.some(item=>item.id===workspace.id&&item.path===workspace.path&&workspaceHost(item)===workspaceHost(workspace)&&!item.hidden);
+        try{
+          const project=await discoverAssistantProjectFolder(workspace,hostId,route,current);
+          if(project&&current()){
+            setAssistantProjectAliases(before=>({...before,[key]:{route,project}}));
+            setAssistantProjectDiscoveryProblems(before=>{const next={...before};delete next[key];return next;});
+          }
+        }catch(error){if(current())setAssistantProjectDiscoveryProblems(before=>({...before,[key]:error instanceof Error?error.message:String(error)}));}
+      }
+    };
+    void Promise.all(Array.from({length:Math.min(4,candidates.length)},resolveNext));
+    return()=>{active=false;};
+  },[backend,hostList,assignmentDiscoveryKey,discoverAssignmentProjects]);
   const scopedAssistantWorkspaces = workspaces.filter(workspace=>assignedProjects.some(binding=>resolveAssistantProject(binding.project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace)===workspace));
   const scopedAssistantMonitors = assistantMonitors.filter(monitor=>scopedAssistantWorkspaces.some(workspace=>workspace.id===monitor.workspaceId && workspace.path===monitor.cwd && workspaceHost(workspace)===monitor.hostId));
   // Migrate callers of the former widget destination into the main canvas.
@@ -2620,7 +2649,8 @@ export function App() {
                 return threadId;
               }}
               projects={assignedProjects.map(binding=>({project:binding.project,name:workspaces.find(workspace=>workspace.id===binding.project.workspaceId)?.name??binding.project.cwd.split('/').at(-1)??'Project',unavailable:projectUnavailable(binding.project)}))}
-              availableProjects={workspaces.filter(workspace=>!workspace.hidden&&workspaceHost(workspace)===assistantHost?.routeHostId).flatMap(workspace=>{const project=canonicalProjectForWorkspace(workspace);return project?[{project,name:workspace.name}]:[];})}
+              availableProjects={assignmentWorkspaces.flatMap(workspace=>{const project=canonicalProjectForWorkspace(workspace);return project?[{project,name:workspace.name}]:[];})}
+              unavailableProjects={assignmentWorkspaces.filter(workspace=>!canonicalProjectForWorkspace(workspace)).map(workspace=>({id:workspace.id,name:workspace.name,path:workspace.path,problem:authenticatedProjectHost(workspaceHost(workspace))!==assignmentHostId?'Reconnect this project’s owning machine.':assistantProjectDiscoveryProblems[projectAliasKey(workspace,assignmentHostId!)]??'Verifying this folder with its owning machine…'}))}
               taskScopes={Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.project&&assignedProjects.some(binding=>binding.project.hostId===entry.snapshot?.project?.hostId&&binding.project.workspaceId===entry.snapshot?.project?.workspaceId&&binding.project.cwd===entry.snapshot?.project?.cwd)?[{project:entry.snapshot.project,owner:entry.owner,snapshot:entry.snapshot}]:[])}
               onOpenProject={project=>{const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);if(!workspace){toast('Reconnect this project to open it.');return;}setActiveWorkspace(workspace.id);setMainView({kind:'workspace'});setSection('threads');}}
               onOpenNotebook={project=>{setAssistantNotebookProject(project);navigateAssistant('memory');}}
