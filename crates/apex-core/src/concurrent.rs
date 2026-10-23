@@ -561,6 +561,7 @@ impl ConcurrentRoom {
             let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
             request.system = crate::view::system_prompt(&config, &room.configs())
                 + &crate::view::pinned_section(room.pins())
+                + &room.checklist_section(&ticket.id)
                 + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
                 + answer_guidance;
             if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
@@ -578,6 +579,7 @@ impl ConcurrentRoom {
         sink(RoomEvent::TurnStarted {
             id: ticket.id.clone(),
         });
+        let checklists = self.room.lock().await.checklists_handle();
         let changes = Mutex::new(Vec::new());
         let progress = |update: Progress<'_>| {
             if let Progress::Change(change) = update {
@@ -589,6 +591,7 @@ impl ConcurrentRoom {
                     seq: shown,
                 });
             }
+            crate::room::remember_checklist(&checklists, &ticket.id, shown, update);
             sink(progress_event(&ticket.id, update));
         };
         let approver = RoomApprover {

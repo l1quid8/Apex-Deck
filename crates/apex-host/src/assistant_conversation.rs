@@ -50,6 +50,7 @@ mod tests {
                     allowed: vec![],
                     usage: Default::default(),
                     plan: false,
+                    checklists: Default::default(),
                 },
             }],
             evidence: vec![ConversationEvidence {
@@ -708,6 +709,7 @@ mod tests {
                 allowed: vec![],
                 usage: Default::default(),
                 plan: false,
+                checklists: Default::default(),
             },
         }
     }
