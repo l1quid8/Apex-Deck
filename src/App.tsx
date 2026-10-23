@@ -34,7 +34,7 @@ import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
-import { rosterMessage, loadMainView, saveMainView, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
+import { rosterMessage, loadMainView, saveMainView, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, assistantProjectCanvasDestination, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import "./apex-agent-dock.css";
 import { LibraryView } from "./lazyViews";
@@ -2206,6 +2206,14 @@ export function App() {
     setFocusedPane(pane.id);
     if (maximized && maximized !== pane.id) setMaximized(null);
   };
+  const openAssistantProjectCanvas = (project:ProjectRef) => {
+    const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
+    if(!workspace){toast('Reconnect this project to open it.');return;}
+    const destination=assistantProjectCanvasDestination(workspace,viewPanes,focusedPane,recentThreads,new Set([...deleting,...poppedIds]));
+    if(destination.pane)focusPane(destination.pane);
+    else {setMainView({kind:'workspace'});setCreatingAssistant(false);setActiveWorkspace(destination.workspaceId);setSection(destination.section);setFocusedPane(null);setPicking(true);}
+    setMaximized(destination.maximized);
+  };
   // Window events for pop-outs arrive between renders; they need the newest focus.
   popoutLive.current.focusPane = focusPane;
   const openDashboard = (id: string, destination?: DashboardDestination) => {
@@ -2653,7 +2661,7 @@ export function App() {
               availableProjects={assignmentWorkspaces.flatMap(workspace=>{const project=canonicalProjectForWorkspace(workspace);return project?[{project,name:workspace.name}]:[];})}
               unavailableProjects={assignmentWorkspaces.filter(workspace=>!canonicalProjectForWorkspace(workspace)).map(workspace=>({id:workspace.id,name:workspace.name,path:workspace.path,problem:authenticatedProjectHost(workspaceHost(workspace))!==assignmentHostId?'Reconnect this project’s owning machine.':assistantProjectDiscoveryProblems[projectAliasKey(workspace,assignmentHostId!)]??'Verifying this folder with its owning machine…'}))}
               taskScopes={Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.project&&assignedProjects.some(binding=>binding.project.hostId===entry.snapshot?.project?.hostId&&binding.project.workspaceId===entry.snapshot?.project?.workspaceId&&binding.project.cwd===entry.snapshot?.project?.cwd)?[{project:entry.snapshot.project,owner:entry.owner,snapshot:entry.snapshot}]:[])}
-              onOpenProject={project=>{const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);if(!workspace){toast('Reconnect this project to open it.');return;}setActiveWorkspace(workspace.id);setMainView({kind:'workspace'});setSection('threads');}}
+              onOpenProject={openAssistantProjectCanvas}
               onOpenNotebook={project=>{setAssistantNotebookProject(project);navigateAssistant('memory');}}
               onOpenThread={(project,id)=>{const pane=viewPanes.find(pane=>pane.id===id&&pane.workspaceId===project.workspaceId);if(pane){focusPane(pane);setMainView({kind:'workspace'});}}}
             />:undefined}

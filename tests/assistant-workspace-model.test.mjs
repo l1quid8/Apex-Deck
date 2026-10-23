@@ -84,3 +84,21 @@ test('main-view persistence rejects malformed records and strips non-navigation 
  const record={kind:'assistant',assistant:{...a,role:'admin'},section:'settings',projects:[{tools:'full'}],previousSections:['memory']};assert.deepEqual(workspaceModel.parseMainView(JSON.stringify(record)),{kind:'assistant',assistant:a,section:'settings'});
  const unavailable={getItem(){throw new Error('storage disabled');},setItem(){throw new Error('storage disabled');}};assert.deepEqual(workspaceModel.loadMainView(unavailable),{kind:'workspace'});assert.doesNotThrow(()=>workspaceModel.saveMainView({kind:'assistant',assistant:a,section:'memory'},unavailable));
 });
+
+test('opening a project chooses and maximizes its own saved chat instead of the previously focused foreign thread',()=>{
+ const workspace={id:'qa',hostId:'local',path:'/Users/tylercaldwell/apex-assistant/fidelity-qa',name:'fidelity-qa'};
+ const unrelated={id:'apex-dot',workspaceId:'apex-deck',kind:'chat',title:'Apex-Dot'};
+ const own={id:'qa-worker',workspaceId:'qa',kind:'chat',title:'QA worker'};
+ const second={id:'qa-other',workspaceId:'qa',kind:'chat',title:'Other QA'};
+ const result=workspaceModel.assistantProjectCanvasDestination(workspace,[unrelated,second,own],unrelated.id,[unrelated.id,own.id]);
+ assert.equal(result.workspaceId,'qa');assert.equal(result.pane,own);assert.equal(result.focusedPane,own.id);assert.equal(result.maximized,own.id);assert.equal(result.section,'threads');assert.equal(result.picking,false);
+ assert.equal(workspaceModel.assistantProjectCanvasDestination(workspace,[own,second],second.id,[own.id]).pane,second);
+});
+
+test('opening an empty project clears foreign focus and shows its picker without creating or reassigning any chat',()=>{
+ const workspace={id:'qa',name:'QA',path:'/qa'},panes=[{id:'foreign',workspaceId:'other',kind:'chat',title:'Foreign'},{id:'terminal',workspaceId:'qa',kind:'terminal',title:'Terminal'},{id:'archived',workspaceId:'qa',kind:'chat',title:'Archived',archived:true},{id:'external',workspaceId:'qa',kind:'chat',title:'External'}];
+ const before=structuredClone(panes);const result=workspaceModel.assistantProjectCanvasDestination(workspace,panes,'foreign',['foreign'],new Set(['external']));
+ assert.deepEqual(result,{workspaceId:'qa',pane:null,focusedPane:null,maximized:null,picking:true,section:'threads'});assert.deepEqual(panes,before);
+ const closed={id:'closed',workspaceId:'qa',kind:'chat',title:'Saved',closed:true};assert.equal(workspaceModel.assistantProjectCanvasDestination(workspace,[closed],'foreign',[]).pane,closed);
+ assert.throws(()=>workspaceModel.assistantProjectCanvasDestination({...workspace,hidden:true},panes,null,[]),/unavailable/);
+});

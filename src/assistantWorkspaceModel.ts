@@ -1,6 +1,6 @@
 import type { Backend } from './backend.ts';
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
-import type { ParticipantConfig, ModelChoice, Workspace } from './types.ts';
+import type { ParticipantConfig, ModelChoice, Workspace, Pane } from './types.ts';
 export type AssistantSection = 'conversation' | 'projects' | 'activity' | 'memory' | 'settings';
 export type MainView = { kind: 'workspace' } | { kind: 'assistant'; assistant: AssistantRef; section: AssistantSection; previousSections?: AssistantSection[] };
 const MAIN_VIEW_STORAGE_KEY = 'apex-deck.main-view.v1';
@@ -102,4 +102,14 @@ export async function discoverAssistantProjectFolder(workspace:Workspace,hostId:
  const project={hostId,workspaceId:workspace.id,cwd:folder.path};
  projectIdentityKey(project);
  return project;
+}
+
+/** The global canvas spans projects. Opening one project must choose its own
+ * saved chat explicitly, or show its picker rather than leave another chat up. */
+export function assistantProjectCanvasDestination(workspace:Workspace,panes:readonly Pane[],focusedPane:string|null,recentThreads:readonly string[],unavailable:ReadonlySet<string>=new Set()) {
+ if(workspace.hidden)throw new Error('This project is unavailable.');
+ const own=panes.filter(pane=>pane.workspaceId===workspace.id&&pane.kind==='chat'&&!pane.archived&&!unavailable.has(pane.id));
+ const open=own.filter(pane=>!pane.closed);const candidates=open.length?open:own;
+ const pane=candidates.find(item=>item.id===focusedPane)??recentThreads.map(id=>candidates.find(item=>item.id===id)).find(item=>!!item)??candidates[0]??null;
+ return {workspaceId:workspace.id,pane,focusedPane:pane?.id??null,maximized:pane?.id??null,picking:!pane,section:'threads' as const};
 }
