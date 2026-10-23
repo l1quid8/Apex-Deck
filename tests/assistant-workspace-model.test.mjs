@@ -119,3 +119,17 @@ test('opening an assistant lands on chat; memory then back returns to work',()=>
  state=workspaceModel.assistantNavigation(state,{kind:'section',section:'work'});state=workspaceModel.assistantNavigation(state,{kind:'section',section:'memory'});
  assert.equal(workspaceModel.assistantNavigation(state,{kind:'back'}).mainView.section,'work');
 });
+
+test('dirtyFields lists changed settings in page order',()=>{
+ const saved={name:'A',model:'m1',effort:'low',access:'ask',projects:['/a'],look:{seed:'s',color:'#111111',kind:'pixel'}};
+ assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved}),[]);
+ assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,model:'m2',effort:'high'}),['Model','Reasoning']);
+ assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,name:'B',look:{...saved.look,color:'#222222'},access:'full',projects:['/a','/b']}),['Name','Avatar','Project tools','Projects']);
+ assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,projects:['/a']}),[],'same projects in a new array is not a change');
+});
+test('an unchanged image avatar is not counted as a change',()=>{
+ const look=()=>({seed:'s',color:'#111111',kind:'image',image:{assetId:'a1',sha256:'x'}});
+ const saved={name:'A',model:'m',effort:null,access:'ask',projects:[],look:look()};
+ assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,look:look()}),[]);
+ assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,look:{...look(),image:{assetId:'a2',sha256:'y'}}}),['Avatar']);
+});

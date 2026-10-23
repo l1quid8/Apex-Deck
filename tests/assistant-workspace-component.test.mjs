@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {createRequire} from 'node:module';
 import {assistantAppearance,createAssistantAppearance,projectIdentityKey} from '../src/assistantIdentity.ts';
-import {runtimeProfile,textModels,reconcileEffort,validateAssistantDraft} from '../src/assistantWorkspaceModel.ts';
+import {runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields} from '../src/assistantWorkspaceModel.ts';
 import {providerEnabled,providerForConfig} from '../src/providers.ts';
 import {AGENT_COLORS} from '../src/identicon.ts';
 import {assistantStatus,accessLabel} from '../src/assistantStatus.ts';
@@ -23,7 +23,7 @@ function mount(overrides={}){
  const props={backend,lane,hostId:'mac',profiles:[profile],projects:[],...overrides,backend,lane:overrides.lane===undefined&&Object.hasOwn(overrides,'lane')?undefined:lane};
  const states=[],deps=[],queued=[],cleanups=[];let cursor=0;
  const hooks={useRef(initial){const i=cursor++;return states[i]??(states[i]={current:initial});},useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}}};
- const bindings={React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel};
+ const bindings={React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel};
  const components=new Function(...Object.keys(bindings),`${compiled}\nreturn {AssistantEditor,AssistantWorkspace};`)(...Object.values(bindings));
  return{props,calls,unmount(){cleanups.forEach(fn=>fn?.());},render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
 }
@@ -48,7 +48,7 @@ test('missing credentials and unavailable models block saving the existing recor
 test('creation and Settings share ordered controls and create durable pixel/runtime fields only on Create',async()=>{
  const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});let tree=await h.ready();assert.ok(text(tree).indexOf('AI model')<text(tree).indexOf('Access'));assert.ok(text(tree).indexOf('Access')<text(tree).indexOf('Avatar'));assert.equal(created.length,0);
  input(tree,'Assistant name').props.onChange({target:{value:'Teammate'}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);assert.equal(created[0].workspaceVersion,4);assert.equal(typeof created[0].avatarDraftId,'string');assert.equal(created[0].avatarGenerationId,undefined);assert.equal(created[0].avatarAssetId,undefined);assert.equal(created[0].profile.access,'full');assert.match(created[0].look.color,/^#[\da-f]{6}$/);assert.ok(created[0].look.seed);
- const current=await mount().ready();assert.ok(text(current).indexOf('Connected context')>text(current).indexOf('Access'));assert.ok(text(current).indexOf('Skills & tools')<text(current).indexOf('Avatar'));
+ const current=text(await mount().ready());assert.ok(current.indexOf('Model')<current.indexOf('Projects & access'));assert.ok(current.indexOf('Projects & access')<current.indexOf('Tools & rules'));
 });
 test('a conflict changes no draft fields and retains the captured revision for explicit retry',async()=>{
  const h=mount({lane:{configureWorkspace:async()=>{throw new Error('Revision conflict; refresh and retry');}}});let tree=await h.ready();input(tree,'Assistant name').props.onChange({target:{value:'Keep my draft'}});await submit(h);tree=h.render();assert.equal(input(tree,'Assistant name').props.value,'Keep my draft');assert.match(text(tree),/Revision conflict/);assert.equal(record.name,'Null');
@@ -152,18 +152,18 @@ test('Settings keeps an unavailable saved provider instead of silently replacing
  let catalogs=0;const h=mount({backend:{sessionLoad:async()=>({profiles:[profile,textApi]}),detectAgents:async()=>[],apiKeyStatus:async()=>['saved'],apiModels:async()=>{catalogs++;return[{id:'configured-text'}];}}});const tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,0);assert.match(text(tree),/not installed/);assert.equal(catalogs,0);
 });
 
-test('Project tools offers exact mockup choices and Off disables every saved and newly assigned project',async()=>{
+test('Project tools offers exact mockup choices and Read only disables every saved and newly assigned project',async()=>{
  const projectA={hostId:'mac',workspaceId:'a',cwd:'/a'},projectB={hostId:'other',workspaceId:'b',cwd:'/b'};
- const h=mount({lane:{assistant:{...record,projects:[{project:projectA,tools:'full'},{project:projectB,tools:'ask'}]}},projects:[{id:'c',name:'New project',path:'/c'}]});let tree=await h.ready();
- assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Off']);
+ const h=mount({lane:{assistant:{...record,allowedFolders:['/c'],projects:[{project:projectA,tools:'full'},{project:projectB,tools:'ask'}]}},projects:[{id:'c',name:'New project',path:'/c'}]});let tree=await h.ready();
+ assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);
  input(tree,'Project tools').props.onChange({target:{value:'read'}});tree=h.render();find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.onChange({target:{checked:true}});await submit(h);
  assert.equal(h.calls[0].profile.access,'read');assert.equal(h.calls[0].projects.length,3);assert.ok(h.calls[0].projects.every(binding=>binding.tools==='off'));assert.deepEqual(h.calls[0].projects.map(binding=>binding.project),[projectA,projectB,{hostId:'mac',workspaceId:'c',cwd:'/c'}]);
  const reloaded=mount({lane:{assistant:{...record,profile:{...profile,access:'read'},projects:[{project:projectA,tools:'full'}]}}});await reloaded.ready();await submit(reloaded);assert.equal(reloaded.calls[0].projects[0].tools,'off');
 });
 test('legacy edits access stays explicit and is retained until the user chooses a supported mockup setting',async()=>{
  const binding={project:{hostId:'mac',workspaceId:'a',cwd:'/a'},tools:'ask'};
- const h=mount({lane:{assistant:{...record,profile:{...profile,access:'edits'},projects:[binding]}}});let tree=await h.ready();assert.equal(input(tree,'Project tools').props.value,'edits');assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Off','Allow edits (legacy)']);await submit(h);assert.equal(h.calls[0].profile.access,'edits');assert.deepEqual(h.calls[0].projects,[binding]);
- input(h.render(),'Project tools').props.onChange({target:{value:'ask'}});tree=h.render();assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Off']);await submit(h);assert.equal(h.calls[1].profile.access,'ask');assert.equal(h.calls[1].projects[0].tools,'ask');
+ const h=mount({lane:{assistant:{...record,profile:{...profile,access:'edits'},projects:[binding]}}});let tree=await h.ready();assert.equal(input(tree,'Project tools').props.value,'edits');assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only','Allow edits (legacy)']);await submit(h);assert.equal(h.calls[0].profile.access,'edits');assert.deepEqual(h.calls[0].projects,[binding]);
+ input(h.render(),'Project tools').props.onChange({target:{value:'ask'}});tree=h.render();assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);await submit(h);assert.equal(h.calls[1].profile.access,'ask');assert.equal(h.calls[1].projects[0].tools,'ask');
 });
 
 test('failed and interrupted delegated work stays visible in assistant header attention status',()=>{
@@ -183,16 +183,15 @@ test('outside project requires exact-folder confirmation and refreshes revision 
  const grants=[];const project={id:'outside',name:'Outside project',path:'/other/exact'};
  const h=mount({projects:[project],backend:{supports:cap=>cap==='assistant_project_folder_grant_v1',call:async(cmd,args)=>{grants.push([cmd,args]);return {assistant:{...record,allowedFolders:['/existing','/other/exact'],revision:8}};}},lane:{assistant:{...record,allowedFolders:['/existing']}}});
  let tree=await h.ready();input(tree,'Assistant name').props.onChange({target:{value:'My unsaved draft'}});
- assert.equal(find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);
- find(tree,n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();tree=h.render();
- assert.match(text(tree),/\/other\/exact/);assert.equal(grants.length,0);
- find(tree,n=>n.type==='button'&&text(n)==='Cancel').props.onClick();assert.equal(grants.length,0);
- find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();
+ const choice=()=>find(h.render(),n=>n.type==='input'&&n.props.type==='checkbox');
+ choice().props.onChange({target:{checked:true}});tree=h.render();
+ assert.match(text(tree),/\/other\/exact/);assert.equal(grants.length,0);assert.equal(choice().props.checked,false);
+ find(tree,n=>n.type==='button'&&text(n)==='Cancel').props.onClick();assert.equal(grants.length,0);assert.equal(choice().props.checked,false);
+ choice().props.onChange({target:{checked:true}});
  await find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();
  assert.deepEqual(grants,[['personal_workspace_configure',{assistantId:'a',expectedRevision:7,folderGrant:{hostId:'mac',workspaceId:'outside',cwd:'/other/exact'}}]]);
- tree=h.render();assert.equal(input(tree,'Assistant name').props.value,'My unsaved draft');
- const choice=find(tree,n=>n.type==='input'&&n.props.type==='checkbox');assert.equal(choice.props.disabled,false);choice.props.onChange({target:{checked:true}});
- await submit(h);assert.equal(h.calls[0].expectedRevision,8);assert.equal(h.calls[0].settings.name,'My unsaved draft');assert.equal(h.calls[0].folderGrant,undefined);assert.equal(h.calls[0].projects[0].project.cwd,'/other/exact');
+ tree=h.render();assert.equal(input(tree,'Assistant name').props.value,'My unsaved draft');assert.equal(choice().props.checked,true);
+ await submit(h);assert.equal(h.calls[0].expectedRevision,8);assert.equal(h.calls[0].settings.name,'My unsaved draft');assert.equal(h.calls[0].folderGrant,undefined);assert.equal(h.calls[0].projects.length,1);assert.equal(h.calls[0].projects[0].project.cwd,'/other/exact');
 });
 test('older host explains missing grant capability without enabling outside project',async()=>{
  const h=mount({projects:[{id:'outside',name:'Outside',path:'/other/exact'}],lane:{assistant:{...record,allowedFolders:['/existing']}}});const tree=await h.ready();
@@ -202,8 +201,8 @@ test('older host explains missing grant capability without enabling outside proj
 
 test('late folder grant cannot update an unmounted draft or a different owner',async()=>{
  let resolve;const changed=[];const h=mount({projects:[{id:'p',name:'P',path:'/exact'}],backend:{supports:()=>true,call:()=>new Promise(r=>{resolve=r;})},lane:{assistant:{...record,allowedFolders:[]}},onCommitted:()=>changed.push('committed')});await h.ready();
- find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();const promise=find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();h.unmount();resolve({assistant:{...record,revision:8,allowedFolders:['/exact']}});await promise;assert.deepEqual(changed,['committed']);assert.equal(find(h.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);
- const wrong=mount({projects:[{id:'p',name:'P',path:'/exact'}],backend:{supports:()=>true,call:async()=>({assistant:{...record,id:'other',revision:8,allowedFolders:['/exact']}})},lane:{assistant:{...record,allowedFolders:[]}}});await wrong.ready();find(wrong.render(),n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();await find(wrong.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();assert.match(text(wrong.render()),/owner could not be verified/);assert.equal(find(wrong.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);
+ find(h.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.onChange({target:{checked:true}});const promise=find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();h.unmount();resolve({assistant:{...record,revision:8,allowedFolders:['/exact']}});await promise;assert.deepEqual(changed,['committed']);assert.equal(find(h.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.checked,false);
+ const wrong=mount({projects:[{id:'p',name:'P',path:'/exact'}],backend:{supports:()=>true,call:async()=>({assistant:{...record,id:'other',revision:8,allowedFolders:['/exact']}})},lane:{assistant:{...record,allowedFolders:[]}}});await wrong.ready();find(wrong.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.onChange({target:{checked:true}});await find(wrong.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();assert.match(text(wrong.render()),/owner could not be verified/);assert.equal(find(wrong.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.checked,false);
 });
 
 const headerLane=(over={})=>({name:'Apex Assistant',hostName:'Mac',offline:false,pause:async()=>{},assistant:{...record,name:'Apex Assistant',paused:false,profile:{...profile,backend:{kind:'open_ai_compatible',base_url:'x',model:'deepseek-v4.1-flash'},access:'ask'},projects:[{project:{hostId:'mac',workspaceId:'w',cwd:'/r'},tools:'ask'}],tasks:[],...over}});
@@ -232,4 +231,47 @@ test('subview back says Chat or Work',()=>{
 });
 test('work panel renders the work slot',()=>{
  assert.match(text(header(headerLane(),{section:'work',work:'Work content'})),/Work content/);
+});
+
+const settingsMount=(over={})=>mount({projects:[{id:'p',name:'Granted',path:'/existing/p'},{id:'q',name:'Outside',path:'/other/q'}],backend:{supports:cap=>cap==='assistant_project_folder_grant_v1',call:async()=>({assistant:{...record,allowedFolders:['/existing','/other/q'],revision:8}})},lane:{assistant:{...record,allowedFolders:['/existing']}},...over});
+test('settings is one short column in page order',async()=>{
+ const t=text(await settingsMount().ready());
+ const order=['General','Model','Projects & access','Memory','Tools & rules'].map(label=>t.indexOf(label));
+ assert.ok(order.every(i=>i>=0),String(order));assert.deepEqual([...order].sort((a,b)=>a-b),order);
+ assert.doesNotMatch(t,/Make .* yours|Connected context|Skills & tools/);
+});
+test('provider is hidden when only one provider is configured',async()=>{
+ assert.equal(input(await settingsMount().ready(),'Assistant provider'),null);
+});
+test('Project tools names read-only access the way the header does',async()=>{
+ assert.deepEqual(all(input(await settingsMount().ready(),'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);
+});
+test('switching on a granted project adds it',async()=>{
+ const h=settingsMount();let tree=await h.ready();
+ const sw=input(tree,'Use Granted');assert.equal(sw.props.role,'switch');assert.equal(sw.props.disabled,false);
+ sw.props.onChange({target:{checked:true}});await submit(h);assert.equal(h.calls[0].projects[0].project.cwd,'/existing/p');
+});
+test('switching on an ungranted project asks first and connects after the grant',async()=>{
+ const h=settingsMount();let tree=await h.ready();
+ assert.equal(find(tree,n=>n.type==='button'&&text(n)==='Allow this folder…'),null,'no separate allow button');
+ input(tree,'Use Outside').props.onChange({target:{checked:true}});tree=h.render();
+ assert.match(text(tree),/Allow Null to access this folder and its subfolders\?/);assert.equal(input(tree,'Use Outside').props.checked,false);
+ await find(tree,n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();tree=h.render();
+ assert.equal(input(tree,'Use Outside').props.checked,true);
+});
+test('failed folder grant leaves switch off',async()=>{
+ const h=settingsMount({backend:{supports:()=>true,call:async()=>{throw new Error('Grant refused');}}});let tree=await h.ready();
+ input(tree,'Use Outside').props.onChange({target:{checked:true}});await find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();tree=h.render();
+ assert.equal(input(tree,'Use Outside').props.checked,false);assert.match(text(tree),/Grant refused/);await submit(h);assert.deepEqual(h.calls[0]?.projects??[],[]);
+});
+test('the save bar counts changes and Discard restores saved values',async()=>{
+ const h=settingsMount();let tree=await h.ready();assert.match(text(find(tree,n=>n.props?.className==='assistant-save-summary')),/No unsaved changes/);
+ input(tree,'Assistant name').props.onChange({target:{value:'Renamed'}});tree=h.render();
+ assert.equal(text(find(tree,n=>n.props?.className==='assistant-save-summary')),'1 unsaved change · Name');
+ find(tree,n=>n.type==='button'&&text(n)==='Discard').props.onClick();tree=h.render();
+ assert.equal(input(tree,'Assistant name').props.value,'Null');
+});
+test('Memory row opens memory',async()=>{
+ const opened=[];const tree=await settingsMount({onOpenMemory:()=>opened.push('memory')}).ready();
+ find(tree,n=>n.type==='button'&&n.props?.className==='assistant-settings-link'&&text(n).includes('Personal notes')).props.onClick();assert.deepEqual(opened,['memory']);
 });

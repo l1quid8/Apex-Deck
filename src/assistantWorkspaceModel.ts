@@ -123,3 +123,18 @@ export function assistantWorkerThreadDestination(workspace:Workspace,threadId:st
  const pane=panes.find(item=>item.id===threadId&&item.workspaceId===workspace.id&&item.kind==='chat'&&!item.archived&&!unavailable.has(item.id));
  return pane?assistantProjectCanvasDestination(workspace,[pane],pane.id,[],unavailable):null;
 }
+
+export type SettingsSnapshot = { name:string; model:string; effort:string|null; access:string; projects:string[]; look:{seed:string;color:string;kind?:string;image?:unknown} };
+export type SettingsField = 'Name'|'Avatar'|'Model'|'Reasoning'|'Project tools'|'Projects';
+/** What the Settings save bar counts, in the order the page shows them. */
+export function dirtyFields(saved:SettingsSnapshot,draft:SettingsSnapshot):SettingsField[] {
+ const changed:SettingsField[]=[];
+ if(saved.name.trim()!==draft.name.trim())changed.push('Name');
+ if(saved.look.seed!==draft.look.seed||saved.look.color!==draft.look.color||(saved.look.kind??'pixel')!==(draft.look.kind??'pixel')||JSON.stringify(saved.look.image??null)!==JSON.stringify(draft.look.image??null))changed.push('Avatar');
+ if(saved.model!==draft.model)changed.push('Model');
+ if((saved.effort??null)!==(draft.effort??null))changed.push('Reasoning');
+ if(saved.access!==draft.access)changed.push('Project tools');
+ const a=[...saved.projects].sort(),b=[...draft.projects].sort();
+ if(a.length!==b.length||a.some((key,i)=>key!==b[i]))changed.push('Projects');
+ return changed;
+}
