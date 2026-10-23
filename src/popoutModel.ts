@@ -10,6 +10,7 @@ import type { LandingTextureSettings } from "./settings";
 import type { AppearanceValues } from "./themes";
 import type { Access, AgentInfo, Pane, ParticipantConfig, RoomOptions } from "./types";
 import type { VoiceSettings } from "./voice/types";
+import type { WorkspaceTaskRow } from "./workspaceTasks.ts";
 
 export type PopoutKind = "pane" | "tab";
 
@@ -86,6 +87,8 @@ export interface PopoutSnapshot {
   };
   /** A dashboard's rows at pop-out time; the owner keeps pushing them. */
   dashboardRows?: DashRow[];
+  workspaceTaskRows?: WorkspaceTaskRow[];
+  workspaceTaskProblems?: string[];
   /** A tasks tab's conversation, so it watches the same project. */
   conversationId?: string;
   /** The workspace's display name, for tab titles. */
@@ -166,6 +169,8 @@ export interface PopoutUpdate {
   conversationId?: string;
   /** A dashboard's current rows. */
   dashboardRows?: DashRow[];
+  workspaceTaskRows?: WorkspaceTaskRow[];
+  workspaceTaskProblems?: string[];
   /** A preview's source while it is still open. */
   previewSource?: { title: string; kind: "terminal" | "chat"; running: boolean } | null;
   /** A popped thread's agents, saved Agents and settings, resent whenever they change in Deck. */

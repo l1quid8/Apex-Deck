@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { transform } from 'sucrase';
 import * as model from '../src/workspaceTasks.ts';
 import * as identity from '../src/assistantIdentity.ts';
-const source=await fs.readFile(new URL('../src/WorkspaceTasks.tsx',import.meta.url),'utf8');
+const source=await fs.readFile(new URL('../src/WorkspaceTasksScreen.tsx',import.meta.url),'utf8');
 const code=transform(source.replace(/^import .*;\n/gm,'').replace(/export (function|const)/g,'$1'),{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
 const {WorkspaceTasks}=new Function('React','useState','model','identity',`const {filterWorkspaceTasks}=model; const {assistantIdentityKey,projectIdentityKey}=identity; ${code}; return {WorkspaceTasks};`)(React,React.useState,model,identity);
 const row={key:'row',source:'project',assistant:null,project:{hostId:'host',workspaceId:'project',cwd:'/project'},taskId:'t1',title:'Preserve owner',status:'queued',updatedAt:100,observedAt:200,offline:true,group:'working',assistantName:'Unassigned',projectName:'Project',owner:{hostId:'host',workspaceId:'project',cwd:'/project',conversationId:'m1'},revision:4};

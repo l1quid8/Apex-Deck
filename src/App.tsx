@@ -82,6 +82,9 @@ import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
+import { WorkspaceTasks } from "./WorkspaceTasksScreen";
+import { WorkspaceTaskDetails } from "./WorkspaceTaskDetails";
+import { collectWorkspaceTasks, type WorkspaceTaskRow } from "./workspaceTasks";
 import type { DashboardDestination } from "./dashboardModel";
 import { placeDashboardPane } from "./dashboardNavigation";
 import { RightBrowser } from "./RightBrowser";
@@ -199,6 +202,7 @@ export function App() {
   const { workspaces, panes: savedPanesForSession, importedHostSessions } = records;
   const panes = savedPanesForSession;
   const [assistantRegistry, setAssistantRegistry] = useState<AssistantRegistryState>(() => emptyAssistantRegistry());
+  const globalTaskFeed = useRef<{ rows: WorkspaceTaskRow[]; problems: string[] }>({ rows: [], problems: [] });
   const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
   const [assistantTaskSignals, setAssistantTaskSignals] = useState<Record<string, Signal>>({});
   const [assistantTaskNeedsDetails, setAssistantTaskNeedsDetails] = useState<Record<string, string[]>>({});
@@ -1376,7 +1380,7 @@ export function App() {
       chatConfig: chatConfigOf(workspace, hostId),
       ...(selected?.kind === "chat" ? { activeChatId: selected.id } : { activeChatId: null }),
       ...(tab.kind === "dashboard" ? { dashboardRows } : {}),
-      ...(tab.kind === "tasks" ? { conversationId: assistantMonitors.find((m) => m.workspaceId === workspace?.id)?.conversationId ?? "" } : {}),
+      ...(tab.kind === "tasks" ? { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems } : {}),
     };
     return bridge.open(snapshot, bounds).then(({ token }) => {
       setPanel(takeout.panel);
@@ -1868,6 +1872,26 @@ export function App() {
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
   const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'conversation'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
   const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
+  const workspaceTaskProblems = Object.entries(assistantTaskErrors).filter(([id]) => workspaces.some(workspace => workspace.id === id && !workspace.hidden)).map(([id, error]) => `${workspaces.find(workspace => workspace.id === id)?.name ?? id}: ${error}`);
+  let workspaceTaskRows: WorkspaceTaskRow[] = [];
+  try {
+    workspaceTaskRows = collectWorkspaceTasks(assistants.assistants.flatMap(summary => {
+      const lane = assistants.lane(summary.ref);
+      const host = assistants.hosts.find(host => host.hostId === summary.ref.hostId);
+      return lane?.assistant ? [{ assistant: summary.ref, name: summary.name, tasks: lane.assistant.tasks, offline: summary.offline, observedAt: summary.lastSeen, routeHostId: host?.routeHostId }] : [];
+    }), Object.values(currentAssistantRegistry.owners).flatMap(entry => entry.snapshot ? [{
+      project: { hostId: entry.owner.hostId, workspaceId: entry.owner.workspaceId, cwd: entry.owner.cwd }, owner: entry.owner,
+      name: workspaces.find(workspace => workspace.id === entry.owner.workspaceId)?.name ?? entry.owner.workspaceId,
+      snapshot: entry.snapshot, offline: offlineHost(entry.owner.hostId) || !!assistantTaskErrors[entry.owner.workspaceId], observedAt: entry.observedAt ?? 0,
+    }] : []));
+  } catch (cause) { workspaceTaskProblems.push(`Could not verify task owners: ${cause instanceof Error ? cause.message : String(cause)}`); }
+  globalTaskFeed.current = { rows: workspaceTaskRows, problems: workspaceTaskProblems };
+  const globalTaskFeedVersion = JSON.stringify(globalTaskFeed.current);
+  useEffect(() => {
+    const bridge = window.apexDeck?.popout;
+    if (!bridge) return;
+    for (const rec of poppedTabs) if (rec.tab.kind === 'tasks') void bridge.update(rec.token, { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems }).catch(() => {});
+  }, [globalTaskFeedVersion, poppedTabs]);
   const selectedAssistant = mainView.kind === 'assistant' ? assistants.lane(mainView.assistant) : null;
   const openAssistant = (ref:AssistantRef) => { assistants.select(ref); setMainView({kind:'assistant',assistant:ref,section:'conversation'}); setCreatingAssistant(false); setSettingsOpen(null); closeApexAgent(); };
   const assistantHost = mainView.kind === 'assistant' ? assistants.hosts.find(host=>host.hostId===mainView.assistant.hostId) : undefined;
@@ -2580,17 +2604,12 @@ export function App() {
             style={overlayDetails ? { right: `calc(min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px)) + var(--deck-gap, 0px))` } : undefined}
           />}
           <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}${sidePanelFull ? " full" : ""}`} style={sidePanelFull ? undefined : { width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
-            <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} onPopout={(tabId) => popOutTab(tabId)} onPopoutDragOut={(tabId, x, y) => popOutTab(tabId, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 })} taskAttention={{ count: sectionFlags.agents.count, details: sectionFlags.agents.rows.map((row) => row.title).join("\n") || "ApexAgent tasks are waiting for your response" }} bodies={{
+            <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} onPopout={(tabId) => popOutTab(tabId)} onPopoutDragOut={(tabId, x, y) => popOutTab(tabId, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 })} taskAttention={{ count: workspaceTaskRows.filter(row => row.group === 'waiting').length, details: workspaceTaskRows.filter(row => row.group === 'waiting').map(row => `${row.assistantName} · ${row.projectName}: ${row.title}`).join("\n") }} bodies={{
               dashboard: (_tab, visible) => <RightDashboard rows={dashboardRows} onOpen={openDashboard} visible={visible && detailsOpen} />,
-              tasks: () => {
-                const selected = listed.find((pane) => pane.id === focusedPane);
-                const workspaceId = selected?.workspaceId ?? activeWorkspace;
-                const monitor = assistantMonitors.find((item) => item.workspaceId === workspaceId);
-                if (!monitor) return <p className="muted right-panel-empty">Pick a project with ApexAgent tasks.</p>;
-                let route: Backend;
-                try { route = hostBackend(monitor.hostId); } catch { return <p className="muted right-panel-empty">This project machine is unavailable.</p>; }
-                return <ApexAgentTasks key={`side:${monitor.workspaceId}:${monitor.hostId}:${monitor.cwd}:${monitor.conversationId}`} backend={route} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="sidebar" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? "Project", label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
-              },
+              tasks: () => <WorkspaceTasks rows={workspaceTaskRows} problems={workspaceTaskProblems} renderDetail={row => {
+                let route: Backend | null = null; try { route = hostBackend(row.routeHostId); } catch { /* Keep the last known owner visible. */ }
+                return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes} onOpenThread={id => { const pane = viewPanes.find(item => item.id === id && item.workspaceId === row.project?.workspaceId); if (pane) focusPane(pane); }} />;
+              }} />,
               browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
               files: (_tab, visible) => {

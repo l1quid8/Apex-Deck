@@ -3,7 +3,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { ApexAgentTasks } from "./lazyViews";
+import { WorkspaceTasks } from "./WorkspaceTasksScreen";
+import { WorkspaceTaskDetails } from "./WorkspaceTaskDetails";
+import type { WorkspaceTaskRow } from "./workspaceTasks";
 import type { Backend } from "./backend";
 import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
 import type { DashRow } from "./dashboardModel";
@@ -67,6 +69,8 @@ export function PopoutApp({ token }: { token: string }) {
   const [ptyId, setPtyId] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [rows, setRows] = useState<DashRow[]>([]);
+  const [taskRows, setTaskRows] = useState<WorkspaceTaskRow[]>([]);
+  const [taskProblems, setTaskProblems] = useState<string[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [cwd, setCwd] = useState("");
   const [hostId, setHostId] = useState("local");
@@ -114,6 +118,8 @@ export function PopoutApp({ token }: { token: string }) {
       setPtyId(snap.ptyId ?? null);
       setUrl(snap.url ?? "");
       setRows(snap.dashboardRows ?? []);
+      setTaskRows(snap.workspaceTaskRows ?? []);
+      setTaskProblems(snap.workspaceTaskProblems ?? []);
       setActiveChatId(snap.activeChatId ?? null);
       setCwd(snap.cwd ?? "");
       setHostId(snap.hostId ?? "local");
@@ -134,6 +140,8 @@ export function PopoutApp({ token }: { token: string }) {
       if (patch.ptyId !== undefined) setPtyId(patch.ptyId);
       if (patch.url !== undefined) setUrl(patch.url);
       if (patch.dashboardRows !== undefined) setRows(patch.dashboardRows);
+      if (patch.workspaceTaskRows !== undefined) setTaskRows(patch.workspaceTaskRows);
+      if (patch.workspaceTaskProblems !== undefined) setTaskProblems(patch.workspaceTaskProblems);
       if (patch.activeChatId !== undefined) setActiveChatId(patch.activeChatId);
       if (patch.cwd !== undefined) setCwd(patch.cwd);
       if (patch.hostId !== undefined) setHostId(patch.hostId);
@@ -203,13 +211,14 @@ export function PopoutApp({ token }: { token: string }) {
 
   const route: Backend | null = useMemo(() => {
     if (!backend) return null;
+    if (snapshot?.kind === 'tab' && snapshot.tabKind === 'tasks') return backend;
     if (hostId === "local" || !backend.machines) return backend;
     try {
       return backend.machines.get(hostId);
     } catch {
       return null;
     }
-  }, [backend, hostId]);
+  }, [backend, hostId, snapshot?.tabKind]);
 
   const openPath = (path: string) => {
     if (route) void route.openTarget(path, cwd || null, false).catch(() => {});
@@ -280,7 +289,7 @@ export function PopoutApp({ token }: { token: string }) {
           />
         ) : snapshot.kind === "tab" ? (
           <TabBody
-            snapshot={snapshot} backend={backend} route={route} title={title} url={url} rows={rows}
+            snapshot={snapshot} backend={backend} route={route} title={title} url={url} rows={rows} taskRows={taskRows} taskProblems={taskProblems}
             activeChatId={activeChatId} cwd={cwd} hostId={hostId} workspaceId={workspaceId}
             conversationId={conversationId} workspaceName={workspaceName} bundle={bundle}
             tabDetails={tabDetails} profilesChanged={profilesChanged}
@@ -473,13 +482,15 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
 }
 
 /** A popped-out side-panel tab. Selection-following tabs move with the main window. */
-function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd, hostId, workspaceId, conversationId, workspaceName, bundle, tabDetails, profilesChanged, onUrl, send, openPath }: {
+function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskProblems, activeChatId, cwd, hostId, workspaceId, workspaceName, bundle, tabDetails, profilesChanged, onUrl, send, openPath }: {
   snapshot: PopoutSnapshot;
   backend: Backend;
   route: Backend;
   title: string;
   url: string;
   rows: DashRow[];
+  taskRows: WorkspaceTaskRow[];
+  taskProblems: string[];
   activeChatId: string | null;
   cwd: string;
   hostId: string;
@@ -534,22 +545,11 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
     return <RightDashboard rows={rows} onOpen={(id, destination) => send({ type: "dashboard-open", id, destination })} />;
   }
   if (tabKind === "tasks") {
-    return (
-      <HostPane backend={route} agents={[]}>
-        {() => (
-          <ApexAgentTasks
-            backend={route}
-            owner={{ workspaceId, hostId, cwd, conversationId }}
-            panes={[]}
-            profiles={bundle.profiles}
-            view="sidebar"
-            projectName={workspaceName || snapshot.workspaceName}
-            onMonitorUpdate={() => {}}
-            onOpenThread={showPane}
-          />
-        )}
-      </HostPane>
-    );
+    return <WorkspaceTasks rows={taskRows} problems={taskProblems} renderDetail={row => {
+      let ownerBackend: Backend | null = null;
+      try { ownerBackend = row.routeHostId === 'local' ? backend : backend.machines?.get(row.routeHostId) ?? null; } catch { /* Retain offline rows. */ }
+      return <WorkspaceTaskDetails key={row.key} row={row} backend={ownerBackend} profiles={bundle.profiles} onOpenThread={showPane} />;
+    }} />;
   }
   if (tabKind === "details" || tabKind === "artifacts") {
     const isArtifacts = tabKind === "artifacts";
