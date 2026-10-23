@@ -20,8 +20,8 @@ type Props = {
   profiles: ParticipantConfig[];
   onMonitorUpdate?: (monitor: ProjectMonitor) => void;
   onOpenThread?: (id: string) => void;
-  /** The conversation is the only view. Accepted so existing callers still type-check. */
-  view?: 'conversation';
+  /** Compact project rows in the workspace sidebar; conversation remains the default. */
+  view?: 'conversation' | 'sidebar';
   focused?: boolean;
 };
 
@@ -68,7 +68,7 @@ function verificationLabel(task: AssistantTask): string {
 }
 const modeLabel = (mode: AssistantTask['mode']): string => mode === 'read_only' ? 'Read only' : mode === 'in_place' ? 'In place' : 'Separate copy';
 
-export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, focused, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery }: Props) {
+export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, focused, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery, view = 'conversation' }: Props) {
   const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
   const [receipt, setReceipt] = useState<{ requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'unknown' | 'unchecked'; taskId?: string | null } | null>(null);
@@ -84,9 +84,12 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const [taskContextId, setTaskContextId] = useState<string | null>(null);
   const [reviewedRevision, setReviewedRevision] = useState<Record<string, number>>({});
   const [visibleReviewRevision, setVisibleReviewRevision] = useState<Record<string, number>>({});
-  // Unified Tasks view (see apexAgentTaskView.ts). Null means the old single-conversation layout.
-  const taskView = useContext(TaskViewContext);
+  // The sidebar keeps its own selection, separate from the assistant's unified Tasks view.
+  const sidebarView = view === 'sidebar';
+  const sharedTaskView = useContext(TaskViewContext);
+  const taskView = sidebarView ? null : sharedTaskView;
   const contextMode = taskView !== null;
+  const taskDetailView = sidebarView || contextMode;
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [changeOpen, setChangeOpen] = useState<Record<string, boolean>>({});
   const titleRef = useRef<HTMLHeadingElement | null>(null);
@@ -251,8 +254,9 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
 
   const openTaskDetail = (task: AssistantTask) => {
+    if (!isTaskOwnedBy(task, activeOwner.current)) return;
     setTaskContextId(task.id); setDetailId(task.id); setReviewedRevision((current) => ({ ...current, [task.id]: -1 }));
-    if (onSelectTask && !taskFinal(task.status)) {
+    if (!sidebarView && onSelectTask && !taskFinal(task.status)) {
       const captured = owner; const version = generation.current;
       onSelectTask(task, async (text) => {
         if (!currentOwner(captured, version)) throw new Error('This task assignment changed. Select the task again.');
@@ -303,7 +307,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   useEffect(() => { taskView?.report(storeKey, summaryRows); }, [summaryRows, storeKey, contextMode]);
   useEffect(() => () => { taskView?.report(storeKey, []); }, [storeKey]);
   // Moving to a selected task moves focus to its title.
-  useEffect(() => { if (contextMode && taskView?.selectedKey && contextTask) titleRef.current?.focus?.(); }, [taskView?.selectedKey, contextTask?.id]);
+  useEffect(() => { if ((contextMode && taskView?.selectedKey && contextTask) || (sidebarView && detailId)) titleRef.current?.focus?.(); }, [taskView?.selectedKey, contextTask?.id, sidebarView, detailId]);
   const sendTaskText = async (task: AssistantTask, text: string): Promise<boolean> => {
     if (task.status === 'needs_clarification') {
       const destination = proposedDestination(task);
@@ -383,7 +387,8 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
 
   // Conversation rows (legacy cards, or one link line each in context mode) and the detail. Links never act or bind the composer.
-  const visibleCards = tasks.filter((task) => !task.resultData?.dismissedAtMs && (!taskFinal(task.status) || task.updatedAtMs > clearedAt));
+  const sidebarTasks = tasks.filter((task) => isTaskOwnedBy(task, owner) && !task.resultData?.dismissedAtMs);
+  const visibleCards = sidebarTasks.filter((task) => !taskFinal(task.status) || task.updatedAtMs > clearedAt);
   const tasksOnly = taskView?.display === 'tasks';
   const detailVisible = contextMode ? tasksOnly && !!contextTask : !!detailId;
   // Reply text is kept per task and per kind, so it survives re-renders until it is sent.
@@ -402,7 +407,8 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     return <button type="button" className="assistant-task-link" key={key} onClick={() => taskView?.openTask(key)}>{`${label} ›`}</button>;
   };
 
-  return <section className="assistant-tasks assistant-task-conversation" aria-label="Assistant workspace" data-assistant-workspace-id={owner.workspaceId} data-focused={focused ? 'true' : 'false'}>
+  return <section className={`assistant-tasks ${sidebarView ? 'assistant-task-sidebar' : 'assistant-task-conversation'}`} aria-label={sidebarView ? 'Project tasks' : 'Assistant workspace'} data-assistant-workspace-id={owner.workspaceId} data-focused={focused ? 'true' : 'false'}>
+    {sidebarView && <header className="assistant-task-sidebar-heading"><h2>Tasks</h2><p>{projectName ?? owner.workspaceId}</p>{detailId && <button type="button" className="assistant-back" onClick={() => { setDetailId(null); setTaskContextId(null); }}>Back to tasks</button>}</header>}
     {!tasksOnly && recoveryRequest && <article className="assistant-chat-message assistant" role="status">
       <small>Unconfirmed message{projectName ? ` · ${projectName}` : ''}</small><p>{recoveryRequest.text}</p>
       {(() => { const known = receipt?.requestId === recoveryRequest.requestId ? receipt : null; return <>
@@ -413,17 +419,20 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       <button type="button" disabled={busy} onClick={() => requestRecovery ? requestRecovery.discard() : discardPending()}>Discard saved request and start over</button>
     </article>}
     {taskView?.display === 'links' && visibleCards.map(taskLink)}
-    {!contextMode && visibleCards.map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
+    {sidebarView && !detailId && <div className="assistant-task-sidebar-list">{sidebarTasks.map((task) => <button type="button" className="assistant-task-sidebar-row" data-assistant-task-id={task.id} key={task.id} onClick={() => openTaskDetail(task)}>
+      <span className="assistant-task-sidebar-summary"><strong title={task.originalRequest}>{oneLine(task.originalRequest)}</strong><small>{workerLabel(task, profiles)}</small></span><span className={`assistant-task-sidebar-status status-${task.status}`}>{taskStatusLabel(task.status)}</span>
+    </button>)}{!loading && !error && !sidebarTasks.length && <p className="assistant-task-muted">No tasks for this project yet.</p>}</div>}
+    {!contextMode && !sidebarView && visibleCards.map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
       <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}</small><p className="assistant-task-request" title={task.originalRequest}>{task.originalRequest}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
       <div className="assistant-task-card-actions"><button type="button" onClick={() => openTaskDetail(task)}>{task.status === 'ready_for_review' ? 'Review result' : 'Open task'}</button>
       {(task.status === 'proposed' || task.status === 'needs_clarification') && <button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button>}</div>
       {task.brief.length > 160 ? <details className="assistant-task-scope"><summary>Scope: {scopeSummary(task.brief)}</summary><p>{task.brief}</p></details> : <p className="assistant-task-muted">Scope: {task.brief}</p>}
     </article>)}
-    {!contextMode && detailId && <button type="button" onClick={() => { setDetailId(null); setTaskContextId(null); }}>Close task details</button>}
+    {!contextMode && !sidebarView && detailId && <button type="button" onClick={() => { setDetailId(null); setTaskContextId(null); }}>Close task details</button>}
     {(!tasksOnly || contextTask) && error && <p className="assistant-task-error" role="alert">{error}</p>}
     {(!tasksOnly || contextTask) && loading && <p className="assistant-task-muted" role="status">Loading tasks…</p>}
     {!contextMode && detailId && !selectedTask && <p className="assistant-task-muted">This task is no longer available in the current assignment.</p>}
-    {detailVisible && <div className="assistant-task-list">{tasks.filter((task) => task.id === activeTaskId).map((task) => {
+    {detailVisible && <div className="assistant-task-list">{tasks.filter((task) => task.id === activeTaskId && isTaskOwnedBy(task, owner)).map((task) => {
       const resultData = task.resultData ?? {};
       const pendingApprovals = resultData.pendingApprovals ?? [];
       const pendingQuestions = resultData.pendingQuestions ?? [];
@@ -433,10 +442,10 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       const hasReviewData = hasReviewMaterial(task);
       const currentReviewVisible = hasReviewData && visibleReviewRevision[task.id] === task.revision;
       return <article className={`assistant-task-card status-${task.status}`} key={task.id}>
-        {contextMode && <h2 className="assistant-task-title" id={`assistant-task-title-${task.id}`} tabIndex={-1} ref={titleRef}>{oneLine(task.originalRequest)}</h2>}
+        {taskDetailView && <h2 className="assistant-task-title" id={`assistant-task-title-${task.id}`} tabIndex={-1} ref={titleRef}>{oneLine(task.originalRequest)}</h2>}
         <header><div><span className="assistant-task-status">{taskStatusLabel(task.status)}</span><span className="assistant-task-meta">Revision {task.revision} · {task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'}</span></div><span className="assistant-task-usage">{taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</span></header>
         <div className="assistant-task-detail-scroll" ref={detailScrollRef}>
-        {contextMode && task.result?.trim() && <section className="assistant-task-result-block" aria-label="Result">
+        {taskDetailView && task.result?.trim() && <section className="assistant-task-result-block" aria-label="Result">
           <h3>Result</h3>
           <p className="assistant-task-result-text">{task.result}</p>
           <p className="assistant-task-muted">{`Worker: ${workerLabel(task, profiles)} · Project: ${projectName ?? owner.workspaceId} · Machine: ${owner.hostId} · ${taskFinal(task.status) ? 'Finished' : 'Updated'} ${new Date(task.updatedAtMs).toLocaleString()} · ${verificationLabel(task)}`}</p>
@@ -444,8 +453,8 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         </section>}
         {typeof (resultData as { batchId?: unknown }).batchId === 'string' && <p className="assistant-task-muted">From your cross-project plan</p>}
         <details><summary>Original request and brief</summary><p className="assistant-task-original"><strong>Original request</strong>{task.originalRequest}</p><p className="assistant-task-brief"><strong>Brief</strong>{task.brief}</p></details>
-        {contextMode && (task.status === 'proposed' || task.status === 'needs_clarification') && <p className="assistant-task-plan"><strong>Plan</strong> {task.brief}</p>}
-        {contextMode && task.status === 'needs_clarification' && <p className="assistant-task-warning">{proposedDestination(task) ? 'ApexAgent has a question before it starts. Its question is in the conversation; answer it below.' : "ApexAgent didn't pick a chat for this. Say which chat to use below, or Dismiss it."}</p>}
+        {taskDetailView && (task.status === 'proposed' || task.status === 'needs_clarification') && <p className="assistant-task-plan"><strong>Plan</strong> {task.brief}</p>}
+        {taskDetailView && task.status === 'needs_clarification' && <p className="assistant-task-warning">{proposedDestination(task) ? 'ApexAgent has a question before it starts. Its question is in the conversation; answer it below.' : "ApexAgent didn't pick a chat for this. Say which chat to use below, or Dismiss it."}</p>}
         {task.status === 'proposed' && <dl className="assistant-task-proposal" aria-label="Proposed destination">
           <div><dt>Worker</dt><dd>{workerLabel(task, profiles)}</dd></div>
           <div><dt>Destination chat</dt><dd>{task.destination ? (task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId ?? 'Needs clarification') : 'Needs clarification'}</dd></div>
@@ -456,14 +465,14 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         {task.mode === 'in_place' && task.status === 'queued' && <p className="assistant-task-lease">Queued for checkout access; work starts when the current writer releases it.</p>}
         {task.mode === 'in_place' && ['running', 'needs_you', 'ready_for_review', 'applying'].includes(task.status) && <p className="assistant-task-lease">Edits are already in the checkout. This task holds the writer lease through review; other Deck writers wait. Accept releases the lease, and Request changes keeps it.</p>}
         <nav className="assistant-task-links" aria-label="Related threads">{taskThreadLinks(task).map((link) => <button type="button" key={link.id} onClick={() => onOpenThread?.(link.id)}>{link.label}</button>)}</nav>
-        {task.status === 'ready_for_review' && hasReviewData && <div className="assistant-review-material" ref={reviewMaterialRef}>{!contextMode && task.result && <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>}{hasCapturedDiff && <section className="assistant-review-diff"><h3>{resultData.reviewDiff ? 'Review diff' : 'Review result'}</h3>{resultData.reviewDiff ? <pre>{resultData.reviewDiff}</pre> : <p>No file changes in this result.</p>}</section>}{task.evidence.length > 0 && <section className="assistant-task-evidence"><h3>Findings and evidence</h3>{task.evidence.map((item, index) => <p key={index}>{item}</p>)}</section>}</div>}
+        {task.status === 'ready_for_review' && hasReviewData && <div className="assistant-review-material" ref={reviewMaterialRef}>{!taskDetailView && task.result && <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>}{hasCapturedDiff && <section className="assistant-review-diff"><h3>{resultData.reviewDiff ? 'Review diff' : 'Review result'}</h3>{resultData.reviewDiff ? <pre>{resultData.reviewDiff}</pre> : <p>No file changes in this result.</p>}</section>}{task.evidence.length > 0 && <section className="assistant-task-evidence"><h3>Findings and evidence</h3>{task.evidence.map((item, index) => <p key={index}>{item}</p>)}</section>}</div>}
         {task.status === 'ready_for_review' && <div className="assistant-review-criteria">{renderChecks(task)}</div>}
         {task.status === 'ready_for_review' && !hasReviewData && <p className="assistant-task-warning">The current result has no review diff or captured findings. Open the worker chat and refresh after its result is available.</p>}
         {task.status === 'ready_for_review' && hasReviewData && !currentReviewVisible && <p className="assistant-task-muted">Scroll the current result, diff, or findings into view to enable acknowledgement.</p>}
         {pendingApprovals.length > 0 && <div className="assistant-task-waits"><strong>Waiting for approval</strong>{pendingApprovals.map((approval, index) => { const action = approval && typeof approval === 'object' ? (approval as { action?: { title?: string; detail?: string } }).action : undefined; return <div key={index}><p><b>{action?.title ?? 'Worker approval'}</b>{action?.detail ? `\n${action.detail}` : `\n${objectText(approval)}`}</p></div>; })}</div>}
         {pendingQuestions.length > 0 && <div className="assistant-task-waits"><strong>Waiting for your answer</strong>{pendingQuestions.map((questionGroup, groupIndex) => { const group = questionGroup && typeof questionGroup === 'object' ? questionGroup as { request?: string; questions?: Question[] } : {}; const requestKey = group.request ?? `legacy-${groupIndex}`; return <div key={groupIndex}>{hasQuestionGroup(questionGroup) && (group.questions ?? []).map((question, questionIndex) => { const key = `${task.id}:${requestKey}:${questionIndex}`; const selected = inlineAnswer[key] ?? []; return <fieldset className="assistant-inline-question" key={key}><legend>{question.header || `Question ${questionIndex + 1}`}</legend><p>{question.question}</p>{question.options.map((option) => <label className="assistant-inline-option" key={option.label}><input type={question.multi_select ? 'checkbox' : 'radio'} name={key} checked={selected.includes(option.label)} onChange={(event) => setInlineAnswer((current) => ({ ...current, [key]: question.multi_select ? event.target.checked ? [...selected, option.label] : selected.filter((item) => item !== option.label) : [option.label] }))} /><span>{option.label}{option.description && <small>{option.description}</small>}</span></label>)}<label className="assistant-inline-other">{question.options.length ? 'Other answer' : 'Your answer'}<input value={inlineOther[key] ?? ''} onChange={(event) => setInlineOther((current) => ({ ...current, [key]: event.target.value }))} /></label></fieldset>; })}{!hasQuestionGroup(questionGroup) && <p className="assistant-task-warning">This question uses older metadata. Continue in the worker chat.</p>}</div>; })}</div>}
         {task.status === 'needs_you' && resultData.startup != null && <p className="assistant-task-warning">Worker startup issue: {objectText(resultData.startup)}</p>}
-        {!contextMode && task.result && (task.status === 'ready_for_review' ? null : <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>)}
+        {!taskDetailView && task.result && (task.status === 'ready_for_review' ? null : <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>)}
         {Array.isArray((resultData as { taskHistory?: unknown }).taskHistory) && <details><summary>Task history</summary><ol className="assistant-task-history">{((resultData as { taskHistory?: { atMs: number; kind: string; text: string }[] }).taskHistory ?? []).map((entry, index) => <li key={`${entry.atMs}:${index}`}><time>{new Date(entry.atMs).toLocaleString()}</time><b>{entry.kind}</b><span>{entry.text}</span></li>)}</ol></details>}
         {(resultData as { budgetPaused?: boolean }).budgetPaused && <div className="assistant-task-budget"><p className="assistant-task-warning">Paused at its spend limit. Raise the daily limit in Rules, then resume. This keeps the task ID, edits, and history.</p><button type="button" disabled={busy} onClick={() => void act(task, 'resume_budget')}>Resume task</button></div>}
         {hasCapturedDiff && task.status !== 'ready_for_review' && <details><summary>Review diff</summary><pre>{resultData.reviewDiff}</pre></details>}
@@ -474,17 +483,17 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
 
         {task.mode === 'isolated' && taskFinal(task.status) && !archivedExecutions.has(task.id) && <div className="assistant-task-actions">{shouldSuggestArchive(task) && <p className="assistant-task-warning">This terminal worktree is over 14 days old. Archive it to save disk space; the task result and history will remain available.</p>}<button type="button" disabled={busy} onClick={() => void act(task, 'archive')}>Archive isolated worktree</button><span className="assistant-task-muted">Removes the owned worktree and keeps this task’s result and history.</span></div>}
         {task.mode === 'isolated' && archivedExecutions.has(task.id) && <p className="assistant-task-muted">Isolated worktree archived{typeof resultData.worktreeDiskBytes === 'number' ? ` · saved worktree size ${formatBytes(resultData.worktreeDiskBytes)}` : ''}. Task result and history are retained.</p>}
-        {contextMode && task.status === 'needs_clarification' && <div className="assistant-task-reply">
+        {taskDetailView && task.status === 'needs_clarification' && <div className="assistant-task-reply">
           <label><span>{"Answer ApexAgent's question"}</span><textarea rows={2} value={draftText(task.id, 'answer')} onChange={(event) => setDraft(task.id, 'answer', event.target.value)} /></label>
           <button type="button" disabled={busy || !draftText(task.id, 'answer').trim()} onClick={() => void sendDraft(task, 'answer')}>Send answer</button>
         </div>}
-        {contextMode && task.status === 'ready_for_review' && <div className="assistant-task-reply">
+        {taskDetailView && task.status === 'ready_for_review' && <div className="assistant-task-reply">
           {changeOpen[task.id] ? <>
             <label><span>What should change</span><textarea rows={3} value={draftText(task.id, 'changes')} onChange={(event) => setDraft(task.id, 'changes', event.target.value)} /></label>
             <button type="button" disabled={busy || !draftText(task.id, 'changes').trim()} onClick={() => void sendDraft(task, 'changes')}>{`Send change request to ${workerLabel(task, profiles)}`}</button>
           </> : <button type="button" disabled={busy} onClick={() => setChangeOpen((current) => ({ ...current, [task.id]: true }))}>Request changes…</button>}
         </div>}
-        {contextMode && ['queued', 'running', 'applying', 'needs_you'].includes(task.status) && pendingQuestions.length === 0 && <div className="assistant-task-reply">
+        {taskDetailView && ['queued', 'running', 'applying', 'needs_you'].includes(task.status) && pendingQuestions.length === 0 && <div className="assistant-task-reply">
           <label><span>Add a note for the worker</span><textarea rows={2} value={draftText(task.id, 'note')} onChange={(event) => setDraft(task.id, 'note', event.target.value)} /></label>
           <button type="button" disabled={busy || !draftText(task.id, 'note').trim()} onClick={() => void sendDraft(task, 'note')}>Send note</button>
         </div>}

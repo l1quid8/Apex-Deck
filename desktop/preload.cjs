@@ -115,6 +115,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
     zoom: () => webFrame.getZoomFactor(),
   },
   popout: {
+    restore: (available) => ipcRenderer.invoke('popout:restore', available),
     open: (snapshot, bounds) => ipcRenderer.invoke('popout:open', snapshot, bounds),
     snapshot: (token) => ipcRenderer.invoke('popout:snapshot', token),
     close: (token) => ipcRenderer.invoke('popout:close', token),

@@ -4,6 +4,7 @@ dist/
 .DS_Store
 *.log
 release/
+staging/
 dist-phone/
 build/DerivedData/
 err*.txt

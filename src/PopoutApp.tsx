@@ -531,7 +531,7 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
     return <RightPhone phone={backend.phone} visible />;
   }
   if (tabKind === "dashboard") {
-    return <RightDashboard rows={rows} onOpen={showPane} />;
+    return <RightDashboard rows={rows} onOpen={(id, destination) => send({ type: "dashboard-open", id, destination })} />;
   }
   if (tabKind === "tasks") {
     return (
@@ -542,7 +542,7 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
             owner={{ workspaceId, hostId, cwd, conversationId }}
             panes={[]}
             profiles={bundle.profiles}
-            view="conversation"
+            view="sidebar"
             projectName={workspaceName || snapshot.workspaceName}
             onMonitorUpdate={() => {}}
             onOpenThread={showPane}

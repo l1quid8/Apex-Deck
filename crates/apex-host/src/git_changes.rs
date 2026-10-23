@@ -278,8 +278,10 @@ pub fn status(cwd: &Path) -> Result<State, String> {
         )?
         .is_empty();
     let key = root.to_string_lossy().to_string();
+    // A passed check is a property of (head, targetHead), not of tree cleanliness:
+    // touching an unrelated file after checks pass must not revoke them.
     let checks_passed =
-        clean && checks().lock().unwrap().get(&key) == Some(&(head.clone(), target_head.clone()));
+        checks().lock().unwrap().get(&key) == Some(&(head.clone(), target_head.clone()));
     Ok(State {
         root: key,
         head,
@@ -401,23 +403,67 @@ fn branch_ready(now: &State) -> Result<(&str, &str), String> {
     }
     Ok((branch, target))
 }
+fn target_checked_out_elsewhere(root: &Path, target: &str) -> bool {
+    let Ok(list) = git(root, None, &["worktree", "list", "--porcelain"]) else {
+        return true;
+    };
+    let wanted = format!("branch refs/heads/{target}");
+    list.lines().any(|line| line.trim() == wanted)
+}
 fn merge(cwd: &Path, expected: &State) -> Result<String, String> {
     let now = current(cwd, expected)?;
     let (branch, target) = branch_ready(&now)?;
     let root = Path::new(&now.root);
-    clean(root)?;
-    if !now.clean {
-        return Err("Commit or resolve all working changes first.".into());
-    }
     if !now.checks_passed {
-        return Err("Run checks on the latest clean commit first.".into());
+        return Err("Run checks on the latest commit first.".into());
     }
     if now.behind > 0 {
         return Err("Update this branch from its target, then run checks again.".into());
     }
-    git(root, None, &["switch", target])?;
-    if let Err(error) = git(root, None, &["merge", "--ff-only", &now.head]) {
-        let _ = git(root, None, &["switch", branch]);
+    let old_target = now
+        .target_head
+        .as_deref()
+        .ok_or("No local main or master target branch was found.")?;
+    // Fast-forward by ref only: behind == 0 makes target an ancestor of head, so
+    // advancing the ref is the whole merge. No branch switch over a dirty tree and
+    // no stash, so uncommitted files are never touched.
+    if git(
+        root,
+        None,
+        &["merge-base", "--is-ancestor", old_target, &now.head],
+    )
+    .is_err()
+    {
+        return Err("Update this branch from its target, then run checks again.".into());
+    }
+    if target_checked_out_elsewhere(root, target) {
+        return Err(format!(
+            "{target} is checked out in another worktree. Merge there instead."
+        ));
+    }
+    git(
+        root,
+        None,
+        &[
+            "update-ref",
+            &format!("refs/heads/{target}"),
+            &now.head,
+            old_target,
+        ],
+    )?;
+    // Both branches now point at the same commit, so switching changes only the
+    // HEAD symref; working files and the index are left exactly as they are.
+    if let Err(error) = git(root, None, &["switch", target]) {
+        let _ = git(
+            root,
+            None,
+            &[
+                "update-ref",
+                &format!("refs/heads/{target}"),
+                old_target,
+                &now.head,
+            ],
+        );
         return Err(error);
     }
     match git(root, None, &["branch", "-d", "--", branch]) {
@@ -701,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_requires_clean_tree_and_host_verified_current_check() {
+    fn merge_fast_forwards_with_dirty_files_and_host_verified_current_check() {
         let r = Repo::new();
         r.write("one.txt", "changed\n");
         assert!(merge(&r.0, &status(&r.0).unwrap()).is_err());
@@ -711,15 +757,23 @@ mod tests {
         let checked = status(&r.0).unwrap();
         remember_check(&checked);
         assert!(status(&r.0).unwrap().checks_passed);
+        // Unrelated dirty work after checks pass neither revokes them nor blocks
+        // the merge; a stale snapshot is still rejected before anything moves.
         r.write("two.txt", "later\n");
-        assert!(!status(&r.0).unwrap().checks_passed);
+        assert!(status(&r.0).unwrap().checks_passed);
         assert!(merge(&r.0, &checked).is_err());
-        r.git(&["restore", "two.txt"]);
         merge(&r.0, &status(&r.0).unwrap()).unwrap();
         assert_eq!(r.git(&["branch", "--show-current"]), "main");
         assert!(!r
             .git(&["branch", "--list", "feat/test"])
             .contains("feat/test"));
+        assert_eq!(r.git(&["show", "HEAD:one.txt"]), "changed");
+        assert_eq!(r.git(&["show", "HEAD:two.txt"]), "two");
+        assert_eq!(
+            std::fs::read_to_string(r.0.join("two.txt")).unwrap(),
+            "later\n",
+            "uncommitted file survives the merge untouched"
+        );
     }
 
     #[test]
