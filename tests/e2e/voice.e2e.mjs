@@ -19,7 +19,7 @@ test(
   async (t) => {
     const data = fs.mkdtempSync("/tmp/avc-");
     const child = spawn(
-      path.resolve("target/debug/apex-daemon"),
+      process.env.APEX_DAEMON_BIN ?? path.resolve("target/debug/apex-daemon"),
       ["serve", "--exit-on-stdin-close", "--data-dir", data],
       { stdio: ["pipe", "ignore", "pipe"] },
     );

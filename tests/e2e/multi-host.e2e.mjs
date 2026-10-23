@@ -19,7 +19,7 @@ async function until(check, ms = 10000) {
 }
 async function daemon(t) {
   const data = fs.mkdtempSync('/tmp/adm-');
-  const binary = path.resolve('target/debug/apex-daemon');
+  const binary = process.env.APEX_DAEMON_BIN ?? path.resolve('target/debug/apex-daemon');
   const child = spawn(binary, ['serve', '--exit-on-stdin-close', '--data-dir', data],
     { stdio: ['pipe', 'ignore', 'pipe'] });
   let exit = null; let error = ''; let spawnError = ''; let link; let client;

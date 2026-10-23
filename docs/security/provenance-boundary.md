@@ -241,6 +241,13 @@ call, so `Daemon::start` is broker-only in every build of it, including
 `apex-provenance` itself before packaging, so a stale or test-built
 `target/release` binary is never copied.
 
+`npm run test:e2e` also builds that explicitly named fixture binary and runs
+the JavaScript E2E clients against dedicated temporary stores. The runner
+overrides `APEX_DAEMON_BIN` for those tests only; it never changes production
+admission or installs the fixture. These checks exercise real transport,
+storage and worker behavior under simulated verified admission. Their results
+do not replace the signed installed UI, broker and negative-client checks.
+
 Because those dev-dependencies compile every `apex-host` and `apex-daemon` test
 target with `test-support`, the forged-storage integration tests live in the
 separate crate `apex-host-production-check`, which depends on `apex-host`

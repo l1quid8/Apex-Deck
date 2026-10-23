@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test:e2e": "cargo build -p apex-daemon && node --experimental-strip-types --test tests/e2e/*.e2e.mjs",
+    "test:e2e": "cargo build -p apex-daemon --features test-support --bin apex-daemon-fixture && node scripts/run-e2e.mjs",
     "desktop": "cargo build -p apex-daemon --features remote && vite build && electron .",
     "desktop:dev": "cargo build -p apex-daemon --features remote && node desktop/dev.mjs",
     "desktop:smoke": "cargo build -p apex-daemon --features remote && vite build && node desktop/run-smoke.mjs",
