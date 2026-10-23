@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   LEGACY_MARKER, LEDGER_LABELS, applyRequest, confirmWords, fileSize, importableCount, importableLedgers,
   interestingLedgers, isStalePreview, noticeKey, plain, resultLine, resultOutcomes, rowText, shortHash,
-  shouldShowNotice, skippedIds, statusWord,
+  shouldShowNotice, skippedIds, statusWord, legacyTranscript, rememberDismissal,
 } from '../src/legacyImportModel.ts';
 
 const hash = (seed) => (seed.repeat(64)).slice(0, 64);
@@ -199,4 +199,29 @@ test('a source that could not be read is listed even with no records and no prob
   ]);
   assert.deepEqual(interestingLedgers(shown).map((l) => l.ledger),
     ['assistant-tasks-v1.json', 'room-authority-v1.json', 'personal-assistants.json']);
+});
+
+// Hiding unsupported rows would silently omit machine permissions that need new approval.
+test('unsupported machine grants stay visible with their reason and never become importable', () => {
+  const machine = ledger('personal-machine.json', { state: 'notSupported', reason: 'Re-approve on this machine.', counts: { records: 1, importable: 0, notImported: 1 }, records: [{ id: 'grant', kind: 'grant', title: 'Shell', originalStatus: 'allowed', importStatus: 'notImported', reason: 'Re-approve on this machine.' }] });
+  assert.deepEqual(interestingLedgers(preview([machine])), [machine]);
+  assert.equal(importableCount(preview([machine])), 0);
+});
+
+test('saved transcript renders full request and response as text while retaining the complete source record', () => {
+ const record={request:{text:'First line\n<script>literal</script>',evidence:[{text:'original evidence'}]},response:'Saved answer',status:'completed'};
+ const view=legacyTranscript(record);
+ assert.equal(view.request,'First line\n<script>literal</script>');assert.equal(view.response,'Saved answer');
+ assert.deepEqual(JSON.parse(view.raw),record);
+ assert.deepEqual(legacyTranscript(null),{request:null,response:null,raw:'null'});
+});
+
+test('dismissing another data folder preserves the earlier source key and changes still resurface', () => {
+ const doc=preview([ledger('assistant-tasks-v1.json')]);
+ const first=noticeKey('/one',doc), second=noticeKey('/two',doc);
+ let stored=rememberDismissal(null,first);stored=rememberDismissal(stored,second);
+ assert.equal(shouldShowNotice(doc,'/one',stored),false);assert.equal(shouldShowNotice(doc,'/two',stored),false);
+ const changed=preview([ledger('assistant-tasks-v1.json',{sha256:hash('b')})]);
+ assert.equal(shouldShowNotice(changed,'/one',stored),true);
+ assert.equal(shouldShowNotice(doc,'/one',rememberDismissal(first,second)),false,'old single-key storage migrates');
 });

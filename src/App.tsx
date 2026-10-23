@@ -30,6 +30,7 @@ import { ApexAgentTasks } from "./lazyViews";
 import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
 import { usePersonalAssistant } from "./personalAssistant";
+import { subscribeToImports } from "./legacyImportRefresh.ts";
 import { ApexAgentWidget } from "./ApexAgentWidget";
 import "./apex-agent-dock.css";
 import { widgetCoordinates, widgetSidePanelPosition, type AssistantSourceDrop, type WidgetPosition } from "./apexAgentWidgetModel.ts";
@@ -1763,7 +1764,9 @@ export function App() {
       }
     };
     projects.forEach((workspace) => { void refresh(workspace); });
-    const stops: (() => void)[] = [];
+    const stops: (() => void)[] = [subscribeToImports(() => {
+      projects.forEach((workspace) => { void refresh(workspace); });
+    })];
     const hostIds = [...new Set(projects.map(workspaceHost))];
     for (const hostId of hostIds) {
       let route: Backend;

@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { transform } = require('sucrase');
+import { subscribeToImports, announceImport } from '../src/legacyImportRefresh.ts';
 import { PersonalAssistantsCollection } from '../src/usePersonalAssistants.ts';
 const source = fs.readFileSync(new URL('../src/usePersonalAssistants.ts', import.meta.url), 'utf8').split('export function usePersonalAssistants')[1];
 const compiled = transform('function usePersonalAssistants' + source, { transforms: ['typescript'] }).code;
@@ -28,8 +29,8 @@ function harness(args) {
     const changed = !prev || !deps || deps.some((dep, k) => !Object.is(dep, prev.deps[k]));
     if (changed) { prev?.cleanup?.(); effects[i] = { deps, cleanup: effect() }; }
   };
-  const hook = new Function('useState', 'useRef', 'useCallback', 'useEffect', 'PersonalAssistantsCollection', `${compiled}\nreturn usePersonalAssistants;`)(useState, useRef, useCallback, useEffect, PersonalAssistantsCollection);
-  return { render() { cursor = 0; return hook(args); } };
+  const hook = new Function('useState', 'useRef', 'useCallback', 'useEffect', 'PersonalAssistantsCollection', 'subscribeToImports', `${compiled}\nreturn usePersonalAssistants;`)(useState, useRef, useCallback, useEffect, PersonalAssistantsCollection, subscribeToImports);
+  return { render() { cursor = 0; return hook(args); }, unmount() { for (const effect of effects) effect?.cleanup?.(); } };
 }
 
 test('the phone asks for notifications once, sends its token to the assistant host, and a tap opens the assistant', async () => {
@@ -70,4 +71,18 @@ test('the phone asks for notifications once, sends its token to the assistant ho
     globalThis.setInterval = savedInterval;
     delete globalThis.Capacitor;
   }
+});
+
+test('a completed import refreshes assistant discovery immediately and unsubscribes on unmount', async () => {
+ const savedInterval=globalThis.setInterval;globalThis.setInterval=()=>0;
+ let reads=0;let imported=false;
+ const assistant={id:'old',hostId:'mac',revision:1,name:'Restored',messages:[],tasks:[],timezone:'UTC',utcOffsetMinutes:0};
+ const route={supports:()=>false,host:{connection:{get:()=>({status:{kind:'connected',hostId:'mac'}})}},call:async cmd=>{if(cmd==='personal_list'){reads++;return imported?[assistant]:[];}return {};}};
+ const h=harness({hosts:[{id:'local',name:'Mac',remote:false}],hostBackend:()=>route,offlineHost:()=>false});
+ try {
+  h.render();await settle();assert.equal(h.render().assistants.length,0);
+  imported=true;announceImport();await settle();
+  assert.equal(h.render().assistants[0].name,'Restored');
+  h.unmount();const before=reads;announceImport();await settle();assert.equal(reads,before);
+ } finally {h.unmount();globalThis.setInterval=savedInterval;}
 });

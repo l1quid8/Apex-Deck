@@ -90,3 +90,10 @@ test('an older in-flight list cannot discard a newer exact notification target',
 test('an unseen exact notification presents an attributed pending lane with no writable fallback',async()=>{
  const f=fixture();await f.collection.refresh();f.collection.openNotification({notification:{data:{hostId:'beta',assistantId:'asst-2'}}});const waiting=f.collection.pendingLane();assert.equal(waiting.assistant,null);assert.equal(waiting.offline,true);assert.deepEqual(waiting.ref,ref('beta','asst-2'));await assert.rejects(waiting.send('never to mac'),/waiting/i);assert.equal(f.calls.some(([,cmd])=>cmd==='personal_send'),false);f.collection.select(ref('alpha'));assert.equal(f.collection.pendingLane(),null);
 });
+
+test('imported assistant summaries retain the host legacy marker instead of looking verified', async () => {
+ const f=fixture(); const legacy={sourceSha256:'a'.repeat(64),importedAtMs:1,verified:false};
+ f.lists.local[0].legacy=legacy; await f.collection.refresh();
+ assert.deepEqual(f.collection.snapshot().assistants.find(a=>a.ref.hostId==='mac').legacy,legacy);
+ assert.equal(f.collection.snapshot().assistants.find(a=>a.ref.hostId==='beta').legacy,undefined);
+});

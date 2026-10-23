@@ -73,7 +73,7 @@ const modeLabel = (mode: AssistantTask['mode']): string => mode === 'read_only' 
 export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, focused, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery, view = 'conversation' }: Props) {
   const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
-  const [receipt, setReceipt] = useState<{ requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'unknown' | 'unchecked'; taskId?: string | null } | null>(null);
+  const [receipt, setReceipt] = useState<{ requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'legacy' | 'unknown' | 'unchecked'; taskId?: string | null } | null>(null);
   const [routingThreads, setRoutingThreads] = useState<{ id: string; workers: ParticipantConfig[] }[] | undefined>(undefined);
   const [namedOnlyWorkerIds, setNamedOnlyWorkerIds] = useState<string[] | undefined>(undefined);
   const [archivedExecutions, setArchivedExecutions] = useState<Set<string>>(() => new Set());
@@ -125,7 +125,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     const listVersion = ++listRequestVersion.current;
     try {
       const unsure = loadPendingRequest(window.localStorage, captured);
-      const snapshot = await backend.call<AssistantTaskSnapshot & { request?: { requestId: string; status: 'pending' | 'completed' | 'interrupted'; taskId?: string | null } | null }>('assistant_tasks_list', unsure ? { owner: captured, requestId: unsure.requestId } : { owner: captured });
+      const snapshot = await backend.call<AssistantTaskSnapshot & { request?: { requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'legacy'; taskId?: string | null } | null }>('assistant_tasks_list', unsure ? { owner: captured, requestId: unsure.requestId } : { owner: captured });
       const visible = assistantTasksForOwner(snapshot, captured);
       // Reconcile an unconfirmed message with what the service actually did, so Retry never stands beside work it already received.
       if (unsure && currentOwner(captured, version) && listRequestVersion.current === listVersion) {
@@ -209,7 +209,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     return () => window.clearTimeout(timer);
   }, [receipt]);
   const retryRecovery = async () => {
-    if (busy) return;
+    if (busy || receipt?.status === 'legacy' || receipt?.status === 'pending') return;
     if (!requestRecovery) { await sendRequest({ preventDefault() {} } as React.FormEvent); return; }
     const captured = owner, version = generation.current;
     setBusy(true); setError('');
@@ -409,7 +409,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     const key = keyFor(task.id);
     const title = oneLine(task.originalRequest, 60);
     const label = task.status === 'ready_for_review' ? `Review result · ${title}` : task.status === 'done' && task.result?.trim() ? `Result ready · ${title}` : `Task · ${taskStatusLabel(task.status)} · ${title}`;
-    return <button type="button" className="assistant-task-link" key={key} onClick={() => taskView?.openTask(key)}>{`${label} ›`}</button>;
+    return <button type="button" className="assistant-task-link" key={key} onClick={() => taskView?.openTask(key)}>{`${label} ›`}{task.legacy && <LegacyBadge />}</button>;
   };
 
   return <section className={`assistant-tasks ${sidebarView ? 'assistant-task-sidebar' : 'assistant-task-conversation'}`} aria-label={sidebarView ? 'Project tasks' : 'Assistant workspace'} data-assistant-workspace-id={owner.workspaceId} data-focused={focused ? 'true' : 'false'}>
@@ -417,9 +417,10 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     {!tasksOnly && recoveryRequest && <article className="assistant-chat-message assistant" role="status">
       <small>Unconfirmed message{projectName ? ` · ${projectName}` : ''}</small><p>{recoveryRequest.text}</p>
       {(() => { const known = receipt?.requestId === recoveryRequest.requestId ? receipt : null; return <>
-        <p>{known?.status === 'pending' ? 'The service received this and is still answering it. Retry is off so it can’t run twice.' : known?.status === 'interrupted' ? `The service received this but restarted before answering${known.taskId ? '. It had already created its task, so Retry shows that task instead of making a second one' : ''}.` : known?.status === 'unknown' ? 'The service never received this message. Retry sends it once.' : known?.status === 'unchecked' ? 'The last response was uncertain. Retry reuses the saved request ID, so the service won’t do it twice.' : 'Checking whether the service received this…'}</p>
+        {known?.status === 'legacy' && <LegacyBadge />}
+        <p>{known?.status === 'legacy' ? 'This is read-only history from an older copy. Open Older records in Settings to read the saved transcript.' : known?.status === 'pending' ? 'The service received this and is still answering it. Retry is off so it can’t run twice.' : known?.status === 'interrupted' ? `The service received this but restarted before answering${known.taskId ? '. It had already created its task, so Retry shows that task instead of making a second one' : ''}.` : known?.status === 'unknown' ? 'The service never received this message. Retry sends it once.' : known?.status === 'unchecked' ? 'The last response was uncertain. Retry reuses the saved request ID, so the service won’t do it twice.' : 'Checking whether the service received this…'}</p>
         {error && <p className="assistant-task-warning">{error}</p>}
-        {known?.status !== 'pending' && <button type="button" disabled={busy || !known} onClick={retryRecovery}>{busy ? 'Retrying…' : 'Retry request'}</button>}
+        {known?.status !== 'pending' && known?.status !== 'legacy' && <button type="button" disabled={busy || !known} onClick={retryRecovery}>{busy ? 'Retrying…' : 'Retry request'}</button>}
       </>; })()}
       <button type="button" disabled={busy} onClick={() => requestRecovery ? requestRecovery.discard() : discardPending()}>Discard saved request and start over</button>
     </article>}
@@ -428,7 +429,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       <span className="assistant-task-sidebar-summary"><strong title={task.originalRequest}>{oneLine(task.originalRequest)}</strong><small>{workerLabel(task, profiles)}</small></span><span className={`assistant-task-sidebar-status status-${task.status}`}>{taskStatusLabel(task.status)}</span>{task.legacy && <LegacyBadge />}
     </button>)}{!loading && !error && !sidebarTasks.length && <p className="assistant-task-muted">No tasks for this project yet.</p>}</div>}
     {!contextMode && !sidebarView && visibleCards.map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
-      <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}</small><p className="assistant-task-request" title={task.originalRequest}>{task.originalRequest}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
+      <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}{task.legacy && <LegacyBadge />}</small><p className="assistant-task-request" title={task.originalRequest}>{task.originalRequest}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
       <div className="assistant-task-card-actions"><button type="button" onClick={() => openTaskDetail(task)}>{task.status === 'ready_for_review' ? 'Review result' : 'Open task'}</button>
       {(task.status === 'proposed' || task.status === 'needs_clarification') && <button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button>}</div>
       {task.brief.length > 160 ? <details className="assistant-task-scope"><summary>Scope: {scopeSummary(task.brief)}</summary><p>{task.brief}</p></details> : <p className="assistant-task-muted">Scope: {task.brief}</p>}

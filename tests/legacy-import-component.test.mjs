@@ -35,9 +35,9 @@ const ruleRow = {
 };
 const snapshot = { id: '20261022-204152', path: '/data/legacy-import/20261022-204152', createdAtMs: 1792700000000, reused: false };
 
-function harness({ previewDoc, result, applyError, nextPreviews, routePreviews } = {}) {
-  const states = []; const refs = []; const effectSlots = []; let cursor = 0; let prefix = 'screen';
-  const applies = []; const previewCalls = []; const queued = nextPreviews ? [...nextPreviews] : [];
+function harness({ previewDoc, result, applyError, nextPreviews, routePreviews, historyResult, historyError } = {}) {
+  const states = []; const refs = []; const timers = new Map(); let nextTimer = 0; const effectSlots = []; let cursor = 0; let prefix = 'screen';
+  const applies = []; const historyCalls = []; const previewCalls = []; const queued = nextPreviews ? [...nextPreviews] : [];
   const React = {
     Fragment: 'Fragment',
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }),
@@ -58,8 +58,10 @@ function harness({ previewDoc, result, applyError, nextPreviews, routePreviews }
     const same = previous && Array.isArray(deps) && previous.deps
       && previous.deps.length === deps.length && deps.every((value, index) => Object.is(value, previous.deps[index]));
     if (same) return;
-    effectSlots[i] = { deps: Array.isArray(deps) ? [...deps] : null };
-    queued_effects.push(fn);
+    previous?.cleanup?.();
+    const slot = { deps: Array.isArray(deps) ? [...deps] : null };
+    effectSlots[i] = slot;
+    queued_effects.push(() => { slot.cleanup = fn(); });
   };
   let queued_effects = [];
   const makeApi = (route) => ({
@@ -71,7 +73,7 @@ function harness({ previewDoc, result, applyError, nextPreviews, routePreviews }
       return thunk ? await thunk() : structuredClone(previewDoc);
     },
     apply: async (shown, ledgers) => { applies.push({ shown, ledgers }); if (applyError) throw applyError; return structuredClone(result); },
-    history: async () => { throw new Error('not used here'); },
+    history: async (snapshot, id) => { historyCalls.push([snapshot, id]); if (historyError) throw historyError; return typeof historyResult === 'function' ? await historyResult(snapshot, id) : structuredClone(historyResult); },
   });
   const backend = { supports: () => true, call: async () => previewDoc, dataFolder: async () => '/data' };
   // Explicit per-call previews for the default backend, for flows where the *number*
@@ -85,9 +87,9 @@ function harness({ previewDoc, result, applyError, nextPreviews, routePreviews }
   const api = makeApi(backend);
   const createLegacyImportClient = (options) => makeApi(options.route);
   const built = new Function('React', 'useState', 'useEffect', 'useRef', ...Object.keys(model), ...Object.keys(refresh),
-    'createLegacyImportClient',
+    'createLegacyImportClient', 'setInterval', 'clearInterval',
     `${code}; return { LegacyImportScreen, LegacyImportPanel, LegacyBadge, legacyImportFor, previewOnce, PREVIEW_TTL_MS };`)(
-    React, useState, useEffect, useRef, ...Object.values(model), ...Object.values(refresh), createLegacyImportClient);
+    React, useState, useEffect, useRef, ...Object.values(model), ...Object.values(refresh), createLegacyImportClient, (fn) => { timers.set(++nextTimer, fn); return nextTimer; }, (id) => timers.delete(id));
   const run = (render) => {
     cursor = 0;
     queued_effects = [];
@@ -96,10 +98,12 @@ function harness({ previewDoc, result, applyError, nextPreviews, routePreviews }
     return tree;
   };
   return {
-    api, applies, previewCalls, built, backend,
+    api, applies, historyCalls, previewCalls, built, backend,
+    poll() { for (const fn of [...timers.values()]) fn(); },
+    unmount() { for (const slot of Object.values(effectSlots)) slot.cleanup?.(); },
     render(props = {}) {
       prefix = 'screen';
-      return run(() => built.LegacyImportScreen({ api, onClose: props.onClose ?? (() => {}), onImported: props.onImported ?? (() => {}) }));
+      return run(() => built.LegacyImportScreen({ api: props.api ?? api, onClose: props.onClose ?? (() => {}), onImported: props.onImported ?? (() => {}) }));
     },
     renderPanel(props = {}) {
       prefix = 'panel';
@@ -299,7 +303,7 @@ test('a different backend is read again and does not inherit the old folder', as
   const swapped = h.renderPanel({ store, backend: other });
   await tick();
   assert.ok(h.previewCalls.length > reads, 'the new backend is read, not the cached one');
-  assert.ok(swapped, 'the swapped render happens before effects run, as in React');
+  assert.equal(swapped, null, 'the old backend notice is hidden before the new effects run');
   assert.equal(text(h.renderPanel({ store, backend: other })), '', 'nothing to import on the other backend');
 });
 
@@ -344,4 +348,70 @@ test('a shared preview expires and is not remembered when it failed', async () =
   const fifth = h.built.previewOnce(h.api, base + h.built.PREVIEW_TTL_MS + 1);
   assert.notEqual(third, fifth, 'past the window the files are read again');
   await fifth.catch(() => {});
+});
+
+const conversationRow = { id: 'request-7', kind: 'conversation', title: 'Fix startup', originalStatus: 'completed', importStatus: 'legacy', reason: 'Kept as unverified history.' };
+const conversationPreview = () => ({ snapshot, ledgers: [ledger('assistant-conversations-v1.json', { state: 'imported', records: [conversationRow] })] });
+test('a saved conversation opens by exact snapshot and request id as text-only unverified history', async () => {
+  const record = { request: { text: '<script>do not execute</script>' }, response: 'Saved response', status: 'completed' };
+  const h = harness({ previewDoc: conversationPreview(), historyResult: { snapshot: snapshot.id, requestId: 'request-7', sourceSha256: hash('a'), verified: false, label: 'Unverified', record } });
+  h.render(); await tick();
+  const open = button(h.render(), 'Read saved transcript');
+  assert.ok(open, 'saved conversation needs a read-only entry point');
+  open.props.onClick(); await tick();
+  const tree = h.render();
+  assert.deepEqual(h.historyCalls, [[snapshot.id, 'request-7']]);
+  assert.match(text(tree), /Older copy · unverified/);
+  assert.match(text(tree), /Saved response/);
+  assert.match(text(tree), /<script>do not execute<\/script>/);
+  assert.equal(findAll(tree, n => n.type === 'script' || n.type === 'textarea' || n.props?.dangerouslySetInnerHTML).length, 0);
+  assert.equal(h.applies.length, 0);
+  assert.equal(button(tree, 'Retry'), undefined);
+});
+test('a failed history read shows an error and no transcript from the previous selection', async () => {
+  const h = harness({ previewDoc: conversationPreview(), historyError: new Error('Saved copy changed') });
+  h.render(); await tick();
+  const open = button(h.render(), 'Read saved transcript'); assert.ok(open);
+  open.props.onClick(); await tick();
+  assert.match(text(h.render()), /Saved copy changed/);
+  assert.equal(h.applies.length, 0);
+});
+test('switching a screen api drops the previous confirmation and ignores its delayed preview', async () => {
+  let resolve;
+  const h = harness({ routePreviews: [() => new Promise(r => { resolve = r; })] });
+  h.render();
+  const api = { preview: async () => ({ snapshot, ledgers: [] }) };
+  h.render({ api }); await tick();
+  resolve(previewWith()); await tick();
+  const tree = h.render({ api });
+  assert.equal(button(tree, 'Import 1 record'), undefined);
+  assert.doesNotMatch(text(tree), /Sort the invoices/);
+});
+
+test('a dismissed mounted notice re-reads changed files and stops reading after unmount', async () => {
+  const store = { key:null, read(){return this.key;}, write(key){this.key=key;} };
+  let doc=previewWith();
+  const route={supports:()=>true,dataFolder:async()=>'/data',__preview:async()=>structuredClone(doc)};
+  const h=harness();
+  h.renderPanel({backend:route,store});await tick();
+  button(h.renderPanel({backend:route,store}), 'Dismiss until my saved files change').props.onClick();
+  assert.equal(text(h.renderPanel({backend:route,store})), '');
+  doc=previewWith();doc.ledgers[0].sha256=hash('b');
+  // Simulate the next polling window without sleeping for a real interval.
+  const now=Date.now;Date.now=()=>now()+h.built.PREVIEW_TTL_MS+1;
+  try { h.poll();await tick(); } finally { Date.now=now; }
+  assert.match(text(h.renderPanel({backend:route,store})), /Older records found/);
+  h.unmount();const before=h.previewCalls.length;h.poll();await tick();assert.equal(h.previewCalls.length,before);
+});
+test('a slow notice read started before import cannot restore its old banner', async () => {
+  forgetImportListeners();let finish;let reads=0;
+  const route={supports:()=>true,dataFolder:async()=>'/data',__preview:()=>++reads===1?new Promise(r=>{finish=r;}):Promise.resolve({snapshot:null,ledgers:[]})};
+  const h=harness();const props={backend:route,store:{read:()=>null,write(){}}};
+  h.renderPanel(props);announceImport();await tick();finish(previewWith());await tick();
+  assert.equal(text(h.renderPanel(props)), '');h.unmount();
+});
+
+test('a panel without import capability renders nothing instead of dereferencing an absent preview', () => {
+ const h=harness();const backend={supports:()=>false,dataFolder:async()=>'/data'};
+ assert.equal(h.renderPanel({backend}),null);h.unmount();
 });

@@ -605,9 +605,9 @@ test('links view: one short line per task, no cards or detail, and opening makes
   let tree = h.render(); await tick(); tree = h.render();
   const links = findAll(tree, node => node.type === 'button' && node.props.className === 'assistant-task-link');
   assert.equal(links.length, 3);
-  assert.equal(textOf(links[0]), 'Task · Running · Fix parser ›');
-  assert.equal(textOf(links[1]), 'Review result · Review docs ›');
-  assert.equal(textOf(links[2]), 'Result ready · Ship notes ›');
+  assert.equal(textOf(links[0]).trim(), 'Task · Running · Fix parser ›');
+  assert.equal(textOf(links[1]).trim(), 'Review result · Review docs ›');
+  assert.equal(textOf(links[2]).trim(), 'Result ready · Ship notes ›');
   assert.equal(findAll(tree, node => node.type === 'article' && node.props.className?.startsWith?.('assistant-task-card')).length, 0);
   assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
   assert.equal(find(tree, node => node.type === 'button' && /^(Open task|Review result)$/.test(textOf(node))), null);
@@ -724,4 +724,22 @@ test('an imported task is marked unverified and names its saved folder before a 
   openDetail(other); other = fresh.render();
   assert.equal(findAll(other, node => node.type === LegacyBadge).length, 0, 'a task from this machine is not marked');
   assert.ok(!/Came from an older copy/.test(textOf(other)));
+});
+
+test('imported tasks stay visibly unverified in conversation summaries and task links', async () => {
+ const marker={sourceSha256:'a'.repeat(64),importedAtMs:1,verified:false};
+ const backend={demo:false,call:async cmd=>cmd==='assistant_tasks_list'?snapshot([task({legacy:marker})]):null};
+ for(const props of [{},{taskView:{display:'links',selectedKey:null,openTask(){},report(){}}}]){
+  const h=harness(backend,props);h.render();await tick();const tree=h.render();
+  assert.ok(find(tree,node=>node.type===LegacyBadge),'status summary must preserve imported marker');
+ }
+});
+
+test('an imported conversation receipt is read-only and never offers request retry', async () => {
+ const pending={requestId:'old-request',owner,text:'Old request',destination:null,newWorkerProfiles:[],mode:'in_place',checks:[]};
+ const saved=new Map([[model.pendingRequestStorageKey(owner),JSON.stringify(pending)]]);let dispatched=0;
+ const backend={demo:false,call:async cmd=>{if(cmd==='assistant_tasks_list')return {...snapshot(),request:{requestId:'old-request',status:'legacy'}};dispatched++;return null;}};
+ const h=harness(backend,{},saved);h.render();await tick();const tree=h.render();
+ assert.equal(button(tree,'Retry request'),null);assert.match(textOf(tree),/read.only|Older records/i);
+ assert.ok(find(tree,node=>node.type===LegacyBadge));assert.equal(dispatched,0);h.unmount();
 });

@@ -16,7 +16,7 @@ const { transform } = require('sucrase');
 const source = fs.readFileSync(new URL('../src/ApexAgentAll.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
 const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
-const textOf = node => typeof node === 'string' || typeof node === 'number' ? String(node) : node?.type === MarkdownStub ? node.props.text : node?.children?.map(textOf).join('') ?? '';
+const textOf = node => node?.type === LegacyBadgeStub ? 'Imported · unverified' : typeof node === 'string' || typeof node === 'number' ? String(node) : node?.type === MarkdownStub ? node.props.text : node?.children?.map(textOf).join('') ?? '';
 const find = (node, predicate) => !node || typeof node !== 'object' ? null : predicate(node) ? node : node.children?.map(child => find(child, predicate)).find(Boolean) ?? null;
 const evidence = { sourceId: 'file:test-report.md', label: 'test-report.md', observedAt: 1, excerpt: 'Login tests failed.' };
 const message = (id, role, at) => ({ id, role, at, text: `Message ${id}`, evidence: [evidence] });
@@ -25,6 +25,7 @@ const projects = [{ id: 'mobile', name: 'Mobile launch' }, { id: 'billing', name
 
 // Stands in for the panels component: the harness only checks which panel was asked for.
 const MarkdownStub = () => null;
+const LegacyBadgeStub = () => null;
 const PersonalPanelsStub = (props) => ({ type: PersonalPanelsStub, props, children: [] });
 const PersonalCallStub = (props) => ({ type: PersonalCallStub, props, children: [] });
 const ApexAgentMessageActionsStub = (props) => ({ type: ApexAgentMessageActionsStub, props, children: [] });
@@ -42,7 +43,7 @@ function harness(props, { effects = false } = {}) {
     useEffect(fn, deps) { const i = cursor++; if (effects && (!effectDeps[i] || deps.some((v, j) => v !== effectDeps[i][j]))) { queuedEffects.push(fn); effectDeps[i] = deps; } },
     useCallback(fn) { cursor++; return fn; },
   };
-  const component = new Function('assistantComposerDraftFor', 'useAssistantComposerDraftState', 'React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'withoutLaneMentions', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(assistantComposerDraftFor, draftHookFor(hooks), React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
+  const component = new Function('assistantComposerDraftFor', 'useAssistantComposerDraftState', 'React', 'Markdown', 'LegacyBadge', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'withoutLaneMentions', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(assistantComposerDraftFor, draftHookFor(hooks), React, MarkdownStub, LegacyBadgeStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, flushEffects() { queuedEffects.splice(0).forEach(fn => fn()); }, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
@@ -937,4 +938,16 @@ test('a remounted work brief keeps its original captured task destination', asyn
   find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(sent, ['Keep this task brief']);
+});
+
+test('imported personal assistant and old messages carry unverified labels without marking a new reply', () => {
+ const legacy={sourceSha256:'a'.repeat(64),importedAtMs:1,verified:false};
+ const assistant={id:'a',hostId:'mac',name:'Helper',paused:true,legacy,messages:[{id:'old',role:'assistant',kind:'chat',text:'Saved old text',at:1,legacy},{id:'new',role:'assistant',kind:'chat',text:'Fresh reply',at:2}],tasks:[]};
+ const h=harness({workspaces:[],monitors:[],personal:{name:'Helper',hostName:'Mac',assistant,offline:false,send:async()=>{}}});
+ const tree=h.render();
+ assert.match(textOf(tree), /Imported · unverified/);
+ const old=find(tree,n=>n.type==='div' && n.props.className?.includes('apex-agent-personal') && textOf(n).includes('Saved old text'));
+ const fresh=find(tree,n=>n.type==='div' && n.props.className?.includes('apex-agent-personal') && textOf(n).includes('Fresh reply'));
+ assert.match(textOf(old), /Imported · unverified/);
+ assert.doesNotMatch(textOf(fresh), /Imported · unverified/);
 });

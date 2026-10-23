@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Markdown } from './Markdown';
+import { LegacyBadge } from './LegacyImportScreen';
 import './apex-agent-panel.css';
 import './assistant-tasks.css';
 import './apex-agent-dock.css';
@@ -534,7 +535,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           {workspaces.map((workspace) => <button type="button" role="menuitem" key={workspace.id} onClick={() => onSetUp(workspace.id)}>{monitors.some((monitor) => monitor.workspaceId === workspace.id) ? `Sources · ${workspace.name}` : `Watch ${workspace.name}…`}</button>)}
         </div></details>{onFullScreen && <button className="icon" onClick={onFullScreen} aria-pressed={fullScreen} aria-label={fullScreen ? 'Exit full screen' : 'Full screen'} title={fullScreen ? 'Exit full screen' : 'Full screen'}>{fullScreen ? '⤡' : '⤢'}</button>}<button className="icon" onClick={onClose} aria-label="Close ApexAgent">×</button></div>
       </div>
-      <div className="apex-agent-head-row apex-agent-head-context"><p>{headline}</p></div>
+      <div className="apex-agent-head-row apex-agent-head-context"><p>{headline}{!filterWorkspaceId && assistant?.legacy && <LegacyBadge />}</p></div>
       <div className="apex-agent-head-row apex-agent-views" role="tablist" aria-label="ApexAgent views">
         <button type="button" role="tab" className="apex-agent-view-tab" aria-selected={view === 'chat'} onClick={() => switchView('chat')}>Chat</button>
         <button type="button" role="tab" className="apex-agent-view-tab" aria-selected={view === 'tasks'} onClick={() => switchView('tasks')}>Tasks{needsCount > 0 && <b className="apex-agent-tabs-count">{` · ${needsCount}`}</b>}</button>
@@ -561,7 +562,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           const personalBubble = `assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
           const personalBody = <>
-            <small className="apex-agent-message-meta">{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}</small>
+            <small className="apex-agent-message-meta">{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.legacy && <LegacyBadge />}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}</small>
             {item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
           </>;
           const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {

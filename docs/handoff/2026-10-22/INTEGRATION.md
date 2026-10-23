@@ -4,6 +4,44 @@ Branch: `fix/assistant-workspace-integration` in the existing assistant-workspac
 worktree. No integration changes were made in the primary checkout or installed
 apps; other work continues in the primary checkout independently.
 
+## G2b completion after `3f532bd`
+
+Deepgeek's `f284d0c` was reviewed and cherry-picked as `769e700` on the isolated
+`fix/g2b-completion` branch, then completed by Null. The main checkout's unrelated
+working changes were preserved in place. See [G2B-COMPLETION.md](G2B-COMPLETION.md)
+for the source decisions, regressions, review and next handoff. This section
+supersedes the older G2b assignment/remaining-work lists below.
+
+G2b now refreshes assistant discovery, project task registry, open task views,
+room recovery and notices after import. Protected legacy markers appear on room,
+assistant identity/message and every touched task status surface. Old task retry
+shows its saved folder; legacy conversation receipts cannot retry. Source
+conversations open read-only in Older records via the existing hash-checked
+snapshot/history API. Their label says `Older copy · unverified`, because these
+are saved source rows rather than a new protected conversation-list API.
+
+Mounted notices recheck changed source hashes with a shared 30-second cache;
+import revisions invalidate it together. Dismissals retain multiple folder/hash
+keys and accept the old single-key format. Stale confirmation, API/backend
+changes, overlapping responses and unavailable hosts are covered. Machine grants
+that cannot be imported remain visible with their reapproval reason.
+
+Independent Luna review identified two P2 UI gaps; both were fixed with
+regressions. Final scoped review and receipt follow-up approved the source with
+no remaining P1/P2. Full validation: **2,157 JS tests**, **1,331 Rust tests**
+(8 existing ignored), **3 feature-off production checks**, TypeScript and
+whitespace checks passed. Logs: `/tmp/apex-g2b-release-js.log`,
+`/tmp/apex-g2b-final-rust.log`, `/tmp/apex-g2b-final-production.log`.
+The synthetic Chromium transcript/import fixture passed and its screenshot was
+inspected; it is not installed-app acceptance.
+
+@deepgeek: next prepare a reviewed authority-preserving upgrade procedure from
+INSTALL-CHECKPOINT.md and return it to @null. Preserve existing keys/journal and
+stable host-lock inodes. Do not use the authority-resetting old re-pin/--yes path.
+Null retains candidate integration and final installed review. No release build,
+installation, re-pin, main merge or Tasks 4-8 occurred in this G2b pass. Those
+remain gated by the signed-install checks below.
+
 ## Security follow-up after `ae792dce`
 
 Independent broader source review found two P1 issues. The first is corrected

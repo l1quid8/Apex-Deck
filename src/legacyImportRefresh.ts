@@ -8,6 +8,9 @@
 export type ImportListener = () => void;
 
 const listeners = new Set<ImportListener>();
+let revision = 0;
+/** Lets all panels share one fresh preview after the same completed import. */
+export const importRevision = () => revision;
 
 /** Called while mounted. Returns the unsubscribe the effect cleanup needs. */
 export function subscribeToImports(listener: ImportListener): () => void {
@@ -20,6 +23,7 @@ export function subscribeToImports(listener: ImportListener): () => void {
  * local copy, because the host is the only thing that knows what it accepted.
  */
 export function announceImport(): void {
+  revision++;
   // Copy first: a listener that unsubscribes while being notified (a view unmounting
   // as a result of the import) must not disturb the iteration.
   for (const listener of [...listeners]) {

@@ -91,7 +91,7 @@ const ALWAYS_SHOWN = new Set(["unreadable", "unavailable", "conflict"]);
  */
 export function interestingLedgers(preview: LegacyImportPreview): LegacyLedgerPreview[] {
   return preview.ledgers.filter((ledger) => {
-    if (ledger.state === "missing" || ledger.state === "notSupported") return false;
+    if (ledger.state === "missing") return false;
     if (ALWAYS_SHOWN.has(ledger.state)) return true;
     return ledger.counts.records > 0 || ledger.problems.length > 0;
   });
@@ -112,7 +112,7 @@ export function noticeKey(dataDir: string, preview: LegacyImportPreview): string
 /** Offer the notice only when there is something importable that was not dismissed as-is. */
 export function shouldShowNotice(preview: LegacyImportPreview, dataDir: string, dismissed: string | null): boolean {
   if (importableCount(preview) === 0) return false;
-  return noticeKey(dataDir, preview) !== dismissed;
+  return !dismissalKeys(dismissed).includes(noticeKey(dataDir, preview));
 }
 
 /** One record as the preview list shows it: what it was, what it becomes, and why. */
@@ -201,4 +201,23 @@ export function resultLine(result: LegacyImportResult): string {
 /** Records named in the result's skipped ids, for a short "left behind" list. */
 export function skippedIds(result: LegacyImportResult): string[] {
   return result.ledgers.flatMap((ledger) => ledger.skippedIds ?? []);
+}
+
+function dismissalKeys(value: string | null): string[] {
+  if (!value) return [];
+  try { const parsed: unknown = JSON.parse(value); if (Array.isArray(parsed)) return parsed.filter((key): key is string => typeof key === "string"); } catch { /* The old value was a single key. */ }
+  return [value];
+}
+
+/** Persist every folder/source dismissal, accepting the previous single-key format. */
+export function rememberDismissal(previous: string | null, key: string): string {
+  return JSON.stringify([...new Set([...dismissalKeys(previous), key])]);
+}
+
+/** Keep original text readable, with the complete saved record alongside it. */
+export function legacyTranscript(record: unknown): { request: string | null; response: string | null; raw: string } {
+  const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+  const saved = object(record) ? record : {};
+  const request = object(saved.request) ? saved.request : {};
+  return { request: typeof request.text === "string" ? request.text : null, response: typeof saved.response === "string" ? saved.response : null, raw: JSON.stringify(record, null, 2) ?? String(record) };
 }

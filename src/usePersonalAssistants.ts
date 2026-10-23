@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { subscribeToImports } from "./legacyImportRefresh.ts";
 import type { Backend, HostEntry } from "./backend";
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type AssistantLook } from "./assistantIdentity.ts";
 import { ASSISTANT_FOLDER, ASSISTANT_PROFILE, linkThisMacOn, requestId, runMachineBridge } from "./personalAssistant.ts";
@@ -16,7 +17,7 @@ export type PersonalAssistantsOptions = {
 };
 export type PersonalAssistantSummary = {
   ref: AssistantRef; name: string; hostName: string; look?: AssistantLook;
-  offline: boolean; revision: number; lastSeen: number;
+  offline: boolean; revision: number; lastSeen: number; legacy?: PersonalAssistantRecord["legacy"];
 };
 type HostState = { routeHostId: string; hostId?: string; name: string; state: "ready" | "empty" | "offline" | "unsupported" | "error"; listedAfter?: number; problem?: string };
 type Row = { ref: AssistantRef; routeHostId: string; route: Backend; assistant: PersonalAssistantRecord; epoch: number; written: number; lastSeen: number };
@@ -82,7 +83,7 @@ export class PersonalAssistantsCollection {
     } catch { return true; }
   }
   snapshot = () => ({
-    assistants: [...this.rows.values()].map(row => ({ ref: { ...row.ref }, name: row.assistant.name, look: row.assistant.look, revision: row.assistant.revision, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), lastSeen: row.lastSeen } satisfies PersonalAssistantSummary)),
+    assistants: [...this.rows.values()].map(row => ({ ref: { ...row.ref }, name: row.assistant.name, legacy: row.assistant.legacy, look: row.assistant.look, revision: row.assistant.revision, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), lastSeen: row.lastSeen } satisfies PersonalAssistantSummary)),
     selected: this.selected ? { ...this.selected } : null,
     hosts: [...this.hosts.values()],
   });
@@ -331,7 +332,8 @@ export function usePersonalAssistants(options: PersonalAssistantsOptions) {
   useEffect(() => {
     const refresh = async () => { await collection.refresh(); await collection.syncTimezones(); };
     void refresh(); const timer = setInterval(() => void refresh(), 2500);
-    return () => clearInterval(timer);
+    const stopImports = subscribeToImports(() => { void refresh(); });
+    return () => { stopImports(); clearInterval(timer); };
   }, [collection, hostKey]);
   useEffect(() => {
     if (!options.bridge) return;

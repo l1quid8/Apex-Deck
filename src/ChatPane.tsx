@@ -9,7 +9,8 @@ import { voiceLabel } from './voice/callView';
 import type { VoiceSettings, VoiceTurn } from './voice/types';
 import { useHostConnection } from "./useHostConnection";
 import { ConnectionBanner } from "./ConnectionBanner";
-import { LegacyImportPanel } from "./LegacyImportScreen";
+import { subscribeToImports } from "./legacyImportRefresh.ts";
+import { LegacyBadge, LegacyImportPanel } from "./LegacyImportScreen";
 import { hostCanMutate } from "./hostAvailability";
 import { createAttachRetry, createRoomRecovery, createRoomTotalsRefresh, isWaitingForOwner, loadRoomAttach, loadRoomState, loadRoomTotals, messageDedup, representedRoomEvent } from "./roomRecovery.ts";
 import { aboveAnchor } from "./floating";
@@ -560,6 +561,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const refreshSteps = useRef<() => void>(() => {});
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
+  const [legacy, setLegacy] = useState<import("./types").RoomState["legacy"]>();
   const [pins, setPins] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<AllowedRule[]>([]);
   /** "Removed. Null asks again next time.", shown for a moment after Remove. */
@@ -949,6 +951,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
     const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()) ?? questionSignal(questionSnapshot()[pane.id], namesRef.current));
     let recoveredState: import("./types").RoomState | null = null;
+    setLegacy(undefined);
     loadedSteps.current.clear();
     const stepsLoader = createStepsIndexLoader(
       () => backend.roomSteps(pane.id, null),
@@ -1182,6 +1185,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       apply: (state) => {
         if (!alive) return;
         const saved = state.snapshot;
+        setLegacy(state.legacy);
         setMountHistory(state.mounts ?? []);
         if (state.cwd && state.cwd !== cwd) folderChanged.current?.(state.cwd);
         closeGitCard();
@@ -1253,6 +1257,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       recoveredState = null; // a new daemon boot starts its room event numbers over
       await recovery.refresh();
     };
+    const offImports = subscribeToImports(() => { void refresh(); });
     const offRecovery = backend.host?.connection.recover?.(refresh, recovery.pending) ?? (() => {});
     let offHub = () => {};
     void startHub(backend, backend.host?.id).then(off => {
@@ -1264,7 +1269,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     return () => {
       alive = false;
       attachRetry.dispose();
-      recovery.dispose(); offRecovery();
+      recovery.dispose(); offRecovery(); offImports();
       durableRecovery.dispose();
       offHub();
       unregister();
@@ -3447,6 +3452,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     <div ref={root} data-bot-chip-style={chipParts.style ?? "classic"} className={`chat ${profileMode ? "" : `thread-chat${landing ? " thread-landing" : ""}`}`}>
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && <LegacyImportPanel backend={backend} />}
+      {!profileMode && legacy && <div className="legacy-room-marker"><LegacyBadge /></div>}
       {!profileMode && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {

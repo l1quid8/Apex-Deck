@@ -1,3 +1,4 @@
+import {subscribeToImports} from '../src/legacyImportRefresh.ts';
 import {chatFolder, mountWorktree} from "../src/worktreeMount.ts";
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -101,6 +102,7 @@ function appHarness() {
   const mountCode = transform(mountSource, {transforms:['typescript']}).code;
   const useWorktreeMount = new Function('useEffect','useRef','useState','mountWorktree',mountCode+';return useWorktreeMount;')(hooks.useEffect,hooks.useRef,hooks.useState,mountWorktree);
   const defaults = {
+    subscribeToImports,
     chatFolder, useWorktreeMount,
     getBackend: async () => backend,
     DEFAULT_SETTINGS: { disabledProviders: [], theme: 'dark' },

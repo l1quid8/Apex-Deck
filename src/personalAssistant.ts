@@ -52,6 +52,7 @@ export type PersonalSettings = {
   utcOffsetMinutes?: number;
 };
 export type PersonalAssistantRecord = PersonalSettings & {
+  legacy?: PersonalLegacyMarker;
   id: string; hostId: string; allowedFolders: string[]; paused?: boolean; revision: number;
   /** Assistant-owned snapshot; changing it never edits a reusable Agents profile. */
   profile: ParticipantConfig | null;

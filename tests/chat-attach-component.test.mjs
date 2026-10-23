@@ -14,11 +14,12 @@ test('a popped-out chat waits for Deck, approves for both windows, and never clo
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-attach-'));
   const html = `<html><body><div id="test-root"></div><script type="module">
     import React from 'react'; import {createRoot} from 'react-dom/client';
-    import {ChatPane} from '/src/ChatPane.tsx'; import {getBackend} from '/src/backend.ts'; import '/src/styles.css';
+    import {ChatPane} from '/src/ChatPane.tsx'; import {announceImport} from '/src/legacyImportRefresh.ts'; import {getBackend} from '/src/backend.ts'; import '/src/styles.css';
     const root=createRoot(document.getElementById('test-root'));
     const bot={id:'bot',display_name:'Bot',persona:'',access:'read',effort:null,backend:{kind:'scripted',lines:['[pass]']}};
-    const state=()=>({recovery_seq:1,snapshot:{participants:[bot],options:{policy:'mention',max_bot_hops:3},transcript:[]},active:['bot'],approvals:[{id:'bot',request:'req-1',action:{kind:'command',title:'Run ls',detail:'ls'}}]});
-    window.fixture={calls:[],misses:0,listeners:[],
+    const state=()=>({...(window.fixture?.imported?{legacy:{sourceSha256:'a'.repeat(64),importedAtMs:1,verified:false}}:{}),recovery_seq:1,snapshot:{participants:[bot],options:{policy:'mention',max_bot_hops:3},transcript:[]},active:['bot'],approvals:[{id:'bot',request:'req-1',action:{kind:'command',title:'Run ls',detail:'ls'}}]});
+    window.fixture={calls:[],misses:0,listeners:[],imported:false,
+      importedRecords(){this.imported=true;announceImport();},
       mount(attach){root.render(React.createElement(ChatPane,{pane:{id:'r1',workspaceId:'w1',kind:'chat',title:'Thread'},cwd:'/tmp/project',agents:[],backend,focused:true,onActivity(){},profiles:[],onProfilesChange(){},disabledProviders:[],attach}));},
       unmount(){root.render(null);},
       emit(event){this.listeners.forEach(fn=>fn('r1',event));},
@@ -81,6 +82,8 @@ test('a popped-out chat waits for Deck, approves for both windows, and never clo
         assert.equal(await run(popout,()=>window.fixture.count('roomClose')),0,'the pop-out never closes the room');
         assert.equal(await run(deck,()=>document.querySelector('textarea')?.disabled),false,'Deck chat still ready');
         // Control: the Deck window's own view does close its room when it goes away.
+        await run(deck,()=>window.fixture.importedRecords());
+        await wait(deck,()=>document.querySelector('.legacy-room-marker')?.textContent.includes('Imported · unverified'),'import refresh and room marker');
         await run(deck,()=>window.fixture.unmount());
         await wait(deck,()=>window.fixture.count('roomClose')===1,'Deck closes its own room');
         console.log('Chat attach Chromium checks passed'); app.exit(0);
