@@ -1,5 +1,5 @@
 //! Versioned assistant-owned configuration. No machine grants or reusable
-//! profiles are changed by this transaction.
+//! profiles are changed by an ordinary settings save. Folder grants require a separate explicit transaction.
 use crate::{
     personal::{Look, PersonalAssistant},
     personal_settings::{self, Changed, Settings},
@@ -76,6 +76,9 @@ pub struct Configure {
     pub projects: Option<Vec<AssistantProjectBinding>>,
     #[serde(default)]
     pub avatar: Option<crate::assistant_avatar::Selection>,
+    /// Explicit user approval of one existing project folder, sent separately from draft settings.
+    #[serde(default)]
+    pub folder_grant: Option<ProjectRef>,
 }
 
 fn identifier(value: &str) -> bool {
@@ -340,13 +343,12 @@ impl Host {
         Ok(profile)
     }
 
-    pub(crate) fn validate_project_binding(&self, assistant: &PersonalAssistant, mut binding: AssistantProjectBinding) -> Result<AssistantProjectBinding, String> {
+    fn validate_project_identity(&self, mut project: ProjectRef) -> Result<ProjectRef, String> {
         let local = self.local_host_id()?;
         let workspaces = self
             .session()?
             .and_then(|s| s.workspaces)
             .unwrap_or_default();
-        let project = &mut binding.project;
         if !identifier(&project.host_id)
             || !identifier(&project.workspace_id)
             || !identifier(&project.cwd)
@@ -386,6 +388,13 @@ impl Host {
                     .into(),
             );
         }
+        project.cwd = cwd.to_string_lossy().into_owned();
+        Ok(project)
+    }
+
+    pub(crate) fn validate_project_binding(&self, assistant: &PersonalAssistant, mut binding: AssistantProjectBinding) -> Result<AssistantProjectBinding, String> {
+        binding.project = self.validate_project_identity(binding.project)?;
+        let cwd = Path::new(&binding.project.cwd);
         if !assistant
             .allowed_folders
             .iter()
@@ -394,7 +403,6 @@ impl Host {
         {
             return Err("That project has no existing folder grant for this assistant.".into());
         }
-        project.cwd = cwd.to_string_lossy().into_owned();
         Ok(binding)
     }
 
@@ -472,6 +480,29 @@ impl Host {
         let snapshot = self.personal_get(&input.assistant_id)?;
         if snapshot.revision != input.expected_revision {
             return Err("The assistant changed. Refresh before saving this draft.".into());
+        }
+        if let Some(project) = input.folder_grant {
+            if input.settings.is_some() || input.profile.is_some() || input.projects.is_some() || input.avatar.is_some() {
+                return Err("Allow this folder separately from saving your settings draft.".into());
+            }
+            // Validate the project against this host's saved identity and canonical folder.
+            // No mkdir, parent broadening, remote grants or assignment changes occur here.
+            let project = self.validate_project_identity(project)?;
+            return self.change_personal(|assistants| {
+                let assistant = assistants.iter_mut().find(|a| a.id == input.assistant_id)
+                    .ok_or("That assistant does not exist on this host.")?;
+                if assistant.host_id != project.host_id {
+                    return Err("The assistant machine identity changed. Reconnect before allowing this folder.".into());
+                }
+                if assistant.revision != input.expected_revision {
+                    return Err("The assistant changed. Refresh before allowing this folder.".into());
+                }
+                if !assistant.allowed_folders.iter().filter_map(|folder| Path::new(folder).canonicalize().ok()).any(|folder| Path::new(&project.cwd).starts_with(folder)) {
+                    assistant.allowed_folders.push(project.cwd);
+                    assistant.revision += 1;
+                }
+                Ok(Changed { assistant: assistant.clone() })
+            });
         }
         let mut settings = input.settings.map(parse_settings).transpose()?;
         let mut policy_snapshot = snapshot.clone();

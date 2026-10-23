@@ -100,3 +100,20 @@ test('separate-copy editing mode is sent only after explicit Task access selecti
 test('Project tools Off blocks new delegation regardless of read-only default',async()=>{
  const h=harness({lane:{assistant:{...record,projects:[{project,tools:'off'}]},name:'Ada',offline:false},taskScopes:[{project,owner}],onCreateWorkerThread:async()=>{assert.fail('must not create worker');}});let tree=h.render();await tick();tree=h.render();assert.equal(button(tree,'Delegate a task').props.disabled,true);await button(tree,'Delegate a task').props.onClick();tree=h.render();assert.equal(find(tree,node=>node.props.role==='dialog'),null);assert.ok(!h.calls.some(call=>call.cmd==='personal_project_delegate_ui'));
 });
+
+test('Assign projects explicitly allows one exact folder without losing the assignment draft',async()=>{
+ const outside={project:{...project,workspaceId:'outside',cwd:'/outside/exact'},name:'Outside'};const saves=[];
+ const h=harness({availableProjects:[{project,name:'Project'},outside],lane:{assistant:record,name:'Ada',offline:false,configureWorkspace:async input=>saves.push(input)}});
+ h.backend.supports=cap=>cap==='assistant_project_folder_grant_v1';
+ const originalCall=h.backend.call;h.backend.call=async(cmd,args)=>cmd==='personal_workspace_configure'?(h.calls.push({cmd,args}),{assistant:{...record,revision:4,allowedFolders:[...record.allowedFolders,'/outside/exact']}}):originalCall(cmd,args);
+ h.render();let tree=h.render();button(tree,'Assign projects').props.onClick();tree=h.render();
+ const row=()=>find(h.render(),node=>node.props.className==='assistant-project-assignment'&&text(node).includes('Outside'));
+ assert.equal(find(row(),node=>node.type==='input').props.disabled,true);
+ button(row(),'Allow this folder…').props.onClick();assert.match(text(h.render()),/\/outside\/exact/);assert.equal(h.calls.filter(c=>c.cmd==='personal_workspace_configure').length,0);
+ button(h.render(),'Cancel folder access').props.onClick();assert.equal(h.calls.filter(c=>c.cmd==='personal_workspace_configure').length,0);
+ button(row(),'Allow this folder…').props.onClick();await button(h.render(),'Allow this folder').props.onClick();await tick();tree=h.render();
+ assert.deepEqual(h.calls.find(c=>c.cmd==='personal_workspace_configure').args,{assistantId:'assistant',expectedRevision:3,folderGrant:outside.project});
+ assert.equal(find(row(),node=>node.type==='input').props.disabled,false);assert.equal(find(row(),node=>node.type==='input').props.checked,false);
+ find(row(),node=>node.type==='input').props.onChange({target:{checked:true}});tree=h.render();find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();
+ assert.equal(saves[0].expectedRevision,4);assert.deepEqual(saves[0].projects,[{project,tools:'ask'},{project:outside.project,tools:'ask'}]);assert.equal(saves[0].folderGrant,undefined);
+});

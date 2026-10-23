@@ -11,7 +11,7 @@ export function projectTasks(snapshot: AssistantTaskSnapshot, owner: AssistantTa
 export function assignmentBlocked(record: PersonalAssistantRecord, project: ProjectRef): string | undefined {
   if (project.hostId !== record.hostId) return 'Assignments can be added only on this assistant’s machine.';
   const path = project.cwd.replace(/\/$/, '');
-  if (!record.allowedFolders.some(folder => { const root = folder.replace(/\/$/, ''); return path === root || path.startsWith(`${root}/`); })) return 'This folder is outside the assistant’s existing folder grants. Manage machine access first.';
+  if (!record.allowedFolders.some(folder => { const root = folder.replace(/\/$/, ''); return path === root || path.startsWith(`${root}/`); })) return 'This folder is outside the assistant’s existing folder grants. Allow this folder before assigning it.';
 }
 /** Match the host assignment guard: failed work still requires cancellation,
  * and any retained checkout lease keeps even a terminal task assigned. */

@@ -426,6 +426,44 @@ mod personal_workspace_tests {
         let _ = std::fs::remove_dir_all(root);
     }
     #[tokio::test]
+    async fn personal_workspace_folder_grant_is_explicit_scoped_and_revision_checked() {
+        let (root,host,_) = fixture().await;
+        let outside = root.join("other-project");
+        std::fs::create_dir_all(&outside).unwrap();
+        host.session_save(json!({"version":1,"workspaces":[{"id":"other","path":outside,"hostId":"owner"}]})).unwrap();
+        let before = host.personal_get("asst-1").unwrap();
+        let project=json!({"hostId":"owner","workspaceId":"other","cwd":outside});
+        assert!(configure(&host,json!({"assistantId":before.id,"expectedRevision":before.revision,"projects":[{"project":project,"tools":"full"}]})).await.is_err());
+        for request in [
+            json!({"assistantId":before.id,"expectedRevision":before.revision-1,"folderGrant":project}),
+            json!({"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":{"hostId":"other-host","workspaceId":"other","cwd":outside}}),
+            json!({"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":{"hostId":"owner","workspaceId":"invented","cwd":outside}}),
+            json!({"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":{"hostId":"owner","workspaceId":"other","cwd":root}}),
+            json!({"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":project,"settings":{"name":"Overwrite"}}),
+            json!({"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":{"hostId":"owner","workspaceId":"other","cwd":root.join("missing")}}),
+            json!({"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":project,"projects":[]}),
+            json!({"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":project,"avatar":{"kind":"pixel"}}),
+        ] {
+            assert!(configure(&host,request).await.is_err());
+            assert_eq!(host.personal_get("asst-1").unwrap(),before);
+        }
+        let result=configure(&host,json!({"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":project})).await.unwrap();
+        // Raw model/daemon commands cannot approve a folder, even at a valid revision.
+        let untrusted=host.call(Command::from_json(json!({"cmd":"personal_workspace_configure","args":{"assistantId":before.id,"expectedRevision":before.revision,"folderGrant":project}})).unwrap()).await.unwrap_err();
+        assert!(untrusted.to_lowercase().contains("provenance"),"{untrusted}");
+        let mut expected=before.clone();
+        expected.allowed_folders.push(outside.canonicalize().unwrap().to_string_lossy().into_owned());
+        expected.revision+=1;
+        assert_eq!(host.personal_get("asst-1").unwrap(),expected);
+        assert_eq!(result["assistant"]["revision"],expected.revision);
+        configure(&host,json!({"assistantId":before.id,"expectedRevision":expected.revision,"folderGrant":project})).await.unwrap();
+        assert_eq!(host.personal_get("asst-1").unwrap(),expected,"duplicate grant does not broaden access or change revision");
+        configure(&host,json!({"assistantId":before.id,"expectedRevision":expected.revision,"projects":[{"project":project,"tools":"full"}]})).await.unwrap();
+        assert_eq!(host.personal_get("asst-1").unwrap().allowed_folders,expected.allowed_folders);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn personal_workspace_rejects_credentials_unknown_fields_and_outbound_privacy_before_discovery() {
         let (root,host,profile)=fixture().await;
         let before=host.personal_get("asst-1").unwrap();

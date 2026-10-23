@@ -28,6 +28,8 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Part
         throw new Error("This host does not support named assistant delegation. Update the owning host.");
       if (cmd === "personal_workspace_configure" && client.hasCapability?.("assistant_workspace_v4") !== true)
         throw new Error("This host’s Apex Deck service does not advertise assistant workspace settings support. Update the service on the assistant machine, then reconnect.");
+      if (cmd === "personal_workspace_configure" && args?.folderGrant != null && client.hasCapability?.("assistant_project_folder_grant_v1") !== true)
+        throw new Error("Update the assistant machine’s service, then reconnect to allow this project folder.");
       if (cmd.startsWith("assistant_")) client.requireCapability?.("assistant_delegation", "ApexAgent delegation");
       if (cmd.startsWith("assistant_") && args?.mode === "isolated") client.requireCapability?.("assistant_isolation", "ApexAgent isolated worktrees");
       const needsWorkspaceV3 = args?.mode === "read_only" || args?.spendLimitMicros != null

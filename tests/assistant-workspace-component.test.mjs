@@ -191,3 +191,31 @@ test('legacy assistants without project assignments load and save an empty bindi
  const legacy={...record,profile:{...profile,access:'read'}};delete legacy.projects;
  const h=mount({lane:{assistant:legacy}});const tree=await h.ready();assert.equal(input(tree,'Project tools').props.value,'read');await submit(h);assert.equal(h.calls.length,1);assert.deepEqual(h.calls[0].projects,[]);
 });
+
+
+test('outside project requires exact-folder confirmation and refreshes revision while preserving draft',async()=>{
+ const grants=[];const project={id:'outside',name:'Outside project',path:'/other/exact'};
+ const h=mount({projects:[project],backend:{supports:cap=>cap==='assistant_project_folder_grant_v1',call:async(cmd,args)=>{grants.push([cmd,args]);return {assistant:{...record,allowedFolders:['/existing','/other/exact'],revision:8}};}},lane:{assistant:{...record,allowedFolders:['/existing']}}});
+ let tree=await h.ready();input(tree,'Assistant name').props.onChange({target:{value:'My unsaved draft'}});
+ assert.equal(find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);
+ find(tree,n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();tree=h.render();
+ assert.match(text(tree),/\/other\/exact/);assert.equal(grants.length,0);
+ find(tree,n=>n.type==='button'&&text(n)==='Cancel').props.onClick();assert.equal(grants.length,0);
+ find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();
+ await find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();
+ assert.deepEqual(grants,[['personal_workspace_configure',{assistantId:'a',expectedRevision:7,folderGrant:{hostId:'mac',workspaceId:'outside',cwd:'/other/exact'}}]]);
+ tree=h.render();assert.equal(input(tree,'Assistant name').props.value,'My unsaved draft');
+ const choice=find(tree,n=>n.type==='input'&&n.props.type==='checkbox');assert.equal(choice.props.disabled,false);choice.props.onChange({target:{checked:true}});
+ await submit(h);assert.equal(h.calls[0].expectedRevision,8);assert.equal(h.calls[0].settings.name,'My unsaved draft');assert.equal(h.calls[0].folderGrant,undefined);assert.equal(h.calls[0].projects[0].project.cwd,'/other/exact');
+});
+test('older host explains missing grant capability without enabling outside project',async()=>{
+ const h=mount({projects:[{id:'outside',name:'Outside',path:'/other/exact'}],lane:{assistant:{...record,allowedFolders:['/existing']}}});const tree=await h.ready();
+ assert.equal(find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);assert.match(text(tree),/Update.*service.*folder/i);
+});
+
+
+test('late folder grant cannot update an unmounted draft or a different owner',async()=>{
+ let resolve;const changed=[];const h=mount({projects:[{id:'p',name:'P',path:'/exact'}],backend:{supports:()=>true,call:()=>new Promise(r=>{resolve=r;})},lane:{assistant:{...record,allowedFolders:[]}},onCommitted:()=>changed.push('committed')});await h.ready();
+ find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();const promise=find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();h.unmount();resolve({assistant:{...record,revision:8,allowedFolders:['/exact']}});await promise;assert.deepEqual(changed,['committed']);assert.equal(find(h.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);
+ const wrong=mount({projects:[{id:'p',name:'P',path:'/exact'}],backend:{supports:()=>true,call:async()=>({assistant:{...record,id:'other',revision:8,allowedFolders:['/exact']}})},lane:{assistant:{...record,allowedFolders:[]}}});await wrong.ready();find(wrong.render(),n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();await find(wrong.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();assert.match(text(wrong.render()),/owner could not be verified/);assert.equal(find(wrong.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);
+});
