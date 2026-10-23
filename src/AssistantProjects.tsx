@@ -165,9 +165,11 @@ export function AssistantProjects({lane,backend,projects,availableProjects=proje
     const choice=revisedChoices.find(choice=>choice.key===revisedWorker);if(!choice)return;
     const captured=current.current;
     await run(async()=>{
-      const threadId=choice.threadId||await onCreateWorkerThread?.(selected.project,choice.profile);
+      const threadKey=JSON.stringify(['startup',captured.ownerKey,projectIdentityKey(selected.project),task.id,task.revision,choice.profile]);
+      const threadId=choice.threadId||createdThreads.current[threadKey]||await onCreateWorkerThread?.(selected.project,choice.profile);
       if(!threadId)throw new Error('Choose an available saved worker chat.');
       if(current.current.ownerKey!==captured.ownerKey||current.current.backend!==captured.backend)throw new Error('The assistant changed while checking this plan.');
+      createdThreads.current[threadKey]=threadId;
       const result=await backend.call<AssistantTask>('assistant_task_action',assistantTaskActionArgs(task,'revise_startup',{mode:task.mode,destination:{threadId,workers:[choice.profile.id],newThread:false}}));
       if(result.id!==task.id)throw new Error('The host returned a different task.');
       await refresh();setRevisedWorker('');setNotice('Revised plan checked. Review its worker and unchanged access, then approve this revision to start.');

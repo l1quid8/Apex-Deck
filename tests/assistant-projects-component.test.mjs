@@ -284,3 +284,18 @@ test('blocked startup shows one human reason with the saved worker name and keep
  const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'needs_you',result:`Task startup needs you. worker: ${reason}`,resultData:{startup:{message:`Task startup needs you. worker: ${reason}`,workers:[{needsYou:{profile_id:'worker',detail:reason}}]}}});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
  const startup=find(tree,node=>node.type==='section'&&node.props.className==='assistant-project-outcome');assert.ok(startup.children.some(node=>node?.type==='p'&&text(node)===`Codex: ${reason}`));assert.equal(find(tree,node=>node.props.className==='assistant-task-result-body'),null);
 });
+
+
+test('failed startup preflight retries the same exact worker room without creating duplicate chats',async()=>{
+ let created=0,attempt=0;
+ const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=> `retry-worker-${++created}`},{...baseTask,status:'needs_you',attempts:[],resultData:{startup:{message:'Unsupported worker'}}});
+ h.backend.supports=cap=>cap==='assistant_task_revise_startup_v1';
+ const call=h.backend.call;h.backend.call=async(cmd,args)=>{if(cmd==='assistant_task_action'&&args.action==='revise_startup'){h.calls.push({cmd,args});if(++attempt===1)throw new Error('Worker temporarily unavailable');return {...baseTask,status:'proposed',revision:3};}return call(cmd,args);};
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ find(tree,node=>node.type==='select'&&node.props['aria-label']==='Revised task worker').props.onChange({target:{value:'worker'}});
+ button(h.render(),'Check revised plan').props.onClick();await tick();assert.match(text(h.render()),/Worker temporarily unavailable/);
+ button(h.render(),'Check revised plan').props.onClick();await tick();
+ assert.equal(created,1,'a failed preflight does not create another worker chat');
+ const attempts=h.calls.filter(call=>call.cmd==='assistant_task_action');assert.equal(attempts.length,2);assert.deepEqual(attempts[1].args,attempts[0].args,'same task revision and exact destination on retry');
+ assert.ok(!attempts.some(call=>call.args.action==='approve'));
+});

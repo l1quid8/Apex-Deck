@@ -349,6 +349,7 @@ impl Journal {
         // Old task-action receipts used one key for every action at a task
         // revision. Preserve those replay barriers while allowing a different
         // explicitly signed action to use its new action-qualified key.
+        let content_preflight = content_bound_startup_preflight(&command);
         if command["cmd"] == "assistant_task_action" && command.get("provenanceRequestId").is_some() {
             let mut legacy = command.clone();
             legacy.as_object_mut().unwrap().remove("provenanceRequestId");
@@ -356,8 +357,21 @@ impl Journal {
             if self.claims.contains_key(&legacy_key) {
                 return Err("Historical task submission was consumed and its action is unavailable; reconcile the task before resubmitting.".into());
             }
-            if self.entries.get(&legacy_key).is_some_and(|entry| entry.receipt.command["args"]["action"] == command["args"]["action"]) {
+            if self.entries.get(&legacy_key).is_some_and(|entry| entry.receipt.command["args"]["action"] == command["args"]["action"] && (!content_preflight || entry.claimed)) {
                 return Err("This task action already has a protected legacy submission; do not resubmit automatically.".into());
+            }
+            if content_preflight {
+                let mut qualified = command.clone();
+                qualified["provenanceRequestId"] = json!("task-action:revise_startup");
+                let previous_key = command_key(uid, data_dir, &qualified)?;
+                if self.claims.contains_key(&previous_key) || self.entries.get(&previous_key).is_some_and(|entry| entry.claimed) {
+                    return Err("This startup check has a consumed protected submission; reconcile the task before checking another plan.".into());
+                }
+                // Only unclaimed startup checks may migrate to content-bound
+                // keys. Retain their original receipts unchanged. Preflight
+                // never dispatches a worker; its successful proposal mutation
+                // advances the task revision by compare-and-swap, so competing
+                // old/new receipts cannot both revise the same task revision.
             }
         }
         // A still-running older UI must not replay an action already issued
@@ -531,6 +545,11 @@ pub fn protected(name: &str) -> bool {
             | "legacy_import_apply"
     )
 }
+fn content_bound_startup_preflight(command: &Value) -> bool {
+    command["cmd"] == "assistant_task_action"
+        && command["args"]["action"] == "revise_startup"
+        && command["provenanceRequestId"] == "task-action:revise_startup:content-v1"
+}
 fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, String> {
     let name = command["cmd"].as_str().ok_or("Missing command")?;
     if !protected(name) {
@@ -558,8 +577,15 @@ fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, Stri
         let revision = args["revision"].as_u64().ok_or("Missing task revision")?;
         if let Some(delivery) = command.get("provenanceRequestId") {
             let action = args["action"].as_str().filter(|s| !s.is_empty() && s.len() <= 200).ok_or("Missing task action")?;
-            if delivery.as_str() != Some(format!("task-action:{action}").as_str()) { return Err("Task action submission ID does not match its action".into()); }
-            json!([task, revision, action])
+            if content_bound_startup_preflight(command) {
+                // The explicit version marker keeps every existing receipt's
+                // key stable. The broker hashes all plan content itself; the
+                // renderer cannot select a key or substitute unsigned fields.
+                json!([task, revision, action, "content-v1", args])
+            } else {
+                if delivery.as_str() != Some(format!("task-action:{action}").as_str()) { return Err("Task action submission ID does not match its action".into()); }
+                json!([task, revision, action])
+            }
         } else {
             // Existing receipts must retain their original key across upgrades.
             json!([task, revision])
@@ -1102,6 +1128,58 @@ mod tests {
         let mut command=json!({"cmd":"assistant_task_action","args":{"taskId":"task-1","revision":4,"action":action,"owner":{"workspaceId":"qa","cwd":"/qa","hostId":"local","conversationId":"monitor"}}});
         if qualified {command["provenanceRequestId"]=json!(format!("task-action:{action}"));}
         command
+    }
+    fn startup_preflight(thread: &str) -> Value {
+        let mut command=task_action("revise_startup",true);
+        command["provenanceRequestId"]=json!("task-action:revise_startup:content-v1");
+        command["args"]["mode"]=json!("isolated");
+        command["args"]["destination"]=json!({"threadId":thread,"workers":["worker"],"newThread":false});
+        command
+    }
+    #[test]
+    fn startup_preflight_content_can_change_after_failure_without_reusing_authority() {
+        let mut journal=Journal::new();
+        let first=journal.issue(501,"/data",startup_preflight("worker-a"),true).unwrap();
+        assert_eq!(first,journal.issue(501,"/data",startup_preflight("worker-a"),true).unwrap());
+        let second=journal.issue(501,"/data",startup_preflight("worker-b"),true).unwrap();
+        assert_ne!(first.key,second.key,"a different preflight destination needs its own exact authority");
+        let mut other_worker=startup_preflight("worker-a");other_worker["args"]["destination"]["workers"]=json!(["replacement-worker"]);
+        assert_ne!(first.key,journal.issue(501,"/data",other_worker,true).unwrap().key,"switching workers is a distinct preflight even in the same room");
+        let mut altered=startup_preflight("worker-a");altered["args"]["owner"]["cwd"]=json!("/other");
+        assert_ne!(first.key,journal.issue(501,"/data",altered,true).unwrap().key,"all preflight content is bound");
+        journal.claim(501,"/data",&second,NONCE).unwrap();
+        assert!(journal.claim(501,"/data",&second,NONCE).is_err());
+        journal.finish(501,"/data",&second.key,json!({"status":"succeeded"}),true).unwrap();
+        let key=new_key().unwrap();journal.compact(&key).unwrap();
+        let mut reopened=Journal::open(&serde_json::to_vec(&journal).unwrap(),key.public_key().as_ref()).unwrap();
+        assert!(reopened.issue(501,"/data",startup_preflight("worker-b"),true).is_err(),"compaction must not revive consumed content");
+        assert!(reopened.claim(501,"/data",&second,NONCE).is_err());
+        assert_eq!(first,reopened.issue(501,"/data",startup_preflight("worker-a"),true).unwrap());
+    }
+    #[test]
+    fn startup_preflight_migrates_only_unclaimed_legacy_receipts_and_keeps_originals() {
+        for qualified in [false,true] {
+            let mut journal=Journal::new();let mut old_command=startup_preflight("failed-worker");
+            if qualified {old_command["provenanceRequestId"]=json!("task-action:revise_startup");} else {old_command.as_object_mut().unwrap().remove("provenanceRequestId");}
+            let old=journal.issue(501,"/data",old_command,true).unwrap();
+            let next=journal.issue(501,"/data",startup_preflight("different-worker"),true).unwrap();
+            assert_ne!(old.key,next.key);
+            assert_eq!(journal.entries.get(&old.key).unwrap().receipt,old,"migration never edits protected originals");
+            let key=new_key().unwrap();let mut reopened=Journal::open(&serde_json::to_vec(&journal).unwrap(),key.public_key().as_ref()).unwrap();
+            assert_eq!(next,reopened.issue(501,"/data",startup_preflight("different-worker"),true).unwrap());
+            reopened.claim(501,"/data",&old,NONCE).unwrap();
+            assert!(reopened.issue(501,"/data",startup_preflight("third-worker"),true).is_err(),"a consumed legacy action remains a barrier");
+            reopened.finish(501,"/data",&old.key,json!({"status":"succeeded"}),true).unwrap();reopened.compact(&key).unwrap();
+            assert!(reopened.issue(501,"/data",startup_preflight("fourth-worker"),true).is_err(),"compacted legacy authority stays blocked");
+        }
+    }
+    #[test]
+    fn content_preflight_marker_cannot_change_other_task_action_keys() {
+        let mut journal=Journal::new();
+        for action in ["approve","retry","cancel"] {
+            let mut forged=task_action(action,true);forged["provenanceRequestId"]=json!("task-action:revise_startup:content-v1");
+            assert!(journal.issue(501,"/data",forged,true).is_err());
+        }
     }
     #[test]
     fn task_actions_allow_cancel_after_rejected_retry_but_never_replay_the_same_action() {

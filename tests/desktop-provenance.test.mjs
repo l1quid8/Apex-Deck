@@ -87,3 +87,15 @@ test('task actions use stable distinct action-qualified submissions at the same 
  for(const action of ['retry','cancel','retry'])await mod.attestFrame({id:20,cmd:'assistant_task_action',args:{taskId:'task-1',revision:2,action}},{dataDir:'/data',uid:501,publicKey:raw,issue:signRequest});
  assert.equal(issued[0].provenanceRequestId,'task-action:retry');assert.equal(issued[1].provenanceRequestId,'task-action:cancel');assert.deepEqual(issued[0],issued[2]);
 });
+
+test('only revised startup checks request the versioned content-bound submission format',async()=>{
+ const {publicKey,privateKey}=generateKeyPairSync('ed25519');const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);const issued=[];
+ const signRequest=async request=>{issued.push(request.command);const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:request.command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+ for(const action of ['revise_startup','approve']){
+  const args={taskId:'task-1',revision:2,action,owner:{hostId:'host',workspaceId:'project',cwd:'/project',conversationId:'monitor'},mode:'isolated',destination:{threadId:'worker-a',workers:['worker'],newThread:false}};
+  await mod.attestFrame({id:20,cmd:'assistant_task_action',args},{dataDir:'/data',uid:501,publicKey:raw,issue:signRequest});
+  assert.deepEqual(issued.at(-1).args,args,'the entire submitted plan remains exactly signed');
+ }
+ assert.equal(issued[0].provenanceRequestId,'task-action:revise_startup:content-v1');
+ assert.equal(issued[1].provenanceRequestId,'task-action:approve');
+});
