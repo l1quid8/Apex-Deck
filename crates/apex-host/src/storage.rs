@@ -272,8 +272,9 @@ impl Store {
     pub(crate) fn import_legacy_room_authorities(&self, rooms: Vec<LegacyRoom>, marker: &crate::legacy_import::LegacyMarker) -> Result<LegacyRoomOutcome, String> {
         let _guard = self.writes.lock().unwrap();
         let mut authorities = self.room_authorities()?;
-        let mut outcome = LegacyRoomOutcome { imported: vec![], already: vec![], skipped: vec![] };
+        let mut outcome = LegacyRoomOutcome { imported: vec![], already: vec![], skipped: vec![], skipped_participants: vec![] };
         for room in rooms {
+            outcome.skipped_participants.extend(room.omitted_commands.iter().map(|p| format!("participant:{}/{}", room.id, p.id)));
             match authorities.get(&room.id) {
                 Some(entry) if entry.get("legacy").is_some_and(|m| !m.is_null()) => outcome.already.push(room.id),
                 Some(_) => outcome.skipped.push(room.id),
@@ -562,6 +563,7 @@ impl Store {
 pub(crate) struct LegacyRoom {
     pub id: String,
     authority: RoomAuthority,
+    pub omitted_commands: Vec<apex_core::ParticipantConfig>,
 }
 
 /// Room ids by what an import did with them.
@@ -571,6 +573,7 @@ pub(crate) struct LegacyRoomOutcome {
     pub already: Vec<String>,
     /// Already had a protected manifest of its own; left as it is.
     pub skipped: Vec<String>,
+    pub skipped_participants: Vec<String>,
 }
 
 /// The folder switches that lead to `cwd`, walking back from it. A mount that
@@ -589,15 +592,28 @@ pub(crate) fn own_lineage(cwd: Option<&str>, mounts: &[MountBoundary]) -> Vec<Mo
 }
 
 /// Map one legacy room file: its folder, bots, options and plan switch are
-/// kept; remembered permissions are left ungranted and outside mounts dropped.
+/// kept; automatic access is reset, remembered permissions are left ungranted
+/// and outside mounts dropped. Custom commands stay in the original snapshot:
+/// arbitrary executables cannot be constrained by a participant's Ask setting.
 /// Returns the room and how many permissions and mounts were left out.
 pub(crate) fn plan_legacy_room(id: &str, bytes: &[u8]) -> Result<(LegacyRoom, usize, usize), String> {
-    let saved: SavedRoom = serde_json::from_slice(bytes).map_err(|e| format!("The saved room could not be read: {e}"))?;
+    let mut saved: SavedRoom = serde_json::from_slice(bytes).map_err(|e| format!("The saved room could not be read: {e}"))?;
     let mounts = own_lineage(saved.cwd.as_deref(), &saved.mounts);
     let dropped = saved.mounts.len() - mounts.len();
     let allowed = saved.snapshot.allowed.len();
+    let mut omitted_commands = vec![];
+    saved.snapshot.participants.retain_mut(|participant| {
+        if matches!(participant.backend, apex_core::Backend::Cli { .. }) {
+            omitted_commands.push(participant.clone());
+            return false;
+        }
+        if matches!(participant.access, apex_core::Access::Full | apex_core::Access::Edits) {
+            participant.access = apex_core::Access::Ask;
+        }
+        true
+    });
     let authority = RoomAuthority { cwd: saved.cwd, participants: saved.snapshot.participants, options: saved.snapshot.options, allowed: vec![], plan: saved.snapshot.plan, mounts, legacy: None };
-    Ok((LegacyRoom { id: id.into(), authority }, allowed, dropped))
+    Ok((LegacyRoom { id: id.into(), authority, omitted_commands }, allowed, dropped))
 }
 
 /// The room id a saved room file belongs to: "<hex id>.json".

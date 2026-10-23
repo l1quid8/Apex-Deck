@@ -309,6 +309,90 @@ fn apply_imports_legacy_records_restores_rooms_without_permissions_and_dispatche
 }
 
 #[test]
+fn imported_rooms_require_fresh_approval_for_saved_full_and_edit_access() {
+    let mut f = Fixture::new("room-access", |data| {
+        let mut room = legacy_room();
+        room["cwd"] = json!(data.to_string_lossy());
+        room["mounts"] = json!([]);
+        room["snapshot"]["participants"] = json!([
+            {"id":"full","display_name":"Full bot","access":"full","backend":{"kind":"scripted","lines":[]}},
+            {"id":"edits","display_name":"Editing bot","access":"edits","backend":{"kind":"scripted","lines":[]}},
+            {"id":"ask","display_name":"Asking bot","access":"ask","backend":{"kind":"scripted","lines":[]}},
+            {"id":"read","display_name":"Reading bot","access":"read","backend":{"kind":"scripted","lines":[]}}
+        ]);
+        write_json(&room_file(data, ROOM_ID), &room);
+    });
+    let source = room_file(&f.data, ROOM_ID);
+    let original = std::fs::read(&source).unwrap();
+    let preview = f.preview();
+    assert_eq!(f.apply(Fixture::apply_args(&preview)).unwrap()["complete"], true);
+    assert_eq!(std::fs::read(source).unwrap(), original, "retain the original legacy file during import");
+
+    // Admission to the ordinary room route is not a new access decision. The
+    // protected manifest consumed by the adapters must require one after import.
+    f.restart();
+    let restored = f.host.room_create(ROOM_ID.into(), vec![], Default::default(), None).unwrap();
+    let access: Vec<_> = restored.participants.iter().map(|p| (p.id.as_str(), p.access)).collect();
+    assert_eq!(access, vec![
+        ("full", apex_core::Access::Ask),
+        ("edits", apex_core::Access::Ask),
+        ("ask", apex_core::Access::Ask),
+        ("read", apex_core::Access::Read),
+    ], "import must not turn old Full or Edits labels into standing grants");
+    assert!(restored.allowed.is_empty());
+
+    // Opening/saving and another restart cannot recover the old editable grants.
+    f.restart();
+    let restored = f.host.room_create(ROOM_ID.into(), vec![], Default::default(), None).unwrap();
+    assert_eq!(restored.participants[0].access, apex_core::Access::Ask);
+    assert_eq!(restored.participants[1].access, apex_core::Access::Ask);
+}
+
+#[test]
+fn custom_commands_stay_in_the_snapshot_until_added_again_from_the_ui() {
+    let mut f = Fixture::new("room-custom-command", |data| {
+        let mut room = legacy_room();
+        room["cwd"] = json!(data.to_string_lossy());
+        room["mounts"] = json!([]);
+        room["snapshot"]["participants"] = json!([
+            {"id":"custom","display_name":"My command","access":"ask",
+             "backend":{"kind":"cli","program":"/bin/sh","args":["-c","exit 73"]}},
+            {"id":"safe","display_name":"Regular bot","access":"read","backend":{"kind":"scripted","lines":[]}}
+        ]);
+        write_json(&room_file(data, ROOM_ID), &room);
+    });
+    let preview = f.preview();
+    let result = f.apply(Fixture::apply_args(&preview)).unwrap();
+    let rooms = result["ledgers"].as_array().unwrap().iter().find(|entry| entry["ledger"] == ROOMS).unwrap();
+    assert_eq!(rooms["skipped"], 1);
+    assert_eq!(rooms["skippedIds"], json!(["participant:legacy-room/custom"]));
+    f.restart();
+    let restored = f.host.room_create(ROOM_ID.into(), vec![], Default::default(), None).unwrap();
+    let ids: Vec<_> = restored.participants.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, vec!["safe"], "Ask cannot constrain an arbitrary custom executable; import must leave it inactive");
+
+    let rows = ledger(&preview, ROOMS)["records"].as_array().unwrap();
+    let command = rows.iter().find(|row| row["kind"] == "grant" && row["title"] == "My command").expect("preview the omitted command");
+    assert_eq!(command["importStatus"], "notImported");
+    assert!(command["reason"].as_str().unwrap().contains("add"), "{command}");
+    let snapshot: Value = serde_json::from_slice(&std::fs::read(f.snapshot_dir(&preview).join("saved-chats-v1/rooms").join(room_file(&f.data, ROOM_ID).file_name().unwrap())).unwrap()).unwrap();
+    assert_eq!(snapshot["snapshot"]["participants"][0]["backend"]["program"], "/bin/sh", "retain the original command for review");
+}
+
+#[test]
+fn room_preview_explains_that_saved_access_needs_a_new_decision() {
+    let f = Fixture::new("room-access-preview", |data| {
+        let mut room = legacy_room();
+        room["snapshot"]["participants"][0]["access"] = json!("full");
+        write_json(&room_file(data, ROOM_ID), &room);
+    });
+    let preview = f.preview();
+    let reason = record(ledger(&preview, ROOMS), ROOM_ID)["reason"].as_str().unwrap();
+    assert!(reason.contains("Ask") && reason.contains("Full") && reason.contains("Edits"),
+        "the access reset must be visible before confirming import: {reason}");
+}
+
+#[test]
 fn apply_refuses_a_snapshot_changed_after_preview_and_writes_nothing() {
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new("tamper", write_all_legacy);
