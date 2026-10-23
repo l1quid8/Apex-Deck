@@ -51,7 +51,7 @@ function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) =
 }
 
 /** One conversation across every watched project. Replies go to the project they name, or the last one discussed. */
-export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture }: {
+export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled }: {
   /** The personal assistant on its durable host, shown as one more lane in this conversation. */
   personal?: PersonalLane | null;
   personalLaneId?: string;
@@ -69,6 +69,9 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   onCommand?: (command: Command, laneId: string) => void | Promise<void>;
   /** The glyph rain a new teammate's empty chat shows, as new threads do. */
   landingTexture?: LandingTextureSettings;
+  /** A task Work asked to open; handled once per nonce. */
+  focusTask?: { key: string; nonce: number } | null;
+  onFocusHandled?: () => void;
   offlineWorkspaceIds?: string[];
   onOpenEvidence?: (workspaceId: string, evidence: MonitorEvidence) => Promise<void>;
   onOverview?: (text: string) => Promise<void>;
@@ -237,6 +240,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     else if (current.view === 'notifications') notificationsScroll.current = top;
     setView('tasks'); setSelectedKey(key);
   }, []);
+  useEffect(() => { if (!focusTask) return; openTask(focusTask.key); onFocusHandled?.(); }, [focusTask?.nonce]);
   // Rows are replaced per store. Identical rows keep the same state, so a store reporting on every render cannot loop.
   const report = useCallback((storeKey: string, rows: TaskSummary[]) => {
     setReported((current) => JSON.stringify(current[storeKey]) === JSON.stringify(rows) ? current : { ...current, [storeKey]: rows });

@@ -1024,3 +1024,12 @@ test('the first message replaces the empty state', () => {
 test('LandingTexture listens on the new-teammate surface', () => {
  assert.match(fs.readFileSync(new URL('../src/landing/LandingTexture.tsx', import.meta.url),'utf8'),/\.assistant-first-run/);
 });
+
+test('Work can open a personal task in embedded chat, once', () => {
+ const messages=[pm('pm-1','human','chat',1,'Disk?'),pm('pm-2','system','approval',2,'Approval needed: Run `df -h /`?','pt-1')];
+ const {lane}=personalLane([personalTask('needsYou')],messages);const key='focus-owner';const handled=[];
+ const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[],focusTask:{key:personalTaskKey('vps','pt-1',undefined),nonce:1},onFocusHandled:()=>handled.push(1)},{effects:true});
+ h.render();h.flushEffects();const tree=h.render();
+ assert.ok(find(tree,n=>n.props?.className==='assistant-chat-back'),'task details are open');
+ assert.equal(handled.length,1);h.flushEffects();h.render();h.flushEffects();assert.equal(handled.length,1);
+});
