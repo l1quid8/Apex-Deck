@@ -1344,7 +1344,7 @@ pub(crate) fn codex_plan(snapshot: &Value, partial: bool) -> Option<PlanUsage> {
 
 /// The usage resets in an `account/rateLimits/read` answer
 /// (`rateLimitResetCredits`), soonest to expire first. Only ones still
-/// available are kept. `None` when the answer didn't include them.
+/// available that reset Codex's rate limits are kept. `None` when the answer didn't include them.
 pub(crate) fn codex_reset_credits(summary: &Value) -> Option<ResetCredits> {
     let available = summary["availableCount"].as_u64()?;
     let mut credits: Vec<ResetCredit> = summary["credits"]
@@ -1352,6 +1352,7 @@ pub(crate) fn codex_reset_credits(summary: &Value) -> Option<ResetCredits> {
         .into_iter()
         .flatten()
         .filter(|credit| credit["status"].as_str().is_none_or(|status| status == "available"))
+        .filter(|credit| credit["resetType"].as_str().is_none_or(|kind| kind == "codexRateLimits"))
         .filter_map(|credit| {
             Some(ResetCredit {
                 id: credit["id"].as_str()?.to_string(),
@@ -2121,6 +2122,7 @@ mod tests {
         let summary = json!({ "availableCount": 3, "credits": [
             { "id": "late", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1791417037, "expiresAt": 1794009037, "title": "Full reset", "description": "Thanks for using Codex!" },
             { "id": "used", "resetType": "codexRateLimits", "status": "redeemed", "grantedAt": 1790000000, "expiresAt": 1792000000, "title": null },
+            { "id": "other", "resetType": "unknown", "status": "available", "grantedAt": 1790000000, "expiresAt": 1791000000 },
             { "id": "forever", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1790000000, "expiresAt": null },
             { "id": "soon", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1790710015, "expiresAt": 1793302015, "title": "Full reset" }
         ] });

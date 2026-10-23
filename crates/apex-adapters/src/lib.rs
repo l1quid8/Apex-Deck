@@ -168,25 +168,45 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
 pub use codex_server::ResetOutcome;
 
 /// Use one of a provider's usage resets: `credit`, or the next one when
-/// `None`. Only Codex offers them. Gives what happened and, when the plan
-/// could be read after, where it stands now, which is also what the next
-/// `plan_usage` gives.
-pub async fn use_plan_reset(tool: AgentTool, credit: Option<&str>, context: &BuildContext) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
+/// `None`. Only Codex offers them. `key` names the person's attempt; asking
+/// again with the same key after a failure can't spend a second credit, and
+/// a fresh one is made when it is `None`. Gives what happened and, when the
+/// plan could be read after, where it stands now, which is also what the
+/// next `plan_usage` gives.
+pub async fn use_plan_reset(tool: AgentTool, credit: Option<&str>, key: Option<&str>, context: &BuildContext) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
     if tool != AgentTool::Codex {
         return Err("only Codex offers usage resets".to_string());
     }
+    let key = key.map_or_else(attempt_key, str::to_string);
     let child = start_codex_server(context)?;
-    let (outcome, mut plan) = codex_server::consume_reset(child, credit, &attempt_key()).await?;
-    if let Some(plan) = plan.as_mut() {
-        // A credit just used is gone even if the read didn't list credits.
-        if plan.reset_credits.is_none() && outcome == ResetOutcome::Reset {
+    let (outcome, mut plan) = codex_server::consume_reset(child, credit, &key).await?;
+    if outcome == ResetOutcome::Reset {
+        // The windows started over even if reading them after failed: try
+        // once more, then fall back to the last plan with its windows emptied.
+        if plan.is_none() {
+            plan = read_codex_plan(context).await.ok();
+        }
+        if plan.is_none() {
+            plan = plan_cache::last(tool).map(|mut last| {
+                last.windows.iter_mut().for_each(|w| w.used_percent = 0);
+                last.reset_credits = None;
+                last
+            });
+        }
+        if let Some(plan) = plan.as_mut().filter(|plan| plan.reset_credits.is_none()) {
+            // The credit just used is gone. When the provider picked it,
+            // which one is unknown, so only the count stays.
             plan.reset_credits = plan_cache::last(tool).and_then(|last| last.reset_credits).map(|mut known| {
-                let used = credit.map(str::to_string).or_else(|| known.credits.first().map(|c| c.id.clone()));
-                known.credits.retain(|c| Some(&c.id) != used.as_ref());
                 known.available = known.available.saturating_sub(1);
+                match credit {
+                    Some(used) => known.credits.retain(|c| c.id != used),
+                    None => known.credits.clear(),
+                }
                 known
             });
         }
+    }
+    if let Some(plan) = plan.as_ref() {
         plan_cache::remember(plan);
     }
     Ok((outcome, plan))

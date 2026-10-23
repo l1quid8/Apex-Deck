@@ -958,31 +958,58 @@ async fn initialize(
         .map_err(|e| format!("the app server went away: {e}"))
 }
 
-/// Read the account's plan limits without starting a turn. `child` must
-/// have been started with `ARGS` and all three standard streams piped.
-pub(crate) async fn read_plan(mut child: OwnedChild) -> Result<PlanUsage, String> {
-    let mut stdin = child.stdin.take().expect("stdin was piped");
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    tokio::spawn(async move {
-        let mut sink = Vec::new();
-        let _ = stderr.read_to_end(&mut sink).await;
-    });
-    let mut lines = BufReader::new(stdout).lines();
-    initialize(&mut stdin, &mut lines).await?;
-    send(&mut stdin, &rate_limits_read(1))
-        .await
-        .map_err(|e| format!("the app server went away: {e}"))?;
-    let result = answer_within(&mut lines, 1, SETUP_TIMEOUT).await;
-    drop(stdin);
-    if tokio::time::timeout(Duration::from_secs(2), child.wait())
-        .await
-        .is_err()
-    {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+/// A short conversation with an app server started outside a turn, for
+/// account requests. `child` must have been started with `ARGS` and all
+/// three standard streams piped.
+struct AccountSession {
+    child: OwnedChild,
+    stdin: ChildStdin,
+    lines: Lines<BufReader<ChildStdout>>,
+}
+
+impl AccountSession {
+    async fn start(mut child: OwnedChild) -> Result<Self, String> {
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let mut stderr = child.stderr.take().expect("stderr was piped");
+        tokio::spawn(async move {
+            let mut sink = Vec::new();
+            let _ = stderr.read_to_end(&mut sink).await;
+        });
+        let mut lines = BufReader::new(stdout).lines();
+        initialize(&mut stdin, &mut lines).await?;
+        Ok(Self { child, stdin, lines })
     }
-    child.terminate_tree().await?;
+
+    /// Send `request` and wait up to `limit` for the answer to `id`.
+    async fn ask(&mut self, request: &Value, id: u64, limit: Duration) -> Result<Value, String> {
+        send(&mut self.stdin, request)
+            .await
+            .map_err(|e| format!("the app server went away: {e}"))?;
+        answer_within(&mut self.lines, id, limit).await
+    }
+
+    /// Close the server's input and make sure it and its children are gone.
+    async fn finish(self) -> Result<(), String> {
+        let Self { mut child, stdin, .. } = self;
+        drop(stdin);
+        if tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        child.terminate_tree().await
+    }
+}
+
+/// Read the account's plan limits without starting a turn. `child` is
+/// started as for `AccountSession`.
+pub(crate) async fn read_plan(child: OwnedChild) -> Result<PlanUsage, String> {
+    let mut session = AccountSession::start(child).await?;
+    let result = session.ask(&rate_limits_read(1), 1, SETUP_TIMEOUT).await;
+    session.finish().await?;
     plan_from_read(&result?).ok_or_else(|| "the answer had no rate limits".to_string())
 }
 
@@ -1026,39 +1053,18 @@ impl ResetOutcome {
 /// Use usage-reset credit `credit` (or the next one, when `None`), then
 /// read where the plan stands. `key` names this one attempt, so asking
 /// again with it can't use a second credit. `child` is started as for
-/// `read_plan`.
-pub(crate) async fn consume_reset(mut child: OwnedChild, credit: Option<&str>, key: &str) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
-    let mut stdin = child.stdin.take().expect("stdin was piped");
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    tokio::spawn(async move {
-        let mut sink = Vec::new();
-        let _ = stderr.read_to_end(&mut sink).await;
-    });
-    let mut lines = BufReader::new(stdout).lines();
-    initialize(&mut stdin, &mut lines).await?;
-    send(&mut stdin, &reset_credit_consume(1, credit, key))
-        .await
-        .map_err(|e| format!("the app server went away: {e}"))?;
-    let outcome = answer_within(&mut lines, 1, SETUP_TIMEOUT).await.and_then(|result| {
+/// `AccountSession`.
+pub(crate) async fn consume_reset(child: OwnedChild, credit: Option<&str>, key: &str) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
+    let mut session = AccountSession::start(child).await?;
+    let outcome = session.ask(&reset_credit_consume(1, credit, key), 1, SETUP_TIMEOUT).await.and_then(|result| {
         let outcome = result["outcome"].as_str().unwrap_or_default();
         ResetOutcome::from_wire(outcome).ok_or_else(|| format!("the app server answered with an unknown outcome {outcome:?}"))
     });
     let plan = match outcome {
-        Ok(_) if send(&mut stdin, &rate_limits_read(2)).await.is_ok() => {
-            answer_within(&mut lines, 2, LIMITS_TIMEOUT).await.ok().and_then(|result| plan_from_read(&result))
-        }
-        _ => None,
+        Ok(_) => session.ask(&rate_limits_read(2), 2, LIMITS_TIMEOUT).await.ok().and_then(|result| plan_from_read(&result)),
+        Err(_) => None,
     };
-    drop(stdin);
-    if tokio::time::timeout(Duration::from_secs(2), child.wait())
-        .await
-        .is_err()
-    {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-    }
-    child.terminate_tree().await?;
+    session.finish().await?;
     Ok((outcome?, plan))
 }
 

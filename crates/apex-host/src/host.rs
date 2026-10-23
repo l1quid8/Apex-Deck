@@ -1174,9 +1174,10 @@ impl Host {
     }
 
     /// Use one of `tool`'s usage resets (`credit`, or the next one) for the
-    /// account a bot in `room` is signed in to, then send the room the plan
-    /// as it stands after. Gives what the provider said happened.
-    pub async fn room_plan_reset(&self, room: &str, tool: AgentTool, credit: Option<String>) -> Result<apex_adapters::ResetOutcome, String> {
+    /// account a bot in `room` is signed in to, then send every open chat the
+    /// plan as it stands after. `key` names the person's attempt, so a retry
+    /// can't spend a second credit. Gives what the provider said happened.
+    pub async fn room_plan_reset(&self, room: &str, tool: AgentTool, credit: Option<String>, key: Option<String>) -> Result<apex_adapters::ResetOutcome, String> {
         let context = {
             let handle = self.handle(room)?;
             let saved = handle.checkpoint.lock().unwrap();
@@ -1185,9 +1186,13 @@ impl Host {
             }
             handle.context.clone()
         };
-        let (outcome, plan) = apex_adapters::use_plan_reset(tool, credit.as_deref(), &context).await?;
+        let (outcome, plan) = apex_adapters::use_plan_reset(tool, credit.as_deref(), key.as_deref(), &context).await?;
         if let Some(plan) = plan {
-            self.room_event(room, RoomEvent::plan(&plan));
+            // The plan is the account's, so every open chat shows the change.
+            let open: Vec<String> = self.rooms.lock().unwrap().keys().cloned().collect();
+            for id in open {
+                self.room_event(&id, RoomEvent::plan(&plan));
+            }
         }
         Ok(outcome)
     }

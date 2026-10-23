@@ -98,8 +98,9 @@ export interface Backend {
   /** What is left on API bot `participant`'s account, in US dollars. Null when the provider has no balance check. */
   roomBotBalance?(room: string, participant: string): Promise<number | null>;
   /** Use one of `tool`'s usage resets (`credit`, or the next one) for the account a bot in `room` is signed in to.
-   *  The room then gets the plan as it stands after. Only Codex offers them. */
-  roomPlanReset?(room: string, tool: AgentTool, credit: string | null): Promise<import("./resetCredits").ResetOutcome>;
+   *  Every open chat then gets the plan as it stands after. Only Codex offers them. `key` names this attempt:
+   *  send the same one to try again, so a reset that went through unseen isn't spent twice. */
+  roomPlanReset?(room: string, tool: AgentTool, credit: string | null, key: string): Promise<import("./resetCredits").ResetOutcome>;
   /** Models a coding agent lists for the account it is signed in to. Empty if it keeps no list. */
   agentModels(tool: AgentTool): Promise<ModelChoice[]>;
   /** Have `writer` write a name and persona for a new agent from `idea`. `taken` are names already in use. Nothing is saved. */

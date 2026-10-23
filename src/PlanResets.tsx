@@ -1,15 +1,26 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { availableCount, exactDeadline, liveCredits, secondsCountdown } from "./resetCredits.ts";
 import type { ResetCredit, ResetCredits } from "./types";
 
-/** The time in Unix seconds, read again every second while shown. */
-function useSeconds(): number {
+/** The time in Unix seconds, read again every second while `box` is on
+ *  screen. A collapsed Usage section keeps it mounted but out of sight. */
+function useSeconds(box: RefObject<HTMLElement | null>): number {
   const [now, setNow] = useState(() => Date.now() / 1000);
+  const [shown, setShown] = useState(true);
   useEffect(() => {
+    const el = box.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const watch = new IntersectionObserver(([entry]) => setShown(entry.isIntersecting));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [box]);
+  useEffect(() => {
+    if (!shown) return;
+    setNow(Date.now() / 1000);
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [shown]);
   return now;
 }
 
@@ -17,12 +28,13 @@ function useSeconds(): number {
  *  its expiry by the second, with the exact deadline on hover, and Apply
  *  asks to use it. */
 export function PlanResets({ credits, applying, onApply }: { credits: ResetCredits; applying: string | null; onApply(credit: ResetCredit | null): void }) {
-  const now = useSeconds();
+  const box = useRef<HTMLDivElement>(null);
+  const now = useSeconds(box);
   const live = liveCredits(credits, now);
   const count = availableCount(credits, now);
   if (count === 0) return null;
   return (
-    <div className="usage-row">
+    <div ref={box} className="usage-row">
       <span className="usage-label">Resets</span>
       <div className="plan-resets">
         {live.map((credit) => {

@@ -206,11 +206,11 @@ test('a usage reset is asked for by thread and provider', async () => {
   const transport = recording();
   transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return 'reset'; };
   const backend = commandBackend(transport, stubShell());
-  assert.equal(await backend.roomPlanReset('r', 'codex', 'c1'), 'reset');
-  await backend.roomPlanReset('r', 'codex', null);
+  assert.equal(await backend.roomPlanReset('r', 'codex', 'c1', 'k1'), 'reset');
+  await backend.roomPlanReset('r', 'codex', null, 'k2');
   assert.deepEqual(transport.calls, [
-    { cmd: 'room_plan_reset', args: { room: 'r', tool: 'codex', credit: 'c1' } },
-    { cmd: 'room_plan_reset', args: { room: 'r', tool: 'codex', credit: null } },
+    { cmd: 'room_plan_reset', args: { room: 'r', tool: 'codex', credit: 'c1', key: 'k1' } },
+    { cmd: 'room_plan_reset', args: { room: 'r', tool: 'codex', credit: null, key: 'k2' } },
   ]);
 });
 

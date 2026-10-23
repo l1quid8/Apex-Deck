@@ -17,8 +17,7 @@ import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
-import type { ResetCredit } from "./types";
+import type { AllowedRule, NextStep, ResetCredit, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { PlanResets } from "./PlanResets";
 import { exactDeadline, outcomeLine, secondsCountdown } from "./resetCredits.ts";
@@ -601,6 +600,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const [applyingReset, setApplyingReset] = useState<string | null>(null);
   /** Asks before a usage reset is spent. Kept here so it outlives the hover card. */
   const [resetQuestion, setResetQuestion] = useState<Question | null>(null);
+  /** One key per reset the person asked for, by credit id ("" for the provider's pick). Kept after
+   *  a failure, so trying again can't spend a second credit if the first went through. */
+  const resetKeys = useRef(new Map<string, string>());
   /** The chip whose usage card is open. */
   const [card, setCard] = useState<string | null>(null);
   /** Where the hovered bot's usage card sits: above its badge, at the bottom of the pane. */
@@ -2729,7 +2731,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       title: `Use a ${label} usage reset?`,
       body: `This spends one reset credit and starts your ${label} limits over from empty. It can't be undone.`,
       rows: [
-        ...windows.map((w) => { const name = windowLabel(w); return `${name[0].toUpperCase()}${name.slice(1)} limit: ${Math.min(100, w.used_percent)}% used`; }),
+        ...windows.map((w) => { const name = windowLabel(w); return `${name.charAt(0).toUpperCase()}${name.slice(1)} limit: ${Math.min(100, w.used_percent)}% used`; }),
         ...(credit?.expires_at != null
           ? [`${credit.title ?? "Reset"} · expires in ${secondsCountdown(credit.expires_at, now)}`, exactDeadline(credit.expires_at)]
           : [`${label} picks which credit to use`]),
@@ -2737,9 +2739,12 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       action: "Use reset",
       onConfirm: () => {
         if (!backend.roomPlanReset) return;
-        setApplyingReset(credit?.id ?? "");
-        backend.roomPlanReset(pane.id, provider, credit?.id ?? null)
-          .then((outcome) => { const line = outcomeLine(outcome, label); notify(line.text, line.tone); })
+        const which = credit?.id ?? "";
+        const key = resetKeys.current.get(which) ?? crypto.randomUUID();
+        resetKeys.current.set(which, key);
+        setApplyingReset(which);
+        backend.roomPlanReset(pane.id, provider, credit?.id ?? null, key)
+          .then((outcome) => { resetKeys.current.delete(which); const line = outcomeLine(outcome, label); notify(line.text, line.tone); })
           .catch((error) => notify(`Couldn't use the ${label} reset: ${error instanceof Error ? error.message : String(error)}`, "error"))
           .finally(() => setApplyingReset(null));
       },
