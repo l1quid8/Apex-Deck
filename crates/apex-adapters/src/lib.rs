@@ -168,23 +168,35 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
 pub use codex_server::ResetOutcome;
 
 /// Use one of a provider's usage resets: `credit`, or the next one when
-/// `None`. Only Codex offers them. `key` names the person's attempt; asking
+/// `None`. Codex and Claude offer them. `key` names the person's attempt; asking
 /// again with the same key after a failure can't spend a second credit, and
 /// a fresh one is made when it is `None`. Gives what happened and, when the
 /// plan could be read after, where it stands now, which is also what the
 /// next `plan_usage` gives.
 pub async fn use_plan_reset(tool: AgentTool, credit: Option<&str>, key: Option<&str>, context: &BuildContext) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
-    if tool != AgentTool::Codex {
-        return Err("only Codex offers usage resets".to_string());
-    }
     let key = key.map_or_else(attempt_key, str::to_string);
-    let child = start_codex_server(context)?;
-    let (outcome, mut plan) = codex_server::consume_reset(child, credit, &key).await?;
+    let (outcome, mut plan) = match tool {
+        AgentTool::Codex => codex_server::consume_reset(start_codex_server(context)?, credit, &key).await?,
+        AgentTool::ClaudeCode => {
+            // Claude needs a grant named; without one, use the one it lists first.
+            let grant = credit
+                .map(str::to_string)
+                .or_else(|| plan_cache::last(tool)?.reset_credits?.credits.first().map(|c| c.id.clone()))
+                .ok_or("Claude has no usage reset to use")?;
+            let outcome = claude_usage::consume_reset(&grant, &key).await?;
+            let plan = if outcome == ResetOutcome::NothingToReset { None } else { claude_usage::read_plan().await.ok() };
+            (outcome, plan)
+        }
+        _ => return Err("only Codex and Claude offer usage resets".to_string()),
+    };
     if outcome == ResetOutcome::Reset {
         // The windows started over even if reading them after failed: try
         // once more, then fall back to the last plan with its windows emptied.
         if plan.is_none() {
-            plan = read_codex_plan(context).await.ok();
+            plan = match tool {
+                AgentTool::Codex => read_codex_plan(context).await.ok(),
+                _ => claude_usage::read_plan().await.ok(),
+            };
         }
         if plan.is_none() {
             plan = plan_cache::last(tool).map(|mut last| {
