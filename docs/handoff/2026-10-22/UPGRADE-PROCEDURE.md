@@ -5,6 +5,17 @@ authorization: until it is reviewed and an administrator runs it, nothing here
 has happened. No installation, root write, re-pin, merge or Tasks 4–8 is
 implied by its existence.
 
+Run the phases in order from one ordinary-user Terminal shell in the integration
+checkout so `MNT` and `STAMP` remain available to later phases and rollback:
+
+```sh
+cd /Users/tylercaldwell/Downloads/apex-deck-worktrees/assistant-workspace-plan
+```
+
+Use `sudo` only where shown. The reviewed [pre-flight record](GATE-8f67474-PREFLIGHT.md)
+documents the existing backups, user-store size and process state; repeat the
+live Phase B checks before acting on that snapshot.
+
 Two helper scripts accompany it, both read-only:
 
 - `scripts/verify-protected-bundle.sh` — validates a candidate bundle against
@@ -307,10 +318,11 @@ Required reading of that output:
   `b2ad5d46…` and `538dbd09…` in the after file.
 - `RESULT: PASS`.
 
-**Do not run `--compare` across the acceptance window.** After Phase H the
-journal is *supposed* to grow; the tool would report that as drift, correctly
-but uselessly. For the whole-window check, compare before-swap against the
-post-acceptance inventory and read the per-item lines: the keys and every
+**Do not require `--compare` to pass across the acceptance window.** After
+Phase H the journal may have changed through legitimate protected writes. For
+the whole-window review, compare before-swap against the post-acceptance
+inventory and read the per-item lines; the strict tool may exit 1 for the changed
+journal, which is not the Phase F preservation verdict. The keys and every
 pre-existing lock identity must still say `SAME`. Journal growth and `ADDED`
 lock scopes are expected after real activity; neither is an upgrade-time loss.
 
@@ -370,6 +382,9 @@ Expect `launchagent.daemon-path` and `static.fuses.installed` to **PASS**. The
 a broker client. `static.cdhash-pins` remains SKIP without administrator access;
 UI/device-dependent checks remain SKIP in this shell harness even when a window
 is open. Capture their evidence separately rather than relabeling them.
+Require zero harness failures and review every skip. A passing
+LaunchAgent path alone does not close the gate; all required interactive items
+below must also be evidenced before Tasks 4–8 proceed.
 
 Then, interactively, and none of it may be inferred from counts:
 

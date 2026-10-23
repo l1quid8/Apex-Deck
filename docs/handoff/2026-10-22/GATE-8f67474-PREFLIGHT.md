@@ -6,10 +6,15 @@ not installed evidence: no phase that requires `sudo` has been run, and none of
 the numbers below describe a completed upgrade.
 
 **Blocker, stated first.** This machine has no passwordless `sudo`
-(`sudo -n true` → `sudo: a password is required`), and tooling here runs without a
-terminal. Phases C through H of `UPGRADE-PROCEDURE.md` therefore cannot be
-executed by an agent. The checkpoint requires a human at the keyboard. Everything
-an unprivileged process *can* verify was verified and is recorded here.
+(`sudo -n true` → `sudo: a password is required`). The administrator commands in
+Phases C–G of [UPGRADE-PROCEDURE.md](UPGRADE-PROCEDURE.md) require human
+authentication. Phase H's shell harness runs as the ordinary user; its signed UI
+and paired-device checks still need interactive evidence. The artifact and
+unprivileged baseline measurements below do not establish installed acceptance.
+
+Reviewed by @null after handback from @deepgeek. The unchanged-journal comparison
+belongs in Phase F before launching the candidate, and the LaunchAgent path is
+one required check among the full Phase H list. Neither alone closes the gate.
 
 ## Phase A — artifact verification: PASS
 
@@ -88,8 +93,11 @@ Measured at the time of writing — **both are currently unmet**:
   succeeds). Phase B requires
   `launchctl bootout "gui/$(id -u)/dev.apexdeck.daemon"` first.
 
-No `apex-daemon` process is running at this moment, so only the UI and the loaded
-agent stand between the operator and Phase C.
+No `apex-daemon` process was running in @deepgeek's snapshot. At @null's
+2026-10-23 06:39Z read-back, the old `/Applications` UI **and daemon** were
+running (pids 7105 and 7118); the loaded agent reported `state = running` and
+the same `/Applications` daemon path. Recheck process paths immediately before
+Phase C. The earlier absence of a daemon is not a quiescence guarantee.
 
 ## Two conditions the procedure does not mention
 
@@ -114,18 +122,31 @@ and Phase G preflight refusals will not fire.
 
 ## What is still required — and is not mine to run
 
-1. Phase B as a human: quit both copies, bootout both services, prove with
-   `pgrep` that no `apex-daemon` and no `Apex Deck` remains.
-2. Phases C–G under `sudo`, following `UPGRADE-PROCEDURE.md` without deviation.
+1. Phase B: quit every UI copy, bootout the per-user daemon agent, and prove with
+   `pgrep` that no `apex-daemon` and no `Apex Deck` remains. Leave the root broker
+   running until Phase E stops it for the executable swap.
+2. Follow Phases C–G in `UPGRADE-PROCEDURE.md`, authenticating only its explicit
+   `sudo` commands; user-store backup and launching the UI run as the ordinary user.
    Phase E and Rollback are the only blocks that can damage authority; both were
    rehearsed against a sandbox, neither has been run against this machine.
+   In Phase F, before launching any candidate UI or daemon, compare the Phase C
+   and after-swap inventories. Require unchanged keys, journal and pre-existing
+   lock identities, the exact candidate pins, and `RESULT: PASS`.
 3. Phase H: the acceptance harness (expecting `launchagent.daemon-path` and
    `static.fuses.installed` to turn PASS, and `negative.installed-daemon` to
    execute rather than skip), then the interactive checklist.
-4. A final `sudo authority-inventory.sh` compared against the Phase C snapshot:
-   keys, journal and every pre-existing lock identity `SAME`, pins `CHANGED` to
-   the candidate, `RESULT: PASS`.
+4. A final `sudo /bin/bash scripts/authority-inventory.sh` after acceptance:
+   unchanged keys and every pre-existing lock identity, pins matching the
+   candidate. Successful protected writes may change the journal and create new
+   lock scopes. Do not require the strict `--compare` verdict to pass across
+   that activity window; the unchanged-journal proof is the Phase F comparison.
+   Verify preservation of records through the signed UI separately.
 
-The single check that says the gate closed is `launchagent.daemon-path`
-transitioning to PASS. It cannot be moved by code; only by the installed
-candidate writing the agent as the protected copy.
+`launchagent.daemon-path` must transition to PASS, together with
+`static.fuses.installed` and the newly executing installed-daemon checks. The
+gate closes only after the complete required signed UI, preserved-data,
+ownership, Full access, paired-remote and native CLI evidence is reviewed.
+Named shell skips remain outstanding until separately evidenced; they are not
+passes. Tasks 4–8 remain gated until then. @null retains final installed
+verification; @deepgeek can review the captured evidence without administrator
+access.

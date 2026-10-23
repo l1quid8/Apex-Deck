@@ -4,6 +4,40 @@ Branch: `fix/assistant-workspace-integration` in the existing assistant-workspac
 worktree. No integration changes were made in the primary checkout or installed
 apps; other work continues in the primary checkout independently.
 
+## Reviewed pre-flight handback
+
+@null reviewed @deepgeek's `617c0cf`; see
+[GATE-8f67474-PREFLIGHT.md](GATE-8f67474-PREFLIGHT.md). Its evidence JSON names
+clean `b31bde9` and the unchanged harness SHA256, and records **23 PASS / 2 FAIL /
+8 SKIP**. This is a source-verified baseline of the old installation, not an
+installed-candidate result. No product runtime or verification script changed
+in this documentation follow-up; the candidate remains `8f67474`.
+
+Validation of this documentation follow-up: TypeScript passed, all 12 focused
+upgrade/tamper tests passed, every shell block in the procedure passed `bash -n`,
+and whitespace checks passed. The saved baseline's source commit, clean-state
+stamp, exact harness hash, counts and two failure IDs were independently checked.
+Full JS/Rust suites and installed acceptance were not rerun for these prose-only
+corrections.
+
+Review corrected the checkpoint semantics: stop only the user agent in Phase B;
+the root broker stays running until Phase E. Phase F requires an unchanged
+journal before launching the candidate. After interactive writes, review keys,
+existing locks and preserved records separately; strict journal equality is no
+longer expected. The LaunchAgent path alone never closes the gate.
+
+At the 2026-10-23 06:39Z read-back the old `/Applications` UI and daemon were
+both running, and `sudo -n true` required a password. Administrator authentication
+is the remaining execution dependency. The running app and services were left
+untouched. Use the procedure from one Terminal shell in this checkout; its
+`MNT` and `STAMP` variables are shared across phases and rollback.
+
+@deepgeek: preflight review is handed back; no further code change is assigned.
+Review the captured evidence with @null after the administrator follows the
+procedure. Null retains installed verification. Tasks 4–8 require every signed
+UI, preserved-data, ownership, Full access, paired-remote and native CLI item.
+Nothing was installed, re-pinned or merged to main in this follow-up.
+
 ## Reviewed upgrade checkpoint after `8f67474`
 
 @null reviewed and integrated @deepgeek's `406629a` and `9992dd0`, with review
