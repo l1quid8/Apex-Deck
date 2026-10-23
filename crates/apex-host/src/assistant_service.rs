@@ -2066,7 +2066,7 @@ impl Host {
                     input.revision = task.revision;
                 }
                 if input.action == "retry"
-                    && matches!(task.status, TaskStatus::NeedsYou | TaskStatus::Interrupted)
+                    && matches!(task.status, TaskStatus::NeedsYou | TaskStatus::Interrupted | TaskStatus::Failed)
                     && task.attempts.is_empty()
                 {
                     let _retry_lock = self.assistant_apply.lock().await;
@@ -2078,8 +2078,8 @@ impl Host {
                     if task.owner != input.owner || task.revision != input.revision {
                         return Err("Task ownership or revision is stale.".into());
                     }
-                    // NeedsYou is saved just before the startup run marks itself
-                    // finished; let that run settle instead of refusing the retry.
+                    // A failed baseline may have no execution chat or attempt yet.
+                    // Restart its original dispatch after the startup run settles.
                     self.wait_for_run_to_settle(&task.id).await?;
                     self.recover_task_operations(&task.id)?;
                     let monitor = self
@@ -3783,6 +3783,29 @@ mod tests {
             finished.result
         );
         assert_eq!(finished.attempts.len(), 1);
+    }
+
+    #[test]
+    fn retry_after_pre_attempt_failure_reuses_saved_destination_and_starts_first_attempt() {
+        let f=fixture();
+        let git_backup=f.data.join("temporarily-unavailable-git");
+        std::fs::rename(f.root.join(".git"),&git_backup).unwrap();
+        let failed=isolated_task(&f,"startup-git-failure");
+        assert_eq!(failed.status,TaskStatus::Failed);
+        assert!(failed.attempts.is_empty());assert!(failed.execution_thread_id.is_none());
+        assert_eq!(failed.destination.as_ref().unwrap().thread_id.as_deref(),Some("parent"));
+        std::fs::rename(&git_backup,f.root.join(".git")).unwrap();
+        let action=|revision,owner|AssistantActionInput {task_id:failed.id.clone(),revision,owner,action:"retry".into(),mode:None,text:None,destination:None,new_worker_profiles:vec![],checks:None,spend_limit_micros:None};
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action(failed.revision-1,f.owner.clone()))).unwrap_err().contains("revision"));
+        let mut wrong_owner=f.owner.clone();wrong_owner.conversation_id="another-owner".into();
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action(failed.revision,wrong_owner))).unwrap_err().contains("ownership"));
+        f.runtime.block_on(f.host.assistant_task_action(action(failed.revision,f.owner.clone()))).unwrap();
+        let finished=wait_for(&f,&failed.id);
+        assert_eq!(finished.status,TaskStatus::ReadyForReview,"{:?}",finished.result);
+        assert_eq!(finished.attempts.len(),1);assert_eq!(finished.attempts[0].number,1);
+        assert!(finished.execution_thread_id.is_some());
+        assert_eq!(finished.original_request,failed.original_request);assert_eq!(finished.brief,failed.brief);
+        assert_eq!(finished.destination,failed.destination);assert_eq!(finished.workers,failed.workers);
     }
 
     #[test]
