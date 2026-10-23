@@ -427,7 +427,8 @@ export function App() {
   const pendingSection = useRef<DetailsSection | undefined>(undefined);
   const detailsWidth = sidebarWidths.details ?? SIDEBAR_DEFAULT.details;
   // Full screen fills the work area, so it never floats over the canvas as an overlay.
-  const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth);
+  // Assistant views reflow below the Threads pane minimum. Keep their controls visible beside a docked panel.
+  const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth, mainView.kind === "assistant" ? 400 : 560);
   /** Runs `action` now, or after the user agrees to drop unsaved edits in the Files tab. */
   const guardUnsavedEdits = (action: () => void) => {
     const file = unsavedEditName();
