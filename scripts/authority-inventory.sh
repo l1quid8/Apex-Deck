@@ -24,7 +24,6 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 ROOT='/Library/Application Support/Apex Deck Provenance'
 TRUSTED_APP="$ROOT/TrustedUI/Apex Deck.app"
 INSTALLED_APP='/Applications/Apex Deck.app'
-AGENT="$HOME/Library/LaunchAgents/dev.apexdeck.daemon.plist"
 
 # A future edit must not be able to widen this into another path.
 [[ "$ROOT" == '/Library/Application Support/Apex Deck Provenance' ]] || {
@@ -52,6 +51,40 @@ problems, unproven = [], []
 def say(state, item, detail=""):
     print("%-7s %s%s" % (state, item, (" — " + detail) if detail else ""))
 
+def metadata(item):
+    return tuple(item.get(k) for k in ("device", "inode", "uid", "gid", "mode", "symlink"))
+
+def protected(item):
+    try:
+        return item.get("uid") == 0 and not item.get("symlink") and not (int(item["mode"], 8) & 0o022)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+for side, snapshot in (("before", before), ("after", after)):
+    if snapshot.get("inventoryErrors"):
+        say("UNPROVEN", side + " inventory", "; ".join(snapshot["inventoryErrors"]))
+        unproven.append(side + " inventory")
+    if snapshot.get("locksDirectory") and snapshot.get("locksReadable") is not True:
+        say("UNPROVEN", side + " host-locks listing", "could not enumerate every existing lock")
+        unproven.append(side + " host-locks listing")
+    identities = {"authority directory": snapshot.get("authorityDirectory"),
+                  "host-locks directory": snapshot.get("locksDirectory")}
+    identities.update(snapshot.get("authority") or {})
+    identities.update({"host-locks/" + key: value for key, value in (snapshot.get("locks") or {}).items()})
+    for name, item in identities.items():
+        if item and (any(type(item.get(key)) is not int for key in ("device", "inode", "uid", "gid"))
+                     or not isinstance(item.get("mode"), str) or type(item.get("symlink")) is not bool):
+            say("UNPROVEN", side + " " + name, "identity metadata is incomplete; take a fresh inventory")
+            unproven.append(side + " " + name)
+
+was_root, now_root = before.get("authorityDirectory"), after.get("authorityDirectory")
+if not was_root or not now_root:
+    say("UNPROVEN", "authority directory", "identity was not captured on both sides")
+    unproven.append("authority directory")
+elif metadata(was_root) != metadata(now_root) or not protected(now_root):
+    say("FAIL", "authority directory", "identity or protection changed")
+    problems.append("authority directory")
+
 # Keys and journal must be identical. A journal that moved means a protected
 # write happened while the upgrade claimed everything was stopped.
 for name in ("private-key", "public-key", "journal.json"):
@@ -59,10 +92,11 @@ for name in ("private-key", "public-key", "journal.json"):
     if not was or not now or not was.get("sha256") or not now.get("sha256"):
         say("UNPROVEN", name, "unreadable on one side, so equality is unproven")
         unproven.append(name)
-    elif was["sha256"] == now["sha256"] and was.get("bytes") == now.get("bytes"):
+    elif (was["sha256"] == now["sha256"] and was.get("bytes") == now.get("bytes")
+          and metadata(was) == metadata(now) and protected(now)):
         say("SAME", name, "%s… %s bytes" % (now["sha256"][:16], now["bytes"]))
     else:
-        say("FAIL", name, "changed: %s… (%s bytes) -> %s… (%s bytes)" % (
+        say("FAIL", name, "content, identity or protection changed: %s… (%s bytes) -> %s… (%s bytes)" % (
             (was.get("sha256") or "?")[:16], was.get("bytes"),
             (now.get("sha256") or "?")[:16], now.get("bytes")))
         problems.append(name)
@@ -74,7 +108,13 @@ for name in ("private-key", "public-key", "journal.json"):
 was_locks, now_locks = before.get("locks") or {}, after.get("locks") or {}
 for name in sorted(set(was_locks) | set(now_locks)):
     was, now = was_locks.get(name), now_locks.get(name)
-    if was and now and was.get("inode") == now.get("inode") and was.get("sha256") == now.get("sha256"):
+    if now and not protected(now):
+        say("FAIL", "host-locks/" + name, "root ownership or write protection is missing")
+        problems.append("host-locks/" + name)
+    elif now and not now.get("sha256"):
+        say("UNPROVEN", "host-locks/" + name, "content could not be read")
+        unproven.append("host-locks/" + name)
+    elif was and now and metadata(was) == metadata(now) and was.get("sha256") == now.get("sha256"):
         say("SAME", "host-locks/" + name, "inode %s" % now.get("inode"))
     elif not was:
         say("ADDED", "host-locks/" + name, "inode %s, a scope that had no lock before" % now.get("inode"))
@@ -88,12 +128,18 @@ for name in sorted(set(was_locks) | set(now_locks)):
         problems.append("host-locks/" + name)
 
 was_dir, now_dir = before.get("locksDirectory"), after.get("locksDirectory")
-if not was_dir and now_dir:
+if now_dir and not protected(now_dir):
+    say("FAIL", "host-locks/ directory", "root ownership or write protection is missing")
+    problems.append("host-locks/ directory")
+elif not was_dir and now_dir:
     say("ADDED", "host-locks/ directory", "inode %s, created by this build" % now_dir.get("inode"))
-elif was_dir and now_dir and was_dir.get("inode") == now_dir.get("inode"):
+elif was_dir and now_dir and metadata(was_dir) == metadata(now_dir):
     say("SAME", "host-locks/ directory", "inode %s" % now_dir.get("inode"))
 elif was_dir and now_dir:
     say("FAIL", "host-locks/ directory", "inode %s -> %s" % (was_dir.get("inode"), now_dir.get("inode")))
+    problems.append("host-locks/ directory")
+elif was_dir:
+    say("FAIL", "host-locks/ directory", "vanished during the upgrade")
     problems.append("host-locks/ directory")
 else:
     say("SKIP", "host-locks/ directory", "absent on both sides")
@@ -153,10 +199,23 @@ PY
   *) echo "Unknown argument: $1" >&2; exit 2 ;;
 esac
 
-/usr/bin/python3 -I - "$ROOT" "$TRUSTED_APP" "$INSTALLED_APP" "$AGENT" <<'PY'
-import hashlib, json, os, plistlib, subprocess, sys, time
+/usr/bin/python3 -I - "$ROOT" "$TRUSTED_APP" "$INSTALLED_APP" <<'PY'
+import hashlib, json, os, plistlib, pwd, subprocess, sys, time
 
-root, trusted, installed, agent = sys.argv[1:5]
+root, trusted, installed = sys.argv[1:4]
+# sudo may change HOME and uid to root. Inspect the invoking user's agent,
+# never root's unrelated gui/0 service. Do not trust a supplied home path.
+user_uid = os.getuid()
+if user_uid == 0:
+    try:
+        user_uid = int(os.environ["SUDO_UID"])
+        if user_uid <= 0:
+            raise ValueError("not an ordinary user")
+    except (KeyError, ValueError):
+        raise SystemExit("Run with sudo from the Apex Deck user's shell (SUDO_UID is required).")
+user_home = pwd.getpwuid(user_uid).pw_dir
+agent = os.path.join(user_home, "Library/LaunchAgents/dev.apexdeck.daemon.plist")
+inventory_errors = []
 
 def sha256(path):
     try:
@@ -165,15 +224,20 @@ def sha256(path):
             for chunk in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(chunk)
         return digest.hexdigest()
-    except OSError:
+    except OSError as error:
+        inventory_errors.append("cannot hash %s: %s" % (path, error))
         return None
 
 def stat_of(path):
     try:
         info = os.lstat(path)
-    except OSError:
+    except FileNotFoundError:
         return None
-    return {"mode": oct(info.st_mode & 0o777), "uid": info.st_uid, "inode": info.st_ino,
+    except OSError as error:
+        inventory_errors.append("cannot stat %s: %s" % (path, error))
+        return None
+    return {"mode": oct(info.st_mode & 0o777), "uid": info.st_uid, "gid": info.st_gid,
+            "device": info.st_dev, "inode": info.st_ino,
             "bytes": info.st_size, "mtime": int(info.st_mtime), "symlink": os.path.islink(path)}
 
 def entry(path):
@@ -197,7 +261,7 @@ def cdhash(path):
 # The rule peer.m applies before trusting a peer: every component root-owned,
 # not a symlink, closed to group and world writes. /Applications fails this.
 def root_protected(path):
-    at = os.path.realpath(path)
+    at = os.path.abspath(path)
     while True:
         try:
             info = os.lstat(at)
@@ -233,11 +297,14 @@ if os.path.exists(os.path.join(root, "config.json")):
         pins = None
 
 locks_directory = stat_of(os.path.join(root, "host-locks"))
+locks_readable = locks_directory is None
 locks = {}
 if locks_directory:
     try:
         names = sorted(os.listdir(os.path.join(root, "host-locks")))
-    except OSError:
+        locks_readable = True
+    except OSError as error:
+        inventory_errors.append("cannot list host-locks: %s" % error)
         names = []
     for name in names:
         locks[name] = entry(os.path.join(root, "host-locks", name))
@@ -250,7 +317,7 @@ if agent_info["exists"]:
     except (OSError, ValueError, plistlib.InvalidFileException):
         agent_info["program"] = "unreadable"
 try:
-    done = subprocess.run(["/bin/launchctl", "print", "gui/%d/dev.apexdeck.daemon" % os.getuid()],
+    done = subprocess.run(["/bin/launchctl", "print", "gui/%d/dev.apexdeck.daemon" % user_uid],
                           capture_output=True, text=True, timeout=60)
     agent_info["loaded"] = done.returncode == 0
 except (OSError, subprocess.SubprocessError):
@@ -263,30 +330,38 @@ WATCHED = {"apex-daemon", "apex-provenance", "Apex Deck"}
 
 def processes():
     try:
-        done = subprocess.run(["/bin/ps", "-axo", "pid=,ucomm=,comm="],
+        done = subprocess.run(["/bin/ps", "-axo", "pid=,comm="],
                               capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        inventory_errors.append("cannot list running processes: %s" % error)
+        return []
+    if done.returncode != 0:
+        inventory_errors.append("cannot list running processes: ps exited %d" % done.returncode)
         return []
     keep = []
     for line in done.stdout.splitlines():
-        fields = line.split(None, 2)
-        if len(fields) < 3 or fields[1] not in WATCHED:
+        fields = line.split(None, 1)
+        if len(fields) < 2 or os.path.basename(fields[1]) not in WATCHED:
             continue
-        keep.append({"pid": int(fields[0]), "name": fields[1], "exe": fields[2].strip()})
+        keep.append({"pid": int(fields[0]), "name": os.path.basename(fields[1]), "exe": fields[1]})
     return keep
 
 print(json.dumps({
     "takenAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "host": os.uname().nodename,
     "root": root,
+    "userUid": user_uid,
+    "authorityDirectory": stat_of(root),
     "authority": {name: entry(os.path.join(root, name))
                   for name in ("private-key", "public-key", "journal.json", "config.json")},
     "pins": pins,
     "locksDirectory": locks_directory,
+    "locksReadable": locks_readable,
     "locks": locks,
     "apps": {"trustedUI": bundle(trusted, os.path.join(root, "apex-provenance")),
              "installed": bundle(installed, os.path.join(root, "apex-provenance"))},
     "agent": agent_info,
     "running": processes(),
+    "inventoryErrors": inventory_errors,
 }, indent=2, sort_keys=True))
 PY

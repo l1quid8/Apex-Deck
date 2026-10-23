@@ -10,7 +10,7 @@
 #
 # Usage:
 #   /bin/bash scripts/verify-protected-bundle.sh '/path/to/Apex Deck.app' \
-#       <expected-ui-cdhash> <expected-daemon-cdhash> [broker-binary]
+#       <expected-ui-cdhash> <expected-daemon-cdhash> [broker-binary expected-broker-cdhash]
 #
 # Exit 0: every check passed and both CDHashes matched. Exit 1: something is
 # wrong, reported on the line above. It writes nothing and needs no root; it
@@ -22,16 +22,23 @@ APP="${1:-}"
 EXPECT_UI="$(/usr/bin/printf '%s' "${2:-}" | /usr/bin/tr 'A-Z' 'a-z')"
 EXPECT_DAEMON="$(/usr/bin/printf '%s' "${3:-}" | /usr/bin/tr 'A-Z' 'a-z')"
 BROKER="${4:-}"
+EXPECT_BROKER="$(/usr/bin/printf '%s' "${5:-}" | /usr/bin/tr 'A-Z' 'a-z')"
 
 case "${1:-}" in
   -h|--help) /usr/bin/sed -n '2,17p' "${BASH_SOURCE[0]}" | /usr/bin/cut -c3-; exit 0 ;;
 esac
+[[ $# == 3 || $# == 5 ]] || {
+  echo 'FAIL expected app/UI/daemon hashes, optionally followed by broker path and its expected hash' >&2; exit 1; }
 
 [[ -d "$APP" ]] || { echo "FAIL no bundle at: $APP" >&2; exit 1; }
 [[ "$EXPECT_UI" =~ ^[0-9a-f]{40}$ ]] || {
   echo 'FAIL expected UI CDHash must be 40 hex digits' >&2; exit 1; }
 [[ "$EXPECT_DAEMON" =~ ^[0-9a-f]{40}$ ]] || {
   echo 'FAIL expected daemon CDHash must be 40 hex digits' >&2; exit 1; }
+if [[ $# == 5 ]]; then
+  [[ -n "$BROKER" && "$EXPECT_BROKER" =~ ^[0-9a-f]{40}$ ]] || {
+    echo 'FAIL expected broker path and a 40 hex digit broker CDHash' >&2; exit 1; }
+fi
 
 DAEMON="$APP/Contents/Resources/bin/apex-daemon"
 [[ -f "$DAEMON" && ! -L "$DAEMON" ]] || { echo "FAIL no daemon in the bundle: $DAEMON" >&2; exit 1; }
@@ -108,7 +115,13 @@ if [[ -n "$BROKER" ]]; then
   broker_details=$(/usr/bin/codesign -d --verbose=4 "$BROKER" 2>&1)
   [[ "$broker_details" == *'(runtime)'* ]] || {
     echo 'FAIL hardened runtime is absent from the broker' >&2; exit 1; }
-  echo "OK   broker CDHash $(cdhash "$BROKER")"
+  actual_broker=$(cdhash "$BROKER")
+  if [[ "$actual_broker" == "$EXPECT_BROKER" ]]; then
+    echo "OK   broker CDHash ${actual_broker}"
+  else
+    echo "FAIL broker CDHash $actual_broker is not the selected candidate $EXPECT_BROKER" >&2
+    status=1
+  fi
 fi
 
 version=$(/usr/bin/python3 -I - "$APP" <<'PY'

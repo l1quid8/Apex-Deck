@@ -94,7 +94,7 @@ skip_check() { record "$1" SKIP "$2"; }
 headline() { /usr/bin/head -3 "$1" 2>/dev/null | /usr/bin/tr '\n' ' '; }
 
 # Text a binary contains: "does this build have the broker client at all?".
-has_text() { /usr/bin/strings -a "$1" 2>/dev/null | /usr/bin/grep -qF "$2"; }
+has_text() { /usr/bin/strings -a "$1" 2>/dev/null | /usr/bin/grep -F "$2" >/dev/null; }
 
 # ------------------------------------------------------------- daemon runs
 
@@ -244,14 +244,20 @@ static_runtime() {
       fail_check "$id" "codesign reports no hardened runtime for $image"
     fi
   done
-  if [[ ! -d "$APP" ]]; then
-    skip_check "static.fuses" "not installed: $APP"
+  static_fuses "$APP" static.fuses
+  static_fuses "$INSTALLED_APP" static.fuses.installed
+}
+
+static_fuses() {
+  local app=$1 id=$2
+  if [[ ! -d "$app" ]]; then
+    skip_check "$id" "not installed: $app"
     return
   fi
   # Every architecture slice, every fuse: the installer's rule applied to the
   # installed copy rather than to the one being installed.
   local fuses
-  fuses=$(/usr/bin/python3 -I - "$APP" <<'PY'
+  fuses=$(/usr/bin/python3 -I - "$app" <<'PY'
 import os, sys
 root = os.path.realpath(sys.argv[1])
 framework = os.path.join(root, 'Contents/Frameworks/Electron Framework.framework/Electron Framework')
@@ -282,8 +288,8 @@ print('OK %d slice(s): %s' % (slices, ', '.join(wires)))
 PY
 )
   case "$fuses" in
-    OK*) pass_check "static.fuses" "${fuses#OK }" ;;
-    *) fail_check "static.fuses" "${fuses#FAIL }" ;;
+    OK*) pass_check "$id" "${fuses#OK }" ;;
+    *) fail_check "$id" "${fuses#FAIL }" ;;
   esac
 }
 
