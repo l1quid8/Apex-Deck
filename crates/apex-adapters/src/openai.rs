@@ -403,8 +403,10 @@ impl Participant for OpenAiCompatParticipant {
                 // tools as unsupported lands here; any other 400 fails the
                 // turn with its own message below.
                 if turn.is_some() && round == 0 && matches!(status.as_u16(), 400 | 404 | 422 | 501) && refuses_tools(&lower) {
-                    eprintln!("[apex-deck] {model} turned tools down; answering without them for {:?}: {}", TOOLS_RETRY_AFTER, text.chars().take(200).collect::<String>());
-                    *self.tools_off_until.lock().unwrap() = Some(Instant::now() + TOOLS_RETRY_AFTER);
+                    let now = Instant::now();
+                    eprintln!("[apex-deck] {model} turned tools down; answering without them until {:?} from now: {}", TOOLS_RETRY_AFTER, text.chars().take(200).collect::<String>());
+                    let off = cooldown_after_error(*self.tools_off_until.lock().unwrap(), status.as_u16(), &lower, now);
+                    *self.tools_off_until.lock().unwrap() = off;
                     turn = None;
                     strip_reasoning(&mut messages);
                     messages[0]["content"] = json!(format!("{system}{}", api_tools::NO_TOOLS));
@@ -628,6 +630,19 @@ fn refuses_tools(lower: &str) -> bool {
     about_tools && refusal.iter().any(|r| lower.contains(r))
 }
 
+/// What a failed reply leaves the cooldown at. A model that says outright it
+/// has no tools waits out [`TOOLS_RETRY_AFTER`]. Anything else — a
+/// context-length 400 that merely mentions functions, a schema complaint, a
+/// server error — leaves the cooldown exactly as it was, whether that is
+/// nothing or a refusal from a reply or two ago.
+fn cooldown_after_error(was: Option<Instant>, status: u16, lower: &str, now: Instant) -> Option<Instant> {
+    if matches!(status, 400 | 404 | 422 | 501) && refuses_tools(lower) {
+        Some(now + TOOLS_RETRY_AFTER)
+    } else {
+        was
+    }
+}
+
 /// Whether a refusal of tools still stands. The refusal is a cooldown, not a
 /// verdict: once it runs out the next reply tries tools again.
 fn tools_allowed(off_until: Option<Instant>, now: Instant) -> bool {
@@ -687,13 +702,31 @@ mod tests {
     }
 
     #[test]
-    fn tools_come_back_when_the_cooldown_runs_out() {
+    fn tools_stay_off_until_the_cooldown_runs_out() {
         let now = Instant::now();
-        assert!(tools_allowed(None, now));
-        let until = Some(now + TOOLS_RETRY_AFTER);
-        assert!(!tools_allowed(until, now), "a fresh refusal keeps tools off");
-        assert!(!tools_allowed(until, now + TOOLS_RETRY_AFTER - Duration::from_millis(1)));
-        assert!(tools_allowed(until, now + TOOLS_RETRY_AFTER), "and the next reply asks again");
+        let off = cooldown_after_error(None, 400, "this model does not support tools", now);
+        assert_eq!(off, Some(now + TOOLS_RETRY_AFTER), "a refusal starts the cooldown");
+        for waited in [Duration::ZERO, Duration::from_secs(1), TOOLS_RETRY_AFTER - Duration::from_millis(1)] {
+            assert!(!tools_allowed(off, now + waited), "tools stay off after {waited:?}");
+        }
+        assert!(tools_allowed(off, now + TOOLS_RETRY_AFTER), "the first reply after it asks again");
+        // A second refusal while the cooldown runs pushes it out from that point.
+        let again = cooldown_after_error(off, 422, "function calling is not supported for this model", now + Duration::from_secs(60));
+        assert_eq!(again, Some(now + Duration::from_secs(60) + TOOLS_RETRY_AFTER));
+    }
+
+    #[test]
+    fn an_unrelated_400_leaves_tools_on() {
+        let now = Instant::now();
+        let context = "this model's maximum context length is 8192 tokens. however, you requested 9000 tokens (8000 in the messages, 1000 in the functions)";
+        let off = cooldown_after_error(None, 400, context, now);
+        assert_eq!(off, None, "a context-length 400 is not a refusal");
+        assert!(tools_allowed(off, now), "so tools stay on");
+        assert_eq!(cooldown_after_error(None, 400, "invalid schema for function 'grep'", now), None);
+        assert_eq!(cooldown_after_error(None, 500, "tool server unreachable", now), None);
+        // And an unrelated error never shortens a cooldown that is already running.
+        let running = Some(now + TOOLS_RETRY_AFTER);
+        assert_eq!(cooldown_after_error(running, 400, context, now + Duration::from_secs(5)), running);
     }
 
     #[test]
