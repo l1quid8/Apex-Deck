@@ -11,8 +11,9 @@
 //! 3. `legacy_import_history` (read-only) serves a full legacy transcript from
 //!    the hashed snapshot, labelled unverified.
 //!
-//! Personal assistants and machine grants are kept in the snapshot but not
-//! imported by this version.
+//! Personal assistants are imported with every standing approval left
+//! ungranted (see `legacy_personal`). Machine grants are kept in the snapshot
+//! and previewed, never imported.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,7 +35,7 @@ const TITLE_CHARS: usize = 120;
 const EXCERPT_CHARS: usize = 2000;
 /// A protected document must fit one broker document, with room for its envelope.
 pub(crate) const DOCUMENT_BUDGET: usize = apex_provenance::MAX_BYTES - 64 * 1024;
-const NOT_SUPPORTED: &str = "Kept in the snapshot, but this version does not import personal assistants or machine grants. Recreate them and authorize them again.";
+const MACHINE_GRANTS: &str = "Kept in the snapshot. Machine grants from before the upgrade are never imported; re-approve each one on this machine.";
 
 /// On every imported record. Legacy content was never confirmed through the
 /// protected UI path, so `verified` is always false.
@@ -65,6 +66,9 @@ pub struct LedgerImport {
     pub snapshot: String,
     pub imported: usize,
     pub skipped: usize,
+    /// What was not imported because its id was already taken in the protected ledger.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_ids: Vec<String>,
 }
 
 /// One legacy record as the preview shows it.
@@ -384,11 +388,14 @@ impl Host {
             });
             let extra: Vec<Problem> = found_problems.iter().filter(|(l, _)| *l == ledger).map(|(_, p)| p.clone()).collect();
             found_problems.retain(|(l, _)| *l != ledger);
-            // The protected ledger's own record of an earlier import.
+            // The protected ledger's own record of an earlier import. Rooms are
+            // deduplicated per room, so they only say whether any were restored.
             let mark: Result<Option<String>, String> = match ledger {
                 TASKS => Ok(self.assistant_tasks.legacy_import_mark().map(|m| m.source_sha256)),
                 CONVERSATIONS => Ok(self.assistant_conversations.legacy_import_mark().map(|m| m.source_sha256)),
-                ROOMS => room_marks.as_ref().map(|marks| marks.values().flatten().map(|m| m.source_sha256.clone()).next()).map_err(Clone::clone),
+                PERSONAL => self.personal_legacy_mark().map(|m| m.map(|m| m.source_sha256)),
+                ROOMS if files.is_empty() => room_marks.as_ref().map(|marks| marks.values().flatten().map(|m| m.source_sha256.clone()).next()).map_err(Clone::clone),
+                ROOMS => room_marks.as_ref().map(|_| None).map_err(Clone::clone),
                 _ => Ok(None),
             };
             if files.is_empty() {
@@ -409,14 +416,15 @@ impl Host {
                 TASKS => crate::assistant_tasks::plan_legacy_import(&copies[0].1, &sha, now).map(|p| { let n = p.importable(); (p.rows, p.problems, n) }),
                 CONVERSATIONS => crate::assistant_conversation::plan_legacy_import(&copies[0].1, &sha, now, &|id| Some(crate::assistant_tasks::legacy_task_id(id)))
                     .map(|p| { let n = p.importable(); (p.rows, p.problems, n) }),
-                ROOMS => { let (rooms, rows, problems) = room_plans(&copies); Ok((rows, problems, rooms.len())) }
-                _ => Err(NOT_SUPPORTED.into()),
+                PERSONAL => crate::legacy_personal::plan_legacy_personal(&copies[0].1, &sha, now).map(|p| { let n = p.importable(); (p.rows, p.problems, n) }),
+                MACHINE => crate::legacy_personal::machine_rows(&copies[0].1).map(|rows| (rows, vec![], 0)),
+                _ => { let (rooms, rows, problems) = room_plans(&copies); Ok((rows, problems, rooms.len())) }
             };
             let (state, reason) = match (&mark, &planned) {
                 (Err(why), _) => ("unavailable", format!("The protected ledger could not be read: {why}")),
                 (Ok(Some(done)), _) if *done == sha => ("imported", "Already imported from this exact content.".to_string()),
                 (Ok(Some(done)), _) => ("conflict", different_source(done)),
-                (_, Err(_)) if ledger == PERSONAL || ledger == MACHINE => ("notSupported", NOT_SUPPORTED.to_string()),
+                (_, Ok(_)) if ledger == MACHINE => ("notSupported", MACHINE_GRANTS.to_string()),
                 (_, Err(why)) => ("unreadable", why.clone()),
                 (_, Ok((_, _, 0))) => ("unreadable", "Nothing in it can be imported.".to_string()),
                 (_, Ok(_)) => ("ready", "Ready to import as unverified legacy records.".to_string()),
@@ -425,13 +433,9 @@ impl Host {
             entry["reason"] = json!(reason);
             if let Ok((rows, mut problems, importable)) = planned {
                 problems.extend(extra);
-                let records = rows.len();
-                entry["counts"] = json!({"records": records, "importable": importable, "notImported": problems.len()});
+                entry["counts"] = json!({"records": rows.len(), "importable": importable, "notImported": problems.len()});
                 entry["records"] = json!(rows);
                 entry["problems"] = json!(problems);
-            } else if ledger == PERSONAL {
-                let assistants = serde_json::from_slice::<Value>(&copies[0].1).ok().and_then(|v| v["assistants"].as_array().map(Vec::len)).unwrap_or(0);
-                entry["counts"] = json!({"records": assistants, "importable": 0, "notImported": assistants});
             }
             ledgers.push(entry);
         }
@@ -450,7 +454,7 @@ impl Host {
         if sources.is_empty() { return Err("Choose at least one legacy source to import.".into()); }
         let mut copies: BTreeMap<&str, Vec<(String, Vec<u8>)>> = BTreeMap::new();
         for (ledger, bound) in &sources {
-            let Some(ledger) = [TASKS, CONVERSATIONS, ROOMS].into_iter().find(|name| name == ledger) else {
+            let Some(ledger) = [TASKS, CONVERSATIONS, PERSONAL, ROOMS].into_iter().find(|name| name == ledger) else {
                 return Err(format!("{ledger} cannot be imported by this version."));
             };
             if manifest.of(ledger).is_empty() { return Err(format!("The snapshot has no legacy {ledger}.")); }
@@ -461,15 +465,14 @@ impl Host {
             copies.insert(ledger, files);
         }
         // Refuse a second import of different content before writing anything.
-        let tasks_mark = self.assistant_tasks.legacy_import_mark();
-        let conversations_mark = self.assistant_conversations.legacy_import_mark();
-        for (ledger, mark) in [(TASKS, &tasks_mark), (CONVERSATIONS, &conversations_mark)] {
-            if let (Some(mark), Some(bound)) = (mark, sources.get(ledger)) { same_source(mark, bound)?; }
-        }
-        if let Some(bound) = sources.get(ROOMS) {
-            for marker in self.store().room_authority_marks()?.values().flatten() {
-                if &marker.source_sha256 != bound { return Err(different_source(&marker.source_sha256)); }
-            }
+        // Rooms are deduplicated per room instead.
+        let marks = [
+            (TASKS, self.assistant_tasks.legacy_import_mark()),
+            (CONVERSATIONS, self.assistant_conversations.legacy_import_mark()),
+            (PERSONAL, if sources.contains_key(PERSONAL) { self.personal_legacy_mark()? } else { None }),
+        ];
+        for (ledger, mark) in &marks {
+            if let (Some(mark), Some(bound)) = (mark, sources.get(*ledger)) { same_source(mark, bound)?; }
         }
         let now = now_ms();
         // Parse everything first: an unreadable source writes nothing.
@@ -477,64 +480,72 @@ impl Host {
         if let Some(files) = copies.get(CONVERSATIONS) {
             crate::assistant_conversation::plan_legacy_import(&files[0].1, &sources[CONVERSATIONS], now, &|_| None)?;
         }
-        let (rooms, _, _) = copies.get(ROOMS).map(|files| room_plans(files)).unwrap_or_default();
-        let room_total = rooms.len();
+        let personal_plan = copies.get(PERSONAL).map(|files| crate::legacy_personal::plan_legacy_personal(&files[0].1, &sources[PERSONAL], now)).transpose()?;
+        let rooms = copies.get(ROOMS).map(|files| room_plans(files).0);
 
         let mut results = vec![];
-        let mut failed = false;
-        let mark = |ledger: &str| LedgerImport { source_sha256: sources[ledger].clone(), imported_at_ms: now, snapshot: snapshot.clone(), imported: 0, skipped: 0 };
+        let mark = |ledger: &str| LedgerImport { source_sha256: sources[ledger].clone(), imported_at_ms: now, snapshot: snapshot.clone(), imported: 0, skipped: 0, skipped_ids: vec![] };
         let outcome = |ledger: &str, result: Result<crate::assistant_tasks::LegacyImportOutcome, String>, path: PathBuf| -> Value {
             use crate::assistant_tasks::LegacyImportOutcome::*;
             match result {
                 Ok(outcome) => {
                     let (state, m) = match outcome { Imported(m) => ("imported", m), AlreadyImported(m) => ("alreadyImported", m) };
                     let verified = verify_written(&path, ledger, &m.source_sha256, m.imported);
-                    json!({"ledger": ledger, "state": state, "imported": m.imported, "skipped": m.skipped, "importedAtMs": m.imported_at_ms,
-                        "verified": verified.is_ok(), "error": verified.err()})
+                    json!({"ledger": ledger, "state": state, "imported": m.imported, "skipped": m.skipped, "skippedIds": m.skipped_ids,
+                        "importedAtMs": m.imported_at_ms, "verified": verified.is_ok(), "error": verified.err()})
                 }
                 Err(error) => json!({"ledger": ledger, "state": "failed", "imported": 0, "skipped": 0, "verified": false, "error": error}),
             }
         };
+        // Conversations link to imported tasks, so they wait for them. Personal
+        // assistants and rooms depend on neither and are always attempted.
+        let mut tasks_failed = false;
         if let Some(plan) = task_plan {
             let workspaces = plan.workspaces();
             let result = outcome(TASKS, self.assistant_tasks.import_legacy(plan, mark(TASKS)), data.join(TASKS));
-            failed |= result["verified"] != true;
+            tasks_failed = result["verified"] != true;
             results.push(result);
             for workspace in workspaces { self.assistant_changed(&workspace); }
         }
         if let Some(files) = copies.get(CONVERSATIONS) {
-            if failed {
-                results.push(json!({"ledger": CONVERSATIONS, "state": "notAttempted", "imported": 0, "skipped": 0, "verified": false}));
+            if tasks_failed {
+                results.push(json!({"ledger": CONVERSATIONS, "state": "notAttempted", "imported": 0, "skipped": 0, "verified": false,
+                    "error": "Not attempted because the tasks it links to were not imported."}));
             } else {
                 let tasks = &self.assistant_tasks;
                 let imported_task = |id: &str| { let id = crate::assistant_tasks::legacy_task_id(id); tasks.get(&id).ok().flatten().map(|_| id) };
                 let result = crate::assistant_conversation::plan_legacy_import(&files[0].1, &sources[CONVERSATIONS], now, &imported_task)
                     .and_then(|plan| self.assistant_conversations.import_legacy(plan, mark(CONVERSATIONS)));
-                let result = outcome(CONVERSATIONS, result, data.join(CONVERSATIONS));
-                failed |= result["verified"] != true;
-                results.push(result);
+                results.push(outcome(CONVERSATIONS, result, data.join(CONVERSATIONS)));
             }
         }
-        if sources.contains_key(ROOMS) {
-            if failed {
-                results.push(json!({"ledger": ROOMS, "state": "notAttempted", "imported": 0, "skipped": 0, "verified": false}));
-            } else {
-                let marker = LegacyMarker::new(&sources[ROOMS], now, None, Some("noManifest".into()));
-                let path = self.store().folder().join(ROOMS);
-                let result = match self.store().import_legacy_room_authorities(rooms, &marker) {
-                    Ok(done) => {
-                        let verified = if done.imported == 0 { Ok(()) } else { verify_written(&path, ROOMS, &marker.source_sha256, done.imported) };
-                        let skipped = if done.already { room_total.saturating_sub(done.imported) } else { done.skipped };
-                        json!({"ledger": ROOMS, "state": if done.already { "alreadyImported" } else { "imported" }, "imported": done.imported, "skipped": skipped,
-                            "importedAtMs": now, "verified": verified.is_ok(), "error": verified.err()})
-                    }
-                    Err(error) => json!({"ledger": ROOMS, "state": "failed", "imported": 0, "skipped": 0, "verified": false, "error": error}),
-                };
-                failed |= result["verified"] != true;
-                results.push(result);
-            }
+        if let Some(plan) = personal_plan {
+            let result = self.import_legacy_personal(plan, mark(PERSONAL));
+            results.push(outcome(PERSONAL, result, self.store().folder().join(PERSONAL)));
         }
-        Ok(json!({"snapshot": snapshot, "complete": !failed, "ledgers": results}))
+        if let Some(rooms) = rooms {
+            let marker = LegacyMarker::new(&sources[ROOMS], now, None, Some("noManifest".into()));
+            let ids: Vec<String> = rooms.iter().map(|room| room.id.clone()).collect();
+            let path = self.store().folder().join(ROOMS);
+            let result = match self.store().import_legacy_room_authorities(rooms, &marker) {
+                Ok(done) => {
+                    let verified = verify_rooms(&path, &ids, &done.imported, &marker.source_sha256);
+                    let (state, imported) = if done.imported.is_empty() && !done.already.is_empty() { ("alreadyImported", done.already.len()) } else { ("imported", done.imported.len()) };
+                    let skipped: Vec<String> = done.skipped.iter().map(|id| format!("room:{id}")).collect();
+                    json!({"ledger": ROOMS, "state": state, "imported": imported, "skipped": skipped.len(), "skippedIds": skipped,
+                        "importedAtMs": now, "verified": verified.is_ok(), "error": verified.err()})
+                }
+                Err(error) => json!({"ledger": ROOMS, "state": "failed", "imported": 0, "skipped": 0, "verified": false, "error": error}),
+            };
+            results.push(result);
+        }
+        let complete = results.iter().all(|result| result["verified"] == true);
+        Ok(json!({"snapshot": snapshot, "complete": complete, "ledgers": results}))
+    }
+
+    fn personal_legacy_mark(&self) -> Result<Option<LedgerImport>, String> {
+        let Some(document) = self.store().personal()? else { return Ok(None) };
+        document.extra.get("legacyImport").map(|mark| serde_json::from_value(mark.clone()).map_err(|e| e.to_string())).transpose()
     }
 
     /// One legacy conversation in full, read from the hashed snapshot. Never verified.
@@ -552,19 +563,42 @@ impl Host {
     }
 }
 
-/// Read a written protected ledger back and check it holds what was imported.
-fn verify_written(path: &Path, ledger: &str, sha: &str, expected: usize) -> Result<(), String> {
+fn read_back(path: &Path) -> Result<Value, String> {
     let bytes = crate::authority_file::read(path).map_err(|e| format!("The imported ledger could not be read back: {e}"))?;
     if bytes.len() > apex_provenance::MAX_BYTES { return Err("The imported ledger is larger than a protected document.".into()); }
-    let document: Value = serde_json::from_slice(&bytes).map_err(|e| format!("The imported ledger could not be read back: {e}"))?;
-    let (records, marked) = match ledger {
-        TASKS => (&document["tasks"], document["legacyImport"]["sourceSha256"] == sha),
-        CONVERSATIONS => (&document["records"], document["legacyImport"]["sourceSha256"] == sha),
-        _ => (&document, true),
+    serde_json::from_slice(&bytes).map_err(|e| format!("The imported ledger could not be read back: {e}"))
+}
+
+/// Read a written protected ledger back and check it holds what was imported.
+fn verify_written(path: &Path, ledger: &str, sha: &str, expected: usize) -> Result<(), String> {
+    let document = read_back(path)?;
+    let records = match ledger {
+        TASKS => &document["tasks"],
+        CONVERSATIONS => &document["records"],
+        _ => &document["assistants"],
     };
-    let count = records.as_object().map_or(0, |map| map.values().filter(|r| r["legacy"]["sourceSha256"] == sha).count());
+    let marked = document["legacyImport"]["sourceSha256"] == sha;
+    let legacy = |record: &&Value| record["legacy"]["sourceSha256"] == sha;
+    let count = match records {
+        Value::Object(map) => map.values().filter(legacy).count(),
+        Value::Array(list) => list.iter().filter(legacy).count(),
+        _ => 0,
+    };
     if !marked || count != expected {
         return Err(format!("The imported ledger holds {count} legacy records where {expected} were imported."));
+    }
+    Ok(())
+}
+
+/// Every room in the import now has a manifest, and each new one says it came from `sha`.
+fn verify_rooms(path: &Path, ids: &[String], imported: &[String], sha: &str) -> Result<(), String> {
+    if ids.is_empty() { return Ok(()); }
+    let document = read_back(path)?;
+    if let Some(missing) = ids.iter().find(|id| document.get(id.as_str()).is_none()) {
+        return Err(format!("Room {missing} has no manifest after the import."));
+    }
+    if let Some(wrong) = imported.iter().find(|id| document[id.as_str()]["legacy"]["sourceSha256"] != sha) {
+        return Err(format!("Room {wrong} was not restored from this snapshot."));
     }
     Ok(())
 }

@@ -200,6 +200,9 @@ pub struct Fact {
     pub superseded_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<u64>,
+    /// Set only on a memory imported from pre-provenance data. Never verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 impl Fact {
@@ -912,6 +915,39 @@ impl crate::Host {
             self.personal_wake.notify_one();
         }
         Ok(out)
+    }
+
+    /// Merge pre-provenance assistants in one compare-and-swap of the protected
+    /// document. An assistant id already in it keeps its protected record.
+    pub(crate) fn import_legacy_personal(&self, plan: crate::legacy_personal::LegacyPersonalPlan, mut mark: crate::legacy_import::LedgerImport) -> Result<crate::assistant_tasks::LegacyImportOutcome, String> {
+        use crate::assistant_tasks::LegacyImportOutcome;
+        let _held = PERSONAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut document = self.store().personal()?.unwrap_or_default();
+        if let Some(existing) = document.extra.get("legacyImport") {
+            let existing: crate::legacy_import::LedgerImport = serde_json::from_value(existing.clone()).map_err(|e| e.to_string())?;
+            return crate::legacy_import::same_source(&existing, &mark.source_sha256).map(|()| LegacyImportOutcome::AlreadyImported(existing));
+        }
+        let mut added = vec![];
+        for assistant in plan.assistants {
+            if document.assistants.iter().any(|a| a.id == assistant.id) {
+                mark.skipped += 1;
+                mark.skipped_ids.push(format!("assistant:{}", assistant.id));
+                continue;
+            }
+            added.push((assistant.id.clone(), assistant.revision));
+            document.assistants.push(assistant);
+            mark.imported += 1;
+        }
+        document.version = document.version.max(1);
+        document.extra.insert("legacyImport".into(), serde_json::to_value(&mark).map_err(|e| e.to_string())?);
+        let size = serde_json::to_vec(&document).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+        if size > crate::legacy_import::DOCUMENT_BUDGET {
+            return Err("Importing these assistants would exceed the protected document limit. Nothing was written.".into());
+        }
+        self.store().save_personal(&document)?;
+        for (id, revision) in added { self.emit_personal_changed(&id, revision); }
+        self.personal_wake.notify_one();
+        Ok(LegacyImportOutcome::Imported(mark))
     }
 
     pub(crate) fn change_assistant<T>(&self, id: &str, change: impl FnOnce(&mut PersonalAssistant) -> Result<T, String>) -> Result<T, String> {

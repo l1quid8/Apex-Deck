@@ -259,37 +259,33 @@ impl Store {
         }).collect())
     }
 
-    /// Create manifests for legacy rooms in one compare-and-swap. A room that
-    /// already has a protected manifest keeps it. Returns how many were added,
-    /// or the earlier import's count when this exact source was imported before.
+    /// Create manifests for legacy rooms in one compare-and-swap. Rooms are
+    /// deduplicated by id: one with a legacy-restored manifest was imported
+    /// before, and one with any other manifest keeps it.
     pub(crate) fn import_legacy_room_authorities(&self, rooms: Vec<LegacyRoom>, marker: &crate::legacy_import::LegacyMarker) -> Result<LegacyRoomOutcome, String> {
         let _guard = self.writes.lock().unwrap();
         let mut authorities = self.room_authorities()?;
-        let mut previous = 0;
-        for entry in authorities.values() {
-            let Some(legacy) = entry.get("legacy").and_then(|m| serde_json::from_value::<crate::legacy_import::LegacyMarker>(m.clone()).ok()) else { continue };
-            if legacy.source_sha256 != marker.source_sha256 {
-                return Err(crate::legacy_import::different_source(&legacy.source_sha256));
-            }
-            previous += 1;
-        }
-        if previous > 0 { return Ok(LegacyRoomOutcome { imported: previous, skipped: 0, already: true }); }
-        let (mut imported, mut skipped) = (0, 0);
+        let mut outcome = LegacyRoomOutcome { imported: vec![], already: vec![], skipped: vec![] };
         for room in rooms {
-            if authorities.contains_key(&room.id) { skipped += 1; continue; }
-            let mut legacy = marker.clone();
-            legacy.original_id = Some(room.id.clone());
-            let manifest = RoomAuthority { legacy: Some(legacy), ..room.authority };
-            authorities.insert(room.id, serde_json::to_value(manifest).map_err(|e| e.to_string())?);
-            imported += 1;
+            match authorities.get(&room.id) {
+                Some(entry) if entry.get("legacy").is_some_and(|m| !m.is_null()) => outcome.already.push(room.id),
+                Some(_) => outcome.skipped.push(room.id),
+                None => {
+                    let mut legacy = marker.clone();
+                    legacy.original_id = Some(room.id.clone());
+                    let manifest = RoomAuthority { legacy: Some(legacy), ..room.authority };
+                    authorities.insert(room.id.clone(), serde_json::to_value(manifest).map_err(|e| e.to_string())?);
+                    outcome.imported.push(room.id);
+                }
+            }
         }
-        if imported == 0 { return Ok(LegacyRoomOutcome { imported, skipped, already: false }); }
+        if outcome.imported.is_empty() { return Ok(outcome); }
         let bytes = serde_json::to_vec(&authorities).map_err(|e| e.to_string())?;
         if bytes.len() > crate::legacy_import::DOCUMENT_BUDGET {
             return Err("Importing these rooms would exceed the protected document limit. Nothing was written.".into());
         }
         crate::authority_file::write(&self.root.join("room-authority-v1.json"), &bytes).map_err(|e| e.to_string())?;
-        Ok(LegacyRoomOutcome { imported, skipped, already: false })
+        Ok(outcome)
     }
 
     /// A worktree cannot be removed while any saved chat still points at it.
@@ -561,11 +557,13 @@ pub(crate) struct LegacyRoom {
     authority: RoomAuthority,
 }
 
+/// Room ids by what an import did with them.
 pub(crate) struct LegacyRoomOutcome {
-    pub imported: usize,
-    pub skipped: usize,
-    /// This exact source was imported before; nothing was written.
-    pub already: bool,
+    pub imported: Vec<String>,
+    /// Restored from legacy data by an earlier import; left as it is.
+    pub already: Vec<String>,
+    /// Already had a protected manifest of its own; left as it is.
+    pub skipped: Vec<String>,
 }
 
 /// The folder switches that lead to `cwd`, walking back from it. A mount that

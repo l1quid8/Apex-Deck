@@ -1456,7 +1456,7 @@ fn apply_memory(assistant: &mut PersonalAssistant, remember: &[ProposedFact], fo
         assistant.facts.push(Fact {
             id, text: text.clone(), kind, explicit: proposed.explicit, confidence,
             source: FactSource { message_id: message_id.clone(), task_id: None }, created_at: at, expires_at,
-            superseded_by: None, deleted_at: None,
+            superseded_by: None, deleted_at: None, legacy: None,
         });
         said.push(match corrected { Some(old) => format!("updated “{old}” to “{text}”"), None => format!("“{text}”") });
     }

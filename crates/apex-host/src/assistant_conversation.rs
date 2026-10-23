@@ -1253,7 +1253,11 @@ impl ConversationStore {
         }
         let before = document.clone();
         for record in plan.records {
-            if document.records.contains_key(&record.request.request_id) { mark.skipped += 1; continue; }
+            if document.records.contains_key(&record.request.request_id) {
+                mark.skipped += 1;
+                mark.skipped_ids.push(format!("conversation:{}", record.request.request_id));
+                continue;
+            }
             document.records.insert(record.request.request_id.clone(), record);
             mark.imported += 1;
         }

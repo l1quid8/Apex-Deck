@@ -1191,7 +1191,6 @@ pub(crate) struct LegacyTaskPlan {
     pub problems: Vec<crate::legacy_import::Problem>,
     tasks: Vec<AssistantTask>,
     requests: Vec<HumanRequestRecord>,
-    handoffs: Vec<(String, HandoffReceipt)>,
 }
 
 impl LegacyTaskPlan {
@@ -1231,7 +1230,7 @@ pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64) ->
     if legacy.version != 1 {
         return Err("The legacy task file has an unsupported version.".into());
     }
-    let mut plan = LegacyTaskPlan { rows: vec![], problems: vec![], tasks: vec![], requests: vec![], handoffs: vec![] };
+    let mut plan = LegacyTaskPlan { rows: vec![], problems: vec![], tasks: vec![], requests: vec![] };
     for (key, original) in &legacy.tasks {
         if key != &original.id {
             plan.problems.push(Problem { id: key.clone(), reason: "Its saved id does not match its record, so it was not imported.".into() });
@@ -1282,21 +1281,14 @@ pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64) ->
         request.task_id = legacy_task_id(&request.task_id);
         requests.push(request);
     }
-    let mut handoffs = vec![];
-    for (id, receipt) in &legacy.handoffs {
-        if !imported(&receipt.task_id) {
-            plan.problems.push(Problem { id: id.clone(), reason: "Its task was not imported, so this handoff record was not either.".into() });
-            continue;
-        }
-        let mut receipt = receipt.clone();
-        receipt.task_id = legacy_task_id(&receipt.task_id);
-        handoffs.push((id.clone(), receipt));
+    for id in legacy.handoffs.keys() {
+        // A receipt's payload names a batch and request that only meant something to the old ledger.
+        plan.problems.push(Problem { id: id.clone(), reason: "This handoff receipt was not imported; preparing the handoff again creates a new proposal.".into() });
     }
     for id in legacy.executions.keys() {
         plan.problems.push(Problem { id: id.clone(), reason: "The assistant's claim on this thread was not restored. It opens as an ordinary chat and is never continued automatically.".into() });
     }
     plan.requests = requests;
-    plan.handoffs = handoffs;
     Ok(plan)
 }
 
@@ -1320,21 +1312,23 @@ impl AssistantTasks {
             return crate::legacy_import::same_source(existing, &mark.source_sha256).map(|()| LegacyImportOutcome::AlreadyImported(existing.clone()));
         }
         let before = document.clone();
-        let mut skipped = 0;
         for task in plan.tasks {
-            if document.tasks.contains_key(&task.id) { skipped += 1; continue; }
+            if document.tasks.contains_key(&task.id) {
+                mark.skipped += 1;
+                mark.skipped_ids.push(format!("task:{}", task.id));
+                continue;
+            }
             document.tasks.insert(task.id.clone(), task);
             mark.imported += 1;
         }
         for request in plan.requests {
-            if document.requests.contains_key(&request.request_id) || document.handoffs.contains_key(&request.request_id) { continue; }
+            if document.requests.contains_key(&request.request_id) || document.handoffs.contains_key(&request.request_id) || !document.tasks.get(&request.task_id).is_some_and(|t| t.legacy.is_some()) {
+                mark.skipped += 1;
+                mark.skipped_ids.push(format!("request:{}", request.request_id));
+                continue;
+            }
             document.requests.insert(request.request_id.clone(), request);
         }
-        for (id, receipt) in plan.handoffs {
-            if document.requests.contains_key(&id) || document.handoffs.contains_key(&id) { continue; }
-            document.handoffs.insert(id, receipt);
-        }
-        mark.skipped += skipped;
         document.legacy_import = Some(mark.clone());
         let size = serde_json::to_vec_pretty(&*document).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
         if size > crate::legacy_import::DOCUMENT_BUDGET {

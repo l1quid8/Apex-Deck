@@ -22,6 +22,7 @@ pub mod assistant_isolation;
 pub mod assistant_tasks;
 pub mod assistant_conversation;
 pub mod legacy_import;
+mod legacy_personal;
 pub mod monitor;
 pub mod monitor_evidence;
 pub mod monitor_commands;

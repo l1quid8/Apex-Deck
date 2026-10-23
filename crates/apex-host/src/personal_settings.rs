@@ -165,7 +165,7 @@ impl crate::Host {
             let at = now();
             if assistant.facts.iter().filter(|f| f.current(at)).count() >= MAX_FACTS { return Err("Memory is full; forget something first.".into()); }
             let fact_id = assistant.next_fact_id();
-            assistant.facts.push(Fact { id: fact_id, text: text.to_owned(), kind: FactKind::Fact, explicit: true, confidence: 100, source: FactSource::default(), created_at: at, expires_at: None, superseded_by: None, deleted_at: None });
+            assistant.facts.push(Fact { id: fact_id, text: text.to_owned(), kind: FactKind::Fact, explicit: true, confidence: 100, source: FactSource::default(), created_at: at, expires_at: None, superseded_by: None, deleted_at: None, legacy: None });
             Ok(())
         })
     }
@@ -184,7 +184,7 @@ impl crate::Host {
             let old = assistant.facts.iter_mut().find(|f| f.id == fact_id && f.current(at)).ok_or("That memory isn't current any more.")?;
             old.superseded_by = Some(new_id.clone());
             let kind = old.kind;
-            assistant.facts.push(Fact { id: new_id, text: text.to_owned(), kind, explicit: true, confidence: 100, source: FactSource::default(), created_at: at, expires_at: None, superseded_by: None, deleted_at: None });
+            assistant.facts.push(Fact { id: new_id, text: text.to_owned(), kind, explicit: true, confidence: 100, source: FactSource::default(), created_at: at, expires_at: None, superseded_by: None, deleted_at: None, legacy: None });
             Ok(())
         })
     }
