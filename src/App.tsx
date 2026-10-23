@@ -34,7 +34,7 @@ import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
-import { rosterMessage, loadMainView, saveMainView, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, assistantProjectCanvasDestination, assistantWorkerThreadDestination, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
+import { splitFirstBrief, rosterMessage, loadMainView, saveMainView, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, assistantProjectCanvasDestination, assistantWorkerThreadDestination, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import "./apex-agent-dock.css";
 import { LibraryView } from "./lazyViews";
@@ -73,6 +73,7 @@ import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssist
 import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
 import { assistantStatus, assistantWorkItems, delegatedTasksForAssistant, type WorkItem } from "./assistantStatus";
 import { AssistantWork } from "./AssistantWork";
+import { prefillAssistantComposer } from "./assistantComposerDrafts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { unsavedEditName } from "./unsavedEdits";
@@ -2703,7 +2704,11 @@ export function App() {
             })]}
             />} />}
           {mainView.kind==='assistant' && !selectedAssistant && <div className="picker"><p role="status">This assistant is unavailable. Refresh or reconnect its machine.</p><button onClick={()=>setMainView({kind:'workspace'})}>Back to Workspaces</button></div>}
-          {creatingAssistant && <AssistantCreationDialog onClose={()=>setCreatingAssistant(false)}><div className="assistant-creation-host"><label>Machine <select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label></div>{(()=>{const host=assistants.hosts.find(host=>host.routeHostId===creationHost);return host?.hostId ? <AssistantEditor key={host.hostId} backend={hostBackend(host.routeHostId)} profiles={profiles} disabledProviders={disabledProviders} hostId={host.hostId} projects={[]} onCreate={input=>assistants.create(host.routeHostId,input)} onSaved={ref=>{if(ref)openAssistant(ref);}}/>:<p role="status">Connect a machine with assistant workspace support to create a teammate.</p>;})()}</AssistantCreationDialog>}
+          {creatingAssistant && <AssistantCreationDialog onClose={()=>setCreatingAssistant(false)}>{(()=>{
+            const machinePicker=<label className="assistant-setting-row"><span>Machine</span><select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label>;
+            const host=assistants.hosts.find(host=>host.routeHostId===creationHost);
+            return host?.hostId ? <AssistantEditor key={host.hostId} backend={hostBackend(host.routeHostId)} profiles={profiles} disabledProviders={disabledProviders} hostId={host.hostId} projects={[]} machinePicker={machinePicker} onCreate={async input=>{const {request,brief}=splitFirstBrief(input);const ref=await assistants.create(host.routeHostId,request);if(brief)prefillAssistantComposer(assistantIdentityKey(ref),brief);return ref;}} onSaved={ref=>{if(ref)openAssistant(ref);}}/> : <>{machinePicker}<p role="status">Connect a machine with assistant workspace support to create a teammate.</p></>;
+          })()}</AssistantCreationDialog>}
         {apexAgentWorkspace && typeof apexAgentWorkspace!=='string' && !apexWorkspace && <aside className="assistant-source-view"><p role="alert">This exact project is unavailable. Reconnect its machine or restore its assigned folder.</p><button onClick={closeApexAgentAndReturnFocus}>Back</button></aside>}
         {apexWorkspace && <aside className="assistant-source-view" aria-label={`ApexAgent for ${apexWorkspace.name}`}>
           {apexAgentBackend

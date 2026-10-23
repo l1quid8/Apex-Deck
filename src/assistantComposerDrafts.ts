@@ -32,3 +32,12 @@ export function useAssistantComposerDraftState<T>(key: string | undefined, field
   };
   return [draft ? draft.fields.get(field) as T : value, set];
 }
+
+/** Put text in a teammate's composer, addressed to that teammate. Nothing is sent. */
+export function prefillAssistantComposer(key: string, text: string): void {
+  const draft = assistantComposerDraftFor(key)!;
+  for (const [field, value] of [['text', text], ['draftFallback', key]] as const) {
+    draft.fields.set(field, value);
+    draft.listeners.get(field)?.forEach(update => update());
+  }
+}

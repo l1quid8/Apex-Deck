@@ -46,7 +46,7 @@ test('missing credentials and unavailable models block saving the existing recor
  const h=mount({backend:{sessionLoad:async()=>({profiles:[p]}),apiKeyStatus:async()=>['missing'],apiModels:async()=>{throw new Error('must not discover without credential');}},lane:{assistant:{...record,profile:p}}});const tree=await h.ready();assert.match(text(tree),/credential is missing/);await submit(h);assert.equal(h.calls.length,0);
 });
 test('creation and Settings share ordered controls and create durable pixel/runtime fields only on Create',async()=>{
- const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});let tree=await h.ready();assert.ok(text(tree).indexOf('AI model')<text(tree).indexOf('Access'));assert.ok(text(tree).indexOf('Access')<text(tree).indexOf('Avatar'));assert.equal(created.length,0);
+ const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});let tree=await h.ready();assert.ok(text(tree).indexOf('Name')<text(tree).indexOf('Model'));assert.ok(text(tree).indexOf('Model')<text(tree).indexOf('In those projects it may'));assert.equal(created.length,0);
  input(tree,'Assistant name').props.onChange({target:{value:'Teammate'}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);assert.equal(created[0].workspaceVersion,4);assert.equal(typeof created[0].avatarDraftId,'string');assert.equal(created[0].avatarGenerationId,undefined);assert.equal(created[0].avatarAssetId,undefined);assert.equal(created[0].profile.access,'full');assert.match(created[0].look.color,/^#[\da-f]{6}$/);assert.ok(created[0].look.seed);
  const current=text(await mount().ready());assert.ok(current.indexOf('Model')<current.indexOf('Projects & access'));assert.ok(current.indexOf('Projects & access')<current.indexOf('Tools & rules'));
 });
@@ -86,8 +86,8 @@ test('conflict refresh updates only the expected revision and preserves the comp
  await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'Keep my draft'}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);
  const refresh=find(h.render(),n=>n.type==='button'&&text(n).includes('Refresh revision'));assert.ok(refresh);await refresh.props.onClick();await tick();assert.equal(input(h.render(),'Assistant name').props.value,'Keep my draft');assert.equal(input(h.render(),'Project tools').props.value,'full');conflict=false;await submit(h);assert.equal(requests[1].expectedRevision,9);assert.equal(requests[1].settings.name,'Keep my draft');
 });
-test('applied creation image previews use the captured draft owner and generation',async()=>{
- const h=mount({lane:undefined});let tree=await h.ready();const editor=find(tree,n=>n.type===AssistantAvatarEditor);const image={assetId:'asset',sha256:'hash',mime:'image/png',width:512,height:512};editor.props.onAppearanceChange({...editor.props.appearance,kind:'image',image});editor.props.onApply({kind:'image',generationId:'gen',assetId:'asset'});tree=h.render();
+test('applied image previews in Settings use the captured owner and generation',async()=>{
+ const h=mount();let tree=await h.ready();const editor=find(tree,n=>n.type===AssistantAvatarEditor);const image={assetId:'asset',sha256:'hash',mime:'image/png',width:512,height:512};editor.props.onAppearanceChange({...editor.props.appearance,kind:'image',image});editor.props.onApply({kind:'image',generationId:'gen',assetId:'asset'});tree=h.render();
  for(const preview of all(tree,n=>n.type===Avatar)){assert.deepEqual(preview.props.draftImage,{owner:editor.props.owner,generationId:'gen'});assert.deepEqual(preview.props.image,image);}
 });
 test('cached CLI models cannot make a missing installation ready',async()=>{
@@ -274,4 +274,26 @@ test('the save bar counts changes and Discard restores saved values',async()=>{
 test('Memory row opens memory',async()=>{
  const opened=[];const tree=await settingsMount({onOpenMemory:()=>opened.push('memory')}).ready();
  find(tree,n=>n.type==='button'&&n.props?.className==='assistant-settings-link'&&text(n).includes('Personal notes')).props.onClick();assert.deepEqual(opened,['memory']);
+});
+
+test('the create form is short: name, model, access, first brief, then more options',async()=>{
+ const t=text(await mount({lane:undefined,onCreate:async()=>{},machinePicker:'MACHINE PICKER'}).ready());
+ const order=['Name','Model','In those projects it may','First brief','More options'].map(label=>t.indexOf(label));
+ assert.ok(order.every(i=>i>=0),String(order));assert.deepEqual([...order].sort((a,b)=>a-b),order);
+ assert.doesNotMatch(t,/AI generate|Connected context|Each assistant has its own conversation/);
+ assert.ok(t.indexOf('MACHINE PICKER')>t.indexOf('More options'),'machine lives under More options');
+});
+test('create offers a pattern shuffle and Add teammate, and no AI avatar step',async()=>{
+ assert.equal(find(await mount({lane:undefined,onCreate:async()=>{}}).ready(),n=>n.type===AssistantAvatarEditor),null);
+ const h=mount({lane:undefined,onCreate:async()=>{}});let tree=await h.ready();
+ const before=find(tree,n=>n.type===Avatar).props.seed;find(tree,n=>n.type==='button'&&n.props['aria-label']==='New avatar pattern').props.onClick();
+ assert.notEqual(find(h.render(),n=>n.type===Avatar).props.seed,before);
+ assert.equal(text(find(h.render(),n=>n.type==='button'&&n.props.type==='submit')),'Add teammate');
+});
+test('the first brief is handed over with Create and never sent',async()=>{
+ const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});let tree=await h.ready();
+ input(tree,'Assistant name').props.onChange({target:{value:'Fidelity QA'}});
+ const brief=input(h.render(),'First brief');assert.equal(brief.props.placeholder,'e.g. Run the test suite every morning and tell me what broke.');
+ brief.props.onChange({target:{value:'  Keep the tests green.  '}});await submit(h);
+ assert.equal(created[0].firstBrief,'Keep the tests green.');assert.match(text(h.render()),/Added to its chat, ready to send\./);
 });

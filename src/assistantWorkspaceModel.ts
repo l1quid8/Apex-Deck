@@ -138,3 +138,9 @@ export function dirtyFields(saved:SettingsSnapshot,draft:SettingsSnapshot):Setti
  if(a.length!==b.length||a.some((key,i)=>key!==b[i]))changed.push('Projects');
  return changed;
 }
+
+/** The first brief stays on this device: host create handlers reject unknown fields. */
+export function splitFirstBrief<T extends {firstBrief?:string}>(input:T):{request:Omit<T,'firstBrief'>;brief?:string} {
+ const {firstBrief,...request}=input;
+ return {request,...(firstBrief?.trim()?{brief:firstBrief.trim()}:{})};
+}
