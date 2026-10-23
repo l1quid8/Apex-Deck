@@ -2822,6 +2822,44 @@ mod tests {
     }
 
     #[test]
+    fn ui_delegation_records_one_done_human_event_and_one_pending_proposal() {
+        let f = fixture();
+        std::fs::write(f.data.join("host-id"),"owner").unwrap();
+        let assistant = f.host.personal_create(crate::personal::CreateInput {
+            name:"Ada".into(),style:String::new(),folder:f.owner.cwd.clone(),
+            profile:profile("reasoner", Backend::OpenAiCompatible {base_url:"http://127.0.0.1:9/v1".into(),model:"fixture".into(),api_key_env:None}, Access::Read),
+            workspace_version:None,look:None,projects:None,avatar_draft_id:None,avatar_generation_id:None,avatar_asset_id:None,
+        }).unwrap();
+        let project = crate::personal_workspace::ProjectRef {host_id:assistant.host_id.clone(),workspace_id:f.owner.workspace_id.clone(),cwd:f.root.canonicalize().unwrap().to_string_lossy().into_owned()};
+        f.host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();
+        f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
+        let current=f.host.personal_get(&assistant.id).unwrap();
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:String::new(),delegation_id:"ui-delegation".into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
+        let command=crate::command::Command::PersonalProjectDelegateUi {input:input.clone()};
+        assert!(command.requires_provenance());
+        assert!(apex_provenance::protected("personal_project_delegate_ui"));
+        let mut forged=input.clone();forged.source_event_id="forged".into();
+        assert!(f.host.personal_project_delegate_ui(forged).is_err());
+        let mut stale=input.clone();stale.expected_revision=0;
+        assert!(f.host.personal_project_delegate_ui(stale).is_err());
+        assert!(f.host.personal_get(&assistant.id).unwrap().events.is_empty());
+        let first=f.host.personal_project_delegate_ui(input.clone()).unwrap();
+        let second=f.host.personal_project_delegate_ui(input.clone()).unwrap();
+        assert_eq!(first,second);
+        assert_eq!(first["status"],"proposed");
+        let after=f.host.personal_get(&assistant.id).unwrap();
+        assert_eq!(after.events.len(),1);
+        assert_eq!(after.events[0].state,crate::personal::EventState::Done);
+        assert_eq!(after.messages.iter().filter(|m|m.role=="human").count(),1);
+        let mut changed=input.clone();changed.brief="Different request".into();
+        assert!(f.host.personal_project_delegate_ui(changed).is_err());
+        assert_eq!(f.host.personal_get(&assistant.id).unwrap().events.len(),1);
+        let tasks=f.host.assistant_tasks.list(Some(&f.owner.workspace_id)).unwrap();
+        assert_eq!(tasks.len(),1);
+        assert!(tasks[0].attempts.is_empty());
+    }
+
+    #[test]
     fn personal_delegation_uses_real_executor_and_delivers_once_after_message_pruning() {
         let f = fixture();
         std::fs::write(f.data.join("host-id"),"owner").unwrap();

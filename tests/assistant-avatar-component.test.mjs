@@ -24,20 +24,26 @@ test('real editor generates a preview, requires Apply and emits immutable creati
  const calls=[],applied=[],appearance=[];
  const api={options:async()=>({options:[{providerProfileId:'p',modelId:'image',label:'Provider · image',estimatedCostMicros:null}]}),generate:async input=>{calls.push(input);return {...input,state:'preview',candidate};},asset:async()=>new Blob(['fixture'],{type:'image/png'}),cancel:async()=>{},status:async()=>assert.fail('completed job should not poll')};
  const h=mount({owner,appearance:{seed:'s',color:'#123456'},api,onApply:s=>applied.push(s),onAppearanceChange:s=>appearance.push(s)});
- let tree=h.render();await settle();tree=h.render();button(tree,'Generate with AI').props.onClick();tree=h.render();assert.match(text(tree),/Cost unknown/);
- find(tree,n=>n.type==='textarea').props.onChange({target:{value:'Blue robot'}});tree=h.render();button(tree,'Generate').props.onClick();assert.equal(applied.length,0);await settle();tree=h.render();await settle();tree=h.render();
- assert.equal(applied.length,0);assert.equal(appearance.length,0);assert.equal(button(tree,'Apply').props.disabled,false);
- button(tree,'Apply').props.onClick();assert.deepEqual(applied,[{kind:'image',generationId:calls[0].generationId,assetId:'asset'}]);assert.deepEqual(calls[0].owner,owner);assert.equal(appearance[0].seed,'s');
+ let tree=h.render();await settle();tree=h.render();button(tree,'AI generate').props.onClick();tree=h.render();assert.match(text(tree),/Cost unknown/);
+ find(tree,n=>n.type==='textarea').props.onChange({target:{value:'Blue robot'}});tree=h.render();button(tree,'Generate preview').props.onClick();assert.equal(applied.length,0);await settle();tree=h.render();await settle();tree=h.render();
+ assert.equal(applied.length,0);assert.equal(appearance.length,0);assert.equal(button(tree,'Apply avatar').props.disabled,false);
+ button(tree,'Apply avatar').props.onClick();assert.deepEqual(applied,[{kind:'image',generationId:calls[0].generationId,assetId:'asset'}]);assert.deepEqual(calls[0].owner,owner);assert.equal(appearance[0].seed,'s');
  h.close();
 });
 test('pixel tab navigation preserves an image; explicit reset emits pixel',()=>{
  const applied=[],appearance=[];const h=mount({owner,appearance:{seed:'s',color:'#123456',kind:'image',image:candidate},onApply:s=>applied.push(s),onAppearanceChange:s=>appearance.push(s)});
- let tree=h.render();button(tree,'Generate with AI').props.onClick();tree=h.render();button(tree,'Pixel pattern').props.onClick();tree=h.render();assert.equal(applied.length,0);
- button(tree,'Reset to pixel').props.onClick();assert.deepEqual(applied,[{kind:'pixel'}]);assert.equal(appearance[0].seed,'s');assert.equal(appearance[0].color,'#123456');assert.equal(appearance[0].image,undefined);h.close();
+ let tree=h.render();button(tree,'AI generate').props.onClick();tree=h.render();button(tree,'Pixel pattern').props.onClick();tree=h.render();assert.equal(applied.length,0);
+ button(tree,'Use pixel pattern').props.onClick();assert.deepEqual(applied,[{kind:'pixel'}]);assert.equal(appearance[0].seed,'s');assert.equal(appearance[0].color,'#123456');assert.equal(appearance[0].image,undefined);h.close();
 });
 test('Cancel discards an applied unsaved candidate and restores the initial appearance',async()=>{
  const applied=[],looks=[];const original={seed:'s',color:'#123456'};
  const api={options:async()=>({options:[{providerProfileId:'p',modelId:'i',label:'Image',estimatedCostMicros:1}]}),generate:async input=>({...input,state:'preview',candidate}),asset:async()=>new Blob(['fixture']),cancel:async()=>({})};
  const h=mount({owner,appearance:original,api,onApply:s=>applied.push(s),onAppearanceChange:s=>looks.push(s)});
- let tree=h.render();await settle();tree=h.render();button(tree,'Generate with AI').props.onClick();tree=h.render();find(tree,n=>n.type==='textarea').props.onChange({target:{value:'robot'}});tree=h.render();button(tree,'Generate').props.onClick();await settle();tree=h.render();await settle();tree=h.render();button(tree,'Apply').props.onClick();tree=h.render();button(tree,'Cancel').props.onClick();assert.equal(applied.at(-1),undefined);assert.deepEqual(looks.at(-1),original);h.close();
+ let tree=h.render();await settle();tree=h.render();button(tree,'AI generate').props.onClick();tree=h.render();find(tree,n=>n.type==='textarea').props.onChange({target:{value:'robot'}});tree=h.render();button(tree,'Generate preview').props.onClick();await settle();tree=h.render();await settle();tree=h.render();button(tree,'Apply avatar').props.onClick();tree=h.render();button(tree,'Cancel').props.onClick();assert.equal(applied.at(-1),undefined);assert.deepEqual(looks.at(-1),original);h.close();
+});
+
+test('pixel color controls stay inside the pixel tab and opening AI does not select or generate an avatar',async()=>{
+ const applied=[],requests=[];const marker=React.createElement('div',{'data-pixel-controls':true},'Pixel colors');
+ const h=mount({owner,appearance:{seed:'s',color:'#123456'},pixelControls:marker,api:{options:async()=>({options:[]}),generate:async input=>requests.push(input)},onApply:value=>applied.push(value),onAppearanceChange(){}});
+ let tree=h.render();assert.ok(find(tree,n=>n.props?.['data-pixel-controls']));button(tree,'AI generate').props.onClick();tree=h.render();assert.equal(find(tree,n=>n.props?.['data-pixel-controls']),undefined);assert.ok(find(tree,n=>n.type==='textarea'));assert.equal(requests.length,0);assert.equal(applied.length,0);button(tree,'Pixel pattern').props.onClick();assert.ok(find(h.render(),n=>n.props?.['data-pixel-controls']));h.close();
 });

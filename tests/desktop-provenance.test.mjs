@@ -64,3 +64,19 @@ test('legacy import apply is a protected UI intent; its preview and history are 
   const preview={id:10,cmd:'legacy_import_preview',args:{}};
   assert.deepEqual(await mod.attestFrame(preview,{issue:()=>assert.fail('preview is read-only')}),preview);
 });
+
+test('explicit project delegation is signed with its exact brief, worker and project',async()=>{
+  assert.ok(mod.protectedCommands.has('personal_project_delegate_ui'));
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const frame={id:11,cmd:'personal_project_delegate_ui',args:{assistantId:'a',project:{hostId:'host',workspaceId:'w',cwd:'/repo'},sourceEventId:'',delegationId:'d',brief:'Inspect login',destination:{threadId:'thread',workers:['worker'],newThread:false},mode:'read_only',expectedRevision:3}};
+  let issued;
+  const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
+    issued=request.command;
+    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
+    return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
+  }});
+  assert.equal(result.cmd,'provenance_execute');
+  assert.equal(issued.cmd,'personal_project_delegate_ui');
+  assert.deepEqual(issued.args,frame.args);
+});

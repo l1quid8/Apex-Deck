@@ -17,7 +17,7 @@ test('the four production destinations retain their existing Agents workflow', (
  assert.match(app,/onOpenAssistant=\{openAssistant\}/);
 });
 test('Memory and Settings route into the assistant main canvas', () => {
- assert.match(app,/<AssistantWorkspace lane=\{selectedAssistant\} section=\{mainView.section\}/);
+ assert.match(app,/lane=\{selectedAssistant\} section=\{mainView.section\}/);
  assert.match(app,/onNavigatePanel=\{navigateAssistant\}/);
  assert.match(app,/editor=\{assistantBackend \? <AssistantEditor/);
 });

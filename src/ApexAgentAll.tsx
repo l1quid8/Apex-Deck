@@ -48,12 +48,13 @@ function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) =
 }
 
 /** One conversation across every watched project. Replies go to the project they name, or the last one discussed. */
-export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand }: {
+export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand }: {
   /** The personal assistant on its durable host, shown as one more lane in this conversation. */
   personal?: PersonalLane | null;
   personalLaneId?: string;
   onNavigatePanel?: (section: 'memory' | 'settings' | 'activity') => void;
   embedded?: boolean;
+  assistantAvatar?: ReactNode;
   /** Session draft owner: durable host+assistant identity. The caller keys this component by the same value. */
   draftKey?: string;
   onReact?: (workspaceId: string, messageId: string, emoji: MessageReaction, enabled: boolean) => Promise<void>;
@@ -524,7 +525,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const composerLane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;
 
   return <TaskViewContext.Provider value={taskContextValue}><section className={`apex-agent ${embedded ? 'assistant-conversation' : 'widget'} apex-agent-all`} role="region" aria-label="ApexAgent" onKeyDown={onEscape}>
-    <header className="apex-agent-head">
+    {!embedded && <header className="apex-agent-head">
       <div className="apex-agent-head-row">
         <div className="apex-agent-brand"><h1>{embedded ? personal?.name ?? 'Assistant' : 'ApexAgent'}</h1></div>
         <div className="apex-agent-head-actions">{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label="More ApexAgent options">⋯</summary><div role="menu">
@@ -545,7 +546,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         <button type="button" role="tab" className="apex-agent-view-tab" aria-selected={view === 'tasks'} onClick={() => switchView('tasks')}>Tasks{needsCount > 0 && <b className="apex-agent-tabs-count">{` · ${needsCount}`}</b>}</button>
         <button type="button" role="tab" className="apex-agent-view-tab" aria-selected={view === 'notifications'} onClick={() => switchView('notifications')}>Notifications{notificationCount > 0 && <b className="apex-agent-tabs-count">{` · ${notificationCount}`}</b>}</button>
       </div>
-    </header>
+    </header>}
     {filterWorkspaceId && <div className="apex-agent-filter-bar" role="status"><span>Showing {filterName} only</span><button type="button" onClick={() => onClearFilter?.()}>Show all</button></div>}
     {error && <div className="apex-agent-error" role="alert">{error}</div>}
     <div className="apex-agent-tabpanel" ref={scroller} onScroll={(event) => {
@@ -558,7 +559,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       else notificationsScroll.current = event.currentTarget.scrollTop;
     }}><div className="assistant-chat-transcript" aria-live="polite">
       {view === 'chat' ? <>
-      {entries.map(({ workspaceId, project, message, ...entry }) => {
+      {entries.map(({ workspaceId, project, message, ...entry }, entryIndex) => {
         const item = 'personal' in entry ? entry.personal as PersonalMessage : null;
         if (item) {
           const task = taskOf(item.taskId);
@@ -566,15 +567,16 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           const personalBubble = `assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
           const personalBody = <>
-            <small className="apex-agent-message-meta">{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.legacy && <LegacyBadge />}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}</small>
+            <small className="apex-agent-message-meta">{embedded&&item.role==='assistant'&&assistantAvatar}{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.legacy && <LegacyBadge />}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}{embedded&&item.role==='assistant'&&<time>{clock(item.at)}</time>}</small>
             {item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
           </>;
           const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
             addReplyQuote({ messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL });
           } : undefined} onToggleReaction={onReact ? (emoji, enabled) => run(() => onReact(PERSONAL, item.id, emoji, enabled)) : undefined} /> : null;
-          return personalActions
+          const row=personalActions
             ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={personalBubble}>{personalBody}</div>{personalActions}</article>
             : <article className={personalBubble} key={`${workspaceId}:${message.id}`}>{personalBody}</article>;
+          return embedded ? <div className="assistant-entry-group" key={`${workspaceId}:${message.id}`}>{(entryIndex===0||new Date(entries[entryIndex-1].message.at).toDateString()!==new Date(item.at).toDateString())&&<div className="assistant-conversation-day">{new Date(item.at).toLocaleDateString(undefined,{month:'long',day:'numeric'})}</div>}{row}</div> : row;
         }
         const projectBubble = `assistant-chat-message ${message.role}`;
         const projectBody = <>
@@ -631,7 +633,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         <textarea ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(filterWorkspaceId ?? focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); setCaret(event.currentTarget?.selectionStart ?? value.length); }} onClick={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} onKeyUp={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} rows={1} aria-label="Message ApexAgent" placeholder={selectedTaskContext ? 'Reply to this task…' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…'}
           onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
       </div>
-      <div className="apex-agent-all-compose-row"><small className="apex-agent-muted apex-agent-all-destination">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `To ${personalTag}` : attachmentLane || replyQuotes.length ? `About ${laneNames[attachmentLane ?? replyQuotes[0]!.laneId] ?? 'Project'} · fixed for this reply` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 && !replyQuotes.length && !attachmentLane ? ' · name a project to switch' : ''}{attachmentState.paths.length ? ` · ${attachmentState.paths.length} attachment${attachmentState.paths.length === 1 ? '' : 's'}` : ''}</small><button className="primary apex-agent-all-send" disabled={busy || (!text.trim() && !attachmentState.paths.length) || attachmentState.pending || attachmentState.hasErrors || (!selectedTaskContext && !target && !globalReply)}>{busy ? 'Sending…' : 'Send'}</button></div>
+      <div className="apex-agent-all-compose-row"><small className="apex-agent-muted apex-agent-all-destination">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `To ${personalTag}` : attachmentLane || replyQuotes.length ? `About ${laneNames[attachmentLane ?? replyQuotes[0]!.laneId] ?? 'Project'} · fixed for this reply` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 && !replyQuotes.length && !attachmentLane ? ' · name a project to switch' : ''}{attachmentState.paths.length ? ` · ${attachmentState.paths.length} attachment${attachmentState.paths.length === 1 ? '' : 's'}` : ''}</small><button className="primary apex-agent-all-send" disabled={busy || (!text.trim() && !attachmentState.paths.length) || attachmentState.pending || attachmentState.hasErrors || (!selectedTaskContext && !target && !globalReply)}>{embedded?<><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V4m-6 6 6-6 6 6"/></svg><span className="sr-only">{busy?'Sending…':'Send'}</span></>:busy ? 'Sending…' : 'Send'}</button></div>
     </form>}
     {calling && personal && <PersonalCall lane={personal} onEnd={() => setCalling(false)} />}
     {busy && <div className="apex-agent-busy" role="status">Saving…</div>}

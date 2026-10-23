@@ -17,7 +17,7 @@ export type PersonalAssistantsOptions = {
 };
 export type PersonalAssistantSummary = {
   ref: AssistantRef; name: string; hostName: string; look?: AssistantLook;
-  offline: boolean; revision: number; lastSeen: number; legacy?: PersonalAssistantRecord["legacy"];
+  offline: boolean; revision: number; lastSeen: number; status?: string; legacy?: PersonalAssistantRecord["legacy"];
 };
 type HostState = { routeHostId: string; hostId?: string; name: string; state: "ready" | "empty" | "offline" | "unsupported" | "error"; listedAfter?: number; problem?: string };
 type Row = { ref: AssistantRef; routeHostId: string; route: Backend; assistant: PersonalAssistantRecord; epoch: number; written: number; lastSeen: number };
@@ -83,7 +83,7 @@ export class PersonalAssistantsCollection {
     } catch { return true; }
   }
   snapshot = () => ({
-    assistants: [...this.rows.values()].map(row => ({ ref: { ...row.ref }, name: row.assistant.name, legacy: row.assistant.legacy, look: row.assistant.look, revision: row.assistant.revision, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), lastSeen: row.lastSeen } satisfies PersonalAssistantSummary)),
+    assistants: [...this.rows.values()].map(row => ({ ref: { ...row.ref }, name: row.assistant.name, legacy: row.assistant.legacy, look: row.assistant.look, revision: row.assistant.revision, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), status: row.assistant.paused ? 'Paused' : row.assistant.tasks.some(task=>task.status==='running'||task.status==='queued') ? `${row.assistant.tasks.filter(task=>task.status==='running'||task.status==='queued').length} working` : row.assistant.tasks.some(task=>task.status==='needsYou') ? 'Needs review' : 'Ready', lastSeen: row.lastSeen } satisfies PersonalAssistantSummary)),
     selected: this.selected ? { ...this.selected } : null,
     hosts: [...this.hosts.values()],
   });

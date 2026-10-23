@@ -1,0 +1,166 @@
+import { useEffect, useRef, useState } from 'react';
+import type { Backend } from './backend';
+import type { PersonalLane } from './personalAssistant';
+import type { ParticipantConfig } from './types';
+import { projectIdentityKey, type AssistantProjectBinding, type ProjectRef } from './assistantIdentity';
+import { assistantTaskActionArgs, taskDisplayStatus, type AssistantTask, type AssistantTaskOwner, type AssistantTaskSnapshot } from './assistantTaskModel';
+import { activeProjectTask, assignmentBlocked, projectTasks, sameWorkerConfiguration } from './assistantProjectsModel';
+import './assistant-projects.css';
+
+export type AssistantProjectItem = { project: ProjectRef; name: string; goal?: string; unavailable?: string };
+export type AssistantProjectScope = { project: ProjectRef; owner: AssistantTaskOwner; snapshot?: AssistantTaskSnapshot };
+export type AssistantProjectsProps = {
+  lane: PersonalLane; backend: Backend; projects: AssistantProjectItem[]; availableProjects?: AssistantProjectItem[]; taskScopes: AssistantProjectScope[];
+  onEnsureCoordinator?: (project: ProjectRef) => Promise<AssistantProjectScope>;
+  profiles?: ParticipantConfig[]; onCreateWorkerThread?: (project: ProjectRef, profile: ParticipantConfig) => Promise<string>;
+  onOpenProject?: (project: ProjectRef) => void; onOpenNotebook?: (project: ProjectRef) => void; onOpenThread?: (project: ProjectRef, threadId: string) => void;
+};
+const id = () => crypto.randomUUID();
+const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+export function AssistantProjects({lane,backend,projects,availableProjects=projects,taskScopes,profiles=[],onEnsureCoordinator,onCreateWorkerThread,onOpenProject,onOpenNotebook,onOpenThread}: AssistantProjectsProps) {
+  const record = lane.assistant;
+  const [dynamic,setDynamic] = useState<{ownerKey:string;scopes:AssistantProjectScope[]}>({ownerKey:'',scopes:[]});
+  const [reviewRevision,setReviewRevision] = useState<number|null>(null);
+  const [reviewChecks,setReviewChecks] = useState<string[]>([]);
+  const [reviewOpen,setReviewOpen] = useState(false);
+  const [snapshots,setSnapshots] = useState<Record<string,AssistantTaskSnapshot>>({});
+  const [errors,setErrors] = useState<Record<string,string>>({});
+  const [error,setError] = useState('');
+  const [busy,setBusy] = useState(false);
+  const [filter,setFilter] = useState('assigned');
+  const [selected,setSelected] = useState<{project:ProjectRef;taskId:string}|null>(null);
+  const [dialog,setDialog] = useState<'assign'|'delegate'|null>(null);
+  const [draft,setDraft] = useState<AssistantProjectBinding[]>([]);
+  const [revision,setRevision] = useState(0);
+  const [projectKey,setProjectKey] = useState('');
+  const [worker,setWorker] = useState('');
+  const [brief,setBrief] = useState('');
+  const [criteria,setCriteria] = useState('');
+  const [reviewed,setReviewed] = useState(false);
+  const [excerpt,setExcerpt] = useState('');
+  const [promotion,setPromotion] = useState(false);
+  const [notice,setNotice] = useState('');
+  const delegationId = useRef(id());
+  const promotionId = useRef(id());
+  const generation = useRef(0);
+  const createdThreads = useRef<Record<string,string>>({});
+  const ownerKey = JSON.stringify([record?.hostId,record?.id]);
+  const effectiveScopes=[...new Map([...taskScopes,...(dynamic.ownerKey===ownerKey?dynamic.scopes:[])].map(scope=>[projectIdentityKey(scope.project),scope])).values()];
+  const scopesKey = JSON.stringify(effectiveScopes.map(scope=>[scope.project,scope.owner]));
+  const current = useRef({ownerKey,backend}); current.current={ownerKey,backend};
+  const assignments = record?.projects ?? [];
+  const binding = (project:ProjectRef) => assignments.find(item=>projectIdentityKey(item.project)===projectIdentityKey(project));
+  async function refresh() {
+    if(current.current.ownerKey!==ownerKey||current.current.backend!==backend)return;
+    const token=++generation.current;
+    const loaded:Record<string,AssistantTaskSnapshot>={}, failures:Record<string,string>={};
+    await Promise.all(effectiveScopes.map(async scope=>{
+      const key=projectIdentityKey(scope.project);
+      try {
+        if (!record || lane.offline || backend.demo) throw new Error('Connect the assistant’s machine to read live assignments.');
+        if (scope.project.hostId!==record.hostId) throw new Error('This assignment is on another machine.');
+        const snapshot=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner});
+        projectTasks(snapshot,scope.owner,scope.project,{hostId:record.hostId,assistantId:record.id}); loaded[key]=snapshot;
+      } catch(cause) { failures[key]=message(cause); }
+    }));
+    if(token===generation.current&&current.current.ownerKey===ownerKey&&current.current.backend===backend){setSnapshots(loaded);setErrors(failures);}
+  }
+  useEffect(()=>{setSelected(null);setDialog(null);setError('');setBusy(false);},[ownerKey,backend]);
+  useEffect(()=>{void refresh();let stop:(()=>void)|undefined;let active=true;
+    if(backend.onAssistantTasksChanged) void backend.onAssistantTasksChanged(()=>{if(active)void refresh();}).then(unlisten=>{if(active)stop=unlisten;else unlisten();}).catch(()=>{});
+    return()=>{active=false;generation.current++;stop?.();};
+  },[ownerKey,backend,scopesKey,lane.offline]);
+  const tasksFor=(project:ProjectRef) => {
+    const scope=effectiveScopes.find(item=>projectIdentityKey(item.project)===projectIdentityKey(project));
+    const snapshot=snapshots[projectIdentityKey(project)];
+    if(!scope||!snapshot||!record)return [];
+    return projectTasks(snapshot,scope.owner,project,{hostId:record.hostId,assistantId:record.id});
+  };
+  const allTasks=projects.flatMap(item=>tasksFor(item.project));
+  const task=selected?tasksFor(selected.project).find(item=>item.id===selected.taskId):undefined;
+  const scope=effectiveScopes.find(item=>projectIdentityKey(item.project)===projectKey);
+  const chosen=projects.find(item=>projectIdentityKey(item.project)===projectKey);
+  const snapshot=scope?snapshots[projectKey]:undefined;
+  const savedWorkers=(snapshot?.routingThreads??[]).flatMap(thread=>thread.workers.map(profile=>({key:JSON.stringify([thread.id,profile.id]),threadId:thread.id,profile}))).filter(choice=>!choice.profile.media);
+  const workers=onCreateWorkerThread?profiles.filter(profile=>!profile.media).map(profile=>({key:profile.id,threadId:savedWorkers.find(choice=>sameWorkerConfiguration(choice.profile,profile))?.threadId??'',profile})):savedWorkers;
+  const offline=lane.offline||backend.demo||!record;
+  async function run(action:()=>Promise<void>) {
+    if(busy||offline)return;const captured=current.current;setBusy(true);setError('');
+    try { await action(); } catch(cause) { if(current.current.ownerKey===captured.ownerKey&&current.current.backend===captured.backend)setError(message(cause)); }
+    finally { if(current.current.ownerKey===captured.ownerKey&&current.current.backend===captured.backend)setBusy(false); }
+  }
+  async function ensureCoordinator(project:ProjectRef) {
+    const captured=current.current;
+    const scope=onEnsureCoordinator?await onEnsureCoordinator(project):effectiveScopes.find(item=>projectIdentityKey(item.project)===projectIdentityKey(project));
+    if(current.current.ownerKey!==captured.ownerKey||current.current.backend!==captured.backend)throw new Error('The assistant changed while connecting its project.');
+    if(!scope)return;
+    if(projectIdentityKey(scope.project)!==projectIdentityKey(project))throw new Error('The coordinator returned a different project.');
+    const snapshot=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner});
+    if(current.current.ownerKey!==captured.ownerKey||current.current.backend!==captured.backend)throw new Error('The assistant changed while reading its project.');
+    if(!record)throw new Error('The assistant is unavailable.');
+    projectTasks(snapshot,scope.owner,project,{hostId:record.hostId,assistantId:record.id});
+    setDynamic(before=>({ownerKey,scopes:[...(before.ownerKey===ownerKey?before.scopes:[]).filter(item=>projectIdentityKey(item.project)!==projectIdentityKey(project)),scope]}));
+    setSnapshots(before=>({...before,[projectIdentityKey(project)]:snapshot}));
+  }
+  async function openDelegate(project?:ProjectRef) {
+    const target=project??projects.find(item=>binding(item.project)?.tools!=='off')?.project;
+    if(!target)return;
+    await run(async()=>{await ensureCoordinator(target);setProjectKey(projectIdentityKey(target));setWorker('');setBrief('');setCriteria('');setError('');delegationId.current=id();setDialog('delegate');});
+  }
+  function openTask(project:ProjectRef, task:AssistantTask) {setSelected({project,taskId:task.id});setReviewRevision(null);setReviewChecks([]);setReviewOpen(false);setReviewed(false);setExcerpt(task.result??'');setPromotion(false);setNotice('');promotionId.current=id();}
+  const taskRow=(project:ProjectRef,item:AssistantTask)=><button className="assistant-project-task" key={item.id} onClick={()=>openTask(project,item)}><span><strong>{item.brief}</strong><small>{lane.name} → {item.workers.join(', ')||'Worker not selected'}</small></span><span className="assistant-project-status">{taskDisplayStatus(item)}</span></button>;
+  async function act(action:string, payload:Parameters<typeof assistantTaskActionArgs>[2]={}) {
+    if(!task||!selected)return;
+    await run(async()=>{const result=await backend.call<AssistantTask>('assistant_task_action',assistantTaskActionArgs(task,action,payload));if(result.id!==task.id)throw new Error('The host returned a different task.');await refresh();setReviewed(false);});
+  }
+  if(!record)return <p className="muted">Connect an assistant to manage its projects.</p>;
+  return <div className="assistant-projects">
+    {error&&<p role="alert" className="assistant-project-error">{error}</p>}
+    {notice&&<p role="status">{notice}</p>}
+    {task&&selected?<article className="assistant-project-detail">
+      <button onClick={()=>setSelected(null)}>← Projects</button><h2>{task.brief}</h2><span className="assistant-project-status">{taskDisplayStatus(task)}</span>
+      <div className="assistant-project-meta"><span>Assistant <strong>{lane.name}</strong></span><span>Workers <strong>{task.workers.join(', ')}</strong></span><span>Attempt <strong>{task.attempts.at(-1)?.number??'Not started'}</strong></span></div>
+      <section><h3>Original request</h3><p>{task.originalRequest}</p><h3>Review criteria</h3>{task.reviewCriteria.length?<ul>{task.reviewCriteria.map((criterion,i)=><li key={i}>{criterion}</li>)}</ul>:<p>No review criteria recorded.</p>}</section>
+      <div className="assistant-project-actions">
+        {task.desiredState==='paused'?<button disabled={busy||offline||record.paused} onClick={()=>void act('resume')}>Resume task</button>:['proposed','needs_clarification','queued','running','needs_you'].includes(task.status)&&<button disabled={busy||offline} onClick={()=>void act('pause')}>Pause task</button>}
+        {['failed','interrupted'].includes(task.status)&&<button disabled={busy||offline||record.paused||task.desiredState==='paused'} onClick={()=>void act('retry')}>Retry task</button>}
+        {['proposed','needs_clarification'].includes(task.status)&&<button disabled={busy||offline} onClick={()=>void act('dismiss')}>Dismiss proposal</button>}
+        {activeProjectTask(task)&&<button disabled={busy||offline} onClick={()=>void act('cancel')}>Cancel task</button>}
+        {task.executionThreadId&&<button onClick={()=>onOpenThread?.(selected.project,task.executionThreadId!)}>Open worker thread</button>}
+        {onOpenProject&&<button onClick={()=>onOpenProject(selected.project)}>Review task in project</button>}
+      </div>
+      {task.status==='proposed'&&task.destination&&<button disabled={busy||offline||record.paused||task.desiredState==='paused'} onClick={()=>void act('approve',{destination:task.destination!,newWorkerProfiles:[],mode:task.mode})}>Approve task</button>}
+      {task.status==='proposed'&&<p className="muted">This is a saved proposal. Approving it starts the selected worker with this brief and project scope.</p>}
+      <details><summary>Context available to this worker</summary>{(task.resultData as {delegationContext?:unknown}|null)?.delegationContext?<><p>Captured by the host when this proposal was created. Shared worker prompts exclude private assistant facts.</p><pre>{JSON.stringify((task.resultData as {delegationContext:unknown}).delegationContext,null,2)}</pre></>:<p className="muted">No captured worker context was returned by this host for this task.</p>}</details>
+      <details><summary>Thread &amp; isolated workspace</summary><pre>{JSON.stringify({taskId:task.id,thread:task.executionThreadId,workspace:task.resultData?.executionPath??'Not reported by host',mode:task.mode,revision:task.revision,attempts:task.attempts},null,2)}</pre></details>
+      {task.result&&<section className="assistant-project-outcome"><h3>Worker result</h3><pre>{task.result}</pre>{['ready_for_review','done'].includes(task.status)&&<button disabled={!lane.projectMemory?.stage||offline} onClick={()=>{setPromotion(true);setReviewed(false);}}>Review &amp; save to project</button>}</section>}
+      {task.status==='ready_for_review'&&<section className="assistant-project-outcome"><h3>Review result · revision {task.revision}</h3><details onToggle={event=>{setReviewOpen(event.currentTarget.open);if(!event.currentTarget.open)setReviewRevision(null);}}><summary>Inspect result, changes and checks</summary><pre>{task.result||'No result text reported.'}</pre>{task.resultData?.reviewDiff&&<pre>{task.resultData.reviewDiff}</pre>}<pre>{JSON.stringify(task.resultData?.checkResults??task.resultData?.checks??[],null,2)}</pre></details>{task.reviewCriteria.map(criterion=><label key={criterion}><input type="checkbox" checked={reviewChecks.includes(criterion)} onChange={event=>setReviewChecks(before=>event.target.checked?[...before,criterion]:before.filter(item=>item!==criterion))}/>I reviewed: {criterion}</label>)}<label><input type="checkbox" checked={reviewRevision===task.revision} disabled={!reviewOpen} onChange={event=>setReviewRevision(event.target.checked?task.revision:null)}/>I opened and reviewed revision {task.revision}.</label><button disabled={busy||offline||!reviewOpen||reviewRevision!==task.revision||task.reviewCriteria.some(criterion=>!reviewChecks.includes(criterion))} onClick={()=>void act(task.mode==='read_only'?'review':'accept')}>{task.mode==='read_only'?'Mark reviewed':task.mode==='isolated'?'Accept changes':'Accept and mark done'}</button></section>}
+      {promotion&&<section className="assistant-project-outcome"><h3>Save reviewed worker note</h3><p>Choose an exact excerpt from the completed result. This saves a shared project note with source task and attempt.</p><textarea aria-label="Worker result excerpt" value={excerpt} onChange={event=>{setExcerpt(event.target.value);setReviewed(false);}}/><label><input type="checkbox" checked={reviewed} onChange={event=>setReviewed(event.target.checked)}/>I reviewed this excerpt and want to share it with this project.</label><div className="assistant-project-actions"><button disabled={busy||!reviewed||!excerpt.trim()||!task.result?.includes(excerpt.trim())||offline} onClick={()=>void run(async()=>{
+        const attempt=task.attempts.at(-1);if(!attempt||!lane.projectMemory?.stage||!lane.projectMemory.promote)throw new Error('Completed task evidence is unavailable.');
+        const staged=await lane.projectMemory.stage({project:selected.project,taskId:task.id,attempt:attempt.number,runId:attempt.runId,expectedTaskRevision:task.revision,text:excerpt.trim(),kind:'fact'});
+        const receipt=await lane.projectMemory.promote({...staged,promotionId:promotionId.current});setPromotion(false);setNotice(`Saved project note ${receipt.noteId} · version ${receipt.noteVersion}.`);
+      })}>Save to project notebook</button><button onClick={()=>setPromotion(false)}>Dismiss note</button></div></section>}
+      <section><h3>Task history</h3>{task.resultData?.taskHistory?.length?task.resultData.taskHistory.map((entry,i)=><div className="assistant-project-event" key={i}>{Number.isFinite(entry.atMs)&&<time>{new Date(entry.atMs).toLocaleString()}</time>}<p>{entry.text}</p></div>):<p className="muted">No task history reported by this host.</p>}</section>
+    </article>:<>
+      <div className="assistant-project-intro"><h2>{lane.name}’s projects</h2><p>Give each project a clear goal. Your assistants coordinate the workers and bring the results back here.</p></div>
+      <div className="assistant-project-overview"><span><strong>{assignments.length}</strong> projects</span><span><strong>{allTasks.filter(item=>['running','applying'].includes(item.status)).length}</strong> working</span><span><strong>{allTasks.filter(item=>['ready_for_review','needs_you'].includes(item.status)).length}</strong> need review</span></div>
+      <div className="assistant-project-toolbar"><select aria-label="Projects to show" value={filter} onChange={event=>setFilter(event.target.value)}><option value="assigned">Assigned to {lane.name}</option><option value="all">All projects</option></select><div className="assistant-project-actions"><button disabled={offline||!lane.configureWorkspace} onClick={()=>{setDraft(assignments.map(item=>({...item})));setRevision(record.revision);setDialog('assign');setError('');}}>Assign projects</button><button className="primary" disabled={offline||!assignments.length} onClick={()=>openDelegate()}>Delegate a task</button></div></div>
+      {(filter==='all'?availableProjects:projects).map(item=>{const tasks=tasksFor(item.project);const key=projectIdentityKey(item.project);return <article className="assistant-project-card" key={key}><div className="assistant-project-top"><span className="assistant-project-glyph">▱</span><div><h3>{item.name}</h3><p>{item.project.hostId} · {item.project.cwd}</p></div><span className="assistant-project-status">{tasks.some(task=>['running','applying'].includes(task.status))?`${tasks.filter(task=>['running','applying'].includes(task.status)).length} working`:tasks.some(task=>task.status==='ready_for_review')?'Needs review':errors[key]?'Unavailable':binding(item.project)&&!snapshots[key]?'Not connected':'Ready'}</span></div><p>{item.goal||'No project goal recorded.'}</p><span className="assistant-project-owner">{binding(item.project)?lane.name:'Not assigned to this assistant'}</span>{item.unavailable&&<p role="status">{item.unavailable}</p>}{errors[key]&&<p role="status">{errors[key]}</p>}{!effectiveScopes.some(scope=>projectIdentityKey(scope.project)===key)&&binding(item.project)&&<p className="muted">Delegate a task to connect this project’s task coordinator.</p>}{tasks.filter(activeProjectTask).slice(0,3).map(task=>taskRow(item.project,task))}{!tasks.filter(activeProjectTask).length&&<p className="muted">No active assignments.</p>}<div className="assistant-project-actions"><button disabled={!!item.unavailable} onClick={()=>onOpenProject?.(item.project)}>Open project</button><button disabled={offline||!binding(item.project)||binding(item.project)?.tools==='off'||!!item.unavailable} onClick={()=>openDelegate(item.project)}>Delegate a task</button><button disabled={!binding(item.project)} onClick={()=>onOpenNotebook?.(item.project)}>Project notebook</button></div>{tasks.filter(item=>!activeProjectTask(item)).length>0&&<details><summary>Completed and previous assignments</summary>{tasks.filter(item=>!activeProjectTask(item)).map(task=>taskRow(item.project,task))}</details>}</article>;})}
+      {!projects.length&&<p className="assistant-project-empty">No projects assigned yet. Choose Assign projects to give this assistant a place to work.</p>}
+      <p className="assistant-project-note">Each worker uses its assignment and project notebook. Worker result excerpts become shared project knowledge only after explicit review.</p>
+    </>}
+    {dialog&&<div className="assistant-project-dialog-backdrop"><section role="dialog" aria-modal="true" aria-label={dialog==='assign'?'Assign projects':'Delegate a project task'} className="assistant-project-dialog"><header><h2>{dialog==='assign'?'Assign projects':'Delegate a project task'}</h2><button disabled={busy} aria-label="Close dialog" onClick={()=>setDialog(null)}>×</button></header>{error&&<p role="alert">{error}</p>}
+      {dialog==='assign'?<form onSubmit={event=>{event.preventDefault();void run(async()=>{await lane.configureWorkspace!({expectedRevision:revision,projects:draft});setDialog(null);});}}><p>Assignments use existing machine and folder permissions. Active work must finish or be cancelled before an assignment is removed.</p>{availableProjects.map(item=>{const key=projectIdentityKey(item.project);const saved=draft.find(binding=>projectIdentityKey(binding.project)===key);const blocked=assignmentBlocked(record,item.project)||item.unavailable;const active=tasksFor(item.project).some(activeProjectTask);const unknown=!!binding(item.project)&&(!snapshots[key]||!!errors[key]);return <div className="assistant-project-assignment" key={key}><label><input type="checkbox" checked={!!saved} disabled={busy||(!saved&&!!blocked)||(!!saved&&(active||unknown))} onChange={event=>setDraft(before=>event.target.checked?[...before,{project:item.project,tools:'ask'}]:before.filter(binding=>projectIdentityKey(binding.project)!==key))}/>{item.name}</label>{saved&&<select aria-label={`${item.name} project tools`} value={saved.tools} disabled={busy} onChange={event=>setDraft(before=>before.map(binding=>projectIdentityKey(binding.project)===key?{...binding,tools:event.target.value as AssistantProjectBinding['tools']}:binding))}><option value="ask">Ask first</option><option value="full">Full access</option><option value="off">Off</option></select>}<small>{active?'Finish or cancel active assignments before removing.':unknown?'Reconnect the task coordinator before removing this assignment.':blocked||item.project.cwd}</small></div>;})}<button className="primary" disabled={busy||offline}>Save assignments</button></form>:<form onSubmit={event=>{event.preventDefault();void run(async()=>{
+        const choice=workers.find(item=>item.key===worker);if(!chosen||!choice)throw new Error('Choose an assigned project and a worker.');
+        const captured=current.current;
+        const ensureCurrent=()=>{if(current.current.ownerKey!==captured.ownerKey||current.current.backend!==captured.backend)throw new Error('The assistant changed while saving this delegation.');};
+        const threadKey=JSON.stringify([delegationId.current,projectKey,choice.profile]);
+        const threadId=choice.threadId||createdThreads.current[threadKey]||await onCreateWorkerThread?.(chosen.project,choice.profile);ensureCurrent();
+        if(threadId)createdThreads.current[threadKey]=threadId;
+        await refresh();ensureCurrent();
+        if(!threadId)throw new Error('Create a saved project chat for this worker first.');
+        await backend.call('personal_project_delegate_ui',{assistantId:record.id,project:chosen.project,sourceEventId:'',delegationId:delegationId.current,brief:brief.trim(),destination:{threadId,workers:[choice.profile.id],newThread:false},mode:record.profile?.access==='read'?'read_only':'isolated',reviewCriteria:criteria.split('\n').map(line=>line.trim()).filter(Boolean),expectedRevision:record.revision});ensureCurrent();await refresh();setDialog(null);setNotice('Proposal saved. Open the project to review and approve it before work starts.');
+      });}}><label>Owning assistant<input value={`${lane.name} · ${record.hostId}`} readOnly/></label><label>Project<select aria-label="Task project" value={projectKey} onChange={event=>{const key=event.target.value;const project=projects.find(item=>projectIdentityKey(item.project)===key);setWorker('');if(project)void run(async()=>{await ensureCoordinator(project.project);setProjectKey(key);});else setProjectKey(key);}}><option value="">Choose a project</option>{projects.filter(item=>binding(item.project)?.tools!=='off').map(item=><option key={projectIdentityKey(item.project)} value={projectIdentityKey(item.project)}>{item.name}</option>)}</select></label><label>Worker<select aria-label="Worker" value={worker} onChange={event=>setWorker(event.target.value)}><option value="">Choose a worker</option>{workers.map(item=><option key={item.key} value={item.key}>{item.profile.display_name}{onCreateWorkerThread?'':` · ${item.threadId}`}</option>)}</select></label>{!workers.length&&<p role="status">This host requires a saved project chat with a worker. Open the project, create a worker chat, and reconnect its task coordinator.</p>}<label>Brief<textarea aria-label="Task brief" value={brief} maxLength={16000} required onChange={event=>setBrief(event.target.value)}/></label><label>Review criteria (one per line)<textarea value={criteria} onChange={event=>setCriteria(event.target.value)}/></label><p className="assistant-project-note">Creates a durable proposal for human approval. The host verifies source request, worker, project access, folder permissions, and assistant revision.</p>{record.paused&&<p role="status">Resume this assistant before delegating.</p>}<button className="primary" disabled={busy||offline||record.paused||!worker||!brief.trim()||!chosen||!!chosen.unavailable||binding(chosen.project)?.tools==='off'}>Save delegation proposal</button></form>}
+    </section></div>}
+  </div>;
+}

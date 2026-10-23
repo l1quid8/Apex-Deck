@@ -7,17 +7,17 @@ import {runtimeProfile,textModels,reconcileEffort,validateAssistantDraft} from '
 import {providerEnabled,providerForConfig} from '../src/providers.ts';
 import {AGENT_COLORS} from '../src/identicon.ts';
 const {transform}=createRequire(import.meta.url)('sucrase');
-const source=fs.readFileSync(new URL('../src/AssistantWorkspace.tsx',import.meta.url),'utf8');
+const source=['AssistantEditor.tsx','AssistantWorkspace.tsx'].map(file=>fs.readFileSync(new URL('../src/'+file,import.meta.url),'utf8').replace(/^export \{.*$/gm,'').replace(/^export type \{.*$/gm,'')).join('\n');
 const compiled=transform(source.replace(/^import .*;\n/gm,'').replace(/^export /gm,''),{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
 const React={createElement:(type,props,...children)=>({type,props:props??{},children:children.flat(Infinity)})};
 const text=n=>typeof n==='string'||typeof n==='number'?String(n):n?.children?.map(text).join('')??'';
-const find=(n,p)=>!n||typeof n!=='object'?null:p(n)?n:n.children?.map(c=>find(c,p)).find(Boolean)??null;
-const all=(n,p)=>!n||typeof n!=='object'?[]:[...(p(n)?[n]:[]),...(n.children??[]).flatMap(c=>all(c,p))];
+const find=(n,p)=>!n||typeof n!=='object'?null:p(n)?n:[...(n.children??[]),n.props?.pixelControls].map(c=>find(c,p)).find(Boolean)??null;
+const all=(n,p)=>!n||typeof n!=='object'?[]:[...(p(n)?[n]:[]),...[...(n.children??[]),n.props?.pixelControls].flatMap(c=>all(c,p))];
 const Avatar=()=>null, HexColorPicker=()=>null,PersonalPanels=()=>null,PersonalBrowser=()=>null,AssistantAvatarEditor=()=>null;
-const profile={id:'legacy',display_name:'Legacy',persona:'Legacy metadata retained',backend:{kind:'agent',tool:'codex',model:'old'},effort:'high',access:'ask',legacyLabel:'old custom label'};
+const profile={id:'legacy',display_name:'Legacy',persona:'Legacy metadata retained',backend:{kind:'agent',tool:'claude_code',model:'old'},effort:'high',access:'ask',legacyLabel:'old custom label'};
 const record={id:'a',hostId:'mac',revision:7,name:'Null',style:'Saved legacy style',look:{seed:'saved-seed',color:'#aabbcc',shape:'legacy-shape'},profile,messages:[],tasks:[],projects:[]};
 function mount(overrides={}){
- const calls=[];const backend={sessionLoad:async()=>({profiles:[profile]}),detectAgents:async()=>[{key:'codex',found:true}],agentModels:async()=>[{id:'old',efforts:['low','high']},{id:'new',efforts:['low']}],supports:()=>false,...overrides.backend};
+ const calls=[];const backend={sessionLoad:async()=>({profiles:[profile]}),detectAgents:async()=>[{key:'claude_code',found:true}],agentModels:async()=>[{id:'old',efforts:['low','high']},{id:'new',efforts:['low']}],supports:()=>false,...overrides.backend};
  const lane={name:'Null',hostName:'Mac',assistant:record,offline:false,configureWorkspace:async input=>calls.push(input),...overrides.lane};
  const props={backend,lane,hostId:'mac',profiles:[profile],projects:[],...overrides,backend,lane:overrides.lane===undefined&&Object.hasOwn(overrides,'lane')?undefined:lane};
  const states=[],deps=[],queued=[],cleanups=[];let cursor=0;
@@ -53,7 +53,7 @@ test('a conflict changes no draft fields and retains the captured revision for e
  const h=mount({lane:{configureWorkspace:async()=>{throw new Error('Revision conflict; refresh and retry');}}});let tree=await h.ready();input(tree,'Assistant name').props.onChange({target:{value:'Keep my draft'}});await submit(h);tree=h.render();assert.equal(input(tree,'Assistant name').props.value,'Keep my draft');assert.match(text(tree),/Revision conflict/);assert.equal(record.name,'Null');
 });
 test('Memory and Settings are main-pane views with Back to the same conversation',()=>{
- const h=mount();const opened=[];const tree=h.workspace({lane:{name:'Null',hostName:'Mac'},section:'memory',onNavigate:s=>opened.push(s),onBack(){},conversation:'Retained conversation',editor:'Settings editor',projects:[]});assert.equal(find(tree,n=>n.props.className==='assistant-workspace-content').props.hidden,true);find(tree,n=>n.type==='button'&&text(n)==='← Back to Conversation').props.onClick();assert.deepEqual(opened,['conversation']);assert.equal(find(tree,n=>n.type===PersonalPanels).props.initial,'memory');
+ const h=mount();const opened=[];const tree=h.workspace({lane:{name:'Null',hostName:'Mac'},section:'memory',onNavigate:s=>opened.push(s),onBack(){},conversation:'Retained conversation',editor:'Settings editor',projects:[]});assert.equal(find(tree,n=>n.props.className==='assistant-workspace-content').props.hidden,true);find(tree,n=>n.type==='button'&&text(n)==='‹ Back to conversation').props.onClick();assert.deepEqual(opened,['conversation']);assert.equal(find(tree,n=>n.type===PersonalPanels).props.initial,'memory');
 });
 
 test('saved Keychain credentials are accepted and media models never enter the text picker',async()=>{
@@ -97,7 +97,7 @@ test('applied creation image previews use the captured draft owner and generatio
  for(const preview of all(tree,n=>n.type===Avatar)){assert.deepEqual(preview.props.draftImage,{owner:editor.props.owner,generationId:'gen'});assert.deepEqual(preview.props.image,image);}
 });
 test('cached CLI models cannot make a missing installation ready',async()=>{
- const h=mount({backend:{detectAgents:async()=>[{key:'codex',found:false,program:'codex',label:'Codex'}]}});const tree=await h.ready();assert.match(text(tree),/not installed/i);await submit(h);assert.equal(h.calls.length,0);
+ const h=mount({backend:{detectAgents:async()=>[{key:'claude_code',found:false,program:'claude',label:'Claude Code'}]}});const tree=await h.ready();assert.match(text(tree),/not installed/i);await submit(h);assert.equal(h.calls.length,0);
 });
 
 test('unproven changed folders retain their saved assignment and cannot add a duplicate binding',async()=>{
@@ -115,4 +115,29 @@ test('blank, relative and control-character folder boundaries block creation wit
  const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'Teammate'}});
  for(const folder of ['', 'relative/project','~somebody/project','/projects/\u0000invalid']){input(h.render(),'Allowed project folder').props.onChange({target:{value:folder}});await submit(h);assert.equal(created.length,0);assert.match(text(h.render()),/full path|home-relative/i);}
  input(h.render(),'Allowed project folder').props.onChange({target:{value:'~/Documents/work'}});await submit(h);assert.equal(created[0].folder,'~/Documents/work');
+});
+
+ test('creation offers only text providers accepted by the assistant host',async()=>{
+ const profiles=[
+  {...profile,id:'codex',display_name:'Codex',backend:{kind:'agent',tool:'codex'}},
+  {...profile,id:'grok',display_name:'Grok',backend:{kind:'agent',tool:'grok'}},
+  {...profile,id:'gemini',display_name:'Gemini',backend:{kind:'agent',tool:'gemini'}},
+  {...profile,id:'media',display_name:'Media',media:{kind:'image'},backend:{kind:'open_ai_compatible',base_url:'https://media.example/v1'}},
+  profile,
+  {...profile,id:'api',display_name:'Text API',backend:{kind:'open_ai_compatible',base_url:'https://text.example/v1'}},
+ ];
+ const h=mount({lane:undefined,backend:{sessionLoad:async()=>({profiles})}});
+ const tree=await h.ready();
+ const options=all(input(tree,'Assistant provider'),n=>n.type==='option').map(text);
+ assert.deepEqual(options,['Legacy · claude_code','Text API · api']);
+ assert.equal(input(tree,'Assistant model').props.disabled,false);
+ });
+
+test('workspace uses one identity header, status and a separate mockup tab strip',()=>{
+ const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'conversation',onNavigate(){},onBack(){},conversation:'chat',editor:'editor',projects:[]});
+ assert.ok(find(tree,n=>n.type===Avatar),'identity includes saved avatar');
+ assert.equal(all(tree,n=>n.type==='h1').length,1);
+ const tabs=find(tree,n=>n.props?.role==='tablist');assert.ok(tabs);
+ assert.deepEqual(all(tabs,n=>n.props?.role==='tab').map(text),['Conversation','Projects','Activity']);
+ assert.match(text(tree),/Ready/);
 });

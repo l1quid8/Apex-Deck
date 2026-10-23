@@ -320,7 +320,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   return (
     <aside ref={rail} className="rail" style={props.style} onScroll={hover.hide}>
       <div className="rail-sec"><span>Your team</span><button type="button" className="icon" aria-label="Add teammate" onClick={props.onCreateAssistant}>+</button></div>
-      {props.assistants?.map(assistant => { return <button type="button" key={assistantIdentityKey(assistant.ref)} className="assistant-team-row" aria-current={props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)?'page':undefined} onClick={()=>props.onOpenAssistant?.(assistant.ref)}><AssistantRowAvatar assistant={assistant} backend={props.assistantBackend?.(assistant.ref)}/><span>{assistant.name}</span><small>{assistant.offline?'Offline':assistant.hostName}</small></button>;})}
+      {props.assistants?.map(assistant => { return <button type="button" key={assistantIdentityKey(assistant.ref)} className="assistant-team-row" aria-current={props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)?'page':undefined} onClick={()=>props.onOpenAssistant?.(assistant.ref)}><AssistantRowAvatar assistant={assistant} backend={props.assistantBackend?.(assistant.ref)}/><span>{assistant.name}<span className="assistant-team-subtitle">Assistant · {assistant.offline?'Offline':assistant.status??'Ready'}</span></span><small>{assistant.hostName}</small></button>;})}
       {!props.assistants?.length && <p className="assistant-team-empty">{props.rosterProblem ?? 'No assistants yet.'}</p>}
       {lists.pinned.length > 0 && <>
         <div className="rail-sec" data-sec="pinned">Pinned</div>

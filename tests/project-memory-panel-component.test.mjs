@@ -27,13 +27,13 @@ function fixture() {
   return { lane, calls, handlers };
 }
 
-function mount(lane) {
+function mount(lane, props = {}) {
   const hooks = []; let cursor = 0, effects = [], currentLane = lane;
   const useState = initial => { const i = cursor++; if (!(i in hooks)) hooks[i] = typeof initial === 'function' ? initial() : initial; return [hooks[i], value => { hooks[i] = typeof value === 'function' ? value(hooks[i]) : value; }]; };
   const useRef = initial => { const i = cursor++; return hooks[i] ??= { current: initial }; };
   const useEffect = (effect, deps) => { const i = cursor++; const old = hooks[i]; if (!old || !deps || deps.some((value, index) => value !== old.deps?.[index])) { effects.push(() => { old?.cleanup?.(); hooks[i] = { deps, cleanup: effect() }; }); } };
   const component = new Function('React', 'useState', 'useEffect', 'useRef', 'assistantIdentityKey', 'projectIdentityKey', `${compiled}\nreturn ProjectMemoryPanel;`)(React, useState, useEffect, useRef, assistantIdentityKey, projectIdentityKey);
-  return { lane(value) { currentLane = value; }, render() { cursor = 0; effects = []; const tree = component({ lane: currentLane }); effects.forEach(effect => effect()); return tree; } };
+  return { lane(value) { currentLane = value; }, render() { cursor = 0; effects = []; const tree = component({ lane: currentLane, ...props }); effects.forEach(effect => effect()); return tree; } };
 }
 
 test('project notebook reads only its selected binding and exposes versions, provenance and read-only monitor sources', async () => {
@@ -102,4 +102,54 @@ test('switching projects during a save cannot leave the original project permane
   saving.resolve({ ...result().notes[0], author: null, source: {} }); await settle(); tree = h.render();
   find(tree, node => node.props?.['aria-label'] === 'Project notebook').props.onChange({ target: { value: projectIdentityKey(projectA) } }); h.render(); await settle(); tree = h.render();
   assert.equal(button(tree, 'Correct').props.disabled, false);
+});
+
+test('embedded notebook search and edit retain inspected project/version and source details', async () => {
+  const f = fixture();
+  const h = mount(f.lane, { embedded: true, selectedProject: projectB, notebookControl: React.createElement('select', { 'aria-label': 'Memory notebook' }) });
+  h.render(); await settle(); let tree = h.render();
+  assert.deepEqual(f.calls[0], ['project_memory_list', { assistant: f.lane.ref, project: projectB }]);
+  assert.match(textOf(tree), /Shared decision.*Version 3/s);
+  assert.equal(findAll(tree, node => node.type === 'select').length, 1);
+  find(tree, node => node.props?.['aria-label'] === 'Search notes').props.onChange({ target: { value: 'absent' } }); tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Shared decision/);
+  assert.match(textOf(tree), /No notes match your search/);
+  find(tree, node => node.props?.['aria-label'] === 'Search notes').props.onChange({ target: { value: '' } }); tree = h.render();
+  const record = find(tree, node => node.type === 'details' && textOf(node).startsWith('Record and source'));
+  assert.match(textOf(record), /note-1.*version 3.*task-7.*run-4/s);
+  assert.equal(record.props.open, false);
+  button(tree, 'Edit').props.onClick(); tree = h.render();
+  button(tree, 'Save correction').props.onClick(); await settle();
+  assert.deepEqual(f.calls.find(([command]) => command === 'project_memory_save')[1], { assistant: f.lane.ref, project: projectB, id: 'note-1', expectedVersion: 3, text: 'Shared decision', kind: 'decision' });
+});
+
+test('initialProject opens the requested assigned notebook instead of the first project', async () => {
+  const f = fixture();
+  const h = mount(f.lane, { initialProject: projectB });
+  h.render(); await settle(); const tree = h.render();
+  assert.deepEqual(f.calls[0], ['project_memory_list', { assistant: f.lane.ref, project: projectB }]);
+  assert.equal(find(tree, node => node.props?.['aria-label'] === 'Project notebook').props.value, projectIdentityKey(projectB));
+});
+
+test('embedded edit displays a freshly inspected saved note and keeps it searchable', async () => {
+  const f = fixture();
+  let durable = result(projectB);
+  f.handlers.project_memory_list = () => structuredClone(durable);
+  f.handlers.project_memory_save = args => {
+    assert.equal(args.expectedVersion, durable.notes[0].version);
+    durable.notes[0] = { ...durable.notes[0], text: args.text, version: args.expectedVersion + 1, updatedAt: 5000 };
+    return structuredClone(durable.notes[0]);
+  };
+  const h = mount(f.lane, { embedded: true, initialProject: projectB });
+  h.render(); await settle(); let tree = h.render();
+  button(tree, 'Edit').props.onClick(); tree = h.render();
+  find(tree, node => node.props?.['aria-label'] === 'Corrected project note').props.onChange({ target: { value: 'Reviewed release decision' } }); tree = h.render();
+  button(tree, 'Save correction').props.onClick(); await settle(); tree = h.render();
+  assert.match(textOf(tree), /Reviewed release decision.*Version 4/s);
+  assert.equal(f.calls.filter(([command]) => command === 'project_memory_list').length, 2, 'fresh inspection follows the durable save receipt');
+  find(tree, node => node.props?.['aria-label'] === 'Search notes').props.onChange({ target: { value: 'release' } }); tree = h.render();
+  assert.match(textOf(tree), /Reviewed release decision/);
+  const reopened = mount(f.lane, { embedded: true, initialProject: projectB });
+  reopened.render(); await settle();
+  assert.match(textOf(reopened.render()), /Reviewed release decision.*Version 4/s);
 });

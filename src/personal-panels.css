@@ -48,3 +48,52 @@ button.personal-panels-rowmain { cursor: pointer; }
   .personal-panels-body { padding-inline: 8px; }
 }
 .personal-panels h4 { margin: 12px 0 2px; }
+
+/* Main-pane assistant pages follow the apex-dot reference. Floating panels keep
+   their compact legacy rules above. */
+.personal-panels-embedded { min-height: 0; font-size: 12px; line-height: 1.65; }
+.personal-panels-embedded .personal-panels-body { max-height: none; overflow: visible; padding: 0; }
+.personal-panels-embedded .assistant-panel-page { max-width: 710px; margin: 0 auto; width: 100%; }
+.assistant-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 5px; }
+.personal-panels-embedded .assistant-panel-heading h2 { font-size: 15px; line-height: 1.5; margin: 0; font-weight: 600; }
+.assistant-panel-tag { border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.assistant-panel-subtitle { font-size: 11px; color: var(--muted); margin: 0 0 24px; }
+.personal-panels-embedded .assistant-memory-controls { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 19px; align-items: center; }
+.personal-panels-embedded .assistant-memory-controls select { flex: 1; min-width: 140px; padding: 7px 9px; background: var(--surface, var(--bg)); }
+.personal-panels-embedded button { padding: 5px 10px; font-size: 11px; }
+.personal-panels-embedded .assistant-memory-controls button,
+.personal-panels-embedded .personal-panels-inline button,
+.personal-panels-embedded .assistant-memory-title button { border: 1px solid var(--line); background: var(--surface, var(--bg)); border-radius: 7px; }
+.assistant-memory-scope-info { font-size: 11px; color: var(--muted); line-height: 1.7; margin: 0 0 12px; }
+.personal-panels-embedded .assistant-memory-search { width: 100%; height: 34px; background: var(--surface, var(--bg)); padding: 7px 11px; font-size: 11px; margin: 0 0 13px; }
+.personal-panels-embedded .assistant-memory-note { padding: 15px 0; gap: 0; border-bottom: 1px solid var(--line); }
+.personal-panels-embedded .assistant-memory-title { gap: 8px; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+.assistant-memory-title > span[aria-hidden] { color: var(--accent, #9bbba8); }
+.personal-panels-embedded .assistant-memory-title button { margin-left: auto; color: var(--accent, #9bbba8); font-weight: 400; }
+.assistant-memory-text { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.75; }
+.assistant-memory-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 10px; }
+.personal-panels-embedded .assistant-memory-record { margin-top: 10px; }
+.personal-panels-embedded .assistant-memory-record summary { font-size: 10px; }
+.personal-panels-embedded .assistant-memory-record .personal-panels-muted { font-size: 10px; line-height: 1.8; margin-top: 8px; }
+.personal-panels-embedded .assistant-memory-note > .personal-panels-actions { margin-top: 6px; }
+.personal-panels-embedded .assistant-memory-note > .personal-panels-actions button { padding: 0; font-size: 10px; color: var(--muted); }
+.personal-panels-embedded .assistant-notebook-inspection { margin: 0 0 8px; }
+.personal-panels-embedded .assistant-notebook-inspection summary { font-size: 10px; }
+.personal-panels-embedded .assistant-notebook-inspection p { font-size: 10px; }
+.assistant-panel-empty { color: var(--muted); font-size: 12px; padding: 24px 0; line-height: 1.8; }
+.assistant-activity-timeline { padding: 4px 0 0 13px; }
+.personal-panels-embedded .assistant-activity-item { position: relative; border: 0; border-left: 1px solid var(--line); padding: 0 0 25px 25px; gap: 4px; }
+.assistant-activity-item::before { content: ''; position: absolute; left: -4px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent, #9bbba8); }
+.assistant-activity-item time { font-size: 10px; color: var(--muted); display: block; }
+.personal-panels-embedded .assistant-activity-item > .personal-panels-rowmain { padding: 0; font-weight: 600; }
+.personal-panels-embedded .assistant-activity-item .personal-panels-muted { font-size: 11px; }
+.personal-panels-embedded .assistant-activity-item .personal-panels-actions { margin-top: 4px; }
+.personal-panels-embedded .assistant-activity-item .personal-panels-actions button { border: 1px solid var(--line); }
+.assistant-activity-receipt { padding: 10px 0; }
+.assistant-activity-receipt > span { color: var(--muted); font-size: 10px; }
+.personal-panels-embedded[data-panel='connections'] .personal-panels-body > h4 { font-size: 13px; color: var(--text); text-transform: none; letter-spacing: 0; margin: 25px 0 7px; padding-top: 18px; border-top: 1px solid var(--line); }
+.personal-panels-embedded[data-panel='connections'] .personal-panels-body > h4:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.personal-panels-embedded[data-panel='connections'] .personal-panels-body > p { margin: 6px 0 12px; font-size: 11px; line-height: 1.8; }
+.personal-panels-embedded .personal-panels-form input,
+.personal-panels-embedded .personal-panels-inline input { padding: 7px 9px; }
+.personal-panels-embedded .personal-panels-inline input { flex: 1; min-width: 130px; }

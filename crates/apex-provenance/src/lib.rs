@@ -470,6 +470,7 @@ pub fn protected(name: &str) -> bool {
             | "personal_avatar_generate"
             | "personal_avatar_cancel"
             | "personal_project_delegate"
+            | "personal_project_delegate_ui"
             | "personal_rule_add"
             | "personal_rule_remove"
             | "personal_machine_link"

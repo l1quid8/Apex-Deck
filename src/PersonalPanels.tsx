@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import type { AssistantTask } from './assistantTaskModel.ts';
+import type { ProjectRef } from './assistantIdentity.ts';
 import { PersonalBrowser } from './PersonalBrowser.tsx';
 import { ProjectMemoryPanel } from './ProjectMemoryPanel.tsx';
 import { CLASS_LABEL, MODE_LABEL, TASK_STATUS, type ActionMode, type ConnectorState, type CostEntry, type PersonalAssistantRecord, type PersonalLane, type PersonalSettings, type PersonalTask, type ToolClass } from './personalAssistant.ts';
@@ -97,9 +99,17 @@ function settingsPatch(a: PersonalAssistantRecord, d: Draft): Partial<PersonalSe
 }
 
 /** One panel for the personal assistant: tabs on top, one scrollable view below. */
-export function PersonalPanels({ lane, initial = 'activity', onClose, embedded = false }: { lane: PersonalLane; initial?: PanelName; onClose: () => void; embedded?: boolean }) {
+export type PersonalPanelsProps = { lane: PersonalLane; initial?: PanelName; initialProject?: ProjectRef; delegatedTasks?: AssistantTask[]; onClose: () => void; embedded?: boolean };
+
+export function PersonalPanels({ lane, initial = 'activity', initialProject, delegatedTasks = [], onClose, embedded = false }: PersonalPanelsProps) {
   const ownerKey = JSON.stringify([lane.ref?.hostId ?? lane.assistant?.hostId, lane.ref?.assistantId ?? lane.assistant?.id]);
   const [panel, setPanel] = useState<PanelName>(initial);
+  const [notebooks, setNotebooks] = useState<Record<string, string>>(initialProject ? { [ownerKey]: JSON.stringify([initialProject.hostId, initialProject.workspaceId, initialProject.cwd]) } : {});
+  const [memorySearches, setMemorySearches] = useState<Record<string, string>>({});
+  const [addingMemory, setAddingMemory] = useState<Record<string, boolean>>({});
+  const notebook = notebooks[ownerKey] ?? 'personal';
+  const memoryQuery = memorySearches[ownerKey] ?? '';
+  const showMemoryForm = !embedded || !!addingMemory[ownerKey];
   const [pending, setPending] = useState<Record<string, number | undefined>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const operation = useRef(0);
@@ -119,11 +129,20 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
   const [folder, setFolder] = useState('~/apex-assistant');
   const [githubToken, setGithubToken] = useState('');
   const [google, setGoogle] = useState({ clientId: '', clientSecret: '' });
-  const reloadConnectors = async () => { if (lane.connectors) setConnectors(await lane.connectors()); };
+  const connectorOwner = useRef(ownerKey);
+  connectorOwner.current = ownerKey;
+  const reloadConnectors = async () => {
+    if (!lane.connectors) return;
+    const result = await lane.connectors();
+    if (connectorOwner.current === ownerKey) setConnectors(result);
+  };
   useEffect(() => {
     if (panel !== 'connections' || !lane.connectors) return;
-    lane.connectors().then(setConnectors).catch(() => undefined);
-  }, [panel]);
+    let cancelled = false;
+    setConnectors([]);
+    lane.connectors().then(result => { if (!cancelled && connectorOwner.current === ownerKey) setConnectors(result); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [panel, ownerKey, lane.connectors]);
 
   const a = lane.assistant;
   const locked = busy || lane.offline;
@@ -151,7 +170,8 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
     const unsettled = !SETTLED.includes(task.status);
     const wait = waitText(task.wait);
     return (
-      <div className="personal-panels-row" key={task.id}>
+      <div className={embedded ? 'personal-panels-row assistant-activity-item' : 'personal-panels-row'} key={task.id}>
+        {embedded && <time dateTime={new Date(task.updatedAt).toISOString()}>{when(task.updatedAt)}</time>}
         <button type="button" className="personal-panels-rowmain" aria-expanded={expanded} onClick={() => setOpenTask(expanded ? null : task.id)}>
           <span className="personal-panels-goal">{task.goal}</span>
           <span className="personal-panels-chip" data-status={task.status}>{TASK_STATUS[task.status]}</span>
@@ -163,7 +183,11 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
           {wait && <span> · {wait}</span>}
         </div>
         {unsettled && <div className="personal-panels-actions"><button type="button" disabled={locked} onClick={() => void run(() => lane.cancel(task.id))}>Stop task</button></div>}
-        {expanded && <pre>{receipt?.outputExcerpt.trim() ? receipt.outputExcerpt : receipt?.finishedAt ? 'It printed nothing.' : 'No output yet.'}</pre>}
+        {expanded && <>
+          {embedded && <p className="personal-panels-muted">{lane.name} · {task.targetHost} · Task {task.id}</p>}
+          <pre>{receipt?.outputExcerpt.trim() ? receipt.outputExcerpt : receipt?.finishedAt ? 'It printed nothing.' : 'No output yet.'}</pre>
+          {embedded && task.receipts.length > 0 && <details><summary>Run history · {task.receipts.length}</summary>{task.receipts.map((run, index) => <div className="assistant-activity-receipt" key={`${run.opId}-${index}`}><time>{when(run.finishedAt ?? run.startedAt)}</time><span>{run.phase} · {run.opId}</span><pre>{run.outputExcerpt || 'No output recorded.'}</pre></div>)}</details>}
+        </>}
       </div>
     );
   };
@@ -175,6 +199,28 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
       ['In progress', tasks.filter((task) => ACTIVE.includes(task.status))],
       ['Finished', tasks.filter((task) => SETTLED.includes(task.status)).slice(0, 20)],
     ];
+    const projectTasks = delegatedTasks.filter(task => task.lineage?.assistant.hostId === rec.hostId && task.lineage.assistant.assistantId === rec.id);
+    const delegatedRow = (task: AssistantTask) => {
+      const project = task.lineage!.project;
+      const status = task.desiredState === 'paused' ? 'Paused' : task.status.replaceAll('_', ' ').replace(/^./, letter => letter.toUpperCase());
+      const history = [...(task.resultData?.taskHistory ?? [])].sort((left, right) => right.atMs - left.atMs);
+      return <article className="personal-panels-row assistant-activity-item" key={`project:${project.hostId}:${project.workspaceId}:${task.id}`} data-activity-source="project">
+        <time dateTime={new Date(task.updatedAtMs).toISOString()}>{when(task.updatedAtMs)}</time>
+        <div className="personal-panels-rowmain"><strong className="personal-panels-goal">{task.brief}</strong><span className="personal-panels-chip" data-status={task.status}>{status}</span></div>
+        <div className="personal-panels-muted">{rec.name} → {task.workers.join(', ') || 'Worker not selected'} · {project.cwd.split('/').filter(Boolean).pop()} · {project.hostId}</div>
+        <details><summary>Task history{history.length > 0 ? ` · ${history.length}` : ''}</summary>
+          <p className="personal-panels-muted">Task {task.id} · revision {task.revision} · {project.cwd}</p>
+          {history.length ? history.map((entry, index) => <div className="assistant-activity-receipt" key={`${entry.atMs}-${index}`}><time dateTime={new Date(entry.atMs).toISOString()}>{when(entry.atMs)}</time><span>{entry.text}</span></div>) : <p className="personal-panels-muted">No task history reported by this host.</p>}
+          {task.result && <pre>{task.result}</pre>}
+        </details>
+      </article>;
+    };
+    const timeline = [...tasks.map(task => ({ at: task.updatedAt, node: waitingRow(task) })), ...projectTasks.map(task => ({ at: task.updatedAtMs, node: delegatedRow(task) }))].sort((left, right) => right.at - left.at);
+    if (embedded) return <section className="assistant-panel-page">
+      <div className="assistant-panel-heading"><h2>What {rec.name} has been doing</h2><span className="assistant-panel-tag">{timeline.length} tasks</span></div>
+      <p className="assistant-panel-subtitle">Assignments, updates, and decisions for {rec.name} on {lane.hostName}.</p>
+      <div className="assistant-activity-timeline">{timeline.length ? timeline.map(item => item.node) : <p className="assistant-panel-empty">No activity yet. Give {rec.name} a task in the conversation to get started.</p>}</div>
+    </section>;
     if (!tasks.length) return <p className="personal-panels-muted">No tasks yet.</p>;
     return groups.filter(([, list]) => list.length).map(([title, list]) => (
       <section key={title}><h4>{title}</h4>{list.map(waitingRow)}</section>
@@ -197,14 +243,34 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
   };
 
   const memoryView = (rec: PersonalAssistantRecord) => {
+    const FactRecord = embedded ? 'details' : 'div';
     const facts = rec.facts ?? [];
     const live = facts.filter((fact) => !fact.deletedAt && !fact.supersededBy && !(fact.expiresAt && fact.expiresAt <= now));
+    const visible = live.filter(fact => !embedded || `${fact.text} ${fact.kind}`.toLowerCase().includes(memoryQuery.trim().toLowerCase()));
+    const projects = rec.projects ?? [];
+    const bindingKey = (project: { hostId: string; workspaceId: string; cwd: string }) => JSON.stringify([project.hostId, project.workspaceId, project.cwd]);
+    const selectedProject = projects.find(binding => bindingKey(binding.project) === notebook);
+    const notebookControl = <select aria-label="Memory notebook" value={selectedProject ? notebook : 'personal'} onChange={event => {
+      setNotebooks(before => ({ ...before, [ownerKey]: event.target.value }));
+      setMemorySearches(before => ({ ...before, [ownerKey]: '' }));
+      setAddingMemory(before => ({ ...before, [ownerKey]: false }));
+    }}><option value="personal">{rec.name}’s personal notes</option>{projects.map(binding => <option key={bindingKey(binding.project)} value={bindingKey(binding.project)}>Project · {binding.project.cwd.split('/').filter(Boolean).pop() ?? binding.project.cwd} · {binding.project.hostId}</option>)}</select>;
+    if (embedded && selectedProject) return <section className="assistant-panel-page">
+      <div className="assistant-panel-heading"><h2>{selectedProject.project.cwd.split('/').filter(Boolean).pop()} notebook</h2><span className="assistant-panel-tag">Shared project</span></div>
+      <p className="assistant-panel-subtitle">Personal notes stay with the assistant. Project notebooks are shared only within that project.</p>
+      <ProjectMemoryPanel key={JSON.stringify([rec.hostId, rec.id])} lane={lane} embedded initialProject={selectedProject.project} selectedProject={selectedProject.project} notebookControl={notebookControl} />
+    </section>;
     const older = facts.filter((fact) => !fact.deletedAt && fact.supersededBy);
     return (
-      <>
-        <h4>Private assistant memory</h4>
-        <p className="personal-panels-muted">Private to {rec.name} on {lane.hostName}. Saved assistant revision {rec.revision}; these facts are separate from shared project notes.</p>
-        {lane.remember && (
+      <section className={embedded ? "assistant-panel-page" : undefined}>
+        {embedded ? <>
+          <div className="assistant-panel-heading"><h2>{rec.name}’s memory</h2><span className="assistant-panel-tag">Personal notes</span></div>
+          <p className="assistant-panel-subtitle">Personal notes stay with the assistant. Project notebooks are shared only within that project.</p>
+          <div className="assistant-memory-controls">{notebookControl}{lane.remember && <button type="button" disabled={locked} onClick={() => setAddingMemory(before => ({ ...before, [ownerKey]: !showMemoryForm }))}>＋ Add note</button>}</div>
+          <p className="assistant-memory-scope-info">Private to {rec.name} on {lane.hostName}. Other assistants have separate personal notes.</p>
+          <input className="assistant-memory-search" type="search" aria-label="Search notes" placeholder="Search saved notes…" value={memoryQuery} onChange={event => setMemorySearches(before => ({ ...before, [ownerKey]: event.target.value }))} />
+        </> : <><h4>Private assistant memory</h4><p className="personal-panels-muted">Private to {rec.name} on {lane.hostName}. Saved assistant revision {rec.revision}; these facts are separate from shared project notes.</p></>}
+        {lane.remember && showMemoryForm && (
           <form className="personal-panels-inline" onSubmit={(event) => {
             event.preventDefault();
             const text = memoryText.trim();
@@ -219,9 +285,9 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
             <button type="submit" disabled={locked || !memoryText.trim()}>Remember</button>
           </form>
         )}
-        {!live.length && <p className="personal-panels-muted">Nothing remembered yet.</p>}
-        {live.map((fact) => (
-          <div className="personal-panels-row" key={fact.id}>
+        {!visible.length && <p className="personal-panels-muted assistant-panel-empty">{live.length ? 'No notes match your search.' : 'Nothing remembered yet. Add a note to get started.'}</p>}
+        {visible.map((fact) => (
+          <div className={embedded ? "personal-panels-row assistant-memory-note" : "personal-panels-row"} key={fact.id}>
             {editing?.id === fact.id ? (
               <div className="personal-panels-inline">
                 <input aria-label="Corrected fact" value={editing.text} onChange={(event) => setEditing({ ...editing, text: event.target.value })} />
@@ -235,17 +301,20 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
                 <button type="button" onClick={() => setEditing(null)}>Cancel</button>
               </div>
             ) : (
-              <div className="personal-panels-rowmain"><span className="personal-panels-goal">{fact.text}</span></div>
+              <div className="personal-panels-rowmain assistant-memory-title">{embedded && <span aria-hidden="true">▤</span>}<span className="personal-panels-goal">{embedded ? fact.kind[0].toUpperCase() + fact.kind.slice(1) : fact.text}</span>{embedded && lane.correctFact && <button type="button" disabled={locked} onClick={() => { const correct = lane.correctFact!; setEditing({ id: fact.id, text: fact.text, save: text => correct(fact.id, text) }); }}>Edit</button>}</div>
             )}
-            <div className="personal-panels-muted">
+            {embedded && <p className="assistant-memory-text">{fact.text}</p>}
+            {embedded && <div className="assistant-memory-meta"><span>Personal · {rec.name}</span><span>Revision {rec.revision} · {dayOf(fact.createdAt)}</span></div>}
+            <FactRecord className={embedded ? "assistant-memory-record" : "personal-memory-record"}>{embedded && <summary>Record and source</summary>}<div className="personal-panels-muted">
               {fact.kind} · {fact.explicit ? 'You said' : 'Inferred'}{!fact.explicit && ` · ${fact.confidence}%`} · {dayOf(fact.createdAt)}
               <br />{fact.id} · revision {rec.revision} · created {when(fact.createdAt)}
               {fact.source.messageId && <> · message {fact.source.messageId}</>}{fact.source.taskId && <> · task {fact.source.taskId}</>}
               {fact.expiresAt !== undefined && <> · expires {when(fact.expiresAt)}</>}
             </div>
+            </FactRecord>
             {editing?.id !== fact.id && (
               <div className="personal-panels-actions">
-                {lane.correctFact && <button type="button" disabled={locked} onClick={() => {
+                {!embedded && lane.correctFact && <button type="button" disabled={locked} onClick={() => {
                   const correct = lane.correctFact!;
                   setEditing({ id: fact.id, text: fact.text, save: text => correct(fact.id, text) });
                 }}>Correct</button>}
@@ -263,8 +332,8 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
             <ul>{older.map((fact) => <li key={fact.id} className="personal-panels-muted personal-panels-struck">{fact.text}</li>)}</ul>
           </details>
         )}
-        <ProjectMemoryPanel key={JSON.stringify([rec.hostId, rec.id])} lane={lane} />
-      </>
+        {!embedded && <ProjectMemoryPanel key={JSON.stringify([rec.hostId, rec.id])} lane={lane} initialProject={initialProject} />}
+      </section>
     );
   };
 
@@ -502,7 +571,7 @@ export function PersonalPanels({ lane, initial = 'activity', onClose, embedded =
   };
 
   return (
-    <div className="personal-panels">
+    <div className={`personal-panels${embedded ? " personal-panels-embedded" : ""}`} data-panel={panel}>
       {!embedded && <div className="personal-panels-head">
         <strong>{lane.name}</strong>
         <span className="personal-panels-muted">{lane.hostName}</span>

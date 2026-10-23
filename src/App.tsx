@@ -30,7 +30,9 @@ import { ApexAgentTasks } from "./lazyViews";
 import { overviewOwner, overviewOwnerKey, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
 import { usePersonalAssistants } from "./usePersonalAssistants";
-import { AssistantWorkspace, AssistantEditor } from "./AssistantWorkspace";
+import { AssistantProjects } from './AssistantProjects';
+import { AssistantCreationDialog } from './AssistantCreationDialog';
+import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
 import { rosterMessage, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
@@ -68,7 +70,7 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
-import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
+import { taskBelongsToAssistant, assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { unsavedEditName } from "./unsavedEdits";
@@ -168,6 +170,7 @@ export function App() {
   const [mainView, setMainView] = useState<MainView>({kind:"workspace"});
   const [assistantProjectAliases,setAssistantProjectAliases]=useState<Record<string,{route:Backend;project:ProjectRef}>>({});
   const [creatingAssistant, setCreatingAssistant] = useState(false);
+  const [assistantNotebookProject,setAssistantNotebookProject]=useState<ProjectRef>();
   const [creationHost, setCreationHost] = useState("local");
   /** Bumped by the title bar's + New agent button. */
   const [newAgentRequest, setNewAgentRequest] = useState(0);
@@ -1924,6 +1927,7 @@ export function App() {
   };
   const navigateAssistant = (section:AssistantSection) => setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
+  const selectedDelegatedTasks = selectedAssistant?.ref ? Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.tasks.filter(task=>taskBelongsToAssistant(task,selectedAssistant.ref!)&&assignedProjects.some(binding=>task.lineage?.project.hostId===binding.project.hostId&&task.lineage.project.workspaceId===binding.project.workspaceId&&task.lineage.project.cwd===binding.project.cwd))??[]) : [];
   // Only ambiguous assignments need an owning-host folder read; no global scan or polling.
   const aliasCandidates=assignedProjects.flatMap(binding=>workspaces.filter(workspace=>!workspace.hidden&&workspace.id===binding.project.workspaceId&&workspace.path!==binding.project.cwd&&authenticatedProjectHost(workspaceHost(workspace))===binding.project.hostId&&!snapshotProjectForWorkspace(workspace)).map(workspace=>({workspace,project:binding.project})));
   const aliasCandidatesKey=JSON.stringify(aliasCandidates.map(({workspace,project})=>[projectAliasKey(workspace,project.hostId),project.cwd]));
@@ -2387,7 +2391,7 @@ export function App() {
   );
 
   return (
-    <div className="app">
+    <div className={`app${mainView.kind==='assistant'||creatingAssistant?' assistant-active':''}`}>
       <header className="titlebar">
         {/* Three groups: the two sides take equal room, so the section tabs sit at the centre. */}
         <div className="titlebar-start">
@@ -2590,9 +2594,40 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
           </div>
-          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)} onBack={()=>setMainView({kind:'workspace'})} projects={assignedProjects} onOpenProject={openAssistantProject} projectUnavailable={projectUnavailable}
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} onAddAssistant={()=>setCreatingAssistant(true)} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)} onBack={()=>setMainView({kind:'workspace'})} projects={assignedProjects} onOpenProject={openAssistantProject} projectUnavailable={projectUnavailable}
+            memoryProject={assistantNotebookProject}
+            projectView={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
+              onEnsureCoordinator={async(project)=>{
+                const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
+                if(!workspace||!selectedAssistant.assistant?.profile)throw new Error('Reconnect the assigned project before delegating.');
+                const routeHostId=workspaceHost(workspace);const route=hostBackend(routeHostId);
+                let monitor=await route.call<ProjectMonitor|null>('monitor_get',{workspaceId:workspace.id});
+                if(!monitor)monitor=await route.call<ProjectMonitor>('monitor_assign',{workspaceId:workspace.id,cwd:project.cwd,hostId:routeHostId,text:`Coordinate work for ${workspace.name}.`,files:[],threads:[],profile:selectedAssistant.assistant.profile,onlyIfAbsent:true});
+                if(!monitor||monitor.workspaceId!==project.workspaceId||monitor.hostId!==routeHostId)throw new Error('The project coordinator returned a different owner.');
+                const owner={workspaceId:monitor.workspaceId,cwd:monitor.cwd,hostId:monitor.hostId,conversationId:monitor.conversationId};
+                const snapshot=await route.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner});
+                if(!snapshot.project||snapshot.project.hostId!==project.hostId||snapshot.project.workspaceId!==project.workspaceId||snapshot.project.cwd!==project.cwd)throw new Error('The project coordinator returned a different folder.');
+                setAssistantOwners(state=>({...state,[owner.workspaceId]:owner}));
+                setAssistantRegistry(state=>reduceAssistantSnapshot(state,owner,snapshot,Date.now(),project.hostId));
+                return {project,owner,snapshot};
+              }}
+              onCreateWorkerThread={async(project,profile)=>{
+                const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
+                if(!workspace)throw new Error('Reconnect this project before choosing a worker.');
+                const route=hostBackend(workspaceHost(workspace));const threadId=newId('pane');
+                await route.roomCreate(threadId,[profile],settings.newThread,project.cwd);
+                setPanes(list=>[...list,{id:threadId,workspaceId:workspace.id,kind:'chat',title:`${profile.display_name} · ${selectedAssistant.name}`,started:true,participants:[profile],options:settings.newThread}]);
+                return threadId;
+              }}
+              projects={assignedProjects.map(binding=>({project:binding.project,name:workspaces.find(workspace=>workspace.id===binding.project.workspaceId)?.name??binding.project.cwd.split('/').at(-1)??'Project',unavailable:projectUnavailable(binding.project)}))}
+              availableProjects={workspaces.filter(workspace=>!workspace.hidden&&workspaceHost(workspace)===assistantHost?.routeHostId).flatMap(workspace=>{const project=canonicalProjectForWorkspace(workspace);return project?[{project,name:workspace.name}]:[];})}
+              taskScopes={Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.project&&assignedProjects.some(binding=>binding.project.hostId===entry.snapshot?.project?.hostId&&binding.project.workspaceId===entry.snapshot?.project?.workspaceId&&binding.project.cwd===entry.snapshot?.project?.cwd)?[{project:entry.snapshot.project,owner:entry.owner,snapshot:entry.snapshot}]:[])}
+              onOpenProject={openAssistantProject}
+              onOpenNotebook={project=>{setAssistantNotebookProject(project);navigateAssistant('memory');}}
+              onOpenThread={(project,id)=>{const pane=viewPanes.find(pane=>pane.id===id&&pane.workspaceId===project.workspaceId);if(pane){focusPane(pane);setMainView({kind:'workspace'});}}}
+            />:undefined}
             editor={assistantBackend ? <AssistantEditor key={assistantIdentityKey(mainView.assistant)} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;})} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
-            conversation={<ApexAgentAll key={selectedAssistant.draftKey} draftKey={selectedAssistant.draftKey} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={navigateAssistant} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
+            conversation={<ApexAgentAll key={selectedAssistant.draftKey} draftKey={selectedAssistant.draftKey} assistantAvatar={<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={navigateAssistant} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
             offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence}  overviewEntries={[]} personal={selectedAssistant}
             taskContext={assistantTaskContext && scopedAssistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
             tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, scopedAssistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
@@ -2626,7 +2661,7 @@ export function App() {
             })]}
             />} />}
           {mainView.kind==='assistant' && !selectedAssistant && <div className="picker"><p role="status">This assistant is unavailable. Refresh or reconnect its machine.</p><button onClick={()=>setMainView({kind:'workspace'})}>Back to Workspaces</button></div>}
-          {creatingAssistant && <div className="assistant-creation"><div className="assistant-creation-host"><button onClick={()=>setCreatingAssistant(false)}>← Back</button><label>Machine <select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label></div>{(()=>{const host=assistants.hosts.find(host=>host.routeHostId===creationHost);return host?.hostId ? <AssistantEditor key={host.hostId} backend={hostBackend(host.routeHostId)} profiles={profiles} disabledProviders={disabledProviders} hostId={host.hostId} projects={[]} onCreate={input=>assistants.create(host.routeHostId,input)} onSaved={ref=>{if(ref)openAssistant(ref);}}/>:<p role="status">Connect a machine with assistant workspace support to create a teammate.</p>;})()}</div>}
+          {creatingAssistant && <AssistantCreationDialog onClose={()=>setCreatingAssistant(false)}><div className="assistant-creation-host"><label>Machine <select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label></div>{(()=>{const host=assistants.hosts.find(host=>host.routeHostId===creationHost);return host?.hostId ? <AssistantEditor key={host.hostId} backend={hostBackend(host.routeHostId)} profiles={profiles} disabledProviders={disabledProviders} hostId={host.hostId} projects={[]} onCreate={input=>assistants.create(host.routeHostId,input)} onSaved={ref=>{if(ref)openAssistant(ref);}}/>:<p role="status">Connect a machine with assistant workspace support to create a teammate.</p>;})()}</AssistantCreationDialog>}
         {apexAgentWorkspace && typeof apexAgentWorkspace!=='string' && !apexWorkspace && <aside className="assistant-source-view"><p role="alert">This exact project is unavailable. Reconnect its machine or restore its assigned folder.</p><button onClick={closeApexAgentAndReturnFocus}>Back</button></aside>}
         {apexWorkspace && <aside className="assistant-source-view" aria-label={`ApexAgent for ${apexWorkspace.name}`}>
           {apexAgentBackend

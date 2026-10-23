@@ -230,6 +230,39 @@ impl crate::host::Host {
         })
     }
 
+    /// The explicit delegation form supplies its own human authorization. Keep
+    /// that event Done so the personal model never also processes the brief.
+    /// Retries keep the same event and the ordinary delegation receipt.
+    pub(crate) fn personal_project_delegate_ui(&self, mut input: DelegationInput) -> Result<Value, String> {
+        if !input.source_event_id.is_empty() { return Err("UI delegation records its own human request.".into()); }
+        let assistant = self.personal_get(&input.assistant_id)?;
+        let binding = assistant.projects.iter().find(|b| b.project == input.project).ok_or("Project is not assigned.")?;
+        if self.validate_project_binding(&assistant, binding.clone())?.project != input.project { return Err("Project path is no longer canonical.".into()); }
+        let monitor = self.monitor_get(&input.project.workspace_id)?.ok_or("Project assignment is unavailable.")?;
+        let owner = TaskOwner { workspace_id:monitor.workspace_id.clone(),cwd:monitor.cwd.clone(),host_id:monitor.host_id.clone(),conversation_id:monitor.conversation_id.clone() };
+        let request_id = format!("ui-delegation:{}", input.delegation_id);
+        let event_id = self.change_assistant(&input.assistant_id, |current| {
+            if let Some(event) = current.events.iter().find(|event| event.request_id == request_id) {
+                if event.source != (EventSource::Human {text:input.brief.clone()}) || event.state != crate::personal::EventState::Done { return Err("Delegation ID already belongs to another human request.".into()); }
+                return Ok(event.id.clone());
+            }
+            if current.revision != input.expected_revision { return Err("This assistant changed since the plan was read. Open it again.".into()); }
+            let mut draft = current.clone();
+            draft.counters.event += 1;
+            let event_id = format!("pe-{}", draft.counters.event);
+            let event = PersonalEvent { id:event_id.clone(),request_id:request_id.clone(),source:EventSource::Human {text:input.brief.clone()},received_at:crate::personal::now(),state:crate::personal::EventState::Done,attempts:0,error:None,spend_approved:false };
+            draft.post("human", "chat", input.brief.clone(), None, Some(event_id.clone()), event.received_at);
+            draft.events.push(event.clone());
+            let mut checked = input.clone(); checked.source_event_id=event_id.clone();
+            plan_delegation(&draft, &checked, &event, owner.clone(), monitor.revision)?;
+            *current = draft;
+            Ok(event_id)
+        })?;
+        input.source_event_id=event_id;
+        input.expected_revision=self.personal_get(&input.assistant_id)?.revision;
+        self.prepare_personal_delegation(input)
+    }
+
     /// Record a delegation as a durable proposal. Never dispatches.
     pub async fn personal_project_delegate(
         self: &std::sync::Arc<Self>,

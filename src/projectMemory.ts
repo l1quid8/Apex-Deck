@@ -13,7 +13,13 @@ export type ProjectMemorySource = { id: string; text: string; kind: string; read
 export type ProjectMemoryRead = { project: ProjectRef; notes: ProjectNote[]; sources: ProjectMemorySource[]; readAt: number };
 export type ProjectMemorySave = { project: ProjectRef; id?: string; expectedVersion?: number; text: string; kind: ProjectNoteKind; expiresAt?: number };
 export type ProjectMemoryForget = { project: ProjectRef; id: string; expectedVersion: number };
+export type ProjectScratchInput = { project: ProjectRef; taskId: string; attempt: number; runId: string; expectedTaskRevision: number; text: string; kind: ProjectNoteKind };
+export type ProjectScratch = ProjectScratchInput & { id: string; assistant: AssistantRef; createdAt: number; expiresAt: number };
+export type ProjectPromotionInput = Pick<ProjectScratchInput, 'project' | 'taskId' | 'attempt' | 'runId' | 'expectedTaskRevision'> & { id: string; promotionId: string; expectedVersion?: number };
+export type ProjectPromotionReceipt = { project: ProjectRef; assistant: AssistantRef; taskId: string; attempt: number; runId: string; scratchId: string; expectedTaskRevision: number; promotionId: string; noteId: string; noteVersion: number; promotedAt: number };
 export type ProjectMemoryApi = {
+  stage?(input: ProjectScratchInput): Promise<ProjectScratch>;
+  promote?(input: ProjectPromotionInput): Promise<ProjectPromotionReceipt>;
   /** Explains unavailable reads without probing a host or issuing a mutation. */
   unavailable(project: ProjectRef): string | undefined;
   list(project: ProjectRef): Promise<ProjectMemoryRead>;
@@ -85,6 +91,22 @@ export function createProjectMemoryClient({ assistant: owner, route, assertAvail
       const result = await route.call<ProjectNote>("project_memory_save", args);
       need(project);
       return checkNote(result, project);
+    },
+    stage: async input => {
+      const project = capturedProject(input.project); need(project);
+      if (!nonempty(input.taskId) || !nonempty(input.runId) || !version(input.attempt) || !version(input.expectedTaskRevision) || !nonempty(input.text) || !kinds.has(input.kind)) throw new Error("Choose a completed result excerpt with its inspected task revision and attempt.");
+      const result = await route.call<ProjectScratch>("project_memory_stage", {assistant:{...assistant},project,taskId:input.taskId,attempt:input.attempt,runId:input.runId,expectedTaskRevision:input.expectedTaskRevision,text:input.text.trim(),kind:input.kind});
+      need(project);
+      if (!result || projectIdentityKey(result.project)!==projectIdentityKey(project) || assistantIdentityKey(result.assistant)!==assistantIdentityKey(assistant) || !nonempty(result.id) || result.taskId!==input.taskId || result.runId!==input.runId || result.attempt!==input.attempt || result.expectedTaskRevision!==input.expectedTaskRevision || result.text!==input.text.trim()) throw new Error("The host returned scratch evidence for a different task or revision.");
+      return structuredClone(result);
+    },
+    promote: async input => {
+      const project = capturedProject(input.project); need(project);
+      if (!nonempty(input.id) || !nonempty(input.promotionId) || !nonempty(input.taskId) || !nonempty(input.runId) || !version(input.attempt) || !version(input.expectedTaskRevision) || (input.expectedVersion!==undefined&&!version(input.expectedVersion))) throw new Error("Review the staged note and its task revision before saving.");
+      const result = await route.call<ProjectPromotionReceipt>("project_memory_promote", {assistant:{...assistant},project,taskId:input.taskId,attempt:input.attempt,runId:input.runId,scratchId:input.id,expectedTaskRevision:input.expectedTaskRevision,promotionId:input.promotionId,...(input.expectedVersion===undefined?{}:{expectedVersion:input.expectedVersion})});
+      need(project);
+      if (!result || projectIdentityKey(result.project)!==projectIdentityKey(project) || assistantIdentityKey(result.assistant)!==assistantIdentityKey(assistant) || result.taskId!==input.taskId || result.runId!==input.runId || result.attempt!==input.attempt || result.scratchId!==input.id || result.expectedTaskRevision!==input.expectedTaskRevision || result.promotionId!==input.promotionId || !nonempty(result.noteId) || !version(result.noteVersion)) throw new Error("The host returned a promotion receipt for different evidence.");
+      return structuredClone(result);
     },
     forget: async input => {
       const project = capturedProject(input.project); need(project);

@@ -963,8 +963,11 @@ test('embedded assistant work brief keeps its owner despite newer project activi
  assert.equal(calls[0][0],'send');assert.match(calls[0][1],/coordinate the release/);assert.equal(h.replies.length,0);assert.equal(lane.assistant.messages[0].id,'owned-human');
 });
 
-test('embedded memory and settings menu navigate main canvas without opening a floating panel', () => {
- const sections=[];const {lane}=personalLane([],[]);const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[],onNavigatePanel:section=>sections.push(section)});
- for(const name of ['Memory','Assistant settings'])find(h.render(),node=>node.type==='button'&&node.props.role==='menuitem'&&textOf(node)===name).props.onClick({currentTarget:null});
- assert.deepEqual(sections,['memory','settings']);assert.equal(find(h.render(),node=>node.type===PersonalPanelsStub),null);
+test('embedded conversation delegates navigation to the workspace shell without duplicate header or tabs', () => {
+ const {lane}=personalLane([],[]);const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[]});
+ const tree=h.render();
+ assert.equal(find(tree,n=>n.type==='header'),null);
+ assert.equal(find(tree,n=>n.props?.role==='tablist'),null);
+ assert.equal(find(tree,n=>n.type===PersonalPanelsStub),null);
+ assert.ok(find(tree,n=>n.type==='textarea'));
 });
