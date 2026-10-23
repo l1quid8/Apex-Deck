@@ -17,11 +17,13 @@ export type AssistantProjectsProps = {
   /** Inside the Work view: no intro, stats or filter, which Work already shows. */
   compact?: boolean;
   /** A task Work asked to open. */
-  focusTask?: { project: ProjectRef; taskId: string } | null;
+  focusTask?: { project: ProjectRef; taskId: string; nonce: number } | null;
+  /** Called once the focused task is open, so the same focus never reopens it. */
+  onFocusHandled?: () => void;
 };
 const id = () => crypto.randomUUID();
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
-export function AssistantProjects({lane,backend,projects,availableProjects=projects,unavailableProjects=[],taskScopes,profiles=[],onEnsureCoordinator,onCreateWorkerThread,onOpenProject,onOpenNotebook,onOpenThread,compact=false,focusTask=null}: AssistantProjectsProps) {
+export function AssistantProjects({lane,backend,projects,availableProjects=projects,unavailableProjects=[],taskScopes,profiles=[],onEnsureCoordinator,onCreateWorkerThread,onOpenProject,onOpenNotebook,onOpenThread,compact=false,focusTask=null,onFocusHandled}: AssistantProjectsProps) {
   const record = lane.assistant;
   const [dynamic,setDynamic] = useState<{ownerKey:string;scopes:AssistantProjectScope[]}>({ownerKey:'',scopes:[]});
   const [reviewRevision,setReviewRevision] = useState<number|null>(null);
@@ -75,7 +77,9 @@ export function AssistantProjects({lane,backend,projects,availableProjects=proje
     if(token===generation.current&&current.current.ownerKey===ownerKey&&current.current.backend===backend){setSnapshots(loaded);setErrors(failures);}
   }
   useEffect(()=>{setSelected(null);setDialog(null);setError('');setBusy(false);setPendingFolder(null);setGrantRecord(null);},[ownerKey,backend]);
-  useEffect(()=>{if(focusTask)setSelected({project:focusTask.project,taskId:focusTask.taskId});},[focusTask?.taskId,focusTask?.project.cwd]);
+  // Work's Review goes through openTask so the previous task's review state never carries over.
+  const focusSnapshot=focusTask?snapshots[projectIdentityKey(focusTask.project)]:undefined;
+  useEffect(()=>{if(!focusTask)return;const task=focusSnapshot?.tasks.find(item=>item.id===focusTask.taskId);if(!task)return;openTask(focusTask.project,task);onFocusHandled?.();},[focusTask?.nonce,focusSnapshot]);
   useEffect(()=>{void refresh();let stop:(()=>void)|undefined;let active=true;
     if(backend.onAssistantTasksChanged) void backend.onAssistantTasksChanged(()=>{if(active)void refresh();}).then(unlisten=>{if(active)stop=unlisten;else unlisten();}).catch(()=>{});
     return()=>{active=false;generation.current++;stop?.();};

@@ -22,10 +22,10 @@ function harness(extra={},initialTask=null,routingThreads=[]){
   const hooks={useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return [states[i],next=>{states[i]=typeof next==='function'?next(states[i]):next;}];},useRef(initial){const i=cursor++;return refs[i]??={current:initial};},useEffect(fn,deps){const i=cursor++,before=effects[i];if(!before||deps.some((value,index)=>!Object.is(value,before.deps[index])))effects[i]={fn,deps,changed:true,cleanup:before?.cleanup};}};
   const deps={...identity,...model,...tasks};
   const component=new Function('React',...Object.keys(hooks),...Object.keys(deps),`${compiled};return AssistantProjects;`)(React,...Object.values(hooks),...Object.values(deps));
-  const backend={demo:false,call:async(cmd,args)=>{calls.push({cmd,args});if(cmd==='assistant_tasks_list')return {project,workspaceId:'workspace',tasks:task?[task]:[],routingThreads,executions:[],revision:1};if(cmd==='assistant_task_action'){task={...task,status:args.action==='pause'?task.status:args.action==='resume'?task.status:args.action==='accept'||args.action==='review'?'done':'cancelled',desiredState:args.action==='pause'?'paused':'running',revision:task.revision+1};return task;}return {taskId:'new',status:'proposed'};}};
+  const backend={demo:false,call:async(cmd,args)=>{calls.push({cmd,args});if(cmd==='assistant_tasks_list')return {project,workspaceId:'workspace',tasks:Array.isArray(task)?task:task?[task]:[],routingThreads,executions:[],revision:1};if(cmd==='assistant_task_action'){task={...task,status:args.action==='pause'?task.status:args.action==='resume'?task.status:args.action==='accept'||args.action==='review'?'done':'cancelled',desiredState:args.action==='pause'?'paused':'running',revision:task.revision+1};return task;}return {taskId:'new',status:'proposed'};}};
   const props={lane:{assistant:record,name:'Ada',offline:false},backend,projects:[{project,name:'Project'}],availableProjects:[{project,name:'Project'}],taskScopes:[],profiles:[profile],...extra};
   const render=()=>{cursor=0;const tree=component(props);for(const effect of effects)if(effect?.changed){effect.changed=false;effect.cleanup?.();effect.cleanup=effect.fn();}return tree;};
-  return {render,calls,backend};
+  return {render,calls,backend,props};
 }
 test('first delegation explicitly creates coordinator, shows live worker picker, refreshes new room then proposes without a model send',async()=>{
   let ensured=0,created=0;
@@ -131,6 +131,20 @@ test('project cards show the folder, not the host id',async()=>{
   assert.match(text(card),/\/work\/project/);assert.doesNotMatch(text(card),/host\s*·/);
 });
 test('focusTask selects that task when Work opens it',async()=>{
-  const h=harness({taskScopes:[{project,owner}],focusTask:{project,taskId:'task'}},{...baseTask,status:'ready_for_review',result:'Done'});let tree=h.render();await tick();tree=h.render();await tick();tree=h.render();
+  const h=harness({taskScopes:[{project,owner}],focusTask:{project,taskId:'task',nonce:1}},{...baseTask,status:'ready_for_review',result:'Done'});let tree=h.render();await tick();tree=h.render();await tick();tree=h.render();
   assert.match(text(tree),/Inspect result, changes and checks/);
+});
+
+test('opening a task from Work resets the previous review and the focus is used once',async()=>{
+  const a={...baseTask,id:'a',brief:'Task A',status:'ready_for_review',result:'A',reviewCriteria:['Tests pass']};
+  const b={...baseTask,id:'b',brief:'Task B',status:'ready_for_review',result:'B',reviewCriteria:['Tests pass']};
+  const handled=[];const h=harness({taskScopes:[{project,owner}],onFocusHandled:()=>handled.push(1)},[a,b]);let tree=h.render();await tick();tree=h.render();
+  find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task'&&text(node).includes('Task A')).props.onClick();tree=h.render();
+  find(tree,node=>node.type==='details'&&text(node).includes('Inspect result, changes and checks')).props.onToggle({currentTarget:{open:true}});
+  find(h.render(),node=>node.type==='label'&&/I reviewed:\s+Tests pass/.test(text(node))).children.find(node=>node?.type==='input').props.onChange({target:{checked:true}});
+  tree=h.render();assert.equal(button(tree,'Mark reviewed').props.disabled,false,'A is reviewed');
+  h.props.focusTask={project,taskId:'b',nonce:2};h.render();tree=h.render();
+  assert.equal(button(tree,'Mark reviewed').props.disabled,true,'B starts unreviewed');
+  assert.equal(find(tree,node=>node.type==='label'&&/I reviewed:\s+Tests pass/.test(text(node))).children.find(node=>node?.type==='input').props.checked,false);
+  assert.equal(handled.length,1);h.render();assert.equal(handled.length,1,'focus is consumed once');
 });

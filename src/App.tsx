@@ -1926,10 +1926,12 @@ export function App() {
     try {return alias?.route===hostBackend(workspaceHost(workspace))?alias.project:undefined;}catch{return undefined;}
   };
   const projectUnavailable = (project:ProjectRef):string|undefined => resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) ? undefined : 'This exact project is unavailable. Reconnect its machine or restore its assigned folder.';
-  const [workFocus,setWorkFocus]=useState<{project:ProjectRef;taskId:string}|null>(null);
+  const [workFocus,setWorkFocus]=useState<{project:ProjectRef;taskId:string;nonce:number}|null>(null);
+  const workFocusOwner=mainView.kind==='assistant'?assistantIdentityKey(mainView.assistant):'';
+  useEffect(()=>{setWorkFocus(null);},[workFocusOwner]);
   const assistantProjectName=(project:ProjectRef)=>workspaces.find(workspace=>workspace.id===project.workspaceId)?.name??project.cwd.split('/').filter(Boolean).at(-1)??project.cwd;
   /** Work opens delegated tasks in their project card; personal tasks live in Chat. */
-  const openWorkItem=(item:WorkItem)=>{if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId});navigateAssistant('work');}else navigateAssistant('chat');};
+  const openWorkItem=(item:WorkItem)=>{if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId,nonce:Date.now()});navigateAssistant('work');}else navigateAssistant('chat');};
   const navigateAssistant = (section:AssistantSection) => setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects) : [];
@@ -2638,7 +2640,7 @@ export function App() {
           </div>
           {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
             memoryProject={assistantNotebookProject}
-            work={<AssistantWork items={assistantWorkItems(selectedAssistant.assistant?.tasks??[],selectedDelegatedTasks,assistantProjectName)} onOpenTask={openWorkItem} projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact focusTask={workFocus} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
+            work={<AssistantWork items={assistantWorkItems(selectedAssistant.assistant?.tasks??[],selectedDelegatedTasks,assistantProjectName)} onOpenTask={openWorkItem} projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
               onEnsureCoordinator={async(project)=>{
                 const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
                 if(!workspace||!selectedAssistant.assistant?.profile)throw new Error('Reconnect the assigned project before delegating.');
