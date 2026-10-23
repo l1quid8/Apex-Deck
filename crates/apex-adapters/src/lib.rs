@@ -18,6 +18,7 @@ mod cli;
 mod gemini_usage;
 mod gateway_sandbox;
 mod codex_server;
+pub mod codex_images;
 mod codex_hook;
 mod events;
 mod grok_images;
