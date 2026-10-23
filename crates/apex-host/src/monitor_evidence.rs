@@ -354,6 +354,9 @@ fn fit_text(input: &str, budget: usize) -> (String, bool) {
     (input[..end].to_owned(), true)
 }
 
+// A git repository's contribution to an evidence list: everything it needs to
+// look itself up again and to be capped by the remaining budget.
+#[allow(clippy::too_many_arguments)]
 fn add_git_source(
     sources: &mut Vec<EvidenceSource>,
     warnings: &mut Vec<String>,

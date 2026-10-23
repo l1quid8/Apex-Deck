@@ -19,6 +19,10 @@ use tokio::sync::broadcast;
 /// name the desktop UI listens for, and `payload` is what it receives.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "name", content = "payload")]
+// Each event is cloned into every listening queue, and the room variant
+// carries a whole RoomEvent. Boxing it would put an allocation in front of
+// every clone to shrink a value that is moved through a channel.
+#[allow(clippy::large_enum_variant)]
 pub enum HostEvent {
     /// Durable assistant ledger changed. Clients reload only their owning project.
     #[serde(rename = "assistant-tasks-changed")]

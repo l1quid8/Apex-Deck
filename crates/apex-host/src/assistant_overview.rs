@@ -137,11 +137,11 @@ mod tests {
         let raw = json!({"message":"Proposed work","citations":[],"assignments":[assignment.clone()]}).to_string();
         for (key, value) in [("mode",json!("in_place")), ("brief",json!("")), ("owner",json!({"workspaceId":"unknown","cwd":"/a","hostId":"remote","conversationId":"one"})), ("destination",json!({"threadId":"chat","workers":["unknown"],"newThread":false})), ("destination",json!({"threadId":null,"workers":["null"],"newThread":true}))] {
             let mut invalid = assignment.clone(); invalid[key] = value;
-            let result = parse(&json!({"message":"Proposed","citations":[],"assignments":[invalid]}).to_string(), &[project.clone()]).unwrap();
+            let result = parse(&json!({"message":"Proposed","citations":[],"assignments":[invalid]}).to_string(), std::slice::from_ref(&project)).unwrap();
             assert!(result["assignments"].as_array().unwrap().is_empty());
         }
-        assert_eq!(parse(&raw, &[project.clone()]).unwrap()["assignments"].as_array().unwrap().len(), 1);
-        let over_cap = parse(&json!({"message":"Proposed","citations":[],"assignments":vec![assignment.clone(); 21]}).to_string(), &[project.clone()]).unwrap();
+        assert_eq!(parse(&raw, std::slice::from_ref(&project)).unwrap()["assignments"].as_array().unwrap().len(), 1);
+        let over_cap = parse(&json!({"message":"Proposed","citations":[],"assignments":vec![assignment.clone(); 21]}).to_string(), std::slice::from_ref(&project)).unwrap();
         assert!(over_cap["assignments"].as_array().unwrap().is_empty());
         for (key, value) in [("revision",json!(4)), ("availability",json!("offline")), ("cwd",json!("/changed")), ("routingThreads",json!([]))] {
             let mut changed = project.clone(); changed[key] = value;

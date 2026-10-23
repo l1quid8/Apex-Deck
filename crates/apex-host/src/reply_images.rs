@@ -64,7 +64,7 @@ pub fn import(dir: &Path, source: &Path, room: &str, by: Option<&str>) -> Result
 /// Every picture in the library, newest first, each once.
 pub fn list(dir: &Path) -> Vec<Item> {
     let mut items = read_index(dir);
-    items.sort_by(|a, b| b.created.cmp(&a.created));
+    items.sort_by_key(|item| std::cmp::Reverse(item.created));
     let mut shown = std::collections::HashSet::new();
     items.retain(|i| dir.join(&i.file).exists() && shown.insert(i.file.clone()));
     items

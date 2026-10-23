@@ -200,6 +200,9 @@ pub(crate) async fn run_with_policy(
     run_with_images(child, prompt, cwd, on_progress, approver, after_plan, tools_disabled, &[]).await
 }
 
+// Eight parts of one turn. A struct would be assembled at every call site and
+// taken apart again here, and the call sites read better as a flat list.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_with_images(
     mut child: OwnedChild,
     prompt: &str,
@@ -266,10 +269,8 @@ pub(crate) async fn run_with_images(
         };
         let Some(line) = next else { break };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
-            if message["type"] == "system" && message["subtype"] == "init" {
-                if message["mcp_servers"].is_array() {
-                    on_progress(Progress::ToolServers(&crate::mcp::claude_init_servers(&message)));
-                }
+            if message["type"] == "system" && message["subtype"] == "init" && message["mcp_servers"].is_array() {
+                on_progress(Progress::ToolServers(&crate::mcp::claude_init_servers(&message)));
             }
             if message["type"] == "control_request" {
                 let request = &message["request"];
@@ -360,6 +361,51 @@ pub(crate) async fn run_with_images(
         cleanup_error: cleanup,
         reader,
     })
+}
+
+/// Names of Claude's connected MCP servers and enabled plugins, without
+/// running a turn. A plugin listing that fails leaves just the servers.
+pub async fn list_servers(
+    cwd: Option<String>,
+    path: Option<String>,
+) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    let claude = |args: &[&str]| {
+        let mut command = tokio::process::Command::new("claude");
+        if let Some(path) = &path {
+            command.env("PATH", path);
+        }
+        command
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        if let Some(cwd) = &cwd {
+            command.current_dir(cwd);
+        }
+        command
+    };
+    let (servers, plugins) = tokio::join!(
+        claude(&["mcp", "list"]).output(),
+        tokio::time::timeout(Duration::from_secs(15), claude(&["plugin", "list", "--json"]).output())
+    );
+    let output = servers.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+    if !output.status.success() {
+        return Err("Couldn't list Claude tool servers".into());
+    }
+    let mut entries: Vec<apex_core::server_request::ToolServer> =
+        crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .map(Into::into)
+            .collect();
+    let plugins = plugins.ok().and_then(Result::ok).filter(|o| o.status.success()).map(|o| {
+        crate::mcp::claude_plugins(&String::from_utf8_lossy(&o.stdout), cwd.as_deref())
+    });
+    for name in plugins.unwrap_or_default() {
+        let entry = apex_core::server_request::ToolServer::from(name);
+        if !entries.iter().any(|known| known.token == entry.token) {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -525,49 +571,4 @@ cat > /dev/null"#;
             json!({ "type": "user", "message": { "role": "user", "content": "hello" } })
         );
     }
-}
-
-/// Names of Claude's connected MCP servers and enabled plugins, without
-/// running a turn. A plugin listing that fails leaves just the servers.
-pub async fn list_servers(
-    cwd: Option<String>,
-    path: Option<String>,
-) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
-    let claude = |args: &[&str]| {
-        let mut command = tokio::process::Command::new("claude");
-        if let Some(path) = &path {
-            command.env("PATH", path);
-        }
-        command
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-        if let Some(cwd) = &cwd {
-            command.current_dir(cwd);
-        }
-        command
-    };
-    let (servers, plugins) = tokio::join!(
-        claude(&["mcp", "list"]).output(),
-        tokio::time::timeout(Duration::from_secs(15), claude(&["plugin", "list", "--json"]).output())
-    );
-    let output = servers.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
-    if !output.status.success() {
-        return Err("Couldn't list Claude tool servers".into());
-    }
-    let mut entries: Vec<apex_core::server_request::ToolServer> =
-        crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout))
-            .into_iter()
-            .map(Into::into)
-            .collect();
-    let plugins = plugins.ok().and_then(Result::ok).filter(|o| o.status.success()).map(|o| {
-        crate::mcp::claude_plugins(&String::from_utf8_lossy(&o.stdout), cwd.as_deref())
-    });
-    for name in plugins.unwrap_or_default() {
-        let entry = apex_core::server_request::ToolServer::from(name);
-        if !entries.iter().any(|known| known.token == entry.token) {
-            entries.push(entry);
-        }
-    }
-    Ok(entries)
 }

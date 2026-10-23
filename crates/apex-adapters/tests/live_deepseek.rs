@@ -101,7 +101,7 @@ async fn live_deepseek_turn() {
                     ),
                     Progress::Activity(what) => format!("activity: {what}"),
                     Progress::Work(step) => format!("work: {}", step.label),
-                    Progress::Text(_) | _ => return,
+                    _ => return,
                 };
                 let mut seen = seen.lock().unwrap();
                 if seen.last() != Some(&line) {

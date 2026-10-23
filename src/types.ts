@@ -290,8 +290,9 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cost_micros?: number | null; cost_estimated?: boolean }
   /** How full a participant's context window was on its latest request. */
   | { type: "context_usage"; id: string; used_tokens: number; window_tokens: number }
-  /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value. */
-  | { type: "plan_usage"; provider: AgentTool; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
+  /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value.
+   *  `model` names the model whose own quota group this is, when the provider reads one apart from the account. */
+  | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
   /** The room cut off bots answering each other; `next` is who the last replies asked. */

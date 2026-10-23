@@ -96,8 +96,12 @@ pub struct ConcurrentRoom {
     write_owner: Option<String>,
     cleanup_holds: Arc<Mutex<HashMap<ParticipantId, (String, bool)>>>,
     turn_start: Option<Arc<dyn TurnStartHook>>,
-    voice_requests: Arc<Mutex<HashMap<String, (ParticipantId, String, Arc<AtomicBool>, Arc<AtomicBool>)>>>,
+    voice_requests: VoiceRequests,
 }
+/// Voice turns waiting to start: who asked, the words, and their stop and
+/// done flags.
+type VoiceRequests = Arc<Mutex<HashMap<String, (ParticipantId, String, Arc<AtomicBool>, Arc<AtomicBool>)>>>;
+
 impl ConcurrentRoom {
     pub fn new(room: Room) -> Self {
         Self {
@@ -360,7 +364,7 @@ impl ConcurrentRoom {
                         .map(|ticket| {
                             // A queued bot can change access before its previous turn ends.
                             // Resolve its execution snapshot only after that FIFO wait.
-                            if ticket.previous.clone().now_or_never().is_none() { return None; }
+                            ticket.previous.clone().now_or_never()?;
                             room.request_for_capability(&ticket.id, batch.answers, batch.generated_ui).map(|(p, r)| {
                                 (p, r, room.transcript().len(), room.approvals_handle())
                             })
@@ -482,6 +486,9 @@ impl ConcurrentRoom {
         }
         prepared
     }
+    // Nine parts of one turn: the ticket it runs, the snapshot prepared for it,
+    // and the channels it reports through. Nothing here is optional.
+    #[allow(clippy::too_many_arguments)]
     async fn run_one(
         &self,
         ticket: Ticket,

@@ -364,7 +364,7 @@ impl EventReader {
     fn claude(&mut self, event: &Value, steps: &mut Vec<Step>) {
         // Work done by a helper agent is reported with the id of the tool
         // call that started it. Its text is not part of this reply.
-        let own = event.get("parent_tool_use_id").map_or(true, Value::is_null);
+        let own = event.get("parent_tool_use_id").is_none_or(Value::is_null);
         match event["type"].as_str() {
             Some("stream_event") if own => {
                 let inner = &event["event"];
@@ -860,15 +860,12 @@ impl EventReader {
                 return;
             }
         }
-        match message["method"].as_str() {
-            Some(method @ ("item/started" | "item/completed")) => {
-                let done = method == "item/completed";
-                self.codex_item_step(item, None, done, steps);
-                if kind == Some("subAgentActivity") {
-                    self.codex_helper_box(item, steps);
-                }
+        if let Some(method @ ("item/started" | "item/completed")) = message["method"].as_str() {
+            let done = method == "item/completed";
+            self.codex_item_step(item, None, done, steps);
+            if kind == Some("subAgentActivity") {
+                self.codex_helper_box(item, steps);
             }
-            _ => {}
         }
         match message["method"].as_str() {
             Some("item/agentMessage/delta") => {
@@ -1321,7 +1318,7 @@ pub(crate) fn claude_plan(info: &Value) -> Option<PlanUsage> {
                 .and_then(|name| window(name, info)),
         );
     }
-    (!windows.is_empty()).then(|| PlanUsage {
+    (!windows.is_empty()).then_some(PlanUsage {
         provider: AgentTool::ClaudeCode,
         windows,
         partial: false,

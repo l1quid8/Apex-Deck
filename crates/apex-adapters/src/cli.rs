@@ -311,6 +311,8 @@ impl CliParticipant {
     }
 
     /// A Muse Code turn through its session host. See muse_server.rs.
+    // Eight parts of one turn, for the same reason as `run_with_images`.
+    #[allow(clippy::too_many_arguments)]
     async fn run_muse_server(
         &self,
         program: &str,

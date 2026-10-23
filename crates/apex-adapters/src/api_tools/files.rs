@@ -436,9 +436,9 @@ pub(crate) fn grep(root: &Path, shown_root: &str, args: &Grep<'_>) -> Result<Str
                             out.push("--".into());
                         }
                     }
-                    for i in from.max(last_shown.map_or(0, |l| l + 1))..=to {
+                    let start = from.max(last_shown.map_or(0, |l| l + 1));
+                    for (i, line) in lines.iter().copied().enumerate().take(to + 1).skip(start) {
                         let mark = if i == hit || hits.binary_search(&i).is_ok() { ':' } else { '-' };
-                        let line = lines[i];
                         let line = if line.chars().count() > MATCH_LINE_MAX {
                             format!("{}…", line.chars().take(MATCH_LINE_MAX).collect::<String>())
                         } else {

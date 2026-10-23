@@ -117,7 +117,7 @@ pub fn parse(args: &[String]) -> Result<KeysAction, String> {
                         } else {
                             let mut parsed = Vec::new();
                             for part in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                                parsed.push(KeyScope::parse(part).map_err(&usage)?);
+                                parsed.push(KeyScope::parse(part).map_err(usage)?);
                             }
                             if parsed.is_empty() {
                                 return Err(usage("--scope needs at least one of sub, api, cli".into()));

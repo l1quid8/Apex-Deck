@@ -199,6 +199,12 @@ fn room_event_shapes() {
             { "name": "secondary", "used_percent": 19, "window_minutes": null, "resets_at": null }
         ] })
     );
+    // A provider's own quota group says which model it belongs to.
+    assert_eq!(
+        to_value(RoomEvent::plan_for(&plan, Some(" Gemini-4-Argon ".into()))).unwrap()["model"],
+        json!("gemini-4-argon")
+    );
+    assert_eq!(to_value(RoomEvent::plan_for(&plan, Some("  ".into()))).unwrap().get("model"), None);
     // Reset credits ride along only when the report listed them.
     let credits = apex_core::ResetCredits {
         available: 1,

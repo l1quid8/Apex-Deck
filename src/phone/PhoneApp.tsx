@@ -89,6 +89,7 @@ import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
+import { planKey, planOf } from "../plans";
 import type { AgentTool, ApiModel, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, ResetCredits, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
@@ -129,7 +130,8 @@ type Room = {
   configs: ParticipantConfig[];
   /** Context each bot's latest request filled, and each provider's plan, as reported while the thread is open. */
   fill: Record<string, { used: number; window: number }>;
-  plans: Partial<Record<AgentTool, PlanWindow[]>>;
+  /** Keyed by plans.ts's planKey: a provider's figure, or one model's own quota group. */
+  plans: Record<string, PlanWindow[]>;
   /** Usage resets each provider granted, as last reported; kept when a report doesn't list them. */
   credits: Partial<Record<AgentTool, ResetCredits>>;
   /** Tokens each bot has used in this thread, as saved with it and added to after each turn. */
@@ -882,7 +884,7 @@ export function PhoneApp() {
       });
       if (event.type === "plan_usage") setRoom((current) => current && current.id === id ? {
         ...current,
-        plans: { ...current.plans, [event.provider]: mergePlan(current.plans[event.provider], event.windows, event.partial) },
+        plans: { ...current.plans, [planKey(event.provider, event.model)]: mergePlan(current.plans[planKey(event.provider, event.model)], event.windows, event.partial) },
         credits: event.reset_credits ? { ...current.credits, [event.provider]: event.reset_credits } : current.credits,
       } : current);
       if (event.type === "failed") setNotice(`${roomRef.current?.participants.find((person) => person.id === event.id)?.display_name ?? event.id} couldn't reply: ${event.error}`);
@@ -1605,7 +1607,7 @@ export function PhoneApp() {
             onBot={setBotSheet}
             meters={room && openPane && room.id === openPane.id ? Object.fromEntries(room.configs.map((config) => {
               const provider = config.backend.kind === "agent" ? config.backend.tool : null;
-              return [config.id, pillMeter(provider, room.fill[config.id], provider ? room.plans[provider] : undefined, new Date())];
+              return [config.id, pillMeter(provider, room.fill[config.id], planOf(room.plans, provider, config.backend.kind === "agent" ? config.backend.model : null), new Date())];
             })) : {}}
             to={room && openPane && room.id === openPane.id && answerers?.paneId === room.id
               ? recipientName({ targets: answerers.ids, roster: room.participants.map((p) => ({ id: p.id, name: p.display_name })), policy: room.policy })
@@ -1896,14 +1898,14 @@ export function PhoneApp() {
             <BotSheet key={`${room.id}:${who.id}`} who={who} config={config} reported={reported} apiModels={apiModels}
               status={asking ? "Waiting on your answer" : turn ? `${toolLine(turnWords(turn, false, room.plan))} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}
               statusWarn={asking} working={Boolean(turn)} asking={asking}
-              meters={botMeters(provider, room.fill[who.id], provider ? room.plans[provider] : undefined, new Date(), account?.balance ?? null)}
+              meters={botMeters(provider, room.fill[who.id], planOf(room.plans, provider, config.backend.kind === "agent" ? config.backend.model : null), new Date(), account?.balance ?? null)}
               shared={provider && sharing > 1 ? `The plan is shared by all ${sharing} ${TOOL_WORDS[provider] ?? provider} bots in this thread.` : ""}
               tokens={tokenWords(room.used[who.id])}
               resets={(() => {
                 const credits = provider ? room.credits[provider] : undefined;
                 const spend = phoneHost(openLink.id)?.backend.roomPlanReset;
                 if (!provider || !credits || !spend) return null;
-                return <PhoneResets credits={credits} windows={room.plans[provider] ?? []} provider={toolName(provider)} offline={openLink.status !== "online" ? downLine(openLink) : ""} use={(credit) => {
+                return <PhoneResets credits={credits} windows={planOf(room.plans, provider, config.backend.kind === "agent" ? config.backend.model : null) ?? []} provider={toolName(provider)} offline={openLink.status !== "online" ? downLine(openLink) : ""} use={(credit) => {
                   const which = `${openLink.id}:${provider}:${credit?.id ?? ""}`;
                   const key = resetKeys.current.get(which) ?? crypto.randomUUID();
                   resetKeys.current.set(which, key);

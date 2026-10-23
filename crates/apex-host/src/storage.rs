@@ -464,6 +464,24 @@ pub(crate) fn prepare_private_root(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Write a room file that must not exist yet, private to this user, flushed to disk.
+fn write_new(path: &Path, saved: &SavedRoom) -> Result<(), String> {
+    use std::io::Write;
+    let bytes = serde_json::to_vec_pretty(saved).map_err(|e| e.to_string())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { e.to_string() })?;
+    if let Err(e) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+        let _ = std::fs::remove_file(path);
+        return Err(format!("Could not save: {e}"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,22 +809,4 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("monitor.json")).unwrap(), "broken");
         std::fs::remove_dir_all(root).unwrap();
     }
-}
-
-/// Write a room file that must not exist yet, private to this user, flushed to disk.
-fn write_new(path: &Path, saved: &SavedRoom) -> Result<(), String> {
-    use std::io::Write;
-    let bytes = serde_json::to_vec_pretty(saved).map_err(|e| e.to_string())?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)] {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { e.to_string() })?;
-    if let Err(e) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
-        let _ = std::fs::remove_file(path);
-        return Err(format!("Could not save: {e}"));
-    }
-    Ok(())
 }

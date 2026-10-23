@@ -731,7 +731,8 @@ async fn recovery_kills_the_command_a_dead_service_left_running() {
     let mut fixture = Fixture::new();
     let (mut leader, pids) = orphan(&fixture.root.join("orphan"), "sleep 300 & echo $$ $! > pids.tmp; mv pids.tmp pids; wait").await;
     assert!(pids.iter().all(|pid| alive(*pid)));
-    running_with(&fixture, MARKS.lock().unwrap().get(&leader.id()).cloned().flatten().unwrap()).await;
+    let mark = MARKS.lock().unwrap().get(&leader.id()).cloned().flatten().unwrap();
+    running_with(&fixture, mark).await;
 
     fixture.restart();
     assert!(gone(&pids).await, "the shell and its child were killed: {pids:?}");

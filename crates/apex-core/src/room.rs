@@ -128,11 +128,16 @@ pub enum RoomEvent {
     /// How much of a provider account's plan is used. Shared by every agent
     /// on that provider. With `partial`, windows not listed keep their last
     /// value.
+    /// A provider can keep a model in a quota group of its own (Gemini's
+    /// Argon), read apart from the account's larger figure: `model` names the
+    /// model that group belongs to, and is left out for the whole account.
     /// `reset_credits` is left out when the report didn't list them.
     PlanUsage {
         provider: AgentTool,
         windows: Vec<PlanWindow>,
         partial: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reset_credits: Option<crate::types::ResetCredits>,
     },
@@ -179,6 +184,18 @@ impl RoomEvent {
     pub fn plan(plan: &crate::types::PlanUsage) -> Self {
         plan_event(plan)
     }
+
+    /// The event that reports `plan` as the quota group `model` draws from,
+    /// for a provider that reads a model apart from the account's own figure.
+    pub fn plan_for(plan: &crate::types::PlanUsage, model: Option<String>) -> Self {
+        RoomEvent::PlanUsage {
+            provider: plan.provider,
+            windows: plan.windows.clone(),
+            partial: plan.partial,
+            model: model.map(|model| model.trim().to_lowercase()).filter(|model| !model.is_empty()),
+            reset_credits: plan.reset_credits.clone(),
+        }
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -186,7 +203,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
-    RoomEvent::PlanUsage { provider: plan.provider, windows: plan.windows.clone(), partial: plan.partial, reset_credits: plan.reset_credits.clone() }
+    RoomEvent::plan_for(plan, None)
 }
 
 /// Puts a participant's proposal in front of the person and waits for
@@ -1047,6 +1064,12 @@ impl Room {
     }
 }
 
+fn response_pin_parts(pin: &str) -> Option<(usize, &str)> {
+    let rest = pin.strip_prefix("[Pinned response #")?;
+    let (seq, text) = rest.split_once("]\n")?;
+    Some((seq.parse().ok()?, text))
+}
+
 #[cfg(test)]
 mod approver_tests {
     use crate::view::ANSWERS_SYSTEM;
@@ -1216,7 +1239,7 @@ mod approver_tests {
         assert!(on.plan);
         assert_eq!(on.access, Some(crate::Access::Read), "nobody edits while planning");
         assert!(on.system.ends_with(PLAN_SYSTEM));
-        let _ = futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
     }
 
     #[test]
@@ -1343,10 +1366,4 @@ mod approver_tests {
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },
             RoomEvent::AllowedChanged { allowed }, RoomEvent::Activity { .. }] if allowed.len() == 1), "{events:?}");
     }
-}
-
-fn response_pin_parts(pin: &str) -> Option<(usize, &str)> {
-    let rest = pin.strip_prefix("[Pinned response #")?;
-    let (seq, text) = rest.split_once("]\n")?;
-    Some((seq.parse().ok()?, text))
 }
