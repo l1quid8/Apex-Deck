@@ -96,6 +96,10 @@ impl Daemon {
         host.start_monitor_clock()?;
         // The worker stamps operations with this machine's id, so make it first.
         let host_id = crate::identity::host_id(&paths.data)?;
+        #[cfg(feature="test-support")]
+        if crate::test_support::assumed() && crate::test_support::deterministic_images(){
+            apex_host::test_support::register_deterministic_avatar_adapter(&host)?;
+        }
         // The worker needs the protected assistant list, which the broker only
         // serves to a build it has pinned. Exiting here would happen before the
         // socket is bound, leaving the window on its splash screen with nothing

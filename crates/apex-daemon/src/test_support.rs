@@ -14,3 +14,8 @@ pub fn assume_verified_ui_for_this_process() {
 pub(crate) fn assumed() -> bool {
     ASSUMED.load(Ordering::SeqCst)
 }
+
+static DETERMINISTIC_IMAGES: AtomicBool = AtomicBool::new(false);
+/// Only the fixture binary's own main calls this before daemon construction.
+pub fn register_deterministic_images_for_this_process(){DETERMINISTIC_IMAGES.store(true,Ordering::SeqCst);}
+pub(crate) fn deterministic_images()->bool{DETERMINISTIC_IMAGES.load(Ordering::SeqCst)}

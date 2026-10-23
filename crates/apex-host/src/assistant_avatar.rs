@@ -140,6 +140,10 @@ fn normalize(bytes: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?;
     Ok(out.into_inner())
 }
+#[cfg(feature = "test-support")]
+fn fixture_profile() -> apex_core::ParticipantConfig {
+    serde_json::from_value(serde_json::json!({"id":"fixture-avatar-provider","display_name":"Deterministic image fixture","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/avatar-fixture","model":"fixture-avatar-image"}})).expect("static fixture profile")
+}
 impl Host {
     fn avatar_owner(&self, owner: &Owner) -> Result<(), String> {
         let host = self.local_host_id()?;
@@ -251,6 +255,29 @@ impl Host {
     pub async fn personal_avatar_options(&self, owner: Owner) -> Result<Options, String> {
         self.avatar_owner(&owner)?;
         self.personal_avatar_collect(crate::personal::now())?;
+        #[cfg(feature = "test-support")]
+        if crate::test_support::deterministic_avatar_adapter(self).is_some() {
+            if let Owner::Assistant { assistant } = &owner {
+                let a = self.personal_get(&assistant.assistant_id)?;
+                if let Some(reason) =
+                    crate::personal_worker::endpoint_refusal(&a, &fixture_profile())
+                {
+                    return Ok(Options {
+                        options: vec![],
+                        reason: Some(reason),
+                    });
+                }
+            }
+            return Ok(Options {
+                options: vec![OptionRow {
+                    provider_profile_id: "fixture-avatar-provider".into(),
+                    model_id: "fixture-avatar-image".into(),
+                    label: "Deterministic fixture image · no provider request or charge".into(),
+                    estimated_cost_micros: Some(40000),
+                }],
+                reason: None,
+            });
+        }
         let mut options = vec![];
         for profile in self.avatar_profiles()? {
             let apex_core::Backend::OpenAiCompatible {
@@ -372,6 +399,50 @@ impl Host {
                 o.provider_profile_id == input.provider_profile_id && o.model_id == input.model_id
             })
             .ok_or("Choose a configured supported image model.")?;
+        #[cfg(feature = "test-support")]
+        if let Some(adapter) = crate::test_support::deterministic_avatar_adapter(self) {
+            if input.provider_profile_id != "fixture-avatar-provider"
+                || input.model_id != "fixture-avatar-image"
+            {
+                return Err("Choose the registered fixture image model.".into());
+            }
+            let job = Job {
+                owner: input.owner.clone(),
+                generation_id: input.generation_id.clone(),
+                editor_token: input.editor_token.clone(),
+                state: "pending".into(),
+                candidate: None,
+                error: None,
+                created_at: crate::personal::now(),
+                cost: Some(crate::personal::CostEntry {
+                    at: crate::personal::now(),
+                    purpose: "avatar".into(),
+                    kind: "image".into(),
+                    source: crate::personal::CostSource::Estimated,
+                    micros: Some(option.estimated_cost_micros.unwrap_or(40000)),
+                    input_tokens: None,
+                    output_tokens: None,
+                    bytes_out: input.prompt.len() as u64,
+                    endpoint: "127.0.0.1".into(),
+                }),
+            };
+            let (job, dispatch) = self.avatar_reserve(job, &fixture_profile())?;
+            if dispatch {
+                let host = Arc::clone(self);
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    let result = adapter
+                        .generate(&input.owner, &input.generation_id, &input.prompt)
+                        .and_then(|bytes| normalize(&bytes));
+                    if let Err(error) =
+                        host.avatar_finish(&input.owner, &input.generation_id, result)
+                    {
+                        eprintln!("fixture avatar completion failed: {error}")
+                    }
+                });
+            }
+            return Ok(job);
+        }
         let profile = self
             .avatar_profiles()?
             .into_iter()
@@ -717,15 +788,17 @@ mod tests {
         Arc<Host>,
         crate::personal::PersonalAssistant,
     ) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
-            "assistant-avatar-{}-{}",
+            "assistant-avatar-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        let host = Host::new(
+        let host = crate::test_support::isolated_host_assuming_verified_ui(
             crate::HostPaths {
                 data: root.join("data"),
                 downloads: None,
@@ -1176,6 +1249,67 @@ mod tests {
                 .is_err());
             assert_eq!(host.personal_list().unwrap().len(), count);
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+    #[tokio::test]
+    async fn assistant_avatar_registered_fixture_runs_exact_rpcs_without_credentials() {
+        let (root, host, a) = fixture().await;
+        let owner = json!({"kind":"assistant","assistant":{"hostId":"host","assistantId":a.id}});
+        let call = |cmd: &str, args: serde_json::Value| {
+            crate::Command::from_json(json!({"cmd":cmd,"args":args})).unwrap()
+        };
+        assert!(
+            host.call_assuming_verified_ui_for_test(call(
+                "personal_avatar_options",
+                json!({"owner":owner})
+            ))
+            .await
+            .unwrap()["options"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "compiling test support alone registers nothing"
+        );
+        let adapter = crate::test_support::register_deterministic_avatar_adapter(&host).unwrap();
+        let options = host
+            .call_assuming_verified_ui_for_test(call(
+                "personal_avatar_options",
+                json!({"owner":owner}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            options["options"][0]["providerProfileId"],
+            "fixture-avatar-provider"
+        );
+        let args = json!({"owner":owner,"generationId":"rpc-generation","editorToken":"rpc-editor","providerProfileId":"fixture-avatar-provider","modelId":"fixture-avatar-image","prompt":"Blue robot"});
+        let first = host
+            .call_assuming_verified_ui_for_test(call("personal_avatar_generate", args.clone()))
+            .await
+            .unwrap();
+        assert_eq!(first["state"], "pending");
+        host.call_assuming_verified_ui_for_test(call("personal_avatar_generate", args))
+            .await
+            .unwrap();
+        let result = loop {
+            let j = host
+                .call_assuming_verified_ui_for_test(call(
+                    "personal_avatar_status",
+                    json!({"owner":owner,"generationId":"rpc-generation"}),
+                ))
+                .await
+                .unwrap();
+            if j["state"] != "pending" {
+                break j;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(result["state"], "preview");
+        assert_eq!(adapter.calls(), 1);
+        let updated=host.call_assuming_verified_ui_for_test(call("personal_workspace_configure",json!({"assistantId":a.id,"expectedRevision":a.revision,"settings":{"name":"RPC saved"},"avatar":{"kind":"image","generationId":"rpc-generation","assetId":result["candidate"]["assetId"]}}))).await.unwrap();
+        assert_eq!(updated["assistant"]["costs"][0]["micros"], 40000);
+        let bytes=host.call_assuming_verified_ui_for_test(call("personal_avatar_asset",json!({"assistantId":a.id,"assetId":result["candidate"]["assetId"],"sha256":result["candidate"]["sha256"]}))).await.unwrap();
+        assert!(bytes["base64"].as_str().unwrap().starts_with("iVBOR"));
         let _ = std::fs::remove_dir_all(root);
     }
 }
