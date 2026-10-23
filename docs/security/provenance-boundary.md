@@ -238,12 +238,20 @@ daemon, broker or LaunchAgent. It prints one `PASS`/`FAIL`/`SKIP` line per check
 and writes a JSON evidence file whose path it prints (default under
 `target/acceptance-provenance/`). It exits non-zero when any check fails.
 
+The evidence file stamps the source it was produced from — `source.commit`,
+`source.branch`, `source.dirty` with `source.uncommittedFiles`, and the harness's
+own `source.harnessSha256` — so a run is never mistaken for a claim about a
+commit it did not come from. Read `dirty` first: a dirty run describes a working
+folder.
+
 Three consecutive runs on 2026-10-23 (04:22Z, 04:28Z and a `--keep` run) all
 produced the same result: **23 PASS, 1 FAIL, 8 SKIP of 32 checks** against the
 parked protected copy (daemon `6eedd8545bc0`) and the rolled-back `/Applications`
 build (daemon `8e2116f9c224-dirty`). Evidence for the 04:28Z run:
 `target/acceptance-provenance/evidence-20261023T042821Z.json` (not committed:
-`target/` is ignored, and the file names the host and user).
+`target/` is ignored, and the file names the host and user). The stdio and
+tamper checks were then strengthened (see the mapping table) and the same counts
+reproduced at 04:34Z and after the commit that carries them.
 
 The single failure is real and is the defect G4 exists for:
 `launchagent.daemon-path` reports that the user's LaunchAgent runs
@@ -258,8 +266,8 @@ still reports `active count = 1`.
 | Checklist item | Evidence |
 | --- | --- |
 | Signed UI and daemon succeed through the root broker in isolated data | `positive.trusted-daemon`, `positive.protected-read` (protected daemon `serve --data-dir <tmp>` logs no `protected ledgers unavailable` and answers a protected ledger read). Source: `apex-provenance::tests::claim_is_durable_and_cannot_be_replayed_after_reload`, `exact_retry_is_idempotent_but_changed_request_is_rejected`, `apex-provenance::tests::native_audit_token_rejects_an_unpinned_same_user_process` |
-| The same intent from shell, raw socket, stdio attach and an alternative daemon is refused, with no protected state change | `negative.raw-socket-issue`, `negative.stdio-protected-command`, `negative.copied-daemon`, `negative.copied-daemon-serves`, `negative.installed-daemon*`. Source: `untrusted_process_cannot_issue_even_with_full_filesystem_access`, `unknown_and_nested_commands_never_gain_authority`, `copied_receipt_cannot_cross_user_project_or_data_directory`, `apex-host::command::tests::provenance_unverified_command_is_refused_before_any_mutation`, `apex-daemon::authority::tests::every_command_for_every_tier_and_scope` (`provenance_execute` is `Need::Never` for paired devices) |
-| Tampered user JSON, restart, protected originals and approval states win | `tamper.forged-user-json` (forged `assistant-tasks-v1.json`, revision 9, is ignored; the protected ledger answers revision 0). Source: `protected_ledgers_reject_untrusted_writers_and_stale_versions`, `protected_personal_approval_survives_reload_without_trusting_user_json` |
+| The same intent from shell, raw socket, stdio attach and an alternative daemon is refused, with no protected state change | `negative.raw-socket-issue`, `negative.stdio-protected-command` (a real `apex-daemon --stdio --attach --data-dir <tmp>` session relaying to the running protected daemon, not a second socket exchange; `--attach` fails rather than starting a second host, so a reply proves the transport), `negative.copied-daemon`, `negative.copied-daemon-serves`, `negative.installed-daemon*`. Source: `untrusted_process_cannot_issue_even_with_full_filesystem_access`, `unknown_and_nested_commands_never_gain_authority`, `copied_receipt_cannot_cross_user_project_or_data_directory`, `apex-host::command::tests::provenance_unverified_command_is_refused_before_any_mutation`, `apex-daemon::authority::tests::every_command_for_every_tier_and_scope` (`provenance_execute` is `Need::Never` for paired devices) |
+| Tampered user JSON, restart, protected originals and approval states win | `tamper.forged-user-json` (a *valid* forged `assistant-tasks-v1.json` — revision 9, task `forged-acceptance` — planted, daemon started, stopped and started again; both starts must answer the protected ledger exactly, field for field, and the planted file must be untouched). The fixture is `crates/apex-host/tests/fixtures/forged-assistant-tasks-v1.json` and `assistant_tasks::tests::acceptance_tamper_fixture_is_a_valid_forged_ledger` parses it with the real document type and serves it through `AssistantTasks::open`, so "ignored" cannot mean "unparseable". Source: `protected_ledgers_reject_untrusted_writers_and_stale_versions`, `protected_personal_approval_survives_reload_without_trusting_user_json` |
 | Crash between claim/dispatch/outcome leaves an uncertain status and no repeated effects; concurrent compare-and-swap; rejected approvals | `a_crash_between_claim_and_outcome_leaves_one_claim_and_no_replay` and `two_writers_from_the_same_read_commit_once_and_the_second_is_refused` (added here; they were the only gaps), plus `stale_approval_rejection_is_durable_and_cannot_be_rewritten`, `archived_submission_finish_is_reported_not_silently_dropped`, `expired_unclaimed_receipt_fails_closed_and_can_be_reissued`, and at the worker level `personal_worker::tests::attempted_non_idempotent_op_becomes_uncertain_and_asks` |
 | Installed signatures, every fuse slice, keys, ACLs, nested resources, symlink containment; developer/ad-hoc or copied mutable code refused | `static.signature.*`, `static.signature.app-deep`, `static.hardened-runtime.*`, `static.entitlements.*`, `static.fuses` (every slice scanned for the Electron wire), `static.ownership`, `static.symlinks`, `static.keys-and-acls` (root-only, no ACL, modes), `negative.copied-daemon` (same bytes from a user-owned path are refused) |
 | The root broker is a running system LaunchDaemon with its socket, and the daemon agent starts from the protected copy rather than a mutable one | `static.broker-job`, `static.broker-socket`, `launchagent.daemon-path` — the first two PASS; the third is the harness's one **FAIL** until the gate build is installed (see above) |

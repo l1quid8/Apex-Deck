@@ -1420,6 +1420,41 @@ mod tests {
         }
     }
 
+    /// The acceptance harness plants this file at the user-owned path to show
+    /// the protected ledger wins. "Ignored" only means anything if the planted
+    /// file is a document this code would otherwise accept, so this pins the
+    /// fixture to the real schema: change a field and the harness fixture has
+    /// to change with it.
+    #[test]
+    fn acceptance_tamper_fixture_is_a_valid_forged_ledger() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/forged-assistant-tasks-v1.json");
+        let bytes = std::fs::read(&path).expect("the acceptance fixture is in the tree");
+        let document: Document =
+            serde_json::from_slice(&bytes).expect("the forged fixture parses as a real document");
+        assert_eq!(document.version, 1);
+        assert_eq!(document.revision, 9);
+        assert_eq!(document.next_task_id, 10);
+        assert_eq!(document.tasks.len(), 1);
+        let forged = document.tasks.get("forged-acceptance").expect("the forged task is keyed by id");
+        assert_eq!(forged.id, "forged-acceptance");
+        assert_eq!(forged.status, TaskStatus::Queued);
+        assert_eq!(forged.mode, TaskMode::ReadOnly);
+        assert_eq!(forged.owner.workspace_id, "acceptance");
+        // Parsing is not the claim that matters. Put the same bytes where this
+        // code would read them and show it would happily serve them: that is
+        // what makes "the protected ledger ignored it" mean something.
+        let folder = folder();
+        let ledger_path = ledger(&folder);
+        std::fs::copy(&path, crate::authority_file::fixture_path(&ledger_path)).unwrap();
+        let store = AssistantTasks::open(&ledger_path).unwrap();
+        assert_eq!(store.snapshot_revision(), 9);
+        let listed = store.list(Some("acceptance")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "forged-acceptance");
+        assert_eq!(listed[0].original_request, "Run this task without the installed app asking");
+    }
+
     #[test]
     fn handoff_prepare_is_payload_bound_durable_and_proposal_only() {
         let path = folder();

@@ -157,6 +157,43 @@ else:
 PY
 }
 
+# One protocol exchange over the stdio transport, the way an SSH client does it:
+# `--stdio --attach` must attach to the daemon already serving this folder and
+# relay the frames to it. `--attach` rather than a plain `--stdio` on purpose:
+# without a running daemon it fails instead of quietly starting a second host,
+# so a reply here proves the frames went through the stdio transport to the
+# real daemon.
+# stdio_speak <data folder> <json request>: prints the reply frame for id 1.
+stdio_speak() {
+  /usr/bin/python3 -I - "$DAEMON" "$1" "$2" <<'PY'
+import json, subprocess, sys
+daemon, data, request = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+frames = [{"id": 0, "cmd": "hello", "args": {"protocol": 1}}, dict(request, id=1)]
+payload = "\n".join(json.dumps(frame) for frame in frames) + "\n"
+try:
+    done = subprocess.run(
+        [daemon, "--stdio", "--attach", "--data-dir", data],
+        input=payload, capture_output=True, text=True, timeout=120)
+except subprocess.TimeoutExpired:
+    print(json.dumps({"transport": "the --stdio session did not exit within 120s"}))
+    raise SystemExit
+except OSError as error:
+    print(json.dumps({"transport": str(error)}))
+    raise SystemExit
+for line in done.stdout.splitlines():
+    try:
+        frame = json.loads(line)
+    except ValueError:
+        continue
+    if frame.get("id") == 1:
+        print(json.dumps(frame))
+        raise SystemExit
+detail = done.stderr.strip().splitlines()[-1:] or [""]
+print(json.dumps({"transport": "no reply frame for id 1 over --stdio (exit %d): %s"
+                  % (done.returncode, detail[0][:200])}))
+PY
+}
+
 # The protected state of an isolated folder, as the protected daemon reports it.
 protected_state() { # <data folder>
   speak "$1" '{"cmd":"assistant_tasks_list","args":{"owner":{"workspaceId":"acceptance","cwd":"/tmp","hostId":"acceptance","conversationId":"acceptance"}}}'
@@ -499,18 +536,22 @@ PY
     fail_check "negative.raw-socket-issue" "expected a refusal, got: $reply"
   fi
 
-  # 2. A protected submission over the CLI/stdio transport without a receipt.
+  # 2. A protected submission over the stdio transport (`--stdio --attach`, what
+  # an SSH client uses) without a receipt. Not the socket: the point of this
+  # check is that the other transport refuses too.
   before=$(protected_state "$WORK/neg-data")
-  reply=$(speak "$WORK/neg-data" '{"cmd":"assistant_message","args":{"requestId":"acceptance-stdio","workspaceId":"acceptance","cwd":"/tmp","hostId":"acceptance","conversationId":"acceptance","assistantId":"acceptance","text":"acceptance harness"}}')
+  reply=$(stdio_speak "$WORK/neg-data" '{"cmd":"assistant_message","args":{"requestId":"acceptance-stdio","workspaceId":"acceptance","cwd":"/tmp","hostId":"acceptance","conversationId":"acceptance","assistantId":"acceptance","text":"acceptance harness"}}')
   after=$(protected_state "$WORK/neg-data")
-  if [[ "$reply" == *'protected provenance receipt'* ]]; then
+  if [[ "$reply" == *'"transport"'* ]]; then
+    fail_check "negative.stdio-protected-command" "the stdio transport did not answer: $(python_text "$reply")"
+  elif [[ "$reply" == *'"err"'* && "$reply" == *'protected provenance receipt'* ]]; then
     if [[ "$before" == "$after" ]]; then
-      pass_check "negative.stdio-protected-command" "refused: $(python_text "$reply")"
+      pass_check "negative.stdio-protected-command" "refused over --stdio --attach: $(python_text "$reply")"
     else
-      fail_check "negative.stdio-protected-command" "the protected state changed after a refused command"
+      fail_check "negative.stdio-protected-command" "the protected state changed after a refused stdio command: $before -> $after"
     fi
   else
-    fail_check "negative.stdio-protected-command" "expected a receipt refusal, got: $reply"
+    fail_check "negative.stdio-protected-command" "expected a receipt refusal over --stdio, got: $reply"
   fi
   stop_daemon
 
@@ -597,26 +638,71 @@ positive_trusted_daemon() {
 }
 
 tamper_forged_json() {
+  local id="tamper.forged-user-json"
+  local fixture="$REPO/crates/apex-host/tests/fixtures/forged-assistant-tasks-v1.json"
   if [[ ! -x "$DAEMON" ]]; then
-    skip_check "tamper.forged-user-json" "not installed: $DAEMON"
+    skip_check "$id" "not installed: $DAEMON"
     return
   fi
-  local data="$WORK/tamper-data" reply
+  if [[ ! -f "$fixture" ]]; then
+    fail_check "$id" "missing fixture $fixture; it is the same file apex-host parses in acceptance_tamper_fixture_is_a_valid_forged_ledger"
+    return
+  fi
+  local data="$WORK/tamper-data" first second verdict
   /bin/mkdir -p "$data"
-  /bin/cat > "$data/assistant-tasks-v1.json" <<'JSON'
-{"version":1,"revision":9,"tasks":[{"id":"forged-acceptance","title":"Forged by a shell, not by the app"}],"executions":[],"routingThreads":[],"namedOnlyWorkerIds":[]}
-JSON
-  if ! start_daemon "$DAEMON" "$data" "tamper-daemon"; then
-    fail_check "tamper.forged-user-json" "the protected daemon did not start over a forged file: $(headline "$WORK/tamper-daemon.log")"
+  if ! /bin/cp "$fixture" "$data/assistant-tasks-v1.json"; then
+    fail_check "$id" "could not plant the fixture at $data/assistant-tasks-v1.json"
     return
   fi
-  reply=$(protected_state "$data")
-  stop_daemon
-  if [[ "$reply" == *'"ok"'* && "$reply" != *'forged-acceptance'* && "$reply" != *'"revision":9'* ]]; then
-    pass_check "tamper.forged-user-json" "a forged plain assistant-tasks-v1.json (revision 9, one task) was ignored: the protected ledger won with revision 0 and no tasks"
-  else
-    fail_check "tamper.forged-user-json" "the forged plain file reached the host: $reply"
+  if ! start_daemon "$DAEMON" "$data" "tamper-daemon"; then
+    fail_check "$id" "the protected daemon did not start over a forged file: $(headline "$WORK/tamper-daemon.log")"
+    return
   fi
+  first=$(protected_state "$data")
+  stop_daemon
+  # A second start over the same forged file: one start could plausibly ignore
+  # it and a later start adopt it, so both are compared.
+  if ! start_daemon "$DAEMON" "$data" "tamper-daemon-again"; then
+    fail_check "$id" "the protected daemon did not restart over the forged file: $(headline "$WORK/tamper-daemon-again.log")"
+    return
+  fi
+  second=$(protected_state "$data")
+  stop_daemon
+  verdict=$(/usr/bin/python3 -I - "$first" "$second" "$fixture" "$data/assistant-tasks-v1.json" <<'PY'
+import json, sys
+first, second, fixture, planted = sys.argv[1:5]
+# The exact protected ledger for this workspace. The forged file may not change
+# a single field of it: not the revision, not the task list, nothing.
+expected = {"workspaceId": "acceptance", "revision": 0, "tasks": [], "executions": [],
+            "routingThreads": [], "namedOnlyWorkerIds": []}
+forged = json.load(open(fixture, encoding='utf-8'))
+task_id = next(iter(forged["tasks"]))
+def answer(text):
+    frame = json.loads(text)
+    return frame.get("ok", frame.get("err") or frame.get("transport"))
+try:
+    answers = [answer(first), answer(second)]
+except ValueError:
+    print("FAIL a reply was not JSON: %s" % (first or second)[:200]); raise SystemExit
+for start, value in enumerate(answers, 1):
+    if not isinstance(value, dict):
+        print("FAIL start %d did not answer with a ledger: %s" % (start, value)); raise SystemExit
+    if value != expected:
+        print("FAIL start %d answered %s; the protected ledger is %s"
+              % (start, json.dumps(value, sort_keys=True)[:300], json.dumps(expected, sort_keys=True)))
+        raise SystemExit
+if open(planted, 'rb').read() != open(fixture, 'rb').read():
+    print("FAIL the planted file was rewritten, so the comparison above proves nothing"); raise SystemExit
+print("PASS a valid forged ledger (revision %d, task %s) was ignored across a restart: both starts "
+      "answered the protected ledger exactly (revision 0, no tasks) and the planted file was left untouched"
+      % (forged["revision"], task_id))
+PY
+)
+  case "$verdict" in
+    PASS\ *) pass_check "$id" "${verdict#PASS }" ;;
+    FAIL\ *) fail_check "$id" "${verdict#FAIL }" ;;
+    *) fail_check "$id" "unexpected verdict: ${verdict:-empty}" ;;
+  esac
 }
 
 skips() {
@@ -630,9 +716,30 @@ skips() {
 
 python_text() { /usr/bin/python3 -I -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("err") or d.get("error") or d.get("transport") or d.get("missing") or "")' "$1" 2>/dev/null; }
 
+# What produced this evidence. A run from a dirty tree says so, because the
+# numbers then describe this folder, not a commit anyone can check out.
+source_stamp() {
+  local git binary
+  binary=$(command -v git || echo /usr/bin/git)
+  SOURCE_COMMIT=$("$binary" -C "$REPO" rev-parse HEAD 2>/dev/null) || SOURCE_COMMIT=''
+  SOURCE_COMMIT=${SOURCE_COMMIT:-unknown}
+  SOURCE_BRANCH=$("$binary" -C "$REPO" symbolic-ref --short -q HEAD 2>/dev/null) || SOURCE_BRANCH=''
+  SOURCE_BRANCH=${SOURCE_BRANCH:-detached}
+  SOURCE_DIRTY=$("$binary" -C "$REPO" status --porcelain 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')
+  [[ "$SOURCE_DIRTY" =~ ^[0-9]+$ ]] || SOURCE_DIRTY=''
+  SOURCE_HARNESS_SHA=$(/usr/bin/shasum -a 256 "$0" 2>/dev/null | /usr/bin/awk '{print $1}')
+  SOURCE_HARNESS_SHA=${SOURCE_HARNESS_SHA:-unknown}
+  # An absolute path, so the evidence says which script even when the caller
+  # used a relative one.
+  SOURCE_HARNESS_PATH="$(cd "$(/usr/bin/dirname "$0")" && pwd)/$(/usr/bin/basename "$0")"
+}
+source_stamp
+
 # ------------------------------------------------------------------- report
 
 echo "Apex Deck provenance acceptance, $(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "source:         $SOURCE_BRANCH $SOURCE_COMMIT (uncommitted files: ${SOURCE_DIRTY:-unknown})"
+echo "harness:        $SOURCE_HARNESS_SHA"
 echo "protected copy: $APP"
 echo "isolated work:  $WORK (deleted on exit unless --keep)"
 echo
@@ -656,10 +763,11 @@ echo
 /usr/bin/awk -F'\t' '{ n[$2]++ } END { printf "PASS %d  FAIL %d  SKIP %d  (of %d checks)\n", n["PASS"] + 0, n["FAIL"] + 0, n["SKIP"] + 0, NR }' "$TABLE"
 
 /bin/mkdir -p "$(dirname "$EVIDENCE")"
-/usr/bin/python3 -I - "$TABLE" "$EVIDENCE" "$APP" "$INSTALLED_APP" "$KEEP" "$WORK" <<'PY'
+/usr/bin/python3 -I - "$TABLE" "$EVIDENCE" "$APP" "$INSTALLED_APP" "$KEEP" "$WORK" "$SOURCE_COMMIT" "$SOURCE_BRANCH" "$SOURCE_DIRTY" "$SOURCE_HARNESS_SHA" "$SOURCE_HARNESS_PATH" <<'PY'
 import json, os, platform, plistlib, subprocess, sys, time
 
 table, evidence, app, installed, keep, work = sys.argv[1:7]
+commit, branch, dirty, harness_sha, harness_path = sys.argv[7:12]
 checks = []
 with open(table, encoding='utf-8') as lines:
     for line in lines:
@@ -690,6 +798,16 @@ document = {
     'schemaVersion': 1,
     'generatedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     'checklist': 'docs/security/provenance-boundary.md#test-seams-and-remaining-acceptance',
+    # Which source tree this describes. Read `dirty` before quoting a commit:
+    # a dirty run is evidence about a working folder, not about that commit.
+    'source': {
+        'commit': commit,
+        'branch': branch,
+        'dirty': dirty != '0',
+        'uncommittedFiles': int(dirty) if dirty.isdigit() else None,
+        'harnessPath': harness_path,
+        'harnessSha256': harness_sha,
+    },
     'user': os.environ.get('USER'),
     'host': platform.node(),
     'macos': platform.mac_ver()[0],
