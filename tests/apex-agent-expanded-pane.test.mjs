@@ -18,7 +18,7 @@ test('the four production destinations retain their existing Agents workflow', (
 });
 test('Memory and Settings route into the assistant main canvas', () => {
  assert.match(app,/lane=\{selectedAssistant\} section=\{mainView.section\}/);
- assert.match(app,/onNavigatePanel=\{navigateAssistant\}/);
+ assert.match(app,/onNavigatePanel=\{panel=>navigateAssistant\(panel==='activity'\?'work':panel\)\}/);
  assert.match(app,/editor=\{assistantBackend \? <AssistantEditor/);
 });
 test('project source setup occupies the main canvas without a floating dock', () => {
