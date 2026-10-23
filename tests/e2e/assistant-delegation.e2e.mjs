@@ -7,6 +7,7 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { DaemonClient } from '../../src/daemon/client.ts';
 import { socketLink } from './link.mjs';
+import { workspaceFixture, eventually, readAssistant, ref, configure } from './workspace-fixture.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const bin = process.env.APEX_DAEMON_BIN ?? path.join(repo, 'target/debug/apex-daemon');
@@ -32,6 +33,165 @@ async function serve(data, env = {}) {
 }
 const options = { policy: 'mention', max_bot_hops: 0 };
 const worker = (id, script) => ({ id, display_name: id, access: 'edits', backend: { kind: 'cli', program: 'sh', args: ['-c', script] } });
+
+test('two assistant owners coordinate three canonical isolated projects with reviewed memory and independent controls across restart', { timeout: 90_000 }, async t => {
+  const f = await workspaceFixture(t, 'adw-work');
+  fs.writeFileSync(path.join(f.tools, 'claude'), `#!/bin/sh
+case "$*" in *--help*) echo 'The workspace trust dialog is skipped when stdout is not a TTY.'; exit 0;; esac
+case "$*" in *bypassPermissions*) exit 22;; esac
+IFS= read -r prompt
+case "$prompt" in *TASK_0*) task=0;; *TASK_1*) task=1;; *TASK_2*) task=2;; *) echo unknown-assignment >&2; exit 23;; esac
+printf '%s' "$prompt" > '${f.root}/prompt-'"$task"
+echo '{"type":"system","subtype":"init"}'
+printf '{"type":"control_request","request_id":"write-result","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"%s/result.txt","content":"result"}}}\\n' "$PWD"
+IFS= read -r answer
+case "$answer" in *'"behavior":"allow"'*) ;; *) exit 24;; esac
+echo run >> '${f.root}/runs-'"$task"
+while [ ! -f '${f.root}/release-'"$task" ]; do sleep 0.05; done
+printf 'project %s result\\n' "$task" > result.txt
+printf '{"type":"result","subtype":"success","is_error":false,"result":"Project %s reviewed observation","usage":{"input_tokens":10,"output_tokens":4}}\\n' "$task"
+cat >/dev/null
+`, { mode: 0o755 });
+  const hosts = [await f.host('alpha'), await f.host('beta')];
+  const projects = Array.from({ length: 3 }, (_, i) => ({ host: hosts[i === 0 ? 0 : 1], cwd: f.project(`project-${i}`), workspaceId: `project-${i}`, index: i }));
+  for (const host of hosts) {
+    const owned = projects.filter(project => project.host === host);
+    await host.client.call('session_save', { session: { version: 1, profiles: [f.profile], workspaces: owned.map(p => ({ id: p.workspaceId, hostId: host.hostId, path: p.cwd })) } });
+    let assistant = await host.client.call('personal_create', { name: host === hosts[0] ? 'Alpha' : 'Beta', folder: f.root, profile: f.profile, workspaceVersion: 4, look: { seed: `stable-${host.hostId}`, color: '#336699' } });
+    assert.equal(assistant.id, 'asst-1');
+    assistant = await configure(host, assistant.id, { projects: owned.map(p => ({ project: { hostId: host.hostId, workspaceId: p.workspaceId, cwd: p.cwd }, tools: 'full' })), profile: f.profile });
+    await host.client.call('personal_memory_add', { assistantId: assistant.id, expectedRevision: assistant.revision, text: `PRIVATE_${assistant.name}_ONLY` });
+    host.assistant = await readAssistant(host);
+  }
+  assert.notDeepEqual(ref(hosts[0].assistant), ref(hosts[1].assistant));
+  for (const p of projects) {
+    p.project = { hostId: p.host.hostId, workspaceId: p.workspaceId, cwd: p.cwd };
+    p.assistant = ref(p.host.assistant);
+    p.destination = { threadId: `worker-room-${p.index}`, workers: ['registered-worker'], newThread: false };
+    await p.host.client.call('room_create', { id: p.destination.threadId, cwd: p.cwd, options, participants: [{ id: 'registered-worker', display_name: 'Registered fixture worker', access: 'ask', backend: { kind: 'agent', tool: 'claude_code', model: null } }] });
+    const monitorCwd = p.index === 0 && p.cwd.startsWith('/private/tmp/') ? p.cwd.replace('/private/tmp/', '/tmp/') : p.cwd;
+    const monitor = await p.host.client.call('monitor_assign', { ...p.project, cwd: monitorCwd, hostId: 'local', text: `Track TASK_${p.index}`, files: [], threads: [], profile: f.profile });
+    p.owner = { workspaceId: p.workspaceId, cwd: monitorCwd, hostId: 'local', conversationId: monitor.conversationId };
+    await p.host.client.call('monitor_pause', { ...p.owner, paused: true });
+    p.note = await p.host.client.call('project_memory_save', { assistant: p.assistant, project: p.project, text: `PROJECT_${p.index}_ONLY`, kind: 'fact' });
+    const source = await p.host.client.call('personal_send', { assistantId: 'asst-1', requestId: `human-${p.index}`, text: `Implement TASK_${p.index} in ${p.workspaceId}.` });
+    p.input = { assistantId: 'asst-1', project: p.project, sourceEventId: source.eventId, delegationId: `delegation-${p.index}`, brief: `Implement TASK_${p.index}. Use PROJECT_${p.index}_ONLY.`, destination: p.destination, mode: 'isolated', reviewCriteria: [] };
+    p.receipt = await eventually('revision-bound proposal', async () => {
+      try { return await p.host.client.call('personal_project_delegate', { ...p.input, expectedRevision: (await readAssistant(p.host)).revision }); }
+      catch (error) { if (/changed|revision/i.test(error.message)) return false; throw error; }
+    });
+    p.read = async () => (await p.host.client.call('assistant_tasks_list', { owner: p.owner })).tasks.find(task => task.id === p.receipt.taskId);
+    p.action = async (action, extra = {}) => { const task = await p.read(); return p.host.client.call('assistant_task_action', { taskId: task.id, revision: task.revision, owner: p.owner, action, ...extra }); };
+    assert.equal(p.receipt.status, 'proposed'); assert.deepEqual((await p.read()).lineage.assistant, p.assistant);
+    await p.action('approve', { mode: 'isolated', destination: p.destination, newWorkerProfiles: [], checks: [] });
+  }
+  const waiting = await Promise.all(projects.map(p => eventually(`project ${p.index} human approval`, async () => { const task = await p.read(); return task.status === 'needs_you' && task.resultData.pendingApprovals?.length ? task : false; })));
+  assert.equal(new Set(waiting.map(task => task.resultData.executionPath)).size, 3);
+  for (const p of projects) {
+    const prompt = fs.readFileSync(path.join(f.root, `prompt-${p.index}`), 'utf8');
+    assert.match(prompt, new RegExp(`PROJECT_${p.index}_ONLY`));
+    assert.doesNotMatch(prompt, /PRIVATE_Alpha_ONLY|PRIVATE_Beta_ONLY/);
+    for (const other of projects.filter(other => other !== p)) assert.doesNotMatch(prompt, new RegExp(`PROJECT_${other.index}_ONLY`));
+    assert.equal(fs.existsSync(path.join(p.cwd, 'result.txt')), false);
+  }
+  await assert.rejects(hosts[0].client.call('project_memory_list', { assistant: ref(hosts[0].assistant), project: projects[1].project }), /authority|host|assign/i);
+  // Keep one unapproved proposal durable while active tasks and another host progress.
+  const p0 = projects[0];
+  const pendingInput = { ...p0.input, delegationId: 'pending-after-restart', expectedRevision: (await readAssistant(p0.host)).revision };
+  const pending = await p0.host.client.call('personal_project_delegate', pendingInput);
+  await p0.action('pause');
+  await hosts[0].client.call('personal_pause', { assistantId: 'asst-1', requestId: 'owner-pause', paused: true });
+  const heldProposal = (await p0.host.client.call('assistant_tasks_list', { owner: p0.owner })).tasks.find(task => task.id === pending.taskId);
+  await assert.rejects(p0.host.client.call('assistant_task_action', { taskId: heldProposal.id, owner: p0.owner, revision: heldProposal.revision, action: 'approve', mode: 'isolated', destination: p0.destination }), /paused/i);
+  for (const p of projects.slice(1)) {
+    const task = await p.read(), approval = task.resultData.pendingApprovals[0];
+    await p.host.client.call('room_decide', { id: task.executionThreadId, request: approval.request, approve: true, always: false });
+    fs.writeFileSync(path.join(f.root, `release-${p.index}`), 'go');
+  }
+  await hosts[0].client.call('personal_pause', { assistantId: 'asst-1', requestId: 'owner-resume', paused: false });
+  assert.equal((await p0.read()).pauseReason, 'manual', 'assistant Resume must preserve a manual task pause');
+  await p0.action('cancel');
+  const cancelled = await p0.read();
+  assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.attempts.length, 1);
+  for (const p of projects.slice(1)) {
+    p.ready = await eventually(`project ${p.index} result while Alpha paused/cancelled`, async () => { const task = await p.read(); return task.status === 'ready_for_review' ? task : false; });
+    assert.equal(p.ready.attempts.length, 1); assert.equal(fs.readFileSync(path.join(f.root, `runs-${p.index}`), 'utf8'), 'run\n');
+  }
+  const p = projects[1], task = p.ready, attempt = task.attempts[0];
+  const stageInput = { assistant: p.assistant, project: p.project, taskId: task.id, attempt: attempt.number, runId: attempt.runId, expectedTaskRevision: task.revision, text: 'Project 1 reviewed observation', kind: 'fact' };
+  const scratch = await p.host.client.call('project_memory_stage', stageInput);
+  const promotion = { ...stageInput, scratchId: scratch.id, promotionId: 'reviewed-promotion' }; delete promotion.text; delete promotion.kind;
+  await assert.rejects(p.host.client.call('project_memory_promote', { ...promotion, expectedTaskRevision: task.revision - 1 }), /changed|review|revision/i);
+  assert.equal((await p.host.client.call('project_memory_list', { assistant: p.assistant, project: p.project })).notes.length, 1, 'scratch/finished work do not silently promote memory');
+  const receipt = await p.host.client.call('project_memory_promote', promotion);
+  const replay = await p.host.client.call('project_memory_promote', { ...promotion, promotionId: 'fresh-delivery-id' });
+  assert.deepEqual(replay, receipt);
+  let notes = (await p.host.client.call('project_memory_list', { assistant: p.assistant, project: p.project })).notes;
+  assert.equal(notes.length, 2); const promoted = notes.find(note => note.id === receipt.noteId); assert.equal(promoted.version, 1);
+  const corrected = await p.host.client.call('project_memory_save', { assistant: p.assistant, project: p.project, id: promoted.id, expectedVersion: promoted.version, text: 'Corrected project observation', kind: 'fact' });
+  await assert.rejects(p.host.client.call('project_memory_save', { assistant: p.assistant, project: p.project, id: promoted.id, expectedVersion: promoted.version, text: 'Stale correction', kind: 'fact' }), /stale|changed|version/i);
+  await p.host.client.call('project_memory_forget', { assistant: p.assistant, project: p.project, id: corrected.id, expectedVersion: corrected.version });
+  notes = (await p.host.client.call('project_memory_list', { assistant: p.assistant, project: p.project })).notes;
+  assert.equal(notes.some(note => /observation|Stale correction/.test(note.text)), false);
+  for (const host of hosts) {
+    host.beforeRestart = await readAssistant(host);
+    await host.stop(); await host.start(); await host.connect();
+    const restored = await readAssistant(host);
+    assert.deepEqual(ref(restored), ref(host.beforeRestart)); assert.deepEqual(restored.look, host.beforeRestart.look); assert.deepEqual(restored.profile, host.beforeRestart.profile);
+  }
+  const pendingRestored = (await p0.host.client.call('assistant_tasks_list', { owner: p0.owner })).tasks.find(task => task.id === pending.taskId);
+  assert.equal(pendingRestored.status, 'proposed'); assert.equal(pendingRestored.attempts.length, 0);
+  assert.equal((await p0.read()).attempts.length, 1); assert.equal(fs.existsSync(path.join(f.root, 'runs-0')), false, 'cancelled approval never executes after restart');
+  await configure(p0.host, 'asst-1', { settings: { privacy: { localOnly: true, allowedEndpoints: [] } } });
+  await assert.rejects(p0.action('retry'), /local.only|nothing was sent|endpoint/i);
+  assert.equal((await p0.read()).status, 'cancelled', 'denied destination cannot clear cancellation or create another attempt');
+  await configure(p0.host, 'asst-1', { settings: { privacy: { localOnly: false, allowedEndpoints: [] } } });
+  await p0.action('retry');
+  const retryWaiting = await eventually('explicit new retry attempt approval', async () => { const task = await p0.read(); return task.attempts.length === 2 && task.resultData.pendingApprovals?.length ? task : false; });
+  assert.notEqual(retryWaiting.attempts[0].runId, retryWaiting.attempts[1].runId);
+  assert.deepEqual(retryWaiting.attempts[0], cancelled.attempts[0]);
+  await p0.host.client.call('room_decide', { id: retryWaiting.executionThreadId, request: retryWaiting.resultData.pendingApprovals[0].request, approve: true, always: false });
+  fs.writeFileSync(path.join(f.root, 'release-0'), 'go');
+  await eventually('retry result', async () => (await p0.read()).status === 'ready_for_review');
+  for (const p of projects) {
+    const ready = await p.read();
+    assert.equal(ready.status, 'ready_for_review'); assert.match(ready.resultData.reviewDiff, /result.txt/);
+    const replay = await p.host.client.call('personal_project_delegate', { ...p.input, expectedRevision: 1 });
+    assert.equal(replay.taskId, ready.id); assert.equal((await p.read()).attempts.length, p.index ? 1 : 2);
+    assert.equal(fs.readFileSync(path.join(f.root, `runs-${p.index}`), 'utf8'), 'run\n');
+    const assistant = await eventually('attributable once-only result', async () => { const a = await readAssistant(p.host); return a.messages.some(message => message.kind === 'result' && message.eventId === p.input.sourceEventId && message.text.includes(ready.id)) ? a : false; });
+    const resultMessages = assistant.messages.filter(message => message.kind === 'result' && message.eventId === p.input.sourceEventId && message.text.includes(ready.id));
+    assert.equal(resultMessages.length, p.index ? 1 : 2, 'each finished attempt delivers once to original assistant/event');
+    assert.equal(assistant.messages.some(message => message.kind === 'result' && projects.filter(other => other.host !== p.host).some(other => message.text.includes(other.receipt.taskId) && message.text.includes(other.workspaceId))), false);
+  }
+});
+
+test('delegation blocks forbidden worker endpoints at proposal and after privacy changes before approval', { timeout: 30_000 }, async t => {
+  const f = await workspaceFixture(t, 'adw-policy'), host = await f.host('host'), cwd = f.project('project');
+  const project = { hostId: host.hostId, workspaceId: 'project', cwd };
+  await host.client.call('session_save', { session: { version: 1, workspaces: [{ id: 'project', path: cwd, hostId: host.hostId }] } });
+  const assistant = await host.client.call('personal_create', { name: 'Private', folder: cwd, profile: f.profile });
+  await configure(host, assistant.id, { projects: [{ project, tools: 'full' }], settings: { privacy: { localOnly: true, allowedEndpoints: [] } } });
+  await host.client.call('room_create', { id: 'destination', cwd, options, participants: [{ id: 'worker', display_name: 'Worker', access: 'ask', backend: { kind: 'agent', tool: 'claude_code', model: null } }] });
+  const monitor = await host.client.call('monitor_assign', { workspaceId: 'project', cwd, hostId: 'local', text: 'Track requested work', files: [], threads: [], profile: f.profile });
+  const owner = { workspaceId: 'project', cwd, hostId: 'local', conversationId: monitor.conversationId };
+  await host.client.call('monitor_pause', { ...owner, paused: true });
+  const source = await host.client.call('personal_send', { assistantId: assistant.id, requestId: 'source', text: 'Inspect my confidential project.' });
+  const input = { assistantId: assistant.id, project, sourceEventId: source.eventId, delegationId: 'forbidden', brief: 'Inspect confidential project notes', destination: { threadId: 'destination', workers: ['worker'], newThread: false }, mode: 'read_only', reviewCriteria: [] };
+  const propose = async () => eventually('revision-bound policy proposal', async () => {
+    try { return await host.client.call('personal_project_delegate', { ...input, expectedRevision: (await readAssistant(host)).revision }); }
+    catch (error) { if (/changed|revision/i.test(error.message)) return false; throw error; }
+  });
+  await assert.rejects(propose(), /local.only|nothing was sent|endpoint/i);
+  assert.equal((await host.client.call('assistant_tasks_list', { owner })).tasks.length, 0);
+  await configure(host, assistant.id, { settings: { privacy: { localOnly: false, allowedEndpoints: [] } } });
+  const receipt = await propose();
+  await configure(host, assistant.id, { settings: { privacy: { localOnly: false, allowedEndpoints: ['127.0.0.1'] } } });
+  const task = (await host.client.call('assistant_tasks_list', { owner })).tasks.find(task => task.id === receipt.taskId);
+  await assert.rejects(host.client.call('assistant_task_action', { taskId: task.id, owner, revision: task.revision, action: 'approve', mode: 'read_only', destination: input.destination }), /allowed.*endpoint|nothing was sent/i);
+  const held = (await host.client.call('assistant_tasks_list', { owner })).tasks.find(row => row.id === task.id);
+  assert.equal(held.status, 'proposed'); assert.equal(held.attempts.length, 0); assert.equal(held.executionThreadId, null);
+});
 
 test('natural named-worker read-only tasks keep questions human-owned and persist spend pauses across restart', { timeout: 60_000 }, async t => {
   const base = fs.realpathSync(fs.mkdtempSync('/tmp/ade-v3-budget-'));

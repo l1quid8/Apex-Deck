@@ -10,6 +10,9 @@ import { createHostBackends } from '../../src/hostBackends.ts';
 import { createEventHub } from '../../src/eventHub.ts';
 import { socketLink } from './link.mjs';
 import { FolderMoveUnsupported, MoveRefused, placeThread } from '../../src/threadMove.ts';
+import { createHash } from 'node:crypto';
+import { workspaceFixture, eventually, readAssistant, ref, configure, assertOfflinePixelFallback } from './workspace-fixture.mjs';
+import { createAvatarEditor, reduceAvatarEditor } from '../../src/assistantAvatar.ts';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, ms = 10000) {
@@ -60,6 +63,90 @@ const bot = label => ({
   id: 'bot', display_name: label,
   backend: { kind: 'cli', program: 'sh', args: ['-c', 'echo ' + label] },
 });
+
+test('same local assistant IDs retain independent runtime, applied generated avatars and spend receipts across host restart', { timeout: 60_000 }, async t => {
+  const f = await workspaceFixture(t, 'adw-avatars');
+  const hosts = [await f.host('alpha'), await f.host('beta')];
+  assert.notEqual(hosts[0].hostId, hosts[1].hostId);
+  const saved = [];
+  for (const [index, host] of hosts.entries()) {
+    await host.client.call('session_save', { session: { version: 1, profiles: [f.profile] } });
+    const creation = { kind: 'creation', hostId: host.hostId, draftId: `draft-${index}` };
+    const create = { name: index ? 'Beta' : 'Alpha', folder: path.join(f.root, `assistant-${index}`), profile: f.profile, workspaceVersion: 4, look: { seed: `seed-${index}`, color: index ? '#3355aa' : '#aa5533', shape: 'pixel' } };
+    let assistant;
+    let owner;
+    if (index) {
+      assistant = await host.client.call('personal_create', create);
+      owner = { kind: 'assistant', assistant: ref(assistant) };
+    } else owner = creation;
+    const offered = await host.client.call('personal_avatar_options', { owner });
+    assert.deepEqual(offered.options.map(({ providerProfileId, modelId, estimatedCostMicros }) => ({ providerProfileId, modelId, estimatedCostMicros })), [{ providerProfileId: 'fixture-avatar-provider', modelId: 'fixture-avatar-image', estimatedCostMicros: 40_000 }]);
+    const input = { owner, generationId: 'same-generation', editorToken: 'same-editor', providerProfileId: 'fixture-avatar-provider', modelId: 'fixture-avatar-image', prompt: 'A geometric compass' };
+    let editor = reduceAvatarEditor(createAvatarEditor(owner, input.editorToken), { type: 'generate', generationId: input.generationId, editorToken: input.editorToken });
+    const pending = await host.client.call('personal_avatar_generate', input);
+    assert.equal(pending.state, 'pending');
+    const preview = await eventually('real normalized avatar preview', async () => {
+      const job = await host.client.call('personal_avatar_status', { owner, generationId: input.generationId });
+      if (job.state === 'error') throw new Error(job.error);
+      return job.state === 'preview' ? job : null;
+    });
+    assert.deepEqual((await host.client.call('personal_avatar_generate', input)).candidate, preview.candidate, 'same generation reconciles without another paid dispatch');
+    editor = reduceAvatarEditor(editor, { type: 'result', job: preview });
+    assert.equal(editor.selection, undefined, 'preview is not Apply');
+    if (assistant) assert.notEqual((await readAssistant(host)).look.kind, 'image', 'Generate cannot apply an avatar');
+    else assert.deepEqual(await host.client.call('personal_list', {}), [], 'creation preview cannot create an assistant');
+    editor = reduceAvatarEditor(editor, { type: 'apply' });
+    if (!index) assistant = await host.client.call('personal_create', { ...create, avatarDraftId: creation.draftId, avatarGenerationId: editor.selection.generationId, avatarAssetId: editor.selection.assetId });
+    else assistant = await configure(host, assistant.id, { avatar: editor.selection });
+    assert.equal(assistant.id, 'asst-1');
+    assistant = await configure(host, assistant.id, { settings: { name: `${create.name} saved` }, profile: { ...f.profile, id: `owned-${index}`, display_name: `Owned ${index}`, access: 'full', effort: null } });
+    assert.equal(assistant.profile.access, 'full'); assert.equal(assistant.profile.backend.model, 'fixture-text'); assert.equal(assistant.profile.effort ?? null, null);
+    assert.equal(assistant.look.kind, 'image'); assert.equal(assistant.look.seed, create.look.seed); assert.equal(assistant.look.color, create.look.color);
+    const images = assistant.costs.filter(cost => cost.kind === 'image');
+    assert.equal(images.length, 1); assert.equal(images[0].micros, 40_000);
+    assert.deepEqual((await host.client.call('session_load', {})).profiles, [f.profile], 'assistant-owned settings never edit source Agents profiles');
+    saved.push({ assistant, input, preview, editor, owner });
+  }
+  assert.notEqual(saved[0].assistant.look.image.sha256, saved[1].assistant.look.image.sha256);
+  const wrongHost = { kind: 'assistant', assistant: ref(saved[0].assistant) };
+  await assert.rejects(hosts[1].client.call('personal_avatar_status', { owner: wrongHost, generationId: 'same-generation' }), /host|owner/i);
+  await assert.rejects(hosts[1].client.call('personal_avatar_asset', { assistantId: 'asst-1', assetId: saved[0].assistant.look.image.assetId, sha256: saved[0].assistant.look.image.sha256 }), /asset|owner|applied/i);
+  for (const [index, host] of hosts.entries()) {
+    const before = saved[index].assistant;
+    await host.stop(); await host.start();
+    assert.equal(host.hostId, before.hostId);
+    const second = await host.connect();
+    const restored = await second.call('personal_get', { assistantId: before.id });
+    assert.deepEqual(restored.look, before.look); assert.deepEqual(restored.profile, before.profile);
+    const { assetId, sha256 } = restored.look.image;
+    const asset = await second.call('personal_avatar_asset', { assistantId: restored.id, assetId, sha256 });
+    const bytes = Buffer.from(asset.base64, 'base64');
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), sha256);
+    assert.equal(bytes.readUInt32BE(16), 512); assert.equal(bytes.readUInt32BE(20), 512);
+    assert.equal(restored.costs.filter(cost => cost.kind === 'image').length, 1, 'restart does not regenerate or rebill');
+  }
+  const host = hosts[1], before = await readAssistant(host), owner = { kind: 'assistant', assistant: ref(before) };
+  const cancelInput = { ...saved[1].input, owner, generationId: 'cancelled', editorToken: 'cancelled' };
+  await host.client.call('personal_avatar_generate', cancelInput);
+  await host.client.call('personal_avatar_cancel', { owner, generationId: cancelInput.generationId });
+  const cancelled = await host.client.call('personal_avatar_status', { owner, generationId: cancelInput.generationId });
+  assert.equal(cancelled.state, 'cancelled');
+  await assert.rejects(configure(host, before.id, { avatar: { kind: 'image', generationId: cancelInput.generationId, assetId: before.look.image.assetId } }), /cancelled|stale/i);
+  assert.deepEqual((await readAssistant(host)).look, before.look);
+  const newer = reduceAvatarEditor(saved[1].editor, { type: 'generate', generationId: 'newer', editorToken: 'newer' });
+  assert.equal(reduceAvatarEditor(newer, { type: 'result', job: saved[1].preview }), newer, 'late actual completion cannot replace a newer editor');
+  await assertOfflinePixelFallback(before, before.look.image);
+  const current = await readAssistant(host);
+  await assert.rejects(host.client.call('personal_workspace_configure', { assistantId: current.id, expectedRevision: current.revision - 1, settings: { name: 'stale rename' }, avatar: { kind: 'pixel' } }), /changed|revision/i);
+  assert.deepEqual((await readAssistant(host)).look, before.look);
+  const reset = await configure(host, before.id, { avatar: { kind: 'pixel' } });
+  assert.equal(reset.look.kind, 'pixel'); assert.equal(reset.look.image, undefined); assert.equal(reset.look.seed, before.look.seed); assert.equal(reset.look.color, before.look.color);
+  assert.equal(reset.costs.filter(cost => cost.kind === 'image').length, 2, 'cancel after dispatch retains its cost reservation');
+  await host.stop(); await host.start();
+  assert.deepEqual((await readAssistant(host)).look, reset.look);
+  assert.equal((await host.client.call('personal_avatar_status', { owner, generationId: cancelInput.generationId })).state, 'cancelled');
+  assert.deepEqual((await readAssistant(hosts[0])).look, saved[0].assistant.look, 'other same-ID owner remains unchanged');
+});
 test('real host backends isolate a drop and do not replay rejected text', { timeout: 30000 }, async t => {
   const mac = await daemon(t); const server = await daemon(t);
   assert.notEqual(mac.welcome.host_id, server.welcome.host_id);
@@ -101,6 +188,33 @@ test('real host backends isolate a drop and do not replay rejected text', { time
     e.type === 'message_added' && e.message.text === 'server-reply'), false);
   assert.equal(heard.some(([host, e]) => host === 'h-at' &&
     e.type === 'message_added' && e.message.text === 'mac-reply'), false);
+});
+
+test('creation draft charges survive cancel or reset to pixel and consumed drafts cannot dispatch again', { timeout: 30_000 }, async t => {
+  const f = await workspaceFixture(t, 'adw-draft'), host = await f.host('host');
+  await host.client.call('session_save', { session: { version: 1, profiles: [f.profile] } });
+  for (const action of ['cancel', 'reset']) {
+    const owner = { kind: 'creation', hostId: host.hostId, draftId: `draft-${action}` };
+    const input = { owner, generationId: 'generation', editorToken: 'editor', providerProfileId: 'fixture-avatar-provider', modelId: 'fixture-avatar-image', prompt: `${action} candidate` };
+    await host.client.call('personal_avatar_generate', input);
+    if (action === 'cancel') await host.client.call('personal_avatar_cancel', { owner, generationId: input.generationId });
+    else await eventually('unapplied creation preview', async () => (await host.client.call('personal_avatar_status', { owner, generationId: input.generationId })).state === 'preview');
+    // draftId carries bookkeeping, while omission of generation/asset expresses
+    // the user's explicit pixel selection. It cannot attach an unapplied image.
+    const create = { name: `Pixel ${action}`, folder: path.join(f.root, action), profile: f.profile, workspaceVersion: 4, avatarDraftId: owner.draftId, look: { seed: `pixel-${action}`, color: '#336699', kind: 'pixel' } };
+    const assistant = await host.client.call('personal_create', create);
+    assert.equal(assistant.look.kind, 'pixel'); assert.equal(assistant.look.image, undefined);
+    assert.deepEqual(assistant.costs.filter(cost => cost.kind === 'image').map(cost => cost.micros), [40_000]);
+    await assert.rejects(host.client.call('personal_create', create), /already|draft/i);
+    await assert.rejects(host.client.call('personal_avatar_generate', { ...input, generationId: 'late-reservation' }), /consumed|draft/i);
+    await assert.rejects(host.client.call('personal_avatar_status', { owner, generationId: 'late-reservation' }), /not found|missing|unknown/i);
+    assert.equal((await readAssistant(host, assistant.id)).costs.filter(cost => cost.kind === 'image').length, 1);
+  }
+  await host.stop(); await host.start();
+  for (const assistant of await host.client.call('personal_list', {})) {
+    assert.equal(assistant.look.kind, 'pixel'); assert.equal(assistant.look.image, undefined);
+    assert.equal(assistant.costs.filter(cost => cost.kind === 'image').length, 1);
+  }
 });
 
 // Moving a thread that hasn't started: what it had must still be somewhere whole.
