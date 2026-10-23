@@ -1,14 +1,14 @@
 # Apex Deck
 
 A desktop workspace for running coding agents side by side, with group chats
-where several models share one conversation, a personal assistant that hands
-work to them, and an iPhone app to follow along from anywhere.
+where several models share one conversation, a team of named assistants that
+hand work to them, and an iPhone app to follow along from anywhere.
 
 Apex Deck is open source (MIT) and runs on your own machines. It does not
 include any model usage: you bring your own command-line agents and API keys.
 
-**Status: early, moving fast.** Current release: **0.6.1** (Mac app, Linux
-daemon). iPhone: TestFlight **1.1 (5)**. Expect rough edges. Release notes are
+**Status: early, moving fast.** Current release: **0.9.0** (Mac app, Linux
+daemon). iPhone: TestFlight **1.1 (16)**. Expect rough edges. Release notes are
 in [docs/releases](docs/releases).
 
 ## What's in it
@@ -34,12 +34,18 @@ Apex Deck for bots reached through an API.
 Tools that can spend money or publish ask every time, even at Full access,
 unless you choose Always allow for that tool in that thread.
 
-**ApexAgent, a personal assistant.** A floating avatar opens one
-conversation across all your projects, with Chat, Tasks and Notifications.
-Ask for something and it plans a task, waits for your Approve where needed,
-hands the work to a thread bot, and reports back on one updating card. It
-keeps memory, rules and schedules, and can watch projects for you. Messages
-can be read aloud. See [docs/apexagent-delegation.md](docs/apexagent-delegation.md).
+**Your team of assistants.** Add named teammates under **Team** in the
+sidebar. Each has its own conversation, memory, projects and avatar. Brief a
+teammate in **Chat** and it plans the work, hands it to your agents in its
+projects, waits for your Approve where needed, and brings the result back as a
+card you review in one step. **Work** lists what needs you, what is running,
+its projects and what finished. Teammates keep memory, rules and schedules,
+and one status (Needs you, Failed, Working, Paused, Offline) shows the same
+everywhere. See [docs/apexagent-delegation.md](docs/apexagent-delegation.md).
+
+**Voice calls.** The microphone beside Send starts a call with a bot in the
+thread, with a voice per bot and mute. Speech runs locally on the Mac after an
+optional download.
 
 **iPhone app.** Pair a phone by scanning a QR code in Settings → Remote
 access and approving it on the Mac. The phone then reaches your machines on
@@ -52,8 +58,10 @@ and a voice call are on the phone.
 across every paired machine, on Mac and phone. Image and video models from
 custom providers can join a thread and are woken only when you tag them.
 
-**Your look.** Optional glass skins, background patterns, glow and accent
-colours, in Settings → Appearance.
+**Your look.** Classic, glass skins (Smoked, Tide, Dusk, Rose, Frost,
+Liquid) and the warm Clay theme in light or dark, plus background patterns,
+glow and accent colours, in Settings → Appearance. Every screen, the team
+included, follows the theme you pick.
 
 ## Requirements
 
