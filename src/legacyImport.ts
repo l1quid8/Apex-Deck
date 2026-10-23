@@ -10,9 +10,9 @@ export type LegacyLedgerName =
   | "assistant-tasks-v1.json" | "assistant-conversations-v1.json" | "room-authority-v1.json"
   | "personal-assistants.json" | "personal-machine.json";
 /** Only these can be imported by this host version. */
-export const IMPORTABLE_LEDGERS: readonly LegacyLedgerName[] = ["assistant-tasks-v1.json", "assistant-conversations-v1.json", "room-authority-v1.json"];
+export const IMPORTABLE_LEDGERS: readonly LegacyLedgerName[] = ["assistant-tasks-v1.json", "assistant-conversations-v1.json", "room-authority-v1.json", "personal-assistants.json"];
 export type LegacyLedgerState = "ready" | "imported" | "conflict" | "missing" | "unreadable" | "unavailable" | "notSupported";
-export type LegacyRecordKind = "task" | "conversation" | "room";
+export type LegacyRecordKind = "task" | "conversation" | "room" | "assistant" | "memory" | "schedule" | "rule" | "approval" | "grant" | "personalTask" | "history";
 export type LegacyRow = { id: string; kind: LegacyRecordKind; title: string; originalStatus: string; importStatus: string; reason: string };
 export type LegacyProblem = { id: string; reason: string };
 export type LegacyLedgerPreview = {
@@ -23,7 +23,7 @@ export type LegacySnapshot = { id: string; path: string; createdAtMs: number; re
 export type LegacyImportPreview = { snapshot: LegacySnapshot | null; ledgers: LegacyLedgerPreview[] };
 export type LegacyLedgerResult = {
   ledger: LegacyLedgerName; state: "imported" | "alreadyImported" | "failed" | "notAttempted";
-  imported: number; skipped: number; verified: boolean; importedAtMs?: number; error?: string | null;
+  imported: number; skipped: number; skippedIds?: string[]; verified: boolean; importedAtMs?: number; error?: string | null;
 };
 export type LegacyImportResult = { snapshot: string; complete: boolean; ledgers: LegacyLedgerResult[] };
 /** A full legacy transcript from the hashed snapshot. `record` is the original, unverified JSON. */
@@ -39,7 +39,7 @@ export type LegacyImportApi = {
 
 const ledgerNames = new Set<string>(["assistant-tasks-v1.json", "assistant-conversations-v1.json", "room-authority-v1.json", "personal-assistants.json", "personal-machine.json"]);
 const states = new Set<string>(["ready", "imported", "conflict", "missing", "unreadable", "unavailable", "notSupported"]);
-const kinds = new Set<string>(["task", "conversation", "room"]);
+const kinds = new Set<string>(["task", "conversation", "room", "assistant", "memory", "schedule", "rule", "approval", "grant", "personalTask", "history"]);
 const resultStates = new Set<string>(["imported", "alreadyImported", "failed", "notAttempted"]);
 const text = (value: unknown): value is string => typeof value === "string";
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -72,7 +72,8 @@ function checkResult(value: unknown, snapshot: string): LegacyImportResult {
   if (!object(value) || value.snapshot !== snapshot || typeof value.complete !== "boolean" || !Array.isArray(value.ledgers)) invalid("result");
   for (const ledger of value.ledgers as unknown[]) {
     if (!object(ledger) || !ledgerNames.has(ledger.ledger as string) || !resultStates.has(ledger.state as string) || !count(ledger.imported) || !count(ledger.skipped)
-      || typeof ledger.verified !== "boolean" || (ledger.error != null && !text(ledger.error))) invalid("ledger result");
+      || typeof ledger.verified !== "boolean" || (ledger.error != null && !text(ledger.error))
+      || (ledger.skippedIds !== undefined && (!Array.isArray(ledger.skippedIds) || !ledger.skippedIds.every(text)))) invalid("ledger result");
   }
   return structuredClone(value as LegacyImportResult);
 }

@@ -406,6 +406,8 @@ pub struct PersonalMessage {
     /// Reactions from the authenticated human account, shared by its devices.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -763,7 +765,7 @@ impl PersonalAssistant {
 
     pub(crate) fn post(&mut self, role: &str, kind: &str, text: String, task_id: Option<String>, event_id: Option<String>, at: u64) {
         let id = self.next_message_id();
-        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new() });
+        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new(), legacy: None });
         if self.messages.len() > MAX_MESSAGES {
             let extra = self.messages.len() - MAX_MESSAGES;
             self.messages.drain(..extra);
@@ -928,6 +930,8 @@ impl crate::Host {
             return crate::legacy_import::same_source(&existing, &mark.source_sha256).map(|()| LegacyImportOutcome::AlreadyImported(existing));
         }
         let mut added = vec![];
+        mark.skipped += plan.skipped_ids.len();
+        mark.skipped_ids.extend(plan.skipped_ids);
         for assistant in plan.assistants {
             if document.assistants.iter().any(|a| a.id == assistant.id) {
                 mark.skipped += 1;

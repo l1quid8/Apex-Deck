@@ -139,3 +139,14 @@ G2a review (opus): Needs fixes — Important: personal/machine not previewed per
 - Ruling: import personal assistants now (facts legacy, rules/approvals ungranted, tasks proposed/interrupted, schedules paused); machine grants previewed not imported — later tasks build on personal records and spec requires preserving personal memories — cost: larger G2a.
 G2a: minor (deferred): conversations imported before tasks lose taskId link permanently; conversation envelope budget fails whole ledger above ~2000 records; legacy task owner.cwd/threadIds kept verbatim → G2b/retry UI must show cwd.
 G2a: fix round 1 sent.
+
+## Null continuation — fix/assistant-workspace-completion
+
+- Resumed clean worktree at 6b2e21e; preserved the original docs branch and main checkout. The WIP already wired personal import and per-room deduplication, despite the earlier handoff summary.
+- Independent review found and resolved legacy process recovery authority on settled tasks, automatic read approvals, missing model-context attribution, duplicate decision IDs from stale counters, and skipped-record accounting. See CONTINUATION.md for the concrete mappings.
+- Ruling: preserve local folders as scope ceilings, force all imported modes to Ask/HandOff, and require fresh protected decisions/settings for execution — clearing folders would strand imported assistants because no folder editor exists — cost: future changes must preserve this per-operation authorization boundary.
+- Ruling: omit legacy HandoffReceipt entries from the active index and count them as skipped; preserve their original bytes in the snapshot — avoids replayable legacy delivery authority — cost: historical handoffs need a new proposal.
+- Scoped independent review approved final G2a host/client changes, including the final rejected-assistant accounting regression (1/1 independently passed). G3 broader security review remains pending.
+- Final checks: npm 2092, TypeScript and diff whitespace passed; full default Rust 1303 passed, zero failed, 8 existing ignored; isolated production-check 3 passed separately. Initial inherited long TMPDIR caused seven attach fixtures to exceed macOS sun_path; use TMPDIR=/tmp for Rust acceptance.
+- G2a: complete within host/client scope; scoped independent review approved and final regression suites passed. G2b/G4/G3 and installed acceptance remain pending; this does not pass the production gate.
+- Next: Forge G2b, Deepgeek G4 then G3, Null contracts/integration; no source or installed claim for Tasks 4–8 until the mandatory gate.

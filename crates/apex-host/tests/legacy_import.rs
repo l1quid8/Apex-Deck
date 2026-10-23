@@ -349,12 +349,11 @@ fn exact_retry_is_idempotent_and_changed_content_under_the_same_ledger_is_reject
     let written: Vec<Vec<u8>> = ledgers.iter().map(|p| std::fs::read(protected_fixture_path(p)).unwrap()).collect();
 
     let second = f.apply(args).unwrap();
-    for (name, path) in [TASKS, CONVERSATIONS, ROOMS].iter().zip(&ledgers) {
-        let entry = second["ledgers"].as_array().unwrap().iter().find(|l| l["ledger"] == *name).unwrap();
+    for name in [TASKS, CONVERSATIONS, ROOMS] {
+        let entry = second["ledgers"].as_array().unwrap().iter().find(|l| l["ledger"] == name).unwrap();
         assert_eq!(entry["state"], "alreadyImported", "{second}");
-        let original = first["ledgers"].as_array().unwrap().iter().find(|l| l["ledger"] == *name).unwrap();
+        let original = first["ledgers"].as_array().unwrap().iter().find(|l| l["ledger"] == name).unwrap();
         assert_eq!(entry["imported"], original["imported"]);
-        let _ = path;
     }
     let after: Vec<Vec<u8>> = ledgers.iter().map(|p| std::fs::read(protected_fixture_path(p)).unwrap()).collect();
     assert_eq!(after, written, "an exact retry wrote again");
@@ -370,6 +369,232 @@ fn exact_retry_is_idempotent_and_changed_content_under_the_same_ledger_is_reject
     let refused = match result { Err(error) => error, Ok(value) => value.to_string() };
     assert!(refused.contains("different legacy content"), "{refused}");
     assert_eq!(std::fs::read(protected_fixture_path(&ledgers[0])).unwrap(), written[0]);
+}
+
+#[test]
+fn newly_discovered_rooms_can_be_imported_after_an_earlier_room_import() {
+    let f = Fixture::new("incremental-rooms", |data| write_json(&room_file(data, ROOM_ID), &legacy_room()));
+    let first = f.preview();
+    let original_args = Fixture::apply_args(&first);
+    assert_eq!(f.apply(original_args.clone()).unwrap()["complete"], true);
+    let authority = protected_fixture_path(&f.data.join("saved-chats-v1").join(ROOMS));
+    let before: Value = serde_json::from_slice(&std::fs::read(&authority).unwrap()).unwrap();
+
+    write_json(&room_file(&f.data, "later-room"), &legacy_room());
+    let second = f.preview();
+    assert_eq!(ledger(&second, ROOMS)["state"], "ready");
+    assert_eq!(ledger(&second, ROOMS)["counts"]["importable"], 1);
+    assert_eq!(ledger(&second, ROOMS)["records"][0]["id"], "later-room");
+    let result = f.apply(Fixture::apply_args(&second)).unwrap();
+    assert_eq!(result["complete"], true, "{result}");
+    assert_eq!(result["ledgers"][0]["imported"], 1);
+    let after: Value = serde_json::from_slice(&std::fs::read(&authority).unwrap()).unwrap();
+    assert_eq!(after[ROOM_ID], before[ROOM_ID], "the earlier manifest is preserved");
+    assert_eq!(after["later-room"]["legacy"]["verified"], false);
+    assert_eq!(ledger(&f.preview(), ROOMS)["state"], "imported");
+    let bytes = std::fs::read(&authority).unwrap();
+    assert_eq!(f.apply(original_args).unwrap()["ledgers"][0]["state"], "alreadyImported");
+    assert_eq!(std::fs::read(&authority).unwrap(), bytes);
+}
+
+#[test]
+fn machine_grant_preview_counts_every_grant_as_not_imported() {
+    const MACHINE: &str = "personal-machine.json";
+    let f = Fixture::new("machine-grants", |data| {
+        write_json(&data.join("saved-chats-v1").join(MACHINE), &json!({"allows": [
+            {"hostId":"local","assistantHostId":"owner","assistantId":"asst-1","folder":"/one"},
+            {"hostId":"local","assistantHostId":"owner","assistantId":"asst-1","folder":"/two"}
+        ]}));
+    });
+    let preview = f.preview();
+    let grants = ledger(&preview, MACHINE);
+    assert_eq!(grants["state"], "notSupported");
+    assert_eq!(grants["counts"]["records"], 2);
+    assert_eq!(grants["counts"]["importable"], 0);
+    assert_eq!(grants["counts"]["notImported"], 2);
+    let rows = grants["records"].as_array().unwrap();
+    assert_ne!(rows[0]["id"], rows[1]["id"], "each grant needs its own preview identity");
+    assert!(rows.iter().all(|row| row["importStatus"] == "notImported"));
+    assert!(!protected_fixture_path(&f.data.join("saved-chats-v1").join(MACHINE)).exists());
+}
+
+fn legacy_personal_assistant() -> Value {
+    let task = |id: &str, status: &str| json!({
+        "id":id,"goal":"Old command","completionCriteria":[],"targetHost":"owner","status":status,
+        "operation":{"tool":"host.command","host":"owner","cwd":"/proj","argv":["true"]},
+        "decision":{"id":format!("pd-{}", id.strip_prefix("pt-").unwrap()),"kind":"approve","paramsHash":"old-hash","prompt":"Run it?","status":"approved","openedAt":1},"fromEvent":"pe-1","maxAttempts":3,"createdAt":1,"updatedAt":2,
+        "receipts":[{"opId":"op-1","paramsHash":"old-hash","phase":"attempted","startedAt":1,
+            "process":{"pgid":4294967295u32,"started":1}}]
+    });
+    json!({
+        "id":"asst-1","name":"Original","style":"Keep this style","hostId":"owner","profile":null,
+        "allowedFolders":["/proj"],"paused":false,"revision":4,"createdAt":1,
+        "counters":{"message":1,"event":1,"task":3,"decision":1},
+        "look":{"color":"#123456","seed":"original"},"typeLabel":"legacy helper",
+        "modes":{"read":"auto","write":"auto","send":"auto","spend":"auto"},
+        "budget":{"unknownCostOk":true},
+        "rules":[{"id":"pr-1","text":"Always ask before sending","class":"send","mode":"ask","createdAt":1}],
+        "messages":[{"id":"pm-1","role":"human","kind":"chat","text":"Old request","at":1}],
+        "events":[{"id":"pe-1","requestId":"req-old","source":{"kind":"human","text":"Old request"},"receivedAt":1,"state":"held","spendApproved":true}],
+        "tasks":[task("pt-1","queued"),task("pt-2","running"),task("pt-3","done")],
+        "facts":[
+            {"id":"f-1","text":"Earlier","kind":"fact","explicit":true,"confidence":90,"source":{"messageId":"pm-1"},"createdAt":1,"supersededBy":"f-2","deletedAt":3},
+            {"id":"f-2","text":"Corrected","kind":"fact","explicit":true,"confidence":90,"source":{"messageId":"pm-1"},"createdAt":2,"deletedAt":3}
+        ],
+        "schedules":[{"id":"ps-1","goal":"Check status","argv":["true"],"everyMs":60000,"nextAt":1,"status":"active","createdAt":1,"paramsHash":"old-hash","decision":{"id":"pd-4","kind":"schedule","paramsHash":"old-hash","prompt":"Schedule it?","status":"approved","openedAt":1}}],
+        "machines":[{"hostId":"other","name":"Other Mac","folder":"/remote"}]
+    })
+}
+
+#[test]
+fn personal_import_preserves_identity_and_memory_chains_but_never_revives_authority() {
+    const PERSONAL: &str = "personal-assistants.json";
+    let f = Fixture::new("personal", |data| write_json(&data.join("saved-chats-v1").join(PERSONAL), &json!({"version":1,"assistants":[legacy_personal_assistant()]})));
+    let preview = f.preview();
+    let personal = ledger(&preview, PERSONAL);
+    assert_eq!(personal["state"], "ready", "{personal}");
+    let rows = personal["records"].as_array().unwrap();
+    for kind in ["assistant", "memory", "schedule", "rule", "approval", "grant"] {
+        assert!(rows.iter().any(|row| row["kind"] == kind), "missing {kind}: {personal}");
+    }
+    let result = f.apply(Fixture::apply_args(&preview)).unwrap();
+    assert_eq!(result["complete"], true, "{result}");
+    let path = protected_fixture_path(&f.data.join("saved-chats-v1").join(PERSONAL));
+    let bytes = std::fs::read(&path).unwrap();
+    let stored: Value = serde_json::from_slice(&bytes).unwrap();
+    let assistant = &stored["assistants"][0];
+    assert_eq!(assistant["name"], "Original");
+    assert_eq!(assistant["look"]["seed"], "original");
+    assert_eq!(assistant["typeLabel"], "legacy helper");
+    assert_eq!(assistant["legacy"]["verified"], false);
+    assert_eq!(assistant["facts"][0]["supersededBy"], "f-2");
+    for fact in assistant["facts"].as_array().unwrap() {
+        assert_eq!(fact["deletedAt"], 3);
+        assert_eq!(fact["explicit"], false);
+        assert_eq!(fact["legacy"]["verified"], false);
+    }
+    for class in ["read", "write", "send", "spend"] { assert_eq!(assistant["modes"][class], "ask"); }
+    assert_eq!(assistant["allowedFolders"], json!(["/proj"]), "scope survives; all actions still ask");
+    assert_eq!(assistant["legacy"]["originalAllowedFolders"], json!(["/proj"]));
+    assert_eq!(assistant["messages"][0]["legacy"]["verified"], false);
+    assert_eq!(assistant["budget"]["unknownCostOk"], false);
+    assert!(assistant["machines"].as_array().unwrap().is_empty());
+    assert_eq!(assistant["schedules"][0]["status"], "proposed");
+    assert_eq!(assistant["schedules"][0]["nextAt"], Value::Null);
+    assert_eq!(assistant["schedules"][0]["decision"]["status"], "open");
+    assert_eq!(assistant["events"][0]["state"], "failed");
+    assert_eq!(assistant["events"][0]["spendApproved"], false);
+    for task in assistant["tasks"].as_array().unwrap() {
+        assert_ne!(task["status"], "queued");
+        assert_ne!(task["status"], "running");
+        for receipt in task["receipts"].as_array().unwrap() {
+            assert_ne!(receipt["phase"], "attempted", "legacy receipts cannot trigger recovery: {task}");
+            assert_eq!(receipt["process"], Value::Null, "legacy process ids must never be signalled: {task}");
+        }
+    }
+    let again = f.apply(Fixture::apply_args(&preview)).unwrap();
+    assert_eq!(again["ledgers"][0]["state"], "alreadyImported");
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn personal_import_repairs_stale_counters_before_allocating_decisions() {
+    const PERSONAL: &str = "personal-assistants.json";
+    let f = Fixture::new("personal-counters", |data| {
+        let mut assistant = legacy_personal_assistant();
+        assistant["counters"] = json!({"message":0,"event":0,"task":0,"decision":0});
+        assistant["schedules"][0].as_object_mut().unwrap().remove("decision");
+        write_json(&data.join("saved-chats-v1").join(PERSONAL), &json!({"version":1,"assistants":[assistant]}));
+    });
+    let preview = f.preview();
+    assert_eq!(f.apply(Fixture::apply_args(&preview)).unwrap()["complete"], true);
+    let stored: Value = serde_json::from_slice(&std::fs::read(protected_fixture_path(&f.data.join("saved-chats-v1").join(PERSONAL))).unwrap()).unwrap();
+    let assistant = &stored["assistants"][0];
+    assert_eq!(assistant["schedules"][0]["decision"]["id"], "pd-4");
+    for (counter, expected) in [("message",1),("event",1),("task",3),("decision",4),("fact",2),("schedule",1),("rule",1)] {
+        assert_eq!(assistant["counters"][counter], expected, "{counter}");
+    }
+}
+
+#[test]
+fn personal_preview_rejects_duplicate_ids_and_exhausted_counters() {
+    const PERSONAL: &str = "personal-assistants.json";
+    for invalid in ["duplicate", "exhausted"] {
+        let f = Fixture::new(invalid, |data| {
+            let mut assistant = legacy_personal_assistant();
+            if invalid == "duplicate" { assistant["tasks"][1]["decision"]["id"] = json!("pd-1"); }
+            else { assistant["counters"]["message"] = json!(u64::MAX); }
+            write_json(&data.join("saved-chats-v1").join(PERSONAL), &json!({"version":1,"assistants":[assistant]}));
+        });
+        let preview = f.preview();
+        let personal = ledger(&preview, PERSONAL);
+        assert_eq!(personal["counts"]["importable"], 0, "{personal}");
+        assert!(!personal["problems"].as_array().unwrap().is_empty(), "{personal}");
+        assert!(!protected_fixture_path(&f.data.join("saved-chats-v1").join(PERSONAL)).exists());
+    }
+}
+
+#[test]
+fn rooms_are_still_imported_when_the_task_document_cannot_be_written() {
+    let f = Fixture::new("partial-write", write_all_legacy);
+    let preview = f.preview();
+    std::fs::create_dir_all(protected_fixture_path(&f.data.join(TASKS))).unwrap();
+    let result = f.apply(Fixture::apply_args(&preview)).unwrap();
+    assert_eq!(result["complete"], false, "{result}");
+    let entries = result["ledgers"].as_array().unwrap();
+    assert_eq!(entries.iter().find(|l| l["ledger"] == TASKS).unwrap()["state"], "failed");
+    assert_eq!(entries.iter().find(|l| l["ledger"] == CONVERSATIONS).unwrap()["state"], "notAttempted");
+    assert_eq!(entries.iter().find(|l| l["ledger"] == ROOMS).unwrap()["verified"], true);
+    assert!(apex_host::storage::Store::new(f.data.join("saved-chats-v1")).room(ROOM_ID).unwrap().is_some());
+}
+
+#[test]
+fn apply_reports_requests_and_handoffs_that_are_not_imported() {
+    let f = Fixture::new("skipped-receipts", |data| {
+        let mut legacy = legacy_tasks();
+        legacy["handoffs"]["handoff-old"] = json!({"task_id":"task-1","payload":{
+            "requestId":"handoff-old","batchId":"batch-old","owner":owner(),"revision":1,
+            "originalRequest":"Old request","brief":"Old brief","destination":{"threadId":"build","workers":["null"],"newThread":false},
+            "mode":"isolated","reviewCriteria":[]
+        }});
+        write_json(&data.join(TASKS), &legacy);
+        let mut protected = legacy_tasks();
+        protected["tasks"] = json!({});
+        protected["executions"] = json!({});
+        protected["requests"]["req-a"]["text"] = json!("Protected request");
+        write_json(&protected_fixture_path(&data.join(TASKS)), &protected);
+    });
+    let preview = f.preview();
+    let result = f.apply(Fixture::apply_args(&preview)).unwrap();
+    assert_eq!(result["complete"], true, "{result}");
+    let entry = &result["ledgers"][0];
+    let skipped = entry["skippedIds"].as_array().unwrap();
+    assert!(skipped.contains(&json!("request:req-a")), "{entry}");
+    assert!(skipped.contains(&json!("handoff:handoff-old")), "{entry}");
+    let stored: Value = serde_json::from_slice(&std::fs::read(protected_fixture_path(&f.data.join(TASKS))).unwrap()).unwrap();
+    assert_eq!(stored["requests"]["req-a"]["text"], "Protected request");
+    assert!(stored["handoffs"].as_object().unwrap().is_empty(), "legacy receipts must not be replayable");
+}
+
+#[test]
+fn personal_apply_reports_assistants_rejected_in_preview() {
+    const PERSONAL: &str = "personal-assistants.json";
+    let f = Fixture::new("personal-skipped", |data| {
+        let valid = legacy_personal_assistant();
+        let mut invalid = valid.clone();
+        invalid["id"] = json!("asst-2");
+        invalid["tasks"][1]["decision"]["id"] = json!("pd-1");
+        write_json(&data.join("saved-chats-v1").join(PERSONAL), &json!({"version":1,"assistants":[valid,invalid]}));
+    });
+    let preview = f.preview();
+    assert_eq!(ledger(&preview, PERSONAL)["counts"]["importable"], 1);
+    assert_eq!(ledger(&preview, PERSONAL)["problems"].as_array().unwrap().len(), 1);
+    let result = f.apply(Fixture::apply_args(&preview)).unwrap();
+    assert_eq!(result["complete"], true, "{result}");
+    let entry = &result["ledgers"][0];
+    assert_eq!(entry["imported"], 1);
+    assert_eq!(entry["skipped"], 1, "{entry}");
+    assert_eq!(entry["skippedIds"], json!(["assistant:asst-2"]));
 }
 
 #[test]

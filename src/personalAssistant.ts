@@ -8,7 +8,8 @@ import type { ParticipantConfig } from "./types";
 import type { AssistantLook, AssistantProjectBinding } from "./assistantIdentity.ts";
 import type { ProjectMemoryApi } from "./projectMemory.ts";
 
-export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[] };
+export type PersonalLegacyMarker = { sourceSha256: string; importedAtMs: number; originalId?: string; originalStatus?: string; verified: false };
+export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[]; legacy?: PersonalLegacyMarker };
 export type ToolClass = "read" | "write" | "send" | "spend";
 /** Dot's four rule choices: do it without asking, only when I say so, ask first, hand it to me. */
 export type ActionMode = "auto" | "onRequest" | "ask" | "handOff";
@@ -35,6 +36,7 @@ export type Fact = {
   explicit: boolean; confidence: number;
   source: { messageId?: string; taskId?: string }; createdAt: number;
   expiresAt?: number; supersededBy?: string; deletedAt?: number;
+  legacy?: PersonalLegacyMarker;
 };
 export type Schedule = { id: string; goal: string; argv: string[]; everyMs?: number; dailyAt?: string; nextAt?: number; status: "proposed" | "active" | "cancelled"; createdAt: number; lastTaskId?: string; runs: number; paramsHash: string; decision?: PersonalDecision };
 export type Notice = { id: string; text: string; taskId?: string; urgent: boolean; at: number; deliverAt: number; deliveredAt?: number; seenAt?: number; fingerprint: string };

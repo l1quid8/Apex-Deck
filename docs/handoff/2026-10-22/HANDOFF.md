@@ -1,5 +1,7 @@
 # Handoff — Named Assistant Workspace (apex-dot) + provenance gate
 
+Continuation: see [CONTINUATION.md](CONTINUATION.md) for the G2a fix round and current task branch.
+
 Written 2026-10-22 ~20:50 PDT at the end of a Claude Code session. Read this whole file before
 touching the branch. Everything here was verified at the time of writing unless marked otherwise.
 

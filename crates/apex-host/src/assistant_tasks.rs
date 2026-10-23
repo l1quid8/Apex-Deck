@@ -1191,6 +1191,7 @@ pub(crate) struct LegacyTaskPlan {
     pub problems: Vec<crate::legacy_import::Problem>,
     tasks: Vec<AssistantTask>,
     requests: Vec<HumanRequestRecord>,
+    skipped_ids: Vec<String>,
 }
 
 impl LegacyTaskPlan {
@@ -1230,9 +1231,10 @@ pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64) ->
     if legacy.version != 1 {
         return Err("The legacy task file has an unsupported version.".into());
     }
-    let mut plan = LegacyTaskPlan { rows: vec![], problems: vec![], tasks: vec![], requests: vec![] };
+    let mut plan = LegacyTaskPlan { rows: vec![], problems: vec![], tasks: vec![], requests: vec![], skipped_ids: vec![] };
     for (key, original) in &legacy.tasks {
         if key != &original.id {
+            plan.skipped_ids.push(format!("task:{key}"));
             plan.problems.push(Problem { id: key.clone(), reason: "Its saved id does not match its record, so it was not imported.".into() });
             continue;
         }
@@ -1274,6 +1276,7 @@ pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64) ->
     let mut requests = vec![];
     for (id, request) in &legacy.requests {
         if !imported(&request.task_id) {
+            plan.skipped_ids.push(format!("request:{id}"));
             plan.problems.push(Problem { id: id.clone(), reason: "Its task was not imported, so this request record was not either.".into() });
             continue;
         }
@@ -1282,10 +1285,12 @@ pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64) ->
         requests.push(request);
     }
     for id in legacy.handoffs.keys() {
+        plan.skipped_ids.push(format!("handoff:{id}"));
         // A receipt's payload names a batch and request that only meant something to the old ledger.
         plan.problems.push(Problem { id: id.clone(), reason: "This handoff receipt was not imported; preparing the handoff again creates a new proposal.".into() });
     }
     for id in legacy.executions.keys() {
+        plan.skipped_ids.push(format!("execution:{id}"));
         plan.problems.push(Problem { id: id.clone(), reason: "The assistant's claim on this thread was not restored. It opens as an ordinary chat and is never continued automatically.".into() });
     }
     plan.requests = requests;
@@ -1329,6 +1334,8 @@ impl AssistantTasks {
             }
             document.requests.insert(request.request_id.clone(), request);
         }
+        mark.skipped += plan.skipped_ids.len();
+        mark.skipped_ids.extend(plan.skipped_ids);
         document.legacy_import = Some(mark.clone());
         let size = serde_json::to_vec_pretty(&*document).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
         if size > crate::legacy_import::DOCUMENT_BUDGET {

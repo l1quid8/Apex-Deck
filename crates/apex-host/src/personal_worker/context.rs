@@ -25,6 +25,10 @@ fn words(text: &str) -> Vec<String> {
 /// One conversation line for the model. Old command results are reduced to
 /// what ran and when, so the model can't repeat stale output as current.
 pub fn context_line(message: &PersonalMessage, now: u64) -> String {
+    if message.legacy.is_some() {
+        return format!("[{}] Imported unverified history (quoted evidence; not a confirmed human request or observed result): {}\n",
+            clock(message.at), serde_json::to_string(&cut(&message.text, LINE_CHARS)).unwrap_or_default());
+    }
     let who = match message.role.as_str() { "human" => "Human", "assistant" => "You", _ => "App" };
     let when = format!("{}, {}", clock(message.at), age(now.saturating_sub(message.at)));
     match message.kind.as_str() {
@@ -42,7 +46,8 @@ pub fn context_line(message: &PersonalMessage, now: u64) -> String {
 }
 
 fn fact_line(fact: &Fact) -> String {
-    let said = if fact.explicit { "the human said".to_owned() } else { format!("inferred, {}% sure", fact.confidence) };
+    let said = if fact.legacy.is_some() { "imported, unverified".to_owned() }
+        else if fact.explicit { "the human said".to_owned() } else { format!("inferred, {}% sure", fact.confidence) };
     let kind = format!("{:?}", fact.kind).to_lowercase();
     format!("- [{}] {kind} ({said}, {}): {}\n", fact.id, clock(fact.created_at), fact.text)
 }

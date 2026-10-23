@@ -468,6 +468,7 @@ fn result_message(at: u64) -> PersonalMessage {
         task_id: Some("task-1".into()),
         event_id: None,
         reactions: Vec::new(),
+        legacy: None,
     }
 }
 
@@ -488,6 +489,56 @@ fn a_fresh_command_result_is_shown_with_when_it_was_observed() {
     assert!(line.contains("140G"));
     assert!(line.contains("observed at"));
     assert!(line.contains("30s ago"));
+}
+
+#[tokio::test]
+async fn imported_messages_and_facts_are_unverified_in_model_context() {
+    let f = Fixture::new();
+    let mut assistant = f.get();
+    let at = now();
+    let marker = crate::legacy_import::LegacyMarker::new("old-source", at, None, None);
+    let mut result = serde_json::to_value(result_message(at)).unwrap();
+    result["legacy"] = serde_json::to_value(&marker).unwrap();
+    assistant.messages.push(serde_json::from_value(result).unwrap());
+    let mut human = serde_json::to_value(result_message(at)).unwrap();
+    human["role"] = serde_json::json!("human");
+    human["kind"] = serde_json::json!("chat");
+    human["text"] = serde_json::json!("Old human claim");
+    human["legacy"] = serde_json::to_value(&marker).unwrap();
+    assistant.messages.push(serde_json::from_value(human).unwrap());
+    assistant.facts.push(serde_json::from_value(serde_json::json!({
+        "id":"f-old","text":"Old fact","kind":"fact","explicit":true,"confidence":100,
+        "source":{},"createdAt":at,"legacy":marker
+    })).unwrap());
+    let prompt = super::context::assemble(&assistant, "New question", at, &[]);
+    let fact = prompt.lines().find(|line| line.contains("Old fact")).unwrap();
+    assert!(fact.contains("unverified"), "{fact}");
+    assert!(!fact.contains("the human said") && !fact.contains("100% sure"), "{fact}");
+    assert!(!prompt.contains("command result observed at"), "legacy output was treated as current observation");
+    assert!(!prompt.contains("Human: Old human claim"), "legacy text was treated as a verified human message");
+    assert!(prompt.contains("Old human claim") && prompt.contains("140G"), "history must remain inspectable");
+}
+
+#[tokio::test]
+async fn imported_folder_scope_never_restores_automatic_read_permission() {
+    let f = Fixture::new();
+    let mut original = f.get();
+    original.modes.read = crate::personal::ActionMode::Auto;
+    let folders = original.allowed_folders.clone();
+    let bytes = serde_json::to_vec(&serde_json::json!({"version":1,"assistants":[original]})).unwrap();
+    let mut plan = crate::legacy_personal::plan_legacy_personal(&bytes, "old-source", now()).unwrap();
+    let imported = plan.assistants.remove(0);
+    assert_eq!(imported.allowed_folders, folders);
+    f.host.change_assistant(&f.id, |a| { *a = imported; Ok(()) }).unwrap();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    f.host.personal_send(&f.id, "fresh-ui-request", "Read the free disk space").unwrap();
+    f.drain(&fake.tools()).await;
+    assert_eq!(fake.runs(), 0, "an imported read mode must not automatically run a command");
+    assert_eq!(f.task().status, TaskStatus::NeedsYou);
+    f.decide("fresh-ui-decision", true);
+    f.drain(&fake.tools()).await;
+    assert_eq!(fake.runs(), 1, "the existing protected decision reauthorizes exactly this operation");
 }
 
 #[tokio::test]

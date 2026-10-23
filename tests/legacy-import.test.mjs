@@ -66,3 +66,20 @@ test('history is always labelled unverified', async () => {
   const forged = createLegacyImportClient({ route: route({ answers: { legacy_import_history: { ...history, verified: true } } }) });
   await assert.rejects(forged.history('20261022-101501', 'req-1'), /unverified/i);
 });
+
+test('personal preview kinds and exact personal hash can be imported while grants stay excluded', async () => {
+  const p = preview();
+  p.ledgers[3] = { ...p.ledgers[3], size: 100, state: 'ready', sha256: sha('d'),
+    counts: { records: 8, importable: 1, notImported: 1 },
+    records: ['assistant', 'memory', 'schedule', 'rule', 'approval', 'grant', 'personalTask', 'history'].map((kind, i) => row(String(i), kind, 'saved', 'legacy')) };
+  const r = route({ answers: { legacy_import_preview: p, legacy_import_apply: { ...applied, ledgers: [
+    { ledger: 'personal-assistants.json', state: 'imported', imported: 1, skipped: 1, skippedIds: ['assistant:existing'], verified: true }
+  ] } } });
+  const client = createLegacyImportClient({ route: r });
+  const current = await client.preview();
+  const result = await client.apply(current, ['personal-assistants.json']);
+  assert.deepEqual(r.calls[1][1].sources, { 'personal-assistants.json': sha('d') });
+  assert.deepEqual(result.ledgers[0].skippedIds, ['assistant:existing']);
+  r.call = async () => ({ ...applied, ledgers: [{ ...applied.ledgers[0], skippedIds: [42] }] });
+  await assert.rejects(client.apply(current), /invalid/i);
+});

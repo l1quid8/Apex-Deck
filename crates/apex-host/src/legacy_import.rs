@@ -433,7 +433,8 @@ impl Host {
             entry["reason"] = json!(reason);
             if let Ok((rows, mut problems, importable)) = planned {
                 problems.extend(extra);
-                entry["counts"] = json!({"records": rows.len(), "importable": importable, "notImported": problems.len()});
+                let not_imported = problems.len() + rows.iter().filter(|row| row.import_status == "notImported").count();
+                entry["counts"] = json!({"records": rows.len(), "importable": importable, "notImported": not_imported});
                 entry["records"] = json!(rows);
                 entry["problems"] = json!(problems);
             }
