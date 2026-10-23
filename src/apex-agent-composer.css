@@ -13,7 +13,7 @@
   top: 2px;
   right: 2px;
   z-index: 1;
-  background: #000a;
+  background: color-mix(in srgb, black 67%, transparent);
   border-radius: 4px;
 }
 

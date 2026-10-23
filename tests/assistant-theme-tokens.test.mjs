@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const read = file => readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
-const FILES = ['assistant-workspace.css', 'assistant-tasks.css', 'assistant-projects.css', 'assistant-editor.css', 'personal-panels.css'];
+const FILES = ['assistant-workspace.css', 'assistant-tasks.css', 'assistant-projects.css', 'assistant-editor.css', 'personal-panels.css', 'apex-agent-dock.css', 'apex-agent-panel.css', 'apex-agent-composer.css', 'apex-agent-message-actions.css', 'apex-agent-sources.css'];
 const COLOR = /#[0-9a-f]{3,8}\b|\brgba?\(\s*\d|\bhsla?\(\s*\d/gi;
 
 test('assistant CSS uses theme tokens only', () => {

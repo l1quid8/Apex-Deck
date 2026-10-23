@@ -37,11 +37,11 @@
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--panel, var(--background));
-  box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+  box-shadow: 0 4px 16px color-mix(in srgb, black 18%, transparent);
 }
 .apex-agent-message-row.human .apex-agent-reaction-options { left: auto; right: 0; }
-.apex-agent-message-actions [role="alert"] { color: var(--danger, #f87171); font-size: 11px; padding: 0 6px; }
-.apex-agent-reply-quote { border-left: 2px solid var(--accent); margin: 0 0 7px; padding: 5px 9px; background: rgba(127, 127, 127, .08); border-radius: 0 7px 7px 0; }
+.apex-agent-message-actions [role="alert"] { color: var(--danger); font-size: 11px; padding: 0 6px; }
+.apex-agent-reply-quote { border-left: 2px solid var(--accent); margin: 0 0 7px; padding: 5px 9px; background: color-mix(in srgb, var(--text) 8%, transparent); border-radius: 0 7px 7px 0; }
 .apex-agent-quote-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--muted); }
 .apex-agent-quote-clear-all { font-size: 12px; }
 .apex-agent-reply-quote button { border: 0; background: none; color: inherit; cursor: pointer; }
