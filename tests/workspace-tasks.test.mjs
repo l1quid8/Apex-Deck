@@ -62,6 +62,15 @@ test('host-supplied canonical project metadata relates lineage to unchanged lega
   delete data.snapshot.project;
   assert.throws(()=>collectWorkspaceTasks([],[data]),/different/);
 });
+test('same legacy local owner tuple on different authoritative hosts remains two global tasks',()=>{
+  const legacy={hostId:'local',workspaceId:'shared',cwd:'/project',conversationId:'monitor-1'};
+  const sources=['h1','h2'].map(hostId=>{
+    const p={hostId,workspaceId:'shared',cwd:'/project'};
+    const data=source(p,[task('same-task',p,{owner:legacy})],{owner:legacy});data.snapshot.project=p;return data;
+  });
+  const rows=collectWorkspaceTasks([],sources);
+  assert.equal(rows.length,2);assert.equal(new Set(rows.map(row=>row.key)).size,2);
+});
 test('waiting and approval states precede working; queued and silent running remain working', () => {
   const statuses=['queued','running','proposed','needs_you','ready_for_review','done'];
   const rows=collectWorkspaceTasks([],[source(project(),statuses.map(status=>task(status,project(),{status})))]);

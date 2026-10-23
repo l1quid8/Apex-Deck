@@ -72,7 +72,7 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
       if (task.resultData?.archivedAtMs != null || task.resultData?.dismissedAtMs != null) continue;
       const assistant = lineage(task, source.project);
       const status = taskDisplayStatus(task).toLowerCase().replaceAll(' ', '_');
-      const key = workspaceTaskKey('project', task.owner, task.id);
+      const key = workspaceTaskKey('project', { ...task.owner, ...source.project }, task.id);
       rows.set(key, { key, source: 'project', assistant, project: source.project, taskId: task.id, title: task.originalRequest || task.brief,
         status, updatedAt: task.updatedAtMs, observedAt: source.observedAt, offline: source.offline, group: group(status),
         assistantName: assistant ? names.get(assistantIdentityKey(assistant)) ?? assistant.assistantId : 'Unassigned', projectName: source.name,
