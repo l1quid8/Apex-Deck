@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
+import type { AssistantAvatarAsset, AssistantRef } from "./assistantIdentity";
+import type { AssistantAvatarApi } from "./assistantAvatar";
+
 import { batteryCells, refillDelay, REFILL_STAGGER_MS, shellState, type Levels } from "./battery";
 import { identiconCells, scrambleFrames } from "./identicon";
 
@@ -16,10 +19,12 @@ const REFILL_MS = 4 * REFILL_STAGGER_MS + 420;
  *  colour. The lit squares shimmer while it is working. Given `levels`, it
  *  is also a battery: context left on the left half, plan left on the right
  *  (see battery.ts). */
-export function Avatar({ seed, color, size = "md", working = false, levels, refills, scramble }: { seed: string; color: string; size?: "sm" | "md" | "lg"; working?: boolean; levels?: Levels; refills?: Refills; scramble?: number }) {
+export function Avatar({ seed, color, size = "md", working = false, levels, refills, scramble, image, assistant, avatarApi }: { seed: string; color: string; size?: "sm" | "md" | "lg"; working?: boolean; levels?: Levels; refills?: Refills; scramble?: number; image?: AssistantAvatarAsset; assistant?: AssistantRef; avatarApi?: AssistantAvatarApi }) {
   const cells = useMemo(() => identiconCells(seed), [seed]);
   const refilling = useRefill(refills);
   const frame = useScramble(scramble);
+  const imageUrl = useAvatarImage(assistant, image, avatarApi);
+  if (imageUrl) return <span className={`identicon identicon-${size}${working ? " working" : ""}`} style={{ "--who": color, display:"inline-block", overflow:"hidden" } as CSSProperties} aria-hidden="true"><img src={imageUrl} style={{width:"100%",height:"100%",objectFit:"cover"}} onError={event=>{event.currentTarget.style.display="none";}} /></span>;
   if (!levels) {
     return (
       <span className={`identicon identicon-${size}${working ? " working" : ""}`} style={{ "--who": color } as CSSProperties} aria-hidden="true">
@@ -96,4 +101,15 @@ function useScramble(scramble: number | undefined): boolean[] | null {
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
   return frame;
+}
+
+/** Authenticated host fetch. Never persist browser URLs. A failed/offline fetch
+ * falls back to the original seeded pixel avatar, and every object URL is revoked. */
+function useAvatarImage(assistant:AssistantRef|undefined, image:AssistantAvatarAsset|undefined, api:AssistantAvatarApi|undefined):string|undefined {
+ const [resolved,setResolved]=useState<{key:string;url:string}>();
+ const key=assistant&&image?JSON.stringify([assistant.hostId,assistant.assistantId,image.assetId,image.sha256]):"";
+ useEffect(()=>{let disposed=false;let url:string|undefined;setResolved(undefined);
+ if(api&&assistant&&image)api.asset({assistantId:assistant.assistantId,assetId:image.assetId,sha256:image.sha256}).then(blob=>{if(disposed)return;url=URL.createObjectURL(blob);setResolved({key,url});}).catch(()=>{});
+ return()=>{disposed=true;if(url)URL.revokeObjectURL(url);};},[api,key]);
+ return resolved?.key===key?resolved.url:undefined;
 }

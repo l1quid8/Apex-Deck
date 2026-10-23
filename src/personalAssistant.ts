@@ -66,6 +66,7 @@ export type PersonalAssistantRecord = PersonalSettings & {
 /** Versioned transaction: callers retain the revision from their editor draft. */
 export type PersonalWorkspaceConfigure = {
   expectedRevision: number;
+  avatar?: import("./assistantAvatar.ts").AvatarSelection;
   settings?: Partial<PersonalSettings>;
   profile?: ParticipantConfig;
   projects?: AssistantProjectBinding[];
