@@ -18,6 +18,7 @@ export interface ProjectTaskSource {
   offline: boolean;
   observedAt: number;
   problem?: string;
+  authenticatedHostId?: string;
 }
 export interface WorkspaceTaskRow {
   key: string;
@@ -36,6 +37,7 @@ export interface WorkspaceTaskRow {
   owner: AssistantTaskOwner | null;
   revision: number | null;
   routeHostId: string;
+  verifiedHostId: string | null;
 }
 export type WorkspaceTaskFilters = { assistant?: AssistantRef | 'unassigned' | null; project?: ProjectRef | null; query?: string; group?: WorkspaceTaskRow['group'] | 'all' };
 export type WorkspaceTaskRoute = { source: 'project'; owner: AssistantTaskOwner; taskId: string; revision: number } | { source: 'personal'; assistant: AssistantRef; taskId: string };
@@ -67,7 +69,7 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
   for (const source of projectSnapshots) {
     if (!source.snapshot) continue;
     const canonical = (source.snapshot as AssistantTaskSnapshot & { project?: ProjectRef }).project;
-    if (canonical ? projectIdentityKey(canonical) !== projectIdentityKey(source.project) || canonical.workspaceId !== source.owner.workspaceId : projectIdentityKey(source.owner) !== projectIdentityKey(source.project)) throw new Error('Task snapshot belongs to a different project owner.');
+    if (canonical ? projectIdentityKey(canonical) !== projectIdentityKey(source.project) || canonical.workspaceId !== source.owner.workspaceId : projectIdentityKey({ ...source.owner, hostId: source.authenticatedHostId ?? source.owner.hostId }) !== projectIdentityKey(source.project)) throw new Error('Task snapshot belongs to a different project owner.');
     for (const task of assistantTasksForOwner(source.snapshot, source.owner)) {
       if (task.resultData?.archivedAtMs != null || task.resultData?.dismissedAtMs != null) continue;
       const assistant = lineage(task, source.project);
@@ -76,7 +78,7 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
       rows.set(key, { key, source: 'project', assistant, project: source.project, taskId: task.id, title: task.originalRequest || task.brief,
         status, updatedAt: task.updatedAtMs, observedAt: source.observedAt, offline: source.offline, group: group(status),
         assistantName: assistant ? names.get(assistantIdentityKey(assistant)) ?? assistant.assistantId : 'Unassigned', projectName: source.name,
-        owner: task.owner, revision: task.revision, routeHostId: source.owner.hostId });
+        owner: task.owner, revision: task.revision, routeHostId: source.owner.hostId, verifiedHostId: canonical?.hostId ?? source.authenticatedHostId ?? null });
     }
   }
   for (const source of personalSnapshots) {
@@ -85,7 +87,7 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
       rows.set(key, { key, source: 'personal', assistant: source.assistant, project: null, taskId: task.id, title: task.goal,
         status: task.status, updatedAt: task.updatedAt, observedAt: source.observedAt, offline: source.offline,
         group: task.status === 'needsYou' && task.decision?.status === 'open' ? 'waiting' : ['queued', 'running', 'waiting', 'blocked', 'needsYou'].includes(task.status) ? 'working' : 'done',
-        assistantName: source.name, projectName: 'Personal', owner: null, revision: null, routeHostId: source.routeHostId ?? source.assistant.hostId });
+        assistantName: source.name, projectName: 'Personal', owner: null, revision: null, routeHostId: source.routeHostId ?? source.assistant.hostId, verifiedHostId: source.assistant.hostId });
     }
   }
   return [...rows.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key));
@@ -105,6 +107,20 @@ export function workspaceTaskRoute(row: WorkspaceTaskRow): WorkspaceTaskRoute {
 export function personalTaskForRow(row: WorkspaceTaskRow, record: Pick<PersonalAssistantRecord, 'id' | 'hostId' | 'tasks'> | null): PersonalTask | null {
   if (row.source !== 'personal' || !row.assistant || !record || assistantIdentityKey(row.assistant) !== assistantIdentityKey({ hostId: record.hostId, assistantId: record.id })) return null;
   return record.tasks.find(task => task.id === row.taskId) ?? null;
+}
+export function workspaceTaskHostMatches(row: Pick<WorkspaceTaskRow, 'verifiedHostId'>, status: { kind: string; hostId?: string } | undefined): boolean {
+  return !!row.verifiedHostId && status?.kind === 'connected' && status.hostId === row.verifiedHostId;
+}
+/** A retained detail callback must not follow a transport alias onto a new host. */
+export function guardWorkspaceTaskBackend<T extends object & { host?: { connection: { get(): { status: { kind: string; hostId?: string } } } } }>(row: Pick<WorkspaceTaskRow, 'verifiedHostId'>, backend: T): T {
+  const methods = new Map<PropertyKey, unknown>();
+  const need = () => { if (!workspaceTaskHostMatches(row, backend.host?.connection.get().status)) throw new Error('Reconnect the owning machine before using this task.'); };
+  return new Proxy(backend, { get(target, key) {
+    const value = Reflect.get(target, key, target);
+    if (!['call', 'roomState', 'roomDecide', 'roomAnswer'].includes(String(key)) || typeof value !== 'function') return value;
+    if (!methods.has(key)) methods.set(key, async (...args: unknown[]) => { need(); const result = await Reflect.apply(value, target, args); need(); return result; });
+    return methods.get(key);
+  } });
 }
 /** A failed poll marks retained data stale; it never turns an unavailable host into an empty ledger. */
 export function reconcileWorkspaceTaskSources(previous: readonly ProjectTaskSource[], incoming: ProjectTaskSource): readonly ProjectTaskSource[] {

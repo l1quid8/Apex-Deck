@@ -1,16 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Backend } from './backend.ts';
 import type { Pane, ParticipantConfig } from './types.ts';
 import { ApexAgentTasks } from './lazyViews';
 import { TaskViewContext, projectTaskKey } from './apexAgentTaskView.ts';
 import { requestId, type PersonalAssistantRecord } from './personalAssistant.ts';
 import { PersonalWorkspaceTaskDetail } from './PersonalWorkspaceTaskDetail';
-import type { WorkspaceTaskRow } from './workspaceTasks.ts';
+import { workspaceTaskHostMatches, guardWorkspaceTaskBackend, type WorkspaceTaskRow } from './workspaceTasks.ts';
 
 /** Both docked and popped-out details resolve the row's saved route and owner. */
 export function WorkspaceTaskDetails({ row, backend, profiles, panes = [], onOpenThread }: { row: WorkspaceTaskRow; backend: Backend | null; profiles: ParticipantConfig[]; panes?: Pane[]; onOpenThread?: (id: string) => void }) {
   const [record, setRecord] = useState<PersonalAssistantRecord | null>(null);
   const [problem, setProblem] = useState('');
+  const ownerBackend = useMemo(() => backend ? guardWorkspaceTaskBackend(row, backend) : null, [backend, row.key, row.verifiedHostId]);
   useEffect(() => {
     setRecord(null); setProblem('');
     if (row.source !== 'personal' || !row.assistant || !backend || row.offline) return;
@@ -30,9 +31,9 @@ export function WorkspaceTaskDetails({ row, backend, profiles, panes = [], onOpe
     void load(); const timer = setInterval(() => void load(), 2500);
     return () => { active = false; clearInterval(timer); };
   }, [row.key, row.offline, backend]);
-  if (row.offline || !backend) return <><h3>{row.title}</h3><p>{row.status.replaceAll('_', ' ')}</p><p role="status">Reconnect the owning machine to inspect current task details and actions.</p></>;
+  if (row.offline || !backend || !workspaceTaskHostMatches(row, backend.host?.connection.get().status)) return <><h3>{row.title}</h3><p>{row.status.replaceAll('_', ' ')}</p><p role="status">Reconnect the owning machine to inspect current task details and actions.</p></>;
   if (row.source === 'project' && row.owner) return <TaskViewContext.Provider value={{ display: 'tasks', selectedKey: projectTaskKey(row.owner.hostId, row.owner.workspaceId, row.taskId), openTask: () => {}, report: () => {} }}>
-    <ApexAgentTasks backend={backend} owner={row.owner} profiles={profiles} panes={panes} projectName={row.projectName} onOpenThread={onOpenThread} />
+    <ApexAgentTasks backend={ownerBackend!} owner={row.owner} profiles={profiles} panes={panes} projectName={row.projectName} onOpenThread={onOpenThread} />
   </TaskViewContext.Provider>;
   if (row.source !== 'personal' || !row.assistant) return <p role="status">This task has no verified owner.</p>;
   if (problem) return <p role="status">{problem}</p>;

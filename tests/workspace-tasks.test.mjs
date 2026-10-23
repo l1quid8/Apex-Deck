@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectWorkspaceTasks, filterWorkspaceTasks, workspaceTaskRoute, workspaceTaskKey, reconcileWorkspaceTaskSources, personalTaskForRow } from '../src/workspaceTasks.ts';
+import { collectWorkspaceTasks, filterWorkspaceTasks, workspaceTaskRoute, workspaceTaskKey, reconcileWorkspaceTaskSources, personalTaskForRow, workspaceTaskHostMatches, guardWorkspaceTaskBackend } from '../src/workspaceTasks.ts';
 
 const assistant = (hostId='h1', assistantId='asst-1') => ({hostId,assistantId});
 const project = (workspaceId='p1', hostId='h1') => ({hostId,workspaceId,cwd:`/projects/${workspaceId}`});
@@ -103,4 +103,23 @@ test('global status derives Pausing and Paused from durable control without rewr
   assert.equal(rows.find(row=>row.taskId==='active').group,'working');
   assert.equal(rows.find(row=>row.taskId==='queued').status,'paused');
   assert.equal(rows.find(row=>row.taskId==='queued').group,'waiting');
+});
+test('retained task rows cannot act through a route rebound to another authenticated host',()=>{
+  const p=project(), data=source(p);data.snapshot.project=p;
+  const [row]=collectWorkspaceTasks([],[data]);
+  assert.equal(workspaceTaskHostMatches(row,{kind:'connected',hostId:'h1'}),true);
+  assert.equal(workspaceTaskHostMatches(row,{kind:'connected',hostId:'h2'}),false);
+  assert.equal(workspaceTaskHostMatches(row,{kind:'reconnecting'}),false);
+  const [legacy]=collectWorkspaceTasks([],[source(p,undefined,{authenticatedHostId:'h1'})]);
+  assert.equal(workspaceTaskHostMatches(legacy,{kind:'connected',hostId:'h1'}),true);
+  assert.equal(workspaceTaskHostMatches(legacy,{kind:'connected',hostId:'h2'}),false);
+});
+test('task backend checks captured host at invocation and rejects a late reply after rebinding',async()=>{
+  let status={kind:'connected',hostId:'h1'},calls=0,finish;
+  const backend={host:{connection:{get:()=>({status})}},call:async()=>{calls++;return new Promise(resolve=>{finish=resolve;});}};
+  const guarded=guardWorkspaceTaskBackend({verifiedHostId:'h1'},backend);
+  status={kind:'connected',hostId:'h2'};
+  await assert.rejects(async()=>guarded.call('assistant_task_action',{}),/owning machine/);assert.equal(calls,0);
+  status={kind:'connected',hostId:'h1'};const reply=guarded.call('assistant_tasks_list',{});assert.equal(calls,1);
+  status={kind:'connected',hostId:'h2'};finish({tasks:[]});await assert.rejects(reply,/owning machine/);
 });

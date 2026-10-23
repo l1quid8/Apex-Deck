@@ -9,6 +9,7 @@ export interface AssistantOwnerRegistry {
   tombstonedChildIds: string[];
   snapshot?: AssistantTaskSnapshot;
   observedAt?: number;
+  authenticatedHostId?: string;
 }
 export interface AssistantRegistryState { owners: Record<string, AssistantOwnerRegistry> }
 export type AssistantVisiblePane = Pane & Partial<Pick<AssistantExecutionPane, 'participants' | 'options' | 'started' | 'assistantTaskId' | 'hostId' | 'executionPath'>>;
@@ -52,14 +53,16 @@ export function reduceAssistantSnapshot(
   owner: AssistantTaskOwner,
   snapshot: AssistantTaskSnapshot,
   observedAt = Date.now(),
+  authenticatedHostId?: string,
 ): AssistantRegistryState {
   assistantTasksForOwner(snapshot, owner);
   if (!Number.isFinite(snapshot.revision)) throw new Error('ApexAgent returned an invalid task registry revision.');
   const key = ownerKey(owner);
-  const previous = state.owners[key];
+  const saved = state.owners[key];
+  const previous = saved && (!authenticatedHostId || !saved.authenticatedHostId || saved.authenticatedHostId === authenticatedHostId) ? saved : undefined;
   if (previous && snapshot.revision < previous.revision) return state;
   if (previous && snapshot.revision === previous.revision) return {
-    owners: { ...state.owners, [key]: { ...previous, snapshot, observedAt } },
+    owners: { ...state.owners, [key]: { ...previous, snapshot, observedAt, authenticatedHostId: authenticatedHostId ?? previous.authenticatedHostId } },
   };
 
   const panes = { ...(previous?.panes ?? {}) };
@@ -87,7 +90,7 @@ export function reduceAssistantSnapshot(
       ...state.owners,
       [key]: {
         owner, revision: snapshot.revision, panes,
-        snapshot, observedAt,
+        snapshot, observedAt, authenticatedHostId: authenticatedHostId ?? previous?.authenticatedHostId,
         registeredChildIds: [...registered], tombstonedChildIds: [...tombstoned],
       },
     },

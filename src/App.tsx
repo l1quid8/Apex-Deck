@@ -84,7 +84,7 @@ import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
 import { WorkspaceTasks } from "./WorkspaceTasksScreen";
 import { WorkspaceTaskDetails } from "./WorkspaceTaskDetails";
-import { collectWorkspaceTasks, type WorkspaceTaskRow } from "./workspaceTasks";
+import { collectWorkspaceTasks, workspaceTaskHostMatches, type WorkspaceTaskRow } from "./workspaceTasks";
 import type { DashboardDestination } from "./dashboardModel";
 import { placeDashboardPane } from "./dashboardNavigation";
 import { RightBrowser } from "./RightBrowser";
@@ -1690,13 +1690,16 @@ export function App() {
       const hostId = workspaceHost(workspace);
       let route: Backend;
       try { route = hostBackend(hostId); } catch { return; }
+      const sourceStatus = route.host?.connection.get().status;
+      const authenticatedHostId = sourceStatus?.kind === 'connected' ? sourceStatus.hostId : undefined;
       const version = (versions.get(workspaceId) ?? 0) + 1;
       versions.set(workspaceId, version);
       const current = () => {
         const latestWorkspace = latest.current.workspaces.find((item) => item.id === workspaceId);
         return live && versions.get(workspaceId) === version && !!latestWorkspace && !latestWorkspace.hidden
           && latestWorkspace.path === workspace.path && workspaceHost(latestWorkspace) === hostId
-          && monitorOwnerVersion(workspaceId) === ownerVersion && hostBackend(hostId) === route;
+          && monitorOwnerVersion(workspaceId) === ownerVersion && hostBackend(hostId) === route
+          && (!route.host || workspaceTaskHostMatches({ verifiedHostId: authenticatedHostId ?? null }, route.host.connection.get().status));
       };
       try {
         const monitor = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
@@ -1715,7 +1718,7 @@ export function App() {
         setAssistantOwners((all) => JSON.stringify(all[workspaceId]) === JSON.stringify(owner) ? all : { ...all, [workspaceId]: owner });
         const snapshot = await route.call<AssistantTaskSnapshot>("assistant_tasks_list", { owner });
         if (!current()) return;
-        setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot));
+        setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot, Date.now(), authenticatedHostId));
         setAssistantTaskStatuses((all) => {
           const next = Object.fromEntries(Object.entries(all).filter(([key]) => !key.startsWith(`${workspaceId}\u0000`)));
           for (const task of snapshot.tasks) next[`${workspaceId}\u0000${task.id}`] = task.status;
@@ -1873,6 +1876,7 @@ export function App() {
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
   const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'conversation'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
   const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
+  const taskRouteStatus = (id: string) => { try { return hostBackend(id).host?.connection.get().status; } catch { return undefined; } };
   const workspaceTaskProblems = Object.entries(assistantTaskErrors).filter(([id]) => workspaces.some(workspace => workspace.id === id && !workspace.hidden)).map(([id, error]) => `${workspaces.find(workspace => workspace.id === id)?.name ?? id}: ${error}`);
   let workspaceTaskRows: WorkspaceTaskRow[] = [];
   try {
@@ -1881,9 +1885,9 @@ export function App() {
       const host = assistants.hosts.find(host => host.hostId === summary.ref.hostId);
       return lane?.assistant ? [{ assistant: summary.ref, name: summary.name, tasks: lane.assistant.tasks, offline: summary.offline, observedAt: summary.lastSeen, routeHostId: host?.routeHostId }] : [];
     }), Object.values(currentAssistantRegistry.owners).flatMap(entry => entry.snapshot ? [{
-      project: (entry.snapshot as AssistantTaskSnapshot & { project?: ProjectRef }).project ?? { hostId: entry.owner.hostId, workspaceId: entry.owner.workspaceId, cwd: entry.owner.cwd }, owner: entry.owner,
+      project: entry.snapshot.project ?? { hostId: entry.authenticatedHostId ?? entry.owner.hostId, workspaceId: entry.owner.workspaceId, cwd: entry.owner.cwd }, owner: entry.owner, authenticatedHostId: entry.authenticatedHostId,
       name: workspaces.find(workspace => workspace.id === entry.owner.workspaceId)?.name ?? entry.owner.workspaceId,
-      snapshot: entry.snapshot, offline: offlineHost(entry.owner.hostId) || !!assistantTaskErrors[entry.owner.workspaceId], observedAt: entry.observedAt ?? 0,
+      snapshot: entry.snapshot, offline: offlineHost(entry.owner.hostId) || !!assistantTaskErrors[entry.owner.workspaceId] || !workspaceTaskHostMatches({ verifiedHostId: entry.snapshot.project?.hostId ?? entry.authenticatedHostId ?? null }, taskRouteStatus(entry.owner.hostId)), observedAt: entry.observedAt ?? 0,
     }] : []));
   } catch (cause) { workspaceTaskProblems.push(`Could not verify task owners: ${cause instanceof Error ? cause.message : String(cause)}`); }
   globalTaskFeed.current = { rows: workspaceTaskRows, problems: workspaceTaskProblems };
@@ -2648,7 +2652,7 @@ export function App() {
               dashboard: (_tab, visible) => <RightDashboard rows={dashboardRows} onOpen={openDashboard} visible={visible && detailsOpen} />,
               tasks: () => <WorkspaceTasks rows={workspaceTaskRows} problems={workspaceTaskProblems} renderDetail={row => {
                 let route: Backend | null = null; try { route = hostBackend(row.routeHostId); } catch { /* Keep the last known owner visible. */ }
-                return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes} onOpenThread={id => { const pane = viewPanes.find(item => item.id === id && item.workspaceId === row.project?.workspaceId); if (pane) focusPane(pane); }} />;
+                return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes} onOpenThread={id => { const workspace = row.project ? resolveAssistantProject(row.project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace) : null; const pane = workspace ? viewPanes.find(item => item.id === id && item.workspaceId === workspace.id) : undefined; if (pane) focusPane(pane); }} />;
               }} />,
               browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
