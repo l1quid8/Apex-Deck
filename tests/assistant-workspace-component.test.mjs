@@ -186,3 +186,8 @@ test('failed and interrupted delegated work stays visible in assistant header at
   assert.match(text(find(tree,n=>n.props.className==='assistant-live-status')),/1 need review/);
  }
 });
+
+test('legacy assistants without project assignments load and save an empty binding list',async()=>{
+ const legacy={...record,profile:{...profile,access:'read'}};delete legacy.projects;
+ const h=mount({lane:{assistant:legacy}});const tree=await h.ready();assert.equal(input(tree,'Project tools').props.value,'read');await submit(h);assert.equal(h.calls.length,1);assert.deepEqual(h.calls[0].projects,[]);
+});

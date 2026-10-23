@@ -53,7 +53,7 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
  const [effort,setEffort]=useState<string|null>(original?.profile?.effort ?? null);
  const [folder,setFolder]=useState('~/apex-assistant');
  const [access,setAccess]=useState<ParticipantConfig['access']>(original?.profile?.access ?? 'ask');
- const [bindings,setBindings]=useState<AssistantProjectBinding[]>(()=>original?.projects.map(binding=>original.profile?.access==='read'?{...binding,tools:'off'}:binding) ?? []);
+ const [bindings,setBindings]=useState<AssistantProjectBinding[]>(()=>(original?.projects ?? []).map(binding=>original?.profile?.access==='read'?{...binding,tools:'off'}:binding));
  const [models,setModels]=useState<ModelChoice[]>([]);
  const [providerReady,setProviderReady]=useState(false);
  const [discovery,setDiscovery]=useState('Loading offered models…');
