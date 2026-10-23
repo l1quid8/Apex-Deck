@@ -4,7 +4,7 @@ import { canvasPanes } from "./canvasPanes.ts";
 import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceFamily, workspaceHost } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
 import { HostPane, HostAgents, HostMonitors } from "./HostPane";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { getBackend, type Backend, type HostEntry } from "./backend";
 import { connection, statusWords } from "./connection";
@@ -27,13 +27,14 @@ import { AgentsSection } from "./AgentsSection";
 import { addRenames, renamedAgents, renameNotes, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { ApexAgentSources } from "./ApexAgentSources";
 import { ApexAgentTasks } from "./lazyViews";
-import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
+import { overviewOwner, overviewOwnerKey, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
-import { usePersonalAssistant } from "./personalAssistant";
+import { usePersonalAssistants } from "./usePersonalAssistants";
+import { AssistantWorkspace, AssistantEditor } from "./AssistantWorkspace";
+import { assistantIdentityKey, type AssistantRef } from "./assistantIdentity";
+import { rosterMessage, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
-import { ApexAgentWidget } from "./ApexAgentWidget";
 import "./apex-agent-dock.css";
-import { widgetCoordinates, widgetSidePanelPosition, type AssistantSourceDrop, type WidgetPosition } from "./apexAgentWidgetModel.ts";
 import { LibraryView } from "./lazyViews";
 import { DeckIcon } from "./DeckIcon";
 import { LayoutPicker } from "./LayoutPicker";
@@ -67,7 +68,7 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
-import { assistantTasksForOwner, assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
+import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { unsavedEditName } from "./unsavedEdits";
@@ -161,6 +162,9 @@ const TOAST_MS = 4000;
 
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
+  const [mainView, setMainView] = useState<MainView>({kind:"workspace"});
+  const [creatingAssistant, setCreatingAssistant] = useState(false);
+  const [creationHost, setCreationHost] = useState("local");
   /** Bumped by the title bar's + New agent button. */
   const [newAgentRequest, setNewAgentRequest] = useState(0);
   /** What each thread reports: its head's words, and who is replying or stopped on a card. */
@@ -198,7 +202,7 @@ export function App() {
   const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
   const [assistantTaskSignals, setAssistantTaskSignals] = useState<Record<string, Signal>>({});
   const [assistantTaskNeedsDetails, setAssistantTaskNeedsDetails] = useState<Record<string, string[]>>({});
-  const [assistantTaskCounts, setAssistantTaskCounts] = useState<Record<string, number>>({});
+  const [, setAssistantTaskCounts] = useState<Record<string, number>>({});
   // Each project task's status, keyed by project and task, so a worker chat's menu knows whether its task is still going.
   const [assistantTaskStatuses, setAssistantTaskStatuses] = useState<Record<string, string>>({});
   const [assistantTaskErrors, setAssistantTaskErrors] = useState<Record<string, string>>({});
@@ -248,62 +252,36 @@ export function App() {
   const [migrationNotice, setMigrationNotice] = useState("");
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
   const [apexAgentWorkspace, setApexAgentWorkspace] = useState<string | null>(null);
-  const [apexAgentDockFocused, setApexAgentDockFocused] = useState(false);
-  const [apexAgentAppearanceRequest, setApexAgentAppearanceRequest] = useState(0);
-  const [apexAgentHideRequest, setApexAgentHideRequest] = useState(0);
-  const [apexAgentSelection, setApexAgentSelection] = useState<string | null>(() => {
-    try { return localStorage.getItem("apex-agent-selected-project"); } catch { return null; }
-  });
   /** ApexAgent opens on one conversation across every project; a single project opens only for its setup and sources. */
   const [apexAgentAllOpen, setApexAgentAllOpen] = useState(false);
   /** The project picked from the avatar's project list; null shows every project's conversation. */
-  const [apexAgentFilter, setApexAgentFilter] = useState<string | null>(null);
-  const [apexAvatarPosition, setApexAvatarPosition] = useState<WidgetPosition | null>(null);
-  const [apexAgentFull, setApexAgentFull] = useState(() => { try { return localStorage.getItem("apex-agent-full-screen") === "1"; } catch { return false; } });
-  // The conversation pop-up opens beside the avatar, on whichever edge it sits.
-  const apexFloatStyle = (() => {
-    if (apexAgentFull || !apexAvatarPosition || typeof window === "undefined") return undefined;
-    const viewport = { width: window.innerWidth, height: window.innerHeight };
-    const avatar = widgetCoordinates(apexAvatarPosition, viewport);
-    const width = Math.min(400, viewport.width - 48);
-    const height = Math.min(600, viewport.height - 140);
-    const top = Math.max(48, Math.min(avatar.top + 28 - height / 2, viewport.height - height - 16));
-    return { ...widgetSidePanelPosition(apexAvatarPosition.edge, avatar.left, viewport.width, width, 56, 16, 12), top, bottom: "auto", width, height } as CSSProperties;
-  })();
-  const toggleApexAgentFull = () => setApexAgentFull((full) => { try { localStorage.setItem("apex-agent-full-screen", full ? "0" : "1"); } catch { /* Lasts for this window. */ } return !full; });
   const [, refreshAssistantRequests] = useState(0);
   // Requests this window is sending right now; they show as your chat message, not as an unconfirmed card.
   const assistantSending = useRef(new Set<string>());
   /** Clearing hides earlier messages on this Mac only; each project's assistant keeps its memory and open findings. */
-  const [apexAgentClearedAt, setApexAgentClearedAt] = useState(() => { try { return Number(localStorage.getItem("apex-agent-cleared-at")) || 0; } catch { return 0; } });
-  const [overviewEntries, setOverviewEntries] = useState<OverviewEntry[]>(() => loadOverviewEntries(localStorage));
-  const overviewHistory = useRef(overviewEntries); overviewHistory.current = overviewEntries;
+  const [apexAgentClearedAt] = useState(() => { try { return Number(localStorage.getItem("apex-agent-cleared-at")) || 0; } catch { return 0; } });
   const [handoffBatches, setHandoffBatches] = useState<HandoffBatch[]>(() => loadHandoffBatches(localStorage));
   const handoffHistory = useRef(handoffBatches);
   const handoffBusy = useRef(new Set<string>());
   const [handoffWorking, setHandoffWorking] = useState<string[]>([]);
   const [assistantTaskContext, setAssistantTaskContext] = useState<{ id: string; project: string; label: string; owner: AssistantTaskOwner; send: (text: string) => Promise<void> } | null>(null);
 
-  const clearApexAgentConversation = () => { const at = Date.now(); setApexAgentClearedAt(at); try { localStorage.setItem("apex-agent-cleared-at", String(at)); } catch { /* Lasts for this window. */ } };
   // Only an explicit project pick (project list, notification jump) filters the conversation; ⌘K opens it unfiltered.
-  const openApexAgent = (workspaceId: string, filterToProject = false) => {
+  const openApexAgent = (workspaceId: string, _filterToProject = false) => {
     if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
-    setApexAgentSelection(workspaceId);
     setApexAgentWorkspace(null);
-    setApexAgentFilter(filterToProject ? workspaceId : null);
     setApexAgentAllOpen(true);
     try { localStorage.setItem("apex-agent-selected-project", workspaceId); } catch { /* Selection still lasts for this window. */ }
   };
   const openApexAgentProject = (workspaceId: string) => {
     if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
-    setApexAgentSelection(workspaceId);
     setApexAgentWorkspace(workspaceId);
     setApexAgentAllOpen(true);
   };
-  const closeApexAgent = () => { setApexAgentWorkspace(null); setApexAgentAllOpen(false); setApexAgentDockFocused(false); };
+  const closeApexAgent = () => { setApexAgentWorkspace(null); setApexAgentAllOpen(false); };
   const closeApexAgentAndReturnFocus = () => {
     closeApexAgent();
-    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".apex-widget-hit")?.focus());
+    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".assistant-team-row[aria-current=page]")?.focus());
   };
 
   /** Where you stopped reading each thread, saved with it for "New since you looked". */
@@ -403,10 +381,9 @@ export function App() {
   /** Full screen for the side panel. It opens the panel if needed and collapses ApexAgent's full screen. */
   const setSidePanelFull = (full: boolean) => {
     setPanel((p) => setFull(p, full));
-    if (full && apexAgentFull) { setApexAgentFull(false); try { localStorage.setItem("apex-agent-full-screen", "0"); } catch { /* Lasts for this window. */ } }
+
   };
   // Only one of the two fills the window: ApexAgent going full collapses the side panel.
-  useEffect(() => { if (apexAgentFull) setPanel((p) => p.full ? setFull(p, false) : p); }, [apexAgentFull]);
   const sidePanelFull = detailsOpen && panel.full;
   const asideRef = useRef<HTMLElement | null>(null);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
@@ -418,8 +395,7 @@ export function App() {
   const canvasRef = useRef<HTMLElement>(null);
   const [availableWidth, setAvailableWidth] = useState(0);
   const [, setBodyWidth] = useState(0);
-  const compactApexAgentDock = false; // The v4 pop-up floats over the app, so the sidebar never has to give way.
-  const railVisible = railOpen && !compactApexAgentDock;
+  const railVisible = railOpen;
   /** Sidebar widths the user dragged to; null keeps the default. */
   const [sidebarWidths, setSidebarWidths] = useState<SidebarWidths>(loadWidths);
   const setSidebarWidth = (which: Sidebar) => (width: number | null) => setSidebarWidths((old) => ({ ...old, [which]: width }));
@@ -1886,82 +1862,21 @@ export function App() {
       }
     } finally { handoffBusy.current.delete(batchId); setHandoffWorking([...handoffBusy.current]); }
   };
-  const replyAcrossProjects = async (text: string) => {
-    const startedAt = Date.now();
-    const captured = assistantMonitors.map((monitor) => {
-      const workspace = latest.current.workspaces.find((item) => item.id === monitor.workspaceId && !item.hidden)!;
-      const offline = !reachable(monitor.hostId);
-      return { monitor, workspace, offline, route: offline ? null : hostBackend(monitor.hostId), version: monitorOwnerVersion(workspace.id) };
-    });
-    const stillBound = () => captured.every(({ monitor, workspace, route, version }) => {
-      const current = latest.current.workspaces.find((item) => item.id === workspace.id && !item.hidden);
-      return !!current && current.path === monitor.cwd && workspaceHost(current) === monitor.hostId
-        && monitorOwnerVersion(workspace.id) === version && (!route || hostBackend(monitor.hostId) === route);
-    });
-    const snapshots = await Promise.all(captured.map(async (item) => {
-      if (!item.route) return item.monitor;
-      const current = await item.route.call<ProjectMonitor | null>('monitor_get', { workspaceId: item.workspace.id });
-      if (!current || overviewOwnerKey(overviewOwner(current)) !== overviewOwnerKey(overviewOwner(item.monitor))) throw new Error("A project assignment changed. Reopen ApexAgent.");
-      return current;
-    }));
-    if (!stillBound()) throw new Error("A project or connection changed. Reopen ApexAgent.");
-    const coordinatorIndex = captured.findIndex((item) => !!item.route);
-    if (coordinatorIndex < 0) throw new Error("All project machines are offline. Reconnect one to ask ApexAgent.");
-    const coordinator = captured[coordinatorIndex];
-    const taskSnapshots = await Promise.all(captured.map(async (item, index) => {
-      if (!item.route) return undefined;
-      try {
-        const owner = overviewOwner(snapshots[index]);
-        const snapshot = await item.route.call<AssistantTaskSnapshot>('assistant_tasks_list', { owner });
-        assistantTasksForOwner(snapshot, owner);
-        return snapshot;
-      } catch { return undefined; }
-    }));
-    if (!stillBound()) throw new Error("A project or connection changed. Reopen ApexAgent.");
-    const projects = snapshots.map((monitor, index) => ({ ...overviewProject(monitor, captured[index].workspace.name, captured[index].offline, taskSnapshots[index]?.tasks), routingThreads: overviewRouting(taskSnapshots[index]) }));
-    const history = visibleOverviewEntries(overviewHistory.current, snapshots).slice(-20).map((entry) => ({ role: entry.message.role, text: entry.message.text }));
-    const result = await coordinator.route!.call<{ message: string; citations: OverviewEntry['citations']; assignments?: HandoffAssignment[]; clarification?: string }>('assistant_overview', { owner: overviewOwner(snapshots[coordinatorIndex]), text, projects, history });
-    // Revalidate every live assignment after the tool-free synthesis, not just the coordinator.
-    await Promise.all(captured.map(async (item) => {
-      if (!item.route) return;
-      const current = await item.route.call<ProjectMonitor | null>('monitor_get', { workspaceId: item.workspace.id });
-      if (!current || current.revision !== snapshots[captured.indexOf(item)].revision || overviewOwnerKey(overviewOwner(current)) !== overviewOwnerKey(overviewOwner(item.monitor))) throw new Error("A project assignment changed while answering. Ask again.");
-    }));
-    if (!stillBound() || typeof result?.message !== 'string') throw new Error("The project context changed while answering. Ask again.");
-    const batch = handoffBatch(crypto.randomUUID(), text, result.assignments ?? [], projects);
-    if (batch.children.length) {
-      // Persist the exact IDs and payloads before any host mutation, including uncertain replies.
-      updateHandoffBatches([...handoffHistory.current, batch]);
-    }
-    const owners = snapshots.map(overviewOwner);
-    const added: OverviewEntry[] = [
-      { workspaceId: '*', project: 'All projects', owners, message: { id: crypto.randomUUID(), role: 'human', text, at: startedAt, evidence: [] } },
-      { workspaceId: '*', project: 'All projects', owners, citations: result.citations, message: { id: crypto.randomUUID(), role: 'assistant', text: result.clarification ? `${result.message}\n${result.clarification}` : result.message, at: Date.now(), evidence: [] } },
-    ];
-    setOverviewEntries((previous) => { const next = [...previous, ...added].slice(-100); try { localStorage.setItem('apex-agent-overview-history', JSON.stringify(next)); } catch { /* Keep this window's conversation when storage is unavailable. */ } return next; });
-    if (batch.children.length) await prepareHandoffBatch(batch.id);
-  };
-  const addAssistantSource = async (payload: AssistantSourceDrop) => {
-    const workspace = latest.current.workspaces.find((item) => item.id === payload.workspaceId && !item.hidden);
-    if (!workspace || workspaceHost(workspace) !== payload.hostId || workspace.path !== payload.cwd) throw new Error("That source belongs to a different project folder or machine.");
-    if (payload.kind !== "file" && payload.kind !== "thread") throw new Error("Drop a project file or chat onto ApexAgent.");
-    if (payload.kind === "thread" && !latest.current.panes.some((pane) => pane.id === payload.sourceId && pane.kind === "chat" && pane.workspaceId === workspace.id)) throw new Error("That chat belongs to a different project.");
-    await mutateAssistant(workspace.id, "monitor_sources_update", {
-      mode: "add", files: payload.kind === "file" ? [payload.sourceId] : [], threads: payload.kind === "thread" ? [payload.sourceId] : [],
-    });
-  };
-  /** Whether a machine can take work now. */
-  const reachable = (hostId: string) => {
-    if (hostId === "local" || !backend?.machines) return true;
-    try { return backend.machines.connection(hostId).get().status.kind === "connected"; } catch { return false; }
-  };
-  /** Gray in the lists: it dropped or failed. A server not used yet this session isn't offline. */
-  const offlineHost = (hostId: string) => {
-    if (hostId === "local" || !backend?.machines) return false;
-    try { return dotState(backend.machines.connection(hostId).get().status) === "off"; } catch { return true; }
-  };
+  /** Connectivity is checked against the captured owner route, never selection. */
+  const reachable = (hostId:string) => { if(hostId==='local'||!backend?.machines)return true;try{return backend.machines.connection(hostId).get().status.kind==='connected';}catch{return false;} };
+  const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
-  const personal = usePersonalAssistant({ hosts: hostList, hostBackend, offlineHost, open: apexAgentAllOpen, bridge: true });
+  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'conversation'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
+  const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
+  const selectedAssistant = mainView.kind === 'assistant' ? assistants.lane(mainView.assistant) : null;
+  const openAssistant = (ref:AssistantRef) => { assistants.select(ref); setMainView({kind:'assistant',assistant:ref,section:'conversation'}); setCreatingAssistant(false); setSettingsOpen(null); closeApexAgent(); };
+  const assistantHost = mainView.kind === 'assistant' ? assistants.hosts.find(host=>host.hostId===mainView.assistant.hostId) : undefined;
+  const assistantBackend = assistantHost ? hostBackend(assistantHost.routeHostId) : null;
+  const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
+  const scopedAssistantWorkspaces = workspaces.filter(workspace=>!workspace.hidden && assignedProjects.some(binding=>binding.project.workspaceId===workspace.id && binding.project.hostId===(assistants.hosts.find(host=>host.routeHostId===workspaceHost(workspace))?.hostId ?? workspaceHost(workspace)) && binding.project.cwd===workspace.path));
+  const scopedAssistantMonitors = assistantMonitors.filter(monitor=>scopedAssistantWorkspaces.some(workspace=>workspace.id===monitor.workspaceId && workspace.path===monitor.cwd && workspaceHost(workspace)===monitor.hostId));
+  // Migrate callers of the former widget destination into the main canvas.
+  useEffect(()=>{ if(apexAgentAllOpen && assistants.selected) { setMainView({kind:'assistant',assistant:assistants.selected,section:'conversation'});setApexAgentAllOpen(false); } },[apexAgentAllOpen,assistants.selected?.hostId,assistants.selected?.assistantId]);
   const reactToAssistant = async (workspaceId: string, messageId: string, emoji: string, enabled: boolean) => {
     if (workspaceId === 'personal') {
       if (!personal) throw new Error('The personal assistant is unavailable.');
@@ -2175,6 +2090,8 @@ export function App() {
   }).map((item) => ({ key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, onSelect: () => runProjectMenu(workspace, item.action) }));
 
   const focusPane = (pane: Pane) => {
+    setMainView({kind:"workspace"});
+    setCreatingAssistant(false);
     // Opening a thread reads it, and brings it out of the archive.
     if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId && (pane.closed || pane.unread || pane.archived)) setPanes((list) => list.map((p) => {
       if (p.id !== pane.id) return p;
@@ -2230,8 +2147,8 @@ export function App() {
     event.stopPropagation();
     if (action.kind === "settings") { setSettingsOpen((open) => (open ? null : "general")); return; }
     if (action.kind === "assistant") {
-      const selected = workspaces.find((workspace) => workspace.id === apexAgentSelection && !workspace.hidden) ?? current ?? workspaces.find((workspace) => !workspace.hidden);
-      if (selected) openApexAgent(selected.id);
+      if (assistants.selected) openAssistant(assistants.selected);
+      else setCreatingAssistant(true);
       return;
     }
     // Any other deck shortcut is about the deck, so it closes settings first.
@@ -2361,7 +2278,6 @@ export function App() {
   let creationBackend: Backend | null = backend;
   try { if (current) creationBackend = backendFor({ workspaceId: current.id } as Pane); } catch { creationBackend = null; }
   const apexWorkspace = apexAgentWorkspace ? workspaces.find((w) => w.id === apexAgentWorkspace) ?? null : null;
-  const selectedApexWorkspace = workspaces.find((workspace) => workspace.id === apexAgentSelection && !workspace.hidden) ?? current ?? workspaces.find((workspace) => !workspace.hidden) ?? null;
   let apexAgentBackend: Backend | null = null;
   try { if (apexWorkspace) apexAgentBackend = hostBackend(workspaceHost(apexWorkspace)); } catch { apexAgentBackend = null; }
   const apexMonitorChange = apexWorkspace ? guardedMonitorChange({
@@ -2412,12 +2328,12 @@ export function App() {
           <img className="brand-mark" src="/branding/mark.svg" alt="" width="28" height="28" />
           Apex Deck
         </span>
-        <button className="icon" aria-expanded={railOpen && !compactApexAgentDock} onClick={() => setRailOpen((open) => !open)} disabled={compactApexAgentDock} aria-label={compactApexAgentDock ? "Workspaces hidden while ApexAgent is open" : railOpen ? "Hide workspaces" : "Show workspaces"} title={compactApexAgentDock ? "Workspaces return when ApexAgent closes" : railOpen ? "Hide workspaces" : "Show workspaces"}>
+        <button className="icon" aria-expanded={railOpen} onClick={() => setRailOpen((open) => !open)} aria-label={railOpen ? "Hide workspaces" : "Show workspaces"} title={railOpen ? "Hide workspaces" : "Show workspaces"}>
           <DeckIcon name="sidebar" />
         </button>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         </div>
-        <SectionNavigation section={section} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
+        <SectionNavigation section={section} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
         <LayoutPicker value={layoutPreset} disabled={section === "agents" || visiblePanes.length < 2} onSelect={arrange} />
         {section === "agents" && <button className="primary titlebar-new" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
@@ -2438,21 +2354,19 @@ export function App() {
         </div>
       </header>
 
-      <ApexAgentWidget workspaces={workspaces.filter((workspace) => !workspace.hidden)} workspaceId={selectedApexWorkspace?.id ?? null} open={!!apexWorkspace || apexAgentAllOpen} monitors={assistantMonitors}
-        panelMode="dock" onPositionChange={setApexAvatarPosition}
-        taskCounts={Object.fromEntries(Object.entries(assistantTaskCounts).filter(([id]) => { const owner = assistantOwners[id]; return !!owner && workspaces.some((workspace) => workspace.id === id && !workspace.hidden && workspace.path === owner.cwd && workspaceHost(workspace) === owner.hostId); }))}
-        appearanceRequest={apexAgentAppearanceRequest} hideRequest={apexAgentHideRequest}
-        offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)}
-        onOpen={(id) => openApexAgent(id, true)} onSelect={(id) => openApexAgent(id, true)} onClose={apexAgentFull ? toggleApexAgentFull : closeApexAgentAndReturnFocus} onAddSource={addAssistantSource}
-        onReply={replyToAssistant}
-        onRetry={(workspaceId) => mutateAssistant(workspaceId, "monitor_check_now", {})} />
       {monitorPollers.map(({ hostId, backend: hostRoute, version }) => <HostMonitors key={hostId} hostId={hostId} backend={hostRoute} getVersion={monitorHostVersion} onMonitors={acceptHostMonitors(version)} />)}
       {migrationNotice && <div className="connection-banner" role="status">{migrationNotice}<button onClick={() => setMigrationNotice("")}>Dismiss</button></div>}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
-      <div className={`body${apexWorkspace && apexAgentDockFocused ? " apex-agent-dock-focused" : ""}${compactApexAgentDock ? " apex-agent-dock-narrow" : ""}${apexAgentFull && (apexAgentAllOpen || !!apexWorkspace) ? " apex-agent-dock-expanded" : ""}${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
+      <div className={`body${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
             backend={backend}
+            assistants={assistants.assistants}
+            assistantBackend={ref=>{const host=assistants.hosts.find(host=>host.hostId===ref.hostId);if(!host)return undefined;try{return hostBackend(host.routeHostId);}catch{return undefined;}}}
+            selectedAssistant={mainView.kind==='assistant'?mainView.assistant:null}
+            rosterProblem={rosterMessage(assistants.assistants,assistants.hosts)}
+            onOpenAssistant={openAssistant}
+            onCreateAssistant={()=>{setCreatingAssistant(true);setMainView({kind:'workspace'});}}
             section={section}
             panes={viewPanes}
             workspaces={workspaces}
@@ -2469,11 +2383,12 @@ export function App() {
             workspaceRename={renameRequests}
             paneMenu={(pane) => paneMenuEntries(pane, "rail")}
             projectMenu={projectMenuEntries}
-            onOpenPane={focusPane}
+            onOpenPane={pane=>{setMainView({kind:"workspace"});focusPane(pane);}}
             onTogglePin={(pane) => { if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId) runPaneMenu(pane, "pin", "rail"); }}
             onRenamePane={(id, title) => { if (viewPanes.find((pane) => pane.id === id && (pane as Pane & { assistantTaskId?: string }).assistantTaskId)) setTaskPaneTitle(id, title); else renamePane(id, title); }}
             onRenameWorkspace={(id, name) => setWorkspaces((list) => renameWorkspace(list, id, name))}
             onProjectClick={(workspace) => {
+              setMainView({kind:"workspace"});
               setActiveWorkspace(workspace.id);
               setWorkspaces((list) => setCollapsed(list, workspace.id, !workspace.collapsed));
             }}
@@ -2500,7 +2415,8 @@ export function App() {
           />
         )}
 
-        <main ref={canvasRef} className={`canvas section-${section}`} inert={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined} aria-hidden={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined}>
+        <main ref={canvasRef} className={`canvas section-${section}`} inert={sidePanelFull ? true : undefined} aria-hidden={sidePanelFull ? true : undefined}>
+          <div className="workspace-canvas-content" style={{display:mainView.kind==='workspace'&&!creatingAssistant?'contents':'none'}} inert={mainView.kind!=='workspace'||creatingAssistant?true:undefined}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} voiceSettings={settings.voice} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
@@ -2606,16 +2522,17 @@ export function App() {
             {!maximized && <Dividers tree={tree} area={gridArea} onChange={setTree} onActive={setResizing} />}
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
-        </main>
-        {!apexWorkspace && apexAgentAllOpen && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label="ApexAgent">
-          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={workspaces.filter((workspace) => !workspace.hidden)} monitors={assistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={reactToAssistant} saveAttachment={saveAssistantAttachment} pickAttachmentFolder={pickAssistantAttachmentFolder} onSetUp={openApexAgentProject} filterWorkspaceId={apexAgentFilter} onClearFilter={() => setApexAgentFilter(null)} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)}
-            offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence} onOverview={replyAcrossProjects} overviewEntries={visibleOverviewEntries(overviewEntries, assistantMonitors)} personal={personal}
-            taskContext={assistantTaskContext && assistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
-            tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, assistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
+          </div>
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace lane={selectedAssistant} section={mainView.section} onNavigate={section=>setMainView(before=>before.kind==='assistant'?{...before,section}:before)} onBack={()=>setMainView({kind:'workspace'})} projects={assignedProjects} onOpenProject={openApexAgentProject}
+            editor={assistantBackend ? <AssistantEditor key={assistantIdentityKey(mainView.assistant)} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId)} onSaved={()=>{void assistants.refresh();setMainView(before=>before.kind==='assistant'?{...before,section:'conversation'}:before);}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
+            conversation={<ApexAgentAll key={selectedAssistant.draftKey} draftKey={selectedAssistant.draftKey} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={section=>setMainView(before=>before.kind==='assistant'?{...before,section}:before)} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
+            offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence}  overviewEntries={[]} personal={selectedAssistant}
+            taskContext={assistantTaskContext && scopedAssistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
+            tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, scopedAssistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
               <small>Task plan · {batch.children.length} assignment{batch.children.length === 1 ? '' : 's'}</small><p>{batch.visibleChildren.length === batch.children.length ? batch.originalRequest : 'Saved proposals for available projects. Changed project assignments need a new plan.'}</p>
               {batch.visibleChildren.map((child) => <div key={child.payload.requestId}><strong>{child.project} · {child.payload.destination.workers.join(', ')}</strong><p>{child.payload.brief}</p><small>{child.status === 'proposed' ? 'Prepared · task progress and review below' : child.status} · {child.payload.mode === 'isolated' ? 'Separate worktree' : 'Read only'}</small>{child.error && <p role="status">{child.error}</p>}</div>)}
               {batch.visibleChildren.some((child) => child.status !== 'proposed' && child.status !== 'failed') && <button type="button" disabled={handoffWorking.includes(batch.id)} onClick={() => void prepareHandoffBatch(batch.id)}>Retry saved proposals</button>}
-            </article>), ...assistantMonitors.map((monitor) => {
+            </article>), ...scopedAssistantMonitors.map((monitor) => {
               if (offlineHost(monitor.hostId)) return <article className="assistant-chat-message assistant" key={monitor.workspaceId}><small>{workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} · Offline</small><p>Reconnect this machine to load and respond to delegated work.</p></article>;
               let route: Backend; try { route = hostBackend(monitor.hostId); } catch { return null; }
               const requestOwner = overviewOwner(monitor);
@@ -2640,14 +2557,17 @@ export function App() {
               };
               return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} requestRecovery={requestRecovery} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
             })]}
-            clearedAt={apexAgentClearedAt} onClear={clearApexAgentConversation} fullScreen={apexAgentFull} onFullScreen={toggleApexAgentFull} />
-        </aside>}
-        {apexWorkspace && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label={`ApexAgent for ${apexWorkspace.name}`}>
-          <button className="apex-agent-project-expand icon" type="button" onClick={toggleApexAgentFull} aria-pressed={apexAgentFull} aria-label={apexAgentFull ? "Collapse ApexAgent" : "Expand ApexAgent"} title={apexAgentFull ? "Collapse" : "Expand"}>{apexAgentFull ? "⤡" : "⤢"}</button>
+            />} />}
+          {mainView.kind==='assistant' && !selectedAssistant && <div className="picker"><p role="status">This assistant is unavailable. Refresh or reconnect its machine.</p><button onClick={()=>setMainView({kind:'workspace'})}>Back to Workspaces</button></div>}
+          {creatingAssistant && <div className="assistant-creation"><div className="assistant-creation-host"><button onClick={()=>setCreatingAssistant(false)}>← Back</button><label>Machine <select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label></div>{(()=>{const host=assistants.hosts.find(host=>host.routeHostId===creationHost);return host?.hostId ? <AssistantEditor key={host.hostId} backend={hostBackend(host.routeHostId)} profiles={profiles} disabledProviders={disabledProviders} hostId={host.hostId} projects={[]} onCreate={async input=>{const ref=await assistants.create(host.routeHostId,input);openAssistant(ref);}}/>:<p role="status">Connect a machine with assistant workspace support to create a teammate.</p>;})()}</div>}
+        {apexWorkspace && <aside className="assistant-source-view" aria-label={`ApexAgent for ${apexWorkspace.name}`}>
           {apexAgentBackend
             ? <ApexAgentSources key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={viewPanes} onMonitorChange={apexMonitorChange} onClose={closeApexAgentAndReturnFocus} onBack={() => setApexAgentWorkspace(null)} />
             : <div className="apex-agent-dock-unavailable"><header><strong>ApexAgent</strong><button className="icon" onClick={closeApexAgentAndReturnFocus} aria-label="Close ApexAgent">×</button></header><p role="alert">The project machine is unavailable.</p><p>Reconnect the machine to use ApexAgent for {apexWorkspace.name}.</p></div>}
         </aside>}
+        </main>
+
+
         {detailsOpen && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close side panel overlay" onClick={closeDetails} />}
           {!sidePanelFull && <SidebarHandle

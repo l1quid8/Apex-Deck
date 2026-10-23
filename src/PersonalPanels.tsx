@@ -97,7 +97,7 @@ function settingsPatch(a: PersonalAssistantRecord, d: Draft): Partial<PersonalSe
 }
 
 /** One panel for the personal assistant: tabs on top, one scrollable view below. */
-export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: PersonalLane; initial?: PanelName; onClose: () => void }) {
+export function PersonalPanels({ lane, initial = 'activity', onClose, embedded = false }: { lane: PersonalLane; initial?: PanelName; onClose: () => void; embedded?: boolean }) {
   const ownerKey = JSON.stringify([lane.ref?.hostId ?? lane.assistant?.hostId, lane.ref?.assistantId ?? lane.assistant?.id]);
   const [panel, setPanel] = useState<PanelName>(initial);
   const [pending, setPending] = useState<Record<string, number | undefined>>({});
@@ -503,16 +503,16 @@ export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: 
 
   return (
     <div className="personal-panels">
-      <div className="personal-panels-head">
+      {!embedded && <div className="personal-panels-head">
         <strong>{lane.name}</strong>
         <span className="personal-panels-muted">{lane.hostName}</span>
         <button type="button" className="personal-panels-close" onClick={onClose}>Close</button>
-      </div>
-      <div className="personal-panels-tabs" role="tablist" aria-label="Assistant panels">
+      </div>}
+      {!embedded && <div className="personal-panels-tabs" role="tablist" aria-label="Assistant panels">
         {TABS.map((tab) => (
           <button key={tab.id} type="button" role="tab" aria-selected={panel === tab.id} onClick={() => setPanel(tab.id)}>{tab.label}</button>
         ))}
-      </div>
+      </div>}
       {lane.offline && <p className="personal-panels-muted">Offline. Changes are paused until it reconnects.</p>}
       {error && <p role="alert" className="personal-panels-alert">{error}</p>}
       <div className="personal-panels-body">{content()}</div>

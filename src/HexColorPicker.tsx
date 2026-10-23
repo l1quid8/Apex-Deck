@@ -4,11 +4,12 @@ import { isHardToReadOnDark, normalizeHexColor, parseHexColorInput } from "./hex
 /** A colour control for an agent: preset swatches, the system colour well, and
  *  a hex field that takes `#aabbcc`, `aabbcc`, `#abc` or `abc`. Every change is
  *  reported as lowercase `#rrggbb` so callers can store it as-is. */
-export function HexColorPicker({ label, value, presets, onChange }: {
+export function HexColorPicker({ label, value, presets, onChange, onValidityChange }: {
   label: string;
   value: string;
   presets: readonly string[];
   onChange: (hex: string) => void;
+  onValidityChange?: (valid: boolean) => void;
 }) {
   const normalized = normalizeHexColor(value) ?? presets[0] ?? "#a78bfa";
   const [draft, setDraft] = useState(normalized);
@@ -24,6 +25,7 @@ export function HexColorPicker({ label, value, presets, onChange }: {
     typed.current = hex;
     setDraft(hex);
     onChange(hex);
+    onValidityChange?.(true);
   };
   const titleId = useId();
   const hintId = useId();
@@ -70,7 +72,8 @@ export function HexColorPicker({ label, value, presets, onChange }: {
           onChange={(event) => {
             const text = event.target.value;
             setDraft(text);
-            const next = parseHexColorInput(text);
+            const next = onValidityChange ? (/^#?[a-fA-F0-9]{6}$/.test(text) ? parseHexColorInput(text) : null) : parseHexColorInput(text);
+            onValidityChange?.(next !== null);
             // Apply once it is a whole colour; half-typed text stays a draft.
             if (next) {
               typed.current = next;
@@ -78,7 +81,7 @@ export function HexColorPicker({ label, value, presets, onChange }: {
             }
           }}
           // Leaving the field restores the canonical form it is stored as.
-          onBlur={() => { typed.current = null; setDraft(normalized); }}
+          onBlur={() => { if (!onValidityChange) { typed.current = null; setDraft(normalized); } }}
         />
       </div>
       <p className="hex-hint" id={hintId} role="status">

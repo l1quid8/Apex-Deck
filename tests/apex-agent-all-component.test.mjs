@@ -951,3 +951,20 @@ test('imported personal assistant and old messages carry unverified labels witho
  assert.match(textOf(old), /Imported · unverified/);
  assert.doesNotMatch(textOf(fresh), /Imported · unverified/);
 });
+
+test('embedded assistant work brief keeps its owner despite newer project activity and uses qualified attachment lane', async () => {
+ const {lane,calls}=personalLane([], [pm('owned-human','human','chat',1,'Original human event')]);
+ lane.ref={hostId:'mac',assistantId:'owned'};
+ const ownerKey='["mac","owned"]';
+ const h=harness({embedded:true,personalLaneId:ownerKey,draftKey:ownerKey,personal:lane,workspaces:projects,monitors:[monitor('mobile',[message('newer-project','assistant',99)])]});
+ let tree=h.render();assert.match(textOf(tree),/Original human event/);assert.doesNotMatch(textOf(tree),/Message newer-project/);
+ assert.equal(find(tree,node=>node.type===ApexAgentComposerToolsStub).props.draftKey,ownerKey);
+ find(tree,node=>node.type==='textarea').props.onChange({target:{value:'Please coordinate the release work brief'}});tree=h.render();find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(calls[0][0],'send');assert.match(calls[0][1],/coordinate the release/);assert.equal(h.replies.length,0);assert.equal(lane.assistant.messages[0].id,'owned-human');
+});
+
+test('embedded memory and settings menu navigate main canvas without opening a floating panel', () => {
+ const sections=[];const {lane}=personalLane([],[]);const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[],onNavigatePanel:section=>sections.push(section)});
+ for(const name of ['Memory','Assistant settings'])find(h.render(),node=>node.type==='button'&&node.props.role==='menuitem'&&textOf(node)===name).props.onClick({currentTarget:null});
+ assert.deepEqual(sections,['memory','settings']);assert.equal(find(h.render(),node=>node.type===PersonalPanelsStub),null);
+});

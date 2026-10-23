@@ -28,7 +28,6 @@ export type ApexAgentTaskContext = { id: string; project: string; label: string;
 
 const DAY = 24 * 60 * 60 * 1000;
 /** The personal assistant's lane in the conversation. No workspace uses this id. */
-const PERSONAL = 'personal';
 const PERSONAL_STATUS: Record<string, string> = { needsYou: 'Needs you', queued: 'Approved', running: 'Running', waiting: 'Waiting', blocked: 'Blocked', done: 'Done', failed: 'Failed', cancelled: 'Cancelled' };
 const everyText = (ms: number) => `every ${Math.round(ms / 60000)} min`;
 const whenText = (ts: number) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -49,9 +48,12 @@ function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) =
 }
 
 /** One conversation across every watched project. Replies go to the project they name, or the last one discussed. */
-export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand }: {
+export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand }: {
   /** The personal assistant on its durable host, shown as one more lane in this conversation. */
   personal?: PersonalLane | null;
+  personalLaneId?: string;
+  onNavigatePanel?: (section: 'memory' | 'settings' | 'activity') => void;
+  embedded?: boolean;
   /** Session draft owner: durable host+assistant identity. The caller keys this component by the same value. */
   draftKey?: string;
   onReact?: (workspaceId: string, messageId: string, emoji: MessageReaction, enabled: boolean) => Promise<void>;
@@ -88,8 +90,9 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   fullScreen?: boolean;
   onFullScreen?: () => void;
 }) {
+  const PERSONAL = personalLaneId;
   const names = useMemo(() => Object.fromEntries(workspaces.map((workspace) => [workspace.id, workspace.name])), [workspaces]);
-  const watched = workspaces.filter((workspace) => monitors.some((monitor) => monitor.workspaceId === workspace.id));
+  const watched = (embedded ? [] : workspaces).filter((workspace) => monitors.some((monitor) => monitor.workspaceId === workspace.id));
   const assistant = personal?.assistant ?? null;
   const personalTag = personal ? `${personal.name} · ${personal.hostName}` : '';
   // Projects plus the personal assistant: a reply goes to whichever is named, or the last one discussed.
@@ -99,7 +102,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     workspaceId: PERSONAL, project: personalTag, personal: item,
     message: { id: item.id, role: item.role === 'human' ? 'human' : 'assistant', text: item.text, at: item.at, evidence: [] as MonitorEvidence[], reactions: item.reactions },
   })), [assistant, personalTag]);
-  const allEntries = useMemo(() => [...mergeProjectConversations(monitors, names), ...overviewEntries, ...personalEntries].sort((a, b) => a.message.at - b.message.at), [monitors, names, overviewEntries, personalEntries]);
+  const allEntries = useMemo(() => [...(embedded ? [] : mergeProjectConversations(monitors, names)), ...overviewEntries, ...personalEntries].sort((a, b) => a.message.at - b.message.at), [embedded, monitors, names, overviewEntries, personalEntries]);
   const entries = useMemo(() => allEntries.filter((entry) => entry.message.at > clearedAt && (!filterWorkspaceId || entry.workspaceId === filterWorkspaceId) && !('personal' in entry && entry.personal.kind === 'notice')), [allEntries, clearedAt, filterWorkspaceId]);
   // Only the filtered project's findings and failed checks show while filtering.
   const inView = (workspaceId: string) => !filterWorkspaceId || workspaceId === filterWorkspaceId;
@@ -158,7 +161,8 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   stateRef.current = { view, selectedKey };
   const openPanel = (name: PanelName, event?: { currentTarget: EventTarget | null }) => {
     (event?.currentTarget as HTMLElement | null | undefined)?.closest?.('details')?.removeAttribute('open');
-    setPanelOpen(name);
+    if (onNavigatePanel && (name === 'memory' || name === 'settings' || name === 'activity')) onNavigatePanel(name);
+    else setPanelOpen(name);
   };
   // The project a draft continues is fixed when typing starts, so a background message can't redirect it.
   const [draftFallback, setDraftFallback] = useAssistantComposerDraftState<string | null>(draftKey, 'draftFallback', null);
@@ -335,7 +339,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const personalRows: TaskSummary[] = !assistant ? [] : assistant.tasks.map((task) => {
     const results = (assistant.messages ?? []).filter((line) => line.taskId === task.id && line.kind === 'result');
     return {
-      key: personalTaskKey(assistant.hostId, task.id), source: 'personal', hostId: assistant.hostId, workspaceId: '', id: task.id,
+      key: personalTaskKey(assistant.hostId, task.id, personal?.ref?.assistantId), source: 'personal', hostId: assistant.hostId, workspaceId: '', id: task.id,
       title: task.goal, place: machineOf(task), worker: task.kind === 'helper' ? 'Helper' : personal!.name,
       status: task.status, statusLabel: PERSONAL_STATUS[task.status] ?? task.status, group: personalTaskGroup(task),
       result: results.length ? plain(results[results.length - 1].text) : '', updatedAt: task.updatedAt,
@@ -503,7 +507,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       return <article className={`assistant-chat-message assistant apex-agent-personal-notice${seen ? ' is-seen' : ' is-unseen'}`} key={`notice:${notice.id}`}>
         <small>{personal?.name ?? 'Assistant'} · {whenText(notice.at)}{notice.urgent ? ' · Urgent' : ''}</small>
         <p>{notice.text}</p>
-        {task && <button type="button" className="apex-agent-task-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id))}>{taskLinkText(task)}</button>}
+        {task && <button type="button" className="apex-agent-task-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>{taskLinkText(task)}</button>}
       </article>;
     })}
   </div>;
@@ -519,10 +523,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   };
   const composerLane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;
 
-  return <TaskViewContext.Provider value={taskContextValue}><section className="apex-agent widget apex-agent-all" role="region" aria-label="ApexAgent" onKeyDown={onEscape}>
+  return <TaskViewContext.Provider value={taskContextValue}><section className={`apex-agent ${embedded ? 'assistant-conversation' : 'widget'} apex-agent-all`} role="region" aria-label="ApexAgent" onKeyDown={onEscape}>
     <header className="apex-agent-head">
       <div className="apex-agent-head-row">
-        <div className="apex-agent-brand"><h1>ApexAgent</h1></div>
+        <div className="apex-agent-brand"><h1>{embedded ? personal?.name ?? 'Assistant' : 'ApexAgent'}</h1></div>
         <div className="apex-agent-head-actions">{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label="More ApexAgent options">⋯</summary><div role="menu">
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy} onClick={() => void run(async () => { await batch(active.filter((monitor) => monitor.paused === anyPaused), 'monitor_pause', { paused: !anyPaused }); })}>{anyPaused ? 'Resume project watching' : 'Pause project watching'}{anyPaused && <small>Start checking your project folders again.</small>}</button>}
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy || !active.some((monitor) => !monitor.paused)} onClick={() => void run(async () => { await batch(active.filter((monitor) => !monitor.paused), 'monitor_check_now', {}); })}>Check now</button>}
@@ -558,7 +562,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         const item = 'personal' in entry ? entry.personal as PersonalMessage : null;
         if (item) {
           const task = taskOf(item.taskId);
-          if (task && collapsesToLink(item)) return linkLine.get(task.id) === item.id ? <p className="apex-agent-task-line" key={`${workspaceId}:${message.id}`}><button type="button" className="apex-agent-task-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id))}>{taskLinkText(task)}</button></p> : null;
+          if (task && collapsesToLink(item)) return linkLine.get(task.id) === item.id ? <p className="apex-agent-task-line" key={`${workspaceId}:${message.id}`}><button type="button" className="apex-agent-task-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>{taskLinkText(task)}</button></p> : null;
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           const personalBubble = `assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
           const personalBody = <>

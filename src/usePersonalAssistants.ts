@@ -234,6 +234,18 @@ export class PersonalAssistantsCollection {
     if (Object.keys(settings).some(key => !fields.has(key))) throw new Error("Update this host and use supported workspace configuration to change runtime or projects.");
     if (settings.look && Object.keys(settings.look).some(key => key !== "color" && key !== "shape")) throw new Error("This host's legacy settings cannot save extended assistant appearance. Workspace configuration support is required.");
   }
+  /** Captures the authenticated host before any creation await. Never follows selection. */
+  create = async (routeHostId: string, input: import('./AssistantWorkspace').AssistantCreation): Promise<AssistantRef> => {
+    if (this.options.offlineHost(routeHostId)) throw new Error("This machine is offline.");
+    const route = this.options.hostBackend(routeHostId), hostId = this.owner(route);
+    if (route.supports?.('assistant_workspace_v4') !== true) throw new Error("Update this machine’s service to create workspace assistants.");
+    const assistant = await route.call<PersonalAssistantRecord>('personal_create', input);
+    if (this.options.hostBackend(routeHostId) !== route || this.owner(route) !== hostId) throw new Error("The machine identity changed during creation. Refresh this machine before continuing.");
+    this.validate(assistant, hostId);
+    const ref = {hostId, assistantId:assistant.id}, key = assistantIdentityKey(ref);
+    this.rows.set(key, {ref,routeHostId,route,assistant,epoch:++this.clock,written:this.clock,lastSeen:Date.now()});
+    this.select(ref); return ref;
+  };
   emptyLane = (): PersonalLane | null => {
     const host = [...this.hosts.values()].find(h => h.state === "empty") ?? [...this.hosts.values()][0];
     if (!host) return null;
@@ -357,5 +369,5 @@ export function usePersonalAssistants(options: PersonalAssistantsOptions) {
     pushStarted.current = true;
     void plugin.requestPermissions().then(permission => permission.receive === "granted" ? plugin.register() : undefined).catch(error => console.warn(`Notifications: ${message(error)}`));
   }, [options.device, snapshot.assistants.length]);
-  return { ...snapshot, select: collection.select, lane: collection.lane, refresh: collection.refresh, emptyLane: collection.emptyLane, pendingLane: collection.pendingLane };
+  return { ...snapshot, select: collection.select, lane: collection.lane, refresh: collection.refresh, create: collection.create, emptyLane: collection.emptyLane, pendingLane: collection.pendingLane };
 }

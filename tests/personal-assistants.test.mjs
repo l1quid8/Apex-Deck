@@ -97,3 +97,17 @@ test('imported assistant summaries retain the host legacy marker instead of look
  assert.deepEqual(f.collection.snapshot().assistants.find(a=>a.ref.hostId==='mac').legacy,legacy);
  assert.equal(f.collection.snapshot().assistants.find(a=>a.ref.hostId==='beta').legacy,undefined);
 });
+
+test('explicit creation persists on its captured authenticated machine and selects the returned durable owner',async()=>{
+ const f=fixture();await f.collection.refresh();f.routes.a.supports=cap=>cap==='assistant_workspace_v4';
+ const pending=defer();f.handlers['a:personal_create']=()=>pending.promise;
+ const input={workspaceVersion:4,name:'New teammate',folder:'~/apex-assistant',profile:{id:'p',display_name:'New teammate',backend:{kind:'agent',tool:'codex',model:'offered'},persona:'',access:'full',effort:'low'},look:{seed:'new-seed',color:'#aabbcc',kind:'pixel'},projects:[]};
+ const creating=f.collection.create('a',input);f.collection.select(ref('beta'));pending.resolve({...record('alpha','new'),name:input.name,profile:input.profile,look:input.look});
+ assert.deepEqual(await creating,ref('alpha','new'));assert.deepEqual(f.collection.snapshot().selected,ref('alpha','new'));assert.equal(f.collection.lane(ref('alpha','new')).assistant.profile.access,'full');assert.deepEqual(f.calls.find(([,cmd])=>cmd==='personal_create'),['a','personal_create',input]);
+});
+test('creation rejects a route rebound to another authenticated owner before completion',async()=>{
+ const f=fixture();await f.collection.refresh();f.routes.a.supports=()=>true;const pending=defer();f.handlers['a:personal_create']=()=>pending.promise;
+ const creating=f.collection.create('a',{workspaceVersion:4,name:'A',folder:'/work',profile:{},look:{},projects:[]});
+ f.routes.a.host.connection.get=()=>({status:{kind:'connected',hostId:'different'}});pending.resolve(record('alpha','new'));
+ await assert.rejects(creating,/identity changed/);assert.equal(f.collection.lane(ref('alpha','new')),null);
+});

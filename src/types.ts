@@ -475,3 +475,5 @@ export type PhoneInput =
   | { kind: "type"; text: string }
   | { kind: "key"; key: PhoneKey }
   | { kind: "button"; button: "home" | "lock" };
+
+export type { MainView, AssistantSection } from "./assistantWorkspaceModel";

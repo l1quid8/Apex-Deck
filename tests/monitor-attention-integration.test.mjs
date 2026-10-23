@@ -1,3 +1,5 @@
+import {assistantIdentityKey, assistantAppearance} from '../src/assistantIdentity.ts';
+import {rosterMessage} from '../src/assistantWorkspaceModel.ts';
 import {subscribeToImports} from '../src/legacyImportRefresh.ts';
 import {chatFolder, mountWorktree} from "../src/worktreeMount.ts";
 import test from 'node:test';
@@ -101,7 +103,14 @@ function appHarness() {
   const mountSource = fsSync.readFileSync(new URL('../src/useWorktreeMount.ts', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '').replace('export function', 'function');
   const mountCode = transform(mountSource, {transforms:['typescript']}).code;
   const useWorktreeMount = new Function('useEffect','useRef','useState','mountWorktree',mountCode+';return useWorktreeMount;')(hooks.useEffect,hooks.useRef,hooks.useState,mountWorktree);
+  const assistantRef={hostId:project.hostId,assistantId:'assistant-a'};
+  const personalRecord={id:'assistant-a',hostId:project.hostId,name:'Null',revision:1,messages:[],tasks:[],projects:[{project:{hostId:project.hostId,workspaceId:project.id,cwd:project.path},tools:'ask'}]};
+  const personalLane={ref:assistantRef,draftKey:assistantIdentityKey(assistantRef),name:'Null',hostName:'Mac',assistant:personalRecord,offline:false,send:async()=>{}};
+  const assistantCollection={assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
   const defaults = {
+    assistantIdentityKey,rosterMessage,
+    usePersonalAssistants:()=>assistantCollection,
+
     subscribeToImports,
     chatFolder, useWorktreeMount,
     getBackend: async () => backend,
@@ -143,7 +152,7 @@ function appHarness() {
     layoutKey: () => '',
     pickerRows: () => [], workInRows: () => [],
   };
-  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','ConfirmDialog','PathPrompt','SidebarHandle','RightPanel']);
+  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','AssistantWorkspace','AssistantEditor','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','ConfirmDialog','PathPrompt','SidebarHandle','RightPanel']);
   const globalValues = {
     localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
     crypto: { randomUUID: () => `request-${++requestSequence}` },
@@ -175,7 +184,7 @@ function appHarness() {
   }
   function unmount() { alive = false; for (const effect of effects) effect?.cleanup?.(); }
   return {
-    render, unmount, backend, session, stored,
+    render, unmount, backend, session, stored, assistantRef, personalLane, assistantCollection,
     emitSession(workspaces) { sessionChanged?.({ ...session, workspaces, panes: session.panes }); },
     setConnection(status, hostId = 'host-a') {
       const previous = connectionStates.get(hostId) ?? { status: { kind: 'connected' }, revision: 1 };
@@ -188,7 +197,7 @@ function appHarness() {
 function find(node, predicate) {
   if (!node || typeof node !== 'object') return null;
   if (predicate(node)) return node;
-  for (const child of node.children ?? []) { const found = find(child, predicate); if (found) return found; }
+  for (const child of [...(node.children ?? []),node.props?.conversation,node.props?.editor]) { const found = find(child, predicate); if (found) return found; }
   return null;
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -202,49 +211,27 @@ const hasMonitorAttention = tree => Boolean(monitorRowFor(tree, project.id));
 // The avatar opens one conversation for every project; project setup opens from it.
 const agentOf = (h, tree) => {
   const all = child(tree, 'ApexAgentAll');
-  if (all && !child(tree, 'ApexAgentSources')) { all.props.onSetUp(child(tree, 'ApexAgentWidget').props.workspaceId); tree = h.render(); }
+  if (all && !child(tree, 'ApexAgentSources')) { all.props.onSetUp(project.id); tree = h.render(); }
   return child(tree, 'ApexAgentSources');
 };
 const monitorAttentionItem = tree => monitorRowFor(tree, project.id);
 
-test('one widget stays mounted across pages and retains its explicit project selection', async () => {
-  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
-  const widget = child(tree, 'ApexAgentWidget');
-  assert.ok(widget, 'persistent assistant shell mounted before opening');
-  widget.props.onOpen(project.id); tree = h.render();
-  assert.equal(agentOf(h, tree)?.props.workspace.id, project.id);
-  const other = { id: 'b', name: 'B', hostId: 'host-b', path: '/work/b' };
-  h.emitSession([project, other]); await tick(); tree = h.render();
-  child(tree, 'SectionNavigation').props.onChange('agents'); tree = h.render();
-  assert.ok(child(tree, 'ApexAgentWidget'));
-  assert.equal(agentOf(h, tree)?.props.workspace.id, project.id, 'page changes keep assignment');
-  child(tree, 'ApexAgentWidget').props.onSelect(other.id); tree = h.render();
-  assert.equal(agentOf(h, tree)?.props.workspace.id, other.id);
-  agentOf(h, tree).props.onClose(); tree = h.render();
-  assert.equal(child(tree, 'ApexAgentWidget').props.workspaceId, other.id, 'closing preserves selected project');
-  assert.equal(child(tree, 'ApexAgentWidget').props.open, false);
-  h.unmount();
+test('Your team opens durable assistants in the main canvas and Back restores workspace panes',async()=>{
+ const h=appHarness();let tree=h.render();await tick();tree=h.render();
+ assert.equal(child(tree,'ProjectSidebar').props.assistants[0].ref.assistantId,'assistant-a');
+ child(tree,'ProjectSidebar').props.onOpenAssistant(h.assistantRef);tree=h.render();
+ const view=child(tree,'AssistantWorkspace');assert.ok(view);assert.equal(view.props.lane.ref.assistantId,'assistant-a');assert.equal(child(tree,'ApexAgentWidget'),null);
+ view.props.onBack();tree=h.render();assert.equal(child(tree,'AssistantWorkspace'),null);assert.ok(child(tree,'ProjectSidebar'));
+ h.unmount();
 });
-
-test('drop saves to the captured assignment and only accepts a still-current owner', async () => {
-  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'HostMonitors').props.onMonitors(project.hostId, [blocker]); tree = h.render();
-  const calls = []; let finish;
-  h.backend.call = (cmd, args) => { if (cmd === 'monitor_get') return Promise.resolve(null); calls.push({ cmd, args }); return new Promise(resolve => { finish = resolve; }); };
-  const drop = { workspaceId: project.id, hostId: project.hostId, cwd: project.path, kind: 'file', sourceId: 'docs/plan.md' };
-  const pending = child(tree, 'ApexAgentWidget').props.onAddSource(drop);
-  assert.equal(calls[0].cmd, 'monitor_sources_update');
-  assert.equal(calls[0].args.conversationId, blocker.conversationId);
-  h.emitSession([{ ...project, path: '/moved' }]); await tick(); tree = h.render();
-  finish({ ...blocker, files: ['README.md', 'docs/plan.md'] });
-  await assert.rejects(pending, /changed|moved|owner|connection/i);
-  tree = h.render(); assert.equal(hasMonitorAttention(tree), false);
-  await assert.rejects(child(tree, 'ApexAgentWidget').props.onAddSource(drop), /folder|project|binding|owner/i);
-  assert.equal(calls.length, 1, 'old drop payload cannot mutate the moved project');
-  h.unmount();
+test('assistant navigation leaves global panel selection and open state unchanged',async()=>{
+ const h=appHarness();let tree=h.render();await tick();tree=h.render();
+ const before=child(tree,'RightPanel')?.props.state;
+ child(tree,'ProjectSidebar').props.onOpenAssistant(h.assistantRef);tree=h.render();
+ child(tree,'AssistantWorkspace').props.onNavigate('memory');tree=h.render();
+ assert.deepEqual(child(tree,'RightPanel')?.props.state,before);assert.equal(child(tree,'AssistantWorkspace').props.section,'memory');h.unmount();
 });
-
-test('widget reply retains its request ID until the exact assignment response is confirmed', async () => {
+test('main assistant project reply retains its request ID until the exact assignment response is confirmed', async () => {
   const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
   const requests = [];
   let wrongOwner = true;
@@ -256,7 +243,8 @@ test('widget reply retains its request ID until the exact assignment response is
     }
     return { workspaceId: project.id, revision: 0, tasks: [], executions: [] };
   };
-  const reply = child(tree, 'ApexAgentWidget').props.onReply;
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);tree=h.render();
+  const reply = child(tree, 'ApexAgentAll').props.onReply;
   await assert.rejects(reply(project.id, 'Check the release'), /assignment|conversation/i);
   const key = assistantTaskModel.pendingRequestStorageKey({ workspaceId: project.id, cwd: project.path, hostId: project.hostId, conversationId: blocker.conversationId });
   assert.ok(h.stored.has(key), 'an unconfirmed response retains durable retry identity');
@@ -267,7 +255,7 @@ test('widget reply retains its request ID until the exact assignment response is
   h.unmount();
 });
 
-test('widget reply refuses an assignment changed while sending and keeps its original receipt', async () => {
+test('main assistant project reply refuses an assignment changed while sending and keeps its original receipt', async () => {
   const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
   let liveMonitor = blocker, finish, sent;
   h.backend.call = (command, args) => {
@@ -275,7 +263,8 @@ test('widget reply refuses an assignment changed while sending and keeps its ori
     if (command === 'assistant_message') { sent = args; return new Promise(resolve => { finish = resolve; }); }
     return Promise.resolve({ workspaceId: project.id, revision: 0, tasks: [], executions: [] });
   };
-  const promise = child(tree, 'ApexAgentWidget').props.onReply(project.id, 'Check the release');
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);tree=h.render();
+  const promise = child(tree, 'ApexAgentAll').props.onReply(project.id, 'Check the release');
   await tick();
   liveMonitor = { ...blocker, conversationId: 'new-assignment' };
   finish({ monitor: blocker });
@@ -288,7 +277,7 @@ test('widget reply refuses an assignment changed while sending and keeps its ori
 test('monitor blockers survive conversation visits and pane attention cleanup, then clear on resolution', async () => {
   const h = appHarness();
   let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef); tree = h.render();
   const apex = agentOf(h, tree);
   assert.ok(apex, 'ApexAgent is present after opening its workspace');
   apex.props.onMonitorChange?.(project.id, project.hostId, blocker);
@@ -311,7 +300,7 @@ test('monitor blockers survive conversation visits and pane attention cleanup, t
   assert.ok(hasMonitorAttention(tree), 'closing the monitor conversation leaves the blocker active');
   assert.equal(child(tree, 'ProjectSidebar')?.props.monitorAttention?.[project.id]?.blocking, true, 'opening and closing the conversation does not clear the workspace blocker');
 
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   const reopenedAgent = agentOf(h, tree);
   reopenedAgent.props.onMonitorChange?.(project.id, project.hostId, resolvedBlocker);
@@ -323,7 +312,7 @@ test('monitor blockers survive conversation visits and pane attention cleanup, t
 test('monitor snapshots are accepted only for the rendered workspace, host, and path', async () => {
   const h = appHarness();
   let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   const apex = agentOf(h, tree);
   assert.equal(typeof apex.props.onMonitorChange, 'function');
@@ -341,7 +330,7 @@ test('monitor snapshots are accepted only for the rendered workspace, host, and 
 test('an ApexAgent callback from an old workspace path cannot add or clear attention', async () => {
   const h = appHarness();
   let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   const staleChange = agentOf(h, tree).props.onMonitorChange;
   staleChange(project.id, project.hostId, blocker);
@@ -360,7 +349,7 @@ test('an ApexAgent callback from an old workspace path cannot add or clear atten
 test('an ApexAgent callback from a removed workspace is ignored, including null', async () => {
   const h = appHarness();
   let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   const staleChange = agentOf(h, tree).props.onMonitorChange;
   staleChange(project.id, project.hostId, blocker);
@@ -454,7 +443,7 @@ test('host monitor snapshots reconcile only their own host across multiple works
 test('an ApexAgent callback from before host reconnection cannot clear the current blocker', async () => {
   const h = appHarness();
   let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   const staleChange = agentOf(h, tree).props.onMonitorChange;
   staleChange(project.id, project.hostId, blocker);
@@ -479,7 +468,7 @@ test('an ApexAgent callback from before host reconnection cannot clear the curre
 test('a stale callback after workspace host rebinding cannot clear the new host blocker', async () => {
   const h = appHarness();
   let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   const oldHostChange = agentOf(h, tree).props.onMonitorChange;
   oldHostChange(project.id, 'host-a', blocker);
@@ -568,6 +557,7 @@ const attentionRows = nav => {
 
 function realSidebar() {
   return mountComponent('Sidebar.tsx', 'ProjectSidebar', {
+    assistantIdentityKey,assistantAppearance,Avatar:stubComponent('Avatar'),createAssistantAvatarApi:()=>undefined,
     flagLabel: attention.label, workspaceFlag: attention.workspaceFlag,
     workspaceHost: hostSession.workspaceHost,
     ageWords: sidebarModel.ageWords, hostTints: sidebarModel.hostTints, projectGroups: sidebarModel.projectGroups, sidebarSections: sidebarModel.sidebarSections, twinPath: sidebarModel.twinPath,
@@ -602,7 +592,7 @@ test('the rendered section alerts and sidebar badge keep an unresolved ApexAgent
   assert.equal(classOf(threadsTab(drawNav(child(tree, 'SectionNavigation').props))).includes('has-attention'), false, 'nothing wants attention before ApexAgent reports');
   assert.equal(sidebarBadge(drawSidebar, tree), null, 'the project has no badge before ApexAgent reports');
 
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   agentOf(h, tree).props.onMonitorChange(project.id, project.hostId, blocker);
   tree = h.render();
@@ -642,7 +632,7 @@ test('the rendered section alerts and sidebar badge keep an unresolved ApexAgent
   assert.equal(textOf(badge), '1', 'the sidebar badge is still there after reading');
 
   // Resolving the blocker clears both.
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   agentOf(h, tree).props.onMonitorChange(project.id, project.hostId, resolvedBlocker);
   tree = h.render();
@@ -656,7 +646,7 @@ test('the rendered Mark ready as seen button clears ordinary Ready flags but kee
   const drawNav = realSectionNavigation();
   const drawSidebar = realSidebar();
   let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id);
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef);
   tree = h.render();
   agentOf(h, tree).props.onMonitorChange(project.id, project.hostId, blocker);
   tree = h.render();
@@ -690,48 +680,16 @@ test('the rendered Mark ready as seen button clears ordinary Ready flags but kee
   h.unmount();
 });
 
-test('the avatar opens one conversation for every project with no project dropdown', async () => {
-  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
-  const all = child(tree, 'ApexAgentAll');
-  assert.ok(all, 'combined conversation opens');
-  assert.ok(!child(tree, 'ApexAgentSources'), 'no single-project panel');
-  assert.ok(!find(tree, node => node.props?.['aria-label'] === 'ApexAgent project'), 'no project dropdown');
-  all.props.onClose(); tree = h.render();
-  assert.equal(child(tree, 'ApexAgentWidget').props.open, false);
-  h.unmount();
+test('assistant conversation is owner-bound and never exposes the retired global coordinator',async()=>{
+ const h=appHarness();let tree=h.render();await tick();tree=h.render();
+ child(tree,'ProjectSidebar').props.onOpenAssistant(h.assistantRef);tree=h.render();const all=child(tree,'ApexAgentAll');
+ assert.ok(all);assert.equal(all.props.embedded,true);assert.equal(all.props.personalLaneId,assistantIdentityKey(h.assistantRef));assert.equal(all.props.onOverview,undefined);assert.deepEqual(all.props.overviewEntries,[]);
+ assert.equal(all.props.personal.ref.assistantId,'assistant-a');all.props.onClose();assert.equal(child(h.render(),'AssistantWorkspace'),null);h.unmount();
 });
-
-test('combined chat synthesizes both projects and retains scoped global memory', async () => {
-  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
-  const other = { id: 'project-b', name: 'Billing API', hostId: project.hostId, path: '/work/billing' };
-  const second = { ...blocker, workspaceId: other.id, cwd: other.path, conversationId: 'monitor-b', responsibility: 'Ship billing', messages: [], findings: [] };
-  h.emitSession([project, other]); tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'HostMonitors').props.onMonitors(project.hostId, [blocker, second]); tree = h.render();
-  const commands = [];
-  h.backend.call = async (command, args) => {
-    commands.push([command, args]);
-    if (command === 'monitor_get') return args.workspaceId === project.id ? blocker : second;
-    if (command === 'assistant_overview') return { message: 'Project A is blocked; Billing API has no observed blocker.', citations: [] };
-    return { workspaceId: args.owner?.workspaceId, tasks: [], executions: [], revision: 0 };
-  };
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
-  await child(tree, 'ApexAgentAll').props.onOverview("What's blocked everywhere?"); tree = h.render();
-  const request = commands.find(([command]) => command === 'assistant_overview')[1];
-  assert.deepEqual(request.projects.map(project => project.name), ['Project A', 'Billing API']);
-  assert.equal(commands.some(([command]) => command === 'assistant_message'), false);
-  assert.equal(child(tree, 'ApexAgentAll').props.overviewEntries.length, 2);
-  assert.ok(h.stored.has('apex-agent-overview-history'));
-  assert.ok(child(tree, 'ApexAgentAll').props.tasks.some(node => node.type.displayName === 'ApexAgentTasks'));
-  h.emitSession([project]); tree = h.render();
-  assert.equal(child(tree, 'ApexAgentAll').props.overviewEntries.length, 0, 'answers involving a removed project cannot leak into current context');
-  h.unmount();
-});
-
 
 test('combined evidence opens file, saved thread and Git on their owning host', async () => {
   const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef); tree = h.render();
   const opened = []; h.backend.openTarget = async (...args) => opened.push(args);
   const open = child(tree, 'ApexAgentAll').props.onOpenEvidence;
   await open(project.id, evidence);
@@ -744,55 +702,19 @@ test('combined evidence opens file, saved thread and Git on their owning host', 
   h.unmount();
 });
 
-test('cross-project plans prepare on each owning backend and retry only the uncertain saved child', async () => {
-  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
-  const other = { id: 'project-b', name: 'Billing API', hostId: 'host-b', path: '/work/billing' };
-  const second = { ...blocker, workspaceId: other.id, hostId: other.hostId, cwd: other.path, conversationId: 'monitor-b', messages: [], findings: [] };
-  h.emitSession([project, other]); tree = h.render(); await tick(); tree = h.render();
-  const collect = node => { if (!node || typeof node !== 'object') return; if (node.type?.displayName === 'HostMonitors') node.props.onMonitors(node.props.hostId, [node.props.hostId === project.hostId ? blocker : second]); for (const n of node.children ?? []) collect(n); };
-  collect(tree); tree = h.render();
-  const calls = [], receipts = new Map(); let lost = true;
-  const handle = (hostId, monitor) => async (command, args) => {
-    calls.push({ hostId, command, args });
-    if (command === 'monitor_get') return monitor;
-    if (command === 'assistant_tasks_list') return { workspaceId: monitor.workspaceId, revision: 1, tasks: [], executions: [], routingThreads: [{ id: `chat-${hostId}`, workers: [{ id: 'null', display_name: 'Null' }] }] };
-    if (command === 'assistant_overview') return { message: 'Two proposals awaiting approval.', citations: [], assignments: [blocker, second].map(m => ({ owner: overviewModel.overviewOwner(m), revision: m.revision, brief: `Fix ${m.workspaceId}`, destination: { threadId: `chat-${m.hostId}`, workers: ['null'], newThread: false }, mode: 'isolated', reviewCriteria: [] })) };
-    if (command === 'assistant_handoff_prepare') {
-      assert.ok(h.stored.has('apex-agent-handoff-batches'), 'payloads persist before mutation');
-      assert.equal(args.owner.hostId, hostId, 'coordinator must not prepare remote work locally');
-      const task = receipts.get(args.requestId) ?? { id: `task-${hostId}`, owner: args.owner }; receipts.set(args.requestId, task);
-      if (hostId === other.hostId && lost) { lost = false; throw new Error('reply lost'); }
-      return { task };
-    }
-    throw new Error(`Unexpected dispatch: ${command}`);
-  };
-  h.backend.call = handle(project.hostId, blocker);
-  h.backend.machines.get(other.hostId).call = handle(other.hostId, second);
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
-  await child(tree, 'ApexAgentAll').props.onOverview('Ask Null to fix Project A and Billing API'); tree = h.render();
-  const batch = JSON.parse(h.stored.get('apex-agent-handoff-batches'))[0];
-  assert.deepEqual(batch.children.map(c => c.status), ['proposed', 'uncertain']);
-  const firstPayload = calls.find(c => c.command === 'assistant_handoff_prepare' && c.hostId === other.hostId).args;
-  h.emitSession([other]); tree = h.render();
-  assert.equal(child(tree, 'ApexAgentAll').props.tasks.filter(node => node.type === 'article').length, 1, 'an unaffected pending proposal remains visible after its sibling project is removed');
-  const retry = child(tree, 'ApexAgentAll').props.tasks.map(node => find(node, n => n.type === 'button' && n.children.includes('Retry saved proposals'))).find(Boolean);
-  h.setConnection({ kind: 'connecting' }, other.hostId); tree = h.render();
-  await retry.props.onClick(); await tick(); tree = h.render();
-  assert.equal(calls.filter(c => c.command === 'assistant_handoff_prepare').length, 2, 'a reconnecting target cannot prepare work yet');
-  assert.equal(JSON.parse(h.stored.get('apex-agent-handoff-batches'))[0].children[1].status, 'offline');
-  h.setConnection({ kind: 'connected' }, other.hostId); tree = h.render();
-  await retry.props.onClick(); await tick(); tree = h.render();
-  const preparations = calls.filter(c => c.command === 'assistant_handoff_prepare');
-  assert.equal(preparations.filter(c => c.hostId === project.hostId).length, 1);
-  assert.deepEqual(preparations.filter(c => c.hostId === other.hostId).map(c => c.args), [firstPayload, firstPayload]);
-  assert.deepEqual(JSON.parse(h.stored.get('apex-agent-handoff-batches'))[0].children.map(c => c.status), ['proposed', 'proposed']);
-  assert.equal(receipts.size, 2); h.unmount();
+test('assistant project task cards include only exact host-qualified assignments',async()=>{
+ const h=appHarness();let tree=h.render();await tick();tree=h.render();
+ const other={id:'project-b',name:'Billing API',hostId:'host-b',path:'/work/billing'};
+ h.emitSession([project,other]);tree=h.render();await tick();tree=h.render();
+ child(tree,'HostMonitors').props.onMonitors(project.hostId,[blocker]);tree=h.render();
+ child(tree,'ProjectSidebar').props.onOpenAssistant(h.assistantRef);tree=h.render();
+ const all=child(tree,'ApexAgentAll');assert.deepEqual(all.props.workspaces.map(w=>w.id),[project.id]);assert.deepEqual(all.props.monitors.map(m=>m.workspaceId),[project.id]);
+ assert.equal(all.props.tasks.some(n=>n.props?.projectName==='Billing API'),false);h.unmount();
 });
-
 
 test('failed project request recovers inline and explicit discard allows a new message', async () => {
   const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef); tree = h.render();
   let fail = true; const calls = [];
   h.backend.call = async (command, args) => {
     if (command === 'monitor_get') return blocker;
@@ -817,7 +739,7 @@ test('failed project request recovers inline and explicit discard allows a new m
 test('saved retry refuses a reassigned conversation and leaves its original request intact', async () => {
   const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
   child(tree, 'HostMonitors').props.onMonitors(project.hostId, [blocker]); tree = h.render();
-  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  child(tree, 'ProjectSidebar').props.onOpenAssistant(h.assistantRef); tree = h.render();
   let current = blocker; let sends = 0;
   h.backend.call = async (command) => {
     if (command === 'monitor_get') return current;
