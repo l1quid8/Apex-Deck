@@ -1173,6 +1173,25 @@ impl Host {
         apex_adapters::api_balance(&base_url, api_key_env.as_deref()).await
     }
 
+    /// Use one of `tool`'s usage resets (`credit`, or the next one) for the
+    /// account a bot in `room` is signed in to, then send the room the plan
+    /// as it stands after. Gives what the provider said happened.
+    pub async fn room_plan_reset(&self, room: &str, tool: AgentTool, credit: Option<String>) -> Result<apex_adapters::ResetOutcome, String> {
+        let context = {
+            let handle = self.handle(room)?;
+            let saved = handle.checkpoint.lock().unwrap();
+            if !saved.snapshot.participants.iter().any(|p| matches!(p.backend, apex_core::Backend::Agent { tool: t, .. } if t == tool)) {
+                return Err("no bot in this chat uses that provider".to_string());
+            }
+            handle.context.clone()
+        };
+        let (outcome, plan) = apex_adapters::use_plan_reset(tool, credit.as_deref(), &context).await?;
+        if let Some(plan) = plan {
+            self.room_event(room, RoomEvent::plan(&plan));
+        }
+        Ok(outcome)
+    }
+
     /// The models a coding agent lists for the account it is signed in to, for
     /// the model picker. Empty when the tool keeps no such list.
     pub fn agent_models(&self, tool: AgentTool) -> Vec<ModelChoice> {

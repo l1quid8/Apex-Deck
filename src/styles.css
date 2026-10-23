@@ -4220,3 +4220,12 @@ button.mod-status:hover { color: var(--text); }
     transition: none;
   }
 }
+
+/* Usage resets a provider granted, in the usage card: each counts down to its expiry. */
+.plan-resets { display: grid; gap: 4px; min-width: 0; }
+.plan-reset { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
+.plan-reset-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-reset-left { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help; }
+.plan-reset-left.soon { color: var(--text); }
+.plan-reset-apply { padding: 1px 8px; font-size: 11px; }
+.thread-details .plan-resets { width: 100%; }

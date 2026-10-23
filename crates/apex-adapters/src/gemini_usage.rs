@@ -85,6 +85,7 @@ pub(crate) fn parse_agy_usage(json: &Value) -> Option<PlanUsage> {
         provider: AgentTool::Gemini,
         windows,
         partial: false,
+        reset_credits: None,
     })
 }
 
@@ -179,6 +180,7 @@ pub(crate) fn parse_quota(body: &Value) -> Option<PlanUsage> {
         provider: AgentTool::Gemini,
         windows: vec![PlanWindow { name: "daily".into(), used_percent: used, window_minutes: Some(1440), resets_at: resets }],
         partial: false,
+        reset_credits: None,
     })
 }
 

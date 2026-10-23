@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use apex_core::work_steps::{StepStatus, TodoItem, WorkStep, STEPS_PER_REPLY_MAX};
 use apex_core::{
-    ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction,
+    ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction, ResetCredit, ResetCredits,
 };
 use serde_json::Value;
 
@@ -1308,6 +1308,7 @@ pub(crate) fn claude_plan(info: &Value) -> Option<PlanUsage> {
         provider: AgentTool::ClaudeCode,
         windows,
         partial: false,
+        reset_credits: None,
     })
 }
 
@@ -1337,7 +1338,32 @@ pub(crate) fn codex_plan(snapshot: &Value, partial: bool) -> Option<PlanUsage> {
         provider: AgentTool::Codex,
         windows,
         partial,
+        reset_credits: None,
     })
+}
+
+/// The usage resets in an `account/rateLimits/read` answer
+/// (`rateLimitResetCredits`), soonest to expire first. Only ones still
+/// available are kept. `None` when the answer didn't include them.
+pub(crate) fn codex_reset_credits(summary: &Value) -> Option<ResetCredits> {
+    let available = summary["availableCount"].as_u64()?;
+    let mut credits: Vec<ResetCredit> = summary["credits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|credit| credit["status"].as_str().is_none_or(|status| status == "available"))
+        .filter_map(|credit| {
+            Some(ResetCredit {
+                id: credit["id"].as_str()?.to_string(),
+                title: credit["title"].as_str().map(str::to_string),
+                description: credit["description"].as_str().map(str::to_string),
+                granted_at: credit["grantedAt"].as_u64().unwrap_or(0),
+                expires_at: credit["expiresAt"].as_u64(),
+            })
+        })
+        .collect();
+    credits.sort_by_key(|credit| credit.expires_at.unwrap_or(u64::MAX));
+    Some(ResetCredits { available, credits })
 }
 
 /// The message of an app server error, with its detail when the message
@@ -1977,6 +2003,7 @@ mod tests {
                     window("seven_day", 58, Some(10_080), Some(1791396000)),
                 ],
                 partial: false,
+                reset_credits: None,
             }]
         );
     }
@@ -2066,7 +2093,8 @@ mod tests {
             Some(PlanUsage {
                 provider: AgentTool::Codex,
                 windows: vec![window("primary", 15, Some(10_080), Some(1791580627))],
-                partial: false
+                partial: false,
+                reset_credits: None
             })
         );
         let both = json!({ "primary": { "usedPercent": 40, "windowDurationMins": 300, "resetsAt": 5 }, "secondary": { "usedPercent": 19 } });
@@ -2088,6 +2116,24 @@ mod tests {
     }
 
     #[test]
+    fn codex_reset_credits_are_the_available_ones_soonest_to_expire_first() {
+        // The shape `codex app-server` 0.162 answers with.
+        let summary = json!({ "availableCount": 3, "credits": [
+            { "id": "late", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1791417037, "expiresAt": 1794009037, "title": "Full reset", "description": "Thanks for using Codex!" },
+            { "id": "used", "resetType": "codexRateLimits", "status": "redeemed", "grantedAt": 1790000000, "expiresAt": 1792000000, "title": null },
+            { "id": "forever", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1790000000, "expiresAt": null },
+            { "id": "soon", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1790710015, "expiresAt": 1793302015, "title": "Full reset" }
+        ] });
+        let credits = codex_reset_credits(&summary).unwrap();
+        assert_eq!(credits.available, 3);
+        assert_eq!(credits.credits.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["soon", "late", "forever"]);
+        assert_eq!(credits.credits[0], ResetCredit { id: "soon".into(), title: Some("Full reset".into()), description: None, granted_at: 1790710015, expires_at: Some(1793302015) });
+        // Only a count is known.
+        assert_eq!(codex_reset_credits(&json!({ "availableCount": 1, "credits": null })), Some(ResetCredits { available: 1, credits: vec![] }));
+        assert_eq!(codex_reset_credits(&Value::Null), None);
+    }
+
+    #[test]
     fn codex_rate_limit_updates_replace_the_snapshot_including_null_windows() {
         let update = format!("{{\"method\":\"account/rateLimits/updated\",\"params\":{{\"rateLimits\":{CODEX_RATE_LIMITS}}}}}\n");
         let empty = "{\"method\":\"account/rateLimits/updated\",\"params\":{\"rateLimits\":{\"primary\":null,\"secondary\":null}}}\n";
@@ -2100,12 +2146,14 @@ mod tests {
                 PlanUsage {
                     provider: AgentTool::Codex,
                     windows: vec![window("primary", 15, Some(10_080), Some(1791580627))],
-                    partial: false
+                    partial: false,
+                    reset_credits: None
                 },
                 PlanUsage {
                     provider: AgentTool::Codex,
                     windows: vec![],
-                    partial: false
+                    partial: false,
+                    reset_credits: None
                 }
             ]
         );

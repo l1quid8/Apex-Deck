@@ -6,7 +6,7 @@ import { modHost } from "./mods/host";
 import { createEventHub } from "./eventHub.ts";
 const hub = createEventHub({
   approval: (host, room, event) => { recordApproval(room, event, host); recordQuestion(room, event); },
-  plan: (host, event) => { if (event.type === "plan_usage") recordPlan(event.provider, event.windows, event.partial, host); },
+  plan: (host, event) => { if (event.type === "plan_usage") recordPlan(event.provider, event.windows, event.partial, host, event.reset_credits); },
   roomEvent: (_host, room, event) => modHost.roomEvent(room, event),
   toolCall: (_host, room, event) => modHost.toolCall(room, event.id, event.action),
   notice: text => modHost.notice(text),

@@ -40,7 +40,7 @@ use crate::claude_session::{helpers_line, HELPER_HEARTBEAT, HELPER_LIMIT};
 use crate::codex_hook::{
     hook_state, hooks_list, next_call, serve, trust_edit, Gates, Hook, HookState, McpCall,
 };
-use crate::events::{codex_plan, EventReader, OutputFormat};
+use crate::events::{codex_plan, codex_reset_credits, EventReader, OutputFormat};
 use crate::report;
 
 /// How long the server may take to answer a setup request.
@@ -905,7 +905,7 @@ pub(crate) async fn run_with_images(
     // The turn has used some of the plan; read where it stands now.
     if send(&mut stdin, &rate_limits_read(3)).await.is_ok() {
         if let Ok(result) = answer_within(&mut lines, 3, LIMITS_TIMEOUT).await {
-            if let Some(plan) = codex_plan(&result["rateLimits"], false) {
+            if let Some(plan) = plan_from_read(&result) {
                 crate::plan_cache::remember(&plan);
                 on_progress(Progress::Plan(&plan));
             }
@@ -983,8 +983,83 @@ pub(crate) async fn read_plan(mut child: OwnedChild) -> Result<PlanUsage, String
         let _ = child.wait().await;
     }
     child.terminate_tree().await?;
-    codex_plan(&result?["rateLimits"], false)
-        .ok_or_else(|| "the answer had no rate limits".to_string())
+    plan_from_read(&result?).ok_or_else(|| "the answer had no rate limits".to_string())
+}
+
+/// The plan in an `account/rateLimits/read` answer, with its reset credits.
+fn plan_from_read(result: &Value) -> Option<PlanUsage> {
+    let mut plan = codex_plan(&result["rateLimits"], false)?;
+    plan.reset_credits = codex_reset_credits(&result["rateLimitResetCredits"]);
+    Some(plan)
+}
+
+pub(crate) fn reset_credit_consume(id: u64, credit: Option<&str>, key: &str) -> Value {
+    json!({ "method": "account/rateLimitResetCredit/consume", "id": id, "params": { "creditId": credit, "idempotencyKey": key } })
+}
+
+/// What happened when a usage reset was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetOutcome {
+    /// A credit was used and the plan's windows started over.
+    Reset,
+    /// No window was used enough to reset; the credit was kept.
+    NothingToReset,
+    /// The account has no credit left.
+    NoCredit,
+    /// This same attempt had already gone through.
+    AlreadyRedeemed,
+}
+
+impl ResetOutcome {
+    fn from_wire(outcome: &str) -> Option<Self> {
+        Some(match outcome {
+            "reset" => Self::Reset,
+            "nothingToReset" => Self::NothingToReset,
+            "noCredit" => Self::NoCredit,
+            "alreadyRedeemed" => Self::AlreadyRedeemed,
+            _ => return None,
+        })
+    }
+}
+
+/// Use usage-reset credit `credit` (or the next one, when `None`), then
+/// read where the plan stands. `key` names this one attempt, so asking
+/// again with it can't use a second credit. `child` is started as for
+/// `read_plan`.
+pub(crate) async fn consume_reset(mut child: OwnedChild, credit: Option<&str>, key: &str) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    tokio::spawn(async move {
+        let mut sink = Vec::new();
+        let _ = stderr.read_to_end(&mut sink).await;
+    });
+    let mut lines = BufReader::new(stdout).lines();
+    initialize(&mut stdin, &mut lines).await?;
+    send(&mut stdin, &reset_credit_consume(1, credit, key))
+        .await
+        .map_err(|e| format!("the app server went away: {e}"))?;
+    let outcome = answer_within(&mut lines, 1, SETUP_TIMEOUT).await.and_then(|result| {
+        let outcome = result["outcome"].as_str().unwrap_or_default();
+        ResetOutcome::from_wire(outcome).ok_or_else(|| format!("the app server answered with an unknown outcome {outcome:?}"))
+    });
+    let plan = match outcome {
+        Ok(_) if send(&mut stdin, &rate_limits_read(2)).await.is_ok() => {
+            answer_within(&mut lines, 2, LIMITS_TIMEOUT).await.ok().and_then(|result| plan_from_read(&result))
+        }
+        _ => None,
+    };
+    drop(stdin);
+    if tokio::time::timeout(Duration::from_secs(2), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+    child.terminate_tree().await?;
+    Ok((outcome?, plan))
 }
 
 fn ended_early(reader: EventReader) -> String {

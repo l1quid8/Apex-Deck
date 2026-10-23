@@ -229,7 +229,7 @@ pub(crate) fn plan(usage: &Value) -> Option<PlanUsage> {
     .into_iter()
     .flatten()
     .collect();
-    (!windows.is_empty()).then_some(PlanUsage { provider: AgentTool::Muse, windows, partial: false })
+    (!windows.is_empty()).then_some(PlanUsage { provider: AgentTool::Muse, windows, partial: false, reset_credits: None })
 }
 
 /// The line shown while a tool runs, such as "Running ls -la".

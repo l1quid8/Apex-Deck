@@ -107,6 +107,8 @@ pub fn command_needs(command: &Command) -> Need {
         RoomUnpin { id, .. } => full(thread(id)),
         RoomCompact { id } => full(thread(id)),
         RoomClose { id } => full(thread(id)),
+        // Spends one of the account's usage resets, which can't be given back.
+        RoomPlanReset { room, .. } => full(thread(room)),
         ArtifactsSave { room, .. } => full(thread(room)),
         ListToolServers { room, .. } => full(thread(room)),
         GenerateImage { room, .. } => full(thread(room)),
@@ -306,6 +308,7 @@ mod tests {
             ("room_steps", Some((ReadOnly, "thread")), json!({"room":"mine"})),
             ("room_bot_models", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
             ("room_bot_balance", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
+            ("room_plan_reset", Some((Full, "thread")), json!({ "room": "mine", "tool": "codex" })),
             ("answer_save", Some((Chat, "thread")), json!({ "room": "mine", "key": "1:hosting", "fingerprint": "0a1b2c3d", "inputs": {}, "revision": 0 })),
             ("voice_capabilities", Some((ReadOnly, "global_read")), json!({})),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),

@@ -610,3 +610,16 @@ fn bot_models_and_balance_use_only_the_bots_saved_address() {
     drop(host);
     std::fs::remove_dir_all(data).unwrap();
 }
+
+#[test]
+fn a_usage_reset_is_only_for_a_provider_a_bot_in_the_chat_uses() {
+    let data = std::env::temp_dir().join(format!("apex-plan-reset-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let host = Running::start(&data);
+    host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default(),"cwd":null}})).unwrap();
+    // Nothing here runs Codex, so no credit is spent and no app server starts.
+    assert!(host.call(json!({"cmd":"room_plan_reset","args":{"room":"r","tool":"codex"}})).unwrap_err().contains("provider"));
+    assert!(host.call(json!({"cmd":"room_plan_reset","args":{"room":"missing","tool":"codex","credit":"c1"}})).is_err());
+    drop(host);
+    std::fs::remove_dir_all(data).unwrap();
+}

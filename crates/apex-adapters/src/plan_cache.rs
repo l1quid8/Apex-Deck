@@ -67,8 +67,10 @@ impl Slot {
     }
 
     /// Fold in a plan from a read or a turn. A partial plan only updates
-    /// the windows it lists, and doesn't count as a fresh read.
+    /// the windows it lists, and doesn't count as a fresh read. A plan that
+    /// doesn't list reset credits keeps the last ones known.
     fn remember(&mut self, now: Instant, plan: &PlanUsage) {
+        let known_credits = self.last.as_ref().and_then(|last| last.reset_credits.clone());
         match (&mut self.last, plan.partial) {
             (Some(last), true) => {
                 for window in &plan.windows {
@@ -77,10 +79,15 @@ impl Slot {
                         None => last.windows.push(window.clone()),
                     }
                 }
+                if plan.reset_credits.is_some() {
+                    last.reset_credits = plan.reset_credits.clone();
+                }
             }
             (None, true) => {}
             (_, false) => {
-                self.last = Some(plan.clone());
+                let mut plan = plan.clone();
+                plan.reset_credits = plan.reset_credits.or(known_credits);
+                self.last = Some(plan);
                 self.read_at = Some(now);
             }
         }
@@ -174,6 +181,7 @@ mod tests {
             provider: AgentTool::ClaudeCode,
             windows: vec![PlanWindow { name: "five_hour".into(), used_percent: percent, window_minutes: Some(300), resets_at: None }],
             partial,
+            reset_credits: None,
         }
     }
 
@@ -211,6 +219,20 @@ mod tests {
         let last = slot.last.as_ref().unwrap();
         assert_eq!((last.windows[0].used_percent, last.windows[1].used_percent), (9, 20));
         assert_eq!(slot.answer(now + FRESH), None);
+    }
+
+    #[test]
+    fn reset_credits_stay_until_a_report_lists_new_ones() {
+        let now = Instant::now();
+        let mut slot = Slot::default();
+        let credits = apex_core::ResetCredits { available: 2, credits: vec![] };
+        slot.remember(now, &PlanUsage { reset_credits: Some(credits.clone()), ..plan(5, false) });
+        slot.remember(now, &plan(9, false));
+        slot.remember(now, &plan(12, true));
+        assert_eq!(slot.last.as_ref().unwrap().reset_credits, Some(credits));
+        let fewer = apex_core::ResetCredits { available: 1, credits: vec![] };
+        slot.remember(now, &PlanUsage { reset_credits: Some(fewer.clone()), ..plan(0, false) });
+        assert_eq!(slot.last.as_ref().unwrap().reset_credits, Some(fewer));
     }
 
     #[tokio::test]

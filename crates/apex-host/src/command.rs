@@ -152,6 +152,7 @@ pub enum Command {
     AgentModels { tool: AgentTool },
     RoomBotModels { room: String, participant: ParticipantId },
     RoomBotBalance { room: String, participant: ParticipantId },
+    RoomPlanReset { room: String, tool: AgentTool, #[serde(default)] credit: Option<String> },
     OpenTarget { target: String, cwd: Option<String>, reveal: Option<bool> },
     WorkspaceRead { target: String, cwd: Option<String> },
     PathsExist { targets: Vec<String>, cwd: Option<String> },
@@ -387,6 +388,7 @@ impl Host {
             AgentModels { tool } => reply(self.agent_models(tool)),
             RoomBotModels { room, participant } => reply(self.room_bot_models(&room, &participant).await?),
             RoomBotBalance { room, participant } => reply(self.room_bot_balance(&room, &participant).await?),
+            RoomPlanReset { room, tool, credit } => reply(self.room_plan_reset(&room, tool, credit).await?),
             OpenTarget { target, cwd, reveal } => reply(self.open_target(target, cwd, reveal)?),
             WorkspaceRead { target, cwd } => reply(self.workspace_read(target, cwd)),
             PathsExist { targets, cwd } => reply(self.paths_exist(targets, cwd)),
@@ -504,7 +506,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 152);
+        assert_eq!(names.len(), 153);
+        assert!(names.contains(&"room_plan_reset".to_string()));
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));

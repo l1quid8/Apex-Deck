@@ -128,7 +128,14 @@ pub enum RoomEvent {
     /// How much of a provider account's plan is used. Shared by every agent
     /// on that provider. With `partial`, windows not listed keep their last
     /// value.
-    PlanUsage { provider: AgentTool, windows: Vec<PlanWindow>, partial: bool },
+    /// `reset_credits` is left out when the report didn't list them.
+    PlanUsage {
+        provider: AgentTool,
+        windows: Vec<PlanWindow>,
+        partial: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_credits: Option<crate::types::ResetCredits>,
+    },
     /// A participant chose not to reply.
     Passed { id: ParticipantId },
     /// A participant could not reply.
@@ -179,7 +186,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
-    RoomEvent::PlanUsage { provider: plan.provider, windows: plan.windows.clone(), partial: plan.partial }
+    RoomEvent::PlanUsage { provider: plan.provider, windows: plan.windows.clone(), partial: plan.partial, reset_credits: plan.reset_credits.clone() }
 }
 
 /// Puts a participant's proposal in front of the person and waits for

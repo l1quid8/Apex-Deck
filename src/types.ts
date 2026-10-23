@@ -291,7 +291,7 @@ export type RoomEvent = { recovery_seq?: number } & (
   /** How full a participant's context window was on its latest request. */
   | { type: "context_usage"; id: string; used_tokens: number; window_tokens: number }
   /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value. */
-  | { type: "plan_usage"; provider: AgentTool; windows: PlanWindow[]; partial: boolean }
+  | { type: "plan_usage"; provider: AgentTool; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
   /** The room cut off bots answering each other; `next` is who the last replies asked. */
@@ -310,6 +310,23 @@ export interface PlanWindow {
   window_minutes: number | null;
   /** Unix seconds. */
   resets_at: number | null;
+}
+
+/** Usage resets a provider granted. Using one empties the plan's windows. */
+export interface ResetCredits {
+  /** How many are available. The provider may list fewer. */
+  available: number;
+  credits: ResetCredit[];
+}
+
+export interface ResetCredit {
+  id: string;
+  title?: string;
+  description?: string;
+  /** Unix seconds. */
+  granted_at: number;
+  /** Unix seconds; missing when it never expires. */
+  expires_at?: number;
 }
 
 export interface AgentInfo {

@@ -5,12 +5,14 @@
 import { useSyncExternalStore } from "react";
 
 import { hasReset, liveWindows, mergePlan } from "./battery.ts";
-import type { AgentTool, PlanWindow } from "./types";
+import type { AgentTool, PlanWindow, ResetCredits } from "./types";
 
 export interface PlanState {
   windows: PlanWindow[];
   /** Goes up each time a window starts over, to play the refill. */
   resets: number;
+  /** Usage resets the provider granted, when it has said. */
+  credits?: ResetCredits;
 }
 
 let plans: Record<string, Partial<Record<AgentTool, PlanState>>> = {};
@@ -40,11 +42,12 @@ function watchResets(provider: AgentTool, host = "local") {
   }, wait));
 }
 
-export function recordPlan(provider: AgentTool, windows: PlanWindow[], partial: boolean, host = "local") {
+/** `credits` left out keeps the last ones known: most reports don't list them. */
+export function recordPlan(provider: AgentTool, windows: PlanWindow[], partial: boolean, host = "local", credits?: ResetCredits) {
   const known = plans[host]?.[provider];
   const merged = mergePlan(known?.windows, windows, partial);
   const reset = hasReset(known?.windows, windows);
-  publish({ ...plans, [host]: { ...plans[host], [provider]: { windows: merged, resets: (known?.resets ?? 0) + (reset ? 1 : 0) } } });
+  publish({ ...plans, [host]: { ...plans[host], [provider]: { windows: merged, resets: (known?.resets ?? 0) + (reset ? 1 : 0), credits: credits ?? known?.credits } } });
   watchResets(provider, host);
 }
 

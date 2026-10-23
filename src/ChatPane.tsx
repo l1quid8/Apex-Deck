@@ -18,6 +18,10 @@ import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { ResetCredit } from "./types";
+import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { PlanResets } from "./PlanResets";
+import { exactDeadline, outcomeLine, secondsCountdown } from "./resetCredits.ts";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
 import { commandFrom, isRunnable } from "./codeRun.ts";
@@ -593,6 +597,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** Goes up on each /compact, to play the left side's refill. */
   const [compactions, setCompactions] = useState(0);
   const plans = usePlans(backend.host?.id);
+  /** The usage reset being used: its id, "" for the provider's pick, or null. */
+  const [applyingReset, setApplyingReset] = useState<string | null>(null);
+  /** Asks before a usage reset is spent. Kept here so it outlives the hover card. */
+  const [resetQuestion, setResetQuestion] = useState<Question | null>(null);
   /** The chip whose usage card is open. */
   const [card, setCard] = useState<string | null>(null);
   /** Where the hovered bot's usage card sits: above its badge, at the bottom of the pane. */
@@ -2711,6 +2719,33 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   }
   const canCompact = ready && !busy && participants.length > 0;
 
+  /** Ask, then spend one of `provider`'s usage resets (`credit`, or the provider's pick). */
+  const askReset = (provider: AgentTool, credit: ResetCredit | null) => {
+    const label = AGENT_LABEL[provider];
+    const now = Date.now() / 1000;
+    const windows = liveWindows(plans[provider]?.windows ?? [], now);
+    setCard(null);
+    setResetQuestion({
+      title: `Use a ${label} usage reset?`,
+      body: `This spends one reset credit and starts your ${label} limits over from empty. It can't be undone.`,
+      rows: [
+        ...windows.map((w) => { const name = windowLabel(w); return `${name[0].toUpperCase()}${name.slice(1)} limit: ${Math.min(100, w.used_percent)}% used`; }),
+        ...(credit?.expires_at != null
+          ? [`${credit.title ?? "Reset"} · expires in ${secondsCountdown(credit.expires_at, now)}`, exactDeadline(credit.expires_at)]
+          : [`${label} picks which credit to use`]),
+      ],
+      action: "Use reset",
+      onConfirm: () => {
+        if (!backend.roomPlanReset) return;
+        setApplyingReset(credit?.id ?? "");
+        backend.roomPlanReset(pane.id, provider, credit?.id ?? null)
+          .then((outcome) => { const line = outcomeLine(outcome, label); notify(line.text, line.tone); })
+          .catch((error) => notify(`Couldn't use the ${label} reset: ${error instanceof Error ? error.message : String(error)}`, "error"))
+          .finally(() => setApplyingReset(null));
+      },
+    });
+  };
+
   /** The usage card for a chip: context, plan, session tokens, and a way to compact. */
   const usageCard = (p: ParticipantConfig, at?: { left: number; bottom: number } | null) => {
     const fill = contextFill[p.id];
@@ -2743,6 +2778,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
             {plan ?? (!provider ? "Not reported by this provider" : provider === "claude_code" ? "Known after a Claude Code reply" : "Not reported yet")}
           </span>
         </div>}
+        {!account && provider && backend.roomPlanReset && plans[provider]?.credits && <PlanResets credits={plans[provider]!.credits!} applying={applyingReset} onApply={(credit) => askReset(provider, credit)} />}
         {provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
         <p className="usage-note">{tokenLine(used[p.id])}</p>
         <button className="ghost usage-compact" onClick={() => { setCard(null); compactChat(); }} disabled={!canCompact} title="Summarize earlier turns so every model starts from the summary">
@@ -3447,6 +3483,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
+      {resetQuestion && <ConfirmDialog question={resetQuestion} onCancel={() => setResetQuestion(null)} />}
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.

@@ -165,7 +165,54 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
         .flatten()
 }
 
+pub use codex_server::ResetOutcome;
+
+/// Use one of a provider's usage resets: `credit`, or the next one when
+/// `None`. Only Codex offers them. Gives what happened and, when the plan
+/// could be read after, where it stands now, which is also what the next
+/// `plan_usage` gives.
+pub async fn use_plan_reset(tool: AgentTool, credit: Option<&str>, context: &BuildContext) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
+    if tool != AgentTool::Codex {
+        return Err("only Codex offers usage resets".to_string());
+    }
+    let child = start_codex_server(context)?;
+    let (outcome, mut plan) = codex_server::consume_reset(child, credit, &attempt_key()).await?;
+    if let Some(plan) = plan.as_mut() {
+        // A credit just used is gone even if the read didn't list credits.
+        if plan.reset_credits.is_none() && outcome == ResetOutcome::Reset {
+            plan.reset_credits = plan_cache::last(tool).and_then(|last| last.reset_credits).map(|mut known| {
+                let used = credit.map(str::to_string).or_else(|| known.credits.first().map(|c| c.id.clone()));
+                known.credits.retain(|c| Some(&c.id) != used.as_ref());
+                known.available = known.available.saturating_sub(1);
+                known
+            });
+        }
+        plan_cache::remember(plan);
+    }
+    Ok((outcome, plan))
+}
+
+/// A fresh UUID-shaped key for one reset attempt.
+fn attempt_key() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut bytes = [0u8; 16];
+    for half in bytes.chunks_mut(8) {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        half.copy_from_slice(&hasher.finish().to_le_bytes());
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
 async fn read_codex_plan(context: &BuildContext) -> Result<PlanUsage, String> {
+    codex_server::read_plan(start_codex_server(context)?).await
+}
+
+/// `codex app-server` with all three standard streams piped.
+fn start_codex_server(context: &BuildContext) -> Result<owned_process::OwnedChild, String> {
     let mut command = tokio::process::Command::new("codex");
     command.args(codex_server::ARGS).env("NO_COLOR", "1").env("TERM", "dumb");
     if let Some(path) = &context.path {
@@ -179,9 +226,8 @@ async fn read_codex_plan(context: &BuildContext) -> Result<PlanUsage, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let child = owned_process::Registry::new(context.process_registry.clone()).spawn(&mut command)
-        .map_err(|e| format!("could not start codex: {e}"))?;
-    codex_server::read_plan(child).await
+    owned_process::Registry::new(context.process_registry.clone()).spawn(&mut command)
+        .map_err(|e| format!("could not start codex: {e}"))
 }
 
 /// Verify and stop worker groups persisted by an earlier host process.
