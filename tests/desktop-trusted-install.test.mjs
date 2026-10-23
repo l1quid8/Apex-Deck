@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TRUSTED_APP, TRUSTED_DAEMON, TRUSTED_ROOT, bundlePath, bundleVersion, isProtectedCopy, launchPlan, plistDaemonBin, rootProtected } from '../desktop/trustedInstall.mjs';
 import { LABEL, agentPlist, installAgent } from '../desktop/launchAgent.mjs';
+import * as trustedInstall from '../desktop/trustedInstall.mjs';
 
 const APP = '/Applications/Apex Deck.app';
 const TRUSTED = TRUSTED_APP;
@@ -173,5 +174,49 @@ test('installing never replaces an agent that runs the protected daemon', async 
     assert.equal(installed, 'installed', 'any other daemon may replace any other');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('successful startup handoff opens only the protected app and exits before agent work', async () => {
+  const events = [];
+  const proceed = await trustedInstall.runLaunchPlan(plan(fakeFiles()), {
+    open: async (app) => { events.push(['open', app]); return ''; },
+    quit: () => events.push(['quit']),
+    notice: (value) => events.push(['notice', value]),
+  });
+  if (proceed) events.push(['start-agent']);
+  assert.deepEqual(events, [['open', TRUSTED_APP], ['quit']]);
+  assert.equal(proceed, false);
+});
+
+test('failed startup handoff warns and continues even when the rejection has an empty message', async () => {
+  for (const open of [async () => 'Launch Services refused', async () => { throw new Error(''); }]) {
+    const notices = [];
+    let quits = 0;
+    const proceed = await trustedInstall.runLaunchPlan(plan(fakeFiles()), {
+      open, quit: () => quits++, notice: value => notices.push(value),
+    });
+    assert.equal(proceed, true);
+    assert.equal(quits, 0);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0].detail, /would not open:/i);
+  }
+});
+
+test('missing installs show the concrete notice and dev startup performs no handoff effects', async () => {
+  for (const [launch, expected] of [
+    [plan(fakeFiles({ trusted: false })), 1],
+    [plan(fakeFiles(), { packaged: false }), 0],
+    [plan(fakeFiles(), { dataDir: '/tmp/qa' }), 0],
+    [plan(fakeFiles(), { bundle: TRUSTED_APP }), 0],
+  ]) {
+    const notices = [];
+    const proceed = await trustedInstall.runLaunchPlan(launch, {
+      open: () => assert.fail('this launch must not open another app'),
+      quit: () => assert.fail('this launch must continue'),
+      notice: value => notices.push(value),
+    });
+    assert.equal(proceed, true);
+    assert.equal(notices.length, expected);
   }
 });

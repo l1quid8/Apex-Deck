@@ -141,3 +141,23 @@ export function launchPlan({ packaged, platform, dataDir, bundle, version, daemo
     notice: { message: 'Protected assistant data needs the trusted Apex Deck install', detail },
   };
 }
+
+/** Apply startup effects before agent work. False means this instance exited. */
+export async function runLaunchPlan(plan, { open, quit, notice }) {
+  if (plan.kind === 'handoff') {
+    let refusal;
+    try {
+      refusal = await open(plan.app);
+    } catch (error) {
+      refusal = String(error?.message ?? error) || 'The protected copy could not be opened.';
+    }
+    if (!refusal) {
+      quit();
+      return false;
+    }
+    notice({ ...plan.notice, detail: `${plan.notice.detail} It would not open: ${refusal}` });
+  } else if (plan.kind === 'notice') {
+    notice(plan.notice);
+  }
+  return true;
+}

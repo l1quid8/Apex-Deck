@@ -21,7 +21,7 @@ import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verified
 import { QuitGate } from './quit.mjs';
 import { answers, daemonBinary, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
-import { TRUSTED_DAEMON, launchPlan, plistDaemonBin } from './trustedInstall.mjs';
+import { TRUSTED_DAEMON, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, protectedCommands } from './provenance.mjs';
@@ -964,16 +964,11 @@ function oldAppClosed() {
 app.whenReady().then(async () => {
   // A copy the broker can't trust never touches the daemon or the LaunchAgent:
   // it opens the protected copy and steps aside (trustedInstall.mjs).
-  if (plan.kind === 'handoff') {
-    const refusal = await shell.openPath(plan.app).catch((error) => String(error?.message ?? error));
-    if (!refusal) {
-      app.exit(0);
-      return;
-    }
-    showProtectedInstallNotice({ ...plan.notice, detail: `${plan.notice.detail} It would not open: ${refusal}` });
-  } else if (plan.kind === 'notice') {
-    showProtectedInstallNotice(plan.notice);
-  }
+  if (!await runLaunchPlan(plan, {
+    open: (target) => shell.openPath(target),
+    quit: () => app.exit(0),
+    notice: showProtectedInstallNotice,
+  })) return;
   protocol.handle('app', (request) => {
     const file = appFile(dist, request.url);
     if (!file) return new Response('Not found', { status: 404 });
