@@ -144,6 +144,10 @@ async fn run(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     command.env("NO_COLOR", "1").env("TERM", "dumb");
+    // This adapter must use the saved ChatGPT session, never inherited API keys.
+    command
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("CODEX_API_KEY");
     if let Some(path) = path {
         command.env("PATH", path);
     }
