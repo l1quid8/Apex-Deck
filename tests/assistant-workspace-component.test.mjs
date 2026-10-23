@@ -5,7 +5,7 @@ import {createRequire} from 'node:module';
 import {assistantAppearance,createAssistantAppearance,projectIdentityKey} from '../src/assistantIdentity.ts';
 import {runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields} from '../src/assistantWorkspaceModel.ts';
 import {providerEnabled,providerForConfig} from '../src/providers.ts';
-import {CALL_VOICES,defaultVoiceOf} from '../src/voice/settings.ts';
+import {CALL_VOICES,defaultVoiceOf,readVoiceSettings} from '../src/voice/settings.ts';
 import {CALL_LOOKS,voiceLabel} from '../src/voice/callView.ts';
 import {AGENT_COLORS} from '../src/identicon.ts';
 import {assistantStatus,accessLabel} from '../src/assistantStatus.ts';
@@ -28,7 +28,7 @@ function mount(overrides={}){
  const props={backend,lane,hostId:'mac',profiles:[profile],projects:[],...overrides,backend,lane:overrides.lane===undefined&&Object.hasOwn(overrides,'lane')?undefined:lane};
  const states=[],deps=[],queued=[],cleanups=[];let cursor=0;
  const hooks={useRef(initial){const i=cursor++;return states[i]??(states[i]={current:initial});},useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}}};
- const bindings={VoiceSampleButton,CALL_VOICES,defaultVoiceOf,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel};
+ const bindings={VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel};
  const components=new Function(...Object.keys(bindings),`${compiled}\nreturn {AssistantEditor,AssistantWorkspace};`)(...Object.values(bindings));
  return{props,calls,unmount(){cleanups.forEach(fn=>fn?.());},render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
 }
@@ -368,4 +368,13 @@ test('saving a kept-mounted editor advances its revision and Discard returns to 
 test('a clean kept-mounted settings draft follows newer saved runtime while a dirty draft keeps its revision',async()=>{
  const h=settingsMount();await h.ready();h.props.lane={...h.props.lane,assistant:{...record,revision:8,name:'Changed in header',profile:{...profile,backend:{...profile.backend,model:'new'},effort:'low'}}};await h.ready();assert.equal(input(h.render(),'Assistant name').props.value,'Changed in header');assert.equal(input(h.render(),'Assistant model').props.value,'new');
  input(h.render(),'Assistant name').props.onChange({target:{value:'My unsaved edit'}});h.props.lane={...h.props.lane,assistant:{...h.props.lane.assistant,revision:9,name:'Another remote save'}};await h.ready();assert.equal(input(h.render(),'Assistant name').props.value,'My unsaved edit');await submit(h);assert.equal(h.calls[0].expectedRevision,8);
+});
+
+test('unset shared voice preferences still expose real call defaults and save only explicit edits',async()=>{
+ const saved=[];const h=mount({onVoiceSettings:value=>saved.push(value)});const tree=await h.ready();
+ assert.ok(input(tree,'Voice for calls'));assert.equal(input(tree,'Voice for calls').props.value,'am_michael');
+ assert.equal(input(tree,'Pause before reply').props.value,100);assert.equal(input(tree,'Call controls').props.value,'pill');
+ await submit(h);assert.deepEqual(saved,[]);
+ input(h.render(),'Call controls').props.onChange({target:{value:'bar'}});await submit(h);
+ assert.equal(saved.length,1);assert.deepEqual(saved[0],{...readVoiceSettings(undefined),look:'bar'});
 });

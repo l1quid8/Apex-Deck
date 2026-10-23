@@ -63,3 +63,26 @@
 
 /* Pending approvals, errors and activity use the same fill-only card treatment. */
 .assistant-workspace :is(.assistant-task-waits,.apex-agent-needs-you,.apex-agent-check-failed,.apex-agent-helper,.assistant-activity-item),.assistant-workspace .apex-agent-task-history ol{border-left:0!important}
+
+/* The runtime selector is a compact identity row, using the original header hierarchy. */
+.assistant-workspace{container-type:inline-size}
+.assistant-workspace .assistant-workspace-head{height:auto;min-height:72px;padding:12px 24px;gap:16px;flex-wrap:nowrap}
+.assistant-workspace .assistant-bot-chip{display:flex;align-items:center;gap:10px;flex:0 1 auto;min-width:0;max-width:480px;margin:0;padding:5px 8px 5px 0;border:0;border-radius:8px;background:transparent;box-shadow:none;text-align:left;line-height:1.3}
+.assistant-workspace .assistant-bot-chip:hover:not(:disabled),.assistant-workspace .assistant-bot-chip[aria-expanded=true]{background:var(--hover)}
+.assistant-workspace .assistant-bot-chip:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.assistant-workspace .assistant-bot-chip>.identicon{width:34px;height:34px;flex:none}
+.assistant-workspace .assistant-bot-chip .assistant-workspace-identity{flex:1 1 auto;min-width:0}
+.assistant-workspace .assistant-bot-chip h1{min-width:0;gap:8px;font-size:15px;line-height:20px;letter-spacing:-.02em}
+.assistant-workspace-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.assistant-workspace .assistant-bot-chip .assistant-workspace-meta{margin:2px 0 0;font-size:11px;line-height:16px}
+.assistant-workspace .assistant-runtime-chevron{flex:none;color:var(--muted);font-size:12px;margin-left:2px}
+.assistant-workspace .assistant-workspace-flag{flex:none;font-size:10px;line-height:16px;padding:1px 7px}
+.assistant-workspace .assistant-workspace-tabs{margin-left:auto;flex:none}
+.assistant-workspace .assistant-workspace-actions{flex:none}
+.assistant-workspace .assistant-workspace-tabs button{font-size:12px;line-height:18px;padding:5px 10px}
+@container (max-width:580px){
+ .assistant-workspace .assistant-workspace-head{gap:8px;padding:10px 16px;flex-wrap:wrap}
+ .assistant-workspace .assistant-bot-chip{max-width:none;flex:1 1 calc(100% - 50px)}
+ .assistant-workspace .assistant-workspace-tabs{order:3;margin:0;flex-basis:100%;width:max-content;max-width:max-content}
+ .assistant-workspace .assistant-workspace-actions{margin-left:auto}
+}
