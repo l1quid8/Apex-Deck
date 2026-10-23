@@ -1015,7 +1015,7 @@ impl crate::Host {
     /// Make an assistant that lives on this machine. Its folder is created if
     /// missing and must be absolute.
     pub fn personal_create(&self, input: CreateInput) -> Result<PersonalAssistant, String> {
-        crate::monitor_check::monitor_profile_ok(&input.profile)?;
+        apex_adapters::assistant_profile_ok(&input.profile)?;
         let name = input.name.trim();
         if name.is_empty() || name.len() > 64 {
             return Err("Give the assistant a name of up to 64 characters.".into());
@@ -1155,6 +1155,21 @@ impl crate::Host {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn assistant_creation_accepts_shared_text_providers_without_relaxing_monitor_profiles() {
+        let root=std::env::temp_dir().join(format!("assistant-providers-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let host=crate::Host::new(crate::HostPaths{data:root.join("data"),downloads:None},tokio::runtime::Handle::current());
+        std::fs::write(root.join("data/host-id"),"owner").unwrap();
+        for tool in ["claude_code","codex","gemini","grok","muse"] {
+            let profile:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"p","display_name":"Provider","backend":{"kind":"agent","tool":tool},"access":"ask"})).unwrap();
+            assert_eq!(crate::monitor_check::monitor_profile_ok(&profile).is_ok(),tool=="claude_code");
+            let input=serde_json::from_value(serde_json::json!({"name":format!("Assistant {tool}"),"style":"Precise","folder":root.join(tool),"profile":profile})).unwrap();
+            let created=host.personal_create(input).unwrap_or_else(|e|panic!("{tool}: {e}"));
+            assert_eq!(created.profile.unwrap(),profile);
+        }
+        drop(host); let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn lifecycle_source_receipts_survive_event_pruning_until_explicit_purge() {

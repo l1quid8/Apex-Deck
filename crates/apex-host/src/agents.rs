@@ -35,6 +35,9 @@ pub struct AgentInfo {
     pub label: String,
     pub program: String,
     pub found: bool,
+    /// Native isolated assistant executable; Threads keep their existing preference.
+    #[serde(rename="assistantProgram",skip_serializing_if="Option::is_none")]
+    pub assistant_program: Option<String>,
 }
 
 /// The user's shell, used both to find tools and to launch them. Desktop
@@ -158,6 +161,10 @@ pub fn detect() -> Vec<AgentInfo> {
     let from_shell = probe_with_shell(&user_shell(), &programs).unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
 
+    detected_from(&from_shell,&path)
+}
+
+fn detected_from(from_shell:&[String],path:&str)->Vec<AgentInfo> {
     KNOWN_AGENTS
         .iter()
         .map(|agent| {
@@ -170,6 +177,7 @@ pub fn detect() -> Vec<AgentInfo> {
                 label: agent.label.to_string(),
                 program: found_prog.unwrap_or(&agent.program).to_string(),
                 found: found_prog.is_some(),
+                assistant_program: (agent.key=="gemini"&&(from_shell.iter().any(|program|program=="gemini")||on_path("gemini",path))).then(||"gemini".into()),
             }
         })
         .collect()
@@ -194,6 +202,15 @@ pub fn launch_command(program: Option<&str>) -> (String, Vec<String>) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_native_gemini_discovery_does_not_change_threads_antigravity_preference() {
+        let both=detected_from(&["agy".into(),"gemini".into()],"/no-provider-binaries");
+        let gemini=both.iter().find(|agent|agent.key=="gemini").unwrap();
+        assert_eq!(gemini.program,"agy");assert_eq!(gemini.assistant_program.as_deref(),Some("gemini"));
+        let agy=detected_from(&["agy".into()],"/no-provider-binaries");
+        assert!(agy.iter().find(|agent|agent.key=="gemini").unwrap().assistant_program.is_none());
+    }
 
     #[test]
     fn on_path_finds_executables_and_ignores_plain_files() {
