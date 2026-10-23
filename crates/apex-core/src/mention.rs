@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn a_renamed_bot_is_named_by_its_new_mention_only() {
-        let roster = vec![bot("jigga", "Atlas"), bot("null", "Null")];
+        let roster = [bot("jigga", "Atlas"), bot("null", "Null")];
         assert!(names("@atlas make one", &roster[0]));
         assert!(!names("@jigga make one", &roster[0]), "its old name is gone");
         assert!(!names("@all make one", &roster[0]));
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn an_old_name_belongs_to_whoever_is_called_that_now() {
-        let roster = vec![bot("jigga", "Atlas"), bot("jigga-2", "Jigga")];
+        let roster = [bot("jigga", "Atlas"), bot("jigga-2", "Jigga")];
         assert!(!names("@jigga make one", &roster[0]));
         assert!(names("@jigga make one", &roster[1]));
     }

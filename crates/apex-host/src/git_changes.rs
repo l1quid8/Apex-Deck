@@ -81,8 +81,12 @@ fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
-fn checks() -> &'static Mutex<HashMap<String, (String, Option<String>)>> {
-    static CHECKS: OnceLock<Mutex<HashMap<String, (String, Option<String>)>>> = OnceLock::new();
+/// What was checked out at a path: its head commit, and the commit it is
+/// being compared against.
+type CheckedOut = (String, Option<String>);
+
+fn checks() -> &'static Mutex<HashMap<String, CheckedOut>> {
+    static CHECKS: OnceLock<Mutex<HashMap<String, CheckedOut>>> = OnceLock::new();
     CHECKS.get_or_init(Default::default)
 }
 fn remember_check(state: &State) {

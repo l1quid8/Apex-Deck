@@ -1064,6 +1064,12 @@ impl Room {
     }
 }
 
+fn response_pin_parts(pin: &str) -> Option<(usize, &str)> {
+    let rest = pin.strip_prefix("[Pinned response #")?;
+    let (seq, text) = rest.split_once("]\n")?;
+    Some((seq.parse().ok()?, text))
+}
+
 #[cfg(test)]
 mod approver_tests {
     use crate::view::ANSWERS_SYSTEM;
@@ -1233,7 +1239,7 @@ mod approver_tests {
         assert!(on.plan);
         assert_eq!(on.access, Some(crate::Access::Read), "nobody edits while planning");
         assert!(on.system.ends_with(PLAN_SYSTEM));
-        let _ = futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
     }
 
     #[test]
@@ -1360,10 +1366,4 @@ mod approver_tests {
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },
             RoomEvent::AllowedChanged { allowed }, RoomEvent::Activity { .. }] if allowed.len() == 1), "{events:?}");
     }
-}
-
-fn response_pin_parts(pin: &str) -> Option<(usize, &str)> {
-    let rest = pin.strip_prefix("[Pinned response #")?;
-    let (seq, text) = rest.split_once("]\n")?;
-    Some((seq.parse().ok()?, text))
 }

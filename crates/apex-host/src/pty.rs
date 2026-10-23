@@ -50,7 +50,14 @@ pub fn strip_ansi(input: &str) -> String {
         i += 1; if i >= bytes.len() { break; }
         match bytes[i] {
             b'[' => { i += 1; while i < bytes.len() { let b = bytes[i]; i += 1; if (0x40..=0x7e).contains(&b) { break; } } }
-            b']' => { i += 1; while i < bytes.len() { if bytes[i] == 0x07 { i += 1; break; } if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') { i += 2; break; } i += 1; } }
+            b']' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == 0x07 { i += 1; break; }
+                    if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') { i += 2; break; }
+                    i += 1;
+                }
+            }
             _ => i += 1,
         }
     }
@@ -278,7 +285,7 @@ impl PtyManager {
             if query.is_some() && matched.is_none() { return None; }
             Some(PtySummary { id, name, project, cwd, tail, matched, state, exit_code, last_activity, cursor })
         }).collect();
-        items.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+        items.sort_by_key(|item| std::cmp::Reverse(item.last_activity));
         items
     }
 
@@ -429,7 +436,7 @@ mod tests {
         let history = &mut records.get_mut("tail-cut").unwrap().history;
         history.clear();
         history.extend("💥".as_bytes());
-        history.extend(std::iter::repeat(b'x').take(TAIL_LIMIT - 3));
+        history.extend(std::iter::repeat_n(b'x', TAIL_LIMIT - 3));
         drop(records);
         let record = manager.list(None).remove(0);
         assert!(record.tail.len() <= TAIL_LIMIT);

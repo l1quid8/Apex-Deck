@@ -18,6 +18,10 @@ use crate::Host;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
+// Commands arrive one at a time from the UI and are matched once, so the
+// largest payload stays inline: a box would add an indirection to every
+// command to shrink a value that is built, matched and dropped in one call.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     SessionLoad {},
     SessionSave { session: Value },

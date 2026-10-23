@@ -910,7 +910,7 @@ impl Host {
         let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
         if !handle.approvals.forget(&rule) { return Err("that was no longer always allowed".to_string()); }
         let event = RoomEvent::AllowedChanged { allowed: handle.approvals.allowed() };
-        self.persist_and_emit(&id, &handle, event)?;
+        self.persist_and_emit(&id, handle, event)?;
         Ok(())
     }
 
@@ -1578,7 +1578,7 @@ impl Host {
             let _ = std::fs::remove_dir_all(&staging);
             std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
             let copied = PathBuf::from(copy_folder_attachment(&staging, Path::new(source.trim_end_matches('/')))?.trim_end_matches('/'));
-            let checked = mods::mod_read(copied.to_string_lossy().into_owned()).map_err(|e| { let _ = std::fs::remove_dir_all(&staging); e })?;
+            let checked = mods::mod_read(copied.to_string_lossy().into_owned()).inspect_err(|_e| { let _ = std::fs::remove_dir_all(&staging); })?;
             let name = checked.manifest.get("name").and_then(|n| n.as_str()).map(str::to_owned)
                 .unwrap_or_else(|| copied.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "mod".into()));
             let target = root.join(export::safe_file_name(&name)?);

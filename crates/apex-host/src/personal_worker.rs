@@ -71,13 +71,20 @@ impl ReasonOut {
 }
 
 /// What the worker calls out to. Tests swap in fakes.
+/// Asks the model for its next move, given the assistant and what it was asked.
+type ReasonFn = Arc<dyn Fn(ParticipantConfig, TurnRequest) -> BoxFuture<Result<ReasonOut, String>> + Send + Sync>;
+/// Runs one operation and reports what it did.
+type ExecuteFn = Arc<dyn Fn(OperationSpec, Started) -> BoxFuture<Result<ToolRun, String>> + Send + Sync>;
+/// Says whether this machine can run a tool, and whether running it twice is safe.
+type ToolFn = Arc<dyn Fn(&OperationSpec) -> Option<bool> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct WorkerTools {
-    pub reason: Arc<dyn Fn(ParticipantConfig, TurnRequest) -> BoxFuture<Result<ReasonOut, String>> + Send + Sync>,
-    pub execute: Arc<dyn Fn(OperationSpec, Started) -> BoxFuture<Result<ToolRun, String>> + Send + Sync>,
+    pub reason: ReasonFn,
+    pub execute: ExecuteFn,
     /// `Some(repeatable)` for an operation this machine can run, `None` for
     /// an unknown tool. Repeatable means running it twice does no harm.
-    pub tool: Arc<dyn Fn(&OperationSpec) -> Option<bool> + Send + Sync>,
+    pub tool: ToolFn,
 }
 
 impl WorkerTools {
@@ -437,6 +444,9 @@ fn read_only_request(system: String) -> TurnRequest {
 }
 
 /// What one step of the worker found to do.
+// A tick produces one of these and moves it straight into the match that uses
+// it, so the personal record stays inline rather than behind a box.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Work {
     Event(PersonalAssistant, PersonalEvent),
     Task(String, String),
@@ -952,7 +962,7 @@ fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &s
     }
     // On another machine, only the folder linked for it.
     let folders: Vec<String> = if operation.host == host_id { folders } else { assistant.machines.iter().filter(|m| m.host_id == operation.host).map(|m| m.folder.clone()).collect() };
-    if operation.tool == COMMAND_TOOL && !folders.iter().any(|f| *f == operation.cwd) {
+    if operation.tool == COMMAND_TOOL && !folders.contains(&operation.cwd) {
         return fail(assistant, task_id, "The operation's folder isn't one the assistant may use.", at);
     }
     let hash = operation.hash();
