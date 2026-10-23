@@ -85,3 +85,13 @@ test('personal timer/dependency waits stay working while an open approval needs 
   assert.equal(rows.find(row=>row.taskId==='timer').group,'working');
   assert.equal(rows.find(row=>row.taskId==='approval').group,'waiting');
 });
+test('global status derives Pausing and Paused from durable control without rewriting ledger status',()=>{
+  const rows=collectWorkspaceTasks([],[source(project(),[
+    task('active',project(),{status:'running',desiredState:'paused',attempts:[{finishedAtMs:null}]}),
+    task('queued',project(),{status:'queued',desiredState:'paused'}),
+  ])]);
+  assert.equal(rows.find(row=>row.taskId==='active').status,'pausing');
+  assert.equal(rows.find(row=>row.taskId==='active').group,'working');
+  assert.equal(rows.find(row=>row.taskId==='queued').status,'paused');
+  assert.equal(rows.find(row=>row.taskId==='queued').group,'waiting');
+});

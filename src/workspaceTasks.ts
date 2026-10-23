@@ -1,5 +1,5 @@
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
-import { assistantTasksForOwner, type AssistantTask, type AssistantTaskOwner, type AssistantTaskSnapshot } from './assistantTaskModel.ts';
+import { assistantTasksForOwner, taskDisplayStatus, type AssistantTask, type AssistantTaskOwner, type AssistantTaskSnapshot } from './assistantTaskModel.ts';
 import type { PersonalTask, PersonalAssistantRecord } from './personalAssistant.ts';
 
 export interface PersonalTaskSource {
@@ -71,9 +71,10 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
     for (const task of assistantTasksForOwner(source.snapshot, source.owner)) {
       if (task.resultData?.archivedAtMs != null || task.resultData?.dismissedAtMs != null) continue;
       const assistant = lineage(task, source.project);
+      const status = taskDisplayStatus(task).toLowerCase().replaceAll(' ', '_');
       const key = workspaceTaskKey('project', task.owner, task.id);
       rows.set(key, { key, source: 'project', assistant, project: source.project, taskId: task.id, title: task.originalRequest || task.brief,
-        status: task.status, updatedAt: task.updatedAtMs, observedAt: source.observedAt, offline: source.offline, group: group(task.status),
+        status, updatedAt: task.updatedAtMs, observedAt: source.observedAt, offline: source.offline, group: group(status),
         assistantName: assistant ? names.get(assistantIdentityKey(assistant)) ?? assistant.assistantId : 'Unassigned', projectName: source.name,
         owner: task.owner, revision: task.revision, routeHostId: source.owner.hostId });
     }
