@@ -186,7 +186,9 @@ pub fn capture(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot, Str
         &["read-tree", head.as_deref().unwrap_or("--empty")],
         None,
     )?;
-    run_git(&root, Some(&index.0), &["add", "-u", "--", "."], None)?;
+    // With no pathspec, update tracked files even when HEAD has an empty tree.
+    // Safe new files are added separately below after the exclusion checks.
+    run_git(&root, Some(&index.0), &["add", "-u"], None)?;
     let mut staged_paths = Vec::new();
     for path in staged_additions
         .split(|b| *b == 0)
@@ -968,7 +970,7 @@ mod tests {
         assert!(task_dir(&data, "fixture").unwrap().starts_with(&data));
         std::fs::remove_dir_all(root).unwrap();
     }
-    fn fixture() -> PathBuf {
+    fn empty_fixture() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "apex-assistant-git-{}-{}-{}",
             std::process::id(),
@@ -980,6 +982,10 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "-q"]).unwrap();
+        root
+    }
+    fn fixture() -> PathBuf {
+        let root = empty_fixture();
         std::fs::write(root.join("tracked.txt"), "base\n").unwrap();
         git(&root, &["add", "tracked.txt"]).unwrap();
         git(
@@ -997,6 +1003,34 @@ mod tests {
         .unwrap();
         root
     }
+    #[test]
+    fn empty_committed_repository_captures_runs_and_integrates_without_touching_user_index() {
+        let root=empty_fixture();
+        git(&root,&["-c","user.name=Fixture","-c","user.email=fixture@localhost","commit","--allow-empty","-qm","empty baseline"]).unwrap();
+        assert!(git(&root,&["ls-files"]).unwrap().trim().is_empty());
+        let original_index=std::fs::read(root.join(".git/index")).ok();
+        let original_head=git(&root,&["rev-parse","HEAD"]).unwrap();
+        let data=root.with_extension("data");
+        let baseline=capture(&root,"empty-tree","baseline").unwrap();
+        let task=prepare_worktree(&baseline,"empty-tree",&data).unwrap();
+        // Result capture must also support a worker that has made no changes.
+        let unchanged=capture_result(&task,"empty-tree").unwrap();
+        assert!(git(&task,&["ls-tree","--name-only",&unchanged.commit]).unwrap().trim().is_empty());
+        std::fs::write(task.join("created.txt"),"worker result\n").unwrap();
+        let result=capture_result(&task,"empty-tree").unwrap();
+        std::fs::write(root.join("human-note.txt"),"keep unrelated untracked work\n").unwrap();
+        std::fs::write(root.join(".env"),"PRIVATE_FIXTURE=excluded\n").unwrap();
+        let plan=stage_integration(&root,&baseline,&result.commit,"empty-tree",&data).unwrap();
+        apply_integration(&plan,&data.join("apply.json")).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("created.txt")).unwrap(),"worker result\n");
+        assert_eq!(std::fs::read_to_string(root.join("human-note.txt")).unwrap(),"keep unrelated untracked work\n");
+        assert_eq!(std::fs::read_to_string(root.join(".env")).unwrap(),"PRIVATE_FIXTURE=excluded\n");
+        assert_eq!(std::fs::read(root.join(".git/index")).ok(),original_index);
+        assert_eq!(git(&root,&["rev-parse","HEAD"]).unwrap(),original_head);
+        assert!(!git(&root,&["ls-tree","-r","--name-only",&plan.merged_commit]).unwrap().lines().any(|path|path==".env"));
+        std::fs::remove_dir_all(data).unwrap();std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn integration_accepts_file_directory_transitions_and_preserves_index() {
         for directory_first in [false, true] {
