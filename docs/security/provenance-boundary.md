@@ -244,6 +244,13 @@ own `source.harnessSha256` — so a run is never mistaken for a claim about a
 commit it did not come from. Read `dirty` first: a dirty run describes a working
 folder.
 
+The tamper check also rejects `protected ledgers unavailable` in either startup
+log, after stopping that isolated daemon. An empty fallback response cannot count
+as protected storage winning. `tests/provenance-acceptance.test.mjs` executes the
+actual shell check with isolated daemon effects: each unavailable startup must
+fail even when its response exactly matches the empty protected state. Changed
+state and a rewritten planted file must fail too.
+
 Three consecutive runs on 2026-10-23 (04:22Z, 04:28Z and a `--keep` run) all
 produced the same result: **23 PASS, 1 FAIL, 8 SKIP of 32 checks** against the
 parked protected copy (daemon `6eedd8545bc0`) and the rolled-back `/Applications`

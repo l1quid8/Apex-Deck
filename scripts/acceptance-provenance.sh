@@ -660,6 +660,10 @@ tamper_forged_json() {
   fi
   first=$(protected_state "$data")
   stop_daemon
+  if /usr/bin/grep -q 'protected ledgers unavailable' "$WORK/tamper-daemon.log"; then
+    fail_check "$id" "first start: protected ledgers unavailable; an empty fallback is not evidence that protected state won"
+    return
+  fi
   # A second start over the same forged file: one start could plausibly ignore
   # it and a later start adopt it, so both are compared.
   if ! start_daemon "$DAEMON" "$data" "tamper-daemon-again"; then
@@ -668,6 +672,10 @@ tamper_forged_json() {
   fi
   second=$(protected_state "$data")
   stop_daemon
+  if /usr/bin/grep -q 'protected ledgers unavailable' "$WORK/tamper-daemon-again.log"; then
+    fail_check "$id" "restart: protected ledgers unavailable; an empty fallback is not evidence that protected state won"
+    return
+  fi
   verdict=$(/usr/bin/python3 -I - "$first" "$second" "$fixture" "$data/assistant-tasks-v1.json" <<'PY'
 import json, sys
 first, second, fixture, planted = sys.argv[1:5]
