@@ -4,6 +4,52 @@ Branch: `fix/assistant-workspace-integration` in the existing assistant-workspac
 worktree. No integration changes were made in the primary checkout or installed
 apps; other work continues in the primary checkout independently.
 
+## Reviewed upgrade checkpoint after `8f67474`
+
+@null reviewed and integrated @deepgeek's `406629a` and `9992dd0`, with review
+fixes in `b5e2d399320fe8a31ebfa264752217b305d880af`. Use
+[UPGRADE-PROCEDURE.md](UPGRADE-PROCEDURE.md) for the administrator checkpoint;
+this supersedes the older upgrade assignment below. The signed candidate remains
+the unchanged `8f67474` runtime in `release/Apex-Deck_0.8.2_gate-8f67474_arm64.dmg`.
+Only documentation, verification scripts and tests changed after that build.
+
+Inventory comparison now requires captured device/inode/ownership/mode identity,
+enumerated locks and readable authority. Missing evidence is INCONCLUSIVE, not
+preserved. The verifier requires an exact broker CDHash as well as UI/daemon
+hashes. Acceptance checks `/Applications` fuses separately, and broker-client
+detection consumes the complete strings stream so SIGPIPE cannot fake absence.
+Guarded swap/rollback blocks stop on failures, recover partial renames, restore
+both app copies and the prior agent, and preserve the journal as it stands at
+rollback time rather than restoring an obsolete backup.
+
+Fresh validation: **2,166 JS tests**, TypeScript, shell syntax and whitespace
+passed. Nine new tests include actual documented command bodies with synthetic
+paths, service/signature/ownership effects substituted, each failed rename and
+full rollback after Applications replacement. Independent Luna review findings
+were resolved. This is not root/launchd or installed UI acceptance. No Rust or
+product runtime files changed; the candidate's earlier Rust/production results
+are in its release receipt, not rerun as part of this tooling-only review.
+
+The selected candidate passed the strengthened real verifier (UI `b2ad5d46…`,
+daemon `538dbd09…`, broker `12b8eb9a…`), and the DMG SHA256 again matched
+`3a47ae30977e0c97e816056995f849945c6e6af70611de1cdb75a1d584f0bf58`.
+
+Clean committed installed acceptance at 2026-10-23 06:35Z:
+**23 PASS / 2 FAIL / 8 SKIP of 33**. Evidence:
+`target/acceptance-provenance/evidence-20261023T063522Z.json`; source commit,
+`dirty: false`, and script hash were independently checked. Failures:
+`launchagent.daemon-path` and newly covered `static.fuses.installed`. These
+describe the old installation. The run's isolated folder was removed; the
+existing broker remained running. Logs and the unprivileged inventory check are
+under `target/authority-upgrade-review/` (ignored).
+
+@deepgeek: use the revised procedure for the administrator checkpoint and return
+the installed evidence to @null. Null retains final verification. Nothing was
+installed, re-pinned or merged to main. Tasks 4–8 still require every signed UI,
+preserved-data, ownership, Full access, paired remote and CLI acceptance item;
+neither passing the LaunchAgent path nor removing the two baseline failures
+alone closes the gate.
+
 ## G2b completion after `3f532bd`
 
 Deepgeek's `f284d0c` was reviewed and cherry-picked as `769e700` on the isolated
