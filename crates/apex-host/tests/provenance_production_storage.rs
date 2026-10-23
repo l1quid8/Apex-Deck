@@ -1,5 +1,6 @@
-//! Compiles apex-host as a production dependency, NOT with its unit-test local
-//! storage adapter. An ordinary same-user process must never load local forgery
+//! Uses production construction and storage, NOT the unit-test local storage adapter.
+//! The test-support feature may be compiled in (dev-dependency) but this file never
+//! registers a fixture, so nothing here is an isolated directory. An ordinary same-user process must never load local forgery
 //! as authoritative state, whether a broker is missing or rejects this process.
 use apex_host::{Host,HostPaths};
 #[test]

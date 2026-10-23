@@ -25,6 +25,10 @@ trash = "5"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+# Integration tests assume verified UI admission through the restricted test seam.
+apex-host = { path = ".", features = ["test-support"] }
+
 [features]
 # Explicit in-process fixtures only; no environment or CLI switch enables this.
 test-support = []

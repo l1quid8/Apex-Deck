@@ -98,6 +98,7 @@ version = "0.8.2"
 dependencies = [
  "apex-adapters",
  "apex-core",
+ "apex-daemon",
  "apex-host",
  "apex-pairing",
  "async-trait",
@@ -123,6 +124,7 @@ version = "0.8.2"
 dependencies = [
  "apex-adapters",
  "apex-core",
+ "apex-host",
  "apex-provenance",
  "base64 0.22.1",
  "futures",

@@ -169,6 +169,15 @@ construction remains broker-only even when the feature is compiled; there is
 no environment/CLI/RPC path to register a fixture. The production-compiled
 forged-storage integration test deliberately does not register one.
 
+Integration suites get the seam the same way: `apex-host` and `apex-daemon`
+enable `test-support` through a dev-dependency on themselves/each other, so
+plain `cargo test -p apex-host` and `cargo test -p apex-daemon` need no flag.
+That feature is compiled only into test builds. The `apex-daemon` binary built
+for those tests assumes verified UI admission for its dedicated temporary data
+directory (it panics on any other directory); release and `cargo build` builds
+never enable it. Tests that assert an unattested protected call is refused must
+use production construction (`Host::new` without a registered fixture).
+
 These tests do not substitute for installed OS verification. Before Phase 4:
 
 - Verify signed UI and daemon success through the root broker in isolated data.

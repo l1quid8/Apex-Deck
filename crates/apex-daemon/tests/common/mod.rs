@@ -26,7 +26,7 @@ impl Drop for TempDir {
 
 pub fn temp_dir() -> TempDir {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let dir = PathBuf::from("/tmp").join(format!("ad-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
+    let dir = std::env::temp_dir().join(format!("ad-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
     let _ = std::fs::remove_dir_all(&dir);
     TempDir(dir)
 }
