@@ -310,7 +310,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   useEffect(() => { if (clearedAt) { setDetailId(null); setTaskContextId(null); } }, [clearedAt]);
 
   // Report this store's rows to the unified Tasks list. Finished tasks stay (Clear only hides chat); dismissed ones do not.
-  const summaryRows = useMemo<TaskSummary[]>(() => tasks.filter((task) => isTaskOwnedBy(task, owner) && !task.resultData?.dismissedAtMs).map((task) => ({
+  const summaryRows = useMemo<TaskSummary[]>(() => tasks.filter((task) => isTaskOwnedBy(task, owner) && !task.resultData?.dismissedAtMs && task.resultData?.deletedAtMs == null).map((task) => ({
     key: keyFor(task.id), source: 'project', hostId: owner.hostId, workspaceId: owner.workspaceId, id: task.id,
     title: oneLine(task.originalRequest), place: projectName ?? 'Project', worker: workerLabel(task, profiles), status: task.status, statusLabel: taskDisplayStatus(task),
     group: projectTaskGroup(task), result: readableResult(task.result), updatedAt: task.updatedAtMs,
@@ -399,7 +399,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
 
   // Conversation rows (legacy cards, or one link line each in context mode) and the detail. Links never act or bind the composer.
-  const sidebarTasks = tasks.filter((task) => isTaskOwnedBy(task, owner) && !task.resultData?.dismissedAtMs);
+  const sidebarTasks = tasks.filter((task) => isTaskOwnedBy(task, owner) && !task.resultData?.dismissedAtMs && task.resultData?.deletedAtMs == null);
   const visibleCards = sidebarTasks.filter((task) => !taskFinal(task.status) || task.updatedAtMs > clearedAt);
   const tasksOnly = taskView?.display === 'tasks';
   const detailVisible = contextMode ? tasksOnly && !!contextTask : !!detailId;

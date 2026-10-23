@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url),{transform}=require('sucrase');
+const source=fs.readFileSync(new URL('../src/ThreadComposer.tsx',import.meta.url),'utf8');
+const React={createElement:(type,props,...children)=>({type,props,children})};
+const compiled=transform(source.replace(/^import .*;\n/gm,'').replace(/^export /gm,''),{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
+const {ThreadComposerBox,ComposerModeControls}=new Function('React',compiled+';return {ThreadComposerBox,ComposerModeControls};')(React);
+test('shared composer box preserves input/voice/attachment children and existing responsive classes',()=>{const ref={current:null},child={type:'input'};const box=ThreadComposerBox({ref,stacked:true,withTray:true,children:child});assert.equal(box.type,'div');assert.match(box.props.className,/composer-box stacked with-tray/);assert.equal(box.props.ref,ref);assert.equal(box.children[0],child);});
+test('shared TLDR and Plan controls toggle without submitting the composer',()=>{let t=0,p=0;const modes=ComposerModeControls({planOn:true,onPlan:()=>p++,tldr:false,onTldr:()=>t++});const children=modes.children.flat();const buttons=children.filter(x=>x?.type==='button');assert.equal(buttons.length,2);buttons.forEach(b=>{assert.equal(b.props.type,'button');b.props.onClick();});assert.equal(t,1);assert.equal(p,1);});

@@ -1,3 +1,4 @@
+import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
 import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
@@ -3809,7 +3810,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
         <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />
-        <div className={`composer-box${stacked ? " stacked" : ""}${work && !work.started ? " with-tray" : ""}${quickAdd === "dock" ? " adding" : ""}`} ref={field}>
+        <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock"} ref={field}>
           {quickAdd === "dock" && quickAddMenu}
           <ComposerMenu ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
@@ -3856,16 +3857,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           disabled={!roomReady || participants.length === 0}
         />
           </div>
-        {planOn && !profileMode && (
-          <button type="button" className="plan-chip" title="Plan is on: every bot plans and changes nothing. Click to turn it off."
-            aria-label="Plan is on. Turn it off" onPointerDown={(event) => event.preventDefault()} onClick={() => void setPlan(false)}>
-            <span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span>
-          </button>
-        )}
-        <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}
-          // Keep focus in the message box, so you can type straight after.
-          onPointerDown={(e) => e.preventDefault()}
-          onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
+        <ComposerModeControls planOn={planOn && !profileMode} onPlan={() => void setPlan(false)} tldr={tldr} onTldr={() => { toggleTldr(); input.current?.focus(); }} />
           {/* One round button: the mic while the box is empty, Send once it has something. Each reply keeps its own Stop, and Esc stops them all. */}
           {roundButton.mic && <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />}
           {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
@@ -3874,7 +3866,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
             onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
-        </div>
+        </ThreadComposerBox>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
         {botChips}
         </div>

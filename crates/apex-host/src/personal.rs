@@ -318,6 +318,8 @@ fn default_context_budget() -> u64 { 24_000 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalAssistant {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<u64>,
     pub id: String,
     pub name: String,
     /// Free text for the prompt only. It describes tone, never permissions.
@@ -667,6 +669,8 @@ pub struct ProcessMark {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
     pub id: String,
     pub goal: String,
     pub completion_criteria: Vec<String>,
@@ -788,10 +792,10 @@ impl PersonalAssistant {
     /// Old finished tasks go, oldest first, and long receipt lists are cut,
     /// so a daily schedule can't grow the record forever.
     pub(crate) fn prune_tasks(&mut self) {
-        let settled = self.tasks.iter().filter(|t| t.status.settled()).count();
+        let settled = self.tasks.iter().filter(|t| t.status.settled() && t.deleted_at.is_none()).count();
         let mut extra = settled.saturating_sub(MAX_SETTLED_TASKS);
         self.tasks.retain(|t| {
-            if extra > 0 && t.status.settled() { extra -= 1; false } else { true }
+            if extra > 0 && t.status.settled() && t.deleted_at.is_none() { extra -= 1; false } else { true }
         });
         for task in &mut self.tasks {
             if task.receipts.len() > MAX_RECEIPTS {
@@ -803,10 +807,11 @@ impl PersonalAssistant {
 
     /// Settled events beyond the limit are dropped oldest first. Pending ones never are.
     fn prune_events(&mut self) {
-        let settled = self.events.iter().filter(|e| matches!(e.state, EventState::Done | EventState::Failed)).count();
+        let referenced: std::collections::BTreeSet<_> = self.tasks.iter().map(|task|task.from_event.clone()).collect();
+        let settled = self.events.iter().filter(|e| !referenced.contains(&e.id) && matches!(e.state, EventState::Done | EventState::Failed)).count();
         let mut extra = settled.saturating_sub(MAX_SETTLED_EVENTS);
         self.events.retain(|e| {
-            if extra > 0 && matches!(e.state, EventState::Done | EventState::Failed) {
+            if extra > 0 && !referenced.contains(&e.id) && matches!(e.state, EventState::Done | EventState::Failed) {
                 extra -= 1;
                 false
             } else {
@@ -989,7 +994,18 @@ impl crate::Host {
     }
 
     pub fn personal_list(&self) -> Result<Vec<PersonalAssistant>, String> {
-        Ok(self.store().personal()?.unwrap_or_default().assistants)
+        let mut assistants = self.store().personal()?.unwrap_or_default().assistants;
+        let tasks = self.assistant_tasks.list(None).map_err(|error|error.to_string())?;
+        for assistant in &mut assistants {
+            let deleted: Vec<_> = tasks.iter().filter(|task|task.lineage.as_ref().is_some_and(|lineage|lineage.assistant.assistant_id==assistant.id && lineage.assistant.host_id==assistant.host_id) && task.result_data.as_ref().is_some_and(|data|data["deletedAtMs"].is_number())).collect();
+            // Derived from the authoritative ledger, including projects no longer
+            // assigned. Never save a second copy of execution authority here.
+            let purged=self.assistant_tasks.purged_for_assistant(&crate::personal_workspace::AssistantRef{host_id:assistant.host_id.clone(),assistant_id:assistant.id.clone()});
+            if !deleted.is_empty() || !purged.is_empty() || assistant.extra.contains_key("taskLifecycleRevision") { assistant.extra.insert("taskLifecycleSnapshotRevision".into(),serde_json::json!(self.assistant_tasks.snapshot_revision())); }
+            if deleted.is_empty() { assistant.extra.remove("deletedDelegatedTasks"); } else { assistant.extra.insert("deletedDelegatedTasks".into(), serde_json::to_value(deleted).map_err(|error|error.to_string())?); }
+            if purged.is_empty() { assistant.extra.remove("purgedDelegatedTaskIds"); } else { assistant.extra.insert("purgedDelegatedTaskIds".into(),serde_json::json!(purged)); }
+        }
+        Ok(assistants)
     }
 
     pub fn personal_get(&self, id: &str) -> Result<PersonalAssistant, String> {
@@ -1034,6 +1050,7 @@ impl crate::Host {
             let n = assistants.len() + 1;
             let id = (n..).map(|n| format!("asst-{n}")).find(|id| !assistants.iter().any(|a| &a.id == id)).unwrap();
             let assistant = PersonalAssistant {
+                archived_at: None,
                 id, name: name.to_owned(), style: input.style.trim().to_owned(), host_id,
                 projects: vec![], workspace_config_version: None, extra: Default::default(),
                 profile: Some(input.profile), allowed_folders: vec![folder.to_string_lossy().into_owned()],
@@ -1068,11 +1085,15 @@ impl crate::Host {
     fn personal_accept(&self, id: &str, request: &str, source: EventSource, human_line: Option<String>) -> Result<Accepted, String> {
         let request = request_id(request)?;
         self.change_assistant(id, |assistant| {
+            if assistant.archived_at.is_some(){return Err("This assistant is archived. Restore it before sending messages or changing execution controls.".into());}
             if let Some(existing) = assistant.events.iter().find(|e| e.request_id == request) {
                 if existing.source != source {
                     return Err("That request id was already used for something else.".into());
                 }
                 return Ok((existing.id.clone(), true));
+            }
+            if assistant.extra.get("purgedTaskAuthority").and_then(serde_json::Value::as_object).is_some_and(|records|records.values().any(|record|record["requestId"].as_str()==Some(&request))) {
+                return Err("This request belongs to a permanently deleted task and cannot run again.".into());
             }
             assistant.counters.event += 1;
             let event_id = format!("pe-{}", assistant.counters.event);
@@ -1134,6 +1155,14 @@ impl crate::Host {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn lifecycle_source_receipts_survive_event_pruning_until_explicit_purge() {
+        let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[{"id":"pt-1","goal":"Task","completionCriteria":[],"targetHost":"h","status":"cancelled","fromEvent":"source","maxAttempts":3,"createdAt":0,"updatedAt":0,"deletedAt":1}]})).unwrap();
+        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into()},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false});}
+        assistant.prune_events();
+        assert!(assistant.events.iter().any(|event|event.id=="source"),"source request authority cannot be discarded while a deleted task awaits Empty");
+    }
 
     #[test]
     fn operation_hash_changes_with_any_material_parameter() {

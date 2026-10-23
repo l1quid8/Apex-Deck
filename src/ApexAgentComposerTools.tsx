@@ -9,6 +9,7 @@ import './apex-agent-composer.css';
 import { assistantComposerDraftFor, useAssistantComposerDraftState } from './assistantComposerDrafts.ts';
 
 export type ApexAgentComposerToolsHandle = {
+  attachFiles: (files: File[]) => void;
   paths: () => string[];
   pending: () => boolean;
   hasErrors: () => boolean;
@@ -76,6 +77,7 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
     return () => input.removeEventListener('cancel', cancel);
   }, []);
   useImperativeHandle(ref, () => ({
+    attachFiles: files => { if(disabled||!saveAttachment)return;onChooseAttachment?.();files.forEach(file=>void trackFile(file)); },
     paths: () => currentAttachments().flatMap(item => item.path ? [item.path] : []),
     pending: () => currentAttachments().some(item => item.busy),
     hasErrors: () => currentAttachments().some(item => !!item.error),
@@ -162,7 +164,7 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
     if (item.kind === 'tools') { if (onTools) onTools(); else insert('!', activeTrigger); }
   };
   return <>
-    <div onPointerDown={() => { const field = inputRef.current; if (field) caret.current = field.selectionStart; }}>
+    <div className="composer-tools" onPointerDown={() => { const field = inputRef.current; if (field) caret.current = field.selectionStart; }}>
       <ComposerMenu ref={menuRef} participants={participants} servers={servers} serverStatus={serverStatus} mods={mods} planOn={planOn} disabled={disabled}
         trigger={trigger} choose={chooseItem} canAttach={!!saveAttachment} canAttachFolder={!!pickFolder}
         includeAll={includeAll} allMentionDetail={allMentionDetail} folderUnavailableReason={folderUnavailableReason} filesUnavailableReason={filesUnavailableReason}

@@ -1,19 +1,29 @@
-.personal-browser { position: absolute; inset: 0; z-index: 25; display: flex; flex-direction: column; gap: 8px; padding: 10px; overflow: auto; background: var(--panel, var(--bg)); color: var(--text); font-size: 12.5px; }
-.personal-browser-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }
-.personal-browser-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.personal-browser { position: absolute; inset: 0; z-index: 25; display: flex; flex-direction: column; gap: 8px; padding: 12px; overflow: auto; background: var(--panel, var(--bg)); color: var(--text); font-size: 12.5px; }
+.assistant-browser { position: absolute; z-index: 25; min-width: 0; }
+.assistant-browser[hidden] { display: none; }
+.assistant-browser-popup { right: 16px; bottom: var(--assistant-browser-bottom, 112px); width: min(620px, calc(100% - 32px)); height: min(460px, calc(100% - var(--assistant-browser-bottom, 112px) - 56px)); min-height: 180px; overflow: hidden; border-radius: 14px; background: var(--panel, var(--bg)); box-shadow: 0 12px 32px color-mix(in srgb, var(--text) 15%, transparent); }
+.assistant-browser-expanded { inset: 0; background: var(--panel, var(--bg)); }
+.assistant-browser .personal-browser { border-radius: inherit; }
+.personal-browser-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.personal-browser-head strong { flex: 1 1 100px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .personal-browser-state { font-size: 11px; color: var(--muted); }
-.personal-browser-state.is-taken { color: var(--accent, #71e6b5); }
-.personal-browser-close { margin-left: auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--text); font: inherit; cursor: pointer; }
+.personal-browser-state.is-taken { color: var(--accent); }
+.personal-browser-close { margin-left: auto; }
 .personal-browser-bar { display: flex; gap: 6px; align-items: center; min-width: 0; }
-.personal-browser-bar input, .personal-browser-keys input { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
-.personal-browser button { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--text); font: inherit; cursor: pointer; }
-.personal-browser button.primary { border-color: var(--accent, #71e6b5); color: var(--accent, #71e6b5); }
+.personal-browser-bar input, .personal-browser-keys input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.personal-browser button { flex-shrink: 0; min-height: 28px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--text); font: inherit; cursor: pointer; }
+.personal-browser button.primary { border-color: var(--accent); color: var(--accent); }
 .personal-browser button:disabled, .personal-browser input:disabled { opacity: .45; cursor: default; }
-.personal-browser-toggle { display: flex; flex-direction: column; gap: 4px; }
+.personal-browser-toggle { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .personal-browser-hint { margin: 0; color: var(--muted); font-size: 11.5px; }
-.personal-browser-alert { margin: 0; color: #ef6b6b; }
+.personal-browser-alert { margin: 0; color: var(--danger, var(--text)); }
 .personal-browser-page { min-height: 0; }
-.personal-browser-page img { display: block; width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--line); user-select: none; cursor: default; }
+.personal-browser-page img { display: block; width: 100%; height: auto; border-radius: 6px; user-select: none; cursor: default; }
 .personal-browser-page img.is-taken { cursor: crosshair; }
 .personal-browser-keys { display: flex; flex-direction: column; gap: 6px; }
 .personal-browser-keys form, .personal-browser-keys > div { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+@media (max-width: 560px) {
+  .assistant-browser-popup { right: 8px; width: calc(100% - 16px); }
+  .personal-browser { padding: 8px; }
+  .personal-browser-head { gap: 6px; }
+}

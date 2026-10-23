@@ -1,4 +1,5 @@
 import {assistantIdentityKey, assistantAppearance} from '../src/assistantIdentity.ts';
+import {assistantSidebarPanes, assistantThreadKey} from '../src/assistantSidebar.ts';
 import {rosterMessage} from '../src/assistantWorkspaceModel.ts';
 import {assistantStatus} from '../src/assistantStatus.ts';
 import {subscribeToImports} from '../src/legacyImportRefresh.ts';
@@ -108,10 +109,10 @@ function appHarness() {
   const assistantRef={hostId:project.hostId,assistantId:'assistant-a'};
   const personalRecord={id:'assistant-a',hostId:project.hostId,name:'Null',revision:1,messages:[],tasks:[],projects:[{project:{hostId:project.hostId,workspaceId:project.id,cwd:project.path},tools:'ask'}]};
   const personalLane={ref:assistantRef,draftKey:assistantIdentityKey(assistantRef),name:'Null',hostName:'Mac',assistant:personalRecord,offline:false,send:async()=>{}};
-  const assistantCollection={assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false,paused:false,personalTasks:[],projects:[]}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
+  const assistantCollection={archivedAssistants:[],restoreAssistant:async()=>{},assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false,paused:false,personalTasks:[],projects:[]}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
   const defaults = {
     ...assistantWorkspaceModel,
-    assistantIdentityKey,rosterMessage,
+    assistantIdentityKey,rosterMessage,assistantSidebarPanes,assistantThreadKey,
     usePersonalAssistants:()=>assistantCollection,
 
     subscribeToImports,

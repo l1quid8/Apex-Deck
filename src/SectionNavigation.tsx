@@ -57,7 +57,7 @@ export interface SectionFlag { count: number; worst: Attention | null; rows: Sec
  * colour of its most urgent item; hovering it lists what is waiting.
  */
 export function SectionNavigation({ section, onChange, flags = {}, onOpen, onMarkReadySeen, onDecide }: {
-  section: AppSection;
+  section: AppSection | null;
   onChange: (section: AppSection) => void;
   flags?: Partial<Record<AppSection, SectionFlag>>;
   onOpen?: (paneId: string) => void;

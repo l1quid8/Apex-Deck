@@ -17,7 +17,7 @@ type Change = { model?: string; effort?: string; speed?: Speed | null; access?: 
 
 interface Props {
   config: ParticipantConfig;
-  roomId: string;
+  roomId?: string;
   anchor: HTMLElement;
   backend: Backend;
   save: (config: ParticipantConfig, base: ParticipantConfig) => Promise<void>;
@@ -29,8 +29,18 @@ interface Props {
   accessPending?: boolean;
   /** The provider's usage resets, shown under Access. */
   resets?: ReactNode;
+  /** Assistant-owned snapshots never create or fetch a room. */
+  loadCurrent?: () => Promise<ParticipantConfig>;
+  /** Provider selection and the route to full Settings. */
+  provider?: ReactNode;
+  disabledReason?: string;
+  textOnly?: boolean;
+  allowManualModel?: boolean;
+  allowDefaultModel?: boolean;
+  /** Owning-host text choices for a scoped assistant; no generic fallback models. */
+  offeredModels?: ModelChoice[];
 }
-export function BotSettings({ config, roomId, anchor, backend, save, close, avatar, meters, accessPending = false, resets }: Props) {
+export function BotSettings({ config, roomId, anchor, backend, save, close, avatar, meters, accessPending = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const api = config.backend.kind === 'open_ai_compatible' ? config.backend : null;
@@ -46,9 +56,10 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const [error, setError] = useState('');
   const saveRef = useRef(save);
   saveRef.current = save;
+  const loadCurrentRef = useRef(loadCurrent);
+  loadCurrentRef.current = loadCurrent;
   const orderedSave = useRef(latestSaveQueue<{ change: Change; base: ParticipantConfig }>(async value => {
-    const state = await backend.roomCreate(roomId, [], { policy: 'mention', max_bot_hops: 0 }, '');
-    const current = state.participants.find(p => p.id === value.base.id);
+    const current = loadCurrentRef.current ? await loadCurrentRef.current() : roomId ? (await backend.roomCreate(roomId, [], { policy: 'mention', max_bot_hops: 0 }, '')).participants.find(p => p.id === value.base.id) : undefined;
     if (!current) throw new Error('This bot is no longer in the thread.');
     await saveRef.current(applyTurnChange(current, value.change), current);
   }));
@@ -88,9 +99,9 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     if (apiUrl === null) return;
     let active = true;
     setApiList([]); setDiscovery('loading');
-    backend.apiModels(apiUrl, apiKeyEnv).then(list => { if (active) { setApiList(list); setDiscovery(list.length ? 'ready' : 'empty'); } }).catch(() => { if (active) { setApiList([]); setDiscovery('empty'); } });
+    backend.apiModels(apiUrl, apiKeyEnv).then(list => { if (active) { const offered = textOnly ? list.filter(model => !model.kind || model.kind === 'text') : list; setApiList(offered); setDiscovery(offered.length ? 'ready' : 'empty'); } }).catch(() => { if (active) { setApiList([]); setDiscovery('empty'); } });
     return () => { active = false; };
-  }, [backend, apiUrl, apiKeyEnv]);
+  }, [backend, apiUrl, apiKeyEnv, textOnly]);
   useEffect(() => {
     let active = true;
     if (tool) {
@@ -134,7 +145,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   }, [anchor, close, open]);
   // API metadata also controls pricing and media-specific settings.
   const rich = api !== null && apiList.length > 0;
-  const groups = tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : tool === 'grok' ? 'Grok' : tool === 'muse' ? 'Muse Code' : 'Antigravity') : rich ? apiModelGroups(apiList) : [];
+  const groups = offeredModels ? [{ label: 'Models', models: offeredModels }] : tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : tool === 'grok' ? 'Grok' : tool === 'muse' ? 'Muse Code' : 'Antigravity') : rich ? apiModelGroups(apiList) : [];
   const effortsOf = (id: string) => tool ? effortsFor(AGENT_EFFORTS[tool], groups, id) : effortsFor(API_EFFORTS, groups, id);
   const efforts = effortsOf(model);
   const supportedEffort = efforts.includes(effort) ? effort : '';
@@ -191,6 +202,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     return <span className="model-menu-name">{m.id ? m.label ?? m.id : m.label}{m.id && m.label && <small>{m.id}</small>}</span>;
   };
   const pickModel = (id: string) => {
+    if (disabledReason || (!allowDefaultModel && !id) || (offeredModels && !offeredModels.some(item => item.id === id))) return;
     setModel(id); setOpen(false); setMore(false); setFilter('');
     const picked = rich ? apiList.find(m => m.id === id) : undefined;
     // A picture or video model takes no reasoning level, so any level set before is cleared.
@@ -201,6 +213,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   };
   /** Saves right away; there is no Apply step for agent bots. */
   const apply = async (change: Change) => {
+    if (disabledReason) return;
     const sent: Change = { ...touched.current, ...change };
     // Picture and video choices merge with the ones not yet saved, so no change is lost.
     if (change.media) sent.media = { ...touched.current.media, ...change.media };
@@ -229,7 +242,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     if (version === saveVersion.current) setSaving(false);
   };
   useEffect(() => {
-    const pick = (event: KeyboardEvent) => { const n = Number(event.key); if (!open || saving || !(n >= 1 && n <= items.length) || (event.target as HTMLElement).tagName === 'INPUT') return; pickModel(items[n - 1].id); };
+    const pick = (event: KeyboardEvent) => { const n = Number(event.key); if (!open || saving || disabledReason || !(n >= 1 && n <= items.length) || (event.target as HTMLElement).tagName === 'INPUT') return; pickModel(items[n - 1].id); };
     document.addEventListener('keydown', pick);
     return () => document.removeEventListener('keydown', pick);
   });
@@ -278,7 +291,9 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   };
   return createPortal(<div ref={root} className="bot-settings" style={position} onScroll={() => setOpen(false)} role="dialog" aria-label={`Settings for ${config.display_name}`}>
     <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
-    <fieldset aria-busy={saving}>
+    {provider}
+    {disabledReason && <p role="status" className="muted">{disabledReason}</p>}
+    <fieldset aria-busy={saving} disabled={!!disabledReason}>
       <div className="model-select">
         <span className="model-select-label">Model</span>
         <button ref={triggerRef} type="button" className="model-select-trigger" aria-haspopup="menu" aria-expanded={open} onClick={toggleMenu}>
@@ -288,17 +303,17 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
           <div ref={menuRef} className={rich ? 'model-menu stacked' : 'model-menu'} role="menu" aria-label="Model" style={menuPos}>
             <input autoFocus className="model-filter" aria-label="Filter models" placeholder="Filter models" value={filter} onChange={event => setFilter(event.currentTarget.value)} />
             {query && !shown.length && <p className="muted">No matching models.</p>}
-            {items.map((m, i) => <Fragment key={m.id || 'default'}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" onClick={() => pickModel(m.id)}>
+            {items.map((m, i) => <Fragment key={m.id || 'default'}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" disabled={!!disabledReason || (!allowDefaultModel && !m.id) || (!!offeredModels && !offeredModels.some(item => item.id === m.id))} onClick={() => pickModel(m.id)}>
               {nameOf(m)}
               <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>{i < 9 && <kbd>{i + 1}</kbd>}
             </button></Fragment>)}
             {extra.length > 0 && <button className="model-menu-item model-menu-more" aria-expanded={more} onClick={() => setMore(v => !v)}>{more ? 'Fewer models' : 'More models'}<span>{more ? '⌃' : '⌄'}</span></button>}
-            {more && extra.map(m => <Fragment key={m.id}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" onClick={() => pickModel(m.id)}>
+            {more && extra.map(m => <Fragment key={m.id}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" disabled={!!disabledReason || (!allowDefaultModel && !m.id) || (!!offeredModels && !offeredModels.some(item => item.id === m.id))} onClick={() => pickModel(m.id)}>
               {nameOf(m)}
               <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>
             </button></Fragment>)}
             {discovery === 'loading' && <p className="muted">Loading models…</p>}
-            {discovery === 'empty' && <div className="model-manual">
+            {discovery === 'empty' && allowManualModel && <div className="model-manual">
               <p className="muted">Model discovery unavailable. Enter a model ID.</p>
               <input aria-label="Model name" placeholder="Model ID" value={manualModel} onChange={event => setManualModel(event.currentTarget.value)} onKeyDown={event => {
                 if (event.key === 'Enter' && manualModel.trim()) { event.preventDefault(); pickModel(manualModel.trim()); }

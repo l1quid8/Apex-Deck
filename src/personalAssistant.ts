@@ -20,6 +20,7 @@ export type StopCondition = { exitCode?: number; outputContains?: string; output
 export type RunPlan = { startAt?: number; everyMs?: number; maxRuns?: number; until?: StopCondition; timeoutMs?: number; deadlineAt?: number; after?: string };
 export type TaskWait = { kind: "timer"; at: number } | { kind: "dependency"; taskId: string } | { kind: "machine"; hostId: string };
 export type PersonalTask = {
+  deletedAt?: number;
   id: string; goal: string; completionCriteria: string[]; targetHost: string;
   status: "needsYou" | "queued" | "running" | "waiting" | "blocked" | "done" | "failed" | "cancelled";
   /** What kind of action it is, which decides whether it asks first. */
@@ -53,12 +54,17 @@ export type PersonalSettings = {
 };
 export type PersonalAssistantRecord = PersonalSettings & {
   legacy?: PersonalLegacyMarker;
+  archivedAt?: number;
   id: string; hostId: string; allowedFolders: string[]; paused?: boolean; revision: number;
   /** Assistant-owned snapshot; changing it never edits a reusable Agents profile. */
   profile: ParticipantConfig | null;
   /** Missing on older hosts; assignments do not create machine/folder grants. */
   projects?: AssistantProjectBinding[];
   messages: PersonalMessage[]; tasks: PersonalTask[];
+  purgedDelegatedTaskIds?: string[];
+  taskLifecycleSnapshotRevision?: number;
+  deletedDelegatedTasks?: import("./assistantTaskModel.ts").AssistantTask[];
+  events?: { id: string; requestId: string; state: 'received' | 'processing' | 'held' | 'done' | 'failed'; error?: string; source?: { kind: string; text?: string }; receivedAt?: number }[];
   rules?: StandingRule[]; facts?: Fact[]; schedules?: Schedule[]; notices?: Notice[]; costs?: CostEntry[];
   machines?: { hostId: string; name: string; folder: string; lastSeen?: number }[];
 };
@@ -67,7 +73,7 @@ export type PersonalAssistantRecord = PersonalSettings & {
 export type PersonalWorkspaceConfigure = {
   expectedRevision: number;
   avatar?: import("./assistantAvatar.ts").AvatarSelection;
-  settings?: Partial<PersonalSettings>;
+  settings?: Omit<Partial<PersonalSettings>, 'quietHours'> & { quietHours?: PersonalSettings['quietHours'] | null };
   profile?: ParticipantConfig;
   projects?: AssistantProjectBinding[];
 };
@@ -86,17 +92,22 @@ export type PersonalLane = {
   problem?: string;
   setUp?: () => Promise<void>;
   send(text: string): Promise<void>;
+  sendRequest?(text: string, requestId: string): Promise<{eventId: string}>;
+  cancelReply?(eventId: string): Promise<void>;
+  archiveAssistant?(expectedRevision: number): Promise<void>;
   react(messageId: string, emoji: string, enabled: boolean): Promise<void>;
   saveAttachment(name: string, bytes: Uint8Array): Promise<string>;
   pickFolder(): Promise<string | null>;
   decide(decisionId: string, paramsHash: string, approve: boolean): Promise<void>;
   cancel(taskId: string): Promise<void>;
+  /** Host-backed deletion; restoring cancelled tasks never restarts them. Empty requires the exact displayed key set. */
+  taskLifecycle?(action: 'delete' | 'restore' | 'empty', task?: { source: 'personal' | 'delegated'; taskId: string; revision?: number }, expectedDeleted?: string[]): Promise<void>;
   /** Pause stops new work starting; the assistant keeps answering. */
   pause?(paused: boolean): Promise<void>;
   /** Change name, style, modes, quiet hours, budget or privacy. Only what's given changes. */
   configure?(settings: Partial<PersonalSettings>): Promise<void>;
   /** Only available when the authenticated route advertises assistant_workspace_v4. */
-  configureWorkspace?(configuration: PersonalWorkspaceConfigure): Promise<void>;
+  configureWorkspace?(configuration: PersonalWorkspaceConfigure): Promise<PersonalAssistantRecord | void>;
   addRule?(text: string, cls: ToolClass, mode: ActionMode): Promise<void>;
   removeRule?(ruleId: string): Promise<void>;
   remember?(text: string): Promise<void>;

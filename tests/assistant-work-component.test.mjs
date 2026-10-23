@@ -18,7 +18,7 @@ const work = (items = {}, extra = {}) => AssistantWork({ items: { ...empty, ...i
 
 test('sections appear in urgency order', () => {
   const headings = all(work({ needsYou: [item('a')], finished: [item('b', { status: 'done' })] }), n => n.type === 'h2').map(text);
-  assert.deepEqual(headings.map(h => h.replace(/\d+$/, '')), ['Needs you', 'Working', 'Projects', 'Finished']);
+  assert.deepEqual(headings.map(h => h.replace(/\d+$/, '')), ['Needs you', 'Working', 'Projects', 'Finished', 'Deleted tasks']);
 });
 
 test('empty working shows a hint', () => {
@@ -27,7 +27,7 @@ test('empty working shows a hint', () => {
 
 test('finished is collapsed and groups cancelled tasks', () => {
   const tree = work({ finished: [item('d', { status: 'done' })], cancelled: [item('c1', { status: 'cancelled' }), item('c2', { status: 'cancelled' }), item('c3', { status: 'cancelled' })] });
-  const details = find(tree, n => n.type === 'details');
+  const details = find(tree, n => n.type === 'details' && n.props.className === 'assistant-work-finished');
   assert.ok(details);
   assert.notEqual(details.props.open, true);
   assert.match(text(details), /3 cancelled tasks/);
@@ -37,7 +37,7 @@ test('finished is collapsed and groups cancelled tasks', () => {
 test('review opens the task', () => {
   const opened = [];
   const target = item('a');
-  find(work({ needsYou: [target] }, { onOpenTask: i => opened.push(i) }), n => n.type === 'button' && text(n) === 'Review').props.onClick();
+  find(work({ needsYou: [target] }, { onOpenTask: i => opened.push(i) }), n => n.type === 'button' && text(n) === 'Review result').props.onClick();
   assert.deepEqual(opened, [target]);
 });
 
@@ -50,4 +50,34 @@ test('a row shows project, worker and words for the status', () => {
 
 test('the projects slot is rendered', () => {
   assert.match(text(work()), /Project cards/);
+});
+
+test('running, done and cancelled rows all open their task with the state action', () => {
+  for (const [bucket, status, label] of [['working','running','View task'], ['finished','done','View result'], ['cancelled','cancelled','View task'], ['needsYou','ready_for_review','Review result'], ['needsYou','proposed','Review plan']]) {
+    const opened = [], target = item(status, {status});
+    const tree = work({[bucket]: [target]}, {onOpenTask: task => opened.push(task)});
+    const button = find(tree, node => node.type === 'button' && text(node) === label);
+    assert.ok(button, `${status} action`); button.props.onClick(); assert.deepEqual(opened, [target]);
+  }
+});
+
+test('delete has explicit cancellation wording for active work and restore for deleted records', () => {
+  const deleted = [], restored = [], active = item('r', {status:'running'}), done = item('d', {status:'done'});
+  const tree = work({working:[active], deleted:[done]}, {onDeleteTask: task => deleted.push(task), onRestoreTask: task => restored.push(task)});
+  find(tree, node => node.type === 'button' && text(node) === 'Cancel and delete').props.onClick();
+  find(tree, node => node.type === 'button' && text(node) === 'Restore').props.onClick();
+  assert.deepEqual(deleted, [active]); assert.deepEqual(restored, [done]);
+});
+
+test('Empty requires irreversible confirmation for the displayed exact task keys', () => {
+ const calls=[],prompts=[],original=globalThis.window;
+ try {
+  const deleted=[item('a'),item('b')];
+  const tree=work({deleted},{onEmptyDeleted:keys=>calls.push(keys)});
+  const empty=find(tree,node=>node.type==='button'&&text(node)==='Empty deleted tasks (2)');assert.equal(empty.props.disabled,false);
+  globalThis.window={confirm:prompt=>(prompts.push(prompt),false)};empty.props.onClick();assert.deepEqual(calls,[]);
+  globalThis.window.confirm=prompt=>(prompts.push(prompt),true);empty.props.onClick();
+  assert.match(prompts[0],/Permanently delete 2 deleted tasks/);assert.match(prompts[0],/cannot be undone/);assert.deepEqual(calls,[['delegated:a','delegated:b']]);
+  assert.equal(find(work({}, {onEmptyDeleted(){}}),node=>node.type==='button'&&text(node)==='Empty deleted tasks (0)').props.disabled,true);
+ } finally {globalThis.window=original;}
 });

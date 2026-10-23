@@ -155,3 +155,76 @@ test('a paused worker card says Paused, matching the shared status',async()=>{
   const card=find(tree,node=>node.props?.className==='assistant-project-card');
   assert.doesNotMatch(text(card),/1\s*working/);assert.match(text(find(card,node=>node.props?.className==='assistant-project-status')),/Paused/);
 });
+
+test('task detail returns to its actual source and exposes host backed deletion',async()=>{
+ const opened=[],back=[],deleted=[];
+ const h=harness({taskScopes:[{project,owner}],detailBackLabel:'Work',onDetailChange:value=>opened.push(value),onDetailBack:()=>back.push(1),lane:{assistant:record,name:'Ada',offline:false,taskLifecycle:async(...args)=>deleted.push(args)}},{...baseTask,status:'done',result:'Verified result'});
+ let tree=h.render();await tick();tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.ok(button(tree,'← Work')); assert.ok(opened.includes(true));
+ button(tree,'Delete').props.onClick();await tick();assert.deepEqual(deleted,[['delete',{source:'delegated',taskId:'task',revision:2}]]);
+ button(h.render(),'← Work').props.onClick();assert.deepEqual(back,[1]);
+});
+
+test('deleted task details expose restore without execution actions and are absent from project rows',async()=>{
+ const restored=[];
+ const deleted={...baseTask,status:'cancelled',resultData:{deletedAtMs:2}};
+ const h=harness({taskScopes:[{project,owner}],focusTask:{project,taskId:'task',nonce:1},lane:{assistant:record,name:'Ada',offline:false,taskLifecycle:async(...args)=>restored.push(args)}},deleted);
+ h.render();await tick();h.render();const tree=h.render();
+ assert.ok(button(tree,'Restore'));assert.equal(button(tree,'Resume task'),null);assert.equal(button(tree,'Retry task'),null);assert.equal(button(tree,'Approve task'),null);
+ button(tree,'Restore').props.onClick();await tick();assert.deepEqual(restored,[['restore',{source:'delegated',taskId:'task',revision:2}]]);
+});
+
+test('startup failure leads with cause and states execution has not started',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'needs_you',attempts:[],result:'Worker failed.',resultData:{startup:{message:'Separate-copy mode is unsupported by this worker.'}}});
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.match(text(tree),/Couldn’t start/);assert.match(text(tree),/Separate-copy mode is unsupported/);assert.match(text(tree),/Execution has not started/);assert.equal(button(tree,'Retry task'),null);
+});
+
+test('blocked startup checks a revised worker plan before a separate explicit approval',async()=>{
+ const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=> 'supported-thread'},{...baseTask,status:'needs_you',attempts:[],resultData:{startup:{message:'Unsupported worker'}}});
+ h.backend.supports=cap=>cap==='assistant_task_revise_startup_v1';
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ const select=find(tree,node=>node.type==='select'&&node.props['aria-label']==='Revised task worker');assert.ok(select);select.props.onChange({target:{value:'worker'}});
+ button(h.render(),'Check revised plan').props.onClick();await tick();
+ const action=h.calls.find(call=>call.cmd==='assistant_task_action');assert.equal(action.args.action,'revise_startup');assert.equal(action.args.taskId,'task');assert.equal(action.args.revision,2);assert.equal(action.args.mode,'read_only');assert.deepEqual(action.args.destination,{threadId:'supported-thread',workers:['worker'],newThread:false});
+ assert.ok(!h.calls.some(call=>call.args?.action==='approve'),'checking the plan must not approve or start it');
+});
+
+test('editable acceptance requires separate Changes and Checks inspection and exact revision confirmation',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'ready_for_review',mode:'isolated',result:'Code result',reviewCriteria:[],resultData:{reviewDiff:'diff',checkResults:[{success:true}]}});
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ find(tree,node=>node.type==='details'&&text(node).includes('Inspect result, changes and checks')).props.onToggle({currentTarget:{open:true}});tree=h.render();
+ assert.equal(button(tree,'Accept changes').props.disabled,true);
+ find(tree,node=>node.type==='details'&&node.children[0]?.type==='summary'&&text(node.children[0])==='Changes').props.onToggle({currentTarget:{open:true}});
+ find(tree,node=>node.type==='details'&&node.children[0]?.type==='summary'&&text(node.children[0])==='Checks').props.onToggle({currentTarget:{open:true}});tree=h.render();assert.equal(button(tree,'Accept changes').props.disabled,false);
+ const previous=globalThis.window;try {globalThis.window={confirm:()=>false};button(tree,'Accept changes').props.onClick();await tick();assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false);let prompt='';globalThis.window.confirm=text=>(prompt=text,true);button(h.render(),'Accept changes').props.onClick();await tick();assert.match(prompt,/revision 2/);assert.equal(h.calls.find(call=>call.cmd==='assistant_task_action').args.revision,2);}finally{globalThis.window=previous;}
+});
+
+test('keeping a worker conversation in sidebar is an explicit exact-thread action',async()=>{
+ const kept=[];const h=harness({taskScopes:[{project,owner}],onKeepThread:(...args)=>kept.push(args)},{...baseTask,executionThreadId:'exact-worker'});
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.deepEqual(kept,[]);button(tree,'Keep conversation in sidebar').props.onClick();assert.deepEqual(kept,[[project,'exact-worker']]);
+});
+
+test('offline detail keeps the cached task and disables host actions',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'ready_for_review',result:'Cached worker result'});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ h.props.lane={...h.props.lane,offline:true};h.render();await tick();tree=h.render();assert.match(text(tree),/Cached worker result/);assert.equal(button(tree,'Cancel task').props.disabled,true);
+});
+
+test('task questions and approvals stay in the detail with exact worker request identities',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'needs_you',executionThreadId:'execution',resultData:{pendingQuestions:[{request:'question-1',questions:[{header:'Target',question:'Which target?',options:[{label:'Staging'}],multi_select:false}]}],pendingApprovals:[{request:'approval-1',action:{title:'Run check',detail:'Run the selected test command'}}]}});
+ h.backend.roomAnswer=async(...args)=>h.calls.push({cmd:'room_answer',args});h.backend.roomDecide=async(...args)=>h.calls.push({cmd:'room_decide',args});
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.match(text(tree),/Which target\?/);assert.match(text(tree),/Run the selected test command/);
+ assert.equal(button(tree,'Send answers').props.disabled,true);
+ find(tree,node=>node.type==='input'&&node.props['aria-label']==='Your answer 1').props.onChange({target:{value:'Staging'}});tree=h.render();assert.equal(button(tree,'Send answers').props.disabled,false);button(tree,'Send answers').props.onClick();await tick();assert.deepEqual(h.calls.find(call=>call.cmd==='room_answer').args,['execution','question-1',[['Staging']]]);
+ button(h.render(),'Approve this action').props.onClick();await tick();assert.deepEqual(h.calls.find(call=>call.cmd==='room_decide').args,['execution','approval-1',true,false]);
+});
+
+test('a stale task revision cannot approve an old worker request',async()=>{
+ const task={...baseTask,status:'needs_you',executionThreadId:'execution',resultData:{pendingApprovals:[{request:'approval-1',action:{title:'Run check',detail:'Run the selected test command'}}]}};
+ const h=harness({taskScopes:[{project,owner}]},task);let decisions=0;h.backend.roomDecide=async()=>decisions++;
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ h.backend.call=async()=>({project,workspaceId:'workspace',tasks:[{...task,revision:3}],routingThreads:[],executions:[],revision:2});
+ button(tree,'Approve this action').props.onClick();await tick();assert.equal(decisions,0);assert.match(text(h.render()),/changed.*Refresh before responding/);
+});
