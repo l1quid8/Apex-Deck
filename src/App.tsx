@@ -34,7 +34,7 @@ import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
-import { rosterMessage, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
+import { rosterMessage, loadMainView, saveMainView, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import "./apex-agent-dock.css";
 import { LibraryView } from "./lazyViews";
@@ -167,7 +167,8 @@ const TOAST_MS = 4000;
 
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
-  const [mainView, setMainView] = useState<MainView>({kind:"workspace"});
+  const [mainView, setMainView] = useState<MainView>(()=>loadMainView());
+  useEffect(()=>{saveMainView(mainView);},[mainView]);
   const [assistantProjectAliases,setAssistantProjectAliases]=useState<Record<string,{route:Backend;project:ProjectRef}>>({});
   const [assistantProjectDiscoveryProblems,setAssistantProjectDiscoveryProblems]=useState<Record<string,string>>({});
   const [creatingAssistant, setCreatingAssistant] = useState(false);

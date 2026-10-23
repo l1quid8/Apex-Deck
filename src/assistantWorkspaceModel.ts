@@ -1,8 +1,31 @@
 import type { Backend } from './backend.ts';
-import { projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
+import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
 import type { ParticipantConfig, ModelChoice, Workspace } from './types.ts';
 export type AssistantSection = 'conversation' | 'projects' | 'activity' | 'memory' | 'settings';
 export type MainView = { kind: 'workspace' } | { kind: 'assistant'; assistant: AssistantRef; section: AssistantSection; previousSections?: AssistantSection[] };
+const MAIN_VIEW_STORAGE_KEY = 'apex-deck.main-view.v1';
+const ASSISTANT_SECTIONS:readonly AssistantSection[] = ['conversation','projects','activity','memory','settings'];
+/** Local display preference only: restored identities still resolve through the live roster. */
+export function parseMainView(raw:string|null):MainView {
+ try {
+  if(!raw||raw.length>10000)return {kind:'workspace'};
+  const value:unknown=JSON.parse(raw);
+  if(!value||typeof value!=='object'||Array.isArray(value))return {kind:'workspace'};
+  const record=value as Record<string,unknown>;
+  if(record.kind==='workspace')return {kind:'workspace'};
+  if(record.kind!=='assistant'||!ASSISTANT_SECTIONS.includes(record.section as AssistantSection))return {kind:'workspace'};
+  const assistant=record.assistant as AssistantRef;
+  assistantIdentityKey(assistant);
+  if(assistant.hostId.length>1024||assistant.assistantId.length>1024)return {kind:'workspace'};
+  return {kind:'assistant',assistant:{hostId:assistant.hostId,assistantId:assistant.assistantId},section:record.section as AssistantSection};
+ }catch{return {kind:'workspace'};}
+}
+export function loadMainView(storage?:Pick<Storage,'getItem'>):MainView {
+ try{return parseMainView((storage??localStorage).getItem(MAIN_VIEW_STORAGE_KEY));}catch{return {kind:'workspace'};}
+}
+export function saveMainView(view:MainView,storage?:Pick<Storage,'setItem'>):void {
+ try{(storage??localStorage).setItem(MAIN_VIEW_STORAGE_KEY,JSON.stringify(parseMainView(JSON.stringify(view))));}catch{/* Display preferences are optional when storage is unavailable. */}
+}
 export type AssistantNavigation = {kind:'open';assistant:AssistantRef} | {kind:'section';section:AssistantSection} | {kind:'back'} | {kind:'workspace'};
 /** Navigation owns only the main canvas. Global Dashboard/Tasks panel state is retained verbatim. */
 export function assistantNavigation<T extends {mainView:MainView}>(state:T,event:AssistantNavigation):T {

@@ -68,3 +68,19 @@ test('fresh unassigned projects are canonicalized by their authenticated host wi
  status={kind:'connected',hostId:'mac-host'};pending=workspaceModel.discoverAssistantProjectFolder(workspace,'mac-host',backend,()=>current);finish({path:'relative/path'});await assert.rejects(pending,/absolute/);
  assert.equal(await workspaceModel.discoverAssistantProjectFolder({...workspace,hidden:true},'mac-host',backend,()=>true),null);
 });
+
+test('cold restart restores the exact selected assistant and section while retaining unrelated sidebar preferences',()=>{
+ const items=new Map([['apex-right-panel',JSON.stringify({open:true,active:'dashboard'})]]);
+ const storage={getItem:key=>items.get(key)??null,setItem:(key,value)=>items.set(key,value)};
+ for(const section of ['conversation','projects','activity','memory','settings']){
+  workspaceModel.saveMainView({kind:'assistant',assistant:b,section,previousSections:['projects'],grants:['ignored']},storage);
+  assert.deepEqual(workspaceModel.loadMainView(storage),{kind:'assistant',assistant:b,section});
+ }
+ assert.equal(items.size,2);assert.equal(items.get('apex-right-panel'),JSON.stringify({open:true,active:'dashboard'}));
+ workspaceModel.saveMainView({kind:'workspace'},storage);assert.deepEqual(workspaceModel.loadMainView(storage),{kind:'workspace'});
+});
+test('main-view persistence rejects malformed records and strips non-navigation data',()=>{
+ for(const raw of [null,'bad JSON','null','[]','42',JSON.stringify({kind:'other'}),JSON.stringify({kind:'assistant',assistant:a,section:'admin'}),JSON.stringify({kind:'assistant',assistant:{hostId:' mac ',assistantId:'a'},section:'conversation'}),JSON.stringify({kind:'assistant',assistant:{hostId:'mac',assistantId:'a\u0000'},section:'conversation'}),JSON.stringify({kind:'assistant',assistant:{hostId:'mac'},section:'conversation'}),JSON.stringify({kind:'assistant',assistant:{hostId:'mac',assistantId:'a'.repeat(1025)},section:'conversation'})])assert.deepEqual(workspaceModel.parseMainView(raw),{kind:'workspace'});
+ const record={kind:'assistant',assistant:{...a,role:'admin'},section:'settings',projects:[{tools:'full'}],previousSections:['memory']};assert.deepEqual(workspaceModel.parseMainView(JSON.stringify(record)),{kind:'assistant',assistant:a,section:'settings'});
+ const unavailable={getItem(){throw new Error('storage disabled');},setItem(){throw new Error('storage disabled');}};assert.deepEqual(workspaceModel.loadMainView(unavailable),{kind:'workspace'});assert.doesNotThrow(()=>workspaceModel.saveMainView({kind:'assistant',assistant:a,section:'memory'},unavailable));
+});
