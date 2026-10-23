@@ -268,8 +268,28 @@ impl Store {
     pub fn save_room(&self, id: &str, room: &SavedRoom) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         let previous = self.room(id)?.map(|saved| saved.snapshot.transcript.len()).unwrap_or(0);
-        self.save_room_authority(id,room)?;
-        self.write_held(&self.room_path(id), room)?;
+        // Invariant: the manifest never claims permissions the saved room didn't get.
+        // `room()` takes permission fields from the manifest and the transcript from
+        // the room file, so the room file goes first (a newer file under an older
+        // manifest is safe). If the manifest write then fails, the previous room file
+        // bytes are put back so a failed save leaves both files as they were.
+        let room_path = self.room_path(id);
+        let before = match std::fs::read(&room_path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("Could not read saved data: {e}")),
+        };
+        self.write_held(&room_path, room)?;
+        if let Err(why) = self.save_room_authority(id,room) {
+            let restored = match &before {
+                Some(bytes) => self.write_bytes_held(&room_path, bytes),
+                None => std::fs::remove_file(&room_path).map_err(|e| e.to_string()),
+            };
+            return Err(match restored {
+                Ok(()) => why,
+                Err(undo) => format!("{why} (and the previous chat file could not be restored: {undo})"),
+            });
+        }
         let upto = room.snapshot.transcript.len();
         if upto < previous || upto == 0 {
             self.prune_answers_held(id, upto)?;
@@ -517,8 +537,11 @@ mod tests {
     use apex_core::{Room, RoomOptions};
 
     fn temp() -> PathBuf {
-        std::env::temp_dir().join(format!("apex-deck-storage-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))
+        // The clock alone can repeat across parallel tests, so tests would share and delete one folder.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        std::env::temp_dir().join(format!("apex-deck-storage-{}-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
     }
 
     #[test]
@@ -534,6 +557,25 @@ mod tests {
         let reopened=Store::new(root.clone()).room("r").unwrap().unwrap();
         assert_eq!(reopened.cwd.as_deref(),Some("/trusted"));
         assert!(reopened.mounts.is_empty());assert!(!reopened.snapshot.plan);assert!(reopened.snapshot.allowed.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_room_file_write_leaves_the_manifest_and_room_as_they_were() {
+        let root=temp();let store=Store::new(root.clone());
+        let saved=SavedRoom{cwd:Some("/trusted".into()),mounts:vec![],snapshot:Room::new(vec![],RoomOptions::default()).snapshot()};
+        store.save_room("r",&saved).unwrap();
+        let manifest_before=store.room_authorities().unwrap();
+        let room_before=std::fs::read(store.room_path("r")).unwrap();
+        // A directory where the atomic writer opens its temporary file makes the room write fail.
+        let blocker=store.room_path("r").with_extension("tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        let mut moved=saved.clone();moved.cwd=Some("/elsewhere".into());
+        assert!(store.save_room("r",&moved).is_err());
+        std::fs::remove_dir(&blocker).unwrap();
+        assert_eq!(store.room_authorities().unwrap(),manifest_before);
+        assert_eq!(std::fs::read(store.room_path("r")).unwrap(),room_before);
+        assert_eq!(store.room("r").unwrap().unwrap().cwd.as_deref(),Some("/trusted"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

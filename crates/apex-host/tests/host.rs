@@ -479,12 +479,9 @@ fn importing_with_replace_swaps_an_unstarted_room_for_one_in_another_folder() {
     let _ = std::fs::remove_dir_all(data);
 }
 
-// Exposed by the provenance boundary, not by this seam: `Store::save_room` now writes
-// room-authority-v1.json before the room file, so a failed room-file write leaves the
-// authority manifest (the source of the saved cwd) already moved. Ignored, not weakened,
-// until `save_room` is made atomic across both files; production code is out of scope here.
+// `Store::save_room` writes the room file first and restores it if the authority manifest
+// write fails, so a failed save leaves both the saved room and its manifest as they were.
 #[test]
-#[ignore = "save_room updates room-authority before the room file, so a failed replace moves the saved cwd; needs a production fix"]
 fn a_replace_that_cannot_be_saved_leaves_the_thread_open_and_saved_where_it_was() {
     let data = std::env::temp_dir().join(format!("apex-host-replace-fails-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
