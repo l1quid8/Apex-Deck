@@ -29,12 +29,17 @@ function find(node,predicate){return findAll(node,predicate)[0];}
 function text(node){if(typeof node==='string'||typeof node==='number')return String(node);return(node?.children??[]).map(text).join('');}
 const button=(tree,label)=>find(tree,n=>n.type==='button'&&text(n)===label);
 const checkboxes=tree=>findAll(tree,n=>n.type==='input'&&n.props.type==='checkbox');
+const listed=tree=>checkboxes(tree).map(n=>String(n.props['aria-label']).replace(/^Include /,'').replace(/ in commit$/,''));
 async function loaded(h){h.render();await tick();return h.render();}
 
 test('turn chip request opens live menu with only matching files selected and submits that scope', async()=>{
   let live=state(); const calls=[];
   const h=harness({call:async(cmd,args)=>{if(cmd==='room_git_status')return live;calls.push(args.action);live={...live,head:'def',files:[live.files[1]]};return{state:live,message:'Committed.'};}});
   await loaded(h);h.setProps({request:{paths:['/repo/a.ts','already-committed.ts'],nonce:1}});let tree=await loaded(h);
+  assert.deepEqual(listed(tree),['a.ts'],'only the scoped file is listed');
+  assert.ok(button(tree,'▶ 1 unselected file'),'unselected files start collapsed');
+  button(tree,'▶ 1 unselected file').props.onClick();tree=h.render();
+  assert.deepEqual(listed(tree),['a.ts','b.ts'],'expanding reveals the unselected file');
   assert.deepEqual(checkboxes(tree).map(n=>n.props.checked),[true,false]);
   const message=find(tree,n=>n.type==='input'&&n.props['aria-label']==='Commit message');message.props.onChange({target:{value:'Selected file'}});tree=h.render();
   const form=find(tree,n=>n.type==='form');form.props.onSubmit({preventDefault(){}});await tick();tree=h.render();
@@ -46,11 +51,13 @@ test('polling preserves deselection and stale refresh cannot replace a newer tur
   let defer;let deferred=false;const live=state();
   const h=harness({call:async()=>deferred?new Promise(resolve=>{defer=resolve;}):live});
   let tree=await loaded(h);find(tree,n=>n.type==='button'&&n.props.className?.includes('git-changes-trigger')).props.onClick();tree=await loaded(h);
+  assert.deepEqual(listed(tree),['a.ts','b.ts']);
   checkboxes(tree)[1].props.onChange({target:{checked:false}});h.render();h.poll();await tick();tree=h.render();
-  assert.deepEqual(checkboxes(tree).map(n=>n.props.checked),[true,false]);
+  assert.deepEqual(listed(tree),['a.ts'],'a deselected file moves into the collapsed group and stays out of the commit');
+  assert.ok(button(tree,'▶ 1 unselected file'));
   deferred=true;h.poll();const old=defer;deferred=false;
   h.setProps({request:{paths:['/repo/b.ts'],nonce:2}});tree=await loaded(h);old({...live,head:'outdated'});await tick();tree=h.render();
-  assert.deepEqual(checkboxes(tree).map(n=>n.props.checked),[false,true]);h.unmount();
+  assert.deepEqual(listed(tree),['b.ts'],'a stale poll cannot replace the newer turn selection');h.unmount();
 });
 
 test('merge requires an explicit confirmation and refreshed HEAD cancels it', async()=>{
@@ -68,7 +75,7 @@ test('slow status polls are coalesced and still populate the open menu', async()
   h.render();h.setProps({request:{paths:['/repo/b.ts'],nonce:1}});h.render();h.poll();h.poll();
   assert.equal(calls,1,'polling must not starve the original slow request');
   pending[0](state());await tick();const tree=h.render();
-  assert.deepEqual(checkboxes(tree).map(n=>n.props.checked),[false,true]);h.unmount();
+  assert.deepEqual(listed(tree),['b.ts']);h.unmount();
 });
 
 test('a disconnected host disables actions on an already-open menu', async()=>{

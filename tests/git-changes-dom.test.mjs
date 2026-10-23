@@ -24,7 +24,9 @@ test('Inline Git card toggles and moves between replies, clears top-bar scope, a
     app.whenReady().then(async()=>{const win=new BrowserWindow({show:false,width:360,height:500,webPreferences:{contextIsolation:true,backgroundThrottling:false}});const run=fn=>win.webContents.executeJavaScript('('+fn.toString()+')()');const wait=async fn=>{for(let i=0;i<200;i++){if(await run(fn))return;await new Promise(r=>setTimeout(r,25));}throw Error('Timed out: '+fn+' '+await run(()=>document.body.innerText));};try{
       await win.loadURL(${JSON.stringify(url)});await wait(()=>document.querySelector('.git-changes-trigger')?.getAttribute('aria-label')==='Changes · 3');
       await run(()=>document.querySelector('.turn-files-strip').click());await wait(()=>document.querySelector('.git-file-row input')?.checked);
-      assert.deepEqual(await run(()=>Array.from(document.querySelectorAll('.git-file-row input')).map(i=>i.checked)),[true,false,false]);
+      assert.deepEqual(await run(()=>Array.from(document.querySelectorAll('.git-file-row input')).map(i=>i.checked)),[true],'only the scoped file is listed');
+      assert.equal(await run(()=>document.querySelectorAll('.git-file-entry.is-unselected').length),0,'unselected files stay collapsed by default');
+      assert.equal(await run(()=>document.querySelector('.git-unselected-toggle').textContent),'▶ 2 unselected files','the collapsed group names how many files it hides');
       assert.equal(await run(()=>!!document.querySelector('#reply-1 .git-changes-slot .git-changes-menu')),true,'card is inside clicked reply');
       assert.equal(await run(()=>{const r=document.querySelector('.git-changes-menu').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;}),true,'card fits narrow reply without horizontal overflow');
       await run(()=>document.querySelector('#reply-1 .turn-files-strip').click());await wait(()=>!document.querySelector('.git-changes-menu'));
@@ -35,9 +37,11 @@ test('Inline Git card toggles and moves between replies, clears top-bar scope, a
       await run(()=>document.querySelector('#reply-1 .turn-files-strip').click());await wait(()=>document.querySelector('#reply-1 .git-changes-menu'));
       await run(()=>document.querySelector('#reply-2 .turn-files-strip').click());await wait(()=>document.querySelector('#reply-2 .git-changes-menu'));
       assert.equal(await run(()=>document.querySelectorAll('.git-changes-menu').length),1);
-      assert.deepEqual(await run(()=>Array.from(document.querySelectorAll('.git-file-row input')).map(i=>i.checked)),[false,true,false]);
+      assert.deepEqual(await run(()=>Array.from(document.querySelectorAll('.git-file-row input')).map(i=>i.checked)),[true],'only the newly scoped file is listed');
+      await run(()=>document.querySelector('.git-unselected-toggle').click());await wait(()=>document.querySelectorAll('.git-file-row input').length===3);
+      assert.deepEqual(await run(()=>Array.from(document.querySelectorAll('.git-file-row input')).map(i=>i.checked)),[true,false,false],'expanding reveals the unselected files unchecked');
       await run(()=>document.body.click());assert.equal(await run(()=>!!document.querySelector('.git-changes-menu')),true,'clicking elsewhere leaves the inline card open');
-      await run(()=>document.querySelector('.git-file-name').click());await wait(()=>document.querySelector('.git-file-patch'));assert.match(await run(()=>document.querySelector('.git-file-patch').textContent),/saveVoice/);
+      await run(()=>document.querySelector('.git-file-name').click());await wait(()=>document.querySelector('.git-file-patch'));assert.match(await run(()=>document.querySelector('.git-file-patch').textContent),/preferences/);
       const image=await win.webContents.capturePage();require('node:fs').writeFileSync('/tmp/apex-git-menu-ui.png',image.toPNG());
       await run(()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})));await wait(()=>!document.querySelector('.git-changes-menu'));assert.equal(await run(()=>document.activeElement.classList.contains('turn-files-strip')),true);
       await run(()=>document.querySelector('.git-changes-trigger').click());await wait(()=>document.querySelector('#reply-2 .git-changes-menu'));
