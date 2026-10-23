@@ -376,6 +376,40 @@ Never restore keys or journal from the user store, and never copy
 `journal.json` without `private-key` and `public-key`: the broker refuses a
 mismatched pair with "Authority key mismatch".
 
+## Rehearsal — Phase E and Rollback executed before this handover
+
+Phase E is the only step that can lose authority, so it was run end to end
+against a sandbox on 2026-10-23 rather than merely written down. The sandbox
+used **real bundles** — APFS clones of the protected copy (`7911a74d…`) and the
+candidate (`b2ad5d46…`), so `codesign` derived the real hashes — over
+**synthetic authority**: `private-key`, `public-key`, `journal.json`,
+`host-locks/` with two lock files, and a `config.json` carrying both pins plus
+two keys the procedure does not know about. The code run was the Phase E and
+Rollback blocks above, character for character, with `sudo` and the `launchctl`
+lines omitted.
+
+| Property | Result |
+| --- | --- |
+| pins rewritten to the candidate | `7911a74d…`/`9a7405e0…` → `b2ad5d46…`/`538dbd09…` |
+| `config.json` mode through the atomic replace | `600`, preserved |
+| `config.json` keys not named by the procedure | `uiBundleId` and `futureKey` both survived |
+| temp file left behind | none |
+| `private-key`, `public-key`, `journal.json`, both lock files, and the `host-locks` directory itself | same inode, same size, same SHA-256 after the swap **and** again after rollback |
+| rollback | trusted bundle back to `7911a74d…`, pins back to `7911a74d…`/`9a7405e0…`, authority identical |
+| re-pin against a bundle that cannot be hashed | refused; **no** temp file; `config.json` unchanged byte for byte and inode for inode |
+
+The last row is the one to keep in mind during the checkpoint: `cdhash()` runs
+*before* `config.json` is opened for writing, so a bundle that cannot be
+validated aborts the re-pin instead of applying half a pin. The same ordering
+means the `os.chown` call aborting — which is what a mistaken non-root run
+produces — also leaves the old `config.json` in place.
+
+What the rehearsal did **not** prove: root ownership of the rewritten
+`config.json` (a root process creates the temp file root-owned already, so the
+documented `os.chown` restores rather than changes it); the `launchctl bootout`
+and `bootstrap` steps; and that the broker actually *enforces* the new pins.
+Those are Phase F and Phase H, against the real authority.
+
 ## Evidence to return to @null
 
 1. `gate-8f67474-before.json`, `gate-8f67474-after.json`,
@@ -396,9 +430,15 @@ mismatched pair with "Authority key mismatch".
   table above comes from unprivileged reads: ownership, modes, inodes, bundle
   CDHashes, fuses and the LaunchAgent. Record counts and pin values are for the
   administrator's `sudo` inventory to capture.
-- **No installation, re-pin or launch happened.** Nothing was written outside
-  this repository and `/tmp`; the mounted image was detached.
+- **No installation, re-pin or launch happened against the live authority.**
+  Nothing was written outside this repository and `/tmp`; the mounted image was
+  detached. Phase E and Rollback *were* executed against a sandbox (see the
+  rehearsal above), so their logic is measured rather than assumed — the live
+  paths are not.
 - I did not exercise `verify-protected-bundle.sh` or `authority-inventory.sh`
   as root. Both are read-only by construction, but their `sudo` paths are
   unproven until the checkpoint run — which is worth saying plainly rather than
   leaving to be discovered.
+- The rehearsal could not show the broker rejecting a stale pin or accepting the
+  new one. It is the broker, not this procedure, that turns a correct
+  `config.json` into a working gate; that evidence only exists after Phase F.
