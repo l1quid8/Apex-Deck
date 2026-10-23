@@ -141,3 +141,27 @@ test('workspace uses one identity header, status and a separate mockup tab strip
  assert.deepEqual(all(tabs,n=>n.props?.role==='tab').map(text),['Conversation','Projects','Activity']);
  assert.match(text(tree),/Ready/);
 });
+
+const textApi={id:'api',display_name:'Text API',persona:'',backend:{kind:'open_ai_compatible',base_url:'https://text.test/v1',api_key_env:'SAVED',model:'configured-text'},access:'ask'};
+test('creation defaults to a verified text API ahead of a missing Claude install and preserves its offered configured model',async()=>{
+ const created=[];let catalogs=0;let installations=0;
+ const h=mount({lane:undefined,onCreate:async value=>created.push(value),backend:{sessionLoad:async()=>({profiles:[profile,textApi]}),detectAgents:async()=>{installations++;return[];},apiKeyStatus:async()=>['saved'],apiModels:async()=>{catalogs++;return[{id:'first-text'},{id:'configured-text',efforts:['low','high']},{id:'image-only',kind:'image'}];}}});
+ let tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,1);assert.equal(input(tree,'Assistant model').props.value,'configured-text');assert.equal(input(tree,'Assistant reasoning').props.value,'low');assert.equal(catalogs,1);assert.equal(installations,0);
+ input(tree,'Assistant name').props.onChange({target:{value:'Working default'}});await submit(h);assert.equal(created.length,1);assert.equal(created[0].profile.backend.base_url,textApi.backend.base_url);assert.equal(created[0].profile.backend.model,'configured-text');
+});
+test('creation skips missing API credentials and image-only catalogs before using an installed Claude provider',async()=>{
+ const missing={...textApi,id:'missing',backend:{...textApi.backend,base_url:'https://missing.test/v1',api_key_env:'MISSING'}};
+ const images={...textApi,id:'images',backend:{...textApi.backend,base_url:'https://images.test/v1'}};
+ const catalogs=[];
+ const h=mount({lane:undefined,backend:{sessionLoad:async()=>({profiles:[missing,images,profile]}),apiKeyStatus:async([key])=>[key==='MISSING'?'missing':'saved'],apiModels:async url=>{catalogs.push(url);return[{id:'picture',kind:'image'}];}}});
+ const tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,2);assert.equal(input(tree,'Assistant model').props.value,'old');assert.equal(input(tree,'Assistant model').props.disabled,false);assert.deepEqual(catalogs,['https://images.test/v1']);
+});
+test('a late viable API discovery cannot override an explicit same-provider choice during creation',async()=>{
+ let resolveCatalog;
+ const h=mount({lane:undefined,backend:{sessionLoad:async()=>({profiles:[profile,textApi]}),detectAgents:async()=>[],apiKeyStatus:async()=>['saved'],apiModels:()=>new Promise(resolve=>{resolveCatalog=resolve;})}});
+ h.render();await tick();h.render();await tick();assert.equal(typeof resolveCatalog,'function');
+ input(h.render(),'Assistant provider').props.onChange({target:{value:'0'}});h.render();await tick();resolveCatalog([{id:'configured-text'}]);await tick();const tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,0);assert.equal(input(tree,'Assistant model').props.disabled,true);assert.match(text(tree),/claude_code is not installed/);assert.doesNotMatch(text(tree),/Loading offered models/);
+});
+test('Settings keeps an unavailable saved provider instead of silently replacing it with an available API',async()=>{
+ let catalogs=0;const h=mount({backend:{sessionLoad:async()=>({profiles:[profile,textApi]}),detectAgents:async()=>[],apiKeyStatus:async()=>['saved'],apiModels:async()=>{catalogs++;return[{id:'configured-text'}];}}});const tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,0);assert.match(text(tree),/not installed/);assert.equal(catalogs,0);
+});

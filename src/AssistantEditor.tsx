@@ -44,6 +44,10 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
   });
  },[original,hostProfiles,disabledProviders]);
  const [provider,setProvider]=useState(0);
+ const providerChosen=useRef(false);
+ const [providerIntent,setProviderIntent]=useState(0);
+ const providerSelection=useRef(0);
+ const discoveryHandoff=useRef<{backend:Backend;profile:ParticipantConfig;offered:ModelChoice[];note:string}|null>(null);
  const source=configured[provider];
  const [model,setModel]=useState(()=>original?.profile?.backend.kind==='agent'||original?.profile?.backend.kind==='open_ai_compatible'?original.profile.backend.model ?? '':'');
  const [effort,setEffort]=useState<string|null>(original?.profile?.effort ?? null);
@@ -59,10 +63,11 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
  const [browserStatus,setBrowserStatus]=useState(original?'Checking availability…':'Browser access is available after Create through the connected browser and assistant rules.');
  useEffect(()=>{let active=true;if(lane?.connectors)void lane.connectors().then(connectors=>{if(active)setBrowserStatus(connectors.some(item=>item.kind==='browser'&&item.connected)?'Connected browser available. Browser actions use the assistant’s sending approval rules.':'No connected browser is available on this machine.');}).catch(()=>{if(active)setBrowserStatus('Browser availability could not be checked. Reconnect this machine.');});return()=>{active=false;};},[backend,original?.id]);
  useEffect(()=>{
-  let current=true;setModels([]);setProviderReady(false);setDiscovery('Loading offered models…');
-  const discover=async()=>{
-   if(!source)throw new Error('Configure a compatible provider in Agents before saving this assistant.');
-   const b=source.backend;let offered:ModelChoice[]=[];
+  let current=true;const selection=providerSelection.current;setModels([]);setProviderReady(false);setDiscovery('Loading offered models…');
+  const offeredBy=async(profile:ParticipantConfig)=>{
+   const handoff=discoveryHandoff.current;
+   if(handoff?.backend===backend&&handoff.profile===profile){discoveryHandoff.current=null;return handoff;}
+   const b=profile.backend;let offered:ModelChoice[]=[];
    if(b.kind==='agent') {
     const installed=await backend.detectAgents();
     if(!installed.some(agent=>agent.key===b.tool&&agent.found))throw new Error(`${b.tool} is not installed on this machine. Install it and sign in before saving.`);
@@ -73,10 +78,28 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
     offered=textModels(await backend.apiModels(b.base_url,b.api_key_env));
    }
    if(!offered.length)throw new Error('No offered text models are available from this provider. Check its connection and credentials.');
-   if(!current)return;setModels(offered);setProviderReady(true);setDiscovery(b.kind==='agent'?'CLI installation found. Sign-in cannot be verified here; this model list comes from its cache.':'');
-   setModel(before=>{const selected=offered.find(m=>m.id===before)??offered[0];setEffort(e=>reconcileEffort(e,selected));return selected.id;});
-  };void discover().catch(e=>{if(current)setDiscovery(e instanceof Error?e.message:String(e));});return()=>{current=false;};
- },[backend,source]);
+   return {backend,profile,offered,note:b.kind==='agent'?'CLI installation found. Sign-in cannot be verified here; this model list comes from its cache.':''};
+  };
+  const discover=async()=>{
+   if(!source)throw new Error('Configure a compatible provider in Agents before saving this assistant.');
+   // Creation probes configured APIs first, then an installed CLI. Settings and
+   // explicit choices keep their provider even when that connection is unavailable.
+   const hasHandoff=discoveryHandoff.current?.backend===backend&&discoveryHandoff.current.profile===source;
+   const candidates=!hasHandoff&&!original&&!providerChosen.current?[...configured].sort((a,b)=>Number(b.backend.kind==='open_ai_compatible')-Number(a.backend.kind==='open_ai_compatible')):[source];
+   let failure:unknown;
+   for(const candidate of candidates){
+    try {
+     const result=await offeredBy(candidate);
+     if(!current||selection!==providerSelection.current)return;
+     if(candidate!==source){discoveryHandoff.current=result;setProvider(configured.indexOf(candidate));return;}
+     setModels(result.offered);setProviderReady(true);setDiscovery(result.note);
+     setModel(before=>{const preferred=before||(candidate.backend.kind==='agent'||candidate.backend.kind==='open_ai_compatible'?candidate.backend.model:'');const selected=result.offered.find(m=>m.id===preferred)??result.offered[0];setEffort(e=>reconcileEffort(e,selected));return selected.id;});
+     return;
+    }catch(error){failure=error;if(!current||selection!==providerSelection.current)return;}
+   }
+   throw failure;
+  };void discover().catch(e=>{if(current&&selection===providerSelection.current)setDiscovery(e instanceof Error?e.message:String(e));});return()=>{current=false;};
+ },[backend,source,configured.length,providerIntent]);
  const selected=models.find(m=>m.id===model);
  const folderPath=folder.trim();
  const folderProblem=!original&&(!folderPath||/[\x00-\x1f\x7f]/.test(folderPath)||!(folderPath.startsWith('/')||folderPath.startsWith('~/')||/^[A-Za-z]:[\\/]/.test(folderPath)||/^\\\\[^\\/]+\\[^\\/]+(?:\\|$)/.test(folderPath)))?'Enter a full path or home-relative path (~/) on the selected machine.':'';
@@ -115,7 +138,7 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
   {original&&<header className="assistant-editor-heading"><h2>Settings</h2><p>Make {original.name} yours.</p></header>}
   <section className="assistant-editor-identity">{original&&<h3>Identity</h3>}<label className="assistant-setting-row"><span>Name</span><input aria-label="Assistant name" value={name} maxLength={64} placeholder="Choose a name" autoComplete="off" onChange={e=>setName(e.target.value)}/></label>{!original&&<p className="assistant-setup-intro">Each assistant has its own conversation, memory, and projects. Give it a work brief in Conversation after creating it.</p>}</section>
   <fieldset className="assistant-config"><legend>AI model</legend>
-   <label className="assistant-setting-row"><span>Provider</span><select aria-label="Assistant provider" value={provider} onChange={e=>{setProvider(Number(e.target.value));setEffort(null);setModel('');}}>{!configured.length&&<option>No compatible configured providers</option>}{configured.map((p,i)=><option key={i} value={i}>{p.display_name} · {providerForConfig(p)}</option>)}</select></label>
+   <label className="assistant-setting-row"><span>Provider</span><select aria-label="Assistant provider" value={provider} onChange={e=>{providerChosen.current=true;providerSelection.current++;setProviderIntent(before=>before+1);discoveryHandoff.current=null;setProvider(Number(e.target.value));setEffort(null);setModel('');}}>{!configured.length&&<option>No compatible configured providers</option>}{configured.map((p,i)=><option key={i} value={i}>{p.display_name} · {providerForConfig(p)}</option>)}</select></label>
    <label className="assistant-setting-row"><span>Model</span><select aria-label="Assistant model" value={model} disabled={!providerReady} onChange={e=>{setModel(e.target.value);setEffort(before=>reconcileEffort(before,models.find(m=>m.id===e.target.value)));}}>{!models.length&&<option value="">No offered text models</option>}{models.map(m=><option key={m.id} value={m.id}>{m.label??m.id}</option>)}</select></label>
    <label className="assistant-setting-row"><span>Reasoning</span><select aria-label="Assistant reasoning" value={effort??''} disabled={!selected?.efforts?.length} onChange={e=>setEffort(e.target.value||null)}>{!selected?.efforts?.length&&<option value="">{selected?.efforts?'No reasoning setting':'Provider default'}</option>}{selected?.efforts?.map(level=><option key={level} value={level}>{level}</option>)}</select></label>{discovery&&<p className="assistant-control-note" role="status">{discovery}</p>}
   </fieldset>
