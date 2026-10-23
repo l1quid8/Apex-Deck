@@ -88,7 +88,16 @@ impl Daemon {
         host.start_monitor_clock()?;
         // The worker stamps operations with this machine's id, so make it first.
         let host_id = crate::identity::host_id(&paths.data)?;
-        host.start_personal_worker()?;
+        // The worker needs the protected assistant list, which the broker only
+        // serves to a build it has pinned. Exiting here would happen before the
+        // socket is bound, leaving the window on its splash screen with nothing
+        // to act on. Start without the worker instead; it returns once the
+        // broker is installed or re-pinned for this build.
+        if let Err(why) = host.start_personal_worker() {
+            eprintln!(
+                "[apex-deck] personal assistant worker unavailable ({why}); starting without it. Install or re-pin the provenance broker for this build."
+            );
+        }
         Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] remote: crate::remote_control::RemoteController::serving(),
