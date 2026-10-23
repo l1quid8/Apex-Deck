@@ -31,7 +31,7 @@ import { overviewOwner, overviewOwnerKey, loadHandoffBatches, saveHandoffBatches
 import { ApexAgentAll } from "./ApexAgentAll";
 import { usePersonalAssistants } from "./usePersonalAssistants";
 import { AssistantWorkspace, AssistantEditor } from "./AssistantWorkspace";
-import { assistantIdentityKey, type AssistantRef } from "./assistantIdentity";
+import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
 import { rosterMessage, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import "./apex-agent-dock.css";
@@ -1880,7 +1880,7 @@ export function App() {
       const host = assistants.hosts.find(host => host.hostId === summary.ref.hostId);
       return lane?.assistant ? [{ assistant: summary.ref, name: summary.name, tasks: lane.assistant.tasks, offline: summary.offline, observedAt: summary.lastSeen, routeHostId: host?.routeHostId }] : [];
     }), Object.values(currentAssistantRegistry.owners).flatMap(entry => entry.snapshot ? [{
-      project: { hostId: entry.owner.hostId, workspaceId: entry.owner.workspaceId, cwd: entry.owner.cwd }, owner: entry.owner,
+      project: (entry.snapshot as AssistantTaskSnapshot & { project?: ProjectRef }).project ?? { hostId: entry.owner.hostId, workspaceId: entry.owner.workspaceId, cwd: entry.owner.cwd }, owner: entry.owner,
       name: workspaces.find(workspace => workspace.id === entry.owner.workspaceId)?.name ?? entry.owner.workspaceId,
       snapshot: entry.snapshot, offline: offlineHost(entry.owner.hostId) || !!assistantTaskErrors[entry.owner.workspaceId], observedAt: entry.observedAt ?? 0,
     }] : []));

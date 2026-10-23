@@ -52,6 +52,16 @@ test('mismatched project snapshots and forged lineage cannot reroute a row', () 
   assert.throws(()=>collectWorkspaceTasks([],[source(p,[task('t1',project('other'))])]),/different/);
   assert.throws(()=>collectWorkspaceTasks([],[source(p,[task('t1',p,{lineage:{assistant:assistant(),project:project('other'),sourceEventId:'e',delegationId:'d'}})])]),/lineage/i);
 });
+test('host-supplied canonical project metadata relates lineage to unchanged legacy owner aliases',()=>{
+  const p={hostId:'host-1',workspaceId:'project',cwd:'/private/tmp/project'};
+  const legacyOwner={hostId:'local',workspaceId:'project',cwd:'/tmp/project',conversationId:'m1'};
+  const t=task('t1',p,{owner:legacyOwner,lineage:{assistant:assistant('host-1'),project:p,sourceEventId:'e',delegationId:'d'}});
+  const data=source(p,[t],{owner:legacyOwner});data.snapshot.project=p;
+  const [row]=collectWorkspaceTasks([],[data]);
+  assert.deepEqual(row.project,p); assert.deepEqual(row.owner,legacyOwner);assert.equal(row.routeHostId,'local');
+  delete data.snapshot.project;
+  assert.throws(()=>collectWorkspaceTasks([],[data]),/different/);
+});
 test('waiting and approval states precede working; queued and silent running remain working', () => {
   const statuses=['queued','running','proposed','needs_you','ready_for_review','done'];
   const rows=collectWorkspaceTasks([],[source(project(),statuses.map(status=>task(status,project(),{status})))]);

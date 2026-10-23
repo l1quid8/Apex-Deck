@@ -66,7 +66,8 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
   const rows = new Map<string, WorkspaceTaskRow>();
   for (const source of projectSnapshots) {
     if (!source.snapshot) continue;
-    if (projectIdentityKey(source.owner) !== projectIdentityKey(source.project)) throw new Error('Task snapshot belongs to a different project owner.');
+    const canonical = (source.snapshot as AssistantTaskSnapshot & { project?: ProjectRef }).project;
+    if (canonical ? projectIdentityKey(canonical) !== projectIdentityKey(source.project) || canonical.workspaceId !== source.owner.workspaceId : projectIdentityKey(source.owner) !== projectIdentityKey(source.project)) throw new Error('Task snapshot belongs to a different project owner.');
     for (const task of assistantTasksForOwner(source.snapshot, source.owner)) {
       if (task.resultData?.archivedAtMs != null || task.resultData?.dismissedAtMs != null) continue;
       const assistant = lineage(task, source.project);
