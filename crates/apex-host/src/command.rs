@@ -619,7 +619,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 163);
+        assert_eq!(names.len(), 168);
+        for name in ["personal_avatar_options", "personal_avatar_generate", "personal_avatar_status", "personal_avatar_cancel", "personal_avatar_asset"] { assert!(names.contains(&name.to_owned())); }
         for name in ["legacy_import_preview", "legacy_import_apply", "legacy_import_history"] { assert!(names.contains(&name.to_owned())); }
         for name in ["project_memory_list", "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"voice_capabilities".to_string()));
