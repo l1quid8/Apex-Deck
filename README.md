@@ -207,7 +207,8 @@ progress.
 ## Tests
 
 ```sh
-cargo test --workspace   # chat logic, adapters, terminals, the daemon
+cargo test               # chat logic, adapters, terminals, the daemon (same as `cargo test --workspace --exclude apex-host-production-check`)
+cargo test -p apex-host-production-check   # forged-storage checks; must run alone (feature-off build)
 npm test                 # interface and desktop shell logic
 npm run build            # type-check and bundle the interface
 npm run test:e2e         # the protocol client against a real apex-daemon
