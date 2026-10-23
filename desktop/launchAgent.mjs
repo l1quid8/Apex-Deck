@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { TRUSTED_DAEMON, plistDaemonBin } from './trustedInstall.mjs';
 
 export const LABEL = 'dev.apexdeck.daemon';
 
@@ -128,11 +129,16 @@ async function bootout(uid, run) {
 /**
  * Write the plist and load it. Nothing is rewritten or reloaded when the file
  * already matches and launchd has the agent loaded.
+ *
+ * Resolves `unchanged`, `protected` or `installed`. An agent that runs the
+ * protected daemon is never replaced by one that runs another daemon: that
+ * would take protected assistants, tasks and conversations out of reach.
  */
 export async function installAgent({ plistPath, plist, uid, run = launchctl, fs: files = fs, wait = sleep }) {
   let current = null;
   try { current = files.readFileSync(plistPath, 'utf8'); } catch { /* not installed yet */ }
-  if (current === plist && await loaded(uid, run)) return;
+  if (current === plist && await loaded(uid, run)) return 'unchanged';
+  if (plistDaemonBin(current) === TRUSTED_DAEMON && plistDaemonBin(plist) !== TRUSTED_DAEMON) return 'protected';
   files.mkdirSync(path.dirname(plistPath), { recursive: true });
   const temp = `${plistPath}.${process.pid}.tmp`;
   files.writeFileSync(temp, plist);
@@ -141,7 +147,7 @@ export async function installAgent({ plistPath, plist, uid, run = launchctl, fs:
   for (let attempt = 0; ; attempt++) {
     try {
       await run(['bootstrap', `gui/${uid}`, plistPath]);
-      return;
+      return 'installed';
     } catch (error) {
       // bootout acknowledges removal before launchd has fully unregistered
       // the old job. Immediate bootstrap can fail with EIO (5) in that gap.

@@ -21,6 +21,7 @@ import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verified
 import { QuitGate } from './quit.mjs';
 import { answers, daemonBinary, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
+import { TRUSTED_DAEMON, launchPlan, plistDaemonBin } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, protectedCommands } from './provenance.mjs';
@@ -56,6 +57,28 @@ protocol.registerSchemesAsPrivileged([
 
 const bin = daemonBinary({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repo, env });
 
+/** Text of a file, or null when it isn't there: the LaunchAgent may not exist yet. */
+const readText = (file) => {
+  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+};
+
+/**
+ * What this launch does about the protected copy (see trustedInstall.mjs):
+ * hand off to it, carry on with the daemon it already runs, or say why the
+ * protected data can't be opened instead of quietly downgrading the agent.
+ */
+const plan = launchPlan({
+  packaged: app.isPackaged,
+  platform: process.platform,
+  dataDir,
+  bundle: app.getAppPath(),
+  version: app.getVersion(),
+  daemon: bin,
+  plist: readText(agentPlistPath()),
+});
+/** The daemon the LaunchAgent runs: the protected one whenever it is installed. */
+const agentBin = plan.daemon;
+
 /** The local daemon, once started or found. */
 let local = null;
 let starting = null;
@@ -84,8 +107,16 @@ async function startAgent() {
     infoFile: path.join(path.dirname(socket), 'daemon.json'),
     uid,
     answers,
-    install: () => installAgent({ plistPath, plist: agentPlist({ bin, dataDir, logFile, build: daemonBuild(bin) }), uid }),
-    remove: () => removeAgent({ plistPath, uid }),
+    install: () => installAgent({ plistPath, plist: agentPlist({ bin: agentBin, dataDir, logFile, build: daemonBuild(agentBin) }), uid }),
+    remove: () => {
+      // launchd runs the protected daemon: leaving its job alone is better than
+      // taking protected assistants, tasks and conversations out of reach.
+      if (plistDaemonBin(readText(plistPath)) === TRUSTED_DAEMON) {
+        console.warn('apex-daemon: the protected background service did not answer; its LaunchAgent is left in place.');
+        return Promise.resolve();
+      }
+      return removeAgent({ plistPath, uid });
+    },
   });
   // A daemon Deck didn't start keeps its own flags; Settings says so.
   if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
@@ -897,6 +928,18 @@ handle('popout:close', async (entry, token) => {
   if (popout && !popout.win.isDestroyed()) popout.win.close();
 });
 
+/** Said out loud, before any window: the protected data needs the trusted install, not a quiet downgrade. */
+function showProtectedInstallNotice({ message, detail }) {
+  dialog.showMessageBoxSync({
+    type: 'warning',
+    message,
+    detail,
+    buttons: ['Continue'],
+    defaultId: 0,
+    cancelId: 0,
+  });
+}
+
 /**
  * Whether no Tauri Apex Deck is open, asking for it to be quit while one is.
  * v0.4.0 and before keep no lock on the data folder, so with both open each
@@ -919,6 +962,18 @@ function oldAppClosed() {
 }
 
 app.whenReady().then(async () => {
+  // A copy the broker can't trust never touches the daemon or the LaunchAgent:
+  // it opens the protected copy and steps aside (trustedInstall.mjs).
+  if (plan.kind === 'handoff') {
+    const refusal = await shell.openPath(plan.app).catch((error) => String(error?.message ?? error));
+    if (!refusal) {
+      app.exit(0);
+      return;
+    }
+    showProtectedInstallNotice({ ...plan.notice, detail: `${plan.notice.detail} It would not open: ${refusal}` });
+  } else if (plan.kind === 'notice') {
+    showProtectedInstallNotice(plan.notice);
+  }
   protocol.handle('app', (request) => {
     const file = appFile(dist, request.url);
     if (!file) return new Response('Not found', { status: 404 });
