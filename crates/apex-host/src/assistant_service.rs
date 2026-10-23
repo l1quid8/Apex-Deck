@@ -156,10 +156,11 @@ impl Host {
             }
             let id = destination.thread_id.as_deref().filter(|id| !id.trim().is_empty()).ok_or("Handoff requires a saved destination chat.")?;
             let saved = self.store().room(id)?.ok_or("Handoff destination chat is unavailable.")?;
-            if saved.cwd.as_deref() != Some(input.owner.cwd.as_str()) { return Err("Handoff destination is outside the assigned project.".into()); }
+            if !saved.cwd.as_deref().is_some_and(|cwd| same_project_folder(cwd, &input.owner.cwd)) { return Err("Handoff destination is outside the assigned project.".into()); }
             let workers: Vec<_> = saved.snapshot.participants.iter().filter(|profile| destination.workers.contains(&profile.id.to_string())).cloned().collect();
             if workers.len() != destination.workers.len() { return Err("Handoff contains an unknown destination worker.".into()); }
             verify_task_workers(&workers)?;
+            if let Some(lineage) = &input.lineage { self.validate_delegated_worker_profiles(lineage, &workers)?; }
             let task = self.assistant_tasks.prepare_handoff(input.clone()).map_err(|e|e.to_string())?;
             Ok(json!({"task":task}))
         })?;
@@ -636,7 +637,10 @@ impl Host {
     fn ensure_delegated_start(&self, task: &AssistantTask) -> Result<(), String> {
         let current = self.assistant_tasks.get(&task.id).map_err(|e|e.to_string())?.ok_or("Task unavailable.")?;
         if current.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("The task is paused or cancelled.".into()); }
-        if let Some(lineage) = &current.lineage { self.validate_delegated_task(lineage, true)?; }
+        if let Some(lineage) = &current.lineage {
+            self.validate_delegated_task(lineage, true)?;
+            self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&current)?)?;
+        }
         Ok(())
     }
 
@@ -717,7 +721,7 @@ impl Host {
                         .store()
                         .room(&parent_id)?
                         .ok_or("Selected destination chat was not found.")?;
-                    if saved.cwd.as_deref() != Some(owner.cwd.as_str()) {
+                    if !saved.cwd.as_deref().is_some_and(|cwd| same_project_folder(cwd, &owner.cwd)) {
                         return Err("Selected thread is not in the assigned project.".into());
                     }
                     let available: std::collections::HashSet<_> = saved
@@ -747,7 +751,7 @@ impl Host {
                 .context
                 .cwd
                 .as_deref()
-                .is_none_or(|cwd| cwd.to_string_lossy() != owner.cwd)
+                .is_none_or(|cwd| !same_project_folder(&cwd.to_string_lossy(), &owner.cwd))
             {
                 return Err("Selected thread is not in the assigned project.".into());
             }
@@ -1562,8 +1566,13 @@ impl Host {
             return Err("Task ownership or revision is stale.".into());
         }
         if matches!(input.action.as_str(), "approve" | "retry" | "continue" | "request_changes" | "resume") {
-            if let Some(lineage) = &task.lineage { self.validate_delegated_task(lineage, true)?; }
-            if input.action != "resume" && task.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("Resume this task before starting work.".into()); }
+            if let Some(lineage) = &task.lineage {
+                self.validate_delegated_task(lineage, true)?;
+                if input.action != "approve" { self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&task)?)?; }
+            }
+            let cancelled_retry = input.action == "retry" && task.status == TaskStatus::Cancelled
+                && task.control.desired_state == crate::assistant_tasks::DesiredState::Cancelled;
+            if input.action != "resume" && !cancelled_retry && task.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("Resume this task before starting work.".into()); }
         }
         match input.action.as_str() {
             "pause" | "resume" => {
@@ -2014,6 +2023,8 @@ impl Host {
                 Ok(done)
             }
             "retry" | "continue" | "request_changes" => {
+                let mut task = task;
+                let mut input = input;
                 // Waiting on an approval or question when the service restarted: run the step again on the same chat.
                 if input.action == "retry"
                     && task.status == TaskStatus::NeedsYou
@@ -2035,6 +2046,14 @@ impl Host {
                     .is_some_and(|data| !data["archivedAtMs"].is_null())
                 {
                     return Err("An archived task cannot be retried or continued.".into());
+                }
+                if input.action == "retry" && task.status == TaskStatus::Cancelled {
+                    self.wait_for_run_to_settle(&task.id).await?;
+                    if let Some(id) = task.execution_thread_id.as_deref() { self.recover_worker_cleanup(id)?; }
+                    self.recover_task_operations(&task.id)?;
+                    if has_pending_integration(&task) { return Err("Reconcile the interrupted project integration before retrying this task.".into()); }
+                    task = self.assistant_tasks.prepare_cancelled_retry(&task.id, input.revision, &input.owner).map_err(|e|e.to_string())?;
+                    input.revision = task.revision;
                 }
                 if input.action == "retry"
                     && matches!(task.status, TaskStatus::NeedsYou | TaskStatus::Interrupted)
@@ -2120,9 +2139,9 @@ impl Host {
                 let id = task
                     .execution_thread_id
                     .as_deref()
-                    .ok_or("Task has no execution chat to continue.")?;
+                    .ok_or("Task has no execution chat to continue.")?.to_owned();
                 self.continue_thread_expected(
-                    id,
+                    &id,
                     input.text.clone(),
                     task.workers
                         .iter()
@@ -2241,7 +2260,10 @@ impl Host {
                 if destination.workers.is_empty() {
                     return Err("Select at least one worker before approving this task.".into());
                 }
-                if destination.new_thread { verify_task_workers(&input.new_worker_profiles)?; }
+                if destination.new_thread {
+                    verify_task_workers(&input.new_worker_profiles)?;
+                    if let Some(lineage) = &task.lineage { self.validate_delegated_worker_profiles(lineage, &input.new_worker_profiles)?; }
+                }
                 if destination.new_thread
                     && input
                         .new_worker_profiles
@@ -2261,7 +2283,7 @@ impl Host {
                         .store()
                         .room(thread_id)?
                         .ok_or("Selected destination chat was not found.")?;
-                    if saved.cwd.as_deref() != Some(input.owner.cwd.as_str()) {
+                    if !saved.cwd.as_deref().is_some_and(|cwd|same_project_folder(cwd, &input.owner.cwd)) {
                         return Err(
                             "Selected destination chat is outside the assigned project.".into()
                         );
@@ -2283,6 +2305,7 @@ impl Host {
                     }
                     let selected: Vec<_> = saved.snapshot.participants.into_iter().filter(|profile| destination.workers.contains(&profile.id.to_string())).collect();
                     verify_task_workers(&selected)?;
+                    if let Some(lineage) = &task.lineage { self.validate_delegated_worker_profiles(lineage, &selected)?; }
                 }
                 let requested_mode = task.result_data.as_ref()
                     .and_then(|data| serde_json::from_value(data["mode"].clone()).ok()).unwrap_or(task.mode);
@@ -2379,6 +2402,10 @@ fn verify_task_workers(profiles: &[ParticipantConfig]) -> Result<(), String> {
         return Err("Choose a text worker for assistant tasks. Image and video workers remain available in shared chats.".into());
     }
     Ok(())
+}
+
+fn same_project_folder(left: &str, right: &str) -> bool {
+    left == right || Path::new(left).canonicalize().ok().zip(Path::new(right).canonicalize().ok()).is_some_and(|(a,b)|a == b)
 }
 
 /// The one line a source thread gets when a task starts in its worker room.
@@ -2801,6 +2828,7 @@ mod tests {
         let assistant = f.host.personal_create(crate::personal::CreateInput {
             name:"Ada".into(),style:String::new(),folder:f.owner.cwd.clone(),
             profile:profile("reasoner", Backend::OpenAiCompatible {base_url:"http://127.0.0.1:9/v1".into(),model:"fixture".into(),api_key_env:None}, Access::Read),
+            workspace_version:None,look:None,projects:None,avatar_draft_id:None,avatar_generation_id:None,avatar_asset_id:None,
         }).unwrap();
         let project = crate::personal_workspace::ProjectRef {host_id:assistant.host_id.clone(),workspace_id:f.owner.workspace_id.clone(),cwd:f.root.canonicalize().unwrap().to_string_lossy().into_owned()};
         f.host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();

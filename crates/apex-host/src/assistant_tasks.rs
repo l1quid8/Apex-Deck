@@ -586,6 +586,36 @@ impl AssistantTasks {
         Ok(result)
     }
 
+    /// Only an explicit revision-bound Retry may clear terminal cancellation.
+    /// Persist Interrupted first, so a crash before the next attempt cannot
+    /// turn this authorization into automatic queued dispatch.
+    pub fn prepare_cancelled_retry(&self, id: &str, revision: u64, owner: &TaskOwner) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        check_owner_revision(task, revision, owner)?;
+        if task.status != TaskStatus::Cancelled || task.control.desired_state != DesiredState::Cancelled {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Only a cancelled task can retry its cancellation."));
+        }
+        if task.origin == TaskOrigin::Proposal && task.attempts.is_empty()
+            && !task.result_data.as_ref().is_some_and(|data|data["humanApproved"] == true) {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "This cancelled proposal was never approved. Create and approve a new proposal."));
+        }
+        task.status = TaskStatus::Interrupted;
+        task.control.desired_state = DesiredState::Running;
+        task.control.pause_reason = None;
+        task.control.control_revision += 1;
+        task.revision += 1;
+        task.updated_at_ms = now_ms();
+        if let Some(data) = task.result_data.as_mut() {
+            data["pendingApprovals"] = serde_json::json!([]);
+            data["pendingQuestions"] = serde_json::json!([]);
+        }
+        let result = task.clone();
+        save_mutation(&self.inner, &mut document, before)?;
+        Ok(result)
+    }
+
     /// Begin one durable attempt. The generated run ID is unique and monotonic within this ledger.
     pub fn begin_attempt(
         &self,
@@ -712,6 +742,7 @@ impl AssistantTasks {
         task.workers = destination.workers.clone();
         task.brief = brief;
         task.status = TaskStatus::Queued;
+        task.result_data.get_or_insert_with(||serde_json::json!({}))["humanApproved"] = serde_json::json!(true);
         task.updated_at_ms = now_ms();
         task.revision += 1;
         let result = task.clone();
@@ -1511,6 +1542,52 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "forged-acceptance");
         assert_eq!(listed[0].original_request, "Run this task without the installed app asking");
+    }
+
+    #[test]
+    fn cancelled_before_start_requires_prior_human_approval_to_retry() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        for approved in [false, true] {
+            let task = store.prepare_handoff(HandoffPreparation {request_id:format!("cancel-before-start-{approved}"),batch_id:"batch".into(),owner:owner(),revision:1,original_request:"Inspect".into(),brief:"Inspect".into(),destination:destination(),mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None}).unwrap();
+            let task = if approved {store.set_destination(&task.id,task.revision,&owner(),destination(),"Inspect".into()).unwrap()} else {task};
+            let task = store.control(&task.id,task.revision,&owner(),DesiredState::Cancelled,None).unwrap();
+            let cancelled = store.transition(&task.id,task.revision,&owner(),TaskStatus::Cancelled,None).unwrap();
+            let retry = store.prepare_cancelled_retry(&task.id,cancelled.revision,&owner());
+            if approved {
+                let retry=retry.unwrap(); assert!(retry.attempts.is_empty()); assert_eq!(retry.status,TaskStatus::Interrupted);
+            } else {assert!(retry.is_err());}
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn explicit_cancelled_retry_preserves_attempts_and_recovers_without_dispatch() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("cancel-retry", "Fix it"), "Fix it".into(), Some(destination())).unwrap();
+        let (running, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        store.control(&task.id, running.revision, &owner(), DesiredState::Cancelled, None).unwrap();
+        let cancelled = store.finish_attempt(&task.id, &run, TaskOutcome {status:TaskStatus::Cancelled,result:Some("Cancelled evidence".into()),result_data:Some(serde_json::json!({"pendingApprovals":[{"request":"old"}]})),usage:None}).unwrap();
+        assert!(store.begin_attempt(&task.id, cancelled.revision, &owner()).is_err());
+        assert!(store.control(&task.id, cancelled.revision, &owner(), DesiredState::Running, None).is_err());
+        assert!(store.prepare_cancelled_retry(&task.id, cancelled.revision-1, &owner()).is_err());
+        let mut wrong = owner(); wrong.workspace_id="another".into();
+        assert!(store.prepare_cancelled_retry(&task.id, cancelled.revision, &wrong).is_err());
+        let prepared = store.prepare_cancelled_retry(&task.id, cancelled.revision, &owner()).unwrap();
+        assert_eq!(prepared.status, TaskStatus::Interrupted);
+        assert_eq!(prepared.control.desired_state, DesiredState::Running);
+        assert_eq!(prepared.control.control_revision, cancelled.control.control_revision+1);
+        assert_eq!(prepared.attempts, cancelled.attempts);
+        assert_eq!(prepared.result_data.as_ref().unwrap()["pendingApprovals"], serde_json::json!([]));
+        drop(store);
+        let reopened = AssistantTasks::open(ledger(&path)).unwrap();
+        assert_eq!(reopened.get(&task.id).unwrap().unwrap(), prepared);
+        let (retry, new_run) = reopened.begin_attempt(&task.id, prepared.revision, &owner()).unwrap();
+        assert_ne!(new_run, run); assert_eq!(retry.attempts.len(), 2);
+        assert_eq!(retry.attempts[0], cancelled.attempts[0]);
+        assert!(reopened.finish_attempt(&task.id, &run, TaskOutcome {status:TaskStatus::ReadyForReview,result:Some("late".into()),result_data:None,usage:None}).is_err());
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

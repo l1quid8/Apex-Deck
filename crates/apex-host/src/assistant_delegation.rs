@@ -163,6 +163,26 @@ pub fn plan_delegation(
 }
 
 impl crate::host::Host {
+    pub(crate) fn delegated_worker_profiles(&self, task: &crate::assistant_tasks::AssistantTask) -> Result<Vec<apex_core::ParticipantConfig>, String> {
+        let id = task.execution_thread_id.as_deref().or_else(|| task.destination.as_ref().and_then(|d|d.thread_id.as_deref())).ok_or("Delegated worker destination is unavailable.")?;
+        let profiles = match self.handle(id) {
+            Ok(handle) => handle.checkpoint.lock().unwrap().snapshot.participants.clone(),
+            Err(_) => self.store().room(id)?.ok_or("Delegated worker destination is unavailable.")?.snapshot.participants,
+        };
+        let selected: Vec<_> = profiles.into_iter().filter(|p|task.workers.contains(&p.id.to_string())).collect();
+        if selected.len() != task.workers.len() { return Err("A delegated worker is no longer available.".into()); }
+        Ok(selected)
+    }
+
+    pub(crate) fn validate_delegated_worker_profiles(&self, lineage: &AssistantLineage, profiles: &[apex_core::ParticipantConfig]) -> Result<(), String> {
+        let document = self.store().personal()?.unwrap_or_default();
+        let assistant = document.assistants.iter().find(|a|a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("The owning assistant is unavailable.")?;
+        for profile in profiles {
+            if let Some(reason) = crate::personal_worker::endpoint_refusal(assistant, profile) { return Err(reason); }
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_delegated_task(&self, lineage: &AssistantLineage, require_running: bool) -> Result<(), String> {
         self.change_personal(|assistants| {
             let assistant = assistants.iter().find(|a| a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("The owning assistant is unavailable.")?;
@@ -178,11 +198,15 @@ impl crate::host::Host {
     /// pause cannot slip between the last owner check and a new worker start.
     pub(crate) fn begin_delegated_attempt(&self, task: &crate::assistant_tasks::AssistantTask, owner: &TaskOwner) -> Result<(crate::assistant_tasks::AssistantTask, String), String> {
         if let Some(lineage) = &task.lineage {
+            let profiles = self.delegated_worker_profiles(task)?;
             self.change_personal(|assistants| {
                 let assistant = assistants.iter().find(|a| a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("The owning assistant is unavailable.")?;
                 if assistant.paused { return Err("The owning assistant is paused.".into()); }
                 if assistant.workspace_config_version.is_some() && assistant.profile.as_ref().is_some_and(|p| p.access == apex_core::Access::Read) && task.mode != TaskMode::ReadOnly { return Err("This assistant now has read-only Project tools access.".into()); }
                 if !assistant.projects.iter().any(|b|b.project == lineage.project && b.tools != ProjectTools::Off) { return Err("Project tools are disabled for this assistant.".into()); }
+                for profile in &profiles {
+                    if let Some(reason) = crate::personal_worker::endpoint_refusal(assistant, profile) { return Err(reason); }
+                }
                 self.assistant_tasks.begin_attempt(&task.id,task.revision,owner).map_err(|e|e.to_string())
             })
         } else { self.assistant_tasks.begin_attempt(&task.id,task.revision,owner).map_err(|e|e.to_string()) }

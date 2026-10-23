@@ -1016,7 +1016,7 @@ impl crate::Host {
         let triple = (&input.avatar_draft_id, &input.avatar_generation_id, &input.avatar_asset_id);
         let selection = match triple {
             (Some(_),Some(generation_id),Some(asset_id))=>Some(crate::assistant_avatar::Selection::Image{generation_id:generation_id.clone(),asset_id:asset_id.clone()}),
-            (None,None,None)=>None,
+            (None,None,None)|(Some(_),None,None)=>None,
             _=>return Err("Apply a complete avatar candidate before creating the assistant.".into())
         };
         let owner=crate::assistant_avatar::Owner::Creation{host_id:host_id.clone(),draft_id:input.avatar_draft_id.clone().unwrap_or_else(||"pixel-create".into())};

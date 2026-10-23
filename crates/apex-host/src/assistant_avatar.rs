@@ -577,6 +577,11 @@ impl Host {
             {
                 return Ok((j.clone(), false));
             }
+            if let Owner::Creation { draft_id, .. } = &job.owner {
+                if self.personal_list()?.iter().any(|a|a.extra.get("avatarCreationDraftId").and_then(serde_json::Value::as_str)==Some(draft_id.as_str())) {
+                    return Err("This avatar creation draft was already consumed. Open a new creation editor.".into());
+                }
+            }
             if list.len() >= 10000 {
                 return Err("Avatar job ledger is full.".into());
             }
@@ -859,6 +864,21 @@ mod tests {
         let decoded = image::load_from_memory(&out).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (512, 512));
     }
+    #[tokio::test]
+    async fn assistant_avatar_creation_winning_before_reservation_prevents_late_dispatch() {
+        let (root, host, a) = fixture().await;
+        let owner = Owner::Creation {host_id:"host".into(),draft_id:"consumed-draft".into()};
+        let job = Job {owner,generation_id:"late".into(),editor_token:"editor".into(),state:"pending".into(),candidate:None,error:None,created_at:crate::personal::now(),cost:None};
+        // A Generate request may already hold its resolved provider when Create
+        // wins GATE. The reservation must recheck the consumed draft under GATE.
+        let created = host.personal_create(serde_json::from_value(json!({"name":"Pixel","folder":root.join("project"),"profile":a.profile,"avatarDraftId":"consumed-draft","look":{"seed":"pixel","color":"#335599","kind":"pixel"}})).unwrap()).unwrap();
+        assert!(created.costs.is_empty()); assert!(created.look.unwrap().image.is_none());
+        assert!(host.avatar_reserve(job, a.profile.as_ref().unwrap()).unwrap_err().contains("consumed"));
+        assert!(jobs(&host).unwrap().is_empty());
+        assert!(host.personal_get(&created.id).unwrap().costs.is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn assistant_avatar_exact_owner_preview_apply_revision_and_restart() {
         let (root, host, a) = fixture().await;
@@ -1237,7 +1257,7 @@ mod tests {
         let count = host.personal_list().unwrap().len();
         for extra in [
             json!({"look":{"color":"wrong"}}),
-            json!({"avatarDraftId":"partial"}),
+            json!({"avatarDraftId":"partial","avatarGenerationId":"missing-asset"}),
             json!({"look":{"kind":"image","image":{"assetId":"arbitrary","sha256":"arbitrary","mime":"image/png","width":512,"height":512}}}),
         ] {
             let mut input = json!({"name":"Bad","folder":root.join("new"),"profile":a.profile});
