@@ -7,8 +7,8 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::api_tools::{self, ToolBox, ToolCall};
 use crate::Utf8Chunks;
@@ -19,6 +19,10 @@ const TOOL_ROUNDS_MAX: usize = 100;
 const REASONING_KEPT: usize = 32;
 /// Most tool calls taken from one answer.
 const TOOL_CALLS_MAX: usize = 64;
+/// How long a model that turned tools down goes without them. Long enough not
+/// to re-ask on every reply, short enough that a proxy having a bad minute or
+/// a corrected settings do-over gets another chance without reopening the chat.
+const TOOLS_RETRY_AFTER: Duration = Duration::from_secs(600);
 
 /// A participant backed by an HTTP API that speaks the OpenAI-style chat
 /// completions format with server-sent event streaming.
@@ -35,8 +39,11 @@ pub struct OpenAiCompatParticipant {
     /// How often a queued video is checked on.
     poll: std::time::Duration,
     tools: Option<Arc<ToolBox>>,
-    /// The server turned tools down once; later replies go without them.
-    tools_refused: AtomicBool,
+    /// Until when the server's refusal of tools is honoured. Set for
+    /// `TOOLS_RETRY_AFTER` after a refusal rather than forever, so one bad
+    /// reply cannot leave the chat without a checklist for good. Changing this
+    /// bot's settings builds a new participant, which clears it.
+    tools_off_until: Mutex<Option<Instant>>,
     /// The thinking behind this bot's recent replies, by reply text.
     /// DeepSeek's own API refuses a request with tools unless the thinking
     /// of earlier replies is sent back with them.
@@ -52,7 +59,7 @@ impl OpenAiCompatParticipant {
             attachment_roots: Vec::new(),
             poll: std::time::Duration::from_secs(5),
             tools: None,
-            tools_refused: AtomicBool::new(false),
+            tools_off_until: Mutex::new(None),
             reasoning: Mutex::new(VecDeque::new()),
         }
     }
@@ -310,7 +317,7 @@ impl Participant for OpenAiCompatParticipant {
         // only the question about what the person will ask next.
         let next_steps = request.turns.last().is_some_and(|t| t.role == Role::User && t.content == apex_core::next_steps::ASK);
         let mut turn = match &self.tools {
-            Some(tools) if !next_steps && !self.tools_refused.load(Ordering::SeqCst) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
+            Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
                 let access = request.access.unwrap_or(self.config.access);
                 Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress))
             }
@@ -392,10 +399,12 @@ impl Participant for OpenAiCompatParticipant {
                     continue;
                 }
                 // A model that doesn't take tools: answer without them,
-                // and say so, so it doesn't pretend.
+                // and say so, so it doesn't pretend. Only a reply that names
+                // tools as unsupported lands here; any other 400 fails the
+                // turn with its own message below.
                 if turn.is_some() && round == 0 && matches!(status.as_u16(), 400 | 404 | 422 | 501) && refuses_tools(&lower) {
-                    eprintln!("[apex-deck] {model} turned tools down; answering without them: {}", text.chars().take(200).collect::<String>());
-                    self.tools_refused.store(true, Ordering::SeqCst);
+                    eprintln!("[apex-deck] {model} turned tools down; answering without them for {:?}: {}", TOOLS_RETRY_AFTER, text.chars().take(200).collect::<String>());
+                    *self.tools_off_until.lock().unwrap() = Some(Instant::now() + TOOLS_RETRY_AFTER);
                     turn = None;
                     strip_reasoning(&mut messages);
                     messages[0]["content"] = json!(format!("{system}{}", api_tools::NO_TOOLS));
@@ -619,6 +628,15 @@ fn refuses_tools(lower: &str) -> bool {
     about_tools && refusal.iter().any(|r| lower.contains(r))
 }
 
+/// Whether a refusal of tools still stands. The refusal is a cooldown, not a
+/// verdict: once it runs out the next reply tries tools again.
+fn tools_allowed(off_until: Option<Instant>, now: Instant) -> bool {
+    match off_until {
+        Some(until) => now >= until,
+        None => true,
+    }
+}
+
 /// DeepSeek's own API, the one that wants earlier thinking sent back.
 fn is_deepseek(base_url: &str) -> bool {
     reqwest::Url::parse(base_url.trim()).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).as_deref() == Some("api.deepseek.com")
@@ -666,6 +684,16 @@ mod tests {
         assert!(refuses_tools("function calling is not supported for this model"));
         assert!(!refuses_tools("this model's maximum context length is 8192 tokens. however, you requested 9000 tokens (8000 in the messages, 1000 in the functions)"));
         assert!(!refuses_tools("invalid schema for function 'grep'"));
+    }
+
+    #[test]
+    fn tools_come_back_when_the_cooldown_runs_out() {
+        let now = Instant::now();
+        assert!(tools_allowed(None, now));
+        let until = Some(now + TOOLS_RETRY_AFTER);
+        assert!(!tools_allowed(until, now), "a fresh refusal keeps tools off");
+        assert!(!tools_allowed(until, now + TOOLS_RETRY_AFTER - Duration::from_millis(1)));
+        assert!(tools_allowed(until, now + TOOLS_RETRY_AFTER), "and the next reply asks again");
     }
 
     #[test]
