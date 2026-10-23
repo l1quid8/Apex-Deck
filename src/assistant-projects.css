@@ -36,3 +36,20 @@
 @container (max-width:580px){.assistant-projects .assistant-project-detail{padding:20px 18px 36px}.assistant-projects .assistant-task-heading{display:block}.assistant-projects .assistant-task-heading>.assistant-project-status{display:inline-block;margin-top:10px}.assistant-work .assistant-project-detail h2.assistant-project-title,.assistant-projects .assistant-project-detail h2.assistant-project-title{font-size:19px}.assistant-task-scope{grid-template-columns:minmax(0,1fr);gap:12px;padding:15px}.assistant-task-scope .assistant-task-folder{grid-column:auto}.assistant-projects .assistant-project-detail .assistant-task-commandbar{flex-wrap:wrap}}
 .assistant-projects .assistant-project-detail .assistant-project-outcome{border:0;background:var(--panel)}
 .assistant-projects .assistant-task-review .assistant-task-commandbar>button:not(.primary){padding:7px 10px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:12px}
+
+/* In Work, Projects is a compact access list. Task rows belong to Work itself. */
+.assistant-projects.is-compact{max-width:none;padding:0}
+.assistant-project-management[hidden]{display:none!important}
+.assistant-projects.is-compact .assistant-project-toolbar{justify-content:flex-end;margin:0 0 4px;gap:8px}
+.assistant-projects.is-compact .assistant-project-toolbar button{padding:4px 0;border:0;background:transparent;color:var(--muted);font-size:11px;min-height:26px}
+.assistant-projects .assistant-project-card[data-compact]{padding:14px 0;border:0;border-bottom:1px solid var(--line,var(--border));background:transparent;box-shadow:none}
+.assistant-project-compact-main{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+.assistant-project-compact-main>div:first-child{min-width:0;flex:1}
+.assistant-project-compact-main h3{margin:0 0 4px;color:var(--text);font-size:13px;line-height:19px;font-weight:600}
+.assistant-project-compact-main p{margin:0;color:var(--muted);font-size:11px;line-height:17px;overflow-wrap:anywhere}
+.assistant-project-connection{display:flex;flex-direction:column;gap:3px;flex:none;text-align:right;font-size:11px;line-height:17px;color:var(--muted)}
+.assistant-projects .assistant-project-card[data-compact]>.assistant-project-actions{margin-top:9px;gap:15px}
+.assistant-projects .assistant-project-card[data-compact]>.assistant-project-actions button{min-height:26px;padding:3px 0;border:0;border-radius:4px;background:transparent;color:var(--muted);font-size:11px;line-height:18px}
+.assistant-projects .assistant-project-card[data-compact]>.assistant-project-actions button:hover:not(:disabled){color:var(--text);background:transparent}
+.assistant-project-connection-problem{margin:7px 0 0;font-size:11px;line-height:17px;color:var(--muted)}
+@container (max-width:520px){.assistant-project-compact-main{gap:10px}.assistant-project-connection{max-width:100px}.assistant-projects .assistant-project-card[data-compact]>.assistant-project-actions{gap:12px}}

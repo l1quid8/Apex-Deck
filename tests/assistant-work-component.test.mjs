@@ -16,13 +16,11 @@ const item = (taskId, extra = {}) => ({ key: `delegated:${taskId}`, source: 'del
 const empty = { needsYou: [], working: [], finished: [], cancelled: [] };
 const work = (items = {}, extra = {}) => AssistantWork({ items: { ...empty, ...items }, projects: 'Project cards', onOpenTask() {}, ...extra });
 
-test('sections appear in urgency order', () => {
-  const headings = all(work({ needsYou: [item('a')], finished: [item('b', { status: 'done' })] }), n => n.type === 'h2').map(text);
-  assert.deepEqual(headings.map(h => h.replace(/\d+$/, '')), ['Needs you', 'Working', 'Projects', 'Finished', 'Deleted tasks']);
-});
-
-test('empty working shows a hint', () => {
-  assert.match(text(work()), /Nothing running\. New tasks you start in Chat show up here\./);
+test('v8 groups tasks by urgency and omits empty groups', () => {
+ const tree=work({needsYou:[item('a')],working:[item('r',{status:'running'})]});
+ assert.deepEqual(all(tree,n=>n.type==='h3').map(text),['Needs you1','In progress1']);
+ assert.equal(all(work(),n=>n.type==='h3').length,0);
+ assert.match(text(work()),/You’re caught up/);assert.doesNotMatch(text(work()),/Nothing running|Nothing is waiting/);
 });
 
 test('finished is collapsed and groups cancelled tasks', () => {
@@ -30,7 +28,7 @@ test('finished is collapsed and groups cancelled tasks', () => {
   const details = find(tree, n => n.type === 'details' && n.props.className === 'assistant-work-finished');
   assert.ok(details);
   assert.notEqual(details.props.open, true);
-  assert.match(text(details), /3 cancelled tasks/);
+  assert.match(text(details), /History/);assert.match(text(details), /Finished & cancelled/);assert.match(text(details), /Task c3/);
   assert.match(text(details), /Task d/);
 });
 
@@ -80,4 +78,25 @@ test('Empty requires irreversible confirmation for the displayed exact task keys
   assert.match(prompts[0],/Permanently delete 2 deleted tasks/);assert.match(prompts[0],/cannot be undone/);assert.deepEqual(calls,[['delegated:a','delegated:b']]);
   assert.equal(find(work({}, {onEmptyDeleted(){}}),node=>node.type==='button'&&text(node)==='Empty deleted tasks (0)').props.disabled,true);
  } finally {globalThis.window=original;}
+});
+
+
+test('New task is one header action and Projects is an explicit collapsed management drawer',()=>{
+ let created=0,toggled=0;const tree=work({}, {projectCount:2,projectsOpen:false,onNewTask:()=>created++,onProjectsToggle:()=>toggled++});
+ const create=find(tree,n=>n.type==='button'&&text(n)==='+ New task');assert.ok(create);assert.equal(create.props.disabled,false);create.props.onClick();assert.equal(created,1);
+ const projects=find(tree,n=>n.type==='button'&&n.props['aria-controls']==='assistant-work-project-management');
+ assert.equal(projects.props['aria-expanded'],false);assert.match(text(projects),/Projects/);assert.match(text(projects),/2/);projects.props.onClick();assert.equal(toggled,1);
+ assert.equal(find(tree,n=>n.props.id==='assistant-work-project-management').props.hidden,undefined,'management host remains mounted for focus and dialogs');
+ assert.equal(find(work({}, {projectsOpen:true}),n=>n.props['aria-controls']==='assistant-work-project-management').props['aria-expanded'],true);
+});
+test('each task title opens the same identity as its next action',()=>{
+ const target=item('one'),opened=[];const tree=work({needsYou:[target]}, {onOpenTask:i=>opened.push(i)});
+ const row=find(tree,n=>n.props.className==='assistant-work-row');assert.ok(row);
+ find(row,n=>n.type==='button'&&text(n)==='Task one').props.onClick();
+ find(row,n=>n.type==='button'&&text(n)==='Review result').props.onClick();assert.deepEqual(opened,[target,target]);
+ assert.equal(all(tree,n=>n.props.className==='assistant-work-row').length,1);
+});
+test('New task explains unavailable creation without dropping project management',()=>{
+ const tree=work({}, {onNewTask(){},newTaskDisabledReason:'Assign a project first.'});
+ const create=find(tree,n=>n.type==='button'&&text(n)==='+ New task');assert.equal(create.props.disabled,true);assert.equal(create.props.title,'Assign a project first.');assert.match(text(tree),/Projects/);
 });

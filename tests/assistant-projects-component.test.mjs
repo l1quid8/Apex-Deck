@@ -26,7 +26,8 @@ function harness(extra={},initialTask=null,routingThreads=[]){
   const backend={demo:false,call:async(cmd,args)=>{calls.push({cmd,args});if(cmd==='assistant_tasks_list')return {project,workspaceId:'workspace',tasks:Array.isArray(task)?task:task?[task]:[],routingThreads,executions:[],revision:1};if(cmd==='assistant_task_action'){task={...task,status:args.action==='pause'?task.status:args.action==='resume'?task.status:args.action==='accept'||args.action==='review'?'done':'cancelled',desiredState:args.action==='pause'?'paused':'running',revision:task.revision+1};return task;}if(cmd==='personal_project_delegate_ui'){task={...baseTask,id:'new',status:'proposed',originalRequest:args.brief,brief:args.brief,reviewCriteria:args.reviewCriteria,destination:args.destination,mode:args.mode};return {taskId:task.id,status:'proposed'};}return {taskId:'new',status:'proposed'};}};
   const props={lane:{assistant:record,name:'Ada',offline:false},backend,projects:[{project,name:'Project'}],availableProjects:[{project,name:'Project'}],taskScopes:[],profiles:[profile],...extra};
   const render=()=>{cursor=0;const tree=component(props);for(const effect of effects)if(effect?.changed){effect.changed=false;effect.cleanup?.();effect.cleanup=effect.fn();}return tree;};
-  return {render,calls,backend,props};
+  const remount=()=>{for(const effect of effects)effect?.cleanup?.();states.length=0;refs.length=0;effects.length=0;cursor=0;};
+  return {render,calls,backend,props,remount};
 }
 test('first delegation explicitly creates coordinator, shows live worker picker, refreshes new room then proposes without a model send',async()=>{
   let ensured=0,created=0;
@@ -298,4 +299,28 @@ test('failed startup preflight retries the same exact worker room without creati
  assert.equal(created,1,'a failed preflight does not create another worker chat');
  const attempts=h.calls.filter(call=>call.cmd==='assistant_task_action');assert.equal(attempts.length,2);assert.deepEqual(attempts[1].args,attempts[0].args,'same task revision and exact destination on retry');
  assert.ok(!attempts.some(call=>call.args.action==='approve'));
+});
+
+test('compact project management shows connection and access without repeating Work tasks or boilerplate',async()=>{
+ const h=harness({compact:true,taskScopes:[{project,owner}],lane:{assistant:record,name:'Ada',offline:false,configureWorkspace:async()=>{}}},[{...baseTask,id:'active',brief:'Active task'}, {...baseTask,id:'done',brief:'Finished task',status:'done'}]);h.render();await tick();const tree=h.render();
+ assert.equal(find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task'),null);assert.doesNotMatch(text(tree),/Active task|Finished task|No project goal recorded|No active assignments|Completed and previous assignments/);assert.match(text(tree),/Connected/);assert.match(text(tree),/Ask first/);assert.match(text(tree),/\/work\/project/);assert.ok(button(tree,'Assign projects'));assert.ok(button(tree,'Manage access'));assert.equal(button(tree,'Delegate a task'),null);
+});
+
+test('creation requests open the normal modal while management is collapsed, once across rerender and remount',async()=>{
+ let ensured=0;const h=harness({compact:true,managementOpen:false,onEnsureCoordinator:async()=>{ensured++;return {project,owner};}});
+ h.render();await tick();let tree=h.render();assert.equal(find(tree,node=>node.props.className==='assistant-project-management').props.hidden,true);assert.equal(find(tree,node=>node.props.role==='dialog'),null);
+ h.props.newTaskRequest=1001;h.render();await tick();tree=h.render();assert.ok(find(tree,node=>node.props.role==='dialog'));assert.equal(ensured,1);
+ button(tree,'Review plan');find(tree,node=>node.type==='button'&&node.props['aria-label']==='Close dialog').props.onClick();h.render();h.render();assert.equal(ensured,1);assert.equal(find(h.render(),node=>node.props.role==='dialog'),null);
+ h.remount();h.render();await tick();tree=h.render();assert.equal(ensured,1);assert.equal(find(tree,node=>node.props.role==='dialog'),null);
+ h.props.newTaskRequest=1002;h.render();await tick();tree=h.render();assert.equal(ensured,2);assert.ok(find(tree,node=>node.props.role==='dialog'));
+});
+
+test('a focused task detail stays visible when compact project management is closed',async()=>{
+ const h=harness({compact:true,managementOpen:false,taskScopes:[{project,owner}],focusTask:{project,taskId:'task',nonce:42}},{...baseTask,status:'proposed'});h.render();await tick();h.render();const tree=h.render();
+ assert.ok(find(tree,node=>node.type==='article'&&node.props.className==='assistant-project-detail'));assert.ok(button(tree,'Approve and start'));assert.equal(find(tree,node=>node.props.className==='assistant-project-card'),null);
+});
+
+test('mounting with an already existing creation nonce does not invent a fresh click',async()=>{
+ let ensured=0;const h=harness({compact:true,managementOpen:false,newTaskRequest:2001,onEnsureCoordinator:async()=>{ensured++;return {project,owner};}});h.render();await tick();let tree=h.render();assert.equal(ensured,0);assert.equal(find(tree,node=>node.props.role==='dialog'),null);
+ h.props.newTaskRequest=2002;h.render();await tick();tree=h.render();assert.equal(ensured,1);assert.ok(find(tree,node=>node.props.role==='dialog'));
 });

@@ -168,3 +168,16 @@ The v6 composer was too loosely approximated. Its single row, 22px radius, 9px p
 - Pill remains visible next to Send when a draft exists. Bar can tuck without ending the call. Top bar shows a header capsule with status, timer, mute and End. The timer updates without replacing editable controls. Only one assistant is present, so no multi-agent Talking to selector is needed.
 - Voice preview here is deliberately silent and shows a sample-only notice. It does not request microphone access, play audio, change app defaults, download speech engines, or alter the live assistant. Local Whisper/Kokoro and the assistant's existing text provider remain the implementation path already used by Threads; these controls do not invent another voice engine.
 - Rendered checks at 724px and 1280px viewport widths: narrow pane has 24px gutters; wide inner box is 704px (44rem); empty box is 92px tall with a 44px textarea and two control rows. Twenty lines cap the textarea at 200px while the composer stays at the bottom. Pill stays beside Send with text. All three layouts render; voice, pause2000ms and aliases survive layout changes. Mute, call settings bounds including the Preview button, and End controls are exercised with sample state. These are source and rendered prototype checks, not installed-app audio tests.
+
+
+## v8 approved: organized Work
+
+The user requested this hierarchy in the existing clickable mockup first. The user approved implementation with “lets build it” after reviewing this preview. Native implementation and release verification remain separate gates.
+
+- Needs you contains approvals, questions, blocked startup and results needing review. In progress contains queued/running work; empty groups are omitted.
+- Each task appears once, with its title, concise status/project/worker line, one next action and an overflow menu for lifecycle actions. No card left borders.
+- History holds completed/cancelled tasks in a collapsed drawer. Projects is a separate collapsed management drawer, with connected folder/access information and a link to project access; it does not repeat tasks.
+- Deleted tasks stays reachable as a quiet footer link. New task remains the page's only prominent creation action.
+- Verified clickable sample: review release-notes plan → approve sample → same task moves from Needs you into In progress; History expands completed/cancelled tasks; Projects opens management and returns to Work.
+
+Preview: http://localhost:56324/ (Work v8). Canonical local preview: `/Users/tylercaldwell/.codex/visualizations/2026/10/23/01a168a3-ca13-7a10-afae-0d8dca07a81a/assistant-flow.html`.
