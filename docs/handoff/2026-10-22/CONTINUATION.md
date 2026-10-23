@@ -1,7 +1,9 @@
 # Assistant workspace continuation
 
-Continue from `fix/assistant-workspace-completion` in
+Continue from `fix/assistant-workspace-integration` in
 `/Users/tylercaldwell/Downloads/apex-deck-worktrees/assistant-workspace-plan`.
+Current integration status and contracts: [INTEGRATION.md](INTEGRATION.md).
+The G2a completion base remains `12f2d61` on `fix/assistant-workspace-completion`.
 The earlier `docs/assistant-workspace-plan` branch is preserved at `6b2e21e`.
 Read this together with [HANDOFF.md](HANDOFF.md), the task briefs, and the
 binding [security boundary](../../security/provenance-boundary.md).
@@ -64,16 +66,13 @@ the commands and exact results above are the durable record.
 
 ## Next owners and interfaces
 
-- Forge: G2b preview/confirmation UI, on a separate task branch from this one.
-  `src/legacyImport.ts` now accepts assistant, memory, schedule, rule, approval,
-  grant, personalTask and history rows. Personal messages/facts expose optional
-  `legacy` markers. Include rooms, read-only legacy conversations, and old cwd
-  before task retry; coordinate any missing host `room_state` fields with Null.
-- Deepgeek: G4 TrustedUI handoff, then G3 acceptance harness, in separate task
-  branches. Follow the exact briefs and keep all acceptance writes in isolated
-  temporary data. Preserve the installed app, broker and LaunchAgent.
-- Null: shared contracts, integration, scoped review and final checks. Apply
-  G2b/G4 in dependency order, complete G3, and prepare the concrete install
+- Deepgeek: complete G2b's refresh wiring, legacy markers, read-only conversation
+  viewer and old working folder before task retry. Return a scoped commit with
+  tests and mention @null. Use a separate branch/worktree from the integrated
+  commits; Null owns this checkout while verification runs.
+- Null: shared contracts, integration, scoped review and final checks. G4, G3 and
+  G2b's initial preview/confirm screen are on the integration branch. Finish G2b
+  review and the broader security review, then prepare the concrete install
   checkpoint. Tasks 4–8 remain gated as stated in the approved plan.
 
 No installation, production data import, release build, main merge or push was
