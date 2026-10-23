@@ -70,7 +70,8 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
-import { taskBelongsToAssistant, assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
+import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
+import { delegatedTasksForAssistant } from "./assistantStatus";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { unsavedEditName } from "./unsavedEdits";
@@ -1929,7 +1930,7 @@ export function App() {
   };
   const navigateAssistant = (section:AssistantSection) => setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
-  const selectedDelegatedTasks = selectedAssistant?.ref ? Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.tasks.filter(task=>taskBelongsToAssistant(task,selectedAssistant.ref!)&&assignedProjects.some(binding=>task.lineage?.project.hostId===binding.project.hostId&&task.lineage.project.workspaceId===binding.project.workspaceId&&task.lineage.project.cwd===binding.project.cwd))??[]) : [];
+  const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects) : [];
   // Only ambiguous assignments need an owning-host folder read; no global scan or polling.
   const aliasCandidates=assignedProjects.flatMap(binding=>workspaces.filter(workspace=>!workspace.hidden&&workspace.id===binding.project.workspaceId&&workspace.path!==binding.project.cwd&&authenticatedProjectHost(workspaceHost(workspace))===binding.project.hostId&&!snapshotProjectForWorkspace(workspace)).map(workspace=>({workspace,project:binding.project})));
   const aliasCandidatesKey=JSON.stringify(aliasCandidates.map(({workspace,project})=>[projectAliasKey(workspace,project.hostId),project.cwd]));
