@@ -268,7 +268,9 @@ mod tests {
         let daemon = daemon(&data.0);
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
         let port = socket.local_addr().unwrap().port();
-        let v6 = UdpSocket::bind(format!("[::]:{port}")).unwrap();
+        // Linux's dual-stack socket already holds the IPv4 bind, so there the
+        // IPv6 bind fails and the IPv4 one is enough to block the port.
+        let v6 = UdpSocket::bind(format!("[::]:{port}")).ok();
         remote_config::save_port(&data.0, port).unwrap();
         let error = switched(&daemon, true, false).await.unwrap_err();
         assert!(error.contains(&format!("UDP port {port} is in use")), "{error}");
