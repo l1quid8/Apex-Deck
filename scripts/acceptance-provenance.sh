@@ -6,8 +6,9 @@
 # PASS/FAIL/SKIP line per check plus a JSON evidence file whose path it prints.
 #
 # Safety, in the order it matters:
-#   - nothing here writes to the user's data folder, the installed apps, the
-#     broker's root-owned state, or the LaunchAgent; those are only read.
+#   - nothing here writes to the user's data folder, installed apps, LaunchAgent
+#     or protected authority journal. A current broker may create persistent
+#     root-owned host-lock bookkeeping for this run's isolated scopes.
 #   - every daemon this starts runs on a fresh `mktemp -d` data folder under
 #     /tmp (short paths: macOS caps socket paths) and is stopped before exit.
 #   - the user's running app, daemon and broker are never stopped, replaced or

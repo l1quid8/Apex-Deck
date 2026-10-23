@@ -112,8 +112,35 @@ Room transcripts remain ordinary project data. Their permission-bearing
 fields, including mount lineage, are restored from the protected room manifest.
 An editable snapshot cannot manufacture an Always allow rule, substitute
 participants/cwd or inject an outside fallback mount. Deletion revokes the
-manifest. The existing daemon DataLock provides one host per data directory;
-the broker also rejects stale writes from another process.
+manifest. Before opening authority, the pinned daemon obtains signed broker
+acknowledgements for its canonical primary and saved-chat folders, then takes
+exclusive nonblocking kernel locks on stable root-owned inodes under
+`ROOT/host-locks/`. The host retains read-only, close-on-exec descriptors for its
+lifetime. Both scopes must succeed before either live guard is published;
+contention is a fatal construction error before ledger reads or worker recovery.
+After ownership succeeds, failure to open any initial protected ledger also
+aborts construction; a partially authoritative host never uses empty task state
+alongside live saved-room authority.
+The editable daemon `owner.lock` remains an ordinary startup convenience and
+provides no adversarial singleton guarantee.
+
+Each protected document, claim and outcome call canonicalizes its final folder
+and retains a strong reference from a private weak guard registry throughout
+IO. A missing or untrusted broker leaves the host without authority; later RPCs
+never acquire ownership, so broker recovery requires a host restart. Symlink
+retargeting into an unowned folder refuses authority. Broker restart cannot
+release a living host's kernel locks when the stable files are preserved, while
+host death does. Root-administrator replacement or reset of those files is a
+separate maintenance operation outside the same-UID threat boundary. The broker also
+rejects stale writes from another process.
+
+Lock filenames bind kernel UID and canonical folder by SHA256. The broker
+creates empty root-owned mode 0444 files once, durably, under a mode 0755
+root-owned directory; it never replaces existing inodes. Existing scopes remain
+usable at the 4,096-file capacity; new scopes fail closed. These bookkeeping
+files persist after isolated QA. A same-UID process can contend for the readable
+locks as denial of service, which grants no authority and is outside the
+authenticity guarantee, as are stopping or killing the host.
 
 Broker transactions are serialized and acknowledged only after file and parent
 directory fsync. The response envelope is size-checked before committing.

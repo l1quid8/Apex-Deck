@@ -154,6 +154,10 @@ fn run() -> Result<(), String> {
             let folder = request["dataDir"]
                 .as_str()
                 .ok_or("Missing data directory")?;
+            if request["op"] == "host_lock" {
+                let payload = prepare_host_lock(daemon_uid, folder, request["nonce"].as_str().unwrap_or(""), trusted_daemon)?;
+                return sign(&key, &payload);
+            }
             let mut next = journal.clone();
             if request["op"] != "read" {
                 next.compact_if_due(&key, COMPACT_AT)?;

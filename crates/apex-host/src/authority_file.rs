@@ -106,8 +106,8 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         return local_write(path, bytes);
     }
     let (folder, name) = scope(path)?;
-    // A production host owns one instance per data directory (daemon DataLock).
-    // The broker additionally rejects writes from another daemon's stale read.
+    // Protected host ownership holds stable root-owned kernel locks across the
+    // host lifetime. The broker also rejects writes from a stale revision.
     let mut revisions = REVISIONS
         .get_or_init(Default::default)
         .lock()

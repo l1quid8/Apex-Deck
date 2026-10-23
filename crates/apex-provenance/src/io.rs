@@ -60,6 +60,8 @@ pub fn read_frame(stream: &mut UnixStream) -> Result<Value, String> {
 /// flags, data-dir keys, CLI tokens and caller-supplied author fields are ignored.
 /// A crash after consumption is uncertain, never permission to replay a write.
 pub fn consume(signed: &Signed, data_dir: &Path) -> Result<Receipt, String> {
+    let canonical = data_dir.canonicalize().map_err(|e| e.to_string())?;
+    let _ownership = crate::ownership::require(&canonical)?;
     let key = root_file(&Path::new(ROOT).join("public-key"))?;
     let value = verify(&key, signed)?;
     if value["domain"] != DOMAIN || value["kind"] != "submission" {
@@ -67,11 +69,10 @@ pub fn consume(signed: &Signed, data_dir: &Path) -> Result<Receipt, String> {
     }
     let receipt: Receipt =
         serde_json::from_value(value["receipt"].clone()).map_err(|e| e.to_string())?;
-    let folder = data_dir
-        .canonicalize()
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .into_owned();
+    let folder = canonical
+        .to_str()
+        .ok_or("Host folder is not UTF-8")?
+        .to_owned();
     if receipt.uid != unsafe { libc::geteuid() } || receipt.data_dir != folder {
         return Err("Receipt is for another user or host data directory".into());
     }
@@ -114,12 +115,13 @@ pub fn document(
     name: &str,
     write: Option<(u64, Value)>,
 ) -> Result<crate::ProtectedDocument, String> {
+    let canonical = data_dir.canonicalize().map_err(|e| e.to_string())?;
+    let _ownership = crate::ownership::require(&canonical)?;
     let key = root_file(&Path::new(ROOT).join("public-key"))?;
-    let folder = data_dir
-        .canonicalize()
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .into_owned();
+    let folder = canonical
+        .to_str()
+        .ok_or("Host folder is not UTF-8")?
+        .to_owned();
     let mut random = [0u8; 16];
     SystemRandom::new()
         .fill(&mut random)
@@ -167,12 +169,13 @@ pub fn document(
 }
 
 pub fn finish(data_dir: &Path, key_id: &str, error: Option<&str>) -> Result<(), String> {
+    let canonical = data_dir.canonicalize().map_err(|e| e.to_string())?;
+    let _ownership = crate::ownership::require(&canonical)?;
     let key = root_file(&Path::new(ROOT).join("public-key"))?;
-    let folder = data_dir
-        .canonicalize()
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .into_owned();
+    let folder = canonical
+        .to_str()
+        .ok_or("Host folder is not UTF-8")?
+        .to_owned();
     let mut random = [0u8; 16];
     SystemRandom::new()
         .fill(&mut random)
@@ -210,4 +213,72 @@ pub fn finish(data_dir: &Path, key_id: &str, error: Option<&str>) -> Result<(), 
         return Err("Invalid outcome acknowledgement".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ownership_admission_tests {
+    use super::*;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    fn scope() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "apex-unowned-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    #[test]
+    fn unowned_document_scope_is_refused_before_broker_io() {
+        let dir = scope();
+        let error = document(&dir, "assistant-tasks-v1.json", None).unwrap_err();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(error.contains("Host does not own"), "{error}");
+    }
+    #[test]
+    fn unowned_claim_scope_is_refused_before_receipt_or_broker_io() {
+        let dir = scope();
+        let error = consume(
+            &Signed {
+                payload: "".into(),
+                signature: "".into(),
+            },
+            &dir,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(error.contains("Host does not own"), "{error}");
+    }
+    #[test]
+    fn unowned_finish_scope_is_refused_before_broker_io() {
+        let dir = scope();
+        let error = finish(&dir, "unused", None).unwrap_err();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(error.contains("Host does not own"), "{error}");
+    }
+}
+
+pub(crate) fn challenge() -> Result<String, String> {
+    let mut random = [0u8; 16];
+    SystemRandom::new()
+        .fill(&mut random)
+        .map_err(|_| "Could not create ownership challenge")?;
+    Ok(random.iter().map(|b| format!("{b:02x}")).collect())
+}
+pub(crate) fn exchange(request: &Value) -> Result<Value, String> {
+    let mut bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    if bytes.len() > MAX_BYTES {
+        return Err("Provenance request exceeds limit".into());
+    }
+    let mut stream = UnixStream::connect(SOCKET)
+        .map_err(|e| format!("Protected provenance service unavailable: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
+    stream.write_all(&bytes).map_err(|e| e.to_string())?;
+    read_frame(&mut stream)
 }

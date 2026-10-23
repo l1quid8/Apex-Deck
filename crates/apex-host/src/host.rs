@@ -17,6 +17,37 @@ use crate::quit::QuitGate;
 use crate::storage::{SavedRoom, Store};
 use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images, worktrees};
 
+// Contention is a construction error before any ledger or worker recovery.
+// Unavailable service may degrade, but owns no descriptor or registry entry.
+fn admit_host_ownership(
+    result: Option<Result<apex_provenance::HostOwnership, apex_provenance::HostOwnershipError>>,
+) -> Result<(Option<apex_provenance::HostOwnership>, Option<String>), String> {
+    match result {
+        None => Ok((None, None)), // Only the explicit existing fixture path.
+        Some(Ok(guard)) => Ok((Some(guard), None)),
+        Some(Err(error @ apex_provenance::HostOwnershipError::Held(_))) => Err(error.to_string()),
+        Some(Err(error @ apex_provenance::HostOwnershipError::Unavailable(_))) => Ok((None, Some(error.to_string()))),
+    }
+}
+
+fn open_initial_ledger<T, E: std::fmt::Display>(
+    owns_authority: bool,
+    unavailable: &mut Option<String>,
+    open: impl FnOnce() -> Result<T, E>,
+    fallback: impl FnOnce() -> T,
+) -> Result<T, String> {
+    match open() {
+        Ok(ledger) => Ok(ledger),
+        Err(error) => {
+            if owns_authority {
+                return Err(format!("Could not initialize protected host authority: {error}"));
+            }
+            unavailable.get_or_insert_with(|| error.to_string());
+            Ok(fallback())
+        }
+    }
+}
+
 fn reject_registry_link(directory: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(directory) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err("Process recovery namespaces cannot be symlinks.".into()),
@@ -89,6 +120,8 @@ pub struct HostPaths {
 
 pub struct Host {
     paths: HostPaths,
+    /// Protected primary and saved-chat ownership lasts as long as this host.
+    _ownership: Option<apex_provenance::HostOwnership>,
     /// Runs background work (plan usage, chains started by `room_post_to`).
     runtime: tokio::runtime::Handle,
     events: Bus,
@@ -173,38 +206,33 @@ impl Host {
 
     pub fn try_new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Result<Arc<Host>, String> {
         crate::storage::prepare_private_root(&paths.data)?;
-        // A protected ledger the broker will not serve must not stop the app
-        // from starting. Failing here leaves the window on its splash screen
-        // with nothing to act on, which is worse than an empty ledger: reads
-        // return nothing, and writes stay closed because `authority_file::write`
-        // refuses a ledger that was never read. The broker keeps the real
-        // records, so installing or re-pinning this build brings them back.
-        let mut unavailable: Option<String> = None;
+        // Fixture construction is already explicit and isolated. Production,
+        // even with test-support compiled, always uses the protected broker.
+        #[cfg(test)]
+        let ownership = None;
+        #[cfg(not(test))]
+        let ownership = {
+            #[cfg(feature = "test-support")]
+            let fixture = crate::test_support::isolated(&paths.data);
+            #[cfg(not(feature = "test-support"))]
+            let fixture = false;
+            if fixture { None } else { Some(apex_provenance::HostOwnership::acquire(&paths.data)) }
+        };
+        let (ownership, mut unavailable) = admit_host_ownership(ownership)?;
+        // Without ownership startup may degrade. Once ownership succeeds,
+        // partial authority must never coexist with empty fallback stores.
         let tasks_path = paths.data.join("assistant-tasks-v1.json");
-        let assistant_tasks = match crate::assistant_tasks::AssistantTasks::open(&tasks_path) {
-            Ok(tasks) => tasks,
-            Err(error) => {
-                unavailable.get_or_insert_with(|| error.to_string());
-                crate::assistant_tasks::AssistantTasks::unavailable(&tasks_path)
-            }
-        };
+        let assistant_tasks = open_initial_ledger(ownership.is_some(), &mut unavailable,
+            || crate::assistant_tasks::AssistantTasks::open(&tasks_path),
+            || crate::assistant_tasks::AssistantTasks::unavailable(&tasks_path))?;
         let memory_path = paths.data.join("project-memory-v1.json");
-        let project_memory = match crate::project_memory::ProjectMemory::open(&memory_path) {
-            Ok(memory) => memory,
-            Err(error) => {
-                unavailable.get_or_insert_with(|| error.to_string());
-                crate::project_memory::ProjectMemory::unavailable(&memory_path)
-            }
-        };
+        let project_memory = open_initial_ledger(ownership.is_some(), &mut unavailable,
+            || crate::project_memory::ProjectMemory::open(&memory_path),
+            || crate::project_memory::ProjectMemory::unavailable(&memory_path))?;
         let conversations_path = paths.data.join("assistant-conversations-v1.json");
-        let assistant_conversations =
-            match crate::assistant_conversation::ConversationStore::open(&conversations_path) {
-                Ok(conversations) => conversations,
-                Err(error) => {
-                    unavailable.get_or_insert_with(|| error.to_string());
-                    crate::assistant_conversation::ConversationStore::unavailable(&conversations_path)
-                }
-            };
+        let assistant_conversations = open_initial_ledger(ownership.is_some(), &mut unavailable,
+            || crate::assistant_conversation::ConversationStore::open(&conversations_path),
+            || crate::assistant_conversation::ConversationStore::unavailable(&conversations_path))?;
         if let Some(reason) = unavailable {
             eprintln!(
                 "[apex-deck] protected ledgers unavailable ({reason}); starting with empty ledgers. Install or re-pin the provenance broker for this build."
@@ -219,6 +247,7 @@ impl Host {
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
         let host = Arc::new(Host {
             paths,
+            _ownership: ownership,
             runtime,
             events: Bus::default(),
             store,
@@ -3100,5 +3129,50 @@ mod host_tests {
         host.settings_save(json!({ "disabledProviders": ["venice"], "confirmSteer": false })).unwrap();
         assert_eq!(host.settings_load().unwrap(), Some(json!({ "disabledProviders": ["venice"], "confirmSteer": false })));
         let _ = std::fs::remove_dir_all(data);
+    }
+}
+
+#[cfg(test)]
+mod protected_host_ownership_tests {
+    use super::*;
+    #[test]
+    fn held_kernel_ownership_is_fatal_instead_of_empty_ledger_fallback() {
+        let result = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Held("canonical scope".into()))));
+        assert!(result.is_err(), "A competing host must never enter degraded construction");
+    }
+    #[test]
+    fn owned_initial_ledger_failure_refuses_fallback_before_recovery() {
+        use std::cell::Cell;
+        let root = std::env::temp_dir().join(format!("apex-owned-ledger-failure-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["assistant-tasks-v1.json", "project-memory-v1.json", "assistant-conversations-v1.json"] {
+            let path = root.join(name);
+            // Real authority fixture loaders must fail, rather than a mocked
+            // broker or a manufactured error standing in for their effects.
+            std::fs::write(crate::authority_file::fixture_path(&path), b"{broken").unwrap();
+            let fallback = Cell::new(false);
+            let continued = Cell::new(false);
+            let mut unavailable = None;
+            let result = (|| -> Result<(), String> {
+                open_initial_ledger(true, &mut unavailable, || match name {
+                    "assistant-tasks-v1.json" => crate::assistant_tasks::AssistantTasks::open(&path).map(|_| ()).map_err(|e| e.to_string()),
+                    "project-memory-v1.json" => crate::project_memory::ProjectMemory::open(&path).map(|_| ()).map_err(|e| e.to_string()),
+                    _ => crate::assistant_conversation::ConversationStore::open(&path).map(|_| ()).map_err(|e| e.to_string()),
+                }, || { fallback.set(true); })?;
+                continued.set(true);
+                Ok(())
+            })();
+            assert!(result.is_err(), "{name}: owned host continued after a failed initial read");
+            assert!(!fallback.get(), "{name}: a partially authoritative host opened an empty fallback");
+            assert!(!continued.get(), "{name}: construction reached recovery");
+            assert!(unavailable.is_none(), "{name}: owned failure entered degraded state");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unavailable_service_has_no_authority_guard() {
+        let (guard, unavailable) = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Unavailable("broker absent".into())))).unwrap();
+        assert!(guard.is_none());
+        assert!(unavailable.unwrap().contains("broker absent"));
     }
 }

@@ -1,5 +1,7 @@
 //! Root-owned submission authority. No shell execution and no general file API.
 pub mod io;
+mod ownership;
+pub use ownership::{HostOwnership, HostOwnershipError, prepare_host_lock};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use ring::{
     rand::{SecureRandom, SystemRandom},
