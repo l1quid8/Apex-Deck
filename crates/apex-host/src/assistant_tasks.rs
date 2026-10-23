@@ -170,6 +170,9 @@ pub struct AssistantTask {
     pub usage: Option<TaskUsage>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    /// Set only on a task imported from pre-provenance data. Never verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +266,9 @@ struct Document {
     executions: BTreeMap<String, ExecutionEntry>,
     #[serde(default)]
     handoffs: BTreeMap<String, HandoffReceipt>,
+    /// The one legacy source this ledger imported, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_import: Option<crate::legacy_import::LedgerImport>,
 }
 
 struct Inner {
@@ -1125,6 +1131,7 @@ fn make_task(
         usage: None,
         created_at_ms: now,
         updated_at_ms: now,
+        legacy: None,
     };
     document.tasks.insert(id, task.clone());
     task
@@ -1172,6 +1179,170 @@ fn allowed(from: TaskStatus, to: TaskStatus) -> bool {
         Failed => matches!(to, Queued | Cancelled),
         Interrupted => matches!(to, Queued | Cancelled | ReadyForReview | Done),
         Done | Cancelled => false,
+    }
+}
+
+/// Pre-provenance tasks mapped for an explicit, UI-confirmed import. Nothing
+/// here is dispatched: queued work becomes a proposal, in-progress work is
+/// interrupted, and remembered approvals, checkout leases and delegation
+/// lineage are dropped. Built by `legacy_import`.
+pub(crate) struct LegacyTaskPlan {
+    pub rows: Vec<crate::legacy_import::Row>,
+    pub problems: Vec<crate::legacy_import::Problem>,
+    tasks: Vec<AssistantTask>,
+    requests: Vec<HumanRequestRecord>,
+    handoffs: Vec<(String, HandoffReceipt)>,
+}
+
+impl LegacyTaskPlan {
+    pub fn importable(&self) -> usize {
+        self.tasks.len()
+    }
+
+    pub fn workspaces(&self) -> std::collections::BTreeSet<String> {
+        self.tasks.iter().map(|task| task.workspace_id.clone()).collect()
+    }
+}
+
+/// The imported id of a legacy task. Prefixed so it never meets a protected task's id.
+pub(crate) fn legacy_task_id(original: &str) -> String {
+    format!("legacy-{original}")
+}
+
+fn status_name(status: TaskStatus) -> String {
+    serde_json::to_value(status).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+}
+
+/// What a legacy task's status becomes, and why. Never a state that runs by itself.
+fn legacy_status(task: &AssistantTask) -> (TaskStatus, &'static str) {
+    use TaskStatus::*;
+    match task.status {
+        Queued if task.attempts.is_empty() => (Proposed, "Was queued before the upgrade. Confirm it again before it runs."),
+        Queued | Running | Applying | NeedsYou => (Interrupted, "Was in progress before the upgrade. Nothing resumes on its own; retry it to run it again."),
+        ReadyForReview => (ReadyForReview, "Kept for review. Applying it still needs your confirmation."),
+        Proposed | NeedsClarification => (task.status, "Kept as it was. It needs your confirmation before it runs."),
+        Done | Failed | Cancelled | Interrupted => (task.status, "Kept as history."),
+    }
+}
+
+pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64) -> Result<LegacyTaskPlan, String> {
+    use crate::legacy_import::{title, LegacyMarker, Problem, Row};
+    let legacy: Document = serde_json::from_slice(bytes).map_err(|e| format!("The legacy task file could not be read: {e}"))?;
+    if legacy.version != 1 {
+        return Err("The legacy task file has an unsupported version.".into());
+    }
+    let mut plan = LegacyTaskPlan { rows: vec![], problems: vec![], tasks: vec![], requests: vec![], handoffs: vec![] };
+    for (key, original) in &legacy.tasks {
+        if key != &original.id {
+            plan.problems.push(Problem { id: key.clone(), reason: "Its saved id does not match its record, so it was not imported.".into() });
+            continue;
+        }
+        let (status, reason) = legacy_status(original);
+        plan.rows.push(Row {
+            id: original.id.clone(),
+            kind: "task",
+            title: title(&original.original_request),
+            original_status: status_name(original.status),
+            import_status: status_name(status),
+            reason: reason.into(),
+        });
+        let mut task = original.clone();
+        task.id = legacy_task_id(&original.id);
+        task.status = status;
+        task.revision = 1;
+        // Delegation lineage authorizes project-memory promotion; legacy lineage is unverified.
+        task.lineage = None;
+        for attempt in &mut task.attempts {
+            if attempt.finished_at_ms.is_none() {
+                attempt.status = TaskStatus::Interrupted;
+                attempt.finished_at_ms = Some(now);
+            }
+            attempt.review_revision = None;
+        }
+        if let Some(data) = task.result_data.as_mut().and_then(|data| data.as_object_mut()) {
+            // A checkout lease would be restored at startup; approvals are imported ungranted.
+            data.insert("leaseHeld".into(), serde_json::json!(false));
+            data.insert("pendingApprovals".into(), serde_json::json!([]));
+            data.insert("pendingQuestions".into(), serde_json::json!([]));
+            if data.contains_key("unknownCostAccepted") {
+                data.insert("unknownCostAccepted".into(), serde_json::json!(false));
+            }
+        }
+        task.legacy = Some(LegacyMarker::new(source_sha256, now, Some(original.id.clone()), Some(status_name(original.status))));
+        plan.tasks.push(task);
+    }
+    let imported = |id: &str| plan.tasks.iter().any(|task| task.legacy.as_ref().and_then(|l| l.original_id.as_deref()) == Some(id));
+    let mut requests = vec![];
+    for (id, request) in &legacy.requests {
+        if !imported(&request.task_id) {
+            plan.problems.push(Problem { id: id.clone(), reason: "Its task was not imported, so this request record was not either.".into() });
+            continue;
+        }
+        let mut request = request.clone();
+        request.task_id = legacy_task_id(&request.task_id);
+        requests.push(request);
+    }
+    let mut handoffs = vec![];
+    for (id, receipt) in &legacy.handoffs {
+        if !imported(&receipt.task_id) {
+            plan.problems.push(Problem { id: id.clone(), reason: "Its task was not imported, so this handoff record was not either.".into() });
+            continue;
+        }
+        let mut receipt = receipt.clone();
+        receipt.task_id = legacy_task_id(&receipt.task_id);
+        handoffs.push((id.clone(), receipt));
+    }
+    for id in legacy.executions.keys() {
+        plan.problems.push(Problem { id: id.clone(), reason: "The assistant's claim on this thread was not restored. It opens as an ordinary chat and is never continued automatically.".into() });
+    }
+    plan.requests = requests;
+    plan.handoffs = handoffs;
+    Ok(plan)
+}
+
+/// How an import of one legacy source went.
+pub(crate) enum LegacyImportOutcome {
+    Imported(crate::legacy_import::LedgerImport),
+    /// The same source was imported before; nothing was written.
+    AlreadyImported(crate::legacy_import::LedgerImport),
+}
+
+impl AssistantTasks {
+    pub(crate) fn legacy_import_mark(&self) -> Option<crate::legacy_import::LedgerImport> {
+        self.inner.document.lock().unwrap().legacy_import.clone()
+    }
+
+    /// Merge a legacy plan in one compare-and-swap. Ids already taken in the
+    /// protected ledger keep their protected record; the legacy one is skipped.
+    pub(crate) fn import_legacy(&self, plan: LegacyTaskPlan, mut mark: crate::legacy_import::LedgerImport) -> Result<LegacyImportOutcome, String> {
+        let mut document = self.inner.document.lock().unwrap();
+        if let Some(existing) = &document.legacy_import {
+            return crate::legacy_import::same_source(existing, &mark.source_sha256).map(|()| LegacyImportOutcome::AlreadyImported(existing.clone()));
+        }
+        let before = document.clone();
+        let mut skipped = 0;
+        for task in plan.tasks {
+            if document.tasks.contains_key(&task.id) { skipped += 1; continue; }
+            document.tasks.insert(task.id.clone(), task);
+            mark.imported += 1;
+        }
+        for request in plan.requests {
+            if document.requests.contains_key(&request.request_id) || document.handoffs.contains_key(&request.request_id) { continue; }
+            document.requests.insert(request.request_id.clone(), request);
+        }
+        for (id, receipt) in plan.handoffs {
+            if document.requests.contains_key(&id) || document.handoffs.contains_key(&id) { continue; }
+            document.handoffs.insert(id, receipt);
+        }
+        mark.skipped += skipped;
+        document.legacy_import = Some(mark.clone());
+        let size = serde_json::to_vec_pretty(&*document).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+        if size > crate::legacy_import::DOCUMENT_BUDGET {
+            *document = before;
+            return Err("Importing these tasks would exceed the protected document limit. Nothing was written.".into());
+        }
+        save_mutation(&self.inner, &mut document, before).map_err(|e| e.to_string())?;
+        Ok(LegacyImportOutcome::Imported(mark))
     }
 }
 

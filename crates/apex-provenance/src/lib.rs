@@ -491,6 +491,9 @@ pub fn protected(name: &str) -> bool {
             | "project_memory_forget"
             | "project_memory_stage"
             | "project_memory_promote"
+            // Bound to the UI's delivery ID like room actions; the host also
+            // refuses changed content under the same ledger import.
+            | "legacy_import_apply"
     )
 }
 fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, String> {
@@ -1055,6 +1058,26 @@ mod tests {
         assert!(journal
             .issue(501, "/data", command("changed"), true)
             .is_err());
+    }
+
+    #[test]
+    fn legacy_import_apply_is_issued_only_for_trusted_ui_and_bound_to_a_delivery_id() {
+        let mut journal = Journal::new();
+        let apply = |delivery: Option<&str>| {
+            let mut command = json!({"cmd":"legacy_import_apply","args":{"snapshot":"20261022-101501","sources":{"assistant-tasks-v1.json":"ab"}}});
+            if let Some(id) = delivery { command["provenanceRequestId"] = json!(id); }
+            command
+        };
+        assert!(journal.issue(501, "/data", apply(Some("d-1")), false).is_err());
+        assert!(journal.issue(501, "/data", apply(None), true).is_err());
+        let receipt = journal.issue(501, "/data", apply(Some("d-1")), true).unwrap();
+        assert_eq!(receipt.command, apply(Some("d-1")));
+        let mut changed = apply(Some("d-1"));
+        changed["args"]["sources"]["assistant-tasks-v1.json"] = json!("cd");
+        assert!(journal.issue(501, "/data", changed, true).is_err());
+        for read_only in ["legacy_import_preview", "legacy_import_history"] {
+            assert!(journal.issue(501, "/data", json!({"cmd":read_only,"args":{},"provenanceRequestId":"d-2"}), true).is_err());
+        }
     }
 
     #[test]

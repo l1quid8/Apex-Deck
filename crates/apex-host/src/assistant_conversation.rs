@@ -864,6 +864,8 @@ pub enum ConversationStatus {
     Pending,
     Completed,
     Interrupted,
+    /// Imported from pre-provenance data: read-only history that never runs.
+    Legacy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -876,6 +878,9 @@ pub struct ConversationRecord {
     /// The task this request created, recorded before any worker runs, so a retry reuses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Set only on a record imported from pre-provenance data. Never verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -884,6 +889,9 @@ struct ConversationDocument {
     version: u32,
     #[serde(default)]
     records: BTreeMap<String, ConversationRecord>,
+    /// The one legacy source this ledger imported, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_import: Option<crate::legacy_import::LedgerImport>,
 }
 
 struct StoreInner {
@@ -1048,6 +1056,7 @@ impl ConversationStore {
             response: None,
             revision: 1,
             task_id: None,
+            legacy: None,
         };
         document.records.insert(request.request_id, record.clone());
         if let Err(error) = self.save_locked(&document) {
@@ -1163,6 +1172,102 @@ impl ConversationStore {
             ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
         })?;
         crate::authority_file::write(&self.inner.path,&bytes).map_err(|e|ConversationError::Storage(format!("Could not save protected conversations: {e}")))
+    }
+}
+
+/// Pre-provenance conversations mapped for an explicit import. Each record
+/// keeps only a non-executable envelope with capped excerpts; the full
+/// original stays readable from the hashed snapshot. Built by `legacy_import`.
+pub(crate) struct LegacyConversationPlan {
+    pub rows: Vec<crate::legacy_import::Row>,
+    pub problems: Vec<crate::legacy_import::Problem>,
+    records: Vec<ConversationRecord>,
+}
+
+impl LegacyConversationPlan {
+    pub fn importable(&self) -> usize {
+        self.records.len()
+    }
+}
+
+fn status_name(status: ConversationStatus) -> String {
+    serde_json::to_value(status).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+}
+
+/// `imported_task` maps a legacy task id to its imported id when that task is in the protected ledger.
+pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64, imported_task: &dyn Fn(&str) -> Option<String>) -> Result<LegacyConversationPlan, String> {
+    use crate::legacy_import::{excerpt, title, LegacyMarker, Row};
+    let legacy: ConversationDocument = serde_json::from_slice(bytes).map_err(|e| format!("The legacy conversation file could not be read: {e}"))?;
+    if legacy.version != 1 {
+        return Err("The legacy conversation file has an unsupported version.".into());
+    }
+    let mut plan = LegacyConversationPlan { rows: vec![], problems: vec![], records: vec![] };
+    for (id, original) in legacy.records {
+        if id != original.request.request_id {
+            plan.problems.push(crate::legacy_import::Problem { id, reason: "Its saved id does not match its request, so it was not imported.".into() });
+            continue;
+        }
+        plan.rows.push(Row {
+            id: id.clone(),
+            kind: "conversation",
+            title: title(&original.request.text),
+            original_status: status_name(original.status),
+            import_status: status_name(ConversationStatus::Legacy),
+            reason: "Kept as unverified history. It is never answered or run again; the full text stays readable from the snapshot.".into(),
+        });
+        let request = ConversationRequest {
+            request_id: id,
+            owner: original.request.owner,
+            text: excerpt(&original.request.text),
+            destination: original.request.destination,
+            new_worker_profiles: vec![],
+            worker_profiles: vec![],
+            threads: vec![],
+            evidence: vec![],
+            source_chats: vec![],
+        };
+        plan.records.push(ConversationRecord {
+            request,
+            status: ConversationStatus::Legacy,
+            response: original.response.as_deref().map(excerpt),
+            revision: 1,
+            task_id: original.task_id.as_deref().and_then(imported_task),
+            legacy: Some(LegacyMarker::new(source_sha256, now, None, Some(status_name(original.status)))),
+        });
+    }
+    Ok(plan)
+}
+
+impl ConversationStore {
+    pub(crate) fn legacy_import_mark(&self) -> Option<crate::legacy_import::LedgerImport> {
+        self.inner.document.lock().unwrap().legacy_import.clone()
+    }
+
+    /// Merge a legacy plan in one compare-and-swap. A request id already in the
+    /// protected ledger keeps its protected record; the legacy one is skipped.
+    pub(crate) fn import_legacy(&self, plan: LegacyConversationPlan, mut mark: crate::legacy_import::LedgerImport) -> Result<crate::assistant_tasks::LegacyImportOutcome, String> {
+        use crate::assistant_tasks::LegacyImportOutcome;
+        let mut document = self.inner.document.lock().unwrap();
+        if let Some(existing) = &document.legacy_import {
+            return crate::legacy_import::same_source(existing, &mark.source_sha256).map(|()| LegacyImportOutcome::AlreadyImported(existing.clone()));
+        }
+        let before = document.clone();
+        for record in plan.records {
+            if document.records.contains_key(&record.request.request_id) { mark.skipped += 1; continue; }
+            document.records.insert(record.request.request_id.clone(), record);
+            mark.imported += 1;
+        }
+        document.legacy_import = Some(mark.clone());
+        let size = serde_json::to_vec(&*document).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+        if size > crate::legacy_import::DOCUMENT_BUDGET {
+            *document = before;
+            return Err("Importing these conversations would exceed the protected document limit. Nothing was written.".into());
+        }
+        if let Err(error) = self.save_locked(&document) {
+            *document = before;
+            return Err(error.to_string());
+        }
+        Ok(LegacyImportOutcome::Imported(mark))
     }
 }
 

@@ -19,6 +19,8 @@ struct RoomAuthority {
     cwd:Option<String>,participants:Vec<apex_core::ParticipantConfig>,options:apex_core::RoomOptions,
     allowed:Vec<apex_core::AllowedRule>,plan:bool,
     #[serde(default)] mounts:Vec<MountBoundary>,
+    /// Set when this manifest was created from a pre-provenance room file. Never verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")] legacy:Option<crate::legacy_import::LegacyMarker>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,9 +244,52 @@ impl Store {
     }
     fn save_room_authority(&self,id:&str,room:&SavedRoom)->Result<(),String>{
         let mut authorities=self.room_authorities()?;
-        let manifest=RoomAuthority{cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone()};
+        // A room restored from legacy data keeps saying so after later saves.
+        let legacy=authorities.get(id).and_then(|entry|entry.get("legacy")).and_then(|marker|serde_json::from_value(marker.clone()).ok());
+        let manifest=RoomAuthority{cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone(),legacy};
         authorities.insert(id.into(),serde_json::to_value(manifest).map_err(|e|e.to_string())?);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
+    }
+
+    /// The ids that already have a protected manifest, with any legacy marker.
+    pub(crate) fn room_authority_marks(&self) -> Result<std::collections::BTreeMap<String, Option<crate::legacy_import::LegacyMarker>>, String> {
+        Ok(self.room_authorities()?.into_iter().map(|(id, entry)| {
+            let marker = entry.get("legacy").and_then(|marker| serde_json::from_value(marker.clone()).ok());
+            (id, marker)
+        }).collect())
+    }
+
+    /// Create manifests for legacy rooms in one compare-and-swap. A room that
+    /// already has a protected manifest keeps it. Returns how many were added,
+    /// or the earlier import's count when this exact source was imported before.
+    pub(crate) fn import_legacy_room_authorities(&self, rooms: Vec<LegacyRoom>, marker: &crate::legacy_import::LegacyMarker) -> Result<LegacyRoomOutcome, String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut authorities = self.room_authorities()?;
+        let mut previous = 0;
+        for entry in authorities.values() {
+            let Some(legacy) = entry.get("legacy").and_then(|m| serde_json::from_value::<crate::legacy_import::LegacyMarker>(m.clone()).ok()) else { continue };
+            if legacy.source_sha256 != marker.source_sha256 {
+                return Err(crate::legacy_import::different_source(&legacy.source_sha256));
+            }
+            previous += 1;
+        }
+        if previous > 0 { return Ok(LegacyRoomOutcome { imported: previous, skipped: 0, already: true }); }
+        let (mut imported, mut skipped) = (0, 0);
+        for room in rooms {
+            if authorities.contains_key(&room.id) { skipped += 1; continue; }
+            let mut legacy = marker.clone();
+            legacy.original_id = Some(room.id.clone());
+            let manifest = RoomAuthority { legacy: Some(legacy), ..room.authority };
+            authorities.insert(room.id, serde_json::to_value(manifest).map_err(|e| e.to_string())?);
+            imported += 1;
+        }
+        if imported == 0 { return Ok(LegacyRoomOutcome { imported, skipped, already: false }); }
+        let bytes = serde_json::to_vec(&authorities).map_err(|e| e.to_string())?;
+        if bytes.len() > crate::legacy_import::DOCUMENT_BUDGET {
+            return Err("Importing these rooms would exceed the protected document limit. Nothing was written.".into());
+        }
+        crate::authority_file::write(&self.root.join("room-authority-v1.json"), &bytes).map_err(|e| e.to_string())?;
+        Ok(LegacyRoomOutcome { imported, skipped, already: false })
     }
 
     /// A worktree cannot be removed while any saved chat still points at it.
@@ -508,6 +553,54 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// A pre-provenance room file, mapped to the manifest an import would create.
+pub(crate) struct LegacyRoom {
+    pub id: String,
+    authority: RoomAuthority,
+}
+
+pub(crate) struct LegacyRoomOutcome {
+    pub imported: usize,
+    pub skipped: usize,
+    /// This exact source was imported before; nothing was written.
+    pub already: bool,
+}
+
+/// The folder switches that lead to `cwd`, walking back from it. A mount that
+/// does not continue that chain could only have come from an edited file, so it
+/// and everything before it is dropped: the missing-folder fallback picks from them.
+pub(crate) fn own_lineage(cwd: Option<&str>, mounts: &[MountBoundary]) -> Vec<MountBoundary> {
+    let Some(mut expected) = cwd.map(str::to_owned) else { return vec![] };
+    let mut kept = vec![];
+    for mount in mounts.iter().rev() {
+        if mount.to != expected { break; }
+        expected = mount.from.clone();
+        kept.push(mount.clone());
+    }
+    kept.reverse();
+    kept
+}
+
+/// Map one legacy room file: its folder, bots, options and plan switch are
+/// kept; remembered permissions are left ungranted and outside mounts dropped.
+/// Returns the room and how many permissions and mounts were left out.
+pub(crate) fn plan_legacy_room(id: &str, bytes: &[u8]) -> Result<(LegacyRoom, usize, usize), String> {
+    let saved: SavedRoom = serde_json::from_slice(bytes).map_err(|e| format!("The saved room could not be read: {e}"))?;
+    let mounts = own_lineage(saved.cwd.as_deref(), &saved.mounts);
+    let dropped = saved.mounts.len() - mounts.len();
+    let allowed = saved.snapshot.allowed.len();
+    let authority = RoomAuthority { cwd: saved.cwd, participants: saved.snapshot.participants, options: saved.snapshot.options, allowed: vec![], plan: saved.snapshot.plan, mounts, legacy: None };
+    Ok((LegacyRoom { id: id.into(), authority }, allowed, dropped))
+}
+
+/// The room id a saved room file belongs to: "<hex id>.json".
+pub(crate) fn room_id_from_file(name: &str) -> Option<String> {
+    let stem = name.strip_suffix(".json")?;
+    if stem.is_empty() || stem.len() % 2 != 0 || !stem.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+    let bytes = (0..stem.len()).step_by(2).map(|i| u8::from_str_radix(&stem[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
 }
 
 fn steps_entry(record: &ReplySteps, offset: u64, len: u64) -> StepsIndexEntry {

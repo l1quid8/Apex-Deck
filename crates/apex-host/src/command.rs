@@ -37,6 +37,12 @@ pub enum Command {
     AssistantMessage { #[serde(flatten)] input: crate::assistant_service::AssistantMessageInput },
     AssistantTasksList { owner: crate::assistant_tasks::TaskOwner, #[serde(default)] request_id: Option<String> },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
+    /// Snapshot pre-provenance ledgers (originals untouched) and describe an import. Read-only.
+    LegacyImportPreview {},
+    /// Import exactly the previewed legacy sources, bound by their sha256. Protected.
+    LegacyImportApply { snapshot: String, sources: std::collections::BTreeMap<String, String> },
+    /// One full legacy transcript from a hashed snapshot, labelled unverified. Read-only.
+    LegacyImportHistory { snapshot: String, request_id: String },
     MonitorSuggestSources { cwd: String },
     ProjectMemoryList { #[serde(flatten)] input: crate::project_memory_service::ReadNotes },
     ProjectMemorySave { #[serde(flatten)] input: crate::project_memory_service::SaveNotes },
@@ -191,7 +197,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. })
+        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -291,6 +297,18 @@ impl Host {
                 reply(snapshot)
             }
             AssistantTaskAction { input } => reply(self.assistant_task_action(input).await?),
+            LegacyImportPreview {} => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.legacy_import_preview()).await?)
+            }
+            LegacyImportApply { snapshot, sources } => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.legacy_import_apply(snapshot, sources)).await?)
+            }
+            LegacyImportHistory { snapshot, request_id } => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.legacy_import_history(snapshot, request_id)).await?)
+            }
             PersonalList {} => reply(self.personal_list()?),
             PersonalGet { assistant_id } => reply(self.personal_get(&assistant_id)?),
             PersonalCreate { input } => {
@@ -583,7 +601,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 159);
+        assert_eq!(names.len(), 162);
+        for name in ["legacy_import_preview", "legacy_import_apply", "legacy_import_history"] { assert!(names.contains(&name.to_owned())); }
         for name in ["project_memory_list", "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));

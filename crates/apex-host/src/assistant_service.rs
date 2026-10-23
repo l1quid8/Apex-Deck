@@ -347,6 +347,9 @@ impl Host {
                     }
                     return Err("The completed assistant request has no response record.".into());
                 }
+                if rec.status == ConversationStatus::Legacy {
+                    return Err("This request was imported from data saved before protected provenance. It is kept as unverified history and never runs again; send it as a new message.".into());
+                }
                 return Err("This request is already being processed. Wait for it to finish before sending it again.".into());
             }
             assistant_conversation::BeginOutcome::Started(rec) => rec,

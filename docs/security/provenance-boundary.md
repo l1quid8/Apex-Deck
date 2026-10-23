@@ -74,8 +74,8 @@ are crate-private. Paired devices cannot forward a wrapper to bypass scope.
 
 Protected calls cover assistant submissions/actions, personal submissions and
 decisions, standing permissions/configuration/machine grants, explicit memory
-mutations, room authorization/configuration, and assistant-owned room
-continuation. Project-note mutations are reserved to the UI pending the narrow
+mutations, room authorization/configuration, assistant-owned room
+continuation, and the confirmed legacy ledger import. Project-note mutations are reserved to the UI pending the narrow
 context-derived worker bridge in Phase 4. Normal coding/file/process tools are
 not added to this protected intent surface.
 
@@ -154,7 +154,22 @@ copy of unsigned JSON into the journal:
    an old `Approved` flag or label imported facts as newly user-confirmed.
 6. Verify restoration and deduplication before changing which store the UI uses.
 
-That import UI/command is **not implemented** in this candidate. Do not activate
+The host half of that import exists; its UI does not yet. `legacy_import_preview`
+(read-only) copies each legacy file into `<data>/legacy-import/<YYYYMMDD-HHMMSS>/`
+with a `manifest.json` of paths, sizes and sha256, makes the copies read-only and
+reuses a matching earlier snapshot. `legacy_import_apply` is a protected UI intent
+(the broker's `protected()` list includes it, so an installed broker must be
+updated before it can issue one). It binds the exact previewed hashes, re-hashes
+the snapshot, and writes each ledger in one compare-and-swap with a `legacy`
+marker (`verified: false`) on every record. Queued tasks become proposals,
+in-progress tasks are interrupted, approvals, leases, delegation lineage and
+assistant thread claims are dropped, room manifests get empty remembered
+permissions and only the mount chain leading to the room's folder, and
+conversations keep only capped excerpts in a non-executable `legacy` state. The
+full transcript is served read-only from the snapshot by `legacy_import_history`.
+A ledger imports one legacy source: an exact retry writes nothing, and different
+content is refused. Personal assistants and machine grants stay in the snapshot
+and are not imported. Do not activate
 this candidate on the user's normal data directory or distribute it as a
 replacement app until migration and native acceptance pass. New installations
 and isolated QA can exercise the protected path without blessing legacy data.

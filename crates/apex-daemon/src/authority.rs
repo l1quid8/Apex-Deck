@@ -150,6 +150,9 @@ pub fn command_needs(command: &Command) -> Need {
         // The phone is this Mac's simulator; paired devices can't drive it.
         PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
         ModRead { .. } | ModInstall { .. } | ModProcessRun { .. } | ModHttpFetch { .. } | ModFsWrite { .. } | ModFsStat { .. } | ModEnvGet { .. } => Need::Never,
+        // Legacy migration reads every old ledger and transcript on this Mac, and
+        // its apply is a UI-attested intent issued only for this Mac.
+        LegacyImportPreview {} | LegacyImportApply { .. } | LegacyImportHistory { .. } => Need::Never,
     }
 }
 
@@ -414,6 +417,9 @@ mod tests {
             ("phone_give_back", None, json!({})),
             ("phone_bot", None, json!({ "room": "mine", "bot": "a", "name": "A", "request": { "kind": "look" } })),
             ("phone_chat_queued", None, json!({ "room": "mine" })),
+            ("legacy_import_preview", None, json!({})),
+            ("legacy_import_apply", None, json!({ "snapshot": "20261022-101501", "sources": {} })),
+            ("legacy_import_history", None, json!({ "snapshot": "20261022-101501", "requestId": "r" })),
         ]
     }
 
