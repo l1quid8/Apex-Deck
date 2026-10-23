@@ -79,12 +79,12 @@
 
 /* Frost and Liquid share one surface treatment; the numeric controls only
    change its fill, blur, corner size, backdrop and spacing. */
-:root[data-deck-theme="glass"] :is(.pane, .rail, .thread, .thread-details, .composer-box, .md-code, .approval-plan, .quote-preview, .queued-inline) {
+:root[data-deck-theme="glass"] :is(.pane, .rail, .assistant-workspace, .thread, .thread-details, .composer-box, .md-code, .approval-plan, .quote-preview, .queued-inline) {
   border-radius: var(--deck-radius, 12px);
   -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
   backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
 }
-:root[data-deck-theme="glass"] :is(.pane, .rail, .thread-details, .composer-box, .md-code, .quote-preview, .queued-inline) {
+:root[data-deck-theme="glass"] :is(.pane, .rail, .assistant-workspace, .thread-details, .composer-box, .md-code, .quote-preview, .queued-inline) {
   background-color: var(--deck-glass-fill);
   border-color: var(--deck-edge);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .12), 0 14px 38px -28px rgb(0 0 0 / .7);

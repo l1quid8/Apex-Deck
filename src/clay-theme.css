@@ -90,7 +90,7 @@
    --panel-2 and --line, so they follow the tokens above; these rules set
    the radius and remove glass effects Clay never uses. */
 :root[data-deck-theme="clay"] body { background: var(--deck-bg); }
-:root[data-deck-theme="clay"] :is(.pane, .rail, .thread-details, .composer-box, .md-code, .quote-preview, .queued-inline) {
+:root[data-deck-theme="clay"] :is(.pane, .rail, .assistant-workspace, .thread-details, .composer-box, .md-code, .quote-preview, .queued-inline) {
   border-radius: var(--deck-radius, 10px);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
