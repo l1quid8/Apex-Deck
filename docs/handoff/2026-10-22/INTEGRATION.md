@@ -4,6 +4,32 @@ Branch: `fix/assistant-workspace-integration` in the existing assistant-workspac
 worktree. No integration changes were made in the primary checkout or installed
 apps; other work continues in the primary checkout independently.
 
+## Security follow-up after `ae792dce`
+
+Independent broader source review found two P1 issues. The first is corrected
+and scoped-review approved in `05d2502`: old Full/Edits room grants reset to Ask,
+custom CLI bots stay inactive until added again through the UI, and preview/result
+rows disclose omitted bots while the original snapshot stays available. Three
+regressions failed before the fix; all 19 import integration tests pass afterwards.
+The complete checks passed: 2,134 JS, 1,310 Rust with 8 existing ignored, the
+3 feature-off production checks, TypeScript and whitespace validation. Logs:
+`/tmp/apex-gate-security-{npm,cargo,production}.log`. The additional skipped-bot
+count/result assertion also passed in a focused run after the full suite.
+
+The second P1 remains open: an editable `owner.lock` does not prevent another
+pinned daemon, and an old room handle can write back revoked authority using a
+fresh broker revision. The correction is specified in
+[the protected host ownership plan](../../superpowers/plans/2026-10-22-protected-host-ownership.md).
+Implementation and independent review are still required; source tests alone
+will not establish the installed duplicate-daemon boundary.
+
+G2b's remaining UI work remains assigned to @deepgeek from `ae792dce`; mention
+@null with the scoped commit and results. It need not absorb this host fix.
+No main merge, build, installation, re-pin, import or new installed acceptance
+run occurred during this follow-up. Use [INSTALL-CHECKPOINT.md](INSTALL-CHECKPOINT.md)
+before preparing the candidate; the release directory belongs to a different
+shared checkout and the old finish-install script is unsuitable.
+
 ## Integrated source
 
 | Source commit | Integration commit | Scope |

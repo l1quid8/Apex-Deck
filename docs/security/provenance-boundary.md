@@ -2,6 +2,9 @@
 
 Status: implemented for review, **not production accepted**. Phase 4 is blocked.
 The existing Agents tab and Full access execution rules are unchanged.
+Current integration and outstanding UI work are tracked in
+[the gate handoff](../handoff/2026-10-22/INTEGRATION.md); the earlier
+[candidate validation](provenance-validation.md) is historical evidence.
 
 ## Guarantee and threat boundary
 
@@ -154,7 +157,9 @@ copy of unsigned JSON into the journal:
    an old `Approved` flag or label imported facts as newly user-confirmed.
 6. Verify restoration and deduplication before changing which store the UI uses.
 
-The host half of that import exists; its UI does not yet. `legacy_import_preview`
+The host import and initial preview/confirmation UI exist; G2b's remaining
+refresh, record-marker and read-only history work is still pending review.
+`legacy_import_preview`
 (read-only) copies each legacy file into `<data>/legacy-import/<YYYYMMDD-HHMMSS>/`
 with a `manifest.json` of paths, sizes and sha256, makes the copies read-only and
 reuses a matching earlier snapshot. `legacy_import_apply` is a protected UI intent
@@ -164,12 +169,22 @@ the snapshot, and writes each ledger in one compare-and-swap with a `legacy`
 marker (`verified: false`) on every record. Queued tasks become proposals,
 in-progress tasks are interrupted, approvals, leases, delegation lineage and
 assistant thread claims are dropped, room manifests get empty remembered
-permissions and only the mount chain leading to the room's folder, and
+permissions, Full/Edits bot access resets to Ask, custom command bots stay
+inactive in the snapshot until added again through the UI, and only the mount
+chain leading to the room's folder is retained. Imported
 conversations keep only capped excerpts in a non-executable `legacy` state. The
 full transcript is served read-only from the snapshot by `legacy_import_history`.
-A ledger imports one legacy source: an exact retry writes nothing, and different
-content is refused. Personal assistants and machine grants stay in the snapshot
-and are not imported. Do not activate
+A task, conversation or personal-assistant ledger imports one legacy source:
+an exact retry writes nothing, and different content is refused. Rooms deduplicate
+by room ID so a later import can restore additional rooms without replacing an
+existing protected manifest. Personal assistants preserve identities, memories,
+correction/forget chains and historical messages as legacy/unverified records.
+Every action class requires at least Ask; machine links and remembered automatic
+approvals are ungranted, pending work needs a fresh decision, schedules wait for
+confirmation and old process fingerprints cannot become recovery instructions.
+Machine grants are previewed but never imported. See
+[the host completion notes](../handoff/2026-10-22/CONTINUATION.md) for the reviewed
+mapping. Do not activate
 this candidate on the user's normal data directory or distribute it as a
 replacement app until migration and native acceptance pass. New installations
 and isolated QA can exercise the protected path without blessing legacy data.
@@ -222,8 +237,11 @@ These tests do not substitute for installed OS verification. Before Phase 4:
 - Finish reviewed legacy migration and rerun native CLI integration acceptance.
 
 Administrator authentication is required for the LaunchDaemon installation.
-This session's `sudo -n true` returned `sudo: a password is required`.
-The installer has been prepared and syntax-checked but has not been run.
+The historical candidate was installed and later rolled back; the existing
+broker and protected copy are not acceptance of this integration source. The
+current gate build has not been installed or re-pinned. Follow the
+[install checkpoint](../handoff/2026-10-22/INSTALL-CHECKPOINT.md), retaining all
+protected records as well as the original user files.
 
 Phase 4 must derive its original request from protected storage and recorded
 intent. Record existence in the old JSON is never evidence of human origin.

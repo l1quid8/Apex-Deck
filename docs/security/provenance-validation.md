@@ -1,5 +1,12 @@
 # Provenance candidate validation
 
+Historical review of source `04da0fcd519049a9b58dd114f2eb2a897353b465`.
+The software counts, failing tests and uninstalled-machine state below describe
+that earlier candidate, not the current checkout or installation. Current gate
+status and commands live in [INTEGRATION.md](../handoff/2026-10-22/INTEGRATION.md).
+Use the [install checkpoint](../handoff/2026-10-22/INSTALL-CHECKPOINT.md) before
+building or replacing an app; this page is retained as evidence.
+
 **Verdict: gated candidate, not verified for activation. Phase 4 is blocked.**
 
 ## Passing software checks
