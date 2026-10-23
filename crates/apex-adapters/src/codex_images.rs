@@ -80,6 +80,18 @@ pub async fn generate_with_path(
         "--sandbox",
         "read-only",
         "-c",
+        "project_doc_max_bytes=0",
+        "-c",
+        "features.skip_host_skill_discovery=true",
+        "-c",
+        "skills.bundled.enabled=false",
+        "-c",
+        "features.skill_search=false",
+        "-c",
+        "features.plugins=false",
+        "-c",
+        "forced_login_method=chatgpt",
+        "-c",
         "features.shell_tool=false",
         "-c",
         "features.apply_patch_freeform=false",
@@ -454,6 +466,46 @@ mod tests {
         .unwrap_err()
         .contains("timed out"));
         assert!(start.elapsed() < Duration::from_secs(5));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generation_disables_project_documents_skills_plugins_and_api_auth() {
+        let root = fixture();
+        let job = root.join("private-job");
+        std::fs::create_dir(&job).unwrap();
+        let path = fake_cli(
+            &root,
+            "printf '%s\\n' \"$@\" > argv; echo '{\"type\":\"turn.failed\"}'",
+        );
+        assert!(generate_with_path("simple avatar", &job, Some(&path))
+            .await
+            .is_err());
+        let captured = std::fs::read_to_string(job.join("argv")).unwrap();
+        let args: Vec<_> = captured.lines().collect();
+        for restriction in [
+            "project_doc_max_bytes=0",
+            "features.skip_host_skill_discovery=true",
+            "skills.bundled.enabled=false",
+            "features.skill_search=false",
+            "features.plugins=false",
+            "forced_login_method=chatgpt",
+            "features.shell_tool=false",
+            "features.apply_patch_freeform=false",
+            "features.image_generation=true",
+            "features.multi_agent=false",
+            "features.js_repl=false",
+            "web_search=disabled",
+        ] {
+            assert!(
+                args.windows(2).any(|pair| pair == ["-c", restriction]),
+                "missing restriction: {restriction}"
+            );
+        }
+        assert!(args.contains(&"--ignore-user-config"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--sandbox", "read-only"]));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
