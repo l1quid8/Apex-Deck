@@ -31,7 +31,7 @@ export function validateOutput(output) {
 }
 export function upgradeScripts(input) {
   const m = validateManifest(input);
-  const worker = String.raw`import hashlib,json,os,plistlib,pwd,shutil,stat,subprocess,sys,time
+  const worker = String.raw`import hashlib,json,os,plistlib,pwd,re,shutil,stat,subprocess,sys,time
 from pathlib import Path
 M = json.loads(MANIFEST_LITERAL)
 ROOT = Path('/Library/Application Support/Apex Deck Provenance')
@@ -123,11 +123,37 @@ def preflight(payload=False):
         protected(STAGED); validate_bundle(STAGED)
     return user,agent
 
+def service_pid(state):
+    match=re.search(r'^\s*pid = ([0-9]+)\s*$',state,re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+def broker_socket_identity():
+    try:
+        info=Path('/var/run/dev.apexdeck.provenance.sock').lstat()
+        if stat.S_ISSOCK(info.st_mode): return (info.st_dev,info.st_ino,info.st_ctime_ns)
+    except FileNotFoundError: pass
+    return None
+
+def wait_for_broker(previous_pid,previous_socket):
+    for _ in range(20):
+        result=run('/bin/launchctl','print','system/dev.apexdeck.provenance',required=False)
+        pid=service_pid(result.stdout)
+        socket=broker_socket_identity()
+        running=re.search(r'^\s*state = running\s*$',result.stdout,re.MULTILINE)
+        if result.returncode==0 and running and pid and pid!=previous_pid and socket is not None and socket!=previous_socket:
+            try: os.kill(pid,0)
+            except (ProcessLookupError,PermissionError): pass
+            else: return pid
+        time.sleep(1)
+    raise RuntimeError('Protected broker did not become ready within 20 seconds (new live PID, running service, and fresh socket required)')
+
 def install():
     user,agent = preflight(payload=True)
     domain='gui/'+str(user.pw_uid)
     agent_loaded=run('/bin/launchctl','print',domain+'/dev.apexdeck.daemon',required=False).returncode==0
-    broker_loaded=run('/bin/launchctl','print','system/dev.apexdeck.provenance',required=False).returncode==0
+    broker_state=run('/bin/launchctl','print','system/dev.apexdeck.provenance',required=False)
+    broker_loaded=broker_state.returncode==0
+    previous_broker_pid=service_pid(broker_state.stdout)
     backup=UPGRADES/('backup-'+M['id'])
     backup.mkdir(mode=0o700)
     steps=[]; stopped=False; config_changed=False; complete=False; records={}; broker_stopped=False; broker_started=False; recovery_ok=False
@@ -175,13 +201,9 @@ def install():
         for name,want in records.items():
             if digest(ROOT/name)!=want: raise RuntimeError('Authority changed during installation')
         validate_bundle(TRUSTED); validate_bundle(APPLICATION)
+        previous_socket=broker_socket_identity()
         run('/bin/launchctl','bootstrap','system',BROKER_PLIST); broker_started=True
-        for _ in range(20):
-            if Path('/var/run/dev.apexdeck.provenance.sock').is_socket(): break
-            time.sleep(1)
-        else: raise RuntimeError('Protected broker socket did not appear')
-        state=run('/bin/launchctl','print','system/dev.apexdeck.provenance').stdout
-        if 'state = running' not in state: raise RuntimeError('Protected broker did not start')
+        wait_for_broker(previous_broker_pid,previous_socket)
         for name,want in records.items():
             if digest(ROOT/name)!=want: raise RuntimeError('Authority changed before the app was reopened')
         if digest(agent)!=agent_hash: raise RuntimeError('User service plist changed during installation')

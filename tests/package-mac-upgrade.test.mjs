@@ -93,3 +93,34 @@ with tempfile.TemporaryDirectory() as directory:
  backup=u.UPGRADES/('backup-'+u.M['id']);assert (backup/'authority/journal.json').read_bytes()==(u.ROOT/'journal.json').read_bytes()
  assert (backup/'failed-previous-trusted.app').exists();assert not (u.UPGRADES/'install.lock').exists()
 `));
+
+test('broker readiness retries a stale socket, asynchronous waiting state, old PID, and a dead new PID',()=>python(String.raw`
+responses=iter([
+ 'state = waiting\n',
+ 'state = running\npid = 111\n',
+ 'state = running\npid = 222\n',
+ 'state = running\npid = 222\n',
+])
+sockets=iter([(1,10,100),(1,10,100),(1,20,200),(1,20,200)])
+calls=[];sleeps=[];probes=[]
+u.run=lambda *args,**kwargs:(calls.append(args) or subprocess.CompletedProcess(args,0,next(responses),''))
+u.broker_socket_identity=lambda:next(sockets)
+u.time.sleep=lambda delay:sleeps.append(delay)
+def live(pid,signal):
+ probes.append((pid,signal))
+ if len(probes)==1:raise ProcessLookupError('new process not live yet')
+u.os.kill=live
+assert u.wait_for_broker(111,(1,10,100))==222
+assert len(calls)==4 and sleeps==[1,1,1] and probes==[(222,0),(222,0)]
+`));
+test('broker readiness refuses a stale socket even with a live replacement service and times out without blocking tests',()=>python(String.raw`
+sleeps=[];probes=[]
+u.run=lambda *args,**kwargs:subprocess.CompletedProcess(args,0,'state = running\npid = 222\n','')
+u.broker_socket_identity=lambda:(1,10,100)
+u.time.sleep=lambda delay:sleeps.append(delay)
+u.os.kill=lambda pid,signal:probes.append((pid,signal))
+try:u.wait_for_broker(111,(1,10,100))
+except RuntimeError as error:assert '20 seconds' in str(error)
+else:raise AssertionError('stale socket was accepted')
+assert len(sleeps)==20 and not probes
+`));
