@@ -506,6 +506,7 @@ mod tests {
         let error = runtime.block_on(host.call(command)).unwrap_err();
         assert!(error.contains("protected provenance receipt"), "{error}");
         assert!(!data.join("assistant-conversations-v1.json").exists());
+        assert!(!crate::authority_file::fixture_path(&data.join("assistant-conversations-v1.json")).exists());
         let _ = std::fs::remove_dir_all(data);
     }
 

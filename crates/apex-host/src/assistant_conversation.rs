@@ -653,20 +653,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("ledger.json");
+        let disk = crate::authority_file::fixture_path(&path);
         let store = ConversationStore::open(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        std::fs::create_dir(&disk).unwrap();
         assert!(matches!(
             store.begin(request(), false),
             Err(ConversationError::Storage(_))
         ));
         assert!(store.get("req-1", &request().owner).unwrap().is_none());
-        std::fs::remove_dir(&path).unwrap();
+        std::fs::remove_dir(&disk).unwrap();
         let started = match store.begin(request(), false).unwrap() {
             BeginOutcome::Started(record) => record,
             _ => panic!("expected new request"),
         };
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        std::fs::remove_file(&disk).unwrap();
+        std::fs::create_dir(&disk).unwrap();
         assert!(matches!(
             store.finish("req-1", &request().owner, started.revision, "done".into()),
             Err(ConversationError::Storage(_))

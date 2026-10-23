@@ -1839,8 +1839,9 @@ mod tests {
         let root = folder();
         std::fs::create_dir_all(&root).unwrap();
         let ledger = root.join("ledger.json");
+        let disk = crate::authority_file::fixture_path(&ledger);
         let store = AssistantTasks::open(&ledger).unwrap();
-        std::fs::create_dir(&ledger).unwrap();
+        std::fs::create_dir(&disk).unwrap();
         assert_eq!(
             store
                 .submit_human_request(request("r", "Do it"), "brief".into(), Some(destination()))
@@ -1849,7 +1850,7 @@ mod tests {
             TaskErrorKind::Storage
         );
         assert!(store.list(None).unwrap().is_empty());
-        std::fs::remove_dir(&ledger).unwrap();
+        std::fs::remove_dir(&disk).unwrap();
         let task = store
             .submit_human_request(request("r", "Do it"), "brief".into(), Some(destination()))
             .unwrap();

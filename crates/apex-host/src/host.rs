@@ -2403,7 +2403,7 @@ mod host_tests {
         first.shutdown();
         drop(first);
         // The room file survives, but its authority manifest does not (a fresh pin).
-        std::fs::remove_file(data.join("saved-chats-v1/room-authority-v1.json")).unwrap();
+        std::fs::remove_file(crate::authority_file::fixture_path(&data.join("saved-chats-v1/room-authority-v1.json"))).unwrap();
         let entry = data.join("worker-processes/legacy");
         std::fs::create_dir_all(&entry).unwrap();
         let second = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone())

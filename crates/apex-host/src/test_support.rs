@@ -25,6 +25,11 @@ pub fn isolated_host_assuming_verified_ui(
         .insert(root);
     Host::new(paths, runtime)
 }
+/// Where an isolated fixture keeps the protected document for `ledger`, so a
+/// test can tell it apart from legacy user JSON at `ledger` itself.
+pub fn protected_fixture_path(ledger: &Path) -> PathBuf {
+    crate::authority_file::fixture_path(ledger)
+}
 pub(crate) fn isolated(path: &Path) -> bool {
     // Resolve the nearest existing ancestor; filenames need not exist yet.
     let mut base = path;

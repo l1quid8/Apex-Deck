@@ -880,6 +880,8 @@ mod tests {
     struct Fixture {
         dir: PathBuf,
         path: PathBuf,
+        /// Where the local fixture keeps the protected document for `path`.
+        disk: PathBuf,
     }
     impl Fixture {
         fn new() -> Self {
@@ -891,7 +893,8 @@ mod tests {
             ));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("project-memory-v1.json");
-            Self { dir, path }
+            let disk = crate::authority_file::fixture_path(&path);
+            Self { dir, path, disk }
         }
         fn store(&self) -> ProjectMemory {
             ProjectMemory::open(&self.path).unwrap()
@@ -1061,7 +1064,7 @@ mod tests {
             .unwrap()
             .text
             .is_empty());
-        let bytes = std::fs::read_to_string(&fixture.path).unwrap();
+        let bytes = std::fs::read_to_string(&fixture.disk).unwrap();
         assert!(!bytes.contains("private-original"));
         assert!(!bytes.contains("private-correction"));
         error(
@@ -1083,18 +1086,18 @@ mod tests {
         assert!(store.list(&project(), 1).unwrap().is_empty());
         assert!(store.current(&project(), 1).unwrap().is_empty());
         assert!(store.scratch(&project(), "missing").unwrap().is_none());
-        assert!(!fixture.path.exists());
+        assert!(!fixture.disk.exists());
         store.save(save("remember", 1)).unwrap();
-        let before = std::fs::read(&fixture.path).unwrap();
-        let modified = std::fs::metadata(&fixture.path)
+        let before = std::fs::read(&fixture.disk).unwrap();
+        let modified = std::fs::metadata(&fixture.disk)
             .unwrap()
             .modified()
             .unwrap();
         fixture.store().list(&project(), 100).unwrap();
         store.current(&project(), 100).unwrap();
-        assert_eq!(std::fs::read(&fixture.path).unwrap(), before);
+        assert_eq!(std::fs::read(&fixture.disk).unwrap(), before);
         assert_eq!(
-            std::fs::metadata(&fixture.path)
+            std::fs::metadata(&fixture.disk)
                 .unwrap()
                 .modified()
                 .unwrap(),
@@ -1113,12 +1116,12 @@ mod tests {
             scratch
         );
         let first = store.promote(promote(&scratch, "delivery-a", 3)).unwrap();
-        let before = std::fs::read(&fixture.path).unwrap();
+        let before = std::fs::read(&fixture.disk).unwrap();
         assert_eq!(
             store.promote(promote(&scratch, "delivery-a", 4)).unwrap(),
             first
         );
-        assert_eq!(std::fs::read(&fixture.path).unwrap(), before);
+        assert_eq!(std::fs::read(&fixture.disk).unwrap(), before);
         assert_eq!(
             store.promote(promote(&scratch, "delivery-b", 4)).unwrap(),
             first
@@ -1272,12 +1275,12 @@ mod tests {
     fn project_memory_reopen_rejects_unknown_document_version_without_rewrite() {
         let fixture = Fixture::new();
         let original = b"{\"version\":2}";
-        std::fs::write(&fixture.path, original).unwrap();
+        std::fs::write(&fixture.disk, original).unwrap();
         error(
             ProjectMemory::open(&fixture.path).map(|_| ()),
             TaskErrorKind::Storage,
         );
-        assert_eq!(std::fs::read(&fixture.path).unwrap(), original);
+        assert_eq!(std::fs::read(&fixture.disk).unwrap(), original);
     }
 
     // Publishing memory before the write succeeds would make failed writes visible.
@@ -1290,7 +1293,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(
-                std::fs::metadata(&fixture.path)
+                std::fs::metadata(&fixture.disk)
                     .unwrap()
                     .permissions()
                     .mode()
@@ -1298,16 +1301,16 @@ mod tests {
                 0o600
             );
         }
-        let original = std::fs::read(&fixture.path).unwrap();
-        std::fs::remove_file(&fixture.path).unwrap();
-        std::fs::create_dir(&fixture.path).unwrap();
+        let original = std::fs::read(&fixture.disk).unwrap();
+        std::fs::remove_file(&fixture.disk).unwrap();
+        std::fs::create_dir(&fixture.disk).unwrap();
         error(
             store.save(save("must roll back", 2)),
             TaskErrorKind::Storage,
         );
         assert_eq!(store.current(&project(), 3).unwrap(), vec![first]);
-        std::fs::remove_dir(&fixture.path).unwrap();
-        std::fs::write(&fixture.path, original).unwrap();
+        std::fs::remove_dir(&fixture.disk).unwrap();
+        std::fs::write(&fixture.disk, original).unwrap();
         assert_eq!(fixture.store().current(&project(), 3).unwrap().len(), 1);
         assert_eq!(std::fs::read_dir(&fixture.dir).unwrap().count(), 1);
     }
@@ -1348,7 +1351,7 @@ mod tests {
         let fixture = Fixture::new();
         let first = fixture.store().save(save("seed", 1)).unwrap();
         let mut document: Document =
-            serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(&fixture.disk).unwrap()).unwrap();
         document.notes.clear();
         for index in 1..=500 {
             let mut note = first.clone();
@@ -1356,7 +1359,7 @@ mod tests {
             document.notes.insert(note.id.clone(), note);
         }
         document.next_note_id = 500;
-        std::fs::write(&fixture.path, serde_json::to_vec(&document).unwrap()).unwrap();
+        std::fs::write(&fixture.disk, serde_json::to_vec(&document).unwrap()).unwrap();
         let store = fixture.store();
         error(
             store.save(save("beyond active limit", 2)),
@@ -1373,7 +1376,7 @@ mod tests {
 
         // Populate historical tombstones in one fixture write, avoiding thousands of fsyncs.
         let mut document: Document =
-            serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(&fixture.disk).unwrap()).unwrap();
         document.notes.clear();
         for index in 1..=5000 {
             let mut note = first.clone();
@@ -1382,7 +1385,7 @@ mod tests {
             note.deleted_at = Some(1);
             document.notes.insert(note.id.clone(), note);
         }
-        std::fs::write(&fixture.path, serde_json::to_vec(&document).unwrap()).unwrap();
+        std::fs::write(&fixture.disk, serde_json::to_vec(&document).unwrap()).unwrap();
         let store = fixture.store();
         error(
             store.save(save("beyond historical limit", 3)),
@@ -1393,7 +1396,7 @@ mod tests {
         store.save(other).unwrap();
 
         let mut document: Document =
-            serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(&fixture.disk).unwrap()).unwrap();
         document.notes.retain(|_, note| note.project != project());
         for index in 1..=500 {
             let mut note = first.clone();
@@ -1401,7 +1404,7 @@ mod tests {
             note.expires_at = Some(2);
             document.notes.insert(note.id.clone(), note);
         }
-        std::fs::write(&fixture.path, serde_json::to_vec(&document).unwrap()).unwrap();
+        std::fs::write(&fixture.disk, serde_json::to_vec(&document).unwrap()).unwrap();
         let store = fixture.store();
         store
             .save(save("expiry releases active capacity", 3))
@@ -1416,14 +1419,14 @@ mod tests {
         let fixture = Fixture::new();
         let first = fixture.store().stage(stage("seed", 1)).unwrap();
         let mut document: Document =
-            serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(&fixture.disk).unwrap()).unwrap();
         document.scratch.clear();
         for index in 0..1000 {
             let mut scratch = first.clone();
             scratch.id = format!("scratch-seed-{index}");
             document.scratch.insert(scratch.id.clone(), scratch);
         }
-        std::fs::write(&fixture.path, serde_json::to_vec(&document).unwrap()).unwrap();
+        std::fs::write(&fixture.disk, serde_json::to_vec(&document).unwrap()).unwrap();
         let store = fixture.store();
         error(
             store.stage(stage("beyond scratch limit", 2)),
@@ -1441,7 +1444,7 @@ mod tests {
         error(store.stage(revision), TaskErrorKind::StaleRevision);
 
         let mut document: Document =
-            serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(&fixture.disk).unwrap()).unwrap();
         document
             .scratch
             .retain(|_, scratch| scratch.project != project());
@@ -1452,7 +1455,7 @@ mod tests {
             scratch.deleted_at = Some(2);
             document.scratch.insert(scratch.id.clone(), scratch);
         }
-        std::fs::write(&fixture.path, serde_json::to_vec(&document).unwrap()).unwrap();
+        std::fs::write(&fixture.disk, serde_json::to_vec(&document).unwrap()).unwrap();
         let store = fixture.store();
         error(
             store.stage(stage("beyond retained scratch history", 3)),
@@ -1471,16 +1474,16 @@ mod tests {
         let scratch = store.stage(stage("observation", 1)).unwrap();
         let receipt = store.promote(promote(&scratch, "delivery-0", 2)).unwrap();
         let mut document: Document =
-            serde_json::from_slice(&std::fs::read(&fixture.path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(&fixture.disk).unwrap()).unwrap();
         let binding = document.delivery_ids["delivery-0"].clone();
         for index in 1..10000 {
             document
                 .delivery_ids
                 .insert(format!("delivery-{index}"), binding.clone());
         }
-        std::fs::write(&fixture.path, serde_json::to_vec(&document).unwrap()).unwrap();
+        std::fs::write(&fixture.disk, serde_json::to_vec(&document).unwrap()).unwrap();
         let store = fixture.store();
-        let before = std::fs::read(&fixture.path).unwrap();
+        let before = std::fs::read(&fixture.disk).unwrap();
         assert_eq!(
             store.promote(promote(&scratch, "delivery-0", 3)).unwrap(),
             receipt
@@ -1495,7 +1498,7 @@ mod tests {
             store.promote(promote(&scratch, "new-delivery", 3)),
             TaskErrorKind::InvalidRequest,
         );
-        assert_eq!(std::fs::read(&fixture.path).unwrap(), before);
+        assert_eq!(std::fs::read(&fixture.disk).unwrap(), before);
         let mut other = stage("independent source", 3);
         other.project = other_project();
         let other = store.stage(other).unwrap();
@@ -1619,9 +1622,9 @@ mod tests {
         }
         assert_eq!(reviewed.created_at, 10);
         assert_eq!(reviewed.expires_at, 86_400_010);
-        let persisted = std::fs::read(&fixture.path).unwrap();
+        let persisted = std::fs::read(&fixture.disk).unwrap();
         assert_eq!(store.stage(review.clone()).unwrap(), reviewed);
-        assert_eq!(std::fs::read(&fixture.path).unwrap(), persisted);
+        assert_eq!(std::fs::read(&fixture.disk).unwrap(), persisted);
         assert_eq!(
             fixture.store().scratch(&project(), &captured.id).unwrap(),
             Some(reviewed.clone())
@@ -1634,13 +1637,13 @@ mod tests {
         assert_eq!(receipt.expected_task_revision, 8);
 
         // Re-review after promotion cannot replace or invalidate the original receipt.
-        let before = std::fs::read(&fixture.path).unwrap();
+        let before = std::fs::read(&fixture.disk).unwrap();
         review.expected_task_revision = 9;
         review.now = 23;
         let rejected = store.stage(review.clone()).unwrap_err();
         assert_eq!(rejected.kind, TaskErrorKind::StaleRevision);
         assert!(rejected.message.contains("already promoted"));
-        assert_eq!(std::fs::read(&fixture.path).unwrap(), before);
+        assert_eq!(std::fs::read(&fixture.disk).unwrap(), before);
         assert_eq!(
             store
                 .promote(promote(&reviewed, "reviewed-delivery", 24))
@@ -1682,13 +1685,13 @@ mod tests {
         let mut request = stage("pending result", 20);
         request.expected_task_revision = 8;
         let reviewed = store.stage(request.clone()).unwrap();
-        let before = std::fs::read(&fixture.path).unwrap();
+        let before = std::fs::read(&fixture.disk).unwrap();
         request.expected_task_revision = 7;
         error(store.stage(request.clone()), TaskErrorKind::StaleRevision);
         request.expected_task_revision = 9;
         request.now = 86_400_010;
         error(store.stage(request), TaskErrorKind::StaleRevision);
-        assert_eq!(std::fs::read(&fixture.path).unwrap(), before);
+        assert_eq!(std::fs::read(&fixture.disk).unwrap(), before);
         let unchanged = store.scratch(&project(), &captured.id).unwrap().unwrap();
         assert_eq!(unchanged, reviewed);
         assert_eq!(unchanged.created_at, 10);

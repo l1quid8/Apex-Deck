@@ -551,7 +551,7 @@ mod tests {
         let f = fixture().await;
         let saved=call(&f.host,"project_memory_save",json!({"assistant":f.alpha,"project":f.a,"text":"Project A decision","kind":"decision"})).await.unwrap();
         assert_eq!(saved["author"], Value::Null);
-        let before = std::fs::read(f.root.join("data/project-memory-v1.json")).unwrap();
+        let before = std::fs::read(crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json"))).unwrap();
         let list = call(
             &f.host,
             "project_memory_list",
@@ -561,7 +561,7 @@ mod tests {
         .unwrap();
         assert_eq!(list["notes"][0]["id"], saved["id"]);
         assert_eq!(
-            std::fs::read(f.root.join("data/project-memory-v1.json")).unwrap(),
+            std::fs::read(crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json"))).unwrap(),
             before
         );
         assert!(call(
@@ -594,7 +594,7 @@ mod tests {
         .await
         .is_err());
         assert_eq!(
-            std::fs::read(f.root.join("data/project-memory-v1.json")).unwrap(),
+            std::fs::read(crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json"))).unwrap(),
             before
         );
     }
@@ -624,7 +624,7 @@ mod tests {
         assert!(call(&f.host,"project_memory_forget",json!({"assistant":f.alpha,"project":f.b,"id":second["id"],"expectedVersion":second["version"]})).await.is_err());
         let erased=call(&f.host,"project_memory_forget",json!({"assistant":f.alpha,"project":f.a,"id":second["id"],"expectedVersion":second["version"]})).await.unwrap();
         assert_eq!(erased["text"], "");
-        let disk = std::fs::read_to_string(f.root.join("data/project-memory-v1.json")).unwrap();
+        let disk = std::fs::read_to_string(crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json"))).unwrap();
         assert!(!disk.contains("old secret test"));
         assert!(!disk.contains("replacement secret test"));
     }
@@ -697,8 +697,8 @@ mod tests {
         let project = serde_json::from_value(f.a.clone()).unwrap();
         let target = f.host.personal_get(alpha).unwrap().profile.unwrap();
         let personal_before =
-            std::fs::read(f.root.join("data/saved-chats-v1/personal-assistants.json")).unwrap();
-        let memory_before = std::fs::read(f.root.join("data/project-memory-v1.json")).unwrap();
+            std::fs::read(crate::authority_file::fixture_path(&f.root.join("data/saved-chats-v1/personal-assistants.json"))).unwrap();
+        let memory_before = std::fs::read(crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json"))).unwrap();
         let context = f
             .host
             .assemble_delegation_context(&owner, &project, "Lantern work", &target)
@@ -717,11 +717,11 @@ mod tests {
                 < f.host.personal_get(alpha).unwrap().context_budget_chars as usize
         );
         assert_eq!(
-            std::fs::read(f.root.join("data/saved-chats-v1/personal-assistants.json")).unwrap(),
+            std::fs::read(crate::authority_file::fixture_path(&f.root.join("data/saved-chats-v1/personal-assistants.json"))).unwrap(),
             personal_before
         );
         assert_eq!(
-            std::fs::read(f.root.join("data/project-memory-v1.json")).unwrap(),
+            std::fs::read(crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json"))).unwrap(),
             memory_before
         );
         let mut foreign = target.clone();
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(listed["sources"][0]["text"], "Use existing schema");
         assert_eq!(listed["sources"][0]["readOnly"], true);
         assert!(listed["notes"].as_array().unwrap().is_empty());
-        assert!(!f.root.join("data/project-memory-v1.json").exists());
+        assert!(!crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json")).exists());
         monitor.cwd = f.b["cwd"].as_str().unwrap().into();
         f.host
             .store()
@@ -861,7 +861,7 @@ mod tests {
             }
         }
         let disk =
-            std::fs::read_to_string(f.root.join("data/saved-chats-v1/personal-assistants.json"))
+            std::fs::read_to_string(crate::authority_file::fixture_path(&f.root.join("data/saved-chats-v1/personal-assistants.json")))
                 .unwrap();
         for text in ["first secret", "second secret", "third secret"] {
             assert!(!disk.contains(text));
@@ -921,7 +921,7 @@ mod tests {
         // A persisted fixture exercises additive legacy decode. No production
         // API is added just to let tests manufacture verified lineage.
         if lineage {
-            let path = f.root.join("data/assistant-tasks-v1.json");
+            let path = crate::authority_file::fixture_path(&f.root.join("data/assistant-tasks-v1.json"));
             let mut document: Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             document["tasks"][&task.id]["lineage"] = json!({"assistant":f.alpha,"project":f.a,"sourceEventId":"pe-1","delegationId":"delegate-1"});
@@ -1021,7 +1021,7 @@ mod tests {
             .await
             .is_err());
         assert!(
-            !std::fs::read_to_string(f.root.join("data/project-memory-v1.json"))
+            !std::fs::read_to_string(crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json")))
                 .unwrap()
                 .contains("Verified schema uses migrations.")
         );
@@ -1038,7 +1038,7 @@ mod tests {
             .await
             .unwrap_err()
             .contains("Legacy/unassigned"));
-        assert!(!f.root.join("data/project-memory-v1.json").exists());
+        assert!(!crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json")).exists());
     }
     #[tokio::test]
     async fn project_memory_context_hard_limit_includes_json_provenance_and_assignment() {
@@ -1170,6 +1170,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(!f.root.join("data/project-memory-v1.json").exists());
+        assert!(!crate::authority_file::fixture_path(&f.root.join("data/project-memory-v1.json")).exists());
     }
 }

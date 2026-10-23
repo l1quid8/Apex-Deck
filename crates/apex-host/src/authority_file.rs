@@ -11,9 +11,19 @@ use std::{io, path::Path};
 #[cfg(not(test))]
 static REVISIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
 
+/// Where the local fixture keeps a protected document. Production keeps it in
+/// the root broker, never at the user-owned path, and legacy user JSON stays at
+/// that path untouched. The fixture models the same separation so tests can
+/// tell a legacy original from the protected ledger.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn fixture_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".protected-fixture");
+    path.with_file_name(name)
+}
 #[cfg(any(test, feature = "test-support"))]
 fn local_read(path: &Path) -> io::Result<Vec<u8>> {
-    std::fs::read(path)
+    std::fs::read(fixture_path(path))
 }
 #[cfg(test)]
 pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -23,6 +33,7 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
 fn local_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+    let path = &fixture_path(path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
