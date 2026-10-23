@@ -117,3 +117,20 @@ test('Assign projects explicitly allows one exact folder without losing the assi
  find(row(),node=>node.type==='input').props.onChange({target:{checked:true}});tree=h.render();find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();
  assert.equal(saves[0].expectedRevision,4);assert.deepEqual(saves[0].projects,[{project,tools:'ask'},{project:outside.project,tools:'ask'}]);assert.equal(saves[0].folderGrant,undefined);
 });
+
+test('compact mode hides the intro, stats and filter for the Work view',async()=>{
+  const h=harness({compact:true});let tree=h.render();await tick();tree=h.render();
+  assert.equal(find(tree,node=>node.props?.className==='assistant-project-intro'),null);
+  assert.equal(find(tree,node=>node.props?.className==='assistant-project-overview'),null);
+  assert.equal(find(tree,node=>node.type==='select'&&node.props['aria-label']==='Projects to show'),null);
+  assert.ok(button(tree,'Assign projects'),'actions stay');
+});
+test('project cards show the folder, not the host id',async()=>{
+  const h=harness();let tree=h.render();await tick();tree=h.render();
+  const card=find(tree,node=>node.props?.className==='assistant-project-card');
+  assert.match(text(card),/\/work\/project/);assert.doesNotMatch(text(card),/host\s*·/);
+});
+test('focusTask selects that task when Work opens it',async()=>{
+  const h=harness({taskScopes:[{project,owner}],focusTask:{project,taskId:'task'}},{...baseTask,status:'ready_for_review',result:'Done'});let tree=h.render();await tick();tree=h.render();await tick();tree=h.render();
+  assert.match(text(tree),/Inspect result, changes and checks/);
+});
