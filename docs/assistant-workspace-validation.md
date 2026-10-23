@@ -1,10 +1,57 @@
 # Assistant workspace implementation and validation
 
-Implementation branch: `docs/assistant-workspace-plan`.
+Implementation branch: `feat/null-assistant-completion` in `/Users/tylercaldwell/Downloads/apex-deck-worktrees/null-assistant-integration`.
 
-This is an implementation record for the [approved plan](superpowers/plans/2026-10-22-assistant-workspace.md), not a release or installation record. The existing production Agents screen remains the reusable-worker manager. The approved main-pane assistant UI is still a later phase.
+Validated feature source: `696f112475eaf90bac8270c9575cee161b65df7b`, based on `29f8b30`. This records implementation and fixture validation of the [approved plan](superpowers/plans/2026-10-22-assistant-workspace.md). Nothing was merged to main, installed, re-pinned, packaged or shipped in this continuation.
 
-## Source and preservation boundary
+## Current implementation
+
+- Your team uses durable host-qualified assistants. Conversation, Projects, Activity, Memory and Settings occupy the main canvas; existing human sessions remain mounted and the global sidebar keeps its state. Late saves/uploads/creation outcomes retain their original owner and cannot close another assistant's draft.
+- Creation and Settings share supported Provider/Model/Reasoning controls, Full access, pixel identity and optional generated avatars. Creation visibly exposes its initial allowed project folder; choosing Full access or assigning a project never silently creates a folder grant. Existing reusable Agents profiles and legacy metadata remain intact. `src/AgentsSection.tsx` is byte-identical to baseline `29f8b30`.
+- Personal plans create durable project proposals with original verified human-event provenance and immutable assistant/project lineage. Explicit approval uses the existing isolated/read-only worker executor, destination eligibility, checkout protection and limits. Imported Human labels do not establish authority. Worker endpoint privacy is checked again on approval, dispatch and continuation.
+- Task controls retain durable intent, attempts, receipts and uncertain outcomes. Cancelled work can explicitly Retry into a new attempt; duplicate delivery/reconnect cannot duplicate an operation or result. Completed attempts return once to their recorded assistant, even after message history pruning.
+- Avatar generation persists dispatch intent, costs and owner-bound jobs before a provider call. Preview requires explicit Apply, then Create/Save. Cancellation/reset preserve the prior saved appearance; creation spend remains attributed even when a pixel avatar is chosen. Assets normalize to hashed 512×512 PNG, survive restart and authenticated second-client reads, and fall back to the saved pixel pattern offline. Cancelled or late results cannot select another editor's image.
+- Global Tasks collects every current personal/project store, including unassigned legacy tasks and retained offline snapshots. Keys use authoritative host/project identity even when both hosts call themselves `local`. Filters, collapsed groups and task details remain global across page navigation and popouts. Backend calls verify the captured authenticated host before invocation and after replies.
+
+## Fresh integrated verification — 2026-10-23
+
+These are parent-executed results, not only implementation-agent reports. JavaScript passed on `887087e`; its files are unchanged by the final Rust-only startup fix. TypeScript, Rust, production admission and E2E were rerun after that fix.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| `npx tsc --noEmit` | Passed | `/tmp/null-assistant-final-tsc.log` |
+| `npm test` | 2,229 passed; no failures/skips | `/tmp/null-assistant-final-npm.log` |
+| `TMPDIR=/tmp cargo test -p apex-host -p apex-provenance -p apex-daemon -- --test-threads=2` | 834 passed; no failures; 5 existing ignored | `/tmp/null-assistant-final-rust.log` |
+| Feature-off production storage/admission checks | 3 passed; no failures/skips | `/tmp/null-assistant-final-production.log` |
+| All JavaScript E2E files against explicit `apex-daemon-fixture` | 22 passed; no failures/skips | `/tmp/null-assistant-final-e2e.log` |
+| Independent whole-branch source review | No remaining Important/Critical findings; 49 focused checks passed | `/tmp/null-assistant-final-review.md` |
+| `git diff --check`; unchanged production Agents component | Passed | Parent read-back |
+
+The E2E scenarios exercise two hosts with the same local assistant ID, three canonical disposable project roots, real deterministic registered workers, private/project memory separation, reviewed scratch promotion and deduplication, stale edits, independent pause/cancel/retry, pending proposals, restart/reconnect and once-only results. A deterministic image adapter exercises actual generation/status/asset/configuration/create RPCs without credentials or billing, including creation cost transfer and cancellation/reset. The adapter is registered only by the explicitly named temporary-directory fixture binary; compiling test support never enables it in the regular daemon. This is not signed installed-app admission evidence.
+
+The first combined host run exposed an outdated exhaustive command-count assertion after combining the two RPC additions. The assertion now explicitly covers the five avatar commands and the delegation command; the complete rerun above passed. Review also reproduced and fixed forbidden endpoint dispatch, canonical folder alias mismatches, cancelled Retry, creation cost attribution, initial folder selection, exact project navigation and late-save draft loss.
+
+The separate feature-off target caught a degraded-startup regression: recovered-task result reconciliation attempted a protected read after ownership admission had failed. Startup now skips only that reconciliation/dispatch when protected ledgers are unavailable, retaining existing process cleanup and fail-closed writes. Independent review approved the narrow guard; the existing unsigned-forgery startup regression now passes in the separate three-test target.
+
+## Supported boundaries and remaining native gate
+
+- Delegation is validated on the assistant's owning host. Cross-owning-host project dispatch remains unavailable without authenticated remote authority. Clients can still connect to multiple owning hosts independently.
+- Shared worker prompts deliberately omit assistant-private facts; they carry scoped project/monitor evidence and the assignment. No memory text grants authority.
+- Personal Pause prevents new starts. Active work is paused individually with the task control. Adapters without checkpoints stop safely into Interrupted and require explicit Retry; there is no transparent checkpoint-resume claim. This follows Task 5's explicit contract where the design prose differed.
+- Production image generation reuses the existing Venice adapter and configured credentials. Local cancellation prevents application of a result but cannot cancel a charge already dispatched to a provider. No paid image call was made here.
+- CLI installation and cached model metadata are checked and labeled; current CLI sign-in cannot be independently verified by the available discovery API. API-provider missing credentials and unavailable catalogues block the runtime form with a concrete reason.
+- Browser controls reuse actual availability and the existing Open browser/Take over action; browser operations retain their existing Send-class approval policy. No unenforced browser-only permission was invented.
+- No installed or native-window smoke was performed. The observed running processes remained `/Applications/Apex Deck.app/Contents/MacOS/Apex Deck` and its bundled daemon; no development session was launched. A fresh `sudo -n true` still returned `sudo: a password is required`.
+
+The administrator checkpoint in [UPGRADE-PROCEDURE.md](handoff/2026-10-22/UPGRADE-PROCEDURE.md) and signed native acceptance remain open. Its existing `8f67474` security candidate predates this feature source. Passing fixture admission does not close that gate or authorize merging/shipping Tasks 4–8.
+
+After that checkpoint, perform one native smoke in the existing authorized window: create/rename two assistants with explicit project folders and supported saved runtime settings; keep Tasks open while navigating assistants, Projects, Memory, Settings and Agents; approve work in three disposable projects, pause one owner, inspect scoped memory/review and reconnect/restart. Compare durable IDs, pending approvals, attempts, results and pixel/generated asset references before/after. The deterministic image lifecycle is already automated; do not trigger a paid provider call just to repeat it.
+
+## Earlier foundation checkpoints
+
+The phase-local records below describe earlier source checkpoints. Their deferred UI/avatar statements were true at those phases and are superseded by the current implementation and evidence above.
+
+### Earlier source and preservation boundary
 
 - Work happens in `/Users/tylercaldwell/Downloads/apex-deck-worktrees/assistant-workspace-plan`.
 - The publication branch initially predated 58 committed application changes. Merge `5959ee1` reconciles the committed application baseline `4d40cc0` without copying the shared checkout's uncommitted Dashboard/Tasks patch.
