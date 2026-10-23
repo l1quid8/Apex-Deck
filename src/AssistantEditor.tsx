@@ -53,7 +53,7 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
  const [effort,setEffort]=useState<string|null>(original?.profile?.effort ?? null);
  const [folder,setFolder]=useState('~/apex-assistant');
  const [access,setAccess]=useState<ParticipantConfig['access']>(original?.profile?.access ?? 'ask');
- const [bindings,setBindings]=useState<AssistantProjectBinding[]>(original?.projects ?? []);
+ const [bindings,setBindings]=useState<AssistantProjectBinding[]>(()=>original?.projects.map(binding=>original.profile?.access==='read'?{...binding,tools:'off'}:binding) ?? []);
  const [models,setModels]=useState<ModelChoice[]>([]);
  const [providerReady,setProviderReady]=useState(false);
  const [discovery,setDiscovery]=useState('Loading offered models…');
@@ -143,7 +143,7 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
    <label className="assistant-setting-row"><span>Reasoning</span><select aria-label="Assistant reasoning" value={effort??''} disabled={!selected?.efforts?.length} onChange={e=>setEffort(e.target.value||null)}>{!selected?.efforts?.length&&<option value="">{selected?.efforts?'No reasoning setting':'Provider default'}</option>}{selected?.efforts?.map(level=><option key={level} value={level}>{level}</option>)}</select></label>{discovery&&<p className="assistant-control-note" role="status">{discovery}</p>}
   </fieldset>
   <fieldset className="assistant-config"><legend>Access</legend>
-   <label className="assistant-setting-row"><span>Project tools</span><select aria-label="Project tools" value={access} onChange={e=>{const value=e.target.value as ParticipantConfig['access'];setAccess(value);setBindings(before=>before.map(b=>({...b,tools:value==='full'?'full':value==='read'?'off':'ask'})));}}><option value="read">Read only</option><option value="ask">Ask for approval</option><option value="edits">Allow edits</option><option value="full">Full access</option></select></label>
+   <label className="assistant-setting-row"><span>Project tools</span><select aria-label="Project tools" value={access} onChange={e=>{const value=e.target.value as ParticipantConfig['access'];setAccess(value);setBindings(before=>before.map(b=>({...b,tools:value==='full'?'full':value==='read'?'off':'ask'})));}}><option value="ask">Ask first</option><option value="full">Full access</option><option value="read">Off</option>{access==='edits'&&<option value="edits">Allow edits (legacy)</option>}</select></label>
    <div className="assistant-setting-row"><span>Browser<small>Borrow a tab for a requested task</small></span>{lane?.browserView?<button type="button" disabled={busy||lane.offline} onClick={()=>setBrowserOpen(true)}>Open browser / Take over</button>:<span className="assistant-setting-value">After Create</span>}</div><p className="assistant-control-note">{browserStatus}</p>
    {!original&&<details className="assistant-folder-boundary" open={!!folderProblem}><summary>Allowed project folder <span>{folder}</span></summary><label className="assistant-setting-row"><span>Folder</span><input aria-label="Allowed project folder" aria-describedby="assistant-folder-scope" value={folder} disabled={busy} onChange={e=>setFolder(e.target.value)}/></label><p id="assistant-folder-scope" className="assistant-control-note">Choose a full path or ~/ on the selected machine. Create grants access to this folder and its subfolders. Full access controls project actions within this boundary.</p></details>}
   </fieldset>

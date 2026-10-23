@@ -165,3 +165,17 @@ test('a late viable API discovery cannot override an explicit same-provider choi
 test('Settings keeps an unavailable saved provider instead of silently replacing it with an available API',async()=>{
  let catalogs=0;const h=mount({backend:{sessionLoad:async()=>({profiles:[profile,textApi]}),detectAgents:async()=>[],apiKeyStatus:async()=>['saved'],apiModels:async()=>{catalogs++;return[{id:'configured-text'}];}}});const tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,0);assert.match(text(tree),/not installed/);assert.equal(catalogs,0);
 });
+
+test('Project tools offers exact mockup choices and Off disables every saved and newly assigned project',async()=>{
+ const projectA={hostId:'mac',workspaceId:'a',cwd:'/a'},projectB={hostId:'other',workspaceId:'b',cwd:'/b'};
+ const h=mount({lane:{assistant:{...record,projects:[{project:projectA,tools:'full'},{project:projectB,tools:'ask'}]}},projects:[{id:'c',name:'New project',path:'/c'}]});let tree=await h.ready();
+ assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Off']);
+ input(tree,'Project tools').props.onChange({target:{value:'read'}});tree=h.render();find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.onChange({target:{checked:true}});await submit(h);
+ assert.equal(h.calls[0].profile.access,'read');assert.equal(h.calls[0].projects.length,3);assert.ok(h.calls[0].projects.every(binding=>binding.tools==='off'));assert.deepEqual(h.calls[0].projects.map(binding=>binding.project),[projectA,projectB,{hostId:'mac',workspaceId:'c',cwd:'/c'}]);
+ const reloaded=mount({lane:{assistant:{...record,profile:{...profile,access:'read'},projects:[{project:projectA,tools:'full'}]}}});await reloaded.ready();await submit(reloaded);assert.equal(reloaded.calls[0].projects[0].tools,'off');
+});
+test('legacy edits access stays explicit and is retained until the user chooses a supported mockup setting',async()=>{
+ const binding={project:{hostId:'mac',workspaceId:'a',cwd:'/a'},tools:'ask'};
+ const h=mount({lane:{assistant:{...record,profile:{...profile,access:'edits'},projects:[binding]}}});let tree=await h.ready();assert.equal(input(tree,'Project tools').props.value,'edits');assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Off','Allow edits (legacy)']);await submit(h);assert.equal(h.calls[0].profile.access,'edits');assert.deepEqual(h.calls[0].projects,[binding]);
+ input(h.render(),'Project tools').props.onChange({target:{value:'ask'}});tree=h.render();assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Off']);await submit(h);assert.equal(h.calls[1].profile.access,'ask');assert.equal(h.calls[1].projects[0].tools,'ask');
+});
