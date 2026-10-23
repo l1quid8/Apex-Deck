@@ -74,3 +74,15 @@ test('delegatedTasksForAssistant keeps only assigned projects of this assistant'
 test('accessLabel matches agent card copy', () => {
   assert.deepEqual(['ask', 'full', 'read', 'edits'].map(accessLabel), ['Asks first', 'Full access', 'Read only', 'Can edit files']);
 });
+
+test('a paused delegated task is listed as Paused, not Working', () => {
+  const items = assistantWorkItems([], [delegated('running', { desiredState: 'paused' })], () => 'repo');
+  assert.equal(items.working[0].status, 'paused');
+});
+test('isWorkingTask is the one rule for running work', async () => {
+  const { isWorkingTask } = await import('../src/assistantStatus.ts');
+  assert.equal(isWorkingTask({ status: 'running' }), true);
+  assert.equal(isWorkingTask({ status: 'applying' }), true);
+  assert.equal(isWorkingTask({ status: 'running', desiredState: 'paused' }), false);
+  assert.equal(isWorkingTask({ status: 'ready_for_review' }), false);
+});

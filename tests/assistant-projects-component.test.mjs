@@ -5,6 +5,7 @@ import {transform} from 'sucrase';
 import * as identity from '../src/assistantIdentity.ts';
 import * as model from '../src/assistantProjectsModel.ts';
 import * as tasks from '../src/assistantTaskModel.ts';
+import * as status from '../src/assistantStatus.ts';
 const source=await fs.readFile(new URL('../src/AssistantProjects.tsx',import.meta.url),'utf8');
 const compiled=transform(source.replace(/^import .*;\n/gm,'').replace('export function AssistantProjects','function AssistantProjects'),{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
 const text=node=>node==null||typeof node==='boolean'?'':typeof node==='string'||typeof node==='number'?String(node):Array.isArray(node)?node.map(text).join(' '):text(node.children??[]);
@@ -20,7 +21,7 @@ function harness(extra={},initialTask=null,routingThreads=[]){
   const calls=[],states=[],refs=[],effects=[];let cursor=0,task=initialTask;
   const React={createElement:(type,props,...children)=>({type,props:props??{},children:children.flat(Infinity)})};
   const hooks={useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return [states[i],next=>{states[i]=typeof next==='function'?next(states[i]):next;}];},useRef(initial){const i=cursor++;return refs[i]??={current:initial};},useEffect(fn,deps){const i=cursor++,before=effects[i];if(!before||deps.some((value,index)=>!Object.is(value,before.deps[index])))effects[i]={fn,deps,changed:true,cleanup:before?.cleanup};}};
-  const deps={...identity,...model,...tasks};
+  const deps={...identity,...model,...tasks,...status};
   const component=new Function('React',...Object.keys(hooks),...Object.keys(deps),`${compiled};return AssistantProjects;`)(React,...Object.values(hooks),...Object.values(deps));
   const backend={demo:false,call:async(cmd,args)=>{calls.push({cmd,args});if(cmd==='assistant_tasks_list')return {project,workspaceId:'workspace',tasks:Array.isArray(task)?task:task?[task]:[],routingThreads,executions:[],revision:1};if(cmd==='assistant_task_action'){task={...task,status:args.action==='pause'?task.status:args.action==='resume'?task.status:args.action==='accept'||args.action==='review'?'done':'cancelled',desiredState:args.action==='pause'?'paused':'running',revision:task.revision+1};return task;}return {taskId:'new',status:'proposed'};}};
   const props={lane:{assistant:record,name:'Ada',offline:false},backend,projects:[{project,name:'Project'}],availableProjects:[{project,name:'Project'}],taskScopes:[],profiles:[profile],...extra};
@@ -147,4 +148,10 @@ test('opening a task from Work resets the previous review and the focus is used 
   assert.equal(button(tree,'Mark reviewed').props.disabled,true,'B starts unreviewed');
   assert.equal(find(tree,node=>node.type==='label'&&/I reviewed:\s+Tests pass/.test(text(node))).children.find(node=>node?.type==='input').props.checked,false);
   assert.equal(handled.length,1);h.render();assert.equal(handled.length,1,'focus is consumed once');
+});
+
+test('a paused worker card says Paused, matching the shared status',async()=>{
+  const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'running',desiredState:'paused'});let tree=h.render();await tick();tree=h.render();
+  const card=find(tree,node=>node.props?.className==='assistant-project-card');
+  assert.doesNotMatch(text(card),/1\s*working/);assert.match(text(find(card,node=>node.props?.className==='assistant-project-status')),/Paused/);
 });

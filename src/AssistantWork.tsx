@@ -3,7 +3,7 @@ import type { WorkItem, assistantWorkItems } from './assistantStatus';
 
 const STATUS_WORDS: Record<string, string> = {
   needsYou: 'Needs you', needs_you: 'Needs you', ready_for_review: 'Ready for review', needs_clarification: 'Question', proposed: 'Proposed', blocked: 'Blocked',
-  failed: 'Failed', interrupted: 'Failed', running: 'Working', queued: 'Queued', waiting: 'Waiting', applying: 'Applying', done: 'Done', cancelled: 'Cancelled',
+  failed: 'Failed', interrupted: 'Failed', running: 'Working', queued: 'Queued', waiting: 'Waiting', applying: 'Applying', paused: 'Paused', done: 'Done', cancelled: 'Cancelled',
 };
 const when = (atMs: number) => new Date(atMs).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 

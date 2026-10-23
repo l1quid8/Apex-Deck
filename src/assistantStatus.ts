@@ -4,7 +4,7 @@ import type { AssistantProjectBinding, AssistantRef, ProjectRef } from './assist
 import type { ParticipantConfig } from './types.ts';
 
 /** The one place task states become an assistant status. The rail, the
- *  header, the Work tab and the project cards all read it, so they agree. */
+ *  header, the Work tab and the project cards (isWorkingTask) all read it. */
 export type AssistantStatusState = 'offline' | 'paused' | 'needs_you' | 'failed' | 'working' | 'ready';
 export type AssistantStatus = { state: AssistantStatusState; needsYou: number; failed: number; working: number; label: string };
 export type WorkItem = { key: string; source: 'personal' | 'delegated'; taskId: string; title: string; project?: ProjectRef; projectName?: string; worker?: string; status: string; atMs: number };
@@ -13,6 +13,9 @@ type Bucket = 'needsYou' | 'failed' | 'working' | 'finished' | 'cancelled';
 const PERSONAL: Record<PersonalTask['status'], Bucket> = { needsYou: 'needsYou', blocked: 'needsYou', failed: 'failed', running: 'working', queued: 'working', waiting: 'working', done: 'finished', cancelled: 'cancelled' };
 const DELEGATED: Record<string, Bucket> = { needs_you: 'needsYou', needs_clarification: 'needsYou', ready_for_review: 'needsYou', proposed: 'needsYou', failed: 'failed', interrupted: 'failed', running: 'working', applying: 'working', queued: 'working', done: 'finished', cancelled: 'cancelled' };
 
+/** Running delegated work, the same rule the status counts. */
+export function isWorkingTask(task: Pick<AssistantTask, 'status' | 'desiredState'>): boolean { return DELEGATED[task.status] === 'working' && task.desiredState !== 'paused'; }
+const isPausedTask = (task: Pick<AssistantTask, 'status' | 'desiredState'>) => DELEGATED[task.status] === 'working' && task.desiredState === 'paused';
 function personalBucket(task: PersonalTask): Bucket { return PERSONAL[task.status] ?? 'finished'; }
 function delegatedBucket(task: AssistantTask): Bucket | null {
   const bucket = DELEGATED[task.status] ?? null;
@@ -38,7 +41,7 @@ export function assistantWorkItems(personalTasks: readonly PersonalTask[], deleg
   for (const task of delegatedTasks) {
     const bucket = delegatedBucket(task) ?? 'working';
     const project = task.lineage?.project;
-    place(bucket, { key: `delegated:${task.id}`, source: 'delegated', taskId: task.id, title: task.originalRequest.split('\n')[0].trim(), ...(project ? { project, projectName: projectName(project) } : {}), ...(task.workers[0] ? { worker: task.workers[0] } : {}), status: task.status, atMs: task.updatedAtMs });
+    place(bucket, { key: `delegated:${task.id}`, source: 'delegated', taskId: task.id, title: task.originalRequest.split('\n')[0].trim(), ...(project ? { project, projectName: projectName(project) } : {}), ...(task.workers[0] ? { worker: task.workers[0] } : {}), status: isPausedTask(task) ? 'paused' : task.status, atMs: task.updatedAtMs });
   }
   for (const list of Object.values(lists)) list.sort((a, b) => b.atMs - a.atMs);
   return lists;
