@@ -233,6 +233,7 @@ impl Host {
         let assistant_conversations = open_initial_ledger(ownership.is_some(), &mut unavailable,
             || crate::assistant_conversation::ConversationStore::open(&conversations_path),
             || crate::assistant_conversation::ConversationStore::unavailable(&conversations_path))?;
+        let protected_ledgers_available = unavailable.is_none();
         if let Some(reason) = unavailable {
             eprintln!(
                 "[apex-deck] protected ledgers unavailable ({reason}); starting with empty ledgers. Install or re-pin the provenance broker for this build."
@@ -330,7 +331,11 @@ impl Host {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
             Err(error) => return Err(format!("Could not read task operation recovery registry: {error}")),
         }
-        host.redispatch_recovered_queued()?;
+        // Degraded startup retains empty, write-closed ledgers. Reconciliation
+        // reads protected state and must wait for an admitted host restart.
+        if protected_ledgers_available {
+            host.redispatch_recovered_queued()?;
+        }
         Ok(host)
     }
 
