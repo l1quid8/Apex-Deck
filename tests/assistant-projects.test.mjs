@@ -22,7 +22,12 @@ test('assignment UI only offers existing host folder grants with path boundaries
 });
 test('assignments waiting for review remain active until explicitly completed',()=>{
   assert.equal(activeProjectTask({status:'ready_for_review'}),true);
+  assert.equal(activeProjectTask({status:'failed'}),true);
   assert.equal(activeProjectTask({status:'done'}),false);
+  assert.equal(activeProjectTask({status:'cancelled'}),false);
+  assert.equal(activeProjectTask({status:'done',resultData:{leaseHeld:true}}),true);
+  assert.equal(activeProjectTask({status:'cancelled',resultData:{leaseHeld:true}}),true);
+  assert.equal(activeProjectTask({status:'cancelled',resultData:{leaseHeld:false}}),false);
 });
 const source={project,taskId:'task',attempt:1,runId:'run',expectedTaskRevision:7,text:'Verified result',kind:'fact'};
 function client(call) {return createProjectMemoryClient({assistant,route:{supports:()=>true,call},assertAvailable(){},assertBinding(candidate){assert.deepEqual(candidate,project);}});}

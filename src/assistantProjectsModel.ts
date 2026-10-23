@@ -13,7 +13,11 @@ export function assignmentBlocked(record: PersonalAssistantRecord, project: Proj
   const path = project.cwd.replace(/\/$/, '');
   if (!record.allowedFolders.some(folder => { const root = folder.replace(/\/$/, ''); return path === root || path.startsWith(`${root}/`); })) return 'This folder is outside the assistant’s existing folder grants. Manage machine access first.';
 }
-export function activeProjectTask(task: AssistantTask): boolean { return !['done','failed','cancelled'].includes(task.status); }
+/** Match the host assignment guard: failed work still requires cancellation,
+ * and any retained checkout lease keeps even a terminal task assigned. */
+export function activeProjectTask(task: Pick<AssistantTask,'status'|'resultData'>): boolean {
+  return !['done','cancelled'].includes(task.status) || (task.resultData as {leaseHeld?:unknown}|null|undefined)?.leaseHeld === true;
+}
 
 /** Saved worker IDs alone do not prove that the model, access or prompt still matches the roster. */
 export function sameWorkerConfiguration(left: ParticipantConfig, right: ParticipantConfig): boolean {
