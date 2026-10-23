@@ -38,6 +38,8 @@ export interface AssistantTask {
   workers: string[];
   attempts: { number: number; runId: string; status: AssistantTaskStatus; startedAtMs: number; finishedAtMs: number | null; reviewRevision: number | null; usage: TaskUsage | null }[];
   status: AssistantTaskStatus;
+  /** Present when this record was imported from an older copy. Never presented as verified. */
+  legacy?: import('./legacyImport').LegacyMarker | null;
   result: string | null;
   resultData?: { reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; dismissedAtMs?: number; worktreeDiskBytes?: number; spendLimitMicros?: number | null; budgetPaused?: boolean; taskHistory?: TaskHistoryEntry[] } | null;
   revision: number;

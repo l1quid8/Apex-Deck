@@ -78,10 +78,23 @@ export function importableCount(preview: LegacyImportPreview): number {
   return importableLedgers(preview).reduce((total, ledger) => total + ledger.counts.importable, 0);
 }
 
-/** Saved files with something to say even when nothing can be imported (e.g. unreadable). */
+/** States that are worth showing even with no records and no per-record problems. */
+const ALWAYS_SHOWN = new Set(["unreadable", "unavailable", "conflict"]);
+
+/**
+ * Saved files with something to say even when nothing can be imported.
+ *
+ * A file that could not be read, could not be found by the service, or conflicts
+ * with what was already imported is shown on its own merits: its counts are zero
+ * and it has no per-record problems precisely *because* it could not be opened, so
+ * requiring content would hide the one thing the person needs to be told.
+ */
 export function interestingLedgers(preview: LegacyImportPreview): LegacyLedgerPreview[] {
-  return preview.ledgers.filter((ledger) => ledger.state !== "missing"
-    && (ledger.counts.records > 0 || ledger.problems.length > 0));
+  return preview.ledgers.filter((ledger) => {
+    if (ledger.state === "missing" || ledger.state === "notSupported") return false;
+    if (ALWAYS_SHOWN.has(ledger.state)) return true;
+    return ledger.counts.records > 0 || ledger.problems.length > 0;
+  });
 }
 
 /**

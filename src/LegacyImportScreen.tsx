@@ -9,6 +9,7 @@ import {
   LEGACY_MARKER, LEDGER_LABELS, applyRequest, confirmWords, fileSize, importableCount, interestingLedgers,
   isStalePreview, noticeKey, plain, resultLine, resultOutcomes, rowText, shouldShowNotice, shortHash, skippedIds, staleWords,
 } from "./legacyImportModel.ts";
+import { announceImport, subscribeToImports } from "./legacyImportRefresh.ts";
 
 /** Where a dismissal is kept. Swap it for a fake in tests. */
 export type DismissalStore = { read(): string | null; write(key: string): void };
@@ -25,28 +26,41 @@ function message(error: unknown): string {
   return plain(text) || "Something went wrong.";
 }
 
-// One client per backend, and one preview per client per session. A chat pane mounts
-// a panel per pane, and a preview hashes up to 23 MB of saved JSON; without this every
-// pane would re-read every file. `null` means "already asked, cannot import".
-const clients = new WeakMap<Backend, LegacyImportApi | null>();
-const previewCache = new WeakMap<LegacyImportApi, Promise<LegacyImportPreview>>();
+// One client per backend. A chat pane mounts a panel per pane, so the client is
+// shared; availability is *not* shared, because a service that is still starting up
+// can answer later in the same session and a remembered "no" would hide it forever.
+const clients = new WeakMap<Backend, LegacyImportApi>();
 
-/** The typed client, or undefined when this machine's service cannot import at all. */
+/** The typed client, or undefined when this machine's service cannot import right now. */
 export function legacyImportFor(backend: Backend): LegacyImportApi | undefined {
-  const known = clients.get(backend);
-  if (known !== undefined) return known ?? undefined;
-  const api = createLegacyImportClient({ route: backend });
-  const usable = api.unavailable() ? null : api;
-  clients.set(backend, usable);
-  return usable ?? undefined;
+  let api = clients.get(backend);
+  if (!api) {
+    api = createLegacyImportClient({ route: backend });
+    clients.set(backend, api);
+  }
+  return api.unavailable() ? undefined : api;
 }
 
-function previewOnce(api: LegacyImportApi): Promise<LegacyImportPreview> {
+/**
+ * How long a shared preview may answer before it is read again. A preview hashes up
+ * to 23 MB of saved JSON, so panes share one; but a preview is a statement about
+ * files that a person can change, so it cannot be cached for the whole session.
+ */
+export const PREVIEW_TTL_MS = 30_000;
+
+type CachedPreview = { promise: Promise<LegacyImportPreview>; at: number };
+const previewCache = new WeakMap<LegacyImportApi, CachedPreview>();
+
+/** One preview per client within the TTL. `now` is a seam for tests. */
+export function previewOnce(api: LegacyImportApi, now: number = Date.now()): Promise<LegacyImportPreview> {
   const cached = previewCache.get(api);
-  if (cached) return cached;
-  const fresh = api.preview();
+  if (cached && now - cached.at < PREVIEW_TTL_MS) return cached.promise;
+  const fresh: CachedPreview = { promise: api.preview(), at: now };
   previewCache.set(api, fresh);
-  return fresh;
+  // A read that failed is not worth remembering: the next mount should ask again
+  // rather than inherit one bad answer for a whole session.
+  fresh.promise.catch(() => { if (previewCache.get(api) === fresh) previewCache.delete(api); });
+  return fresh.promise;
 }
 
 /** Drop the shared preview after an import, or when the files moved under it. */
@@ -75,15 +89,26 @@ export function LegacyImportScreen({ api, onClose, onImported }: ScreenProps) {
   const [problem, setProblem] = useState("");
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [reloading, setReloading] = useState(false);
   const applying = useRef(false);
   const live = useRef(true);
 
   const load = (why?: "stale") => {
+    const staleReload = why === "stale";
     setProblem("");
-    setStale(why === "stale");
+    setStale(staleReload);
+    setResult(null);
+    if (staleReload) {
+      // The preview on screen is known to be wrong: those hashes are not the files on
+      // disk any more. Drop it so Import cannot be pressed against it, and stay
+      // unavailable until the new read answers. If that read fails, `preview` stays
+      // null, so the button never comes back on its own.
+      setPreview(null);
+      setReloading(true);
+    }
     api.preview().then(
-      (next) => { if (live.current) { setPreview(next); setResult(null); } },
-      (error) => { if (live.current) setProblem(message(error)); },
+      (next) => { if (live.current) { setReloading(false); setPreview(next); } },
+      (error) => { if (live.current) { setReloading(false); setProblem(message(error)); } },
     );
   };
 
@@ -113,6 +138,9 @@ export function LegacyImportScreen({ api, onClose, onImported }: ScreenProps) {
         setStale(false);
         setResult(done);
         forgetPreview(api);
+        // Tell every mounted view, not just the caller's: the notice in another pane
+        // and the lists showing imported records all have to re-read from the host.
+        announceImport();
         onImported();
       },
       (error) => {
@@ -166,7 +194,7 @@ export function LegacyImportScreen({ api, onClose, onImported }: ScreenProps) {
         <h3 id="legacy-import-title">Older records</h3>
         <button className="icon" onClick={onClose} aria-label="Close older records">×</button>
       </header>
-      {!preview && !problem && <p role="status">Looking through your saved files…</p>}
+      {!preview && !problem && <p role="status">{reloading ? "Your files changed. Reading them again…" : "Looking through your saved files…"}</p>}
       {problem && <p className="legacy-import-problem" role="alert">{problem} <button onClick={() => load()}>Try again</button></p>}
       {stale && <p className="legacy-import-stale" role="alert">{staleWords()}</p>}
       {preview && (
@@ -238,25 +266,40 @@ type PanelProps = { backend: Backend; store?: DismissalStore; startOpen?: boolea
  * this; it renders nothing when there is nothing to offer.
  */
 export function LegacyImportPanel({ backend, store = remembered, startOpen, onClose, onImported }: PanelProps) {
-  const [api] = useState(() => legacyImportFor(backend));
+  // Resolved per render, not once: a pane can be handed a different backend, and a
+  // service that could not import a moment ago may be able to now.
+  const api = legacyImportFor(backend);
   const [dataDir, setDataDir] = useState("");
   const [preview, setPreview] = useState<LegacyImportPreview | null>(null);
   const [dismissed, setDismissed] = useState<string | null>(() => store.read());
   const [open, setOpen] = useState(startOpen === true);
-  const live = useRef(true);
 
   useEffect(() => {
-    live.current = true;
-    backend.dataFolder().then((folder) => { if (live.current) setDataDir(folder); }, () => {});
-    return () => { live.current = false; };
-  }, []);
+    let live = true;
+    // Another backend's folder is not this one's; the dismissal key is per folder.
+    setDataDir("");
+    backend.dataFolder().then((folder) => { if (live) setDataDir(folder); }, () => {});
+    return () => { live = false; };
+  }, [backend]);
 
   useEffect(() => {
-    if (!api) return;
-    live.current = true;
-    previewOnce(api).then((next) => { if (live.current) setPreview(next); }, () => {});
-    return () => { live.current = false; };
-  }, []);
+    let live = true;
+    if (!api) { setPreview(null); return () => { live = false; }; }
+    setPreview(null);
+    previewOnce(api).then((next) => { if (live) setPreview(next); }, () => {});
+    return () => { live = false; };
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return undefined;
+    let live = true;
+    const unsubscribe = subscribeToImports(() => {
+      // The files just changed under this preview, whoever imported them.
+      forgetPreview(api);
+      api.preview().then((next) => { if (live) setPreview(next); }, () => {});
+    });
+    return () => { live = false; unsubscribe(); };
+  }, [api]);
 
   if (!api) return null;
   const showing = open || (preview !== null && shouldShowNotice(preview, dataDir, dismissed));

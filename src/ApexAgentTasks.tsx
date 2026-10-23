@@ -4,6 +4,8 @@ import { TaskViewContext, projectTaskGroup, projectTaskKey, type TaskSummary } f
 import type { Pane, ParticipantConfig, Question } from './types.ts';
 import type { ProjectMonitor } from './apexAgentModel.ts';
 import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, shouldSuggestArchive, taskStatusLabel, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
+import { LegacyBadge } from './LegacyImportScreen';
+import { subscribeToImports } from './legacyImportRefresh.ts';
 import './assistant-tasks.css';
 
 type Action = 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'review' | 'archive' | 'reconcile' | 'note' | 'resume_budget';
@@ -150,14 +152,17 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     setTasks([]); setRoutingThreads(undefined); setNamedOnlyWorkerIds(undefined); setArchivedExecutions(new Set()); setBusy(false); setError(''); setLoading(true); setPendingRequest(recovered); requestRef.current = recovered;
     setTaskContextId(null); setChecks({}); setDetailId(null); setReviewedRevision({});
     void loadTasks(captured, version);
-    if (!backend.onAssistantTasksChanged) return () => { generation.current++; };
+    // An import writes tasks this owner now has; whatever the host does or does not
+    // push, re-read once when one finishes rather than trusting a stale list.
+    const stopImports = subscribeToImports(() => { void loadTasks(captured, version); });
+    if (!backend.onAssistantTasksChanged) return () => { generation.current++; stopImports(); };
     let unlisten: (() => void) | undefined;
     let alive = true;
     void backend.onAssistantTasksChanged((payload) => {
       const event = payload as { workspaceId?: string } | null;
       if (alive && (!event?.workspaceId || event.workspaceId === captured.workspaceId)) void loadTasks(captured, version);
     }).then((stop) => { if (alive) unlisten = stop; else stop(); }).catch(() => {});
-    return () => { alive = false; generation.current++; unlisten?.(); };
+    return () => { alive = false; generation.current++; stopImports(); unlisten?.(); };
   }, [backend, ownerKey]);
 
   useEffect(() => {
@@ -420,7 +425,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     </article>}
     {taskView?.display === 'links' && visibleCards.map(taskLink)}
     {sidebarView && !detailId && <div className="assistant-task-sidebar-list">{sidebarTasks.map((task) => <button type="button" className="assistant-task-sidebar-row" data-assistant-task-id={task.id} key={task.id} onClick={() => openTaskDetail(task)}>
-      <span className="assistant-task-sidebar-summary"><strong title={task.originalRequest}>{oneLine(task.originalRequest)}</strong><small>{workerLabel(task, profiles)}</small></span><span className={`assistant-task-sidebar-status status-${task.status}`}>{taskStatusLabel(task.status)}</span>
+      <span className="assistant-task-sidebar-summary"><strong title={task.originalRequest}>{oneLine(task.originalRequest)}</strong><small>{workerLabel(task, profiles)}</small></span><span className={`assistant-task-sidebar-status status-${task.status}`}>{taskStatusLabel(task.status)}</span>{task.legacy && <LegacyBadge />}
     </button>)}{!loading && !error && !sidebarTasks.length && <p className="assistant-task-muted">No tasks for this project yet.</p>}</div>}
     {!contextMode && !sidebarView && visibleCards.map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
       <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}</small><p className="assistant-task-request" title={task.originalRequest}>{task.originalRequest}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
@@ -443,7 +448,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       const currentReviewVisible = hasReviewData && visibleReviewRevision[task.id] === task.revision;
       return <article className={`assistant-task-card status-${task.status}`} key={task.id}>
         {taskDetailView && <h2 className="assistant-task-title" id={`assistant-task-title-${task.id}`} tabIndex={-1} ref={titleRef}>{oneLine(task.originalRequest)}</h2>}
-        <header><div><span className="assistant-task-status">{taskStatusLabel(task.status)}</span><span className="assistant-task-meta">Revision {task.revision} · {task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'}</span></div><span className="assistant-task-usage">{taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</span></header>
+        <header><div><span className="assistant-task-status">{taskStatusLabel(task.status)}</span>{task.legacy && <LegacyBadge />}<span className="assistant-task-meta">Revision {task.revision} · {task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'}</span></div><span className="assistant-task-usage">{taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</span></header>
         <div className="assistant-task-detail-scroll" ref={detailScrollRef}>
         {taskDetailView && task.result?.trim() && <section className="assistant-task-result-block" aria-label="Result">
           <h3>Result</h3>
@@ -510,6 +515,8 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
             : <><p className="assistant-task-warning">{NO_CHAT_NOTE}</p><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>)}
           {task.status === 'needs_you' && <><button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker thread</button>{task.mode === 'isolated' && task.attempts.length === 0 && <button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry worker startup</button>}<button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
           {(task.status === 'queued' || task.status === 'running' || task.status === 'applying') && !canReconcileTask(task) && <button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button>}
+          {task.legacy && (task.status === 'failed' || task.status === 'interrupted' || task.status === 'needs_you')
+            && <p className="assistant-task-warning">Came from an older copy. It was saved for <span className="mono">{task.owner.cwd}</span> — check that folder exists here before you retry it.</p>}
           {(task.status === 'failed' || task.status === 'interrupted') && !canReconcileTask(task) && <><button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry task</button><button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
           {canReconcileTask(task) && <button type="button" disabled={busy} onClick={() => void act(task, 'reconcile')}>Recover interrupted integration</button>}
         </div>}

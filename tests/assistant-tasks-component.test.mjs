@@ -4,6 +4,11 @@ import fs from 'node:fs/promises';
 import { transform } from 'sucrase';
 import * as model from '../src/assistantTaskModel.ts';
 import * as taskViewModule from '../src/apexAgentTaskView.ts';
+import { subscribeToImports } from '../src/legacyImportRefresh.ts';
+
+// A stand-in with its own identity, so "the marker is here" is an assertion about the
+// element rather than about a string that happens to be nearby.
+const LegacyBadge = function LegacyBadge() { return null; };
 
 // Exports the component imports from the shared Tasks contract. Only these names are passed in, so nothing collides with assistantTaskModel.
 const taskViewExports = { TaskViewContext: taskViewModule.TaskViewContext, projectTaskKey: taskViewModule.projectTaskKey, projectTaskGroup: taskViewModule.projectTaskGroup };
@@ -41,7 +46,7 @@ function harness(backend, initial = {}, saved = new Map()) {
     // Stands in for <TaskViewContext.Provider value={initial.taskView}>; the Provider needs react-dom, which these tests do not load.
     useContext(context) { return context === taskViewExports.TaskViewContext ? (props.taskView ?? null) : null; },
   };
-  const component = new Function('React', ...Object.keys(hooks), ...Object.keys(model), ...Object.keys(taskViewExports), 'window', `${compiled}; return ApexAgentTasks;`)(React, ...Object.values(hooks), ...Object.values(model), ...Object.values(taskViewExports), { crypto: { randomUUID: () => 'request-fixed' }, localStorage: { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) } });
+  const component = new Function('React', ...Object.keys(hooks), ...Object.keys(model), ...Object.keys(taskViewExports), 'subscribeToImports', 'LegacyBadge', 'window', `${compiled}; return ApexAgentTasks;`)(React, ...Object.values(hooks), ...Object.values(model), ...Object.values(taskViewExports), subscribeToImports, LegacyBadge, { crypto: { randomUUID: () => 'request-fixed' }, localStorage: { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) } });
   props = { backend, owner, panes: [{ id: 'thread-a', title: 'Build room', kind: 'chat', workspaceId: owner.workspaceId }], profiles: [{ id: 'claude', display_name: 'Claude', backend: { kind: 'agent', tool: 'claude_code' }, media: null }], ...initial };
   const render = () => { cursor = 0; const tree = component(props); for (const effect of effects) if (effect?.changed) { effect.changed = false; effect.cleanup?.(); effect.cleanup = effect.fn(); } return tree; };
   return { render, storage: saved, setReviewVisible(visible = true) { observers.at(-1)?.trigger(visible); }, setProps(next) { props = { ...props, ...next }; }, unmount() { mounted = false; effects.forEach(effect => effect?.cleanup?.()); if (previousObserver) globalThis.IntersectionObserver = previousObserver; else delete globalThis.IntersectionObserver; } };
@@ -694,4 +699,29 @@ test('a running task note goes to the explicit note box as a note action', async
   await button(tree, 'Send note').props.onClick(); await tick();
   assert.equal(calls[0].action, 'note'); assert.equal(calls[0].text, 'Include the fixture.');
   h.unmount();
+});
+
+test('an imported task is marked unverified and names its saved folder before a retry', async () => {
+  const marker = { sourceSha256: 'a'.repeat(64), importedAtMs: 1, originalId: 't-1', originalStatus: 'queued', verified: false };
+  const imported = task({ id: 'legacy-1', status: 'interrupted', executionThreadId: null, legacy: marker });
+  const backend = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([imported]) : null };
+
+  // The sidebar row states the status, so it states the marker with it.
+  const list = harness(backend, { view: 'sidebar' }); let rows = list.render(); await tick(); rows = list.render();
+  assert.ok(findAll(rows, node => node.type === LegacyBadge).length > 0, 'the list marks the imported task');
+
+  // The card detail states the status too, and carries the folder before a retry.
+  const card = harness(backend); let tree = card.render(); await tick(); tree = card.render();
+  openDetail(tree); tree = card.render();
+  const shown = textOf(tree);
+  assert.ok(findAll(tree, node => node.type === LegacyBadge).length > 0, 'the detail carries the marker');
+  assert.match(shown, /Came from an older copy/);
+  assert.match(shown, /\/work\/project/, 'the folder it was saved for is named before a retry');
+
+  // A task this machine wrote is marked nowhere and gets no folder warning.
+  const clean = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([task({ legacy: null })]) : null };
+  const fresh = harness(clean); let other = fresh.render(); await tick(); other = fresh.render();
+  openDetail(other); other = fresh.render();
+  assert.equal(findAll(other, node => node.type === LegacyBadge).length, 0, 'a task from this machine is not marked');
+  assert.ok(!/Came from an older copy/.test(textOf(other)));
 });

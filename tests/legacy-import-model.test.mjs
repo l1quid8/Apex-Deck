@@ -186,3 +186,17 @@ test('source fingerprints and sizes are short enough to compare on screen', () =
   assert.equal(fileSize(512), '512 bytes');
   assert.equal(fileSize(23 * 1024 * 1024), '23.0 MB');
 });
+
+test('a source that could not be read is listed even with no records and no problems', () => {
+  // The old filter required records or problems, so exactly these three states — the
+  // ones with nothing to count *because* they could not be opened — were invisible.
+  const shown = preview([
+    ledger('assistant-tasks-v1.json', { state: 'unreadable', reason: 'It could not be read.', sha256: undefined, counts: { records: 0, importable: 0, notImported: 0 }, records: [], problems: [] }),
+    ledger('room-authority-v1.json', { state: 'unavailable', reason: 'The service did not answer.', sha256: undefined, counts: { records: 0, importable: 0, notImported: 0 }, records: [], problems: [] }),
+    ledger('personal-assistants.json', { state: 'conflict', reason: 'This was already imported from different content.', counts: { records: 0, importable: 0, notImported: 0 }, records: [], problems: [] }),
+    ledger('assistant-conversations-v1.json', { state: 'imported', counts: { records: 0, importable: 0, notImported: 0 }, records: [], problems: [] }),
+    ledger('personal-machine.json', { state: 'notSupported', counts: { records: 0, importable: 0, notImported: 0 }, records: [], problems: [] }),
+  ]);
+  assert.deepEqual(interestingLedgers(shown).map((l) => l.ledger),
+    ['assistant-tasks-v1.json', 'room-authority-v1.json', 'personal-assistants.json']);
+});
