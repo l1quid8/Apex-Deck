@@ -69,3 +69,10 @@ test('runtime providers are loaded from the owning host and unsupported installe
  const providers=await runtime.loadAssistantRuntimeProviders({sessionLoad:async()=>({profiles:[remote,{id:'codex',backend:{kind:'agent',tool:'codex'}},{id:'claude',backend:{kind:'agent',tool:'claude_code'}},{id:'image',media:{},backend:{kind:'open_ai_compatible',base_url:'https://remote.test'}}]})});
  assert.deepEqual(providers.map(p=>p.id),['remote','claude']);
 });
+
+test('Claude assistant runtime accepts the actual claude discovery wire key and still fails closed for missing or unsupported workers',async()=>{
+ const models=[],backend={detectAgents:async()=>[{key:'claude',label:'Claude Code',program:'claude',found:true}],agentModels:async tool=>{models.push(tool);return[{id:'sonnet'}];}};
+ assert.deepEqual(await runtime.assistantRuntimeModels(backend,profile),[{id:'sonnet'}]);assert.deepEqual(models,['claude_code']);
+ await assert.rejects(runtime.assistantRuntimeModels({...backend,detectAgents:async()=>[{key:'claude',label:'Claude Code',program:'claude',found:false}]},profile),/not installed/);
+ await assert.rejects(runtime.assistantRuntimeModels(backend,{...profile,backend:{kind:'agent',tool:'codex'}}),/does not support/);
+});

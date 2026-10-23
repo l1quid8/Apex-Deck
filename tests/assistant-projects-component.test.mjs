@@ -266,3 +266,21 @@ test('a lost plan read keeps the draft and retry reopens the same durable propos
  find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();tree=h.render();assert.ok(button(tree,'Approve and start'));assert.equal(created,1);
  const proposals=h.calls.filter(call=>call.cmd==='personal_project_delegate_ui');assert.equal(proposals.length,2);assert.equal(proposals[0].args.delegationId,proposals[1].args.delegationId);assert.equal(proposals[1].args.destination.threadId,'only-worker-thread');assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false);
 });
+
+test('task detail has a compact header and one primary action with secondary controls disclosed',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'proposed'});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ const header=find(tree,node=>node.props.className==='assistant-task-heading');assert.ok(header);assert.ok(find(header,node=>node.type==='h2'));assert.ok(find(tree,node=>node.props.className==='assistant-task-back'));
+ const actions=find(tree,node=>node.type==='details'&&node.props.className==='assistant-task-actions-menu');assert.ok(actions);assert.ok(button(actions,'Pause task'));assert.ok(button(actions,'Dismiss proposal'));assert.equal(button(actions,'Approve and start'),null);
+ assert.equal(find(tree,node=>node.props['aria-label']==='Task plan').children.some(node=>node?.type==='p'&&text(node)===baseTask.brief),false);
+});
+
+test('review result renders one result body before evidence and secondary project knowledge',async()=>{
+ const result='Unique finished report body';const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'ready_for_review',result});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.equal(text(tree).split(result).length-1,1);assert.ok(find(tree,node=>node.type==='button'&&text(node)==='Mark reviewed'&&node.props.className==='primary assistant-task-primary'));
+});
+
+test('blocked startup shows one human reason with the saved worker name and keeps raw data in diagnostics',async()=>{
+ const reason='The current adapter cannot establish isolated folder trust.';
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'needs_you',result:`Task startup needs you. worker: ${reason}`,resultData:{startup:{message:`Task startup needs you. worker: ${reason}`,workers:[{needsYou:{profile_id:'worker',detail:reason}}]}}});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ const startup=find(tree,node=>node.type==='section'&&node.props.className==='assistant-project-outcome');assert.ok(startup.children.some(node=>node?.type==='p'&&text(node)===`Codex: ${reason}`));assert.equal(find(tree,node=>node.props.className==='assistant-task-result-body'),null);
+});

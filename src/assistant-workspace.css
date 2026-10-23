@@ -86,3 +86,6 @@
  .assistant-workspace .assistant-workspace-tabs{order:3;margin:0;flex-basis:100%;width:max-content;max-width:max-content}
  .assistant-workspace .assistant-workspace-actions{margin-left:auto}
 }
+
+.assistant-workspace .assistant-workspace-actions:has(.voice-capsule){flex:1 1 250px;min-width:0;max-width:100%}
+.assistant-workspace .assistant-workspace-actions .voice-capsule{flex:1 1 auto;min-width:0}

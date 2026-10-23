@@ -21,7 +21,7 @@ const Avatar=()=>null, HexColorPicker=()=>null,PersonalPanels=()=>null,PersonalB
 const profile={id:'legacy',display_name:'Legacy',persona:'Legacy metadata retained',backend:{kind:'agent',tool:'claude_code',model:'old'},effort:'high',access:'ask',legacyLabel:'old custom label'};
 const record={id:'a',hostId:'mac',revision:7,name:'Null',style:'Saved legacy style',look:{seed:'saved-seed',color:'#aabbcc',shape:'legacy-shape'},profile,messages:[],tasks:[],projects:[]};
 function mount(overrides={}){
- const calls=[];const backend={sessionLoad:async()=>({profiles:[profile]}),detectAgents:async()=>[{key:'claude_code',found:true}],agentModels:async()=>[{id:'old',efforts:['low','high']},{id:'new',efforts:['low']}],supports:()=>false,...overrides.backend};
+ const calls=[];const backend={sessionLoad:async()=>({profiles:[profile]}),detectAgents:async()=>[{key:'claude',label:'Claude Code',program:'claude',found:true}],agentModels:async()=>[{id:'old',efforts:['low','high']},{id:'new',efforts:['low']}],supports:()=>false,...overrides.backend};
  let durable=overrides.lane?.assistant??record;
  const configure=overrides.lane?.configureWorkspace;
  const lane={name:'Null',hostName:'Mac',assistant:record,offline:false,...overrides.lane,configureWorkspace:async input=>{if(configure)await configure(input);else calls.push(input);durable={...durable,...input.settings,profile:input.profile??durable.profile,projects:input.projects??durable.projects,revision:input.expectedRevision+1};return durable;}};
@@ -97,7 +97,7 @@ test('applied image previews in Settings use the captured owner and generation',
  for(const preview of all(tree,n=>n.type===Avatar)){assert.deepEqual(preview.props.draftImage,{owner:editor.props.owner,generationId:'gen'});assert.deepEqual(preview.props.image,image);}
 });
 test('cached CLI models cannot make a missing installation ready',async()=>{
- const h=mount({backend:{detectAgents:async()=>[{key:'claude_code',found:false,program:'claude',label:'Claude Code'}]}});const tree=await h.ready();assert.match(text(tree),/not installed/i);await submit(h);assert.equal(h.calls.length,0);
+ const h=mount({backend:{detectAgents:async()=>[{key:'claude',found:false,program:'claude',label:'Claude Code'}]}});const tree=await h.ready();assert.match(text(tree),/not installed/i);await submit(h);assert.equal(h.calls.length,0);
 });
 
 test('unproven changed folders retain their saved assignment and cannot add a duplicate binding',async()=>{

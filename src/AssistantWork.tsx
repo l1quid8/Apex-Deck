@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { WorkItem, assistantWorkItems } from './assistantStatus';
+import './assistant-work.css';
 
 const STATUS_WORDS: Record<string, string> = {
   needsYou: 'Needs you', needs_you: 'Needs you', ready_for_review: 'Ready for review', needs_clarification: 'Question', proposed: 'Proposed', blocked: 'Blocked',
@@ -21,12 +22,12 @@ export function AssistantWork({ items, projects, onOpenTask, onCancelTask, onDel
   function row(item: WorkItem, isDeleted = false) {
     const meta = [item.projectName, item.worker].filter(Boolean).join(' · ');
     return <div className="assistant-work-row" key={item.key} data-status={item.status}>
-      <div className="assistant-work-row-main"><strong>{item.title}</strong><span className="assistant-work-row-meta">{STATUS_WORDS[item.status] ?? item.status}{meta ? ` · ${meta}` : ''} · {when(item.atMs)}</span></div>
+      <div className="assistant-work-row-main"><strong>{item.title}</strong><span className="assistant-work-row-meta">{meta && <span>{meta}</span>}<time>{when(item.atMs)}</time></span><span className="assistant-work-row-status">{STATUS_WORDS[item.status] ?? item.status}</span></div>
       {isDeleted ? <button type="button" disabled={lifecycleDisabled || !onRestoreTask} onClick={() => onRestoreTask?.(item)}>Restore</button> : <>
-        <button type="button" className="primary" onClick={() => onOpenTask(item)}>{primary(item.status)}</button>
+        <button type="button" className="assistant-work-next" onClick={() => onOpenTask(item)}>{primary(item.status)}</button>
         <details className="assistant-work-actions"><summary aria-label={`Actions for ${item.title}`}>Actions</summary>
-          {cancellable(item.status) && <button type="button" disabled={lifecycleDisabled || !onCancelTask} onClick={() => onCancelTask?.(item)}>Cancel task</button>}
-          <button type="button" disabled={lifecycleDisabled || !onDeleteTask} onClick={() => onDeleteTask?.(item)}>{cancellable(item.status) ? 'Cancel and delete' : 'Delete'}</button>
+          <div className="assistant-work-menu">{cancellable(item.status) && <button type="button" disabled={lifecycleDisabled || !onCancelTask} onClick={() => onCancelTask?.(item)}>Cancel task</button>}
+          <button type="button" disabled={lifecycleDisabled || !onDeleteTask} onClick={() => onDeleteTask?.(item)}>{cancellable(item.status) ? 'Cancel and delete' : 'Delete'}</button></div>
         </details>
       </>}
     </div>;

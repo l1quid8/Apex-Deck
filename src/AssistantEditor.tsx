@@ -115,7 +115,7 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
    const b=profile.backend;let offered:ModelChoice[]=[];
    if(b.kind==='agent') {
     const installed=await backend.detectAgents();
-    if(!installed.some(agent=>agent.key===b.tool&&agent.found))throw new Error(`${b.tool} is not installed on this machine. Install it and sign in before saving.`);
+    if(!installed.some(agent=>(agent.key===b.tool||(b.tool==='claude_code'&&agent.key==='claude'))&&agent.found))throw new Error(`${b.tool} is not installed on this machine. Install it and sign in before saving.`);
     offered=await backend.agentModels(b.tool);
    }
    else if(b.kind==='open_ai_compatible') {

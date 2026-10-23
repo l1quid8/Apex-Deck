@@ -27,3 +27,5 @@
   .personal-browser { padding: 8px; }
   .personal-browser-head { gap: 6px; }
 }
+
+.personal-browser button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink,var(--bg))}

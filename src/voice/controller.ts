@@ -463,12 +463,13 @@ export function createVoiceController<R = VoiceRuntime>(
     if (e.type === "ready") {
       const voices = e.voices ?? [];
       const valid = state.scope && voices.includes(deps.voice(state.scope));
-      if (!valid) audio?.mute(true);
+      const muted = state.muted || !valid;
+      audio?.mute(muted);
       set({
         status: valid ? "listening" : "needs-attention",
         voices,
         semantic: e.semantic === true,
-        muted: !valid,
+        muted,
         error: valid
           ? undefined
           : "Choose an installed voice, then unmute the microphone.",
@@ -640,6 +641,9 @@ export function createVoiceController<R = VoiceRuntime>(
         return;
       }
       audio = opened;
+      // A mute clicked while the runtime or microphone was opening must be
+      // applied before the acquired input can feed the connected helper.
+      audio.mute(state.muted);
       audio.flush(generation);
       // Track settings do not establish acoustic AEC. Speaker mode is verified separately.
       if (!audio.echoCancellation)

@@ -220,6 +220,20 @@ function PickMenu({ list, who, active, onDone, threadQuery }: { list: VoiceCandi
   );
 }
 
+/** Keep text exactly as typed while editing. Normalizing each keystroke removes
+ * the space or comma the user needs to type the next word or nickname. */
+function NicknameInput({ aliases, onChange }: { aliases: string[]; onChange(aliases: string[]): void }) {
+  const [text, setText] = useState(() => aliases.join(", "));
+  const editing = useRef(false);
+  const value = aliases.join(", ");
+  useEffect(() => { if (!editing.current) setText(value); }, [value]);
+  const parse = (value: string) => value.split(",").slice(0, 16).map(alias => alias.trim().slice(0, 64)).filter(Boolean);
+  return <input type="text" aria-label="Nicknames" value={text} placeholder="e.g. Helper, Pal"
+    onFocus={() => { editing.current = true; }}
+    onChange={event => { editing.current = true; setText(event.target.value); onChange(parse(event.target.value)); }}
+    onBlur={() => { editing.current = false; setText(parse(text).join(", ")); }} />;
+}
+
 /** One settings panel for all three looks: who you're talking to, their voice, the pause, nicknames, and the look itself. */
 function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; candidates: VoiceCandidate[] }) {
   const { scope, candidate, state, name } = call;
@@ -232,8 +246,11 @@ function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; 
   const picked = chatVoice(settings, scope.hostId, profile, scope.roomId, scope.participantId);
   const fallback = voiceFor(settings, scope.hostId, profile, undefined, undefined, candidate?.agentVoice);
   const speaking = picked || fallback;
-  const savePreference = (patch: Partial<typeof preference>) =>
-    r.save(withChatPreference(r.settings, scope.hostId, profile, scope.roomId, scope.participantId, patch));
+  const saveSettings = (patch: Partial<VoiceSettings>) => { const current = voiceRegistration(scope); current.save({ ...current.settings, ...patch }); };
+  const savePreference = (patch: Partial<typeof preference>) => {
+    const current = voiceRegistration(scope);
+    current.save(withChatPreference(current.settings, scope.hostId, profile, scope.roomId, scope.participantId, patch));
+  };
   const look = readCallLook(settings.look);
   const here = candidates.filter((c) => c.hostId === scope.hostId && c.roomId === scope.roomId);
   return (
@@ -270,18 +287,17 @@ function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; 
       <label className="voice-set-row col">
         <span>Pause before reply <b>{settings.silenceMs} ms</b></span>
         <input type="range" min="100" max="2000" step="50" value={settings.silenceMs}
-          onChange={(e) => r.save({ ...r.settings, silenceMs: e.target.valueAsNumber })} />
+          onChange={(e) => saveSettings({ silenceMs: e.target.valueAsNumber })} />
       </label>
       <label className="voice-set-row">
         <span>Nicknames</span>
-        <input type="text" value={preference.aliases.join(", ")} placeholder={`e.g. ${name.slice(0, -1) || name}, ${name}s`}
-          onChange={(e) => savePreference({ aliases: e.target.value.split(",").slice(0, 16).map((x) => x.trim().slice(0, 64)) })} />
+        <NicknameInput key={JSON.stringify([scope.hostId, profile, scope.roomId, scope.participantId])} aliases={preference.aliases} onChange={aliases => savePreference({ aliases })} />
       </label>
       <div className="voice-set-row">
         <span>Call controls</span>
         <span className="voice-seg" role="group" aria-label="Call controls">
           {CALL_LOOKS.map((l) => (
-            <button type="button" key={l.id} aria-pressed={l.id === look} onClick={() => r.save({ ...r.settings, look: l.id as CallLook })}>
+            <button type="button" key={l.id} aria-pressed={l.id === look} onClick={() => saveSettings({ look: l.id as CallLook })}>
               {l.label}
             </button>
           ))}

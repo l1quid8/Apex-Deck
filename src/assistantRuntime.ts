@@ -65,7 +65,7 @@ export async function assistantRuntimeModels(backend: Pick<Backend, 'detectAgent
   let models: ModelChoice[];
   if (provider.kind === 'agent') {
     if(provider.tool!=='claude_code')throw new Error('This agent does not support assistant replies. Choose a supported provider in Settings.');
-    if (!(await backend.detectAgents()).some(agent => agent.key === provider.tool && agent.found)) throw new Error(`${provider.tool} is not installed on this machine. Open Settings to choose another provider.`);
+    if (!(await backend.detectAgents()).some(agent => (agent.key === provider.tool || (provider.tool === 'claude_code' && agent.key === 'claude')) && agent.found)) throw new Error(`${provider.tool} is not installed on this machine. Open Settings to choose another provider.`);
     models = await backend.agentModels(provider.tool);
   } else if (provider.kind === 'open_ai_compatible') {
     if (provider.api_key_env) {

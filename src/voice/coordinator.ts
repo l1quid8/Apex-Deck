@@ -73,7 +73,18 @@ export function registerVoiceThread(key: string, entry: VoiceRegistration) {
   const timer = closing.get(key);
   if (timer !== undefined) clearTimeout(timer);
   closing.delete(key);
-  registry.set(key, entry);
+  const registration: VoiceRegistration = {
+    ...entry,
+    save(settings) {
+      // App persistence schedules a React render; its registration effects run
+      // later. Publish the new shared snapshot first so consecutive edits (or
+      // another open chat's controls) cannot compose from the old preferences.
+      for (const current of registry.values()) current.settings = settings;
+      registration.settings = settings;
+      entry.save(settings);
+    },
+  };
+  registry.set(key, registration);
 }
 export function unregisterVoiceThread(key: string) {
   registry.delete(key);
