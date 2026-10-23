@@ -42,6 +42,23 @@ Null retains candidate integration and final installed review. No release build,
 installation, re-pin, main merge or Tasks 4-8 occurred in this G2b pass. Those
 remain gated by the signed-install checks below.
 
+### Exact integration and fresh installed baseline
+
+G2b source is integrated at `d03ad170b8516d998591e74a3dd381c83a0b2b25`
+(including deepgeek's cherry-picked `769e700`). The task branch was fast-forwarded
+into `fix/assistant-workspace-integration` after TypeScript passed, then deleted.
+The primary shared checkout was not changed.
+
+Normal-user installed acceptance ran from that exact clean source at
+2026-10-23 06:03Z: **23 PASS / 1 FAIL / 8 SKIP**. Evidence:
+`target/acceptance-provenance/evidence-20261023T060339Z.json` (ignored; includes
+host/user details). Its source commit, `dirty: false`, and harness SHA256 were
+checked against the actual file. The sole failure is still
+`launchagent.daemon-path`, pointing to the old `/Applications` daemon. This is a
+fresh baseline of the old installation, not acceptance of the source candidate.
+Zero `/tmp/apex-acceptance.*` folders remained, and the broker stayed running.
+The following documentation commit changes none of the tested product code.
+
 ## Security follow-up after `ae792dce`
 
 Independent broader source review found two P1 issues. The first is corrected
