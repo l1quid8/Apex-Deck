@@ -1,11 +1,23 @@
-import type { AssistantRef } from './assistantIdentity.ts';
-import type { ParticipantConfig, ModelChoice } from './types.ts';
+import type { AssistantRef, ProjectRef } from './assistantIdentity.ts';
+import type { ParticipantConfig, ModelChoice, Workspace } from './types.ts';
 export type AssistantSection = 'conversation' | 'projects' | 'activity' | 'memory' | 'settings';
-export type MainView = { kind: 'workspace' } | { kind: 'assistant'; assistant: AssistantRef; section: AssistantSection };
+export type MainView = { kind: 'workspace' } | { kind: 'assistant'; assistant: AssistantRef; section: AssistantSection; previousSections?: AssistantSection[] };
 export type AssistantNavigation = {kind:'open';assistant:AssistantRef} | {kind:'section';section:AssistantSection} | {kind:'back'} | {kind:'workspace'};
 /** Navigation owns only the main canvas. Global Dashboard/Tasks panel state is retained verbatim. */
 export function assistantNavigation<T extends {mainView:MainView}>(state:T,event:AssistantNavigation):T {
- const mainView:MainView = event.kind==='workspace' ? {kind:'workspace'} : event.kind==='open' ? {kind:'assistant',assistant:{...event.assistant},section:'conversation'} : state.mainView.kind==='assistant' ? {...state.mainView,section:event.kind==='back'?'conversation':event.section} : state.mainView;
+ let mainView:MainView=state.mainView;
+ if(event.kind==='workspace')mainView={kind:'workspace'};
+ else if(event.kind==='open')mainView={kind:'assistant',assistant:{...event.assistant},section:'conversation'};
+ else if(mainView.kind==='assistant') {
+  const {previousSections,...view}=mainView;
+  if(event.kind==='back') {
+   const history=[...(previousSections??[])];const section=history.pop()??'conversation';
+   mainView={...view,section,...(history.length?{previousSections:history}:{})};
+  } else if(event.section!==mainView.section) {
+   const history=event.section==='settings'||event.section==='memory'?[...(previousSections??[]),mainView.section]:[];
+   mainView={...view,section:event.section,...(history.length?{previousSections:history}:{})};
+  }
+ }
  return {...state,mainView};
 }
 export function textModels<T extends ModelChoice & {kind?:string|null}>(models:T[]):T[] { return models.filter(m=>!m.kind || m.kind==='text'); }
@@ -29,4 +41,18 @@ export function rosterMessage(rows:readonly unknown[],hosts:readonly {state:stri
  const problem=hosts.find(h=>h.problem)?.problem;if(problem)return problem;
  if(hosts.some(h=>h.state==='offline'))return 'Assistant machines are offline. Reconnect to load Your team.';
  return 'No assistants yet. Add a teammate to get started.';
+}
+
+/** Resolve transport aliases only through a current authenticated welcome identity.
+ * Never fall back to workspace ID or normalize an owning host's canonical path. */
+export function resolveAssistantProject(project:ProjectRef,workspaces:readonly Workspace[],authenticatedHost:(routeHostId:string)=>string|undefined,canonicalProjectForWorkspace?:(workspace:Workspace)=>ProjectRef|undefined):Workspace|null {
+ return workspaces.find(workspace=>{
+  const hostId=authenticatedHost(workspace.hostId??'local');
+  if(workspace.hidden||workspace.id!==project.workspaceId||!hostId||hostId!==project.hostId)return false;
+  const canonical=canonicalProjectForWorkspace?.(workspace);
+  return canonical ? canonical.hostId===hostId&&canonical.workspaceId===workspace.id&&canonical.cwd===project.cwd : workspace.path===project.cwd;
+ })??null;
+}
+export function assistantSettingsSaved(view:MainView,owner:AssistantRef):MainView {
+ return view.kind==='assistant'&&view.section==='settings'&&view.assistant.hostId===owner.hostId&&view.assistant.assistantId===owner.assistantId ? {kind:'assistant',assistant:view.assistant,section:'conversation'} : view;
 }

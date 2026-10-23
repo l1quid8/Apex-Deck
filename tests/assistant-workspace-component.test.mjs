@@ -17,14 +17,14 @@ const Avatar=()=>null, HexColorPicker=()=>null,PersonalPanels=()=>null,PersonalB
 const profile={id:'legacy',display_name:'Legacy',persona:'Legacy metadata retained',backend:{kind:'agent',tool:'codex',model:'old'},effort:'high',access:'ask',legacyLabel:'old custom label'};
 const record={id:'a',hostId:'mac',revision:7,name:'Null',style:'Saved legacy style',look:{seed:'saved-seed',color:'#aabbcc',shape:'legacy-shape'},profile,messages:[],tasks:[],projects:[]};
 function mount(overrides={}){
- const calls=[];const backend={sessionLoad:async()=>({profiles:[profile]}),agentModels:async()=>[{id:'old',efforts:['low','high']},{id:'new',efforts:['low']}],supports:()=>false,...overrides.backend};
+ const calls=[];const backend={sessionLoad:async()=>({profiles:[profile]}),detectAgents:async()=>[{key:'codex',found:true}],agentModels:async()=>[{id:'old',efforts:['low','high']},{id:'new',efforts:['low']}],supports:()=>false,...overrides.backend};
  const lane={name:'Null',hostName:'Mac',assistant:record,offline:false,configureWorkspace:async input=>calls.push(input),...overrides.lane};
  const props={backend,lane,hostId:'mac',profiles:[profile],projects:[],...overrides,backend,lane:overrides.lane===undefined&&Object.hasOwn(overrides,'lane')?undefined:lane};
- const states=[],deps=[],queued=[];let cursor=0;
- const hooks={useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(fn);}}};
+ const states=[],deps=[],queued=[],cleanups=[];let cursor=0;
+ const hooks={useRef(initial){const i=cursor++;return states[i]??(states[i]={current:initial});},useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}}};
  const bindings={React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined};
  const components=new Function(...Object.keys(bindings),`${compiled}\nreturn {AssistantEditor,AssistantWorkspace};`)(...Object.values(bindings));
- return{props,calls,render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
+ return{props,calls,unmount(){cleanups.forEach(fn=>fn?.());},render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
 }
 const input=(tree,name)=>find(tree,n=>n.props?.['aria-label']===name);
 const submit=async h=>{find(h.render(),n=>n.type==='form').props.onSubmit({preventDefault(){}});await new Promise(r=>setImmediate(r));};
@@ -60,4 +60,46 @@ test('saved Keychain credentials are accepted and media models never enter the t
  const p={...profile,backend:{kind:'open_ai_compatible',base_url:'https://example.test/v1',api_key_env:'SAVED',model:'text'}};
  const h=mount({backend:{sessionLoad:async()=>({profiles:[p]}),apiKeyStatus:async()=>['saved'],apiModels:async()=>[{id:'text'},{id:'picture',kind:'image'},{id:'movie',kind:'video'}]},lane:{assistant:{...record,profile:p}}});
  const tree=await h.ready();assert.equal(input(tree,'Assistant model').props.disabled,false);assert.doesNotMatch(text(input(tree,'Assistant model')),/picture|movie/);assert.equal(all(input(tree,'Assistant reasoning'),n=>n.type==='option').length,1);await submit(h);assert.equal(h.calls[0].profile.backend.model,'text');assert.equal(h.calls[0].profile.effort,null);
+});
+
+const tick=()=>new Promise(r=>setImmediate(r));
+test('a late save refreshes durable data but cannot navigate a newly opened owner editor',async()=>{
+ let resolve;let committed=0;const navigation=[];
+ const a=mount({lane:{configureWorkspace:()=>new Promise(r=>{resolve=r;})},onSaved:()=>navigation.push('a'),onCommitted:()=>committed++});
+ await a.ready();await submit(a);a.unmount();
+ const b=mount({lane:{assistant:{...record,id:'b',name:'B'}},onSaved:()=>navigation.push('b')});await b.ready();
+ input(b.render(),'Assistant name').props.onChange({target:{value:'B unsaved'}});
+ resolve();await tick();assert.deepEqual(navigation,[]);assert.equal(committed,1);assert.equal(input(b.render(),'Assistant name').props.value,'B unsaved');
+});
+test('leaving and reopening the same settings owner protects the new draft from late save',async()=>{
+ let resolve;const navigation=[];const old=mount({lane:{configureWorkspace:()=>new Promise(r=>{resolve=r;})},onSaved:()=>navigation.push('old')});
+ await old.ready();await submit(old);old.unmount();const reopened=mount();await reopened.ready();input(reopened.render(),'Assistant name').props.onChange({target:{value:'New draft'}});
+ resolve();await tick();assert.deepEqual(navigation,[]);assert.equal(input(reopened.render(),'Assistant name').props.value,'New draft');
+});
+test('creation completion remains durable after navigation without stealing the active view',async()=>{
+ let resolve;const created=[];const navigation=[];const h=mount({lane:undefined,onCreate:()=>new Promise(r=>{resolve=()=>{created.push('created');r({hostId:'mac',assistantId:'new'});};}),onSaved:ref=>navigation.push(ref)});
+ await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'New teammate'}});await submit(h);h.unmount();resolve();await tick();assert.deepEqual(created,['created']);assert.deepEqual(navigation,[]);
+});
+test('project links pass the complete identity and explain unavailable exact destinations',()=>{
+ const h=mount();const project={hostId:'host-b',workspaceId:'shared',cwd:'/b'};const opened=[];
+ const props={lane:{name:'Null',hostName:'Mac'},section:'projects',onNavigate(){},onBack(){},projects:[{project,tools:'ask'}],onOpenProject:p=>opened.push(p)};
+ let tree=h.workspace({...props,projectUnavailable:()=>undefined});find(tree,n=>n.type==='button'&&text(n).includes('/b')).props.onClick();assert.deepEqual(opened,[project]);
+ tree=h.workspace({...props,projectUnavailable:()=>'Exact project unavailable. Reconnect its machine.'});assert.equal(find(tree,n=>n.type==='button'&&text(n).includes('/b')).props.disabled,true);assert.match(text(tree),/Exact project unavailable/);
+});
+
+test('conflict refresh updates only the expected revision and preserves the complete draft for retry',async()=>{
+ const requests=[];let conflict=true;const h=mount({backend:{call:async(cmd,args)=>{assert.equal(cmd,'personal_get');assert.equal(args.assistantId,'a');return {...record,revision:9,name:'Remote name'};}},lane:{configureWorkspace:async value=>{requests.push(value);if(conflict)throw new Error('Revision conflict; refresh and retry');}}});
+ await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'Keep my draft'}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);
+ const refresh=find(h.render(),n=>n.type==='button'&&text(n).includes('Refresh revision'));assert.ok(refresh);await refresh.props.onClick();await tick();assert.equal(input(h.render(),'Assistant name').props.value,'Keep my draft');assert.equal(input(h.render(),'Project tools').props.value,'full');conflict=false;await submit(h);assert.equal(requests[1].expectedRevision,9);assert.equal(requests[1].settings.name,'Keep my draft');
+});
+test('applied creation image previews use the captured draft owner and generation',async()=>{
+ const h=mount({lane:undefined});let tree=await h.ready();const editor=find(tree,n=>n.type===AssistantAvatarEditor);const image={assetId:'asset',sha256:'hash',mime:'image/png',width:512,height:512};editor.props.onAppearanceChange({...editor.props.appearance,kind:'image',image});editor.props.onApply({kind:'image',generationId:'gen',assetId:'asset'});tree=h.render();
+ for(const preview of all(tree,n=>n.type===Avatar)){assert.deepEqual(preview.props.draftImage,{owner:editor.props.owner,generationId:'gen'});assert.deepEqual(preview.props.image,image);}
+});
+test('cached CLI models cannot make a missing installation ready',async()=>{
+ const h=mount({backend:{detectAgents:async()=>[{key:'codex',found:false,program:'codex',label:'Codex'}]}});const tree=await h.ready();assert.match(text(tree),/not installed/i);await submit(h);assert.equal(h.calls.length,0);
+});
+
+test('unproven changed folders retain their saved assignment and cannot add a duplicate binding',async()=>{
+ const assigned={project:{hostId:'mac',workspaceId:'w',cwd:'/private/tmp/p'},tools:'ask'};const h=mount({projects:[{id:'w',path:'/tmp/p',name:'P'}],lane:{assistant:{...record,projects:[assigned]}}});const tree=await h.ready();assert.equal(find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);assert.match(text(tree),/folder.*verified/i);await submit(h);assert.deepEqual(h.calls[0].projects,[assigned]);
 });

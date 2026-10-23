@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import { transform } from 'sucrase';
+import * as assistantWorkspaceModel from '../src/assistantWorkspaceModel.ts';
 import * as attention from '../src/attention.ts';
 import { loadStartupState } from '../src/startupState.ts';
 import * as monitorAttention from '../src/monitorAttention.ts';
@@ -60,7 +61,7 @@ function appHarness() {
   const connectionStates = new Map();
   const connectionListeners = new Map();
   function connectionFor(hostId) {
-    if (!connectionStates.has(hostId)) connectionStates.set(hostId, { status: { kind: 'connected' }, revision: 1 });
+    if (!connectionStates.has(hostId)) connectionStates.set(hostId, { status: { kind: 'connected', hostId }, revision: 1 });
     if (!connectionListeners.has(hostId)) connectionListeners.set(hostId, new Set());
     return {
       get: () => ({ hostId, name: `Host ${hostId}`, ...connectionStates.get(hostId), agents: [], discovery: 'ready' }),
@@ -108,6 +109,7 @@ function appHarness() {
   const personalLane={ref:assistantRef,draftKey:assistantIdentityKey(assistantRef),name:'Null',hostName:'Mac',assistant:personalRecord,offline:false,send:async()=>{}};
   const assistantCollection={assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
   const defaults = {
+    ...assistantWorkspaceModel,
     assistantIdentityKey,rosterMessage,
     usePersonalAssistants:()=>assistantCollection,
 
@@ -188,7 +190,7 @@ function appHarness() {
     emitSession(workspaces) { sessionChanged?.({ ...session, workspaces, panes: session.panes }); },
     setConnection(status, hostId = 'host-a') {
       const previous = connectionStates.get(hostId) ?? { status: { kind: 'connected' }, revision: 1 };
-      connectionStates.set(hostId, { status, revision: previous.revision + 1 });
+      connectionStates.set(hostId, { status: status.kind === 'connected' && !status.hostId ? { ...status, hostId } : status, revision: previous.revision + 1 });
       connectionListeners.get(hostId)?.forEach(fn => fn());
     },
   };
