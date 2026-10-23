@@ -1,4 +1,4 @@
-//! A live DeepSeek turn through Deck's own adapter, for capturing what the
+//! Live DeepSeek turns through Deck's own adapter, for capturing what the
 //! model really sends back. Ignored by default: it needs a real key and spends
 //! real tokens. Run it as
 //!
@@ -8,24 +8,23 @@
 //! ```
 //!
 //! `DS_PROXY` points at a recording proxy so the raw SSE can be kept as a
-//! fixture; without it the request goes straight to the provider.
+//! fixture; without it the request goes straight to the provider. `DS_PROMPT`
+//! and `DS_PROMPT2` set the two turns; leave `DS_PROMPT2` out to send one.
 
 use std::sync::Mutex;
 
 use apex_adapters::{build, BuildContext};
 use apex_core::{
-    Access, Backend, Participant, ParticipantConfig, ParticipantId, Role, TurnRequest, ViewTurn,
+    Access, Backend, ParticipantConfig, ParticipantId, Progress, Role, TurnRequest, ViewTurn,
 };
 
-#[tokio::test]
-#[ignore]
-async fn live_deepseek_turn() {
-    let base = std::env::var("DS_PROXY").unwrap_or_else(|_| "https://api.deepseek.com/v1".into());
-    let cfg = ParticipantConfig {
+fn config() -> ParticipantConfig {
+    ParticipantConfig {
         id: ParticipantId::new("deepseek"),
         display_name: "DeepSeek".into(),
         backend: Backend::OpenAiCompatible {
-            base_url: base,
+            base_url: std::env::var("DS_PROXY")
+                .unwrap_or_else(|_| "https://api.deepseek.com/v1".into()),
             model: std::env::var("DS_MODEL").unwrap_or_else(|_| "deepseek-chat".into()),
             api_key_env: Some("DEEPSEEK_API_KEY".into()),
         },
@@ -36,8 +35,11 @@ async fn live_deepseek_turn() {
         voice: None,
         appearance: None,
         media: None,
-    };
-    let context = BuildContext {
+    }
+}
+
+fn context() -> BuildContext {
+    BuildContext {
         cwd: Some(std::env::temp_dir()),
         path: None,
         codex_hook: None,
@@ -47,32 +49,73 @@ async fn live_deepseek_turn() {
         media_dir: None,
         attachment_roots: vec![],
         phone: None,
-    };
-    let bot = build(cfg, &context);
-    let request = TurnRequest {
+    }
+}
+
+fn request(content: String, think: bool) -> TurnRequest {
+    TurnRequest {
         effort_override: None,
         access: None,
-        system: "You are DeepSeek, one bot in a chat with a person and other bots. Be brief."
-            .into(),
+        system: if think {
+            "You are DeepSeek, one bot in a chat with a person and other bots. Think before you \
+             answer. Be brief."
+                .into()
+        } else {
+            "You are DeepSeek, one bot in a chat with a person and other bots. Be brief.".into()
+        },
         turns: vec![ViewTurn {
             role: Role::User,
-            content: std::env::var("DS_PROMPT").unwrap_or_else(|_| {
-                "[Human]: Plan only, and don't read or change any files while you plan: I want to \
-                 move this project from SQLite to Postgres. Work out the steps, keep your to-do \
-                 list up to date as you go, and reply once the plan is written."
-                    .into()
-            }),
+            content,
         }],
         unseen: vec![],
         plan: false,
-    };
-    let streamed = Mutex::new(String::new());
-    let result = bot
-        .respond(request, &|piece| streamed.lock().unwrap().push_str(piece))
-        .await;
-    match result {
-        Ok(reply) => println!("OK text: {:?}", reply.text),
-        Err(failure) => println!("ERR: {failure}"),
     }
-    println!("--- streamed ---\n{}", streamed.lock().unwrap());
+}
+
+#[tokio::test]
+#[ignore]
+async fn live_deepseek_turn() {
+    let bot = build(config(), &context());
+    let first = std::env::var("DS_PROMPT").unwrap_or_else(|_| {
+        "[Human]: Before anything else, call the todo_write tool with a four-step plan for \
+         moving this project from SQLite to Postgres, and mark the first step in_progress. \
+         Then answer in one sentence."
+            .into()
+    });
+    let mut prompts = vec![first];
+    if let Ok(second) = std::env::var("DS_PROMPT2") {
+        prompts.push(second);
+    }
+    for (n, prompt) in prompts.into_iter().enumerate() {
+        let seen: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let result = bot
+            .respond_with_progress(request(prompt, true), &|update| {
+                let line = match update {
+                    Progress::Todo(items) => format!(
+                        "todo: {}",
+                        items
+                            .iter()
+                            .map(|t| format!("{:?} {}", t.status, t.text))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    ),
+                    Progress::Activity(what) => format!("activity: {what}"),
+                    Progress::Work(step) => format!("work: {}", step.label),
+                    Progress::Text(_) | _ => return,
+                };
+                let mut seen = seen.lock().unwrap();
+                if seen.last() != Some(&line) {
+                    seen.push(line);
+                }
+            })
+            .await;
+        println!("=== turn {} ===", n + 1);
+        for line in seen.into_inner().unwrap() {
+            println!("{line}");
+        }
+        match result {
+            Ok(reply) => println!("reply: {:?}", reply.text),
+            Err(failure) => println!("ERR: {failure}"),
+        }
+    }
 }
