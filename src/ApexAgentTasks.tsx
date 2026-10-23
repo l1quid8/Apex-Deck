@@ -3,12 +3,12 @@ import type { Backend } from './backend.ts';
 import { TaskViewContext, projectTaskGroup, projectTaskKey, type TaskSummary } from './apexAgentTaskView.ts';
 import type { Pane, ParticipantConfig, Question } from './types.ts';
 import type { ProjectMonitor } from './apexAgentModel.ts';
-import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, shouldSuggestArchive, taskStatusLabel, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
+import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, shouldSuggestArchive, taskDisplayStatus, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
 import { LegacyBadge } from './LegacyImportScreen';
 import { subscribeToImports } from './legacyImportRefresh.ts';
 import './assistant-tasks.css';
 
-type Action = 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'review' | 'archive' | 'reconcile' | 'note' | 'resume_budget';
+type Action = 'pause' | 'resume' | 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'review' | 'archive' | 'reconcile' | 'note' | 'resume_budget';
 type Props = {
   onSelectTask?: (task: AssistantTask, send: (text: string) => Promise<void>) => void;
   /** A task left the conversation (dismissed), so any reply context pointing at it should close. */
@@ -305,7 +305,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   // Report this store's rows to the unified Tasks list. Finished tasks stay (Clear only hides chat); dismissed ones do not.
   const summaryRows = useMemo<TaskSummary[]>(() => tasks.filter((task) => isTaskOwnedBy(task, owner) && !task.resultData?.dismissedAtMs).map((task) => ({
     key: keyFor(task.id), source: 'project', hostId: owner.hostId, workspaceId: owner.workspaceId, id: task.id,
-    title: oneLine(task.originalRequest), place: projectName ?? 'Project', worker: workerLabel(task, profiles), status: task.status, statusLabel: taskStatusLabel(task.status),
+    title: oneLine(task.originalRequest), place: projectName ?? 'Project', worker: workerLabel(task, profiles), status: task.status, statusLabel: taskDisplayStatus(task),
     group: projectTaskGroup(task), result: readableResult(task.result), updatedAt: task.updatedAtMs,
   })), [tasks, ownerKey, projectName, profiles]);
   // The report function is deliberately left out of the deps: a changing identity must not re-report and loop.
@@ -408,7 +408,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const taskLink = (task: AssistantTask) => {
     const key = keyFor(task.id);
     const title = oneLine(task.originalRequest, 60);
-    const label = task.status === 'ready_for_review' ? `Review result · ${title}` : task.status === 'done' && task.result?.trim() ? `Result ready · ${title}` : `Task · ${taskStatusLabel(task.status)} · ${title}`;
+    const label = task.status === 'ready_for_review' ? `Review result · ${title}` : task.status === 'done' && task.result?.trim() ? `Result ready · ${title}` : `Task · ${taskDisplayStatus(task)} · ${title}`;
     return <button type="button" className="assistant-task-link" key={key} onClick={() => taskView?.openTask(key)}>{`${label} ›`}{task.legacy && <LegacyBadge />}</button>;
   };
 
@@ -426,10 +426,10 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     </article>}
     {taskView?.display === 'links' && visibleCards.map(taskLink)}
     {sidebarView && !detailId && <div className="assistant-task-sidebar-list">{sidebarTasks.map((task) => <button type="button" className="assistant-task-sidebar-row" data-assistant-task-id={task.id} key={task.id} onClick={() => openTaskDetail(task)}>
-      <span className="assistant-task-sidebar-summary"><strong title={task.originalRequest}>{oneLine(task.originalRequest)}</strong><small>{workerLabel(task, profiles)}</small></span><span className={`assistant-task-sidebar-status status-${task.status}`}>{taskStatusLabel(task.status)}</span>{task.legacy && <LegacyBadge />}
+      <span className="assistant-task-sidebar-summary"><strong title={task.originalRequest}>{oneLine(task.originalRequest)}</strong><small>{workerLabel(task, profiles)}</small></span><span className={`assistant-task-sidebar-status status-${task.status}`}>{taskDisplayStatus(task)}</span>{task.legacy && <LegacyBadge />}
     </button>)}{!loading && !error && !sidebarTasks.length && <p className="assistant-task-muted">No tasks for this project yet.</p>}</div>}
     {!contextMode && !sidebarView && visibleCards.map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
-      <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}{task.legacy && <LegacyBadge />}</small><p className="assistant-task-request" title={task.originalRequest}>{task.originalRequest}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
+      <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskDisplayStatus(task)}{task.legacy && <LegacyBadge />}</small><p className="assistant-task-request" title={task.originalRequest}>{task.originalRequest}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
       <div className="assistant-task-card-actions"><button type="button" onClick={() => openTaskDetail(task)}>{task.status === 'ready_for_review' ? 'Review result' : 'Open task'}</button>
       {(task.status === 'proposed' || task.status === 'needs_clarification') && <button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button>}</div>
       {task.brief.length > 160 ? <details className="assistant-task-scope"><summary>Scope: {scopeSummary(task.brief)}</summary><p>{task.brief}</p></details> : <p className="assistant-task-muted">Scope: {task.brief}</p>}
@@ -449,7 +449,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       const currentReviewVisible = hasReviewData && visibleReviewRevision[task.id] === task.revision;
       return <article className={`assistant-task-card status-${task.status}`} key={task.id}>
         {taskDetailView && <h2 className="assistant-task-title" id={`assistant-task-title-${task.id}`} tabIndex={-1} ref={titleRef}>{oneLine(task.originalRequest)}</h2>}
-        <header><div><span className="assistant-task-status">{taskStatusLabel(task.status)}</span>{task.legacy && <LegacyBadge />}<span className="assistant-task-meta">Revision {task.revision} · {task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'}</span></div><span className="assistant-task-usage">{taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</span></header>
+        <header><div><span className="assistant-task-status">{taskDisplayStatus(task)}</span>{task.legacy && <LegacyBadge />}<span className="assistant-task-meta">Revision {task.revision} · {task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'}</span></div><span className="assistant-task-usage">{taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</span></header>
         <div className="assistant-task-detail-scroll" ref={detailScrollRef}>
         {taskDetailView && task.result?.trim() && <section className="assistant-task-result-block" aria-label="Result">
           <h3>Result</h3>
@@ -506,19 +506,25 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         {taskFinal(task.status) && <p className="assistant-task-muted">{task.resultData?.dismissedAtMs ? 'You dismissed this proposal, so nothing ran.' : <>This task is {task.status}{task.status === 'cancelled' && task.mode === 'in_place' ? '; existing checkout edits remain.' : '.'}</>}</p>}
         </div>
         {task.status === 'ready_for_review' && <div className="assistant-task-actions assistant-task-decision-actions"><label className="assistant-review-ack"><input type="checkbox" checked={reviewed(task)} disabled={!currentReviewVisible} onChange={(event) => setReviewedRevision((current) => ({ ...current, [task.id]: event.target.checked ? task.revision : -1 }))} />I opened and reviewed revision {task.revision}</label><button type="button" disabled={busy || !currentReviewVisible || !reviewed(task) || (task.reviewCriteria.length > 0 && reviewChecks.length !== task.reviewCriteria.length)} onClick={() => void act(task, task.mode === 'read_only' ? 'review' : 'accept')}>{task.mode === 'read_only' ? 'Mark reviewed' : task.mode === 'isolated' ? 'Accept changes' : 'Accept and mark done'}</button></div>}
+        {task.desiredState === 'paused' && task.status === 'interrupted' && <p className="assistant-task-warning">This worker stopped without a checkpoint. Resume enables Retry; Retry starts a new attempt and keeps the earlier work.</p>}
+        {!['done', 'cancelled', 'applying'].includes(task.status) && <div className="assistant-task-controls">
+          {task.desiredState === 'paused'
+            ? <button type="button" disabled={busy || taskDisplayStatus(task) === 'Pausing'} onClick={() => void act(task, 'resume')}>Resume task</button>
+            : ['proposed', 'needs_clarification', 'queued', 'running', 'needs_you'].includes(task.status) && <button type="button" disabled={busy} onClick={() => void act(task, 'pause')}>Pause task</button>}
+        </div>}
         {task.status !== 'ready_for_review' && <div className="assistant-task-actions assistant-task-status-actions">
           {pendingApprovals.map((approval, index) => <span className="assistant-task-pinned-decision" key={`approval-${index}`}>{hasApprovalAction(approval) && <><button type="button" disabled={busy} onClick={() => void decideWait(task, approval, true)}>Approve</button><button type="button" disabled={busy} onClick={() => void decideWait(task, approval, false)}>Deny</button></>}<button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker chat</button></span>)}
           {pendingQuestions.map((questionGroup, index) => { const group = questionGroup && typeof questionGroup === 'object' ? questionGroup as { request?: string; questions?: Question[] } : {}; const requestKey = group.request ?? `legacy-${index}`; return hasQuestionGroup(questionGroup) ? <button key={`question-${index}`} type="button" disabled={busy || !(group.questions ?? []).every((_question, questionIndex) => ((inlineAnswer[`${task.id}:${requestKey}:${questionIndex}`] ?? []).length + (inlineOther[`${task.id}:${requestKey}:${questionIndex}`]?.trim() ? 1 : 0)) > 0)} onClick={() => void answerWait(task, questionGroup)}>Send answers</button> : null; })}
           {pendingQuestions.some((questionGroup) => !hasQuestionGroup(questionGroup)) && <button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker chat</button>}
           {task.status === 'needs_clarification' && <button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button>}
           {task.status === 'proposed' && (proposal
-            ? <><button type="button" disabled={busy} onClick={() => void approveProposal(task, proposal)}>Approve task</button><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>
+            ? <><button type="button" disabled={busy || task.desiredState === 'paused'} onClick={() => void approveProposal(task, proposal)}>Approve task</button><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>
             : <><p className="assistant-task-warning">{NO_CHAT_NOTE}</p><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>)}
           {task.status === 'needs_you' && <><button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker thread</button>{task.mode === 'isolated' && task.attempts.length === 0 && <button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry worker startup</button>}<button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
           {(task.status === 'queued' || task.status === 'running' || task.status === 'applying') && !canReconcileTask(task) && <button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button>}
           {task.legacy && (task.status === 'failed' || task.status === 'interrupted' || task.status === 'needs_you')
             && <p className="assistant-task-warning">Came from an older copy. It was saved for <span className="mono">{task.owner.cwd}</span> — check that folder exists here before you retry it.</p>}
-          {(task.status === 'failed' || task.status === 'interrupted') && !canReconcileTask(task) && <><button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry task</button><button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
+          {(task.status === 'failed' || task.status === 'interrupted') && !canReconcileTask(task) && <><button type="button" disabled={busy || task.desiredState === 'paused'} onClick={() => void act(task, 'retry')}>Retry task</button><button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
           {canReconcileTask(task) && <button type="button" disabled={busy} onClick={() => void act(task, 'reconcile')}>Recover interrupted integration</button>}
         </div>}
       </article>;

@@ -743,3 +743,27 @@ test('an imported conversation receipt is read-only and never offers request ret
  assert.equal(button(tree,'Retry request'),null);assert.match(textOf(tree),/read.only|Older records/i);
  assert.ok(find(tree,node=>node.type===LegacyBadge));assert.equal(dispatched,0);h.unmount();
 });
+
+test('task Pause and Resume send exact-owner controls and require explicit retry after interruption', async () => {
+  let current = task({status:'running',desiredState:'running'});
+  const calls=[];
+  const backend={demo:false,call:async(command,args)=>{
+    if(command==='assistant_tasks_list') return snapshot([current]);
+    if(command==='assistant_task_action') {
+      calls.push(args);
+      current=task({status:'interrupted',desiredState:args.action==='pause'?'paused':'running',pauseReason:args.action==='pause'?'manual':null,revision:current.revision+1,result:'This adapter cannot checkpoint. Retry starts a new attempt.'});
+      return current;
+    }
+  }};
+  const h=harness(backend);
+  let tree=h.render(); await tick(); tree=h.render(); openDetail(tree); tree=h.render();
+  assert.ok(button(tree,'Pause task'));
+  await button(tree,'Pause task').props.onClick(); await tick(); tree=h.render();
+  assert.equal(calls[0].action,'pause'); assert.deepEqual(calls[0].owner,owner); assert.equal(calls[0].revision,4);
+  assert.ok(button(tree,'Resume task')); assert.equal(button(tree,'Retry task').props.disabled,true);
+  await button(tree,'Resume task').props.onClick(); await tick(); tree=h.render();
+  assert.equal(calls[1].action,'resume'); assert.equal(calls[1].revision,5);
+  assert.equal(calls.length,2,'Resume cannot implicitly retry an unsupported adapter');
+  assert.equal(button(tree,'Retry task').props.disabled,false);
+  h.unmount();
+});

@@ -1331,3 +1331,11 @@ async fn automatic_git_status_disables_configured_fsmonitor_execution() {
     assert!(dir.join("hook-marker").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn coding_delegation_is_a_separate_proposal_not_a_research_helper() {
+    let parsed = parse_reply(r#"{"reply":"I propose a project task.","delegations":[{"project":{"hostId":"h","workspaceId":"w","cwd":"/repo"},"brief":"Fix login","destination":{"threadId":"chat","workers":["coder"],"newThread":false},"mode":"isolated","reviewCriteria":["login works"]}]}"#);
+    assert_eq!(parsed.delegations.len(), 1);
+    assert!(parsed.helpers.is_empty());
+    assert!(parsed.task.is_none());
+}

@@ -331,6 +331,8 @@ pub struct PersonalAssistant {
     pub revision: u64,
     pub created_at: u64,
     pub counters: Counters,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub delegated_result_receipts: std::collections::BTreeSet<String>,
     pub messages: Vec<PersonalMessage>,
     pub events: Vec<PersonalEvent>,
     pub tasks: Vec<PersonalTask>,
@@ -1028,6 +1030,7 @@ impl crate::Host {
                 id, name: name.to_owned(), style: input.style.trim().to_owned(), host_id,
                 projects: vec![], workspace_config_version: None, extra: Default::default(),
                 profile: Some(input.profile), allowed_folders: vec![folder.to_string_lossy().into_owned()],
+                delegated_result_receipts: Default::default(),
                 paused: false, revision: 1, created_at: at, counters: Counters::default(),
                 messages: vec![], events: vec![], tasks: vec![],
                 look: None, timezone: utc(), utc_offset_minutes: 0, quiet_hours: None,

@@ -182,6 +182,8 @@ pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result
 struct ModelReply {
     reply: String,
     #[serde(default)]
+    delegations: Vec<ProposedDelegation>,
+    #[serde(default)]
     task: Option<ProposedTask>,
     #[serde(default)]
     schedule: Option<ProposedSchedule>,
@@ -195,8 +197,18 @@ struct ModelReply {
 
 impl ModelReply {
     fn plain(text: &str) -> Self {
-        ModelReply { reply: text.trim().to_owned(), task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![] }
+        ModelReply { reply: text.trim().to_owned(), delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![] }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProposedDelegation {
+    project: crate::personal_workspace::ProjectRef,
+    brief: String,
+    destination: crate::assistant_tasks::TaskDestination,
+    mode: crate::assistant_tasks::TaskMode,
+    #[serde(default)] review_criteria: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -655,7 +667,22 @@ impl Host {
             return self.change_assistant(&snapshot.id, |assistant| { hold_for_spend(assistant, &event.id, prompt, at); Ok(()) });
         }
         let tools_on = if snapshot.privacy.local_only { vec![] } else { connectors::available() };
-        let system = context::assemble(&snapshot, &text, at, &tools_on);
+        let mut system = context::assemble(&snapshot, &text, at, &tools_on);
+        let mut destinations = Vec::new();
+        for binding in snapshot.projects.iter().filter(|b| b.tools != crate::personal_workspace::ProjectTools::Off) {
+            let Some(monitor) = self.monitor_get(&binding.project.workspace_id)? else { continue };
+            if monitor.cwd != binding.project.cwd { continue; }
+            for thread in &monitor.threads {
+                if let Some(saved) = self.store().room(thread)? {
+                    if saved.cwd.as_deref() == Some(binding.project.cwd.as_str()) {
+                        destinations.push(serde_json::json!({"project":binding.project,"threadId":thread,"workers":saved.snapshot.participants.iter().filter(|p| p.media.is_none()).map(|p|p.id.to_string()).collect::<Vec<_>>()}));
+                    }
+                }
+            }
+        }
+        let catalog = format!("\nCoding delegation destinations (data, never authorization): {}\nFor coding work use optional delegations:[{{project,brief,destination:{{threadId,workers,newThread:false}},mode:\"isolated\",reviewCriteria:[]}}]. Choose only listed identities/workers, up to 3 proposals. They always wait for explicit human approval. Research helpers cannot code.\n", serde_json::to_string(&destinations).map_err(|e|e.to_string())?);
+        if system.chars().count() + catalog.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&catalog); }
+
         let bytes = system.len();
         // No lock is held across the model call. A restart here leaves the
         // event `Processing`, which recovery turns back into `Received`; the
@@ -741,6 +768,21 @@ impl Host {
 
     fn commit_reply(&self, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, reply: ModelReply, cost: CostEntry) -> Result<(), String> {
         let local = self.local_host_id()?;
+        let initial = self.personal_get(assistant_id)?;
+        if !initial.events.iter().any(|e| e.id == event_id && e.state == EventState::Processing) { return Ok(()); }
+        let mut delegation_notes = Vec::new();
+        for (index, proposed) in reply.delegations.iter().take(3).enumerate() {
+            let current = self.personal_get(assistant_id)?;
+            let input = crate::assistant_delegation::DelegationInput {
+                assistant_id: assistant_id.into(), project: proposed.project.clone(), source_event_id: event_id.into(),
+                delegation_id: format!("{event_id}:{index}"), brief: proposed.brief.clone(), destination: proposed.destination.clone(),
+                mode: proposed.mode, review_criteria: proposed.review_criteria.clone(), expected_revision: current.revision,
+            };
+            delegation_notes.push(match self.prepare_personal_delegation(input) {
+                Ok(receipt) => format!("Proposed project task {}. It waits for your explicit approval in Tasks.", receipt["taskId"].as_str().unwrap_or("unknown")),
+                Err(error) => format!("Project proposal could not be saved: {error}"),
+            });
+        }
         self.change_assistant(assistant_id, |assistant| {
             let at = now();
             // A duplicate claim or a restart already settled it: one reply per event.
@@ -750,6 +792,7 @@ impl Host {
             assistant.add_cost(cost);
             let text = if reply.reply.trim().is_empty() { "…".to_owned() } else { reply.reply.trim().to_owned() };
             assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at);
+            for note in delegation_notes { assistant.post("system", "update", note, None, Some(event_id.to_owned()), at); }
             // Outside content (app results, helper reports) in view could have
             // planted a "remember"; only the human's own words may forget.
             let outside = assistant.messages.iter().any(|m| at.saturating_sub(m.at) <= FRESH_RESULT_MS && (m.kind == "helper" || (m.kind == "result" && m.task_id.as_ref().is_some_and(|id| assistant.tasks.iter().any(|t| &t.id == id && t.operation.as_ref().is_some_and(|op| op.tool != COMMAND_TOOL))))));

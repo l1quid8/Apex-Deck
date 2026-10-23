@@ -49,6 +49,12 @@ pub struct HandoffPreparation {
     pub destination: TaskDestination,
     pub mode: TaskMode,
     pub review_criteria: Vec<String>,
+    /// Present only for a personal delegation. Legacy handoffs omit it and
+    /// keep their existing payload byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AssistantLineage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +126,8 @@ pub fn budget_pause_text(result_data: Option<&serde_json::Value>, usage: Option<
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskAttempt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
     pub number: u64,
     pub run_id: String,
     pub status: TaskStatus,
@@ -139,9 +147,25 @@ pub struct AssistantLineage {
     pub delegation_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum DesiredState { #[default] Running, Paused, Cancelled }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PauseReason { Assistant, Manual }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskControl {
+    #[serde(default)] pub desired_state: DesiredState,
+    #[serde(default)] pub pause_reason: Option<PauseReason>,
+    #[serde(default)] pub control_revision: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantTask {
+    #[serde(flatten)]
+    pub control: TaskControl,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<AssistantLineage>,
@@ -428,6 +452,13 @@ impl AssistantTasks {
         Ok(task)
     }
 
+    pub(crate) fn handoff_for_request(&self, id: &str) -> Result<Option<(HandoffPreparation, AssistantTask)>, TaskError> {
+        let document = self.inner.document.lock().unwrap();
+        let Some(receipt) = document.handoffs.get(id) else { return Ok(None) };
+        let task = document.tasks.get(&receipt.task_id).cloned().ok_or_else(|| TaskError::new(TaskErrorKind::Storage, "Delegation receipt has no task."))?;
+        Ok(Some((receipt.payload.clone(), task)))
+    }
+
     pub fn prepared_handoff(&self, input: &HandoffPreparation) -> Result<Option<AssistantTask>, TaskError> {
         let document = self.inner.document.lock().unwrap();
         handoff_receipt(&document, input)
@@ -445,6 +476,8 @@ impl AssistantTasks {
         task.mode = input.mode;
         task.review_criteria = input.review_criteria.clone();
         task.result_data = Some(serde_json::json!({"batchId":input.batch_id,"requestId":input.request_id,"monitorRevision":input.revision,"mode":input.mode,"checks":[],"taskHistory":[{"kind":"request","text":input.original_request}]}));
+        task.lineage = input.lineage.clone();
+        if let Some(context) = &input.context { task.result_data.as_mut().unwrap()["delegationContext"] = context.clone(); }
         document.tasks.insert(task.id.clone(), task.clone());
         document.handoffs.insert(input.request_id.clone(), HandoffReceipt { payload: input, task_id: task.id.clone() });
         save_mutation(&self.inner, &mut document, before)?;
@@ -534,6 +567,25 @@ impl AssistantTasks {
         Ok(result)
     }
 
+    /// Persist intent before signalling a live adapter. No checkpoint is implied.
+    pub fn control(&self, id: &str, revision: u64, owner: &TaskOwner, desired: DesiredState, reason: Option<PauseReason>) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        check_owner_revision(task, revision, owner)?;
+        if matches!(task.status, TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Applying) {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "This task cannot be paused or resumed."));
+        }
+        task.control.desired_state = desired;
+        task.control.pause_reason = if desired == DesiredState::Paused { reason } else { None };
+        task.control.control_revision += 1;
+        task.revision += 1;
+        task.updated_at_ms = now_ms();
+        let result = task.clone();
+        save_mutation(&self.inner, &mut document, before)?;
+        Ok(result)
+    }
+
     /// Begin one durable attempt. The generated run ID is unique and monotonic within this ledger.
     pub fn begin_attempt(
         &self,
@@ -549,6 +601,9 @@ impl AssistantTasks {
             .cloned()
             .ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
         check_owner_revision(&current, expected_revision, owner)?;
+        if current.control.desired_state != DesiredState::Running {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "The task is paused or cancelled."));
+        }
         let budget_resume = current.status == TaskStatus::NeedsYou
             && current.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true || data["restartedWhileWaiting"] == true)
             && current.attempts.last().is_some_and(|attempt| attempt.finished_at_ms.is_some());
@@ -579,6 +634,7 @@ impl AssistantTasks {
         }
         let number = task.attempts.len() as u64 + 1;
         task.attempts.push(TaskAttempt {
+            result: None,
             number,
             run_id: run_id.clone(),
             status: TaskStatus::Running,
@@ -832,7 +888,7 @@ impl AssistantTasks {
     ) -> Result<AssistantTask, TaskError> {
         if !matches!(
             outcome.status,
-            TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou
+            TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou | TaskStatus::Interrupted
         ) {
             return Err(TaskError::new(
                 TaskErrorKind::InvalidTransition,
@@ -891,7 +947,7 @@ impl AssistantTasks {
             if !history.is_empty() { data["taskHistory"] = serde_json::json!(history); }
         }
         let over_limit = budget_hit(Some(&data), current.usage.as_ref());
-        if outcome.status != TaskStatus::Cancelled && over_limit {
+        if !matches!(outcome.status, TaskStatus::Cancelled | TaskStatus::Interrupted) && over_limit {
             outcome.status = TaskStatus::NeedsYou;
             data["budgetPaused"] = serde_json::json!(true);
             outcome.result = Some(budget_pause_text(Some(&data), current.usage.as_ref()).into());
@@ -909,9 +965,10 @@ impl AssistantTasks {
         let revision = task.revision;
         if let Some(attempt) = task.attempts.last_mut() {
             attempt.status = outcome.status;
+            attempt.result = task.result.clone();
             if matches!(
                 outcome.status,
-                TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou
+                TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou | TaskStatus::Interrupted
             ) {
                 attempt.finished_at_ms = Some(now_ms());
             }
@@ -1110,6 +1167,7 @@ fn make_task(
     let parent_thread_id = destination.as_ref().and_then(|d| d.thread_id.clone());
     let task = AssistantTask {
         id: id.clone(),
+        control: TaskControl::default(),
         lineage: None,
         workspace_id: owner.workspace_id.clone(),
         parent_thread_id,
@@ -1456,10 +1514,46 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_pause_preserves_attempt_result_for_retry_and_rejects_late_result() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("pause-attempt", "Fix it"), "Fix it".into(), Some(destination())).unwrap();
+        let (running, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        let paused = store.control(&task.id, running.revision, &owner(), DesiredState::Paused, Some(PauseReason::Manual)).unwrap();
+        let stopped = store.finish_attempt(&task.id, &run, TaskOutcome {status:TaskStatus::Interrupted, result:Some("No checkpoint; retry required".into()), result_data:None, usage:None}).unwrap();
+        assert_eq!(stopped.control, paused.control);
+        assert!(stopped.attempts[0].finished_at_ms.is_some());
+        let resumed = store.control(&task.id, stopped.revision, &owner(), DesiredState::Running, None).unwrap();
+        let (retry, new_run) = store.begin_attempt(&task.id, resumed.revision, &owner()).unwrap();
+        assert_ne!(new_run, run);
+        assert_eq!(retry.attempts[0].result.as_deref(), Some("No checkpoint; retry required"));
+        assert!(store.finish_attempt(&task.id, &run, TaskOutcome {status:TaskStatus::ReadyForReview,result:Some("late".into()),result_data:None,usage:None}).is_err());
+    }
+
+    #[test]
+    fn manual_pause_blocks_start_and_survives_restart_and_stale_resume() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.prepare_handoff(HandoffPreparation { request_id: "pause-child".into(), batch_id:"pause".into(), owner:owner(), revision:1, original_request:"fix it".into(), brief:"fix it".into(), destination:destination(), mode:TaskMode::Isolated, review_criteria:vec![], lineage:None, context:None }).unwrap();
+        let queued = store.set_destination(&task.id, task.revision, &owner(), destination(), "fix it".into()).unwrap();
+        let paused = store.control(&task.id, queued.revision, &owner(), DesiredState::Paused, Some(PauseReason::Manual)).unwrap();
+        assert!(store.begin_attempt(&task.id, paused.revision, &owner()).is_err());
+        assert!(store.control(&task.id, queued.revision, &owner(), DesiredState::Running, None).is_err());
+        let reopened = AssistantTasks::open(ledger(&path)).unwrap();
+        let retained = reopened.get(&task.id).unwrap().unwrap();
+        assert_eq!(retained.control.desired_state, DesiredState::Paused);
+        assert_eq!(retained.control.pause_reason, Some(PauseReason::Manual));
+        assert!(reopened.begin_attempt(&task.id, retained.revision, &owner()).is_err());
+        let resumed = reopened.control(&task.id, retained.revision, &owner(), DesiredState::Running, None).unwrap();
+        let (started, _) = reopened.begin_attempt(&task.id, resumed.revision, &owner()).unwrap();
+        assert_eq!(started.attempts.len(), 1);
+    }
+
+    #[test]
     fn handoff_prepare_is_payload_bound_durable_and_proposal_only() {
         let path = folder();
         let store = AssistantTasks::open(ledger(&path)).unwrap();
-        let input = HandoffPreparation { request_id: "child-1".into(), batch_id: "batch-1".into(), owner: owner(), revision: 7, original_request: "Ask Null to fix login and Jigga to test billing".into(), brief: "Fix login".into(), destination: destination(), mode: TaskMode::Isolated, review_criteria: vec!["Login works".into()] };
+        let input = HandoffPreparation { request_id: "child-1".into(), batch_id: "batch-1".into(), owner: owner(), revision: 7, original_request: "Ask Null to fix login and Jigga to test billing".into(), brief: "Fix login".into(), destination: destination(), mode: TaskMode::Isolated, review_criteria: vec!["Login works".into()], lineage: None, context:None };
         let task = store.prepare_handoff(input.clone()).unwrap();
         assert_eq!(task.status, TaskStatus::Proposed);
         assert_eq!(task.mode, TaskMode::Isolated);

@@ -20,6 +20,7 @@ pub mod assistant_overview;
 pub mod assistant_git;
 pub mod assistant_isolation;
 pub mod assistant_tasks;
+pub mod assistant_delegation;
 pub mod assistant_conversation;
 pub mod legacy_import;
 mod legacy_personal;

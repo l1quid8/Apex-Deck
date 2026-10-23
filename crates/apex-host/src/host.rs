@@ -469,6 +469,7 @@ impl Host {
     }
 
     pub(crate) fn assistant_changed(&self, workspace_id: &str) {
+        let _ = self.reconcile_delegation_results();
         self.emit(HostEvent::AssistantTasksChanged { workspace_id: workspace_id.into(), revision: self.assistant_tasks.snapshot_revision() });
     }
 
