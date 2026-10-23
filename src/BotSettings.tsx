@@ -27,8 +27,10 @@ interface Props {
   /** Context and plan bars, shown under the name. */
   meters?: ReactNode;
   accessPending?: boolean;
+  /** The provider's usage resets, shown under Access. */
+  resets?: ReactNode;
 }
-export function BotSettings({ config, roomId, anchor, backend, save, close, avatar, meters, accessPending = false }: Props) {
+export function BotSettings({ config, roomId, anchor, backend, save, close, avatar, meters, accessPending = false, resets }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const api = config.backend.kind === 'open_ai_compatible' ? config.backend : null;
@@ -69,10 +71,18 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    const rect = anchor.getBoundingClientRect();
-    const height = root.current?.offsetHeight ?? 260;
-    setPosition({ top: popoverTop(rect, height, window.innerHeight), left: Math.max(8, Math.min(rect.left, window.innerWidth - 328)) });
+    // Placed again when it grows or shrinks, as when the Resets list opens, so it stays on screen.
+    const place = () => {
+      const rect = anchor.getBoundingClientRect();
+      const height = root.current?.offsetHeight ?? 260;
+      setPosition({ top: popoverTop(rect, height, window.innerHeight), left: Math.max(8, Math.min(rect.left, window.innerWidth - 328)) });
+    };
+    place();
     root.current?.querySelector<HTMLElement>('[aria-checked="true"], input, select')?.focus();
+    if (!root.current || typeof ResizeObserver === 'undefined') return;
+    const watch = new ResizeObserver(place);
+    watch.observe(root.current);
+    return () => watch.disconnect();
   }, [anchor]);
   useEffect(() => {
     if (apiUrl === null) return;
@@ -303,8 +313,9 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
       {(tool || api) && <>
         <div className="bot-access"><span className="model-select-label">Access</span><Segmented label="Access" name="quick-bot-access" options={accessOptions} value={access} onChange={access => { void apply({ access }); }} /></div>
-        <p className="muted bot-access-note" role="status">{accessOptions.find(option => option.value === access)?.title} {accessPending ? 'Applies after this reply.' : 'Same setting as this bot’s settings page.'}</p>
+        {accessPending && <p className="muted bot-access-note" role="status">Applies after this reply.</p>}
       </>}
+      {resets}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}
       {note && <p className="muted">{note}</p>}

@@ -20,14 +20,12 @@ export function availableCount(credits: ResetCredits | undefined, nowSeconds: nu
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
-/** Time left to a deadline, to the second: "6d 13h 42m 08s", "4h 05m 09s", "42m 08s", "8s". */
-export function secondsCountdown(deadline: number, nowSeconds: number): string {
+/** Time left to a deadline, to the second: "6d 16:15:42", or "04:05:09" under a day. */
+export function clockCountdown(deadline: number, nowSeconds: number): string {
   const left = Math.max(0, Math.floor(deadline - nowSeconds));
   const d = Math.floor(left / 86_400), h = Math.floor((left % 86_400) / 3600), m = Math.floor((left % 3600) / 60), s = left % 60;
-  if (d > 0) return `${d}d ${pad(h)}h ${pad(m)}m ${pad(s)}s`;
-  if (h > 0) return `${h}h ${pad(m)}m ${pad(s)}s`;
-  if (m > 0) return `${m}m ${pad(s)}s`;
-  return `${s}s`;
+  const clock = `${pad(h)}:${pad(m)}:${pad(s)}`;
+  return d > 0 ? `${d}d ${clock}` : clock;
 }
 
 /** The exact deadline in the viewer's time zone: "Wed, Oct 28, 2026, 4:06:55 PM PDT". */

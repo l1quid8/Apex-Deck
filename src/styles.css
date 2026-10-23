@@ -4221,11 +4221,30 @@ button.mod-status:hover { color: var(--text); }
   }
 }
 
-/* Usage resets a provider granted, in the usage card: each counts down to its expiry. */
-.plan-resets { display: grid; gap: 4px; min-width: 0; }
-.plan-reset { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
-.plan-reset-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plan-reset-left { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help; }
-.plan-reset-left.soon { color: var(--text); }
-.plan-reset-apply { padding: 1px 8px; font-size: 11px; }
-.thread-details .plan-resets { width: 100%; }
+/* Usage resets a provider granted, in a bot's quick menu: a collapsed row that opens like Model. */
+.quick-resets { display: grid; gap: 6px; }
+.quick-resets-trigger:disabled { cursor: default; opacity: 0.6; }
+.quick-resets-next { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; cursor: help; }
+.reset-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); font-size: 11px; font-weight: 700; }
+.reset-credits { display: grid; gap: 6px; }
+.reset-credit { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.reset-credit.soon { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.reset-credit-title { font-size: 12px; font-weight: 600; }
+.reset-credit-expiry { grid-column: 1; width: max-content; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; cursor: help; border-bottom: 1px dotted color-mix(in srgb, var(--muted) 50%, transparent); }
+.reset-credit.soon .reset-credit-expiry { color: var(--warn); }
+.reset-credit-use { grid-row: 1 / span 2; grid-column: 2; padding: 3px 10px; font-size: 12px; }
+.reset-more { margin: 0; font-size: 11px; }
+.reset-confirm { display: grid; gap: 8px; padding: 10px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 8px; background: var(--panel); font-size: 12px; }
+.reset-confirm p { margin: 0; color: var(--muted); }
+.reset-confirm p b { color: var(--text); font-weight: 600; }
+.reset-confirm .reset-warn { color: var(--warn); }
+.reset-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.reset-confirm-actions button { padding: 3px 10px; font-size: 12px; }
+.reset-go { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.reset-status { margin: 0; font-size: 12px; }
+.reset-status.good { color: var(--accent); }
+.reset-status.meh { color: var(--warn); }
+.reset-tip { position: fixed; z-index: 1100; pointer-events: none; min-width: 220px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); box-shadow: 0 8px 24px rgb(0 0 0 / 45%); font-size: 12px; }
+.reset-tip-key { color: var(--muted); font-size: 11px; }
+.reset-tip-value { font-variant-numeric: tabular-nums; }
+.reset-tip-value + .reset-tip-key { margin-top: 4px; }

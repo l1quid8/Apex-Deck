@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { availableCount, exactDeadline, liveCredits, outcomeLine, secondsCountdown } from '../src/resetCredits.ts';
+import { availableCount, exactDeadline, liveCredits, outcomeLine, clockCountdown } from '../src/resetCredits.ts';
 
 const credits = {
   available: 3,
@@ -22,11 +22,10 @@ test('usable credits come soonest to expire first, and expired ones drop out', (
 
 test('the countdown runs to the second', () => {
   const at = 10_000;
-  assert.equal(secondsCountdown(at + 6 * 86_400 + 13 * 3600 + 42 * 60 + 8, at), '6d 13h 42m 08s');
-  assert.equal(secondsCountdown(at + 4 * 3600 + 5 * 60 + 9, at), '4h 05m 09s');
-  assert.equal(secondsCountdown(at + 42 * 60 + 8, at), '42m 08s');
-  assert.equal(secondsCountdown(at + 8.9, at), '8s');
-  assert.equal(secondsCountdown(at - 5, at), '0s');
+  assert.equal(clockCountdown(at + 6 * 86_400 + 16 * 3600 + 15 * 60 + 42, at), '6d 16:15:42');
+  assert.equal(clockCountdown(at + 4 * 3600 + 5 * 60 + 9, at), '04:05:09');
+  assert.equal(clockCountdown(at + 8.9, at), '00:00:08');
+  assert.equal(clockCountdown(at - 5, at), '00:00:00');
 });
 
 test('the exact deadline names the date, the second and the time zone', () => {
