@@ -1323,3 +1323,20 @@
 .ph-msg .work-steps-note { font-size: 12px; }
 :root[data-deck-theme="glass"] .ph-msg :is(.work-steps-helper, .work-steps-detail) { border-color: var(--line); }
 :root[data-deck-theme="glass"] .ph-msg .work-steps-output { background: var(--panel-2); border: 0; }
+
+/* The bot sheet's usage resets: a row that opens in place, one row per credit counting down to the second. */
+.ph-resets > .ph-srow.ph-srow { padding: 12px 14px; }
+.ph-reset-pill { flex: none; min-width: 22px; height: 22px; padding: 0 7px; margin-right: 6px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--mint) 18%, transparent); color: var(--mint); font-size: 13px; font-weight: 700; }
+.ph-reset-next, .ph-reset-left { font-variant-numeric: tabular-nums; }
+.ph-reset { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--line); }
+.ph-reset strong { font-size: 15px; font-weight: 500; }
+.ph-reset small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
+.ph-reset.soon { box-shadow: inset 3px 0 0 var(--amber); }
+.ph-reset.soon .ph-reset-left { color: var(--amber); }
+.ph-reset button { flex: none; min-height: 36px; padding: 0 16px; border-radius: 10px; }
+.ph-reset-more { margin: 0; padding: 8px 14px 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.ph-reset-confirm { display: grid; gap: 8px; padding: 12px 14px 14px; border-top: 1px solid var(--line); font-size: 14px; line-height: 1.45; }
+.ph-reset-confirm p { margin: 0; color: var(--muted); }
+.ph-reset-confirm p strong, .ph-reset-confirm p b { color: var(--text); font-weight: 600; }
+.ph-reset-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+.ph-reset-actions button { min-height: 44px; border-radius: 12px; }

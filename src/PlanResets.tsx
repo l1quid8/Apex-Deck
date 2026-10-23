@@ -1,14 +1,9 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 
-import { liveWindows, windowLabel } from "./battery";
-import { availableCount, clockCountdown, exactDeadline, liveCredits, outcomeLine, type ResetOutcome } from "./resetCredits.ts";
+import { availableCount, clockCountdown, exactDeadline, liveCredits, outcomeLine, resetAsk, SOON_SECONDS, type ResetOutcome } from "./resetCredits.ts";
 import type { PlanWindow, ResetCredit, ResetCredits } from "./types";
 
-/** Under this much time left, a credit shows in amber. */
-const SOON = 48 * 3600;
-/** Under this much used, spending a credit gains little. */
-const BARELY_USED = 25;
 /** About how tall the deadline card is, to choose above or below. */
 const TIP_HEIGHT = 96;
 
@@ -72,10 +67,6 @@ export function QuickResets({ credits, windows, provider, use }: Props) {
     onMouseEnter: (event: MouseEvent<HTMLElement>) => setTip({ credit, at: event.currentTarget.getBoundingClientRect() }),
     onMouseLeave: () => setTip(null),
   });
-  // The window that binds hardest says how much a reset would give back.
-  const binding = liveWindows(windows, now).reduce<PlanWindow | undefined>((worst, w) => (!worst || w.used_percent > worst.used_percent ? w : worst), undefined);
-  const used = binding ? Math.min(100, binding.used_percent) : null;
-  const name = binding ? windowLabel(binding) : "";
 
   const confirm = (credit: ResetCredit | null) => {
     setBusy(true);
@@ -90,7 +81,7 @@ export function QuickResets({ credits, windows, provider, use }: Props) {
   const ask = (credit: ResetCredit | null) => { setTip(null); setStatus(null); setAsking(credit); };
 
   const card = (credit: ResetCredit) => {
-    const soon = credit.expires_at != null && credit.expires_at - now < SOON;
+    const soon = credit.expires_at != null && credit.expires_at - now < SOON_SECONDS;
     return (
       <div key={credit.id} className={soon ? "reset-credit soon" : "reset-credit"}>
         <span className="reset-credit-title">{credit.title ?? "Usage reset"}</span>
@@ -115,21 +106,18 @@ export function QuickResets({ credits, windows, provider, use }: Props) {
           <Chevron />
         </button>
       </div>
-      {asking !== undefined ? (
+      {asking !== undefined ? (() => { const ask = resetAsk(windows, asking, provider, now); return (
         <div className="reset-confirm" role="alertdialog" aria-label={`Reset ${provider} usage`}>
           <p><b>Reset {provider} usage now?</b></p>
-          {used != null && <p>
-            {name.charAt(0).toUpperCase()}{name.slice(1)} is <b>{used}% used</b>
-            {used >= 100 ? ", so you're blocked until it resets." : binding?.resets_at != null ? `, refills on its own in ${clockCountdown(binding.resets_at, now)}.` : "."}
-          </p>}
-          {used != null && used < BARELY_USED && <p className="reset-warn">Barely used — this would spend a credit for little gain.</p>}
-          <p>{asking?.expires_at != null ? `Spends the credit that expires in ${clockCountdown(asking.expires_at, now)}.` : `${provider} picks which credit to spend.`} Can't be undone.</p>
+          {ask.usage && <p>{ask.usage.name} is <b>{ask.usage.used}% used</b>{ask.usage.after}</p>}
+          {ask.barely && <p className="reset-warn">Barely used — this would spend a credit for little gain.</p>}
+          <p>{ask.spends}</p>
           <div className="reset-confirm-actions">
             <button type="button" className="ghost" disabled={busy} onClick={() => setAsking(undefined)}>Cancel</button>
             <button type="button" className="reset-go" disabled={busy} onClick={() => confirm(asking)}>{busy ? "Resetting…" : "Use reset"}</button>
           </div>
         </div>
-      ) : open && (
+      ); })() : open && (
         <div className="reset-credits">
           {live.map(card)}
           {live.length === 0 && count > 0 && (

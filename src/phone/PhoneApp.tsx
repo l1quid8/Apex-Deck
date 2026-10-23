@@ -89,12 +89,13 @@ import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
-import type { AgentTool, ApiModel, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
+import type { AgentTool, ApiModel, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, ResetCredits, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
   ArrowLeft, ArrowUp, Check, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Folder, Globe, Laptop, Lock, MessageSquare,
   More, Paperclip, Plug, Plus, Settings, Terminal, X,
 } from "./icons";
+import { PhoneResets } from "./PhoneResets";
 
 const NO_ASKS: ThreadAsks = { questions: [], offer: null };
 
@@ -129,6 +130,8 @@ type Room = {
   /** Context each bot's latest request filled, and each provider's plan, as reported while the thread is open. */
   fill: Record<string, { used: number; window: number }>;
   plans: Partial<Record<AgentTool, PlanWindow[]>>;
+  /** Usage resets each provider granted, as last reported; kept when a report doesn't list them. */
+  credits: Partial<Record<AgentTool, ResetCredits>>;
   /** Tokens each bot has used in this thread, as saved with it and added to after each turn. */
   used: Record<string, TokenTotals>;
   /** Pinned for every model in the thread; a pinned message keeps its seq. */
@@ -366,6 +369,9 @@ export function PhoneApp() {
   const [menu, setMenu] = useState<Menu | null>(null);
   /** The bot whose details are open, from holding it in the bot bar. */
   const [botSheet, setBotSheet] = useState<string | null>(null);
+  /** One key per reset asked for, by machine, provider and credit. Kept after a failure, so trying
+   *  again can't spend a second credit if the first went through unseen. */
+  const resetKeys = useRef(new Map<string, string>());
   /** Models each machine's tools offer, asked for when a bot's sheet opens. Keyed by machine and tool. */
   const [offered, setOffered] = useState<Record<string, ModelChoice[]>>({});
   /** What each API account offers and has left, asked for through a bot on it. Keyed by machine and account. */
@@ -850,6 +856,7 @@ export function PhoneApp() {
         configs,
         fill: {},
         plans: {},
+        credits: {},
         used: state.snapshot.usage ?? {},
         pins: state.snapshot.pins ?? [],
       });
@@ -873,7 +880,11 @@ export function PhoneApp() {
         const before = current.used[event.id] ?? { input: 0, output: 0, turns: 0 };
         return { ...current, used: { ...current.used, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1 } } };
       });
-      if (event.type === "plan_usage") setRoom((current) => current && current.id === id ? { ...current, plans: { ...current.plans, [event.provider]: mergePlan(current.plans[event.provider], event.windows, event.partial) } } : current);
+      if (event.type === "plan_usage") setRoom((current) => current && current.id === id ? {
+        ...current,
+        plans: { ...current.plans, [event.provider]: mergePlan(current.plans[event.provider], event.windows, event.partial) },
+        credits: event.reset_credits ? { ...current.credits, [event.provider]: event.reset_credits } : current.credits,
+      } : current);
       if (event.type === "failed") setNotice(`${roomRef.current?.participants.find((person) => person.id === event.id)?.display_name ?? event.id} couldn't reply: ${event.error}`);
       setCuts((all) => { const now = all[id]; const next = now && applyCutEvent(now, event); return !now || next === now ? all : { ...all, [id]: next }; });
       setRoom((current) => {
@@ -1888,6 +1899,17 @@ export function PhoneApp() {
               meters={botMeters(provider, room.fill[who.id], provider ? room.plans[provider] : undefined, new Date(), account?.balance ?? null)}
               shared={provider && sharing > 1 ? `The plan is shared by all ${sharing} ${TOOL_WORDS[provider] ?? provider} bots in this thread.` : ""}
               tokens={tokenWords(room.used[who.id])}
+              resets={(() => {
+                const credits = provider ? room.credits[provider] : undefined;
+                const spend = phoneHost(openLink.id)?.backend.roomPlanReset;
+                if (!provider || !credits || !spend) return null;
+                return <PhoneResets credits={credits} windows={room.plans[provider] ?? []} provider={toolName(provider)} offline={openLink.status !== "online" ? downLine(openLink) : ""} use={(credit) => {
+                  const which = `${openLink.id}:${provider}:${credit?.id ?? ""}`;
+                  const key = resetKeys.current.get(which) ?? crypto.randomUUID();
+                  resetKeys.current.set(which, key);
+                  return spend(room.id, provider, credit?.id ?? null, key).then((outcome) => { resetKeys.current.delete(which); return outcome; });
+                }} />;
+              })()}
               offline={openLink.status !== "online" ? downLine(openLink) : ""}
               onSave={(change) => saveTurn(room.id, openLink.id, who.id)({ change, reported, apiModels })}
               onMention={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who, room.participants) }); setBotSheet(null); }}
@@ -2085,6 +2107,8 @@ function BotSheet(props: {
   apiModels: ApiModel[];
   status: string; statusWarn: boolean; working: boolean; asking: boolean;
   meters: MeterRow[]; shared: string; tokens: string;
+  /** The provider's usage resets, when it granted any. */
+  resets: ReactNode;
   /** Why the bot's machine can't take changes right now; empty while it's online. */
   offline: string;
   onSave(change: TurnChange): Promise<void>; onMention(): void; onStop(): void; onClose(): void;
@@ -2214,6 +2238,7 @@ function BotSheet(props: {
         {props.shared && <p className="ph-meter-note">{props.shared}</p>}
         <p className="ph-meter-note">{props.tokens}</p>
       </div>
+      {props.resets}
       {editable ? <>
         <div className="ph-section">Model and reasoning</div>
         <fieldset className="ph-group ph-turn" disabled={Boolean(props.offline)} aria-busy={result.saving}>

@@ -1,8 +1,14 @@
-// Usage resets a provider granted (only Codex, for now). Each one puts the
+// Usage resets a provider granted (Codex and Claude). Each one puts the
 // plan's windows back to empty when used, and most expire, so the list
 // counts down to each deadline by the second.
 
-import type { ResetCredit, ResetCredits } from "./types";
+import { bindingWindow, windowLabel } from "./battery.ts";
+import type { PlanWindow, ResetCredit, ResetCredits } from "./types";
+
+/** Under this much time left, a credit is shown as expiring soon. */
+export const SOON_SECONDS = 48 * 3600;
+/** Under this much used, spending a credit gains little. */
+const BARELY_USED = 25;
 
 /** The credits still usable at `nowSeconds`, soonest to expire first. */
 export function liveCredits(credits: ResetCredits | undefined, nowSeconds: number): ResetCredit[] {
@@ -46,4 +52,18 @@ export function outcomeLine(outcome: ResetOutcome, provider: string): { text: st
     case "nothing_to_reset": return { text: `${provider} had nothing to reset yet, so the credit was kept.`, tone: "info" };
     case "no_credit": return { text: `${provider} has no reset credits left.`, tone: "error" };
   }
+}
+
+/** What asking before a reset says: how used the plan is and when it refills
+ *  on its own, whether that's too little to be worth a credit, and what it spends. */
+export function resetAsk(windows: PlanWindow[], credit: ResetCredit | null, provider: string, nowSeconds: number): { usage: { name: string; used: number; after: string } | null; barely: boolean; spends: string } {
+  const binding = bindingWindow(windows, nowSeconds);
+  const used = binding ? Math.min(100, binding.used_percent) : null;
+  const label = binding ? windowLabel(binding) : "";
+  const after = used === null ? "" : used >= 100 ? ", so you're blocked until it resets." : binding?.resets_at != null ? `, refills on its own in ${clockCountdown(binding.resets_at, nowSeconds)}.` : ".";
+  return {
+    usage: used === null ? null : { name: `${label.charAt(0).toUpperCase()}${label.slice(1)}`, used, after },
+    barely: used !== null && used < BARELY_USED,
+    spends: `${credit?.expires_at != null ? `Spends the credit that expires in ${clockCountdown(credit.expires_at, nowSeconds)}.` : `${provider} picks which credit to spend.`} Can't be undone.`,
+  };
 }
