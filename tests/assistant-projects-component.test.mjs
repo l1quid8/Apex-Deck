@@ -61,3 +61,13 @@ for(const changed of [false,true])test(`delegation ${changed?'creates current wo
   let tree=h.render();await tick();tree=h.render();await button(tree,'Delegate a task').props.onClick();tree=h.render();await tick();tree=h.render();find(tree,node=>node.type==='select'&&node.props['aria-label']==='Worker').props.onChange({target:{value:'worker'}});find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.onChange({target:{value:'Inspect login'}});tree=h.render();find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();tree=h.render();await tick();
   assert.equal(created,changed?1:0);assert.equal(h.calls.find(call=>call.cmd==='personal_project_delegate_ui').args.destination.threadId,changed?'current-worker-thread':'saved-thread');
 });
+
+test('assigned project can be removed before any delegation or task snapshot; host validates final revision',async()=>{
+  const saved=[];const h=harness({lane:{assistant:record,name:'Ada',offline:false,configureWorkspace:async input=>saved.push(input)}});
+  let tree=h.render();await tick();tree=h.render();button(tree,'Assign projects').props.onClick();tree=h.render();
+  const dialog=find(tree,node=>node.props.role==='dialog');const checkbox=find(dialog,node=>node.type==='input'&&node.props.type==='checkbox');
+  assert.equal(checkbox.props.checked,true);assert.equal(checkbox.props.disabled,false);checkbox.props.onChange({target:{checked:false}});tree=h.render();
+  assert.equal(find(find(tree,node=>node.props.role==='dialog'),node=>node.type==='input'&&node.props.type==='checkbox').props.checked,false);
+  find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();
+  assert.deepEqual(saved,[{expectedRevision:record.revision,projects:[]}]);assert.ok(!h.calls.some(call=>call.cmd==='assistant_tasks_list'||call.cmd==='personal_project_delegate_ui'));
+});

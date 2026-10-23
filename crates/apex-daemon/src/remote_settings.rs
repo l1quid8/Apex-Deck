@@ -95,12 +95,14 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn folder() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "apex-remote-settings-{}-{nanos}",
+            "apex-remote-settings-{}-{nanos}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();

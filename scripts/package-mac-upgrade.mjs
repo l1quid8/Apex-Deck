@@ -262,8 +262,14 @@ export function buildUpgrade(appPath, outputPath) {
     const rendered = upgradeScripts(manifest);
     for (const [name, content] of Object.entries({ 'upgrade.py': rendered.worker, preinstall: rendered.preinstall, postinstall: rendered.postinstall })) fs.writeFileSync(path.join(scripts, name), content, { mode: 0o755 });
     fs.copyFileSync(verifier, path.join(scripts, 'verify-protected-bundle.sh'));
+    const components = path.join(work, 'components.plist');
+    run('/usr/bin/pkgbuild', ['--analyze', '--root', payload, components]);
+    const componentRows = JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', components]));
+    for (const component of componentRows) { component.BundleIsRelocatable = false; component.BundleIsVersionChecked = false; }
+    fs.writeFileSync(components, JSON.stringify(componentRows));
+    run('/usr/bin/plutil', ['-convert', 'xml1', components]);
     // No live protected directory is touched by pkgbuild; this is package metadata only.
-    run('/usr/bin/pkgbuild', ['--root', payload, '--scripts', scripts, '--identifier', `dev.apexdeck.upgrade.${manifest.id}`, '--version', manifest.version, '--ownership', 'recommended', '--install-location', `/Library/Application Support/Apex Deck Upgrade/${manifest.id}`, output]);
+    run('/usr/bin/pkgbuild', ['--root', payload, '--component-plist', components, '--scripts', scripts, '--identifier', `dev.apexdeck.upgrade.${manifest.id}`, '--version', manifest.version, '--ownership', 'recommended', '--install-location', `/Library/Application Support/Apex Deck Upgrade/${manifest.id}`, output]);
     fs.writeFileSync(`${output}.json`, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
     return { output, manifest };
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
