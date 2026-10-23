@@ -15,6 +15,7 @@ import { VoiceSampleButton } from "./voice/VoiceSampleButton";
 import { voiceLabel } from "./voice/callView";
 import { DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
+import { LegacyImportPanel } from "./LegacyImportScreen";
 import { ModelGatewaySettings } from "./ModelGatewaySettings";
 import { gatewayOwner } from "./modelGateway";
 import { ModsSettings } from "./ModsSettings";
@@ -136,6 +137,7 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
   const [folder, setFolder] = useState("");
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
+  const [importing, setImporting] = useState(false);
   useEffect(() => { backend.dataFolder().then(setFolder, () => setFolder("")); }, [backend]);
   const voice = readVoiceSettings(settings.voice);
   return <div className="settings-card">
@@ -165,6 +167,10 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
     <Row label="Remembered models" note={remembered === 0 ? "None yet. Model names you type in the bot form are offered again next time." : `Model names from ${remembered} ${remembered === 1 ? "provider" : "providers"}, offered again in the bot form.`}>
       <button disabled={remembered === 0} onClick={() => { forgetModels(); setRemembered(0); }}>Clear</button>
     </Row>
+    <Row label="Older records" note="Tasks, conversations, group chats and assistants saved before this machine kept them safely. Nothing changes until you import, and the originals stay put.">
+      <button onClick={() => setImporting(true)}>Review…</button>
+    </Row>
+    {importing && <LegacyImportPanel backend={backend} startOpen onClose={() => setImporting(false)} />}
     <Row label="Version" note={`Apex Deck ${__APP_VERSION__}`} />
   </div>;
 }
