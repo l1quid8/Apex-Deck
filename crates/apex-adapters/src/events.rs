@@ -599,9 +599,13 @@ impl EventReader {
         let text = work_feed::claude_result_text(&block["content"]);
         if let Some((tool, input)) = self.todo_calls.remove(id) {
             if work_feed::grok_todo_tool(&tool) {
-                if !failed {
-                    if let Some(list) = work_feed::grok_todos(&text) {
-                        steps.push(Step::Todo(list));
+                match work_feed::grok_todos(&text).filter(|_| !failed) {
+                    Some(list) => steps.push(Step::Todo(list)),
+                    // The list came back in a shape Deck doesn't know: show
+                    // the call rather than drop it without a trace.
+                    None => {
+                        let step = work_feed::claude_step(id, None, &tool, &input, self.cwd.as_deref());
+                        self.work_step(step, steps);
                     }
                 }
                 return;
@@ -2540,6 +2544,19 @@ mod tests {
         assert!(lists[3].iter().all(|(_, status)| *status == TodoStatus::Completed), "{lists:?}");
         // The calls themselves are not work.
         assert!(work(&steps).iter().all(|s| !s.label.contains("todo_write")), "{:#?}", work(&steps));
+    }
+
+    #[test]
+    fn a_todo_write_result_deck_cannot_read_still_shows_the_call() {
+        let stream = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"todo_write","input":{"todos":[]}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Updated the todo list"}]}}"#,
+            "\n",
+        );
+        let steps = claude_steps(stream, "/tmp/probe");
+        assert!(todos(&steps).is_empty(), "no list to show: {steps:#?}");
+        assert_eq!(work(&steps).len(), 1, "the call itself is shown: {steps:#?}");
     }
 
     #[test]
