@@ -1,6 +1,6 @@
-import { createAssistantAvatarApi } from "./assistantAvatar";
-import { Avatar } from "./Avatar";
-import { assistantAppearance, assistantIdentityKey, type AssistantRef } from "./assistantIdentity";
+import { AssistantTeamRow } from "./AssistantTeamRow";
+import { assistantStatus, type AssistantStatus } from "./assistantStatus";
+import { assistantIdentityKey, type AssistantRef } from "./assistantIdentity";
 import type { PersonalAssistantSummary } from "./usePersonalAssistants";
 import { useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { Backend, HostEntry } from "./backend";
@@ -23,6 +23,7 @@ import { WorkspaceHostMenu } from "./WorkspaceHostMenu";
 
 export interface ProjectSidebarProps {
   assistants?: PersonalAssistantSummary[];
+  assistantStatusFor?: (ref:AssistantRef) => AssistantStatus;
   selectedAssistant?: AssistantRef | null;
   rosterProblem?: string | null;
   assistantBackend?: (ref:AssistantRef) => Backend | undefined;
@@ -90,12 +91,6 @@ function marquee(row: HTMLElement) {
 }
 
 const menuKey = (event: ReactKeyboardEvent) => event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
-
-function AssistantRowAvatar({assistant,backend}:{assistant:PersonalAssistantSummary;backend?:Backend}) {
-  const look=assistantAppearance(assistant.ref,assistant.look);
-  const api=useMemo(()=>backend?createAssistantAvatarApi(backend):undefined,[backend]);
-  return <Avatar seed={look.seed} color={look.color} size="sm" image={look.kind==='image'?look.image:undefined} assistant={assistant.ref} avatarApi={api}/>;
-}
 
 export function ProjectSidebar(props: ProjectSidebarProps) {
   const { backend, section, panes, workspaces, deleting, hosts } = props;
@@ -320,7 +315,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   return (
     <aside ref={rail} className="rail" style={props.style} onScroll={hover.hide}>
       <div className="rail-sec"><span>Your team</span><button type="button" className="icon" aria-label="Add teammate" onClick={props.onCreateAssistant}>+</button></div>
-      {props.assistants?.map(assistant => { return <button type="button" key={assistantIdentityKey(assistant.ref)} className="assistant-team-row" aria-current={props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)?'page':undefined} onClick={()=>props.onOpenAssistant?.(assistant.ref)}><AssistantRowAvatar assistant={assistant} backend={props.assistantBackend?.(assistant.ref)}/><span>{assistant.name}<span className="assistant-team-subtitle">Assistant · {assistant.offline?'Offline':assistant.status??'Ready'}</span></span><small>{assistant.hostName}</small></button>;})}
+      {props.assistants?.map(assistant => <AssistantTeamRow key={assistantIdentityKey(assistant.ref)} assistant={assistant} status={props.assistantStatusFor?.(assistant.ref) ?? assistantStatus({offline:assistant.offline,paused:assistant.paused,personalTasks:assistant.personalTasks,delegatedTasks:[]})} selected={!!props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)} backend={props.assistantBackend?.(assistant.ref)} onOpen={ref=>props.onOpenAssistant?.(ref)}/>)}
       {!props.assistants?.length && <p className="assistant-team-empty">{props.rosterProblem ?? 'No assistants yet.'}</p>}
       {lists.pinned.length > 0 && <>
         <div className="rail-sec" data-sec="pinned">Pinned</div>

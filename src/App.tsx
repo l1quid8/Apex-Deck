@@ -71,7 +71,7 @@ import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, typ
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
 import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
-import { delegatedTasksForAssistant } from "./assistantStatus";
+import { assistantStatus, delegatedTasksForAssistant } from "./assistantStatus";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { unsavedEditName } from "./unsavedEdits";
@@ -2472,6 +2472,7 @@ export function App() {
           <ProjectSidebar
             backend={backend}
             assistants={assistants.assistants}
+            assistantStatusFor={ref=>{const summary=assistants.assistants.find(item=>assistantIdentityKey(item.ref)===assistantIdentityKey(ref));return assistantStatus({offline:summary?.offline??false,paused:summary?.paused??false,personalTasks:summary?.personalTasks??[],delegatedTasks:summary?delegatedTasksForAssistant(currentAssistantRegistry.owners,ref,summary.projects):[]});}}
             assistantBackend={ref=>{const host=assistants.hosts.find(host=>host.hostId===ref.hostId);if(!host)return undefined;try{return hostBackend(host.routeHostId);}catch{return undefined;}}}
             selectedAssistant={mainView.kind==='assistant'?mainView.assistant:null}
             rosterProblem={rosterMessage(assistants.assistants,assistants.hosts)}
