@@ -265,8 +265,21 @@ impl Host {
                 if !kind.is_dir() { return Err("Worker recovery registry contains a linked or non-directory entry.".into()); }
                 let id = entry.file_name().to_string_lossy().into_owned();
                 if let Err(error) = host.recover_worker_cleanup(&id) {
-                    let cwd = host.store.room(&id)?.and_then(|saved| saved.cwd)
-                        .ok_or_else(|| format!("Worker cleanup needs attention for {id}, and its saved checkout is unavailable: {error}"))?;
+                    // Process groups were already stopped above; only the checkout
+                    // reservation needs the saved room. If the protected room
+                    // authority cannot be read or verified, nothing is granted or
+                    // released and the registry entry stays for a later start.
+                    let cwd = match host.store.room(&id) {
+                        Ok(Some(saved)) => saved.cwd,
+                        Ok(None) => None,
+                        Err(unverified) => {
+                            eprintln!("[apex-deck] worker cleanup needs attention for {id}: {error}; its saved checkout could not be verified, so no checkout was reserved or released: {unverified}");
+                            continue;
+                        }
+                    };
+                    let Some(cwd) = cwd else {
+                        return Err(format!("Worker cleanup needs attention for {id}, and its saved checkout is unavailable: {error}"));
+                    };
                     let owner = host.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.map(|entry|entry.task_id).unwrap_or_else(||format!("recovery:{id}"));
                     host.checkout_gate(Path::new(&cwd)).restore_hold(owner)
                         .map_err(|why| format!("Could not reserve the checkout for worker recovery: {why:?}"))?;
@@ -2379,6 +2392,41 @@ mod host_tests {
         let _ = std::fs::remove_dir_all(&data);
         let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         (host, runtime, data)
+    }
+
+    #[test]
+    fn startup_survives_a_worker_registry_entry_whose_room_has_no_authority_manifest() {
+        let (first, runtime, data) = host("recover-no-manifest");
+        let cwd = data.join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        first.room_create("legacy".into(), vec![], RoomOptions::default(), Some(cwd.to_string_lossy().into_owned())).unwrap();
+        first.shutdown();
+        drop(first);
+        // The room file survives, but its authority manifest does not (a fresh pin).
+        std::fs::remove_file(data.join("saved-chats-v1/room-authority-v1.json")).unwrap();
+        let entry = data.join("worker-processes/legacy");
+        std::fs::create_dir_all(&entry).unwrap();
+        let second = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone())
+            .expect("an unverifiable room must not stop the daemon from starting");
+        assert!(entry.is_dir(), "the registry entry stays so a later start can recover it");
+        second.shutdown();
+        drop(second);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn startup_survives_a_worker_registry_entry_with_no_saved_room() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-host-recover-no-room-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let entry = data.join("worker-processes/ghost");
+        std::fs::create_dir_all(&entry).unwrap();
+        let host = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone())
+            .expect("an orphaned registry entry must not stop the daemon from starting");
+        assert!(entry.is_dir());
+        host.shutdown();
+        drop(host);
+        let _ = std::fs::remove_dir_all(data);
     }
 
     fn mount_repo(data: &Path) -> (PathBuf, PathBuf) {
