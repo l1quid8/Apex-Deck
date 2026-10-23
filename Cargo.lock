@@ -141,6 +141,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-host-production-check"
+version = "0.8.2"
+dependencies = [
+ "apex-host",
+ "tokio",
+]
+
+[[package]]
 name = "apex-pairing"
 version = "0.8.2"
 dependencies = [

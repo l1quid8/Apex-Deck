@@ -77,9 +77,17 @@ pub struct Daemon {
 impl Daemon {
     /// Open the host on `paths` with a new boot id. Call inside the runtime.
     pub fn start(paths: &apex_host::HostPaths, token: Option<String>) -> Result<Arc<Daemon>, String> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         let host = apex_host::test_support::isolated_host_assuming_verified_ui(paths.clone(),tokio::runtime::Handle::current());
-        #[cfg(not(any(test, feature = "test-support")))]
+        // Construction is broker-only unless this process's own main (the
+        // test fixture binary) opted in; compiling the feature opts nothing in.
+        #[cfg(all(not(test), feature = "test-support"))]
+        let host = if crate::test_support::assumed() {
+            apex_host::test_support::isolated_host_assuming_verified_ui(paths.clone(),tokio::runtime::Handle::current())
+        } else {
+            Host::try_new(paths.clone(), tokio::runtime::Handle::current())?
+        };
+        #[cfg(all(not(test), not(feature = "test-support")))]
         let host = Host::try_new(paths.clone(), tokio::runtime::Handle::current())?;
         // The daemon's arguments (`--data-dir PATH`) are not workspaces.
         host.set_startup_folders(Vec::new());

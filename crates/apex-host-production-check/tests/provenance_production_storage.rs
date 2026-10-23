@@ -1,8 +1,19 @@
-//! Uses production construction and storage, NOT the unit-test local storage adapter.
-//! The test-support feature may be compiled in (dev-dependency) but this file never
-//! registers a fixture, so nothing here is an isolated directory. An ordinary same-user process must never load local forgery
-//! as authoritative state, whether a broker is missing or rejects this process.
+//! Forged-storage integration tests against apex-host built WITHOUT `test-support`.
+//! Run on their own so Cargo does not unify that feature in from other crates:
+//!   cargo test -p apex-host-production-check
+//! An ordinary same-user process must never load local forgery as authoritative
+//! state, whether a broker is missing or rejects this process.
 use apex_host::{Host,HostPaths};
+
+/// Fails (rather than passing vacuously) if another package in the same cargo
+/// invocation enabled the fixtures, e.g. `cargo test --workspace`.
+#[test]
+fn this_target_is_built_without_the_test_support_feature(){
+    assert!(
+        !apex_host::TEST_SUPPORT_COMPILED,
+        "apex-host was built with test-support; run `cargo test -p apex-host-production-check` on its own"
+    );
+}
 #[test]
 fn unsigned_same_user_process_cannot_boot_authority_from_forged_json(){
     let root=std::env::temp_dir().join(format!("apex-untrusted-authority-{}",std::process::id()));

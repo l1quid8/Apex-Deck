@@ -166,17 +166,31 @@ assume verified UI admission. Daemon dependency tests use a `test-support`
 constructor restricted to dedicated temporary directories and a process-local
 registry. It is called only by test construction. Default production
 construction remains broker-only even when the feature is compiled; there is
-no environment/CLI/RPC path to register a fixture. The production-compiled
-forged-storage integration test deliberately does not register one.
+no environment/CLI/RPC path to register a fixture.
 
-Integration suites get the seam the same way: `apex-host` and `apex-daemon`
-enable `test-support` through a dev-dependency on themselves/each other, so
-plain `cargo test -p apex-host` and `cargo test -p apex-daemon` need no flag.
-That feature is compiled only into test builds. The `apex-daemon` binary built
-for those tests assumes verified UI admission for its dedicated temporary data
-directory (it panics on any other directory); release and `cargo build` builds
-never enable it. Tests that assert an unattested protected call is refused must
-use production construction (`Host::new` without a registered fixture).
+Integration suites get the seam without a manual flag: `apex-host` and
+`apex-daemon` enable `test-support` through a dev-dependency on themselves, so
+`cargo test -p apex-host` and `cargo test -p apex-daemon` need no argument. That
+feature is compiled only into test builds, and compiling it opts nothing in.
+
+The daemon's integration tests spawn a separate test-only binary,
+`apex-daemon-fixture` (`required-features = ["test-support"]`). Its own `main`
+marks the process as verified-UI-assuming and then runs the normal daemon
+command line; the isolated host is still limited to a dedicated directory under
+the temporary directory. The shipped `apex-daemon` binary never makes that
+call, so `Daemon::start` is broker-only in every build of it, including
+`cargo test --release`. The fixture binary is never installed or packaged, and
+`scripts/package-mac.mjs` runs the plain release builds of `apex-daemon` and
+`apex-provenance` itself before packaging, so a stale or test-built
+`target/release` binary is never copied.
+
+Because those dev-dependencies compile every `apex-host` and `apex-daemon` test
+target with `test-support`, the forged-storage integration tests live in the
+separate crate `apex-host-production-check`, which depends on `apex-host`
+without the feature and never registers a fixture. Run it on its own
+(`cargo test -p apex-host-production-check`); one of its tests asserts the
+feature is off, so combining it with the other crates in one `cargo test`
+invocation (feature unification) fails loudly instead of passing vacuously.
 
 These tests do not substitute for installed OS verification. Before Phase 4:
 

@@ -27,12 +27,13 @@ impl Drop for TempDir {
 pub fn temp_dir() -> TempDir {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!("ad-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
+    debug_assert!(dir.join("daemon.sock").as_os_str().len() < 100, "the daemon socket path would exceed macOS sun_path: {}", dir.display());
     let _ = std::fs::remove_dir_all(&dir);
     TempDir(dir)
 }
 
 pub fn daemon(args: &[&str], data: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_apex-daemon"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_apex-daemon-fixture"));
     command.args(args).arg("--data-dir").arg(data);
     command
 }

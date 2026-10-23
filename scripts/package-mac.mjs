@@ -21,7 +21,25 @@ export function signingMessage(identity) {
   return identity === '-' ? 'signing ad hoc' : `signing with Developer ID ${identity}`;
 }
 
+// The packaged daemon and broker must come from plain release builds made right
+// here, never from whatever binary a test or earlier build left in target/release.
+export function releaseBuildCommands() {
+  return [
+    ['cargo', ['build', '--release', '-p', 'apex-daemon', '--features', 'remote']],
+    ['cargo', ['build', '--release', '-p', 'apex-provenance']],
+  ];
+}
+
+function buildRelease() {
+  for (const [command, args] of releaseBuildCommands()) {
+    const built = spawnSync(command, args, { stdio: 'inherit' });
+    if (built.error) throw built.error;
+    if (built.status !== 0) throw new Error(`${command} ${args.join(' ')} failed; refusing to package`);
+  }
+}
+
 function main() {
+  buildRelease();
   const discovery = process.env.APEX_DECK_SIGN_IDENTITY
     ? null : spawnSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' });
   const identity = pickIdentity(discovery?.status === 0 ? discovery.stdout : '', process.env);

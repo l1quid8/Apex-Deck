@@ -45,6 +45,10 @@ pub mod worktrees;
 pub mod phone;
 pub mod lock;
 
+/// True only when this build compiled the in-process test fixtures. Production
+/// builds, and `cargo test -p apex-host-production-check`, must see false.
+pub const TEST_SUPPORT_COMPILED: bool = cfg!(feature = "test-support");
+
 pub use command::Command;
 pub use host::{Host, HostPaths};
 pub use apex_core::{ClientCapabilities, GeneratedUiCapability};

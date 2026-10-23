@@ -9,6 +9,13 @@ license.workspace = true
 name = "apex-daemon"
 path = "src/main.rs"
 
+# Test-only twin of apex-daemon that assumes verified UI admission for a dedicated
+# temporary data directory. Not built, installed or packaged without the feature.
+[[bin]]
+name = "apex-daemon-fixture"
+path = "src/bin_fixture.rs"
+required-features = ["test-support"]
+
 [dependencies]
 apex-adapters = { path = "../apex-adapters" }
 apex-core = { path = "../apex-core" }
@@ -33,9 +40,8 @@ async-trait.workspace = true
 qrcode = { version = "0.14", default-features = false, optional = true }
 
 [features]
-# Test builds only (enabled by the self dev-dependency below): the daemon binary
-# assumes verified UI admission for a dedicated temporary data directory, as the
-# in-process fixtures do. No environment or CLI switch enables this.
+# Test builds only (enabled by the self dev-dependency below). Compiling it opts
+# nothing in: only the apex-daemon-fixture binary's own main does.
 test-support = ["apex-host/test-support"]
 remote = ["dep:iroh", "dep:apex-pairing", "dep:qrcode"]
 

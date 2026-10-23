@@ -5,6 +5,7 @@ pub mod authority;
 pub mod build_info;
 pub mod cli;
 pub mod devices;
+pub mod entry;
 pub mod devices_cli;
 pub mod files;
 pub mod gateway_admin;
@@ -33,3 +34,6 @@ pub mod stdio;
 pub mod websocket;
 
 pub mod voice;
+
+#[cfg(feature = "test-support")]
+pub mod test_support;
