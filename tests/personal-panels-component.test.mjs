@@ -276,3 +276,18 @@ test('embedded Activity combines real delegated task status and host history wit
   assert.match(textOf(rows[0]), /Review the releaseReady for review.*Assistant → sol.*apex-deck.*Task history · 2.*revision 3.*Worker returned its result for review.*Worker started attempt 1.*Review completed/s);
   assert.equal(button(rows[0], 'Stop task'), null, 'project task controls must not use the private-task cancellation API');
 });
+
+test('native request history without atMs cannot crash the Activity renderer', () => {
+  // The captured native assistant_tasks_list response includes an original
+  // request entry with kind/text only, followed by timestamped worker events.
+  const { lane } = fakeLane();
+  const project = { hostId: record.hostId, workspaceId: 'native-project', cwd: '/native/project' };
+  const delegated = { id: 'native-completed-task', brief: 'Read-only native QA', status: 'done', workers: ['deepgeek'], revision: 4, updatedAtMs: now, lineage: { assistant: { hostId: record.hostId, assistantId: record.id }, project }, resultData: { taskHistory: [{ kind: 'request', text: 'Original native request' }, { kind: 'completed', text: 'Worker completed read-only task', atMs: now }] } };
+  const h = mount({ lane, embedded: true, delegatedTasks: [delegated] });
+  const tree = h.render();
+  const row = find(tree, node => node.props?.['data-activity-source'] === 'project');
+  assert.match(textOf(row), /Original native request/);
+  assert.match(textOf(row), /Worker completed read-only task/);
+  assert.equal(findAll(row, node => node.type === 'time').length, 2, 'only the task update and dated worker event receive timestamps');
+  assert.doesNotMatch(textOf(row), /Invalid Date/);
+});

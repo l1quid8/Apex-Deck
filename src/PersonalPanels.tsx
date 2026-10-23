@@ -203,14 +203,18 @@ export function PersonalPanels({ lane, initial = 'activity', initialProject, del
     const delegatedRow = (task: AssistantTask) => {
       const project = task.lineage!.project;
       const status = task.desiredState === 'paused' ? 'Paused' : task.status.replaceAll('_', ' ').replace(/^./, letter => letter.toUpperCase());
-      const history = [...(task.resultData?.taskHistory ?? [])].sort((left, right) => right.atMs - left.atMs);
+      // Native request history can contain kind/text without a timestamp.
+      // Keep that evidence visible without inventing a time or calling ISO on
+      // an invalid Date, which would unmount the entire renderer.
+      const historyTimestamp = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && Number.isFinite(new Date(value).getTime()) ? value : undefined;
+      const history = [...(task.resultData?.taskHistory ?? [])].sort((left, right) => (historyTimestamp(right.atMs) ?? -Infinity) - (historyTimestamp(left.atMs) ?? -Infinity));
       return <article className="personal-panels-row assistant-activity-item" key={`project:${project.hostId}:${project.workspaceId}:${task.id}`} data-activity-source="project">
         <time dateTime={new Date(task.updatedAtMs).toISOString()}>{when(task.updatedAtMs)}</time>
         <div className="personal-panels-rowmain"><strong className="personal-panels-goal">{task.brief}</strong><span className="personal-panels-chip" data-status={task.status}>{status}</span></div>
         <div className="personal-panels-muted">{rec.name} → {task.workers.join(', ') || 'Worker not selected'} · {project.cwd.split('/').filter(Boolean).pop()} · {project.hostId}</div>
         <details><summary>Task history{history.length > 0 ? ` · ${history.length}` : ''}</summary>
           <p className="personal-panels-muted">Task {task.id} · revision {task.revision} · {project.cwd}</p>
-          {history.length ? history.map((entry, index) => <div className="assistant-activity-receipt" key={`${entry.atMs}-${index}`}><time dateTime={new Date(entry.atMs).toISOString()}>{when(entry.atMs)}</time><span>{entry.text}</span></div>) : <p className="personal-panels-muted">No task history reported by this host.</p>}
+          {history.length ? history.map((entry, index) => <div className="assistant-activity-receipt" key={`${entry.atMs}-${index}`}>{historyTimestamp(entry.atMs) !== undefined && <time dateTime={new Date(entry.atMs).toISOString()}>{when(entry.atMs)}</time>}<span>{entry.text}</span></div>) : <p className="personal-panels-muted">No task history reported by this host.</p>}
           {task.result && <pre>{task.result}</pre>}
         </details>
       </article>;
