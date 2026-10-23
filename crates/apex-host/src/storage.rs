@@ -251,6 +251,13 @@ impl Store {
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
     }
 
+    /// A room's import label comes only from its protected authority manifest.
+    pub(crate) fn room_legacy(&self, id: &str) -> Result<Option<crate::legacy_import::LegacyMarker>, String> {
+        let Some(entry) = self.room_authorities()?.remove(id) else { return Ok(None); };
+        let authority: RoomAuthority = serde_json::from_value(entry).map_err(|e| e.to_string())?;
+        Ok(authority.legacy)
+    }
+
     /// The ids that already have a protected manifest, with any legacy marker.
     pub(crate) fn room_authority_marks(&self) -> Result<std::collections::BTreeMap<String, Option<crate::legacy_import::LegacyMarker>>, String> {
         Ok(self.room_authorities()?.into_iter().map(|(id, entry)| {

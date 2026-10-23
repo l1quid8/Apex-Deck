@@ -202,6 +202,8 @@ export interface Compaction {
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  /** From the protected room manifest; editable transcript files cannot set this. */
+  legacy?: import("./legacyImport").LegacyMarker | null;
   cwd?: string | null;
   mounts?: import("./worktreeMount").MountBoundary[];
   recovery_seq?: number;

@@ -33,6 +33,8 @@ const SNAPSHOTS: &str = "legacy-import";
 const MANIFEST: &str = "manifest.json";
 const TITLE_CHARS: usize = 120;
 const EXCERPT_CHARS: usize = 2000;
+/// Stable machine token carried by the existing string-error protocol.
+const PREVIEW_CHANGED: &str = "LEGACY_IMPORT_PREVIEW_CHANGED";
 /// A protected document must fit one broker document, with room for its envelope.
 pub(crate) const DOCUMENT_BUDGET: usize = apex_provenance::MAX_BYTES - 64 * 1024;
 const MACHINE_GRANTS: &str = "Kept in the snapshot. Machine grants from before the upgrade are never imported; re-approve each one on this machine.";
@@ -329,7 +331,7 @@ fn snapshot_ledger(dir: &Path, manifest: &Manifest, ledger: &str) -> Result<(Str
     for entry in &files {
         let bytes = std::fs::read(dir.join(&entry.file)).map_err(|e| format!("The legacy snapshot could not be read ({}): {e}", entry.file))?;
         if sha256(&bytes) != entry.sha256 {
-            return Err(format!("The legacy snapshot changed after the preview ({}). Nothing was imported; preview again.", entry.file));
+            return Err(format!("[{PREVIEW_CHANGED}] The legacy snapshot changed after the preview ({}). Nothing was imported; preview again.", entry.file));
         }
         copies.push((entry.file.clone(), bytes));
     }
@@ -461,7 +463,7 @@ impl Host {
             if manifest.of(ledger).is_empty() { return Err(format!("The snapshot has no legacy {ledger}.")); }
             let (sha, files) = snapshot_ledger(&dir, &manifest, ledger)?;
             if &sha != bound {
-                return Err(format!("The legacy {ledger} changed after the preview. Nothing was imported; preview again."));
+                return Err(format!("[{PREVIEW_CHANGED}] The legacy {ledger} changed after the preview. Nothing was imported; preview again."));
             }
             copies.insert(ledger, files);
         }

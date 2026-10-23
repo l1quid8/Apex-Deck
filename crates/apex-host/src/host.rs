@@ -37,6 +37,8 @@ pub(crate) struct RoomHandle {
     /// Mount cannot overtake a checkout/history action, even while it is queued.
     checkout_action: Arc<tokio::sync::RwLock<()>>,
     pub(crate) checkpoint: Arc<Mutex<SavedRoom>>,
+    /// Immutable import attribution read from protected authority when opened.
+    legacy: Option<crate::legacy_import::LegacyMarker>,
     pub(crate) deleted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
@@ -644,6 +646,7 @@ impl Host {
             return Ok(handle.checkpoint.lock().unwrap().snapshot.clone());
         }
         let mut saved = self.store.room(&id)?;
+        let legacy = self.store.room_legacy(&id)?;
         if let Some(saved) = saved.as_mut() {
             if !saved.mounts.is_empty() && saved.cwd.as_ref().is_some_and(|cwd| !Path::new(cwd).is_dir()) {
                 let fallback = saved.mounts.iter().map(|mount| &mount.from).find(|path| Path::new(path).is_dir())
@@ -712,7 +715,7 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
         Ok(snapshot)
     }
 
@@ -724,7 +727,7 @@ impl Host {
         let snapshot = saved.snapshot;
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
-        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone()}))
+        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone()}))
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -2288,7 +2291,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
+        let handle = RoomHandle { legacy: None, checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { mounts: vec![], cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }

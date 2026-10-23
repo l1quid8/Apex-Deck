@@ -126,7 +126,7 @@ test('confirm imports exactly the hashes the preview showed', async () => {
 test('a changed file asks for review again and never imports twice', async () => {
   const h = harness({
     previewDoc: previewWith(),
-    applyError: new Error('The legacy snapshot changed after the preview (assistant-tasks-v1.json). Nothing was imported; preview again.'),
+    applyError: Object.assign(new Error('Review again.'), { code: 'LEGACY_IMPORT_PREVIEW_CHANGED' }),
   });
   h.render(); await tick();
   const tree = h.render();

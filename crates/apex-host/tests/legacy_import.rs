@@ -319,6 +319,7 @@ fn apply_refuses_a_snapshot_changed_after_preview_and_writes_nothing() {
     forged["tasks"]["task-3"]["status"] = json!("queued");
     write_json(&copy, &forged);
     let error = f.apply(Fixture::apply_args(&preview)).unwrap_err();
+    assert!(error.starts_with("[LEGACY_IMPORT_PREVIEW_CHANGED]"), "{error}");
     assert!(error.contains("changed"), "{error}");
     for name in [f.data.join(TASKS), f.data.join(CONVERSATIONS), f.data.join("saved-chats-v1").join(ROOMS)] {
         assert!(!protected_fixture_path(&name).exists(), "a refused apply wrote {name:?}");
@@ -332,11 +333,40 @@ fn apply_refuses_hashes_the_preview_did_not_show() {
     let mut args = Fixture::apply_args(&preview);
     args["sources"][TASKS] = json!(sha(b"something else"));
     let error = f.apply(args).unwrap_err();
+    assert!(error.starts_with("[LEGACY_IMPORT_PREVIEW_CHANGED]"), "{error}");
     assert!(error.contains("changed"), "{error}");
     let missing = json!({"snapshot": preview["snapshot"]["id"], "sources": {}});
     assert!(f.apply(missing).is_err(), "an apply naming no ledger is refused");
     let traversal = json!({"snapshot": "../../etc", "sources": {TASKS: ledger(&preview, TASKS)["sha256"]}});
     assert!(f.apply(traversal).is_err());
+}
+
+#[test]
+fn room_state_labels_imported_rooms_from_protected_authority_after_restart_and_save() {
+    let mut f = Fixture::new("room-marker", |data| {
+        let mut room = legacy_room();
+        room["cwd"] = json!(data.to_string_lossy());
+        room["mounts"] = json!([]);
+        room["snapshot"]["participants"] = json!([]);
+        // Editable room files cannot establish the label's protected identity.
+        room["legacy"] = json!({"verified":true,"sourceSha256":"forged"});
+        write_json(&room_file(data, ROOM_ID), &room);
+    });
+    let preview = f.preview();
+    f.apply(Fixture::apply_args(&preview)).unwrap();
+    f.restart();
+    f.host.room_create(ROOM_ID.into(), vec![], Default::default(), None).unwrap();
+    let state = f.host.room_state(ROOM_ID.into()).unwrap();
+    assert_eq!(state["legacy"]["verified"], false, "{state}");
+    assert_eq!(state["legacy"]["sourceSha256"], ledger(&preview, ROOMS)["sha256"]);
+    assert_eq!(state["legacy"]["originalId"], ROOM_ID);
+    f.call(json!({"cmd":"room_set_plan","args":{"id":ROOM_ID,"on":true}})).unwrap();
+    f.restart();
+    f.host.room_create(ROOM_ID.into(), vec![], Default::default(), None).unwrap();
+    assert_eq!(f.host.room_state(ROOM_ID.into()).unwrap()["legacy"], state["legacy"]);
+
+    f.host.room_create("new-room".into(), vec![], Default::default(), None).unwrap();
+    assert!(f.host.room_state("new-room".into()).unwrap()["legacy"].is_null());
 }
 
 #[test]

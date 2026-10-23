@@ -67,6 +67,32 @@ test('history is always labelled unverified', async () => {
   await assert.rejects(forged.history('20261022-101501', 'req-1'), /unverified/i);
 });
 
+test('apply exposes the stable stale-preview code through wrapped IPC errors without retrying', async () => {
+  for (const message of [
+    '[LEGACY_IMPORT_PREVIEW_CHANGED] Copy changed.',
+    "Error invoking remote method 'daemon:call': Error: [LEGACY_IMPORT_PREVIEW_CHANGED] Wording can change.",
+  ]) {
+    let calls = 0;
+    const client = createLegacyImportClient({ route: {
+      supports: () => true,
+      call: async () => { calls++; throw new Error(message); },
+    } });
+    await assert.rejects(client.apply(preview()), error => {
+      assert.equal(error.code, 'LEGACY_IMPORT_PREVIEW_CHANGED');
+      assert.match(error.message, /review again/i);
+      assert.doesNotMatch(error.message, /LEGACY_IMPORT_PREVIEW_CHANGED/);
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test('ordinary apply failures keep their identity and are not treated as stale', async () => {
+  const failure = new Error('The service is unavailable.');
+  const client = createLegacyImportClient({ route: { supports: () => true, call: async () => { throw failure; } } });
+  await assert.rejects(client.apply(preview()), error => error === failure);
+});
+
 test('personal preview kinds and exact personal hash can be imported while grants stay excluded', async () => {
   const p = preview();
   p.ledgers[3] = { ...p.ledgers[3], size: 100, state: 'ready', sha256: sha('d'),

@@ -150,8 +150,8 @@ test('a preview with nothing ready cannot be applied', () => {
 });
 
 test('only the host stale-preview refusal counts as stale', () => {
-  assert.equal(isStalePreview(new Error('The legacy snapshot changed after the preview (assistant-tasks-v1.json). Nothing was imported; preview again.')), true);
-  assert.equal(isStalePreview('The legacy snapshot changed after the preview (x).'), true);
+  assert.equal(isStalePreview(Object.assign(new Error('Copy can change.'), { code: 'LEGACY_IMPORT_PREVIEW_CHANGED' })), true);
+  assert.equal(isStalePreview(new Error('The legacy snapshot changed after the preview (x).')), false, 'UI decisions do not depend on prose');
   assert.equal(isStalePreview(new Error('There is nothing to import. Preview again.')), false);
   assert.equal(isStalePreview(new Error('This machine is not allowed to write.')), false);
   assert.equal(isStalePreview(undefined), false);

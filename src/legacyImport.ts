@@ -5,6 +5,19 @@
 import type { Backend } from "./backend";
 
 export const LEGACY_IMPORT_CAPABILITY = "assistant_legacy_import_v1";
+/** Stable token on the existing string-error wire; independent of host/IPC copy. */
+export const LEGACY_IMPORT_PREVIEW_CHANGED = "LEGACY_IMPORT_PREVIEW_CHANGED";
+export class LegacyImportPreviewChangedError extends Error {
+  readonly code = LEGACY_IMPORT_PREVIEW_CHANGED;
+  constructor() {
+    super("Your old files changed since this preview — review again.");
+    this.name = "LegacyImportPreviewChangedError";
+  }
+}
+
+export type LegacyMarker = {
+  sourceSha256: string; importedAtMs: number; originalId?: string; originalStatus?: string; verified: false;
+};
 
 export type LegacyLedgerName =
   | "assistant-tasks-v1.json" | "assistant-conversations-v1.json" | "room-authority-v1.json"
@@ -100,7 +113,17 @@ export function createLegacyImportClient({ route }: { route: Pick<Backend, "call
         sources[name] = ledger.sha256;
       }
       if (!Object.keys(sources).length) throw new Error("There is nothing ready to import.");
-      return checkResult(await route.call<unknown>("legacy_import_apply", { snapshot, sources }), snapshot);
+      let result: unknown;
+      try {
+        result = await route.call<unknown>("legacy_import_apply", { snapshot, sources });
+      } catch (error) {
+        // Electron can wrap the host error in its IPC method name and "Error:"
+        // prefix. Only the explicit machine token identifies this refusal.
+        const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+        if (message.includes(`[${LEGACY_IMPORT_PREVIEW_CHANGED}]`)) throw new LegacyImportPreviewChangedError();
+        throw error;
+      }
+      return checkResult(result, snapshot);
     },
     history: async (snapshot, requestId) => {
       need();

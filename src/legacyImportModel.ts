@@ -6,7 +6,7 @@
 import type {
   LegacyImportPreview, LegacyImportResult, LegacyLedgerName, LegacyLedgerPreview, LegacyRow,
 } from "./legacyImport.ts";
-import { IMPORTABLE_LEDGERS } from "./legacyImport.ts";
+import { IMPORTABLE_LEDGERS, LEGACY_IMPORT_PREVIEW_CHANGED } from "./legacyImport.ts";
 
 /** The one label every imported record carries. Never "verified". */
 export const LEGACY_MARKER = "Imported · unverified";
@@ -149,13 +149,11 @@ export function confirmWords(preview: LegacyImportPreview): string {
 }
 
 /**
- * True only for the host's own stale-preview refusal ("The legacy snapshot changed
- * after the preview …"). The wording is the host's, so this is deliberately narrow:
- * a different failure must not be shown as "review again".
+ * Only the typed client refusal identifies stale data. Human-readable copy can
+ * change without turning another failure into a stale-preview response.
  */
 export function isStalePreview(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  return /changed after the preview/i.test(message);
+  return error instanceof Error && "code" in error && error.code === LEGACY_IMPORT_PREVIEW_CHANGED;
 }
 
 /** The refusal text itself, already free of internals, for the review-again state. */
