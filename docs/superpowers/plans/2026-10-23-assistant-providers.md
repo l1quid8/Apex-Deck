@@ -34,8 +34,8 @@ Files: src/assistantRuntime.ts, AssistantEditor.tsx, AssistantRuntimeSettings.ts
 - [x] Run focused frontend tests and TypeScript; commit.
 
 ### Task 3: Review and native acceptance
-- [ ] Run full frontend and affected Rust suites. Fresh whole-increment review; fix consequential findings with RED/GREEN.
-- [ ] Run real adapter smoke for installed supported providers using disposable context, verify forbidden host access/write attempts fail, and stop cleanup. Record unavailable providers honestly.
-- [ ] Build signed app from release; use protected installer and verify exact installed hashes; native QA same Approved Flow QA assistant for provider selection, replies, history, stop, restart, Work layout and approval routing.
-- [ ] Cancel/soft-delete only disposable QA tasks, archive QA when no unfinished work, preserve original assistants.
-- [ ] Build final DMG from exact native-verified signed app, verify mounted contents/signatures and SHA256, update verification record and deliver. Do not merge.
+- [x] Run full frontend and affected Rust suites. Fresh whole-increment review; fix consequential findings with RED/GREEN.
+- [x] Run real adapter smoke for installed supported providers using disposable context, verify forbidden host access/write attempts fail, and stop cleanup. Record unavailable providers honestly.
+- [x] Build signed app from release; use protected installer and verify exact installed hashes; native QA same Approved Flow QA assistant for provider selection, replies, history, stop, restart, Work layout and approval routing.
+- [x] Archive restored QA after native provider checks; no task mutation because the old disposable project is absent. Preserve original assistants; document historical-workflow rerun limitation.
+- [x] Build final DMG from exact native-verified signed app, verify mounted contents/signatures and SHA256, update verification record and deliver. Do not merge.
