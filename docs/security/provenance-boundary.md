@@ -227,3 +227,49 @@ The installer has been prepared and syntax-checked but has not been run.
 
 Phase 4 must derive its original request from protected storage and recorded
 intent. Record existence in the old JSON is never evidence of human origin.
+
+## Acceptance harness and checklist mapping
+
+`scripts/acceptance-provenance.sh` runs the checklist above against whatever is
+installed, as the normal user, with no sudo. It starts its own daemons on a
+fresh `mktemp -d` folder under `/tmp`, stops them before exit, deletes the
+folder (unless `--keep`), and never stops, replaces or reloads the user's app,
+daemon, broker or LaunchAgent. It prints one `PASS`/`FAIL`/`SKIP` line per check
+and writes a JSON evidence file whose path it prints (default under
+`target/acceptance-provenance/`). It exits non-zero when any check fails.
+
+Three consecutive runs on 2026-10-23 (04:22Z, 04:28Z and a `--keep` run) all
+produced the same result: **23 PASS, 1 FAIL, 8 SKIP of 32 checks** against the
+parked protected copy (daemon `6eedd8545bc0`) and the rolled-back `/Applications`
+build (daemon `8e2116f9c224-dirty`). Evidence for the 04:28Z run:
+`target/acceptance-provenance/evidence-20261023T042821Z.json` (not committed:
+`target/` is ignored, and the file names the host and user).
+
+The single failure is real and is the defect G4 exists for:
+`launchagent.daemon-path` reports that the user's LaunchAgent runs
+`/Applications/Apex Deck.app/Contents/Resources/bin/apex-daemon`, not the
+protected daemon, because the rolled-back app was launched after the trusted
+install and rewrote the agent. It will stay red until the gate build is
+installed, so it is the harness's pre-install baseline rather than a regression.
+It is reported only; the harness changes nothing. On a clean exit no
+`/tmp/apex-acceptance.*` folder remains and `system/dev.apexdeck.provenance`
+still reports `active count = 1`.
+
+| Checklist item | Evidence |
+| --- | --- |
+| Signed UI and daemon succeed through the root broker in isolated data | `positive.trusted-daemon`, `positive.protected-read` (protected daemon `serve --data-dir <tmp>` logs no `protected ledgers unavailable` and answers a protected ledger read). Source: `apex-provenance::tests::claim_is_durable_and_cannot_be_replayed_after_reload`, `exact_retry_is_idempotent_but_changed_request_is_rejected`, `apex-provenance::tests::native_audit_token_rejects_an_unpinned_same_user_process` |
+| The same intent from shell, raw socket, stdio attach and an alternative daemon is refused, with no protected state change | `negative.raw-socket-issue`, `negative.stdio-protected-command`, `negative.copied-daemon`, `negative.copied-daemon-serves`, `negative.installed-daemon*`. Source: `untrusted_process_cannot_issue_even_with_full_filesystem_access`, `unknown_and_nested_commands_never_gain_authority`, `copied_receipt_cannot_cross_user_project_or_data_directory`, `apex-host::command::tests::provenance_unverified_command_is_refused_before_any_mutation`, `apex-daemon::authority::tests::every_command_for_every_tier_and_scope` (`provenance_execute` is `Need::Never` for paired devices) |
+| Tampered user JSON, restart, protected originals and approval states win | `tamper.forged-user-json` (forged `assistant-tasks-v1.json`, revision 9, is ignored; the protected ledger answers revision 0). Source: `protected_ledgers_reject_untrusted_writers_and_stale_versions`, `protected_personal_approval_survives_reload_without_trusting_user_json` |
+| Crash between claim/dispatch/outcome leaves an uncertain status and no repeated effects; concurrent compare-and-swap; rejected approvals | `a_crash_between_claim_and_outcome_leaves_one_claim_and_no_replay` and `two_writers_from_the_same_read_commit_once_and_the_second_is_refused` (added here; they were the only gaps), plus `stale_approval_rejection_is_durable_and_cannot_be_rewritten`, `archived_submission_finish_is_reported_not_silently_dropped`, `expired_unclaimed_receipt_fails_closed_and_can_be_reissued`, and at the worker level `personal_worker::tests::attempted_non_idempotent_op_becomes_uncertain_and_asks` |
+| Installed signatures, every fuse slice, keys, ACLs, nested resources, symlink containment; developer/ad-hoc or copied mutable code refused | `static.signature.*`, `static.signature.app-deep`, `static.hardened-runtime.*`, `static.entitlements.*`, `static.fuses` (every slice scanned for the Electron wire), `static.ownership`, `static.symlinks`, `static.keys-and-acls` (root-only, no ACL, modes), `negative.copied-daemon` (same bytes from a user-owned path are refused) |
+| The root broker is a running system LaunchDaemon with its socket, and the daemon agent starts from the protected copy rather than a mutable one | `static.broker-job`, `static.broker-socket`, `launchagent.daemon-path` — the first two PASS; the third is the harness's one **FAIL** until the gate build is installed (see above) |
+| Installed CDHashes match the broker's pins | `static.cdhash-pins` — **SKIP**: `config.json` is root-only by design and this harness never uses sudo. The pin is still enforced on every connection, which `positive.*` and `negative.*` exercise |
+| Full access edits, builds, Git, network and subprocesses in the signed installation; ordinary remote coding compatibility | **SKIP** (`skip.full-access`, `skip.remote-coding`): both need the signed UI window and a paired device. Covered by the final smoke test, never faked here |
+| UI-issued intents and approvals, including the legacy import preview and confirmation | **SKIP** (`skip.ui-issued`, `skip.installed-import`): a protected write needs a receipt only the pinned UI can obtain, so it cannot be driven from a shell (`positive.protected-write`) |
+| Reviewed legacy migration and native CLI integration acceptance | **SKIP** (`skip.native-cli`): the migration review landed with G2a; `npm run test:e2e` is rerun at the install checkpoint |
+
+Delivery of the harness was checked against the parked protected copy only. The
+`/Applications` build installed at the time predates the broker entirely (its
+daemon contains no `dev.apexdeck.provenance` string), so the
+`negative.installed-daemon` checks SKIP with that reason and re-run after the
+gate build is installed.

@@ -1172,4 +1172,111 @@ mod tests {
         // The data directory must still be absolute.
         assert!(document_key(501, "relative", "project-memory-v1.json").is_err());
     }
+
+    // Checklist: "Crash between claim/dispatch/outcome, then verify uncertain
+    // status and no repeated effects." The claim is consumed before dispatch, so
+    // a daemon that dies after claiming leaves one claim with no outcome, and
+    // neither a retry nor a re-issued identical request can repeat the effect.
+    #[test]
+    fn a_crash_between_claim_and_outcome_leaves_one_claim_and_no_replay() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = journal.issue(501, "/data", command("hello"), true).unwrap();
+        journal.claim(501, "/data", &receipt, NONCE).unwrap();
+        // The daemon dies here, before anything records an outcome.
+        let mut recovered =
+            Journal::open(&serde_json::to_vec(&journal).unwrap(), key.public_key().as_ref())
+                .unwrap();
+        let entry = &recovered.entries[&receipt.key];
+        assert!(
+            entry.claimed && entry.outcome.is_none(),
+            "a claimed submission with no outcome is uncertain, never succeeded"
+        );
+        // The retry says so, rather than running the same effect a second time.
+        assert!(recovered
+            .claim(501, "/data", &receipt, NONCE)
+            .unwrap_err()
+            .contains("uncertain"));
+        assert!(recovered
+            .claim(501, "/data", &receipt, "fedcba9876543210fedcba9876543210")
+            .unwrap_err()
+            .contains("uncertain"));
+        // An identical request hands back its original token; no new effect exists.
+        let again = recovered.issue(501, "/data", command("hello"), true).unwrap();
+        assert_eq!(again.issuance_id, receipt.issuance_id);
+        assert_eq!(recovered.entries.len(), 1);
+        // The recovered daemon records the outcome it does know, and only once.
+        assert!(recovered
+            .finish(
+                501,
+                "/data",
+                &receipt.key,
+                json!({"status":"succeeded"}),
+                false
+            )
+            .is_err());
+        recovered
+            .finish(501, "/data", &receipt.key, json!({"status":"succeeded"}), true)
+            .unwrap();
+        assert!(recovered
+            .finish(501, "/data", &receipt.key, json!({"status":"rejected"}), true)
+            .is_err());
+        // A changed request is a new effect only under a new request ID.
+        assert!(recovered
+            .issue(501, "/data", command("changed"), true)
+            .is_err());
+        let mut fresh = command("changed");
+        fresh["args"]["requestId"] = json!("r2");
+        assert!(recovered.issue(501, "/data", fresh, true).is_ok());
+    }
+
+    // Checklist: "test concurrent compare-and-swap". The broker applies every
+    // request to the committed journal (main.rs clones it, then commits), so two
+    // writers that read the same revision cannot both commit: the second is
+    // refused and the first writer's document stands.
+    #[test]
+    fn two_writers_from_the_same_read_commit_once_and_the_second_is_refused() {
+        let name = "assistant-tasks-v1.json";
+        let mut journal = Journal::new();
+        journal
+            .write_document(501, "/data", name, 0, json!({"writer":"start"}), true)
+            .unwrap();
+        // Each request begins from its own copy of the journal.
+        let mut first = journal.clone();
+        let mut second = journal.clone();
+        first
+            .write_document(501, "/data", name, 1, json!({"writer":"first"}), true)
+            .unwrap();
+        // On its own stale copy the second would have committed: the lost update
+        // that committing only through the authoritative journal prevents.
+        second
+            .write_document(501, "/data", name, 1, json!({"writer":"second"}), true)
+            .unwrap();
+        let mut committed = first.clone();
+        assert!(committed
+            .write_document(501, "/data", name, 1, json!({"writer":"second"}), true)
+            .unwrap_err()
+            .contains("changed"));
+        let current = committed.read_document(501, "/data", name, true).unwrap();
+        assert_eq!(current.value, json!({"writer":"first"}));
+        assert_eq!(current.revision, 2);
+        // The refused writer reloads and writes again at the revision it just read.
+        committed
+            .write_document(
+                501,
+                "/data",
+                name,
+                current.revision,
+                json!({"writer":"second"}),
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            committed
+                .read_document(501, "/data", name, true)
+                .unwrap()
+                .value,
+            json!({"writer":"second"})
+        );
+    }
 }
