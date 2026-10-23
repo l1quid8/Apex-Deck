@@ -53,7 +53,7 @@ test('a conflict changes no draft fields and retains the captured revision for e
  const h=mount({lane:{configureWorkspace:async()=>{throw new Error('Revision conflict; refresh and retry');}}});let tree=await h.ready();input(tree,'Assistant name').props.onChange({target:{value:'Keep my draft'}});await submit(h);tree=h.render();assert.equal(input(tree,'Assistant name').props.value,'Keep my draft');assert.match(text(tree),/Revision conflict/);assert.equal(record.name,'Null');
 });
 test('Memory and Settings are main-pane views with Back to the same conversation',()=>{
- const h=mount();const opened=[];const tree=h.workspace({lane:{name:'Null',hostName:'Mac'},section:'memory',onNavigate:s=>opened.push(s),onBack(){},conversation:'Retained conversation',editor:'Settings editor',projects:[]});assert.equal(find(tree,n=>n.props.className==='assistant-workspace-content').props.hidden,true);find(tree,n=>n.type==='button'&&text(n)==='‹ Back to conversation').props.onClick();assert.deepEqual(opened,['conversation']);assert.equal(find(tree,n=>n.type===PersonalPanels).props.initial,'memory');
+ const h=mount();const opened=[];const tree=h.workspace({lane:{name:'Null',hostName:'Mac'},section:'memory',onNavigate:s=>opened.push(s),onBack(){},conversation:'Retained conversation',editor:'Settings editor',projects:[]});assert.equal(find(tree,n=>n.props.className==='assistant-workspace-content').props.hidden,true);find(tree,n=>n.type==='button'&&text(n)==='‹ Back to chat').props.onClick();assert.deepEqual(opened,['chat']);assert.equal(find(tree,n=>n.type===PersonalPanels).props.initial,'memory');
 });
 
 test('saved Keychain credentials are accepted and media models never enter the text picker',async()=>{
@@ -82,7 +82,7 @@ test('creation completion remains durable after navigation without stealing the 
 });
 test('project links pass the complete identity and explain unavailable exact destinations',()=>{
  const h=mount();const project={hostId:'host-b',workspaceId:'shared',cwd:'/b'};const opened=[];
- const props={lane:{name:'Null',hostName:'Mac'},section:'projects',onNavigate(){},onBack(){},projects:[{project,tools:'ask'}],onOpenProject:p=>opened.push(p)};
+ const props={lane:{name:'Null',hostName:'Mac'},section:'work',onNavigate(){},onBack(){},projects:[{project,tools:'ask'}],onOpenProject:p=>opened.push(p)};
  let tree=h.workspace({...props,projectUnavailable:()=>undefined});find(tree,n=>n.type==='button'&&text(n).includes('/b')).props.onClick();assert.deepEqual(opened,[project]);
  tree=h.workspace({...props,projectUnavailable:()=>'Exact project unavailable. Reconnect its machine.'});assert.equal(find(tree,n=>n.type==='button'&&text(n).includes('/b')).props.disabled,true);assert.match(text(tree),/Exact project unavailable/);
 });
@@ -134,11 +134,11 @@ test('blank, relative and control-character folder boundaries block creation wit
  });
 
 test('workspace uses one identity header, status and a separate mockup tab strip',()=>{
- const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'conversation',onNavigate(){},onBack(){},conversation:'chat',editor:'editor',projects:[]});
+ const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'chat',onNavigate(){},onBack(){},conversation:'chat',editor:'editor',projects:[]});
  assert.ok(find(tree,n=>n.type===Avatar),'identity includes saved avatar');
  assert.equal(all(tree,n=>n.type==='h1').length,1);
  const tabs=find(tree,n=>n.props?.role==='tablist');assert.ok(tabs);
- assert.deepEqual(all(tabs,n=>n.props?.role==='tab').map(text),['Conversation','Projects','Activity']);
+ assert.deepEqual(all(tabs,n=>n.props?.role==='tab').map(text),['Chat','Work']);
  assert.match(text(tree),/Ready/);
 });
 

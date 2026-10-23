@@ -6,8 +6,8 @@ const a={hostId:'mac',assistantId:'a'},b={hostId:'mac',assistantId:'b'};
 test('assistant navigation and Back retain owner and never mutate global panel state',()=>{
  const panel={open:true,active:'dashboard'};const state={mainView:{kind:'workspace'},panel};
  const selected=assistantNavigation(state,{kind:'open',assistant:a});assert.deepEqual(selected.panel,panel);
- const settings=assistantNavigation(selected,{kind:'section',section:'settings'});assert.deepEqual(settings.mainView,{kind:'assistant',assistant:a,section:'settings',previousSections:['conversation']});
- assert.deepEqual(assistantNavigation(settings,{kind:'back'}).mainView,{kind:'assistant',assistant:a,section:'conversation'});
+ const settings=assistantNavigation(selected,{kind:'section',section:'settings'});assert.deepEqual(settings.mainView,{kind:'assistant',assistant:a,section:'settings',previousSections:['chat']});
+ assert.deepEqual(assistantNavigation(settings,{kind:'back'}).mainView,{kind:'assistant',assistant:a,section:'chat'});
  assert.deepEqual(assistantNavigation(settings,{kind:'open',assistant:b}).mainView.assistant,b);
 });
 test('runtime preserves legacy metadata and access while selecting offered model and effort',()=>{
@@ -32,14 +32,14 @@ test('project resolution requires authenticated host, exact workspace and folder
  assert.equal(workspaceModel.resolveAssistantProject({hostId:'host-b',workspaceId:'shared',cwd:'/b'},rows,()=>undefined),null);assert.equal(workspaceModel.resolveAssistantProject({hostId:'host-b',workspaceId:'shared',cwd:'/b'},[{...rows[1],hidden:true}],hosts),null);
 });
 test('Memory and Settings Back restore preceding subviews including nested overflow navigation',()=>{
- let state={mainView:{kind:'assistant',assistant:a,section:'projects'}};
+ let state={mainView:{kind:'assistant',assistant:a,section:'work'}};
  state=assistantNavigation(state,{kind:'section',section:'memory'});state=assistantNavigation(state,{kind:'section',section:'settings'});
- state=assistantNavigation(state,{kind:'back'});assert.equal(state.mainView.section,'memory');state=assistantNavigation(state,{kind:'back'});assert.equal(state.mainView.section,'projects');
+ state=assistantNavigation(state,{kind:'back'});assert.equal(state.mainView.section,'memory');state=assistantNavigation(state,{kind:'back'});assert.equal(state.mainView.section,'work');
 });
 
 test('settings completion navigates only its captured owner and expected section',()=>{
  const saved=workspaceModel.assistantSettingsSaved;assert.equal(typeof saved,'function');const other={kind:'assistant',assistant:b,section:'settings'};assert.equal(saved(other,a),other);
- const left={kind:'assistant',assistant:a,section:'projects'};assert.equal(saved(left,a),left);assert.equal(saved({kind:'assistant',assistant:a,section:'settings'},a).section,'conversation');
+ const left={kind:'assistant',assistant:a,section:'work'};assert.equal(saved(left,a),left);assert.equal(saved({kind:'assistant',assistant:a,section:'settings'},a).section,'chat');
 });
 
 test('canonical project metadata reconciles host path aliases without accepting a different owner',()=>{
@@ -72,8 +72,8 @@ test('fresh unassigned projects are canonicalized by their authenticated host wi
 test('cold restart restores the exact selected assistant and section while retaining unrelated sidebar preferences',()=>{
  const items=new Map([['apex-right-panel',JSON.stringify({open:true,active:'dashboard'})]]);
  const storage={getItem:key=>items.get(key)??null,setItem:(key,value)=>items.set(key,value)};
- for(const section of ['conversation','projects','activity','memory','settings']){
-  workspaceModel.saveMainView({kind:'assistant',assistant:b,section,previousSections:['projects'],grants:['ignored']},storage);
+ for(const section of ['chat','work','memory','settings']){
+  workspaceModel.saveMainView({kind:'assistant',assistant:b,section,previousSections:['work'],grants:['ignored']},storage);
   assert.deepEqual(workspaceModel.loadMainView(storage),{kind:'assistant',assistant:b,section});
  }
  assert.equal(items.size,2);assert.equal(items.get('apex-right-panel'),JSON.stringify({open:true,active:'dashboard'}));
@@ -107,4 +107,15 @@ test('worker thread route isolates the exact task pane and rejects foreign or un
  const workspace={id:'qa',name:'QA',path:'/qa'},foreign={id:'old-thread',workspaceId:'apex-deck',kind:'chat',title:'Apex Dot'},other={id:'qa-other',workspaceId:'qa',kind:'chat',title:'Other QA'},worker={id:'execution-task-4',workspaceId:'qa',kind:'chat',title:'Task 4',closed:true};
  const result=workspaceModel.assistantWorkerThreadDestination(workspace,worker.id,[foreign,other,worker]);assert.equal(result.pane,worker);assert.equal(result.focusedPane,worker.id);assert.equal(result.maximized,worker.id);assert.equal(result.picking,false);assert.equal(result.workspaceId,'qa');
  assert.equal(workspaceModel.assistantWorkerThreadDestination(workspace,foreign.id,[foreign,other,worker]),null);assert.equal(workspaceModel.assistantWorkerThreadDestination(workspace,worker.id,[worker],new Set([worker.id])),null);assert.equal(workspaceModel.assistantWorkerThreadDestination({...workspace,hidden:true},worker.id,[worker]),null);
+});
+
+test('legacy sections migrate to Chat and Work',()=>{
+ const view=section=>workspaceModel.parseMainView(JSON.stringify({kind:'assistant',assistant:{hostId:'h',assistantId:'a'},section}));
+ assert.equal(view('conversation').section,'chat');assert.equal(view('projects').section,'work');assert.equal(view('activity').section,'work');
+ assert.equal(view('memory').section,'memory');assert.equal(view('admin').kind,'workspace');
+});
+test('opening an assistant lands on chat; memory then back returns to work',()=>{
+ const a={hostId:'h',assistantId:'a'};let state=workspaceModel.assistantNavigation({mainView:{kind:'workspace'}},{kind:'open',assistant:a});assert.equal(state.mainView.section,'chat');
+ state=workspaceModel.assistantNavigation(state,{kind:'section',section:'work'});state=workspaceModel.assistantNavigation(state,{kind:'section',section:'memory'});
+ assert.equal(workspaceModel.assistantNavigation(state,{kind:'back'}).mainView.section,'work');
 });

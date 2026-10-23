@@ -1,10 +1,12 @@
 import type { Backend } from './backend.ts';
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
 import type { ParticipantConfig, ModelChoice, Workspace, Pane } from './types.ts';
-export type AssistantSection = 'conversation' | 'projects' | 'activity' | 'memory' | 'settings';
+export type AssistantSection = 'chat' | 'work' | 'memory' | 'settings';
 export type MainView = { kind: 'workspace' } | { kind: 'assistant'; assistant: AssistantRef; section: AssistantSection; previousSections?: AssistantSection[] };
 const MAIN_VIEW_STORAGE_KEY = 'apex-deck.main-view.v1';
-const ASSISTANT_SECTIONS:readonly AssistantSection[] = ['conversation','projects','activity','memory','settings'];
+const ASSISTANT_SECTIONS:readonly AssistantSection[] = ['chat','work','memory','settings'];
+/** Views saved before Chat and Work replaced Conversation, Projects and Activity. */
+const LEGACY_SECTIONS:Record<string,AssistantSection> = {conversation:'chat',projects:'work',activity:'work'};
 /** Local display preference only: restored identities still resolve through the live roster. */
 export function parseMainView(raw:string|null):MainView {
  try {
@@ -13,11 +15,12 @@ export function parseMainView(raw:string|null):MainView {
   if(!value||typeof value!=='object'||Array.isArray(value))return {kind:'workspace'};
   const record=value as Record<string,unknown>;
   if(record.kind==='workspace')return {kind:'workspace'};
-  if(record.kind!=='assistant'||!ASSISTANT_SECTIONS.includes(record.section as AssistantSection))return {kind:'workspace'};
+  const section=LEGACY_SECTIONS[record.section as string]??record.section as AssistantSection;
+  if(record.kind!=='assistant'||!ASSISTANT_SECTIONS.includes(section))return {kind:'workspace'};
   const assistant=record.assistant as AssistantRef;
   assistantIdentityKey(assistant);
   if(assistant.hostId.length>1024||assistant.assistantId.length>1024)return {kind:'workspace'};
-  return {kind:'assistant',assistant:{hostId:assistant.hostId,assistantId:assistant.assistantId},section:record.section as AssistantSection};
+  return {kind:'assistant',assistant:{hostId:assistant.hostId,assistantId:assistant.assistantId},section};
  }catch{return {kind:'workspace'};}
 }
 export function loadMainView(storage?:Pick<Storage,'getItem'>):MainView {
@@ -31,11 +34,11 @@ export type AssistantNavigation = {kind:'open';assistant:AssistantRef} | {kind:'
 export function assistantNavigation<T extends {mainView:MainView}>(state:T,event:AssistantNavigation):T {
  let mainView:MainView=state.mainView;
  if(event.kind==='workspace')mainView={kind:'workspace'};
- else if(event.kind==='open')mainView={kind:'assistant',assistant:{...event.assistant},section:'conversation'};
+ else if(event.kind==='open')mainView={kind:'assistant',assistant:{...event.assistant},section:'chat'};
  else if(mainView.kind==='assistant') {
   const {previousSections,...view}=mainView;
   if(event.kind==='back') {
-   const history=[...(previousSections??[])];const section=history.pop()??'conversation';
+   const history=[...(previousSections??[])];const section=history.pop()??'chat';
    mainView={...view,section,...(history.length?{previousSections:history}:{})};
   } else if(event.section!==mainView.section) {
    const history=event.section==='settings'||event.section==='memory'?[...(previousSections??[]),mainView.section]:[];
@@ -78,7 +81,7 @@ export function resolveAssistantProject(project:ProjectRef,workspaces:readonly W
  })??null;
 }
 export function assistantSettingsSaved(view:MainView,owner:AssistantRef):MainView {
- return view.kind==='assistant'&&view.section==='settings'&&view.assistant.hostId===owner.hostId&&view.assistant.assistantId===owner.assistantId ? {kind:'assistant',assistant:view.assistant,section:'conversation'} : view;
+ return view.kind==='assistant'&&view.section==='settings'&&view.assistant.hostId===owner.hostId&&view.assistant.assistantId===owner.assistantId ? {kind:'assistant',assistant:view.assistant,section:'chat'} : view;
 }
 
 /** A read-only owning-host listing may prove an alias. It never rewrites the binding.
