@@ -1008,7 +1008,8 @@ test('embedded task details keep the composer and offer a way back to chat', () 
  const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[]});
  let tree=openFirstTaskLink(h);
  assert.equal(find(tree,n=>n.type==='form').props.hidden,false);
- const back=find(tree,n=>n.props?.className==='assistant-chat-back');assert.equal(textOf(back),'‹ Chat');
+ const back=find(tree,n=>n.props?.className==='apex-agent-back');assert.equal(textOf(back),'‹ Chat');
+ assert.equal(collectAll(tree,n=>n.type==='button'&&textOf(n)==='‹ Chat').length,1,'one way back to the source');
  back.props.onClick();tree=h.render();assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null);
  assert.ok(find(tree,n=>n.props?.className==='apex-agent-task-link'),'transcript is back');
 });
@@ -1046,7 +1047,8 @@ test('Work can open a personal task in embedded chat, once', () => {
  const {lane}=personalLane([personalTask('needsYou')],messages);const key='focus-owner';const handled=[];
  const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[],focusTask:{key:personalTaskKey('vps','pt-1',undefined),nonce:1},onFocusHandled:()=>handled.push(1)},{effects:true});
  h.render();h.flushEffects();const tree=h.render();
- assert.ok(find(tree,n=>n.props?.className==='assistant-chat-back'),'task details are open');
+ assert.ok(find(tree,n=>n.props?.className==='apex-agent-back'),'task details are open');
+ assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null,'no duplicate back control');
  assert.equal(handled.length,1);h.flushEffects();h.render();h.flushEffects();assert.equal(handled.length,1);
 });
 

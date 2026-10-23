@@ -605,7 +605,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       else if (current.view === 'tasks') tasksScroll.current = event.currentTarget.scrollTop;
       else notificationsScroll.current = event.currentTarget.scrollTop;
     }}><div className="assistant-chat-transcript" aria-live="polite">
-      {embedded && view !== 'chat' && <button type="button" className="assistant-chat-back" onClick={() => switchView('chat')}>‹ Chat</button>}
+      {embedded && view !== 'chat' && !selectedKey && <button type="button" className="assistant-chat-back" onClick={() => switchView('chat')}>‹ Chat</button>}
       {view === 'chat' ? <>
       {firstRun && <div className="assistant-first-run">
         {landingTexture && <LandingTexture settings={landingTexture} />}
