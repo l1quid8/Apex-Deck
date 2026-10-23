@@ -1075,6 +1075,42 @@ fn ended_early(reader: EventReader) -> String {
     }
 }
 
+pub async fn list_servers(
+    cwd: Option<String>,
+    path: Option<String>,
+) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    use std::process::Stdio;
+    let mut command = tokio::process::Command::new("codex");
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command
+        .args(ARGS)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let registry = Registry::default();
+    let mut child = registry.spawn(&mut command)
+        .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let result = async {
+        initialize(&mut stdin, &mut lines).await?;
+        mcp_inventory(&mut stdin, &mut lines, false)
+            .await
+            .and_then(|(_, names, _)| names)
+    }
+    .await;
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    child.terminate_tree().await?;
+    result
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test]
@@ -1570,40 +1606,4 @@ cat > /dev/null"#;
             json!({"id":8,"result":{"answers":{}}})
         );
     }
-}
-
-pub async fn list_servers(
-    cwd: Option<String>,
-    path: Option<String>,
-) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
-    use std::process::Stdio;
-    let mut command = tokio::process::Command::new("codex");
-    if let Some(path) = path {
-        command.env("PATH", path);
-    }
-    command
-        .args(ARGS)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    let registry = Registry::default();
-    let mut child = registry.spawn(&mut command)
-        .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
-    let mut stdin = child.stdin.take().unwrap();
-    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-    let result = async {
-        initialize(&mut stdin, &mut lines).await?;
-        mcp_inventory(&mut stdin, &mut lines, false)
-            .await
-            .and_then(|(_, names, _)| names)
-    }
-    .await;
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    child.terminate_tree().await?;
-    result
 }

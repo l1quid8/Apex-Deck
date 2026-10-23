@@ -237,7 +237,7 @@ pub(crate) fn parse(body: &Value) -> Option<PlanUsage> {
             })
         })
         .collect();
-    (!windows.is_empty()).then(|| PlanUsage { provider: AgentTool::ClaudeCode, windows, partial: false, reset_credits: None })
+    (!windows.is_empty()).then_some(PlanUsage { provider: AgentTool::ClaudeCode, windows, partial: false, reset_credits: None })
 }
 
 /// Unix seconds from an RFC 3339 time such as `2026-10-05T02:00:00.05+00:00`.

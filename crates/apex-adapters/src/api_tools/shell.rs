@@ -152,8 +152,12 @@ async fn pump(mut pipe: impl AsyncRead + Unpin, output: Arc<Mutex<Output>>) {
     }
 }
 
+/// A started shell: the child itself, the buffer both its streams land in,
+/// and the task that drains them until it exits.
+type Started = (OwnedChild, Arc<Mutex<Output>>, tokio::task::JoinHandle<()>);
+
 /// Start `script`, with both output streams copied into one buffer.
-fn start(env: &Env, registry: &Registry, script: &str) -> Result<(OwnedChild, Arc<Mutex<Output>>, tokio::task::JoinHandle<()>), String> {
+fn start(env: &Env, registry: &Registry, script: &str) -> Result<Started, String> {
     let mut command = env.command(script)?;
     let mut child = registry.spawn(&mut command).map_err(|e| format!("Couldn't start the shell: {e}"))?;
     let output = Arc::new(Mutex::new(Output::default()));

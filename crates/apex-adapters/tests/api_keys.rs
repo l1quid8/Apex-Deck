@@ -1,9 +1,9 @@
 //! Saved API keys as the OpenAI-compatible backend sees them. Keys go to a
 //! temp folder through `keys::use_file`, never the real Keychain. `use_file`
 //! is global, so every test points it at the same folder and a lock keeps
-//! the tests from writing the key file at the same time.
+//! the tests from writing the key file at the same time. The lock is async
+//! because it is held across the request under test, which reads the key.
 
-use std::sync::Mutex;
 use std::time::Duration;
 
 use apex_adapters::{keys, list_models, OpenAiCompatParticipant};
@@ -14,15 +14,15 @@ use apex_core::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-static LOCK: Mutex<()> = Mutex::new(());
+static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn data_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("apex-api-keys-test-{}", std::process::id()))
 }
 
 /// Point key storage at the shared temp folder and take the lock.
-fn setup() -> std::sync::MutexGuard<'static, ()> {
-    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+async fn setup() -> tokio::sync::MutexGuard<'static, ()> {
+    let guard = LOCK.lock().await;
     keys::use_file(&data_dir());
     guard
 }
@@ -110,7 +110,7 @@ async fn serve_once(
 
 #[tokio::test]
 async fn bot_sends_the_saved_key_as_a_bearer_token() {
-    let _guard = setup();
+    let _guard = setup().await;
     let name = "APEX_TEST_KEY_SENDS";
     std::env::remove_var(name);
     keys::save(name, "  saved-secret-456 \n").unwrap();
@@ -131,7 +131,7 @@ async fn bot_sends_the_saved_key_as_a_bearer_token() {
 
 #[tokio::test]
 async fn bot_naming_a_key_that_is_nowhere_fails_before_any_request() {
-    let _guard = setup();
+    let _guard = setup().await;
     let name = "APEX_TEST_KEY_NOWHERE";
     std::env::remove_var(name);
     keys::remove(name).unwrap();
@@ -147,7 +147,7 @@ async fn bot_naming_a_key_that_is_nowhere_fails_before_any_request() {
 
 #[tokio::test]
 async fn unauthorized_server_without_a_key_setting_asks_for_an_api_key() {
-    let _guard = setup();
+    let _guard = setup().await;
     let (address, _server) = serve_once("401 Unauthorized", vec![b"{\"error\":\"no key\"}"]).await;
     let bot = OpenAiCompatParticipant::new(config("api", api(address, None)));
     let error = bot.respond(request("hi"), &|_| {}).await.unwrap_err();
@@ -158,7 +158,7 @@ async fn unauthorized_server_without_a_key_setting_asks_for_an_api_key() {
 
 #[tokio::test]
 async fn list_models_sends_the_saved_key_and_works_without_one() {
-    let _guard = setup();
+    let _guard = setup().await;
     let name = "APEX_TEST_KEY_MODELS";
     std::env::remove_var(name);
     keys::save(name, "models-secret-789").unwrap();

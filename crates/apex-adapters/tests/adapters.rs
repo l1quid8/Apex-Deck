@@ -1720,8 +1720,8 @@ async fn claude_questions_reach_the_person_and_the_answer_goes_back() {
         *person.said.lock().unwrap() = Some(Answer::Answered(vec![vec!["blue".into()], vec!["apple".into(), "pear".into()]]));
         let (result, _, _) = work_asking(bot.as_ref(), &person).await;
         assert_eq!(result.unwrap().text, "blue with apple, pear");
-        let asked = person.questions.lock().unwrap();
-        assert_eq!(asked.iter().map(|q| q.question.as_str()).collect::<Vec<_>>(), ["Which colour?", "Which fruit?"]);
+        let asked: Vec<String> = person.questions.lock().unwrap().iter().map(|q| q.question.clone()).collect();
+        assert_eq!(asked, ["Which colour?", "Which fruit?"]);
         assert!(person.asked.lock().unwrap().is_empty(), "a question is not an approval card");
 
         let (result, _, _) = work_asking(bot.as_ref(), &Fixed::new(Decision::Approve)).await;
@@ -1809,9 +1809,9 @@ async fn a_planning_claude_asks_before_it_starts_the_work() {
     let yes = Fixed::new(Decision::Approve);
     let (result, _, _) = work_asking_with(bot.as_ref(), &yes, planning("hi")).await;
     assert_eq!(result.unwrap().text, "working", "approved: Claude goes on with its own Full access");
-    let asked = yes.asked.lock().unwrap();
+    let asked: Vec<_> = yes.asked.lock().unwrap().iter().map(|a| (a.kind, a.title.clone(), a.detail.clone())).collect();
     assert_eq!(asked.len(), 1);
-    assert_eq!((asked[0].kind, asked[0].title.as_str(), asked[0].detail.as_str()), (ActionKind::Plan, "Start the work?", "1. Make hello.txt"));
+    assert_eq!((asked[0].0, asked[0].1.as_str(), asked[0].2.as_str()), (ActionKind::Plan, "Start the work?", "1. Make hello.txt"));
 
     let no = Fixed::new(Decision::Reject);
     let (result, _, _) = work_asking_with(bot.as_ref(), &no, planning("hi")).await;

@@ -484,7 +484,7 @@ impl StartGate {
                 let flags = libc::fcntl(3, libc::F_GETFD);
                 if flags < 0 || libc::fcntl(3, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 { return Err(std::io::Error::last_os_error()); }
                 if read != 3 { libc::close(read); }
-                libc::execve(b"/bin/sh\0".as_ptr().cast(), argv_ptrs.as_ptr().cast(), env_ptrs.as_ptr().cast());
+                libc::execve(c"/bin/sh".as_ptr(), argv_ptrs.as_ptr().cast(), env_ptrs.as_ptr().cast());
                 Err(std::io::Error::last_os_error())
             });
         }
