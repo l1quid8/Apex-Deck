@@ -3,7 +3,7 @@ import type { Backend } from './backend.ts';
 export type AvatarDraftOwner = {kind:'assistant';assistant:AssistantRef}|{kind:'creation';hostId:string;draftId:string};
 export type AvatarSelection = {kind:'image';generationId:string;assetId:string}|{kind:'pixel'};
 export type AvatarJob = {owner:AvatarDraftOwner;generationId:string;editorToken:string;state:'pending'|'preview'|'error'|'cancelled';candidate?:AssistantAvatarAsset;error?:string};
-export type AvatarOption = {providerProfileId:string;modelId:string;label:string;estimatedCostMicros:number|null};
+export type AvatarOption = {providerProfileId:string;modelId:string;label:string;estimatedCostMicros:number|null;billing?:'subscription'};
 export type AvatarEditorState = {owner:AvatarDraftOwner;editorToken:string;generationId?:string;status:'idle'|'pending'|'preview'|'error'|'cancelled';candidate?:AssistantAvatarAsset;selection?:AvatarSelection;error?:string};
 export const avatarOwnerKey=(o:AvatarDraftOwner)=>JSON.stringify(o.kind==='assistant'?['assistant',o.assistant.hostId,o.assistant.assistantId]:['creation',o.hostId,o.draftId]);
 export function createAvatarEditor(owner:AvatarDraftOwner,editorToken:string):AvatarEditorState{return {owner,editorToken,status:'idle'};}

@@ -69,6 +69,8 @@ pub struct OptionRow {
     pub model_id: String,
     pub label: String,
     pub estimated_cost_micros: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub billing: Option<&'static str>,
 }
 #[derive(Serialize)]
 pub struct Options {
@@ -143,6 +145,11 @@ fn normalize(bytes: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(feature = "test-support")]
 fn fixture_profile() -> apex_core::ParticipantConfig {
     serde_json::from_value(serde_json::json!({"id":"fixture-avatar-provider","display_name":"Deterministic image fixture","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/avatar-fixture","model":"fixture-avatar-image"}})).expect("static fixture profile")
+}
+const CHATGPT_AVATAR_PROVIDER: &str = "chatgpt-avatar";
+const CHATGPT_AVATAR_MODEL: &str = "codex-image-generation";
+fn chatgpt_avatar_profile() -> apex_core::ParticipantConfig {
+    serde_json::from_value(serde_json::json!({"id":CHATGPT_AVATAR_PROVIDER,"display_name":"ChatGPT Images","access":"read","backend":{"kind":"agent","tool":"codex"}})).expect("static ChatGPT avatar profile")
 }
 impl Host {
     fn avatar_owner(&self, owner: &Owner) -> Result<(), String> {
@@ -274,11 +281,20 @@ impl Host {
                     model_id: "fixture-avatar-image".into(),
                     label: "Deterministic fixture image · no provider request or charge".into(),
                     estimated_cost_micros: Some(40000),
+                    billing: None,
                 }],
                 reason: None,
             });
         }
         let mut options = vec![];
+        let chatgpt = chatgpt_avatar_profile();
+        let chatgpt_allowed = match &owner {
+            Owner::Assistant { assistant } => crate::personal_worker::endpoint_refusal(&self.personal_get(&assistant.assistant_id)?, &chatgpt).is_none(),
+            Owner::Creation { .. } => true,
+        };
+        if chatgpt_allowed && apex_adapters::codex_images::available_with_path(crate::agents::login_path().as_deref()).await {
+            options.push(OptionRow { provider_profile_id:CHATGPT_AVATAR_PROVIDER.into(), model_id:CHATGPT_AVATAR_MODEL.into(), label:"ChatGPT Images".into(), estimated_cost_micros:None, billing:Some("subscription") });
+        }
         for profile in self.avatar_profiles()? {
             let apex_core::Backend::OpenAiCompatible {
                 base_url,
@@ -330,11 +346,12 @@ impl Host {
                         model_id: m.id.clone(),
                         label: format!("{} · {}", profile.display_name, m.id),
                         estimated_cost_micros: estimated,
+                        billing: None,
                     });
                 }
             }
         }
-        let reason=options.is_empty().then(||"No configured supported image model with credentials is available. Configure a Venice image provider in Agents/Providers.".into());
+        let reason=options.is_empty().then(||"No image provider is available. Sign in to ChatGPT in Codex, or configure a Venice image provider in Agents/Providers. Assistant privacy settings may restrict providers.".into());
         Ok(Options { options, reason })
     }
     pub fn personal_avatar_status(&self, owner: Owner, id: String) -> Result<Job, String> {
@@ -439,6 +456,35 @@ impl Host {
                     {
                         eprintln!("fixture avatar completion failed: {error}")
                     }
+                });
+            }
+            return Ok(job);
+        }
+        if option.provider_profile_id == CHATGPT_AVATAR_PROVIDER {
+            if input.model_id != CHATGPT_AVATAR_MODEL { return Err("Unsupported ChatGPT image model.".into()); }
+            let profile = chatgpt_avatar_profile();
+            let job = Job {
+                owner:input.owner.clone(), generation_id:input.generation_id.clone(), editor_token:input.editor_token.clone(), state:"pending".into(), candidate:None, error:None, created_at:crate::personal::now(),
+                cost:Some(crate::personal::CostEntry { at:crate::personal::now(), purpose:"avatar".into(), kind:"image".into(), source:crate::personal::CostSource::Unknown, micros:None, input_tokens:None, output_tokens:None, bytes_out:input.prompt.len() as u64, endpoint:"api.openai.com".into() }),
+            };
+            let (job, dispatch) = self.avatar_reserve(job, &profile)?;
+            if dispatch {
+                let host = Arc::clone(self);
+                tokio::spawn(async move {
+                    // This generated directory contains no user project or conversation context.
+                    let workdir = host.data_dir().join("assistant-avatars/codex").join(digest(&serde_json::to_vec(&(&input.owner, &input.generation_id)).unwrap()));
+                    let prepare = (|| -> Result<(), String> {
+                        std::fs::create_dir_all(workdir.parent().unwrap()).map_err(|e| e.to_string())?;
+                        let mut builder = std::fs::DirBuilder::new();
+                        #[cfg(unix)] { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
+                        builder.create(&workdir).map_err(|e| format!("Could not create a private avatar job folder: {e}"))
+                    })();
+                    let result = match prepare {
+                        Ok(()) => apex_adapters::codex_images::generate_with_path(&input.prompt, &workdir, crate::agents::login_path().as_deref()).await.and_then(|bytes| normalize(&bytes)),
+                        Err(error) => Err(error),
+                    };
+                    let _ = std::fs::remove_dir(&workdir);
+                    if let Err(error) = host.avatar_finish(&input.owner, &input.generation_id, result) { eprintln!("ChatGPT avatar completion could not persist: {error}"); }
                 });
             }
             return Ok(job);
@@ -853,6 +899,25 @@ mod tests {
         )
         .unwrap();
         job
+    }
+    #[tokio::test]
+    async fn chatgpt_avatar_reuses_exact_owner_privacy_and_single_dispatch_reservation() {
+        let (root, host, a) = fixture().await;
+        let profile = chatgpt_avatar_profile();
+        assert_eq!(profile.access, apex_core::Access::Read);
+        let owner = Owner::Assistant { assistant:AssistantRef { host_id:"host".into(), assistant_id:a.id.clone() } };
+        let make_job = |id:&str| Job { owner:owner.clone(), generation_id:id.into(), editor_token:"editor".into(), state:"pending".into(), candidate:None, error:None, created_at:crate::personal::now(), cost:Some(crate::personal::CostEntry { at:crate::personal::now(), purpose:"avatar".into(), kind:"image".into(), source:crate::personal::CostSource::Unknown, micros:None, input_tokens:None, output_tokens:None, bytes_out:10, endpoint:"api.openai.com".into() }) };
+        let (_, dispatch) = host.avatar_reserve(make_job("chatgpt-one"), &profile).unwrap();
+        assert!(dispatch);
+        assert!(!host.avatar_reserve(make_job("chatgpt-one"), &profile).unwrap().1);
+        host.avatar_finish(&owner, "chatgpt-one", normalize(&png(3, 4))).unwrap();
+        let (completed, dispatch) = host.avatar_reserve(make_job("chatgpt-one"), &profile).unwrap();
+        assert_eq!(completed.state, "preview"); assert!(!dispatch);
+        assert_eq!(host.personal_get(&a.id).unwrap().costs.len(), 1);
+        host.change_personal(|all| { all.iter_mut().find(|item|item.id==a.id).unwrap().privacy.local_only=true; Ok(()) }).unwrap();
+        assert!(host.avatar_reserve(make_job("chatgpt-two"), &profile).unwrap_err().contains("Local-only"));
+        assert_eq!(host.personal_get(&a.id).unwrap().costs.len(), 1);
+        let _=std::fs::remove_dir_all(root);
     }
     #[test]
     fn assistant_avatar_normalizes_and_rejects_invalid() {
@@ -1287,8 +1352,8 @@ mod tests {
             .unwrap()["options"]
                 .as_array()
                 .unwrap()
-                .is_empty(),
-            "compiling test support alone registers nothing"
+                .iter().all(|option| option["providerProfileId"] != "fixture-avatar-provider"),
+            "compiling test support alone never registers a fixture provider"
         );
         let adapter = crate::test_support::register_deterministic_avatar_adapter(&host).unwrap();
         let options = host

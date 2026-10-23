@@ -47,3 +47,12 @@ test('pixel color controls stay inside the pixel tab and opening AI does not sel
  const h=mount({owner,appearance:{seed:'s',color:'#123456'},pixelControls:marker,api:{options:async()=>({options:[]}),generate:async input=>requests.push(input)},onApply:value=>applied.push(value),onAppearanceChange(){}});
  let tree=h.render();assert.ok(find(tree,n=>n.props?.['data-pixel-controls']));button(tree,'AI generate').props.onClick();tree=h.render();assert.equal(find(tree,n=>n.props?.['data-pixel-controls']),undefined);assert.ok(find(tree,n=>n.type==='textarea'));assert.equal(requests.length,0);assert.equal(applied.length,0);button(tree,'Pixel pattern').props.onClick();assert.ok(find(h.render(),n=>n.props?.['data-pixel-controls']));h.close();
 });
+
+test('ChatGPT avatar option explains plan usage without claiming API charges',async()=>{
+ const api={options:async()=>({options:[{providerProfileId:'chatgpt-avatar',modelId:'codex-image-generation',label:'ChatGPT Images',estimatedCostMicros:null,billing:'subscription'}]})};
+ const h=mount({owner,appearance:{seed:'s',color:'#123456'},api,onApply(){},onAppearanceChange(){}});
+ let tree=h.render();await settle();tree=h.render();button(tree,'AI generate').props.onClick();tree=h.render();
+ assert.match(text(tree),/Uses your ChatGPT\/Codex plan limits/);
+ assert.doesNotMatch(text(tree),/provider may charge/);
+ h.close();
+});
