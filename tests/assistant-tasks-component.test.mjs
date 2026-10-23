@@ -523,6 +523,70 @@ test('single-conversation recovery survives reopen and successful retry removes 
 
 const projectKey = id => `project:${owner.hostId}:${owner.workspaceId}:${id}`;
 
+test('sidebar rows open local task details and Back restores the compact list without dispatching or binding a composer', async () => {
+  const calls = [], selected = [], opened = [];
+  const tasks = [task(), task({ id: 'task-2', status: 'running', originalRequest: 'Review docs' })];
+  const backend = { demo: false, call: async command => { calls.push(command); return snapshot(tasks); } };
+  const h = harness(backend, { view: 'sidebar', projectName: 'apex-deck', clearedAt: 10, onSelectTask: (...args) => selected.push(args), taskView: { display: 'tasks', selectedKey: projectKey('task-2'), openTask: key => opened.push(key), report() {} } });
+  let tree = h.render(); await tick(); tree = h.render();
+  const rows = findAll(tree, node => node.type === 'button' && node.props.className === 'assistant-task-sidebar-row');
+  assert.equal(rows.length, 2);
+  assert.match(textOf(tree), /apex-deck/);
+  assert.match(textOf(rows[0]), /Fix parser.*Claude.*Ready for review/);
+  assert.match(textOf(rows[1]), /Review docs.*Running/);
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
+  assert.equal(button(tree, 'Approve task'), null);
+  const before = calls.length;
+  rows[0].props.onClick(); tree = h.render();
+  assert.ok(button(tree, 'Accept and mark done'));
+  assert.ok(button(tree, 'Request changes…'), 'the compact sidebar retains the existing explicit review actions');
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-sidebar-row'), null);
+  assert.equal(calls.length, before);
+  assert.deepEqual(selected, []); assert.deepEqual(opened, []);
+  button(tree, 'Back to tasks').props.onClick(); tree = h.render();
+  assert.equal(findAll(tree, node => node.props.className === 'assistant-task-sidebar-row').length, 2);
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
+  assert.equal(calls.length, before);
+  h.unmount();
+});
+
+test('sidebar statuses follow task events and a changed owner cannot keep or open the prior assignment', async () => {
+  let changed, revision = 1, status = 'running';
+  const ownerB = { workspaceId: 'project-b', cwd: '/work/b', hostId: 'host-b', conversationId: 'monitor-b' };
+  const backend = { demo: false, onAssistantTasksChanged: async listener => { changed = listener; return () => {}; }, call: async (_command, args) => args.owner.workspaceId === owner.workspaceId ? { ...snapshot([task({ status })]), revision } : { workspaceId: ownerB.workspaceId, revision: 1, tasks: [], executions: [] } };
+  const h = harness(backend, { view: 'sidebar' }); let tree = h.render(); await tick(); tree = h.render();
+  let row = find(tree, node => node.props.className === 'assistant-task-sidebar-row');
+  assert.ok(row); assert.match(textOf(row), /Running/);
+  status = 'needs_you'; revision++; changed({ workspaceId: owner.workspaceId }); await tick(); tree = h.render();
+  row = find(tree, node => node.props.className === 'assistant-task-sidebar-row');
+  assert.match(textOf(row), /Needs you/);
+  row.props.onClick(); tree = h.render(); assert.ok(button(tree, 'Cancel task'));
+  h.setProps({ owner: ownerB }); tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Fix parser/);
+  row.props.onClick(); await tick(); tree = h.render();
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
+  assert.doesNotMatch(textOf(tree), /Fix parser/);
+  assert.match(textOf(tree), /No tasks for this project/);
+  h.unmount();
+});
+
+test('sidebar distinguishes loading, empty and failed task lists and keeps request recovery accessible', async () => {
+  let finishList;
+  const loading = harness({ demo: false, call: () => new Promise(resolve => { finishList = resolve; }) }, { view: 'sidebar' });
+  let tree = loading.render(); assert.match(textOf(tree), /Loading tasks/); assert.doesNotMatch(textOf(tree), /No tasks for this project/);
+  finishList(snapshot([])); await tick(); tree = loading.render(); assert.match(textOf(tree), /No tasks for this project/); loading.unmount();
+  const failed = harness({ demo: false, call: async () => { throw new Error('Machine is offline'); } }, { view: 'sidebar' });
+  failed.render(); await tick(); tree = failed.render();
+  assert.match(textOf(find(tree, node => node.props.role === 'alert')), /Machine is offline/);
+  assert.doesNotMatch(textOf(tree), /No tasks for this project/); failed.unmount();
+  let discarded = false;
+  const pending = { requestId: 'saved', owner, text: 'Keep my saved request', destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [] };
+  const recovery = harness({ demo: false, call: async () => snapshot([]) }, { view: 'sidebar', requestRecovery: { pending, retry: async () => {}, discard: () => { discarded = true; } } });
+  recovery.render(); await tick(); tree = recovery.render();
+  assert.match(textOf(tree), /Keep my saved request/);
+  button(tree, 'Discard saved request and start over').props.onClick(); assert.equal(discarded, true); recovery.unmount();
+});
+
 test('links view: one short line per task, no cards or detail, and opening makes no backend call', async () => {
   const calls = []; const opened = []; const selected = [];
   const tasks = [

@@ -4,7 +4,7 @@
 import { addLeaf, insertBeside, leafIds, MIN_SHARE, normalize, removeLeaf, type Dir, type LayoutNode } from "./layout.ts";
 import type { PanelTab, RightPanelState, TabKind } from "./rightPanelModel.ts";
 import type { ChipParts } from "./botChip";
-import type { DashRow } from "./dashboardModel";
+import type { DashboardDestination, DashRow } from "./dashboardModel";
 import type { ServerChoice } from "./PreviewPane";
 import type { LandingTextureSettings } from "./settings";
 import type { AppearanceValues } from "./themes";
@@ -126,6 +126,7 @@ export type PopoutAction =
   | { type: "restart-terminal" }
   | { type: "start-pane"; id: string }
   | { type: "show-pane"; id: string }
+  | { type: "dashboard-open"; id: string; destination?: DashboardDestination }
   | { type: "close-pane" }
   | { type: "rename"; title: string }
   | { type: "preview-address"; address: string; servedBy?: string }
