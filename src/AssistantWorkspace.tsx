@@ -1,7 +1,8 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import type { Backend } from './backend';
 import type { PersonalLane } from './personalAssistant';
-import { assistantAppearance, projectIdentityKey, type AssistantProjectBinding, type ProjectRef } from './assistantIdentity';
+import { assistantAppearance, type ProjectRef } from './assistantIdentity';
+import { accessLabel, assistantStatus } from './assistantStatus';
 import type { AssistantTask } from './assistantTaskModel';
 import type { AssistantSection } from './assistantWorkspaceModel';
 import { Avatar } from './Avatar';
@@ -17,35 +18,35 @@ export function AssistantWorkspaceAvatar({lane,backend}:{lane:PersonalLane;backe
  return <Avatar seed={look.seed} color={look.color} image={look.kind==='image'?look.image:undefined} assistant={ref} avatarApi={api} size="sm"/>;
 }
 
-export function AssistantWorkspace({lane,backend,section,onNavigate,onBack,conversation,editor,projects,projectView,memoryProject,delegatedTasks=[],onOpenProject,projectUnavailable,onSubviewBack,previousSection='chat',onAddAssistant}:{lane:PersonalLane;backend?:Backend;section:AssistantSection;onNavigate:(section:AssistantSection)=>void;onBack:()=>void;conversation:ReactNode;editor:ReactNode;projects:AssistantProjectBinding[];projectView?:ReactNode;memoryProject?:ProjectRef;delegatedTasks?:AssistantTask[];onOpenProject?:(project:ProjectRef)=>void;projectUnavailable?:(project:ProjectRef)=>string|undefined;onSubviewBack?:()=>void;previousSection?:AssistantSection;onAddAssistant?:()=>void}) {
+export function AssistantWorkspace({lane,backend,section,onNavigate,chat,work,editor,memoryProject,delegatedTasks=[],onSubviewBack,previousSection='chat'}:{lane:PersonalLane;backend?:Backend;section:AssistantSection;onNavigate:(section:AssistantSection)=>void;chat:ReactNode;work:ReactNode;editor:ReactNode;memoryProject?:ProjectRef;delegatedTasks?:AssistantTask[];onSubviewBack?:()=>void;previousSection?:AssistantSection}) {
  const record=lane.assistant;
  const ref=lane.ref??{hostId:record?.hostId??lane.hostName,assistantId:record?.id??lane.name};
  const look=assistantAppearance(ref,record?.look);
  const avatarApi=useMemo(()=>backend?createAssistantAvatarApi(backend):undefined,[backend]);
  const [pending,setPending]=useState(false);const [error,setError]=useState('');
- const working=(record?.tasks.filter(task=>task.status==='running'||task.status==='queued').length??0)+delegatedTasks.filter(task=>(task.status==='running'||task.status==='applying')&&task.desiredState!=='paused').length;
- const needsYou=(record?.tasks.filter(task=>task.status==='needsYou').length??0)+delegatedTasks.filter(task=>['needs_you','needs_clarification','ready_for_review','proposed','failed','interrupted'].includes(task.status)).length;
- const status=lane.offline?'Offline':record?.paused?'Paused':working?`Working on ${working} ${working===1?'task':'tasks'}`:needsYou?`${needsYou} need review`:'Ready';
- const activity=(record?.tasks.length??0)+(record?.notices?.length??0)+delegatedTasks.length;
+ const status=assistantStatus({offline:!!lane.offline,paused:!!record?.paused,personalTasks:record?.tasks??[],delegatedTasks});
+ const runtime=record?.profile?.backend;const model=runtime&&'model' in runtime?runtime.model:undefined;
+ const projectCount=record?.projects?.length??0;
+ const meta=[model,record?.profile?accessLabel(record.profile.access):undefined,`${projectCount} ${projectCount===1?'project':'projects'}`].filter(Boolean).join(' · ');
+ const attention=status.needsYou+status.failed;
  const subview=section==='settings'||section==='memory';
+ const closeMenu=(target:EventTarget&HTMLElement)=>target.closest('details')?.removeAttribute('open');
  const pause=async()=>{if(!lane.pause||pending)return;setPending(true);setError('');try{await lane.pause(!record?.paused);}catch(cause){setError(String(cause instanceof Error?cause.message:cause));}finally{setPending(false);}};
  return <section className="assistant-workspace" aria-label={`${lane.name} workspace`}>
   <header className="assistant-workspace-head">
-   <Avatar seed={look.seed} color={look.color} image={look.kind==='image'?look.image:undefined} assistant={ref} avatarApi={avatarApi} working={working>0&&!record?.paused} size="md"/>
-   <div className="assistant-workspace-identity"><h1>{lane.name}</h1><div className="assistant-workspace-descriptor"><span className="assistant-live-status" data-state={lane.offline?'offline':record?.paused?'paused':needsYou?'review':'ready'}>{status}</span><span> · Assistant · Ongoing conversation</span></div></div>
+   <Avatar seed={look.seed} color={look.color} image={look.kind==='image'?look.image:undefined} assistant={ref} avatarApi={avatarApi} working={status.working>0&&!record?.paused} size="md"/>
+   <div className="assistant-workspace-identity"><h1>{lane.name}{status.state!=='ready'&&<span className="assistant-workspace-flag" data-state={status.state}>{status.label}</span>}</h1><p className="assistant-workspace-meta">{meta}</p></div>
+   {!subview&&<nav className="assistant-workspace-tabs" role="tablist" aria-label={`${lane.name} views`}>{(['chat','work'] as const).map(tab=><button type="button" role="tab" id={`assistant-tab-${tab}`} aria-selected={section===tab} aria-controls={`assistant-panel-${tab}`} key={tab} onClick={()=>onNavigate(tab)}>{tab==='chat'?'Chat':<>Work{attention>0&&<span className="assistant-tab-count">{attention}</span>}</>}</button>)}</nav>}
    <div className="assistant-workspace-actions">
-    {lane.pause&&<button type="button" className="icon" aria-label={`${record?.paused?'Resume':'Pause'} ${lane.name}`} title={`${record?.paused?'Resume':'Pause'} ${lane.name}`} disabled={pending||lane.offline} onClick={()=>void pause()}>{record?.paused?'▷':'Ⅱ'}</button>}
-    <details className="assistant-workspace-menu"><summary aria-label="Assistant options">⋯</summary><div role="menu">
-     <button type="button" role="menuitem" onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');onBack();}}>Workspaces</button>
-     <button type="button" role="menuitem" onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');onNavigate('memory');}}>Memory</button>
-     <button type="button" role="menuitem" onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');onNavigate('settings');}}>Settings</button>
-     {onAddAssistant&&<button type="button" role="menuitem" onClick={onAddAssistant}>Add a team member</button>}
+    {lane.pause&&<button type="button" className="assistant-pause" disabled={pending||lane.offline} onClick={()=>void pause()}>{record?.paused?'Resume':'Pause'}</button>}
+    <details className="assistant-workspace-menu"><summary aria-label="Memory and settings">⋯</summary><div role="menu">
+     <button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);onNavigate('memory');}}>Memory</button>
+     <button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);onNavigate('settings');}}>Settings</button>
     </div></details>
    </div>
   </header>
-  {!subview&&<nav className="assistant-workspace-tabs" role="tablist" aria-label="Conversation sections">{(['chat','work'] as const).map(tab=><button type="button" role="tab" id={`assistant-tab-${tab}`} aria-selected={section===tab} aria-controls={`assistant-panel-${tab}`} key={tab} onClick={()=>onNavigate(tab)}>{tab==='chat'?'Chat':<>Work{activity>0&&<span className="assistant-tab-count">{activity}</span>}</>}</button>)}</nav>}
   {(lane.problem||error)&&<p className="assistant-workspace-problem" role="alert">{error||lane.problem}</p>}
-  <div id="assistant-panel-chat" role="tabpanel" aria-labelledby="assistant-tab-chat" className="assistant-workspace-content" hidden={section!=='chat'}>{conversation}</div>
-  {section!=='chat'&&<div id={`assistant-panel-${section}`} role={subview?undefined:'tabpanel'} aria-labelledby={subview?undefined:`assistant-tab-${section}`} className="assistant-workspace-subview">{subview&&<button className="assistant-settings-back" onClick={()=>onSubviewBack?onSubviewBack():onNavigate(previousSection)}>‹ Back to {previousSection}</button>}{section==='settings'?editor:section==='work'?(projectView??<><h2>Your projects, moving together.</h2>{!projects.length&&<p className="muted">Give each project a clear goal. Assign projects to coordinate work and bring the results back here.</p>}<button type="button" onClick={()=>onNavigate('settings')}>Assign projects</button>{projects.map(binding=>{const problem=projectUnavailable?.(binding.project);return <div key={projectIdentityKey(binding.project)}><button disabled={!!problem} onClick={()=>onOpenProject?.(binding.project)}>{binding.project.cwd} · {binding.tools}</button>{problem&&<p role="status">{problem}</p>}</div>;})}</>):<PersonalPanels delegatedTasks={delegatedTasks} key={section+JSON.stringify(memoryProject)} initialProject={section==='memory'?memoryProject:undefined} lane={lane} initial={section==='memory'?'memory':'activity'} onClose={()=>onNavigate('chat')} embedded/>}</div>}
+  <div id="assistant-panel-chat" role="tabpanel" aria-labelledby="assistant-tab-chat" className="assistant-workspace-content" hidden={section!=='chat'}>{chat}</div>
+  {section!=='chat'&&<div id={`assistant-panel-${section}`} role={subview?undefined:'tabpanel'} aria-labelledby={subview?undefined:`assistant-tab-${section}`} className="assistant-workspace-subview">{subview&&<button type="button" className="assistant-settings-back" onClick={()=>onSubviewBack?onSubviewBack():onNavigate(previousSection)}>{previousSection==='work'?'‹ Work':'‹ Chat'}</button>}{section==='settings'?editor:section==='work'?(work??<p className="muted">Connect this machine to see its projects and tasks.</p>):<PersonalPanels delegatedTasks={delegatedTasks} key={section+JSON.stringify(memoryProject)} initialProject={memoryProject} lane={lane} initial="memory" onClose={()=>onNavigate('chat')} embedded/>}</div>}
  </section>;
 }

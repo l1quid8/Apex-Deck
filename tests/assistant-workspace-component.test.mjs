@@ -6,6 +6,7 @@ import {assistantAppearance,createAssistantAppearance,projectIdentityKey} from '
 import {runtimeProfile,textModels,reconcileEffort,validateAssistantDraft} from '../src/assistantWorkspaceModel.ts';
 import {providerEnabled,providerForConfig} from '../src/providers.ts';
 import {AGENT_COLORS} from '../src/identicon.ts';
+import {assistantStatus,accessLabel} from '../src/assistantStatus.ts';
 const {transform}=createRequire(import.meta.url)('sucrase');
 const source=['AssistantEditor.tsx','AssistantWorkspace.tsx'].map(file=>fs.readFileSync(new URL('../src/'+file,import.meta.url),'utf8').replace(/^export \{.*$/gm,'').replace(/^export type \{.*$/gm,'')).join('\n');
 const compiled=transform(source.replace(/^import .*;\n/gm,'').replace(/^export /gm,''),{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
@@ -22,7 +23,7 @@ function mount(overrides={}){
  const props={backend,lane,hostId:'mac',profiles:[profile],projects:[],...overrides,backend,lane:overrides.lane===undefined&&Object.hasOwn(overrides,'lane')?undefined:lane};
  const states=[],deps=[],queued=[],cleanups=[];let cursor=0;
  const hooks={useRef(initial){const i=cursor++;return states[i]??(states[i]={current:initial});},useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}}};
- const bindings={React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined};
+ const bindings={React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel};
  const components=new Function(...Object.keys(bindings),`${compiled}\nreturn {AssistantEditor,AssistantWorkspace};`)(...Object.values(bindings));
  return{props,calls,unmount(){cleanups.forEach(fn=>fn?.());},render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
 }
@@ -53,7 +54,7 @@ test('a conflict changes no draft fields and retains the captured revision for e
  const h=mount({lane:{configureWorkspace:async()=>{throw new Error('Revision conflict; refresh and retry');}}});let tree=await h.ready();input(tree,'Assistant name').props.onChange({target:{value:'Keep my draft'}});await submit(h);tree=h.render();assert.equal(input(tree,'Assistant name').props.value,'Keep my draft');assert.match(text(tree),/Revision conflict/);assert.equal(record.name,'Null');
 });
 test('Memory and Settings are main-pane views with Back to the same conversation',()=>{
- const h=mount();const opened=[];const tree=h.workspace({lane:{name:'Null',hostName:'Mac'},section:'memory',onNavigate:s=>opened.push(s),onBack(){},conversation:'Retained conversation',editor:'Settings editor',projects:[]});assert.equal(find(tree,n=>n.props.className==='assistant-workspace-content').props.hidden,true);find(tree,n=>n.type==='button'&&text(n)==='‹ Back to chat').props.onClick();assert.deepEqual(opened,['chat']);assert.equal(find(tree,n=>n.type===PersonalPanels).props.initial,'memory');
+ const h=mount();const opened=[];const tree=h.workspace({lane:{name:'Null',hostName:'Mac'},section:'memory',onNavigate:s=>opened.push(s),onBack(){},chat:'Retained conversation',editor:'Settings editor',projects:[]});assert.equal(find(tree,n=>n.props.className==='assistant-workspace-content').props.hidden,true);find(tree,n=>n.type==='button'&&text(n)==='‹ Chat').props.onClick();assert.deepEqual(opened,['chat']);assert.equal(find(tree,n=>n.type===PersonalPanels).props.initial,'memory');
 });
 
 test('saved Keychain credentials are accepted and media models never enter the text picker',async()=>{
@@ -80,13 +81,6 @@ test('creation completion remains durable after navigation without stealing the 
  let resolve;const created=[];const navigation=[];const h=mount({lane:undefined,onCreate:()=>new Promise(r=>{resolve=()=>{created.push('created');r({hostId:'mac',assistantId:'new'});};}),onSaved:ref=>navigation.push(ref)});
  await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'New teammate'}});await submit(h);h.unmount();resolve();await tick();assert.deepEqual(created,['created']);assert.deepEqual(navigation,[]);
 });
-test('project links pass the complete identity and explain unavailable exact destinations',()=>{
- const h=mount();const project={hostId:'host-b',workspaceId:'shared',cwd:'/b'};const opened=[];
- const props={lane:{name:'Null',hostName:'Mac'},section:'work',onNavigate(){},onBack(){},projects:[{project,tools:'ask'}],onOpenProject:p=>opened.push(p)};
- let tree=h.workspace({...props,projectUnavailable:()=>undefined});find(tree,n=>n.type==='button'&&text(n).includes('/b')).props.onClick();assert.deepEqual(opened,[project]);
- tree=h.workspace({...props,projectUnavailable:()=>'Exact project unavailable. Reconnect its machine.'});assert.equal(find(tree,n=>n.type==='button'&&text(n).includes('/b')).props.disabled,true);assert.match(text(tree),/Exact project unavailable/);
-});
-
 test('conflict refresh updates only the expected revision and preserves the complete draft for retry',async()=>{
  const requests=[];let conflict=true;const h=mount({backend:{call:async(cmd,args)=>{assert.equal(cmd,'personal_get');assert.equal(args.assistantId,'a');return {...record,revision:9,name:'Remote name'};}},lane:{configureWorkspace:async value=>{requests.push(value);if(conflict)throw new Error('The assistant changed. Refresh before saving this draft.');}}});
  await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'Keep my draft'}});input(h.render(),'Project tools').props.onChange({target:{value:'full'}});await submit(h);
@@ -133,14 +127,6 @@ test('blank, relative and control-character folder boundaries block creation wit
  assert.equal(input(tree,'Assistant model').props.disabled,false);
  });
 
-test('workspace uses one identity header, status and a separate mockup tab strip',()=>{
- const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'chat',onNavigate(){},onBack(){},conversation:'chat',editor:'editor',projects:[]});
- assert.ok(find(tree,n=>n.type===Avatar),'identity includes saved avatar');
- assert.equal(all(tree,n=>n.type==='h1').length,1);
- const tabs=find(tree,n=>n.props?.role==='tablist');assert.ok(tabs);
- assert.deepEqual(all(tabs,n=>n.props?.role==='tab').map(text),['Chat','Work']);
- assert.match(text(tree),/Ready/);
-});
 
 const textApi={id:'api',display_name:'Text API',persona:'',backend:{kind:'open_ai_compatible',base_url:'https://text.test/v1',api_key_env:'SAVED',model:'configured-text'},access:'ask'};
 test('creation defaults to a verified text API ahead of a missing Claude install and preserves its offered configured model',async()=>{
@@ -181,9 +167,9 @@ test('legacy edits access stays explicit and is retained until the user chooses 
 });
 
 test('failed and interrupted delegated work stays visible in assistant header attention status',()=>{
- for(const status of ['failed','interrupted','needs_clarification']){
-  const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'projects',onNavigate(){},onBack(){},conversation:'chat',editor:'editor',projects:[],delegatedTasks:[{status}]});
-  assert.match(text(find(tree,n=>n.props.className==='assistant-live-status')),/1 need review/);
+ for(const [status,label] of [['failed','Failed · 1'],['interrupted','Failed · 1'],['needs_clarification','Needs you · 1']]){
+  const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'work',onNavigate(){},chat:'chat',work:'work',editor:'editor',delegatedTasks:[{status}]});
+  assert.equal(text(find(tree,n=>n.props.className==='assistant-workspace-flag')),label);
  }
 });
 
@@ -218,4 +204,32 @@ test('late folder grant cannot update an unmounted draft or a different owner',a
  let resolve;const changed=[];const h=mount({projects:[{id:'p',name:'P',path:'/exact'}],backend:{supports:()=>true,call:()=>new Promise(r=>{resolve=r;})},lane:{assistant:{...record,allowedFolders:[]}},onCommitted:()=>changed.push('committed')});await h.ready();
  find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();const promise=find(h.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();h.unmount();resolve({assistant:{...record,revision:8,allowedFolders:['/exact']}});await promise;assert.deepEqual(changed,['committed']);assert.equal(find(h.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);
  const wrong=mount({projects:[{id:'p',name:'P',path:'/exact'}],backend:{supports:()=>true,call:async()=>({assistant:{...record,id:'other',revision:8,allowedFolders:['/exact']}})},lane:{assistant:{...record,allowedFolders:[]}}});await wrong.ready();find(wrong.render(),n=>n.type==='button'&&text(n)==='Allow this folder…').props.onClick();await find(wrong.render(),n=>n.type==='button'&&text(n)==='Allow this folder').props.onClick();assert.match(text(wrong.render()),/owner could not be verified/);assert.equal(find(wrong.render(),n=>n.type==='input'&&n.props.type==='checkbox').props.disabled,true);
+});
+
+const headerLane=(over={})=>({name:'Apex Assistant',hostName:'Mac',offline:false,pause:async()=>{},assistant:{...record,name:'Apex Assistant',paused:false,profile:{...profile,backend:{kind:'open_ai_compatible',base_url:'x',model:'deepseek-v4.1-flash'},access:'ask'},projects:[{project:{hostId:'mac',workspaceId:'w',cwd:'/r'},tools:'ask'}],tasks:[],...over}});
+const header=(lane,extra={})=>mount().workspace({lane,section:'chat',onNavigate(){},chat:'chat',work:'work',editor:'editor',...extra});
+test('header shows model, access and project count',()=>{
+ assert.match(text(find(header(headerLane()),n=>n.props?.className==='assistant-workspace-meta')),/^deepseek-v4\.1-flash · Asks first · 1 project$/);
+ const two=headerLane({projects:[{project:{hostId:'mac',workspaceId:'w',cwd:'/r'},tools:'ask'},{project:{hostId:'mac',workspaceId:'v',cwd:'/s'},tools:'ask'}]});
+ assert.match(text(header(two)),/2 projects/);assert.doesNotMatch(text(header(two)),/Ongoing conversation|Assistant ·/);
+});
+test('tabs are Chat and Work with an attention count',()=>{
+ const tree=header(headerLane({tasks:[{id:'t',status:'needsYou',goal:'g',updatedAt:1}]}),{delegatedTasks:[{id:'d',status:'failed',originalRequest:'x',workers:[],updatedAtMs:1}]});
+ assert.deepEqual(all(find(tree,n=>n.props?.role==='tablist'),n=>n.props?.role==='tab').map(text),['Chat','Work2']);
+ assert.match(text(find(tree,n=>n.props?.className==='assistant-workspace-flag')),/Needs you · 1/);
+});
+test('a ready assistant shows no status flag',()=>{assert.equal(find(header(headerLane()),n=>n.props?.className==='assistant-workspace-flag'),null);});
+test('menu holds only Memory and Settings',()=>{
+ assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Memory','Settings']);
+});
+test('pause is a labelled button',()=>{
+ assert.ok(find(header(headerLane()),n=>n.type==='button'&&text(n)==='Pause'));
+ assert.ok(find(header(headerLane({paused:true})),n=>n.type==='button'&&text(n)==='Resume'));
+});
+test('subview back says Chat or Work',()=>{
+ const opened=[];const tree=header(headerLane(),{section:'memory',previousSection:'work',onNavigate:s=>opened.push(s)});
+ find(tree,n=>n.type==='button'&&text(n)==='‹ Work').props.onClick();assert.deepEqual(opened,['work']);
+});
+test('work panel renders the work slot',()=>{
+ assert.match(text(header(headerLane(),{section:'work',work:'Work content'})),/Work content/);
 });
