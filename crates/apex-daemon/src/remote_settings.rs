@@ -110,11 +110,11 @@ mod tests {
     #[test]
     fn boot_follows_the_file_unless_the_flag_forces_on() {
         let dir = folder();
-        assert_eq!(enabled_at_boot(&dir, false), false, "a missing file is off");
+        assert!(!enabled_at_boot(&dir, false), "a missing file is off");
 
         save(&dir, true).unwrap();
         assert_eq!(enabled(&dir), Some(true));
-        assert_eq!(enabled_at_boot(&dir, false), true, "file on");
+        assert!(enabled_at_boot(&dir, false), "file on");
         assert_eq!(
             std::fs::metadata(dir.join(FILE))
                 .unwrap()
@@ -125,10 +125,9 @@ mod tests {
         );
 
         save(&dir, false).unwrap();
-        assert_eq!(enabled_at_boot(&dir, false), false, "file off");
-        assert_eq!(
+        assert!(!enabled_at_boot(&dir, false), "file off");
+        assert!(
             enabled_at_boot(&dir, true),
-            true,
             "--remote forces on over a saved off"
         );
         assert_eq!(
@@ -138,9 +137,8 @@ mod tests {
         );
 
         std::fs::write(dir.join(FILE), "not json\n").unwrap();
-        assert_eq!(
-            enabled_at_boot(&dir, false),
-            false,
+        assert!(
+            !enabled_at_boot(&dir, false),
             "a file that is not a setting is off"
         );
         let _ = std::fs::remove_dir_all(dir);
