@@ -1,5 +1,6 @@
 import {assistantIdentityKey, assistantAppearance} from '../src/assistantIdentity.ts';
 import {rosterMessage} from '../src/assistantWorkspaceModel.ts';
+import {assistantStatus} from '../src/assistantStatus.ts';
 import {subscribeToImports} from '../src/legacyImportRefresh.ts';
 import {chatFolder, mountWorktree} from "../src/worktreeMount.ts";
 import test from 'node:test';
@@ -107,7 +108,7 @@ function appHarness() {
   const assistantRef={hostId:project.hostId,assistantId:'assistant-a'};
   const personalRecord={id:'assistant-a',hostId:project.hostId,name:'Null',revision:1,messages:[],tasks:[],projects:[{project:{hostId:project.hostId,workspaceId:project.id,cwd:project.path},tools:'ask'}]};
   const personalLane={ref:assistantRef,draftKey:assistantIdentityKey(assistantRef),name:'Null',hostName:'Mac',assistant:personalRecord,offline:false,send:async()=>{}};
-  const assistantCollection={assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
+  const assistantCollection={assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false,paused:false,personalTasks:[],projects:[]}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
   const defaults = {
     ...assistantWorkspaceModel,
     assistantIdentityKey,rosterMessage,
@@ -559,7 +560,7 @@ const attentionRows = nav => {
 
 function realSidebar() {
   return mountComponent('Sidebar.tsx', 'ProjectSidebar', {
-    assistantIdentityKey,assistantAppearance,Avatar:stubComponent('Avatar'),createAssistantAvatarApi:()=>undefined,
+    assistantIdentityKey,assistantAppearance,Avatar:stubComponent('Avatar'),createAssistantAvatarApi:()=>undefined,AssistantTeamRow:stubComponent('AssistantTeamRow'),assistantStatus,
     flagLabel: attention.label, workspaceFlag: attention.workspaceFlag,
     workspaceHost: hostSession.workspaceHost,
     ageWords: sidebarModel.ageWords, hostTints: sidebarModel.hostTints, projectGroups: sidebarModel.projectGroups, sidebarSections: sidebarModel.sidebarSections, twinPath: sidebarModel.twinPath,
