@@ -36,6 +36,13 @@ const MESSAGE_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "👀", "
 /// model call or a command run.
 static PERSONAL: Mutex<()> = Mutex::new(());
 
+#[cfg(test)]
+pub(crate) fn with_personal_lock_for_test<T>(run: impl FnOnce() -> T) -> T {
+    let _held = PERSONAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    run()
+}
+
+
 pub(crate) fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }

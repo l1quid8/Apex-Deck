@@ -2256,7 +2256,8 @@ impl Host {
                 self.assistant_changed(&input.owner.workspace_id);
                 Ok(result)
             }
-            "approve" | "clarify" => self.change_monitors(|monitors| {
+            "approve" | "clarify" => {
+                let approved = self.change_monitors(|monitors| {
                 if task.result_data.as_ref().is_some_and(|data| data["batchId"].is_string()) {
                     let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("Handoff project assignment is unavailable.")?;
                     if monitor.cwd != input.owner.cwd || monitor.host_id != input.owner.host_id || monitor.conversation_id != input.owner.conversation_id || task.result_data.as_ref().and_then(|data| data["monitorRevision"].as_u64()) != Some(monitor.revision) {
@@ -2376,12 +2377,16 @@ impl Host {
                     destination.workers,
                     worker_profiles,
                 );
-                self.assistant_changed(&action_owner.workspace_id);
                 self.assistant_tasks
                     .get(&queued.id)
                     .map_err(|e| e.to_string())?
                     .ok_or("Task not found after approval.".to_string())
-            }),
+                })?;
+                // Delegation reconciliation takes PERSONAL; release MONITORS first.
+                // Proposal preparation takes those locks in the opposite direction.
+                self.assistant_changed(&input.owner.workspace_id);
+                Ok(approved)
+            },
             _ => Err("Unknown assistant task action.".into()),
         }
     }
@@ -2831,6 +2836,40 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.root);
             let _ = std::fs::remove_dir_all(&self.data);
         }
+    }
+
+    #[test]
+    fn ui_delegation_approval_releases_monitor_lock_before_personal_reconciliation() {
+        let f = fixture();
+        let task=f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {
+            request_id:"concurrent-approval".into(),batch_id:"batch".into(),owner:f.owner.clone(),
+            revision:f.host.monitor_get(&f.owner.workspace_id).unwrap().unwrap().revision,
+            original_request:"Inspect login".into(),brief:"Inspect login".into(),
+            destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},
+            mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None,
+        }).unwrap();
+        let task_id=task.id.clone();
+        let (monitor_tx,monitor_rx)=std::sync::mpsc::channel();
+        let (approval_tx,approval_rx)=std::sync::mpsc::channel();
+        let observed=crate::personal::with_personal_lock_for_test(|| {
+            let host=f.host.clone();let runtime=f.runtime.handle().clone();let owner=f.owner.clone();
+            std::thread::spawn(move || {
+                let result=runtime.block_on(host.assistant_task_action(AssistantActionInput {task_id:task.id,revision:task.revision,owner,action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:task.destination,new_worker_profiles:vec![],checks:None,spend_limit_micros:None}));
+                let _=approval_tx.send(result);
+            });
+            // Approval can persist while PERSONAL is held, then must release
+            // MONITORS before its notification waits for PERSONAL.
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            while f.host.assistant_tasks.get(&task_id).unwrap().unwrap().status==TaskStatus::Proposed && std::time::Instant::now()<deadline { std::thread::sleep(std::time::Duration::from_millis(2)); }
+            let host=f.host.clone();
+            std::thread::spawn(move || {let result=host.change_monitors(|_|Ok(()));let _=monitor_tx.send(result);});
+            monitor_rx.recv_timeout(std::time::Duration::from_secs(5))
+        });
+        // PERSONAL is released even on timeout, so a regression reports failure
+        // without stranding either global lock or the remaining test suite.
+        assert!(approval_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().is_ok());
+        assert_ne!(f.host.assistant_tasks.get(&task_id).unwrap().unwrap().status,TaskStatus::Proposed);
+        assert!(observed.expect("approval held MONITORS while waiting for PERSONAL").is_ok());
     }
 
     #[test]
