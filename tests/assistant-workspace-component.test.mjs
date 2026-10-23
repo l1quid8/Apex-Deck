@@ -179,3 +179,10 @@ test('legacy edits access stays explicit and is retained until the user chooses 
  const h=mount({lane:{assistant:{...record,profile:{...profile,access:'edits'},projects:[binding]}}});let tree=await h.ready();assert.equal(input(tree,'Project tools').props.value,'edits');assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Off','Allow edits (legacy)']);await submit(h);assert.equal(h.calls[0].profile.access,'edits');assert.deepEqual(h.calls[0].projects,[binding]);
  input(h.render(),'Project tools').props.onChange({target:{value:'ask'}});tree=h.render();assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Off']);await submit(h);assert.equal(h.calls[1].profile.access,'ask');assert.equal(h.calls[1].projects[0].tools,'ask');
 });
+
+test('failed and interrupted delegated work stays visible in assistant header attention status',()=>{
+ for(const status of ['failed','interrupted','needs_clarification']){
+  const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'projects',onNavigate(){},onBack(){},conversation:'chat',editor:'editor',projects:[],delegatedTasks:[{status}]});
+  assert.match(text(find(tree,n=>n.props.className==='assistant-live-status')),/1 need review/);
+ }
+});

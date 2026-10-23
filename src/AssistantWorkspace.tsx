@@ -24,7 +24,7 @@ export function AssistantWorkspace({lane,backend,section,onNavigate,onBack,conve
  const avatarApi=useMemo(()=>backend?createAssistantAvatarApi(backend):undefined,[backend]);
  const [pending,setPending]=useState(false);const [error,setError]=useState('');
  const working=(record?.tasks.filter(task=>task.status==='running'||task.status==='queued').length??0)+delegatedTasks.filter(task=>(task.status==='running'||task.status==='applying')&&task.desiredState!=='paused').length;
- const needsYou=(record?.tasks.filter(task=>task.status==='needsYou').length??0)+delegatedTasks.filter(task=>['needs_you','ready_for_review','proposed'].includes(task.status)).length;
+ const needsYou=(record?.tasks.filter(task=>task.status==='needsYou').length??0)+delegatedTasks.filter(task=>['needs_you','needs_clarification','ready_for_review','proposed','failed','interrupted'].includes(task.status)).length;
  const status=lane.offline?'Offline':record?.paused?'Paused':working?`Working on ${working} ${working===1?'task':'tasks'}`:needsYou?`${needsYou} need review`:'Ready';
  const activity=(record?.tasks.length??0)+(record?.notices?.length??0)+delegatedTasks.length;
  const subview=section==='settings'||section==='memory';
