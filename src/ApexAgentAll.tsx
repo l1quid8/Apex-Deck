@@ -660,7 +660,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     </div></div>
     {/* Over the whole popup, not inside the scrolling transcript. */}
     {panelOpen && personal && <div className="apex-agent-panels-sheet">
-      <PersonalPanels onOpenBrowser={onOpenBrowser} key={panelOpen} lane={personal} initial={panelOpen} onClose={() => setPanelOpen(null)} />
+      <PersonalPanels onOpenBrowser={onOpenBrowser ? () => { setPanelOpen(null); onOpenBrowser(); } : undefined} key={panelOpen} lane={personal} initial={panelOpen} onClose={() => setPanelOpen(null)} />
     </div>}
     {(!!watched.length || !!selectedTaskContext || !!assistant) && <form ref={composerShell} className={embedded?`composer assistant-thread-composer${tldr?' tldr':''}${planOn?' plan':''}`:'apex-agent-all-composer'} onSubmit={send} hidden={!embedded && view !== 'chat'}>
       {embedded&&<VoiceCallBar settings={voice.settings} candidates={voice.candidates} who={voice.who}/>}

@@ -1076,3 +1076,14 @@ test('Escape with a pending reply on an older host preserves the draft without c
  assert.doesNotThrow(()=>find(tree,n=>n.type==='textarea').props.onKeyDown({key:'Escape',preventDefault(){}}));
  await new Promise(resolve=>setImmediate(resolve));assert.equal(find(h.render(),n=>n.type==='textarea').props.value,'Keep this draft');assert.doesNotMatch(textOf(h.render()),/cancelReply|not a function/);
 });
+
+
+test('opening the shared browser closes the tools sheet and preserves the chat draft',()=>{
+ const {lane}=personalLane([],[]);let opened=0;
+ const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[],onOpenBrowser:()=>opened++});
+ let tree=h.render();find(tree,n=>n.type==='textarea').props.onChange({target:{value:'Keep this browser task draft'}});tree=h.render();
+ find(tree,n=>n.type===ApexAgentComposerToolsStub).props.onTools();tree=h.render();
+ const panel=find(tree,n=>n.type===PersonalPanelsStub);assert.equal(panel.props.initial,'connections');panel.props.onOpenBrowser();tree=h.render();
+ assert.equal(opened,1);assert.equal(find(tree,n=>n.type===PersonalPanelsStub),null,'browser opens over chat, with the tools sheet dismissed');
+ assert.equal(find(tree,n=>n.type==='textarea').props.value,'Keep this browser task draft');
+});
