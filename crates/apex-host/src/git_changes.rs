@@ -872,6 +872,64 @@ mod tests {
     }
 
     #[test]
+    fn merge_leaves_the_target_alone_while_another_worktree_holds_it() {
+        let r = Repo::new();
+        r.write("one.txt", "feature\n");
+        r.git(&["commit", "-qam", "feature"]);
+        let checked = status(&r.0).unwrap();
+        remember_check(&checked);
+        let main_before = r.git(&["rev-parse", "refs/heads/main"]);
+        let sibling = r.0.with_extension("sibling");
+        r.git(&["worktree", "add", "-q", sibling.to_str().unwrap(), "main"]);
+        let error = merge(&r.0, &checked).unwrap_err();
+        assert!(error.contains("checked out in another worktree"), "{error}");
+        assert_eq!(
+            r.git(&["rev-parse", "refs/heads/main"]),
+            main_before,
+            "a branch another worktree has checked out must not move"
+        );
+        let sibling_status = Command::new("git")
+            .arg("-C")
+            .arg(&sibling)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(
+            sibling_status.stdout.is_empty(),
+            "the other worktree is left exactly as it was"
+        );
+        r.git(&["worktree", "remove", "--force", sibling.to_str().unwrap()]);
+    }
+
+    #[test]
+    fn merge_restores_the_target_when_the_follow_up_switch_fails() {
+        let r = Repo::new();
+        r.write("one.txt", "feature\n");
+        r.git(&["commit", "-qam", "feature"]);
+        let checked = status(&r.0).unwrap();
+        remember_check(&checked);
+        let main_before = r.git(&["rev-parse", "refs/heads/main"]);
+        // A held index lock fails the switch that follows the ref update, which is
+        // the same recovery path a worktree checked out mid-merge would take.
+        let lock = r.0.join(".git/index.lock");
+        std::fs::write(&lock, "").unwrap();
+        let error = merge(&r.0, &checked).unwrap_err();
+        std::fs::remove_file(&lock).unwrap();
+        assert!(!error.is_empty());
+        assert_eq!(
+            r.git(&["rev-parse", "refs/heads/main"]),
+            main_before,
+            "the target is rolled back to where it started"
+        );
+        assert_eq!(
+            r.git(&["branch", "--show-current"]),
+            "feat/test",
+            "no half-switched checkout"
+        );
+        assert!(r.git(&["branch", "--list", "feat/test"]).contains("feat/test"));
+    }
+
+    #[test]
     fn checks_reuse_installed_dependencies_in_a_scratch_checkout() {
         let r = Repo::new();
         std::fs::create_dir_all(r.0.join("node_modules/typescript")).unwrap();
