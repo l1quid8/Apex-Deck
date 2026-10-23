@@ -92,6 +92,6 @@ test('nested Memory and Settings Back controls name their actual source',()=>{
 
 test('remote runtime selector lists owning-host accounts instead of unrelated desktop profiles',async()=>{
  const remote={id:'remote',display_name:'Remote account',backend:{kind:'open_ai_compatible',base_url:'https://remote.test/v1',model:'text'}};
- const h=mount({profiles:[{id:'local',display_name:'Local-only account',backend:{kind:'agent',tool:'codex'}}],backend:{sessionLoad:async()=>({profiles:[remote,{id:'bad',display_name:'Unsupported Codex',backend:{kind:'agent',tool:'codex'}}]})}});
- const tree=await h.ready();const selector=find(tree,n=>n.type==='select'&&n.props['aria-label']==='Assistant runtime provider');assert.match(text(selector),/Remote account/);assert.doesNotMatch(text(selector),/Local-only|Unsupported Codex/);
+ const h=mount({profiles:[{id:'local',display_name:'Local-only account',backend:{kind:'agent',tool:'codex'}}],backend:{sessionLoad:async()=>({profiles:[remote,{id:'bad',display_name:'Connected Codex',backend:{kind:'agent',tool:'codex'}}]})}});
+ const tree=await h.ready();const selector=find(tree,n=>n.type==='select'&&n.props['aria-label']==='Assistant runtime provider');assert.match(text(selector),/Remote account/);assert.doesNotMatch(text(selector),/Local-only/);assert.match(text(selector),/Connected Codex/);
 });

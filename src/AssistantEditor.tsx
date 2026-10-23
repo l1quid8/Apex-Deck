@@ -3,8 +3,9 @@ import type { Backend } from './backend';
 import type { ParticipantConfig, ModelChoice, Workspace } from './types';
 import type { PersonalLane, PersonalWorkspaceConfigure, PersonalAssistantRecord } from './personalAssistant';
 import { assistantAppearance, createAssistantAppearance, projectIdentityKey, type AssistantProjectBinding, type AssistantRef } from './assistantIdentity';
-import { dirtyFields, runtimeProfile, textModels, reconcileEffort, validateAssistantDraft } from './assistantWorkspaceModel';
+import { dirtyFields, runtimeProfile, reconcileEffort, validateAssistantDraft } from './assistantWorkspaceModel';
 import { providerEnabled, providerForConfig } from './providers';
+import { assistantTextProvider, assistantRuntimeModels, loadAssistantRuntimeProviders } from './assistantRuntime';
 import { Avatar } from './Avatar';
 import { HexColorPicker } from './HexColorPicker';
 import { NEW_AGENT_COLORS as AGENT_COLORS } from './identicon';
@@ -55,12 +56,12 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
  const [hexValid,setHexValid]=useState(true);
  const [hostProfiles,setHostProfiles]=useState<ParticipantConfig[]>([]);
  const [profilesProblem,setProfilesProblem]=useState('Loading configured providers…');
- useEffect(()=>{let active=true;void backend.sessionLoad().then(session=>{if(active){setHostProfiles(session?.profiles ?? []);setProfilesProblem('');}}).catch(()=>{if(active)setProfilesProblem('Configured providers could not be loaded from this machine. Reconnect before saving.');});return()=>{active=false;};},[backend,profiles]);
+ useEffect(()=>{let active=true;void loadAssistantRuntimeProviders(backend).then(providers=>{if(active){setHostProfiles(providers);setProfilesProblem('');}}).catch(()=>{if(active)setProfilesProblem('Configured providers could not be loaded from this machine. Reconnect before saving.');});return()=>{active=false;};},[backend,profiles]);
  const configured=useMemo(()=>{
   const candidates=[...(savedBase?.profile?[savedBase.profile]:[]),...hostProfiles];
   const seen=new Set<string>();return candidates.filter(p=>{
-   // Keep the choices aligned with the host's monitor_profile_ok contract.
-   const supported=p.backend.kind==='open_ai_compatible'||(p.backend.kind==='agent'&&p.backend.tool==='claude_code');
+   // Use the same assistant text capability contract as runtime switching.
+   const supported=assistantTextProvider(p);
    if(!supported||p.media!=null||!providerEnabled(providerForConfig(p),disabledProviders))return false;
    const b=p.backend;const key=b.kind==='agent'?b.tool:b.kind==='open_ai_compatible'?JSON.stringify([b.base_url,b.api_key_env]):'';
    if(seen.has(key))return false;seen.add(key);return true;
@@ -112,17 +113,7 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
   const offeredBy=async(profile:ParticipantConfig)=>{
    const handoff=discoveryHandoff.current;
    if(handoff?.backend===backend&&handoff.profile===profile){discoveryHandoff.current=null;return handoff;}
-   const b=profile.backend;let offered:ModelChoice[]=[];
-   if(b.kind==='agent') {
-    const installed=await backend.detectAgents();
-    if(!installed.some(agent=>(agent.key===b.tool||(b.tool==='claude_code'&&agent.key==='claude'))&&agent.found))throw new Error(`${b.tool} is not installed on this machine. Install it and sign in before saving.`);
-    offered=await backend.agentModels(b.tool);
-   }
-   else if(b.kind==='open_ai_compatible') {
-    if(b.api_key_env){const status=await backend.apiKeyStatus([b.api_key_env]);if(!status[0]||status[0]==='missing')throw new Error('The provider credential is missing on this host. Add it in Settings.');}
-    offered=textModels(await backend.apiModels(b.base_url,b.api_key_env));
-   }
-   if(!offered.length)throw new Error('No offered text models are available from this provider. Check its connection and credentials.');
+   const b=profile.backend;const offered=await assistantRuntimeModels(backend,profile);
    return {backend,profile,offered,note:b.kind==='agent'?'CLI installation found. Sign-in cannot be verified here; this model list comes from its cache.':''};
   };
   const discover=async()=>{
@@ -230,7 +221,7 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
   <section className="assistant-settings-section"><h3>Model</h3>
    {configured.length>1&&<label className="assistant-setting-row"><span>Provider</span><select aria-label="Assistant provider" value={provider} onChange={e=>{providerChosen.current=true;providerSelection.current++;setProviderIntent(before=>before+1);discoveryHandoff.current=null;setProvider(Number(e.target.value));setEffort(null);setModel('');}}>{!configured.length&&<option>No compatible configured providers</option>}{configured.map((p,i)=><option key={i} value={i}>{p.display_name} · {providerForConfig(p)}</option>)}</select></label>}
    <label className="assistant-setting-row"><span>Model</span><select aria-label="Assistant model" value={model} disabled={!providerReady} onChange={e=>{setModel(e.target.value);setEffort(before=>reconcileEffort(before,models.find(m=>m.id===e.target.value)));}}>{!models.length&&<option value="">No offered text models</option>}{models.map(m=><option key={m.id} value={m.id}>{m.label??m.id}</option>)}</select></label>
-   <label className="assistant-setting-row"><span>Reasoning</span><select aria-label="Assistant reasoning" value={effort??''} disabled={!selected?.efforts?.length} onChange={e=>setEffort(e.target.value||null)}>{!selected?.efforts?.length&&<option value="">{selected?.efforts?'No reasoning setting':'Provider default'}</option>}{selected?.efforts?.map(level=><option key={level} value={level}>{level}</option>)}</select></label>{discovery&&<p className="assistant-control-note" role="status">{discovery}</p>}
+   <label className="assistant-setting-row"><span>Reasoning</span><select aria-label="Assistant reasoning" value={effort??''} disabled={!selected?.efforts?.length} onChange={e=>setEffort(e.target.value||null)}>{!selected?.efforts?.length&&<option value="">{!selected?.id?'Provider default':selected?.efforts?'No reasoning setting':'Provider default'}</option>}{selected?.efforts?.map(level=><option key={level} value={level}>{level}</option>)}</select></label>{discovery&&<p className="assistant-control-note" role="status">{discovery}</p>}
   </section>
   <section className="assistant-settings-section"><h3>Projects &amp; access</h3><p className="assistant-control-note">Turning a project on lets {original.name} open that folder and run your agents there.</p>
    <label className="assistant-setting-row"><span>Project tools</span><select aria-label="Project tools" value={access} onChange={e=>changeAccess(e.target.value as ParticipantConfig['access'])}><option value="ask">Ask first</option><option value="full">Full access</option><option value="read">Read only</option>{access==='edits'&&<option value="edits">Allow edits (legacy)</option>}</select></label>{fullAccessConfirmation}
@@ -269,7 +260,7 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
  return <div className="assistant-editor assistant-editor-create">
   <div className="assistant-create-identity"><div className="assistant-create-avatar"><Avatar seed={appearance.seed} color={appearance.color} size="lg" image={appearance.kind==='image'?appearance.image:undefined} assistant={original?ref:undefined} avatarApi={api} draftImage={draftImage}/><button type="button" className="assistant-shuffle" aria-label="New avatar pattern" disabled={busy} onClick={()=>setAppearance(before=>({...before,seed:createAssistantAppearance().seed,kind:'pixel',image:undefined}))}>↻ Shuffle</button></div><label className="assistant-setting-row"><span>Name</span><input aria-label="Assistant name" value={name} maxLength={64} placeholder="Choose a name" autoComplete="off" onChange={e=>setName(e.target.value)}/></label></div>
   <details className="assistant-avatar-details"><summary>Customize avatar</summary><AssistantAvatarEditor key={avatarEpoch} owner={owner} api={api} appearance={appearance} onAppearanceChange={next=>setAppearance(before=>({...before,...next}))} onApply={setAvatar} disabled={busy} pixelControls={<HexColorPicker label="Avatar color" value={appearance.color} presets={AGENT_COLORS} onChange={color=>setAppearance(before=>({...before,color}))} onValidityChange={setHexValid}/>}/></details>
-  <div className="assistant-create-model">{configured.length>1&&<label className="assistant-setting-row"><span>Provider</span><select aria-label="Assistant provider" value={provider} onChange={e=>{providerChosen.current=true;providerSelection.current++;setProviderIntent(before=>before+1);discoveryHandoff.current=null;setProvider(Number(e.target.value));setEffort(null);setModel('');}}>{!configured.length&&<option>No compatible configured providers</option>}{configured.map((p,i)=><option key={i} value={i}>{p.display_name} · {providerForConfig(p)}</option>)}</select></label>}<label className="assistant-setting-row"><span>Model</span><select aria-label="Assistant model" value={model} disabled={!providerReady} onChange={e=>{setModel(e.target.value);setEffort(before=>reconcileEffort(before,models.find(m=>m.id===e.target.value)));}}>{!models.length&&<option value="">No offered text models</option>}{models.map(m=><option key={m.id} value={m.id}>{m.label??m.id}</option>)}</select></label><label className="assistant-setting-row"><span>Reasoning</span><select aria-label="Assistant reasoning" value={effort??''} disabled={!selected?.efforts?.length} onChange={e=>setEffort(e.target.value||null)}>{!selected?.efforts?.length&&<option value="">{selected?.efforts?'No reasoning setting':'Provider default'}</option>}{selected?.efforts?.map(level=><option key={level} value={level}>{level}</option>)}</select></label>{discovery&&<p className="assistant-control-note" role="status">{discovery}</p>}</div>
+  <div className="assistant-create-model">{configured.length>1&&<label className="assistant-setting-row"><span>Provider</span><select aria-label="Assistant provider" value={provider} onChange={e=>{providerChosen.current=true;providerSelection.current++;setProviderIntent(before=>before+1);discoveryHandoff.current=null;setProvider(Number(e.target.value));setEffort(null);setModel('');}}>{!configured.length&&<option>No compatible configured providers</option>}{configured.map((p,i)=><option key={i} value={i}>{p.display_name} · {providerForConfig(p)}</option>)}</select></label>}<label className="assistant-setting-row"><span>Model</span><select aria-label="Assistant model" value={model} disabled={!providerReady} onChange={e=>{setModel(e.target.value);setEffort(before=>reconcileEffort(before,models.find(m=>m.id===e.target.value)));}}>{!models.length&&<option value="">No offered text models</option>}{models.map(m=><option key={m.id} value={m.id}>{m.label??m.id}</option>)}</select></label><label className="assistant-setting-row"><span>Reasoning</span><select aria-label="Assistant reasoning" value={effort??''} disabled={!selected?.efforts?.length} onChange={e=>setEffort(e.target.value||null)}>{!selected?.efforts?.length&&<option value="">{!selected?.id?'Provider default':selected?.efforts?'No reasoning setting':'Provider default'}</option>}{selected?.efforts?.map(level=><option key={level} value={level}>{level}</option>)}</select></label>{discovery&&<p className="assistant-control-note" role="status">{discovery}</p>}</div>
   <label className="assistant-setting-row"><span>In those projects it may</span><select aria-label="Project tools" value={access} onChange={e=>changeAccess(e.target.value as ParticipantConfig['access'])}><option value="ask">Ask first</option><option value="full">Full access</option><option value="read">Read only</option>{access==='edits'&&<option value="edits">Allow edits (legacy)</option>}</select></label>{fullAccessConfirmation}
   <label className="assistant-setting-row assistant-first-brief"><span>First brief <small>· optional</small></span><textarea aria-label="First brief" rows={3} maxLength={4000} value={firstBrief} placeholder="e.g. Run the test suite every morning and tell me what broke." onChange={e=>setFirstBrief(e.target.value)}/></label>
   <p className="assistant-control-note">Added to its chat, ready to send.</p>

@@ -1,3 +1,4 @@
+import {assistantTextProvider,assistantRuntimeModels,loadAssistantRuntimeProviders} from '../src/assistantRuntime.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,7 +29,7 @@ function mount(overrides={}){
  const props={backend,lane,hostId:'mac',profiles:[profile],projects:[],...overrides,backend,lane:overrides.lane===undefined&&Object.hasOwn(overrides,'lane')?undefined:lane};
  const states=[],deps=[],queued=[],cleanups=[];let cursor=0;
  const hooks={useRef(initial){const i=cursor++;return states[i]??(states[i]={current:initial});},useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}}};
- const bindings={VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel};
+ const bindings={assistantTextProvider,assistantRuntimeModels,loadAssistantRuntimeProviders,VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel};
  const components=new Function(...Object.keys(bindings),`${compiled}\nreturn {AssistantEditor,AssistantWorkspace};`)(...Object.values(bindings));
  return{props,calls,unmount(){cleanups.forEach(fn=>fn?.());},render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
 }
@@ -129,7 +130,7 @@ test('blank, relative and control-character folder boundaries block creation wit
  const h=mount({lane:undefined,backend:{sessionLoad:async()=>({profiles})}});
  const tree=await h.ready();
  const options=all(input(tree,'Assistant provider'),n=>n.type==='option').map(text);
- assert.deepEqual(options,['Legacy · claude_code','Text API · api']);
+ assert.deepEqual(options,['Codex · codex','Grok · grok','Gemini · gemini','Legacy · claude_code','Text API · api']);
  assert.equal(input(tree,'Assistant model').props.disabled,false);
  });
 
@@ -138,7 +139,7 @@ const textApi={id:'api',display_name:'Text API',persona:'',backend:{kind:'open_a
 test('creation defaults to a verified text API ahead of a missing Claude install and preserves its offered configured model',async()=>{
  const created=[];let catalogs=0;let installations=0;
  const h=mount({lane:undefined,onCreate:async value=>created.push(value),backend:{sessionLoad:async()=>({profiles:[profile,textApi]}),detectAgents:async()=>{installations++;return[];},apiKeyStatus:async()=>['saved'],apiModels:async()=>{catalogs++;return[{id:'first-text'},{id:'configured-text',efforts:['low','high']},{id:'image-only',kind:'image'}];}}});
- let tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,1);assert.equal(input(tree,'Assistant model').props.value,'configured-text');assert.equal(input(tree,'Assistant reasoning').props.value,'low');assert.equal(catalogs,1);assert.equal(installations,0);
+ let tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,1);assert.equal(input(tree,'Assistant model').props.value,'configured-text');assert.equal(input(tree,'Assistant reasoning').props.value,'low');assert.equal(catalogs,1);assert.equal(installations,1);
  input(tree,'Assistant name').props.onChange({target:{value:'Working default'}});await submit(h);assert.equal(created.length,1);assert.equal(created[0].profile.backend.base_url,textApi.backend.base_url);assert.equal(created[0].profile.backend.model,'configured-text');
 });
 test('creation skips missing API credentials and image-only catalogs before using an installed Claude provider',async()=>{
@@ -377,4 +378,12 @@ test('unset shared voice preferences still expose real call defaults and save on
  await submit(h);assert.deepEqual(saved,[]);
  input(h.render(),'Call controls').props.onChange({target:{value:'bar'}});await submit(h);
  assert.equal(saved.length,1);assert.deepEqual(saved[0],{...readVoiceSettings(undefined),look:'bar'});
+});
+
+test('creating an assistant with a CLI provider default persists null instead of inventing a model id',async()=>{
+ const created=[];
+ const h=mount({lane:undefined,onCreate:async value=>created.push(value),backend:{sessionLoad:async()=>({profiles:[]}),detectAgents:async()=>[{key:'claude',label:'Claude Code',program:'claude',found:true}],agentModels:async()=>[]}});
+ let tree=await h.ready();assert.equal(input(tree,'Assistant model').props.value,'');
+ input(tree,'Assistant name').props.onChange({target:{value:'Default provider QA'}});await submit(h);
+ assert.equal(created.length,1);assert.equal(created[0].profile.backend.kind,'agent');assert.equal(created[0].profile.backend.model,null);assert.equal(created[0].profile.effort,null);
 });

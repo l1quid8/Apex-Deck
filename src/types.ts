@@ -337,6 +337,8 @@ export interface AgentInfo {
   label: string;
   program: string;
   found: boolean;
+  /** Native executable for isolated assistant replies, independently of Threads' preference. */
+  assistantProgram?: string;
 }
 
 export type PaneKind = "terminal" | "chat" | "preview";

@@ -175,7 +175,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   // Every provider gets search and the current model first, even for custom IDs.
   const query = filter.trim().toLowerCase();
   const matches = (m: ModelChoice) => !query || m.id.toLowerCase().includes(query) || (m.label ?? '').toLowerCase().includes(query);
-  const ordered = current ? [current, ...all.filter(m => m.id !== model)] : all;
+  const ordered = (current ? [current, ...all.filter(m => m.id !== model)] : all).filter(m=>m.id);
   // With Text, Image and Video sections every model is listed under its heading, so none hide behind More models.
   const sections = rich && apiList.some(m => mediaKind(m));
   const shown = query ? ordered.filter(matches) : sections ? ordered : ordered.slice(0, 4);

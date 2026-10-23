@@ -51,3 +51,12 @@ test('assistant model menu disables an unavailable saved model and offers only h
   assert.ok(replacement, 'host-offered replacement is available');
   assert.equal(replacement.props.disabled, false);
 });
+
+test('an assistant provider default appears once and stays selectable without an invented model id',()=>{
+ const config={id:'a',display_name:'Assistant',backend:{kind:'agent',tool:'codex',model:null},access:'ask',effort:null,persona:''};
+ const h=mount({config,offeredModels:[{id:'',label:'Provider default',efforts:[]}],allowDefaultModel:true});
+ const trigger=find(h.render(),node=>node.props.className==='model-select-trigger');
+ trigger.props.ref.current={getBoundingClientRect:()=>({left:20,right:300,bottom:60})};trigger.props.onClick();
+ const collect=node=>!node||typeof node!=='object'?[]:[...(node.props.role==='menuitemradio'?[node]:[]),...(node.children??[]).flatMap(collect)];
+ const choices=collect(h.render());assert.equal(choices.length,1);assert.equal(choices[0].props.disabled,false);
+});
