@@ -2622,7 +2622,7 @@ export function App() {
               projects={assignedProjects.map(binding=>({project:binding.project,name:workspaces.find(workspace=>workspace.id===binding.project.workspaceId)?.name??binding.project.cwd.split('/').at(-1)??'Project',unavailable:projectUnavailable(binding.project)}))}
               availableProjects={workspaces.filter(workspace=>!workspace.hidden&&workspaceHost(workspace)===assistantHost?.routeHostId).flatMap(workspace=>{const project=canonicalProjectForWorkspace(workspace);return project?[{project,name:workspace.name}]:[];})}
               taskScopes={Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.project&&assignedProjects.some(binding=>binding.project.hostId===entry.snapshot?.project?.hostId&&binding.project.workspaceId===entry.snapshot?.project?.workspaceId&&binding.project.cwd===entry.snapshot?.project?.cwd)?[{project:entry.snapshot.project,owner:entry.owner,snapshot:entry.snapshot}]:[])}
-              onOpenProject={openAssistantProject}
+              onOpenProject={project=>{const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);if(!workspace){toast('Reconnect this project to open it.');return;}setActiveWorkspace(workspace.id);setMainView({kind:'workspace'});setSection('threads');}}
               onOpenNotebook={project=>{setAssistantNotebookProject(project);navigateAssistant('memory');}}
               onOpenThread={(project,id)=>{const pane=viewPanes.find(pane=>pane.id===id&&pane.workspaceId===project.workspaceId);if(pane){focusPane(pane);setMainView({kind:'workspace'});}}}
             />:undefined}
