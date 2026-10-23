@@ -346,6 +346,32 @@ impl Journal {
         if !data_dir.starts_with('/') || data_dir.len() > 4096 || data_dir.contains('\0') {
             return Err("Invalid data directory".into());
         }
+        // Old task-action receipts used one key for every action at a task
+        // revision. Preserve those replay barriers while allowing a different
+        // explicitly signed action to use its new action-qualified key.
+        if command["cmd"] == "assistant_task_action" && command.get("provenanceRequestId").is_some() {
+            let mut legacy = command.clone();
+            legacy.as_object_mut().unwrap().remove("provenanceRequestId");
+            let legacy_key = command_key(uid, data_dir, &legacy)?;
+            if self.claims.contains_key(&legacy_key) {
+                return Err("Historical task submission was consumed and its action is unavailable; reconcile the task before resubmitting.".into());
+            }
+            if self.entries.get(&legacy_key).is_some_and(|entry| entry.receipt.command["args"]["action"] == command["args"]["action"]) {
+                return Err("This task action already has a protected legacy submission; do not resubmit automatically.".into());
+            }
+        }
+        // A still-running older UI must not replay an action already issued
+        // under the new qualified key either.
+        if command["cmd"] == "assistant_task_action" && command.get("provenanceRequestId").is_none() {
+            if let Some(action) = command["args"]["action"].as_str() {
+                let mut qualified = command.clone();
+                qualified["provenanceRequestId"] = json!(format!("task-action:{action}"));
+                let qualified_key = command_key(uid, data_dir, &qualified)?;
+                if self.claims.contains_key(&qualified_key) || self.entries.contains_key(&qualified_key) {
+                    return Err("This task action already has a protected action-qualified submission; do not resubmit automatically.".into());
+                }
+            }
+        }
         let key = command_key(uid, data_dir, &command)?;
         if self.claims.contains_key(&key) {
             return Err("Submission ID was already consumed; retry with a new request ID".into());
@@ -525,13 +551,16 @@ fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, Stri
             .filter(|s| !s.is_empty() && s.len() <= 200)
             .ok_or("Missing room action submission ID")?)
     } else if name == "assistant_task_action" {
-        json!([
-            args["taskId"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .ok_or("Missing task ID")?,
-            args["revision"].as_u64().ok_or("Missing task revision")?
-        ])
+        let task = args["taskId"].as_str().filter(|s| !s.is_empty()).ok_or("Missing task ID")?;
+        let revision = args["revision"].as_u64().ok_or("Missing task revision")?;
+        if let Some(delivery) = command.get("provenanceRequestId") {
+            let action = args["action"].as_str().filter(|s| !s.is_empty() && s.len() <= 200).ok_or("Missing task action")?;
+            if delivery.as_str() != Some(format!("task-action:{action}").as_str()) { return Err("Task action submission ID does not match its action".into()); }
+            json!([task, revision, action])
+        } else {
+            // Existing receipts must retain their original key across upgrades.
+            json!([task, revision])
+        }
     } else {
         json!(args["requestId"]
             .as_str()
@@ -1064,6 +1093,39 @@ mod tests {
         assert!(journal
             .issue(501, "/data", command("changed"), true)
             .is_err());
+    }
+
+    fn task_action(action:&str, qualified:bool)->Value {
+        let mut command=json!({"cmd":"assistant_task_action","args":{"taskId":"task-1","revision":4,"action":action,"owner":{"workspaceId":"qa","cwd":"/qa","hostId":"local","conversationId":"monitor"}}});
+        if qualified {command["provenanceRequestId"]=json!(format!("task-action:{action}"));}
+        command
+    }
+    #[test]
+    fn task_actions_allow_cancel_after_rejected_retry_but_never_replay_the_same_action() {
+        let mut journal=Journal::new();
+        let retry=journal.issue(501,"/data",task_action("retry",true),true).unwrap();
+        journal.claim(501,"/data",&retry,NONCE).unwrap();
+        journal.finish(501,"/data",&retry.key,json!({"status":"rejected"}),true).unwrap();
+        let cancel=journal.issue(501,"/data",task_action("cancel",true),true).unwrap();
+        assert_ne!(retry.key,cancel.key);journal.claim(501,"/data",&cancel,NONCE).unwrap();
+        let repeated=journal.issue(501,"/data",task_action("retry",true),true).unwrap();assert_eq!(repeated,retry);
+        assert!(journal.issue(501,"/data",task_action("retry",false),true).unwrap_err().contains("action-qualified submission"));
+        assert!(journal.claim(501,"/data",&repeated,NONCE).unwrap_err().contains("already consumed"));
+        let mut changed=task_action("retry",true);changed["args"]["owner"]["cwd"]=json!("/other");
+        assert!(journal.issue(501,"/data",changed,true).unwrap_err().contains("conflicts"));
+        let mut mismatched=task_action("cancel",true);mismatched["provenanceRequestId"]=json!("task-action:retry");
+        assert!(journal.issue(501,"/data",mismatched,true).is_err());
+    }
+    #[test]
+    fn legacy_task_receipts_load_and_keep_same_action_replay_barriers_after_upgrade() {
+        let mut journal=Journal::new();let legacy=journal.issue(501,"/data",task_action("retry",false),true).unwrap();
+        journal.claim(501,"/data",&legacy,NONCE).unwrap();journal.finish(501,"/data",&legacy.key,json!({"status":"rejected"}),true).unwrap();
+        let key=new_key().unwrap();let mut restored=Journal::open(&serde_json::to_vec(&journal).unwrap(),key.public_key().as_ref()).unwrap();
+        assert!(restored.issue(501,"/data",task_action("retry",true),true).unwrap_err().contains("legacy submission"));
+        let cancel=restored.issue(501,"/data",task_action("cancel",true),true).unwrap();assert_ne!(cancel.key,legacy.key);restored.claim(501,"/data",&cancel,NONCE).unwrap();
+        assert!(restored.claim(501,"/data",&legacy,NONCE).is_err());
+        let mut compacted=journal;compacted.compact(&key).unwrap();
+        assert!(compacted.issue(501,"/data",task_action("cancel",true),true).unwrap_err().contains("Historical task submission"));
     }
 
     #[test]

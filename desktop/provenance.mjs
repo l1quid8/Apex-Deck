@@ -48,7 +48,8 @@ export function issue(request){
 export async function attestFrame(frame,{dataDir,uid=process.getuid(),publicKey:rawKey,issue:send=issue}={}){
   if(!protectedCommands.has(frame.cmd))return frame;
   const command={cmd:frame.cmd,args:frame.args??{}};
-  if(!['assistant_message','personal_send','personal_decide','assistant_task_action'].includes(frame.cmd)) command.provenanceRequestId=randomUUID();
+  if(frame.cmd==='assistant_task_action') command.provenanceRequestId=`task-action:${command.args.action}`;
+  else if(!['assistant_message','personal_send','personal_decide'].includes(frame.cmd)) command.provenanceRequestId=randomUUID();
   const key=rawKey??publicKey();
   const signed=await send({op:'issue',dataDir,command});
   if(typeof signed?.payload!=='string' || Buffer.byteLength(signed.payload)>LIMIT || typeof signed.signature!=='string')throw new Error('Invalid provenance response.');
