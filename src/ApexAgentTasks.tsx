@@ -7,8 +7,13 @@ import type { Pane, ParticipantConfig, Question } from './types.ts';
 import type { ProjectMonitor } from './apexAgentModel.ts';
 import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, taskBelongsToAssistant, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, shouldSuggestArchive, taskDisplayStatus, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
 import { LegacyBadge } from './LegacyImportScreen';
+import { Markdown } from './Markdown';
 import { subscribeToImports } from './legacyImportRefresh.ts';
 import './assistant-tasks.css';
+
+const openResultLink = (target: string) => {
+  if (/^https?:\/\//i.test(target)) window.open(target, '_blank', 'noopener,noreferrer');
+};
 
 type Action = 'pause' | 'resume' | 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'review' | 'archive' | 'reconcile' | 'note' | 'resume_budget';
 type Props = {
@@ -89,7 +94,6 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const [pendingRequest, setPendingRequest] = useState<PendingAssistantRequest | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [taskContextId, setTaskContextId] = useState<string | null>(null);
-  const [reviewedRevision, setReviewedRevision] = useState<Record<string, number>>({});
   const [visibleReviewRevision, setVisibleReviewRevision] = useState<Record<string, number>>({});
   // The sidebar keeps its own selection, separate from the assistant's unified Tasks view.
   const sidebarView = view === 'sidebar';
@@ -155,7 +159,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     listRequestVersion.current++; snapshotRevision.current = -1;
     const recovered = loadPendingRequest(window.localStorage, captured);
     setTasks([]); setRoutingThreads(undefined); setNamedOnlyWorkerIds(undefined); setArchivedExecutions(new Set()); setBusy(false); setError(''); setLoading(true); setPendingRequest(recovered); requestRef.current = recovered;
-    setTaskContextId(null); setChecks({}); setDetailId(null); setReviewedRevision({});
+    setTaskContextId(null); setChecks({}); setDetailId(null);
     void loadTasks(captured, version);
     // An import writes tasks this owner now has; whatever the host does or does not
     // push, re-read once when one finishes rather than trusting a stale list.
@@ -172,7 +176,6 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
 
   useEffect(() => {
     setChecks((current) => Object.fromEntries(Object.entries(current).filter(([key]) => tasks.some((task) => key === `${task.id}:${task.revision}`))));
-    setReviewedRevision((current) => Object.fromEntries(Object.entries(current).filter(([id, revision]) => tasks.some((task) => task.id === id && task.revision === revision))));
     setVisibleReviewRevision((current) => Object.fromEntries(Object.entries(current).filter(([id, revision]) => tasks.some((task) => task.id === id && task.revision === revision))));
   }, [tasks]);
 
@@ -265,7 +268,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
 
   const openTaskDetail = (task: AssistantTask) => {
     if (!isTaskOwnedBy(task, activeOwner.current)) return;
-    setTaskContextId(task.id); setDetailId(task.id); setReviewedRevision((current) => ({ ...current, [task.id]: -1 }));
+    setTaskContextId(task.id); setDetailId(task.id);
     if (!sidebarView && onSelectTask && !taskFinal(task.status)) {
       const captured = owner; const version = generation.current;
       onSelectTask(task, async (text) => {
@@ -274,7 +277,6 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       });
     }
   };
-  const reviewed = (task: AssistantTask) => reviewedRevision[task.id] === task.revision;
   const hasCurrentRequest = (wait: unknown) => !!wait && typeof wait === 'object' && typeof (wait as { request?: unknown }).request === 'string' && !!(wait as { request: string }).request;
   const hasQuestionGroup = (wait: unknown): wait is { request: string; questions: Question[] } => hasCurrentRequest(wait) && !!wait && typeof wait === 'object' && Array.isArray((wait as { questions?: unknown }).questions) && (wait as { questions: unknown[] }).questions.length > 0 && (wait as { questions: unknown[] }).questions.every((question) => !!question && typeof question === 'object' && typeof (question as Question).question === 'string' && Array.isArray((question as Question).options));
   const hasApprovalAction = (wait: unknown) => hasCurrentRequest(wait) && !!wait && typeof wait === 'object' && !!(wait as { action?: unknown }).action && typeof (wait as { action: { title?: unknown; detail?: unknown } }).action.title === 'string' && typeof (wait as { action: { title?: unknown; detail?: unknown } }).action.detail === 'string';
@@ -459,7 +461,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         <div className="assistant-task-detail-scroll" ref={detailScrollRef}>
         {taskDetailView && task.result?.trim() && <section className="assistant-task-result-block" aria-label="Result">
           <h3>Result</h3>
-          <p className="assistant-task-result-text">{task.result}</p>
+          <div className="assistant-task-result-text"><Markdown text={task.result} onOpen={openResultLink} /></div>
           <p className="assistant-task-muted">{`Worker: ${workerLabel(task, profiles)} · Project: ${projectName ?? owner.workspaceId} · Machine: ${owner.hostId} · ${taskFinal(task.status) ? 'Finished' : 'Updated'} ${new Date(task.updatedAtMs).toLocaleString()} · ${verificationLabel(task)}`}</p>
           {task.executionThreadId ? <button type="button" onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker chat</button> : <p className="assistant-task-muted">No result file to open — the result is the text above.</p>}
         </section>}
@@ -477,14 +479,14 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         {task.mode === 'in_place' && task.status === 'queued' && <p className="assistant-task-lease">Queued for checkout access; work starts when the current writer releases it.</p>}
         {task.mode === 'in_place' && ['running', 'needs_you', 'ready_for_review', 'applying'].includes(task.status) && <p className="assistant-task-lease">Edits are already in the checkout. This task holds the writer lease through review; other Deck writers wait. Accept releases the lease, and Request changes keeps it.</p>}
         <nav className="assistant-task-links" aria-label="Related threads">{taskThreadLinks(task).map((link) => <button type="button" key={link.id} onClick={() => onOpenThread?.(link.id)}>{link.label}</button>)}</nav>
-        {task.status === 'ready_for_review' && hasReviewData && <div className="assistant-review-material" ref={reviewMaterialRef}>{!taskDetailView && task.result && <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>}{hasCapturedDiff && <section className="assistant-review-diff"><h3>{resultData.reviewDiff ? 'Review diff' : 'Review result'}</h3>{resultData.reviewDiff ? <pre>{resultData.reviewDiff}</pre> : <p>No file changes in this result.</p>}</section>}{task.evidence.length > 0 && <section className="assistant-task-evidence"><h3>Findings and evidence</h3>{task.evidence.map((item, index) => <p key={index}>{item}</p>)}</section>}</div>}
+        {task.status === 'ready_for_review' && hasReviewData && <div className="assistant-review-material" ref={reviewMaterialRef}>{!taskDetailView && task.result && <div className="assistant-task-result"><strong>Result</strong><Markdown text={task.result} onOpen={openResultLink} /></div>}{hasCapturedDiff && <section className="assistant-review-diff"><h3>{resultData.reviewDiff ? 'Review diff' : 'Review result'}</h3>{resultData.reviewDiff ? <pre>{resultData.reviewDiff}</pre> : <p>No file changes in this result.</p>}</section>}{task.evidence.length > 0 && <section className="assistant-task-evidence"><h3>Findings and evidence</h3>{task.evidence.map((item, index) => <p key={index}>{item}</p>)}</section>}</div>}
         {task.status === 'ready_for_review' && <div className="assistant-review-criteria">{renderChecks(task)}</div>}
         {task.status === 'ready_for_review' && !hasReviewData && <p className="assistant-task-warning">The current result has no review diff or captured findings. Open the worker chat and refresh after its result is available.</p>}
-        {task.status === 'ready_for_review' && hasReviewData && !currentReviewVisible && <p className="assistant-task-muted">Scroll the current result, diff, or findings into view to enable acknowledgement.</p>}
+        {task.status === 'ready_for_review' && hasReviewData && !currentReviewVisible && <p className="assistant-task-muted">Scroll the current result, diff, or findings into view to enable review.</p>}
         {pendingApprovals.length > 0 && <div className="assistant-task-waits"><strong>Waiting for approval</strong>{pendingApprovals.map((approval, index) => { const action = approval && typeof approval === 'object' ? (approval as { action?: { title?: string; detail?: string } }).action : undefined; return <div key={index}><p><b>{action?.title ?? 'Worker approval'}</b>{action?.detail ? `\n${action.detail}` : `\n${objectText(approval)}`}</p></div>; })}</div>}
         {pendingQuestions.length > 0 && <div className="assistant-task-waits"><strong>Waiting for your answer</strong>{pendingQuestions.map((questionGroup, groupIndex) => { const group = questionGroup && typeof questionGroup === 'object' ? questionGroup as { request?: string; questions?: Question[] } : {}; const requestKey = group.request ?? `legacy-${groupIndex}`; return <div key={groupIndex}>{hasQuestionGroup(questionGroup) && (group.questions ?? []).map((question, questionIndex) => { const key = `${task.id}:${requestKey}:${questionIndex}`; const selected = inlineAnswer[key] ?? []; return <fieldset className="assistant-inline-question" key={key}><legend>{question.header || `Question ${questionIndex + 1}`}</legend><p>{question.question}</p>{question.options.map((option) => <label className="assistant-inline-option" key={option.label}><input type={question.multi_select ? 'checkbox' : 'radio'} name={key} checked={selected.includes(option.label)} onChange={(event) => setInlineAnswer((current) => ({ ...current, [key]: question.multi_select ? event.target.checked ? [...selected, option.label] : selected.filter((item) => item !== option.label) : [option.label] }))} /><span>{option.label}{option.description && <small>{option.description}</small>}</span></label>)}<label className="assistant-inline-other">{question.options.length ? 'Other answer' : 'Your answer'}<input value={inlineOther[key] ?? ''} onChange={(event) => setInlineOther((current) => ({ ...current, [key]: event.target.value }))} /></label></fieldset>; })}{!hasQuestionGroup(questionGroup) && <p className="assistant-task-warning">This question uses older metadata. Continue in the worker chat.</p>}</div>; })}</div>}
         {task.status === 'needs_you' && resultData.startup != null && <p className="assistant-task-warning">Worker startup issue: {objectText(resultData.startup)}</p>}
-        {!taskDetailView && task.result && (task.status === 'ready_for_review' ? null : <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>)}
+        {!taskDetailView && task.result && (task.status === 'ready_for_review' ? null : <div className="assistant-task-result"><strong>Result</strong><Markdown text={task.result} onOpen={openResultLink} /></div>)}
         {Array.isArray((resultData as { taskHistory?: unknown }).taskHistory) && <details><summary>Task history</summary><ol className="assistant-task-history">{((resultData as { taskHistory?: { atMs: number; kind: string; text: string }[] }).taskHistory ?? []).map((entry, index) => <li key={`${entry.atMs}:${index}`}><time>{new Date(entry.atMs).toLocaleString()}</time><b>{entry.kind}</b><span>{entry.text}</span></li>)}</ol></details>}
         {(resultData as { budgetPaused?: boolean }).budgetPaused && <div className="assistant-task-budget"><p className="assistant-task-warning">Paused at its spend limit. Raise the daily limit in Rules, then resume. This keeps the task ID, edits, and history.</p><button type="button" disabled={busy} onClick={() => void act(task, 'resume_budget')}>Resume task</button></div>}
         {hasCapturedDiff && task.status !== 'ready_for_review' && <details><summary>Review diff</summary><pre>{resultData.reviewDiff}</pre></details>}
@@ -511,7 +513,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         </div>}
         {taskFinal(task.status) && <p className="assistant-task-muted">{task.resultData?.dismissedAtMs ? 'You dismissed this proposal, so nothing ran.' : <>This task is {task.status}{task.status === 'cancelled' && task.mode === 'in_place' ? '; existing checkout edits remain.' : '.'}</>}</p>}
         </div>
-        {task.status === 'ready_for_review' && <div className="assistant-task-actions assistant-task-decision-actions"><label className="assistant-review-ack"><input type="checkbox" checked={reviewed(task)} disabled={!currentReviewVisible} onChange={(event) => setReviewedRevision((current) => ({ ...current, [task.id]: event.target.checked ? task.revision : -1 }))} />I opened and reviewed revision {task.revision}</label><button type="button" disabled={busy || !currentReviewVisible || !reviewed(task) || (task.reviewCriteria.length > 0 && reviewChecks.length !== task.reviewCriteria.length)} onClick={() => void act(task, task.mode === 'read_only' ? 'review' : 'accept')}>{task.mode === 'read_only' ? 'Mark reviewed' : task.mode === 'isolated' ? 'Accept changes' : 'Accept and mark done'}</button></div>}
+        {task.status === 'ready_for_review' && <div className="assistant-task-actions assistant-task-decision-actions"><button type="button" disabled={busy || !currentReviewVisible || (task.reviewCriteria.length > 0 && reviewChecks.length !== task.reviewCriteria.length)} onClick={() => void act(task, task.mode === 'read_only' ? 'review' : 'accept')}>{task.mode === 'read_only' ? 'Mark reviewed' : task.mode === 'isolated' ? 'Accept changes' : 'Accept and mark done'}</button></div>}
         {task.desiredState === 'paused' && task.status === 'interrupted' && <p className="assistant-task-warning">This worker stopped without a checkpoint. Resume enables Retry; Retry starts a new attempt and keeps the earlier work.</p>}
         {!['done', 'cancelled', 'applying'].includes(task.status) && <div className="assistant-task-controls">
           {task.desiredState === 'paused'

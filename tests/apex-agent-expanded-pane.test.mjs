@@ -7,7 +7,7 @@ test('assistant routing keeps the human pane tree mounted inside a hidden worksp
  assert.match(app,/workspace-canvas-content/);
  assert.match(app,/display:mainView.kind==='workspace'/);
  assert.match(app,/<div ref=\{gridArea\}/);
- assert.match(app,/chat=\{<ApexAgentAll/);
+ assert.match(app,/conversation=\{<ApexAgentAll/);
  assert.doesNotMatch(app,/<ApexAgentWidget|apex-agent-float|apexAgentFull/);
 });
 test('the four production destinations retain their existing Agents workflow', () => {

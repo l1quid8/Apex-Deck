@@ -977,3 +977,21 @@ test('named assistant conversation and composer announce the saved identity',()=
  assert.equal(find(tree,n=>n.props?.role==='region').props['aria-label'],'Apex Assistant');
  assert.equal(find(tree,n=>n.type==='textarea').props['aria-label'],'Message Apex Assistant');
 });
+
+test('embedded chat ignores a stored tasks view and keeps its composer', () => {
+ const {lane}=personalLane([],[]);const key='stale-view-owner';assistantComposerDraftFor(key).fields.set('view','tasks');
+ const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[]});const tree=h.render();
+ assert.equal(find(tree,n=>n.type==='form').props.hidden,false);
+ assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null);
+});
+
+test('embedded task details keep the composer and offer a way back to chat', () => {
+ const messages=[pm('pm-1','human','chat',1,'Disk?'),pm('pm-2','system','approval',2,'Approval needed: Run `df -h /`?','pt-1')];
+ const {lane}=personalLane([personalTask('needsYou')],messages);const key='task-detail-owner';
+ const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[]});
+ let tree=openFirstTaskLink(h);
+ assert.equal(find(tree,n=>n.type==='form').props.hidden,false);
+ const back=find(tree,n=>n.props?.className==='assistant-chat-back');assert.equal(textOf(back),'‹ Chat');
+ back.props.onClick();tree=h.render();assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null);
+ assert.ok(find(tree,n=>n.props?.className==='apex-agent-task-link'),'transcript is back');
+});

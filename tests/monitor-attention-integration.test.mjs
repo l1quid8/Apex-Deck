@@ -200,7 +200,7 @@ function appHarness() {
 function find(node, predicate) {
   if (!node || typeof node !== 'object') return null;
   if (predicate(node)) return node;
-  for (const child of [...(node.children ?? []),node.props?.chat,node.props?.work,node.props?.editor]) { const found = find(child, predicate); if (found) return found; }
+  for (const child of [...(node.children ?? []),node.props?.conversation,node.props?.editor]) { const found = find(child, predicate); if (found) return found; }
   return null;
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -224,7 +224,7 @@ test('Your team opens durable assistants in the main canvas and Back restores wo
  assert.equal(child(tree,'ProjectSidebar').props.assistants[0].ref.assistantId,'assistant-a');
  child(tree,'ProjectSidebar').props.onOpenAssistant(h.assistantRef);tree=h.render();
  const view=child(tree,'AssistantWorkspace');assert.ok(view);assert.equal(view.props.lane.ref.assistantId,'assistant-a');assert.equal(child(tree,'ApexAgentWidget'),null);
- {const rail=child(tree,'ProjectSidebar').props;assert.ok(rail.panes.length,'harness has a pane');rail.onOpenPane(rail.panes[0]);};tree=h.render();assert.equal(child(tree,'AssistantWorkspace'),null);assert.ok(child(tree,'ProjectSidebar'));
+ view.props.onBack();tree=h.render();assert.equal(child(tree,'AssistantWorkspace'),null);assert.ok(child(tree,'ProjectSidebar'));
  h.unmount();
 });
 test('assistant navigation leaves global panel selection and open state unchanged',async()=>{

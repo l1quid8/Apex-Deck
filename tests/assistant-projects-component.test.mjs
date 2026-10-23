@@ -49,7 +49,7 @@ test('accepting a result requires opening evidence and acknowledging the current
   assert.equal(button(tree,'Mark reviewed').props.disabled,true);
   find(tree,node=>node.type==='details'&&text(node).includes('Inspect result, changes and checks')).props.onToggle({currentTarget:{open:true}});tree=h.render();
   find(tree,node=>node.type==='label'&&/I reviewed:\s+Tests pass/.test(text(node))).children.find(node=>node?.type==='input').props.onChange({target:{checked:true}});
-  find(tree,node=>node.type==='label'&&text(node).includes('I opened and reviewed revision')).children.find(node=>node?.type==='input').props.onChange({target:{checked:true}});tree=h.render();assert.equal(button(tree,'Mark reviewed').props.disabled,false);
+  tree=h.render();assert.equal(find(tree,node=>node.type==='label'&&text(node).includes('I opened and reviewed revision')),null);assert.equal(button(tree,'Mark reviewed').props.disabled,false);
   button(tree,'Mark reviewed').props.onClick();await tick();const action=h.calls.find(call=>call.cmd==='assistant_task_action');assert.equal(action.args.action,'review');assert.equal(action.args.revision,2);
 });
 for(const [status,label,action] of [['running','Cancel task','cancel'],['failed','Retry task','retry'],['proposed','Approve task','approve']])test(`${label} submits the host-owned task revision`,async()=>{

@@ -135,7 +135,12 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const [panelOpen, setPanelOpen] = useState<PanelName | null>(null);
   const [calling, setCalling] = useState(false);
   // One conversation, plus a Tasks view. Each project's task components report their rows here by store.
-  const [view, setView] = useAssistantComposerDraftState<'chat' | 'tasks' | 'notifications'>(draftKey, 'view', 'chat');
+  const [savedView, setSavedView] = useAssistantComposerDraftState<'chat' | 'tasks' | 'notifications'>(draftKey, 'view', 'chat');
+  // Embedded in the assistant workspace there are no view tabs, so a saved
+  // tasks view would hide the composer with no way back. It always opens on chat.
+  const [embeddedView, setEmbeddedView] = useState<'chat' | 'tasks' | 'notifications'>('chat');
+  const view = embedded ? embeddedView : savedView;
+  const setView = embedded ? setEmbeddedView : setSavedView;
   const [selectedKey, setSelectedKey] = useAssistantComposerDraftState<string | null>(draftKey, 'selectedKey', null);
   const [placeFilter, setPlaceFilter] = useAssistantComposerDraftState<string | null>(draftKey, 'placeFilter', null);
   const [reported, setReported] = useState<Record<string, TaskSummary[]>>({});
@@ -559,6 +564,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       else if (current.view === 'tasks') tasksScroll.current = event.currentTarget.scrollTop;
       else notificationsScroll.current = event.currentTarget.scrollTop;
     }}><div className="assistant-chat-transcript" aria-live="polite">
+      {embedded && view !== 'chat' && <button type="button" className="assistant-chat-back" onClick={() => switchView('chat')}>‹ Chat</button>}
       {view === 'chat' ? <>
       {entries.map(({ workspaceId, project, message, ...entry }, entryIndex) => {
         const item = 'personal' in entry ? entry.personal as PersonalMessage : null;
@@ -605,7 +611,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     {panelOpen && personal && <div className="apex-agent-panels-sheet">
       <PersonalPanels key={panelOpen} lane={personal} initial={panelOpen} onClose={() => setPanelOpen(null)} />
     </div>}
-    {(!!watched.length || !!selectedTaskContext || !!assistant) && <form className="apex-agent-all-composer" onSubmit={send} hidden={view !== 'chat'}>
+    {(!!watched.length || !!selectedTaskContext || !!assistant) && <form className="apex-agent-all-composer" onSubmit={send} hidden={!embedded && view !== 'chat'}>
       {selectedTaskContext && <div className="assistant-composer-heading"><strong>{selectedTaskContext.project} · {selectedTaskContext.label}</strong><button type="button" onClick={() => { setDraftTaskContext(null); setFocus(null); setDraftFallback(null); onClearTaskContext?.(); }}>New message</button></div>}
       <ApexAgentReplyQuote quotes={replyQuotes} onClear={() => setReplyQuotes([])} onRemove={(index) => setReplyQuotes((list) => list.filter((_, i) => i !== index))} />
       <div className="apex-agent-all-compose-box">
