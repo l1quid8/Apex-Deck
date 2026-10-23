@@ -1339,3 +1339,23 @@ fn coding_delegation_is_a_separate_proposal_not_a_research_helper() {
     assert!(parsed.helpers.is_empty());
     assert!(parsed.task.is_none());
 }
+
+#[tokio::test]
+async fn delegation_catalog_uses_saved_project_chats_and_canonical_aliases() {
+    let f=Fixture::new();
+    let assistant=f.get();
+    let cwd=f.root.join("slice").to_string_lossy().into_owned();
+    let canonical=std::path::Path::new(&cwd).canonicalize().unwrap().to_string_lossy().into_owned();
+    f.host.session_save(serde_json::json!({"version":1,"workspaces":[{"id":"project","hostId":assistant.host_id,"path":canonical}],"panes":[{"id":"coder-room","kind":"chat","workspaceId":"project"}]})).unwrap();
+    let worker=serde_json::from_value(serde_json::json!({"id":"coder","display_name":"Coder","backend":{"kind":"scripted","lines":["done"]},"access":"read"})).unwrap();
+    f.host.room_create("coder-room".into(),vec![worker],Default::default(),Some(cwd.clone())).unwrap();
+    f.host.monitor_assign(crate::monitor_commands::Assignment {workspace_id:"project".into(),cwd,host_id:"local".into(),text:"Inspect work".into(),files:vec![],threads:vec![],profile:assistant.profile.clone().unwrap()}).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.projects=vec![serde_json::from_value(serde_json::json!({"project":{"hostId":assistant.host_id,"workspaceId":"project","cwd":canonical},"tools":"ask"})).unwrap()];Ok(())}).unwrap();
+    let fake=Fake::new(false);
+    fake.say(r#"{"reply":"I can propose a coding task."}"#);
+    f.host.personal_send(&f.id,"catalog-source","Ask Coder to inspect this project").unwrap();
+    f.drain(&fake.tools()).await;
+    let prompts=fake.prompts.lock().unwrap();
+    assert!(prompts[0].contains("\"threadId\":\"coder-room\""),"saved project chats must be discoverable without adding them as monitor evidence");
+    assert!(prompts[0].contains("\"workers\":[\"coder\"]"));
+}

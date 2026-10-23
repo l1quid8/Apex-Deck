@@ -2370,7 +2370,7 @@ fn enforce_read_only(mode: TaskMode, profiles: &mut [ParticipantConfig]) {
     if mode == TaskMode::ReadOnly { for profile in profiles { profile.access = apex_core::Access::Read; } }
 }
 
-fn task_worker_eligible(profile: &ParticipantConfig) -> bool {
+pub(crate) fn task_worker_eligible(profile: &ParticipantConfig) -> bool {
     profile.media.is_none() && !apex_adapters::build(profile.clone(), &Default::default()).named_only()
 }
 

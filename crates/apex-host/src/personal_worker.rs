@@ -669,13 +669,22 @@ impl Host {
         let tools_on = if snapshot.privacy.local_only { vec![] } else { connectors::available() };
         let mut system = context::assemble(&snapshot, &text, at, &tools_on);
         let mut destinations = Vec::new();
+        let session = self.store().session()?;
         for binding in snapshot.projects.iter().filter(|b| b.tools != crate::personal_workspace::ProjectTools::Off) {
-            let Some(monitor) = self.monitor_get(&binding.project.workspace_id)? else { continue };
-            if monitor.cwd != binding.project.cwd { continue; }
-            for thread in &monitor.threads {
-                if let Some(saved) = self.store().room(thread)? {
-                    if saved.cwd.as_deref() == Some(binding.project.cwd.as_str()) {
-                        destinations.push(serde_json::json!({"project":binding.project,"threadId":thread,"workers":saved.snapshot.participants.iter().filter(|p| p.media.is_none()).map(|p|p.id.to_string()).collect::<Vec<_>>()}));
+            let Ok(checked) = self.validate_project_binding(&snapshot, binding.clone()) else { continue };
+            let Some(monitor) = self.monitor_get(&checked.project.workspace_id)? else { continue };
+            let mut threads: std::collections::BTreeSet<String> = monitor.threads.iter().cloned().collect();
+            for pane in session.as_ref().and_then(|s| s["panes"].as_array()).into_iter().flatten() {
+                if pane["kind"] == "chat" && pane["workspaceId"] == checked.project.workspace_id && pane["archived"] != true {
+                    if let Some(id) = pane["id"].as_str() { threads.insert(id.into()); }
+                }
+            }
+            for thread in threads {
+                if let Some(saved) = self.store().room(&thread)? {
+                    let path = saved.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).canonicalize().ok());
+                    if path.as_deref() == Some(std::path::Path::new(&checked.project.cwd)) {
+                        let workers: Vec<_> = saved.snapshot.participants.iter().filter(|p| crate::assistant_service::task_worker_eligible(p)).map(|p|p.id.to_string()).collect();
+                        if !workers.is_empty() { destinations.push(serde_json::json!({"project":checked.project,"threadId":thread,"workers":workers})); }
                     }
                 }
             }
