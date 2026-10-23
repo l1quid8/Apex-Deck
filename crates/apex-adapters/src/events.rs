@@ -569,6 +569,11 @@ impl EventReader {
         input: &Value,
         steps: &mut Vec<Step>,
     ) {
+        if work_feed::grok_todo_tool(name) {
+            // The list arrives in the result; see `claude_tool_result`.
+            self.todo_calls.insert(id.to_string(), (name.to_string(), input.clone()));
+            return;
+        }
         if work_feed::claude_todo_tool(name) {
             match name {
                 // A helper's list would replace the bot's own.
@@ -593,6 +598,14 @@ impl EventReader {
         let failed = block["is_error"].as_bool().unwrap_or(false);
         let text = work_feed::claude_result_text(&block["content"]);
         if let Some((tool, input)) = self.todo_calls.remove(id) {
+            if work_feed::grok_todo_tool(&tool) {
+                if !failed {
+                    if let Some(list) = work_feed::grok_todos(&text) {
+                        steps.push(Step::Todo(list));
+                    }
+                }
+                return;
+            }
             if !failed && work_feed::fold_task(&mut self.tasks, &tool, &input, meta, &text) {
                 steps.push(Step::Todo(self.tasks.iter().map(|(_, item)| item.clone()).collect()));
             }
@@ -2229,6 +2242,7 @@ mod tests {
         include_str!("../tests/fixtures/work_steps/claude_background.jsonl");
     const CODEX_FIXTURE: &str = include_str!("../tests/fixtures/work_steps/codex_turn.jsonl");
     const CODEX_PLAN_ONLY: &str = include_str!("../tests/fixtures/work_steps/codex_plan_only.jsonl");
+    const GROK_FIXTURE: &str = include_str!("../tests/fixtures/work_steps/grok_turn.jsonl");
     const CODEX_MAIN: &str = "01a14863-3c1a-76f2-a8b5-d5b52a9af162";
     const CODEX_HELPER: &str = "01a14863-5be9-75b1-ad9d-4cedc4b0b31d";
 
@@ -2502,6 +2516,30 @@ mod tests {
         assert_eq!((step(&all, "H1").label.as_str(), step(&all, "H1").status), ("fix_tests", StepStatus::Failed));
         assert_eq!(step(&all, "H2").status, StepStatus::Stopped);
         assert!(!reader.turn_over() && !reader.failed());
+    }
+
+    #[test]
+    fn grok_todo_write_feeds_the_todo_list() {
+        let steps = claude_steps(GROK_FIXTURE, "/tmp/probe");
+        let lists = todos(&steps);
+        assert_eq!(lists.len(), 4, "one list per todo_write result: {lists:?}");
+        assert_eq!(
+            lists[0],
+            [
+                ("Read a.txt".to_string(), TodoStatus::InProgress),
+                ("Run ls sub".to_string(), TodoStatus::Pending),
+                ("Run cat missing.txt".to_string(), TodoStatus::Pending),
+                ("Search folder for alpha".to_string(), TodoStatus::Pending),
+                ("Append 'probe' to a.txt".to_string(), TodoStatus::Pending),
+                ("Start helper to count lines in a.txt".to_string(), TodoStatus::Pending),
+            ]
+        );
+        // The later calls send only the items that changed; the result is
+        // still the whole merged list.
+        assert_eq!(lists[2][3].1, TodoStatus::Completed);
+        assert!(lists[3].iter().all(|(_, status)| *status == TodoStatus::Completed), "{lists:?}");
+        // The calls themselves are not work.
+        assert!(work(&steps).iter().all(|s| !s.label.contains("todo_write")), "{:#?}", work(&steps));
     }
 
     #[test]

@@ -10,7 +10,7 @@ export const MAX_STEPS_SHOWN = 4;
 const CUT_NOTE = / lines cut …/;
 
 const STATUS_WORDS: Record<StepStatus, string> = { running: "Working", done: "Done", failed: "Failed", stopped: "Stopped" };
-const TODO_MARKS: Record<TodoItem["status"], string> = { completed: "✔", in_progress: "▸", pending: "□" };
+const TODO_MARKS: Record<TodoItem["status"], string> = { completed: "✔", in_progress: "▸", pending: "□", cancelled: "⊘" };
 
 /** "0.4s", "12s", "1m 05s". */
 export function formatDuration(ms: number): string {

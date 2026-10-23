@@ -447,7 +447,7 @@ export type PaneStatus = "working" | "idle" | "exited" | "needs_input" | "failed
 /** Mirrors crates/apex-core/src/work_steps.rs. */
 export type StepKind = "command" | "read" | "search" | "list" | "edit" | "web" | "tool" | "helper" | "thinking" | "other";
 export type StepStatus = "running" | "done" | "failed" | "stopped";
-export type TodoStatus = "pending" | "in_progress" | "completed";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
 /** One thing a bot did while writing a reply. */
 export interface WorkStep {

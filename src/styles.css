@@ -1248,6 +1248,8 @@ textarea {
 .work-steps-todo-in_progress { color: var(--text); font-weight: 600; }
 .work-steps-todo-completed { opacity: 0.7; }
 .work-steps-todo-pending .work-steps-todo-mark { color: var(--muted); }
+.work-steps-todo-cancelled { text-decoration: line-through; opacity: 0.6; }
+.work-steps-todo-cancelled .work-steps-todo-mark { color: var(--muted); text-decoration: none; }
 
 .working-line {
   display: flex;

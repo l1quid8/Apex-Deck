@@ -72,6 +72,9 @@ pub enum TodoStatus {
     Pending,
     InProgress,
     Completed,
+    /// Called off before it ran. Muse reports these; they stay in the list
+    /// rather than vanishing from it.
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

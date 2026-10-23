@@ -190,10 +190,15 @@ pub fn agent_command_in(
                 Access::Full => push(&["--permission-mode", "bypassPermissions"]),
             }
             // Fast mode must be asked for on the command line in print mode;
-            // Claude's own saved fast setting does not apply there.
+            // Claude's own saved fast setting does not apply there. The two
+            // task tools are allowed outright in every access level: they
+            // only keep the to-do list, and asking about each one would put a
+            // question in front of the person for every step of the plan.
             let settings = match speed {
-                Some(Speed::Fast) => r#"{"permissions":{"ask":["mcp__*"]},"fastMode":true}"#,
-                _ => r#"{"permissions":{"ask":["mcp__*"]}}"#,
+                Some(Speed::Fast) => {
+                    r#"{"permissions":{"allow":["TaskCreate","TaskUpdate"],"ask":["mcp__*"]},"fastMode":true}"#
+                }
+                _ => r#"{"permissions":{"allow":["TaskCreate","TaskUpdate"],"ask":["mcp__*"]}}"#,
             };
             push(&["--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--settings", settings]);
             "claude"
@@ -355,6 +360,7 @@ mod tests {
         let settings = args.windows(2).find(|a| a[0] == "--settings").expect("MCP ask rule");
         let value: serde_json::Value = serde_json::from_str(&settings[1]).unwrap();
         assert_eq!(value["permissions"]["ask"], serde_json::json!(["mcp__*"]));
+        assert_eq!(value["permissions"]["allow"], serde_json::json!(["TaskCreate", "TaskUpdate"]));
         assert!(args.contains(&"bypassPermissions".to_string()));
     }
 

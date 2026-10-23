@@ -780,10 +780,13 @@ mod tests {
                 ("Start helper subagent to count lines in a.txt", TodoStatus::Pending),
             ]
         );
-        // `cancelled` items are dropped.
+        // A cancelled step stays in the list, marked as called off.
         assert_eq!(
             lists[2].iter().map(|t| (t.text.as_str(), t.status)).collect::<Vec<_>>(),
-            [("Read a.txt, ls sub, cat missing, search alpha, append probe", TodoStatus::Completed)]
+            [
+                ("Read a.txt, ls sub, cat missing, search alpha, append probe", TodoStatus::Completed),
+                ("Start helper subagent to count lines in a.txt", TodoStatus::Cancelled),
+            ]
         );
     }
 
