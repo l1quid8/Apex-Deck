@@ -109,7 +109,7 @@ pub fn budget_hit(result_data: Option<&serde_json::Value>, usage: Option<&TaskUs
     let Some(limit) = result_data.and_then(|data| data["spendLimitMicros"].as_u64()) else { return false };
     let Some(usage) = usage else { return false };
     usage.cost_micros.is_some_and(|cost| cost >= limit)
-        || (usage.unknown_cost_turns > 0 && result_data.map_or(true, |data| data["unknownCostAccepted"] != true))
+        || (usage.unknown_cost_turns > 0 && result_data.is_none_or(|data| data["unknownCostAccepted"] != true))
 }
 
 /// What the task says when it stops at its limit.
@@ -678,6 +678,9 @@ impl AssistantTasks {
         Ok((result, run_id))
     }
 
+    // Seven fields of one task detail write; they are all-or-nothing parts of
+    // the same request.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_task_details(
         &self,
         task_id: &str,

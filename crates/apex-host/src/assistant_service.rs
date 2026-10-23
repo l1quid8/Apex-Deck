@@ -237,7 +237,7 @@ impl Host {
                 self.room_create(
                     label.id.clone(),
                     saved.snapshot.participants.clone(),
-                    saved.snapshot.options.clone(),
+                    saved.snapshot.options,
                     Some(owner.cwd.clone()),
                 )?;
                 true
@@ -592,7 +592,7 @@ impl Host {
                         .threads
                         .iter()
                         .find(|thread| thread.id == thread_id)
-                        .map(|thread| thread.snapshot.options.clone())
+                        .map(|thread| thread.snapshot.options)
                         .unwrap_or_default()
                 };
                 let pane_path = if input.mode == TaskMode::Isolated {
@@ -695,6 +695,9 @@ impl Host {
         child_id
     }
 
+    // Nine parts of one dispatch: the task itself, who asked for it, and the
+    // snapshot the turn was prepared from. Nothing here is optional.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_task(
         self: &Arc<Self>,
         mut task: AssistantTask,
@@ -741,7 +744,7 @@ impl Host {
                     self.room_create(
                         parent_id.clone(),
                         Vec::new(),
-                        saved.snapshot.options.clone(),
+                        saved.snapshot.options,
                         Some(owner.cwd.clone()),
                     )?;
                     self.handle(&parent_id)?
@@ -769,7 +772,7 @@ impl Host {
             .acquire_retained(task.id.clone(), run.stop.clone())
             .await
             .map_err(|e| format!("Could not reserve checkout: {e:?}"))?) };
-        let mut baseline_data = task.result_data.clone().unwrap_or_else(|| initial_task_data(&input, &profiles));
+        let mut baseline_data = task.result_data.clone().unwrap_or_else(|| initial_task_data(input, &profiles));
         baseline_data["leaseHeld"] = json!(input.mode != TaskMode::ReadOnly);
         baseline_data["executionPath"] = json!(owner.cwd);
         if input.mode != TaskMode::ReadOnly {
@@ -823,9 +826,10 @@ impl Host {
                         .into(),
                 );
             }
-            let mut options = apex_core::RoomOptions::default();
-            options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = Some(0);
+            let options = apex_core::RoomOptions {
+                policy: apex_core::TurnPolicy::RoundRobin,
+                max_bot_hops: Some(0),
+            };
             (None, Some((profiles, options)))
         } else if already_bound {
             return Err("The saved execution chat for this task is missing.".into());
@@ -860,9 +864,10 @@ impl Host {
                         .into(),
                 );
             }
-            let mut options = apex_core::RoomOptions::default();
-            options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = Some(0);
+            let options = apex_core::RoomOptions {
+                policy: apex_core::TurnPolicy::RoundRobin,
+                max_bot_hops: Some(0),
+            };
             (None, Some((profiles, options)))
         };
         // The source thread gets one short line, only on the task's first start.
@@ -889,7 +894,7 @@ impl Host {
             self.room_create(
                 child_id.clone(),
                 snapshot.participants.clone(),
-                snapshot.options.clone(),
+                snapshot.options,
                 Some(owner.cwd.clone()),
             )?;
         }
@@ -928,6 +933,8 @@ impl Host {
         Ok(())
     }
 
+    // Ten parts of one isolated dispatch, for the same reason as `dispatch_task`.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_isolated_task(
         self: &Arc<Self>,
         mut task: AssistantTask,
@@ -1065,9 +1072,10 @@ impl Host {
                     "Choose at least one worker before starting isolated execution.".into(),
                 );
             }
-            let mut options = apex_core::RoomOptions::default();
-            options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = Some(0);
+            let options = apex_core::RoomOptions {
+                policy: apex_core::TurnPolicy::RoundRobin,
+                max_bot_hops: Some(0),
+            };
             (selected_profiles, options)
         };
         // The source thread gets one short line, only on the task's first start.
@@ -1401,10 +1409,10 @@ impl Host {
         if let Some(baseline) = baseline { data["attemptBaselineSnapshot"] = json!(baseline); }
         data["leaseHeld"] = json!(task.mode == TaskMode::InPlace);
         if let Some(text) = text.as_ref().filter(|text| !text.trim().is_empty()) { append_history(&mut data, "revision", text); }
-        data.as_object_mut().map(|m| {
-            m.remove("resultSnapshot");
-            m.remove("diff");
-        });
+        if let Some(map) = data.as_object_mut() {
+            map.remove("resultSnapshot");
+            map.remove("diff");
+        }
         next = self
             .assistant_tasks
             .set_result_data(&next.id, next.revision, &next.owner, Some(data))
@@ -1497,10 +1505,12 @@ impl Host {
         let executions: Vec<Value> = self.assistant_tasks.list_executions(Some(&owner.workspace_id)).into_iter().filter_map(|entry| {
             let task = tasks.iter().find(|task| task.id == entry.task_id)?;
             let saved = self.store().room(&entry.thread_id).ok().flatten();
-            let pane = if entry.is_tombstoned() || saved.is_none() { Value::Null } else {
-                let saved = saved.as_ref().unwrap();
-                let execution_path = task.result_data.as_ref().and_then(|data|data["executionPath"].as_str()).unwrap_or(&task.owner.cwd);
-                json!({"id":entry.thread_id,"workspaceId":owner.workspace_id,"kind":"chat","title":format!("Assistant task {}",task.id),"participants":saved.snapshot.participants,"options":saved.snapshot.options,"started":true,"assistantTaskId":task.id,"hostId":task.owner.host_id,"executionPath":execution_path})
+            let pane = match saved {
+                Some(saved) if !entry.is_tombstoned() => {
+                    let execution_path = task.result_data.as_ref().and_then(|data|data["executionPath"].as_str()).unwrap_or(&task.owner.cwd);
+                    json!({"id":entry.thread_id,"workspaceId":owner.workspace_id,"kind":"chat","title":format!("Assistant task {}",task.id),"participants":saved.snapshot.participants,"options":saved.snapshot.options,"started":true,"assistantTaskId":task.id,"hostId":task.owner.host_id,"executionPath":execution_path})
+                }
+                _ => Value::Null,
             };
             Some(json!({"taskId":entry.task_id,"workspaceId":entry.workspace_id,"threadId":entry.thread_id,"mode":entry.mode,"tombstonedAtMs":entry.tombstoned_at_ms,"pane":pane}))
         }).collect();
@@ -1602,7 +1612,7 @@ impl Host {
                 if input.action == "note" {
                     let text = input.text.as_deref().filter(|text| !text.trim().is_empty()).ok_or("Write a note before sending.")?;
                     append_history(&mut data, "note", text);
-                    data["queuedNotes"].as_array_mut().map(|notes| notes.push(json!(text)));
+                    if let Some(notes) = data["queuedNotes"].as_array_mut() { notes.push(json!(text)) }
                     if !data["queuedNotes"].is_array() { data["queuedNotes"] = json!([text]); }
                 } else {
                     if input.spend_limit_micros == Some(0) { return Err("A spend limit must be greater than zero.".into()); }
@@ -2474,6 +2484,9 @@ fn initial_task_data(input: &AssistantMessageInput, workers: &[ParticipantConfig
     data
 }
 
+// Nine parts of one attempt: what to run, where, and the handles it reports
+// through. A struct would be built here only to be taken apart again.
+#[allow(clippy::too_many_arguments)]
 fn spawn_task_attempt(
     host: Arc<Host>,
     task_id: String,
@@ -2525,8 +2538,8 @@ fn spawn_task_attempt(
         } else {
             TaskStatus::ReadyForReview
         };
-        if status == TaskStatus::NeedsYou {
-            if host_for_task
+        if status == TaskStatus::NeedsYou
+            && host_for_task
                 .assistant_tasks
                 .get(&task_id)
                 .ok()
@@ -2537,7 +2550,6 @@ fn spawn_task_attempt(
                     .assistant_tasks
                     .set_run_waiting(&task_id, &run_id, true);
             }
-        }
         let mut result_data = host_for_task
             .assistant_tasks
             .get(&task_id)
@@ -2970,7 +2982,8 @@ mod tests {
         assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(stale)).is_err());
         let mut owner_changed = input.clone(); owner_changed.owner.host_id = "other".into();
         assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(owner_changed)).is_err());
-        for worker in ["missing"] {
+        {
+            let worker = "missing";
             let mut bad = input.clone(); bad.request_id = "bad-child".into(); bad.revision = f.host.monitor_get("workspace").unwrap().unwrap().revision; bad.destination.workers = vec![worker.into()];
             assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(bad)).is_err());
         }
@@ -3223,7 +3236,9 @@ mod tests {
         let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 8192]; stream.read(&mut request).unwrap();
+            let mut request = [0; 8192];
+            let arrived = stream.read(&mut request).unwrap();
+            assert!(arrived > 0, "the catalogue request never arrived");
             let body = r#"{"data":[{"id":"picture","type":"image"}]}"#;
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         });
@@ -3232,7 +3247,7 @@ mod tests {
         let image = profile("image", Backend::OpenAiCompatible { base_url, model: "picture".into(), api_key_env: None }, Access::Read);
         assert!(image.media.is_none(), "The provider catalogue, not profile media settings, identifies this worker.");
         assert!(!task_worker_eligible(&image));
-        assert!(verify_task_workers(&[image.clone()]).is_err());
+        assert!(verify_task_workers(std::slice::from_ref(&image)).is_err());
         let mut saved = f.host.store().room("parent").unwrap().unwrap();
         saved.snapshot.participants.push(image.clone());
         f.host.store().save_room("parent", &saved).unwrap();
@@ -4343,7 +4358,7 @@ mod tests {
         let ready = wait_for(&f, &initial.id);
         assert_eq!(ready.status, TaskStatus::ReadyForReview);
         let child = ready.execution_thread_id.as_deref().unwrap();
-        assert_eq!(
+        assert!(
             f.runtime
                 .block_on(f.host.assistant_continue_thread(
                     child,
@@ -4353,8 +4368,7 @@ mod tests {
                     None,
                     apex_core::GeneratedUiCapability::Unsupported
                 ))
-                .unwrap(),
-            true
+                .unwrap()
         );
         let running = f.host.assistant_tasks.get(&ready.id).unwrap().unwrap();
         assert_eq!(running.status, TaskStatus::Running);

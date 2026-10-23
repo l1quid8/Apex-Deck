@@ -30,7 +30,7 @@ pub use room::{ChangeRecord, Compaction, Room, RoomEvent, RoomOptions, RoomSnaps
 pub use write_gate::{CheckoutWriteGate, WriteLease, WriteWaitError};
 pub use types::{
     Access, AgentTool, Backend, ContextUse, MediaSettings, Message, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage, Speed,
-    PlanWindow, Speaker, TokenTotals,
+    PlanWindow, ResetCredit, ResetCredits, Speaker, TokenTotals,
 };
 pub use view::{render_prompt, render_view, render_view_after, system_prompt, Role, ViewTurn, PASS_TOKEN};
 pub use view::{ClientCapabilities, GeneratedUiClientCapability, GeneratedUiCapability};

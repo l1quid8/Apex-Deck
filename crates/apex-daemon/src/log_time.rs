@@ -134,6 +134,25 @@ pub fn start() {}
 #[cfg(not(unix))]
 pub fn flush() {}
 
+/// UTC timestamp used by metadata-only voice diagnostics.
+pub fn utc_stamp() -> String {
+    #[cfg(unix)]
+    {
+        let now = unsafe { libc::time(std::ptr::null_mut()) };
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::gmtime_r(&now, &mut tm) };
+        format!("{}Z", format_time(&tm).replace(' ', "T"))
+    }
+    #[cfg(not(unix))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,24 +186,5 @@ mod tests {
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };
         (tm.tm_year, tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec) = (126, 9, 8, 15, 42, 6);
         assert_eq!(format_time(&tm), "2026-10-08 15:42:06");
-    }
-}
-
-/// UTC timestamp used by metadata-only voice diagnostics.
-pub fn utc_stamp() -> String {
-    #[cfg(unix)]
-    {
-        let now = unsafe { libc::time(std::ptr::null_mut()) };
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        unsafe { libc::gmtime_r(&now, &mut tm) };
-        format!("{}Z", format_time(&tm).replace(' ', "T"))
-    }
-    #[cfg(not(unix))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .to_string()
     }
 }

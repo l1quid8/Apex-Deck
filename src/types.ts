@@ -292,8 +292,9 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cost_micros?: number | null; cost_estimated?: boolean }
   /** How full a participant's context window was on its latest request. */
   | { type: "context_usage"; id: string; used_tokens: number; window_tokens: number }
-  /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value. */
-  | { type: "plan_usage"; provider: AgentTool; windows: PlanWindow[]; partial: boolean }
+  /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value.
+   *  `model` names the model whose own quota group this is, when the provider reads one apart from the account. */
+  | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
   /** The room cut off bots answering each other; `next` is who the last replies asked. */
@@ -312,6 +313,23 @@ export interface PlanWindow {
   window_minutes: number | null;
   /** Unix seconds. */
   resets_at: number | null;
+}
+
+/** Usage resets a provider granted. Using one empties the plan's windows. */
+export interface ResetCredits {
+  /** How many are available. The provider may list fewer. */
+  available: number;
+  credits: ResetCredit[];
+}
+
+export interface ResetCredit {
+  id: string;
+  title?: string;
+  description?: string;
+  /** Unix seconds. */
+  granted_at: number;
+  /** Unix seconds; missing when it never expires. */
+  expires_at?: number;
 }
 
 export interface AgentInfo {
@@ -432,7 +450,7 @@ export type PaneStatus = "working" | "idle" | "exited" | "needs_input" | "failed
 /** Mirrors crates/apex-core/src/work_steps.rs. */
 export type StepKind = "command" | "read" | "search" | "list" | "edit" | "web" | "tool" | "helper" | "thinking" | "other";
 export type StepStatus = "running" | "done" | "failed" | "stopped";
-export type TodoStatus = "pending" | "in_progress" | "completed";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
 /** One thing a bot did while writing a reply. */
 export interface WorkStep {

@@ -2,7 +2,7 @@
 //! numbered events out. One chat, one terminal, an approval answer and a
 //! restart that brings the chat back.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -60,11 +60,11 @@ fn linked_process_recovery_namespaces_and_task_directories_refuse_startup() {
 }
 
 impl Running {
-    fn start(data: &PathBuf) -> Running {
+    fn start(data: &Path) -> Running {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         // These tests exercise room behavior, not admission: they assume verified UI
         // admission through the test-support seam (a dedicated temporary directory).
-        let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.to_path_buf(), downloads: None }, runtime.handle().clone());
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.clone()));
@@ -121,7 +121,7 @@ fn room_state_identifies_events_already_in_its_snapshot() {
     assert!(!events.is_empty());
     assert!(events.iter().all(|e| e["recovery_seq"].as_u64().unwrap() <= boundary));
     host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot second"}})).unwrap();
-    let latest = host.events().iter().filter(|e| e.name()=="room-event").last().unwrap().payload();
+    let latest = host.events().iter().rfind(|e| e.name()=="room-event").unwrap().payload();
     assert!(latest["recovery_seq"].as_u64().unwrap() > boundary);
     assert_eq!(state["snapshot"]["transcript"].as_array().unwrap().len(),2);
     host.host.shutdown();
@@ -372,9 +372,9 @@ fn importing_a_snapshot_makes_a_fresh_room_without_usage_rules_or_changes() {
     assert_eq!(opened["transcript"], state["snapshot"]["transcript"]);
     assert_eq!(opened["participants"], state["snapshot"]["participants"]);
     assert_eq!(opened["pins"], json!(["keep this"]));
-    assert!(opened.get("usage").map_or(true, |u| u.as_object().unwrap().is_empty()), "a fork starts without usage");
-    assert!(opened.get("allowed").map_or(true, |a| a.as_array().unwrap().is_empty()), "nor Always allow rules");
-    assert!(opened["changes"].as_array().map_or(true, |c| c.is_empty()), "its folder is another one");
+    assert!(opened.get("usage").is_none_or(|u| u.as_object().unwrap().is_empty()), "a fork starts without usage");
+    assert!(opened.get("allowed").is_none_or(|a| a.as_array().unwrap().is_empty()), "nor Always allow rules");
+    assert!(opened["changes"].as_array().is_none_or(|c| c.is_empty()), "its folder is another one");
     assert!(opened["baseline"].is_null());
     // The new room answers in its own folder.
     host.call(json!({"cmd":"room_post","args":{"id":"fork","text":"@bot again"}})).unwrap();
@@ -611,6 +611,19 @@ fn bot_models_and_balance_use_only_the_bots_saved_address() {
     assert!(host.call(json!({"cmd":"room_bot_models","args":{"room":"r","participant":"bot"}})).unwrap_err().contains("API"));
     assert!(host.call(json!({"cmd":"room_bot_models","args":{"room":"r","participant":"nobody"}})).is_err());
     assert!(host.call(json!({"cmd":"room_bot_balance","args":{"room":"missing","participant":"deep"}})).is_err());
+    drop(host);
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+#[test]
+fn a_usage_reset_is_only_for_a_provider_a_bot_in_the_chat_uses() {
+    let data = std::env::temp_dir().join(format!("apex-plan-reset-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let host = Running::start(&data);
+    host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default(),"cwd":null}})).unwrap();
+    // Nothing here runs Codex, so no credit is spent and no app server starts.
+    assert!(host.call(json!({"cmd":"room_plan_reset","args":{"room":"r","tool":"codex"}})).unwrap_err().contains("provider"));
+    assert!(host.call(json!({"cmd":"room_plan_reset","args":{"room":"missing","tool":"codex","credit":"c1"}})).is_err());
     drop(host);
     std::fs::remove_dir_all(data).unwrap();
 }

@@ -81,8 +81,12 @@ fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
-fn checks() -> &'static Mutex<HashMap<String, (String, Option<String>)>> {
-    static CHECKS: OnceLock<Mutex<HashMap<String, (String, Option<String>)>>> = OnceLock::new();
+/// What was checked out at a path: its head commit, and the commit it is
+/// being compared against.
+type CheckedOut = (String, Option<String>);
+
+fn checks() -> &'static Mutex<HashMap<String, CheckedOut>> {
+    static CHECKS: OnceLock<Mutex<HashMap<String, CheckedOut>>> = OnceLock::new();
     CHECKS.get_or_init(Default::default)
 }
 fn remember_check(state: &State) {
@@ -309,17 +313,100 @@ fn current(cwd: &Path, expected: &State) -> Result<State, String> {
     }
     Ok(now)
 }
-fn clean(cwd: &Path) -> Result<(), String> {
-    if !git(
-        cwd,
-        None,
-        &["status", "--porcelain", "--untracked-files=all"],
-    )?
-    .is_empty()
+fn link_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
     {
-        return Err("Commit or resolve all working and staged changes first.".into());
+        std::os::unix::fs::symlink(from, to)
     }
-    Ok(())
+    #[cfg(windows)]
+    {
+        if std::os::windows::fs::symlink_dir(from, to).is_ok() {
+            return Ok(());
+        }
+        // Directory junctions need no elevation, unlike symlinks.
+        let out = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(to)
+            .arg(from)
+            .output()?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ))
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (from, to);
+        Err(std::io::Error::other(
+            "Linking folders is not supported on this platform.",
+        ))
+    }
+}
+/// One commit checked out into a scratch folder. Checks must read the commit and
+/// never the working tree: otherwise an uncommitted edit could make a broken
+/// commit look green, and the pass would be remembered for that commit.
+struct HeadCheckout {
+    root: PathBuf,
+    dir: PathBuf,
+}
+impl HeadCheckout {
+    fn new(root: &Path, head: &str) -> Result<Self, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "apex-checks-{}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.to_string_lossy().to_string();
+        git(
+            root,
+            None,
+            &["worktree", "add", "--detach", "--force", &path, head],
+        )?;
+        let checkout = Self {
+            root: root.to_path_buf(),
+            dir,
+        };
+        checkout.link_dependencies()?;
+        Ok(checkout)
+    }
+    /// A commit carries source, not installed packages, so borrow the live
+    /// node_modules instead of reinstalling it for every check.
+    fn link_dependencies(&self) -> Result<(), String> {
+        let modules = self.root.join("node_modules");
+        if !modules.is_dir() {
+            return Ok(());
+        }
+        let link = self.dir.join("node_modules");
+        if link.exists() {
+            return Ok(());
+        }
+        link_dir(&modules, &link).map_err(|e| {
+            format!(
+                "Checks need node_modules from {} inside an isolated checkout of the commit, and that link failed: {e}",
+                modules.display()
+            )
+        })
+    }
+}
+impl Drop for HeadCheckout {
+    fn drop(&mut self) {
+        let dir = self.dir.to_string_lossy().to_string();
+        let _ = git(
+            &self.root,
+            None,
+            &["worktree", "remove", "--force", &dir],
+        );
+        let _ = std::fs::remove_dir_all(&self.dir);
+        let _ = git(&self.root, None, &["worktree", "prune"]);
+    }
 }
 struct PrivateIndex(PathBuf);
 fn private_index() -> PrivateIndex {
@@ -497,6 +584,49 @@ async fn run(cwd: &Path, program: &str, args: &[&str]) -> Result<String, String>
     }
     Ok(stdout.trim().to_string())
 }
+/// The type check the card runs, unchanged from what the merge rules expect.
+const TYPECHECK: [&str; 4] = ["npx", "--no-install", "tsc", "--noEmit"];
+fn short(head: &str) -> &str {
+    head.get(..7).unwrap_or(head)
+}
+/// Runs `command` in a throwaway checkout of the commit under review, then records
+/// the pass against that commit. The working tree is never an input, so unrelated
+/// uncommitted work can neither block checks nor vouch for untested code.
+async fn check_commit(cwd: &Path, expected: &State, command: &[&str]) -> Result<String, String> {
+    let work = cwd.to_path_buf();
+    let before = expected.clone();
+    let now = tokio::task::spawn_blocking(move || current(&work, &before))
+        .await
+        .map_err(|e| e.to_string())??;
+    checks().lock().unwrap().remove(&now.root);
+    let root = PathBuf::from(&now.root);
+    let head = now.head.clone();
+    let checkout = tokio::task::spawn_blocking(move || HeadCheckout::new(&root, &head))
+        .await
+        .map_err(|e| e.to_string())??;
+    let (program, args) = command.split_first().ok_or("No check command was given.")?;
+    let outcome = run(&checkout.dir, program, args).await;
+    drop(checkout);
+    outcome.map_err(|e| {
+        format!(
+            "TypeScript checks failed on commit {} in an isolated checkout of HEAD; uncommitted files are not part of it.\n{e}",
+            short(&now.head)
+        )
+    })?;
+    let work = cwd.to_path_buf();
+    let checked = now.clone();
+    tokio::task::spawn_blocking(move || {
+        current(&work, &checked)?;
+        remember_check(&checked);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(format!(
+        "TypeScript checks passed on commit {} in an isolated checkout of HEAD; uncommitted files are not part of it.",
+        short(&now.head)
+    ))
+}
 pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
     let message = match action {
         Action::Commit {
@@ -515,38 +645,7 @@ pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
                 .await
                 .map_err(|e| e.to_string())??
         }
-        Action::Checks { expected } => {
-            let work = cwd.clone();
-            let before = expected.clone();
-            let now = tokio::task::spawn_blocking(move || {
-                let now = current(&work, &before)?;
-                if !now.clean {
-                    return Err("Commit or resolve all working changes first.".into());
-                }
-                clean(Path::new(&now.root))?;
-                Ok::<_, String>(now)
-            })
-            .await
-            .map_err(|e| e.to_string())??;
-            checks().lock().unwrap().remove(&now.root);
-            run(
-                Path::new(&now.root),
-                "npx",
-                &["--no-install", "tsc", "--noEmit"],
-            )
-            .await?;
-            let work = cwd.clone();
-            let checked = now.clone();
-            tokio::task::spawn_blocking(move || {
-                current(&work, &checked)?;
-                clean(Path::new(&checked.root))?;
-                remember_check(&checked);
-                Ok::<_, String>(())
-            })
-            .await
-            .map_err(|e| e.to_string())??;
-            "TypeScript checks passed on the current commit.".into()
-        }
+        Action::Checks { expected } => check_commit(&cwd, &expected, &TYPECHECK).await?,
         Action::Pr { expected } => {
             let work = cwd.clone();
             let now = tokio::task::spawn_blocking(move || current(&work, &expected))
@@ -774,6 +873,115 @@ mod tests {
             "later\n",
             "uncommitted file survives the merge untouched"
         );
+    }
+
+    #[test]
+    fn merge_leaves_the_target_alone_while_another_worktree_holds_it() {
+        let r = Repo::new();
+        r.write("one.txt", "feature\n");
+        r.git(&["commit", "-qam", "feature"]);
+        let checked = status(&r.0).unwrap();
+        remember_check(&checked);
+        let main_before = r.git(&["rev-parse", "refs/heads/main"]);
+        let sibling = r.0.with_extension("sibling");
+        r.git(&["worktree", "add", "-q", sibling.to_str().unwrap(), "main"]);
+        let error = merge(&r.0, &checked).unwrap_err();
+        assert!(error.contains("checked out in another worktree"), "{error}");
+        assert_eq!(
+            r.git(&["rev-parse", "refs/heads/main"]),
+            main_before,
+            "a branch another worktree has checked out must not move"
+        );
+        let sibling_status = Command::new("git")
+            .arg("-C")
+            .arg(&sibling)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(
+            sibling_status.stdout.is_empty(),
+            "the other worktree is left exactly as it was"
+        );
+        r.git(&["worktree", "remove", "--force", sibling.to_str().unwrap()]);
+    }
+
+    #[test]
+    fn merge_restores_the_target_when_the_follow_up_switch_fails() {
+        let r = Repo::new();
+        r.write("one.txt", "feature\n");
+        r.git(&["commit", "-qam", "feature"]);
+        let checked = status(&r.0).unwrap();
+        remember_check(&checked);
+        let main_before = r.git(&["rev-parse", "refs/heads/main"]);
+        // A held index lock fails the switch that follows the ref update, which is
+        // the same recovery path a worktree checked out mid-merge would take.
+        let lock = r.0.join(".git/index.lock");
+        std::fs::write(&lock, "").unwrap();
+        let error = merge(&r.0, &checked).unwrap_err();
+        std::fs::remove_file(&lock).unwrap();
+        assert!(!error.is_empty());
+        assert_eq!(
+            r.git(&["rev-parse", "refs/heads/main"]),
+            main_before,
+            "the target is rolled back to where it started"
+        );
+        assert_eq!(
+            r.git(&["branch", "--show-current"]),
+            "feat/test",
+            "no half-switched checkout"
+        );
+        assert!(r.git(&["branch", "--list", "feat/test"]).contains("feat/test"));
+    }
+
+    #[test]
+    fn checks_reuse_installed_dependencies_in_a_scratch_checkout() {
+        let r = Repo::new();
+        std::fs::create_dir_all(r.0.join("node_modules/typescript")).unwrap();
+        r.write("node_modules/typescript/marker.txt", "installed\n");
+        let head = status(&r.0).unwrap().head;
+        let checkout = HeadCheckout::new(&r.0, &head).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(checkout.dir.join("node_modules/typescript/marker.txt")).unwrap(),
+            "installed\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(checkout.dir.join("one.txt")).unwrap(),
+            "one\n"
+        );
+        let dir = checkout.dir.clone();
+        drop(checkout);
+        assert!(!dir.exists(), "the scratch checkout is removed");
+    }
+
+    #[tokio::test]
+    async fn checks_read_the_commit_so_a_dirty_fix_cannot_green_light_it() {
+        let r = Repo::new();
+        // The commit is broken; the repair exists only in the working tree.
+        r.write("one.txt", "BROKEN\n");
+        r.git(&["commit", "-qam", "broken"]);
+        r.write("one.txt", "FIXED\n");
+        let probe = ["sh", "-c", "test \"$(cat one.txt)\" = FIXED"];
+        let dirty = status(&r.0).unwrap();
+        assert!(check_commit(&r.0, &dirty, &probe).await.is_err());
+        assert!(
+            !status(&r.0).unwrap().checks_passed,
+            "an uncommitted fix must not record a pass for the broken commit"
+        );
+        // Isolation leaves the user's checkout and their uncommitted file alone.
+        assert_eq!(
+            std::fs::read_to_string(r.0.join("one.txt")).unwrap(),
+            "FIXED\n"
+        );
+        assert_eq!(
+            r.git(&["status", "--porcelain", "--untracked-files=all"]),
+            "M one.txt"
+        );
+        r.git(&["commit", "-qam", "fixed"]);
+        let fixed = status(&r.0).unwrap();
+        assert!(check_commit(&r.0, &fixed, &probe).await.is_ok());
+        let after = status(&r.0).unwrap();
+        assert!(after.checks_passed);
+        assert_eq!(r.git(&["status", "--porcelain"]), "");
     }
 
     #[test]

@@ -50,6 +50,7 @@ mod tests {
                     allowed: vec![],
                     usage: Default::default(),
                     plan: false,
+                    checklists: Default::default(),
                 },
             }],
             evidence: vec![ConversationEvidence {
@@ -709,6 +710,7 @@ mod tests {
                 allowed: vec![],
                 usage: Default::default(),
                 plan: false,
+                checklists: Default::default(),
             },
         }
     }
@@ -1349,15 +1351,15 @@ pub enum ConversationDecision {
 pub fn prompt(request: &ConversationRequest) -> TurnRequest {
     let threads: Vec<_> = request.threads.iter().map(|thread| serde_json::json!({
         "id": thread.id, "label": thread.label,
-        "participants": thread.snapshot.participants.iter().map(|p| json_profile(p)).collect::<Vec<_>>(),
+        "participants": thread.snapshot.participants.iter().map(json_profile).collect::<Vec<_>>(),
         "lastTargets": thread.snapshot.last_targets.iter().map(ToString::to_string).collect::<Vec<_>>(),
         "namedOnlyWorkers": thread.named_only_workers,
     })).collect();
     let input = serde_json::json!({
         "humanRequest": request.text,
         "selectedDestination": request.destination,
-        "newWorkerProfiles": request.new_worker_profiles.iter().map(|p| json_profile(p)).collect::<Vec<_>>(),
-        "workerProfiles": request.worker_profiles.iter().map(|p| json_profile(p)).collect::<Vec<_>>(),
+        "newWorkerProfiles": request.new_worker_profiles.iter().map(json_profile).collect::<Vec<_>>(),
+        "workerProfiles": request.worker_profiles.iter().map(json_profile).collect::<Vec<_>>(),
         "candidateThreads": threads,
         "evidence": request.evidence,
         "evidenceIsUntrusted": true,

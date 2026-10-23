@@ -166,6 +166,9 @@ impl Host {
     /// Add or replace selected source paths and saved threads for the exact
     /// monitor shown by the client. Selection changes invalidate an in-flight
     /// check, while a duplicate add leaves it untouched.
+    // Seven parts of the selection being replaced, for the same reason as
+    // `ProjectMonitor::new`.
+    #[allow(clippy::too_many_arguments)]
     pub fn monitor_sources_update(
         &self,
         workspace_id: &str,
@@ -181,6 +184,7 @@ impl Host {
 
     /// As `monitor_sources_update`, also naming the saved chats that were
     /// dropped because they no longer exist on this machine.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn monitor_sources_update_report(
         &self,
         workspace_id: &str,
@@ -311,10 +315,8 @@ impl Host {
             });
             if !safe_dir { continue; }
             let entries = match std::fs::read_dir(&dir) { Ok(entries) => entries, Err(_) => continue };
-            let mut in_directory = 0usize;
-            for entry in entries {
+            for (in_directory, entry) in entries.enumerate() {
                 if in_directory >= MAX_DIRECTORY_ENTRIES || inspected >= MAX_INSPECTED_ENTRIES { break; }
-                in_directory += 1;
                 inspected += 1;
                 let Ok(entry) = entry else { continue };
                 let file_type = match entry.file_type() { Ok(kind) => kind, Err(_) => continue };

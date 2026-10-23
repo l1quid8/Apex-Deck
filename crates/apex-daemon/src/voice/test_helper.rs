@@ -17,13 +17,7 @@ pub async fn fake_helper(token: &str) -> (Running, tokio::task::JoinHandle<()>) 
             let token = token.clone();
             let owner = owner.clone();
             tokio::spawn(async move {
-                let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(
-                    stream,
-                    |req: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-                        assert_eq!(req.headers()["origin"], "apex-daemon");
-                        Ok(response)
-                    },
-                )
+                let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(stream, origin_check)
                 .await
                 else {
                     return;
@@ -119,4 +113,19 @@ pub fn bin(seq: u32) -> String {
     b[2] = 1;
     b[8..12].copy_from_slice(&seq.to_le_bytes());
     base64::engine::general_purpose::STANDARD.encode(b)
+}
+
+/// The fake helper accepts a handshake only from the daemon's own origin.
+/// tungstenite fixes the callback's error type, and its `ErrorResponse` is
+/// much larger than the response it hands back.
+#[allow(clippy::result_large_err)]
+fn origin_check(
+    req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+    response: tokio_tungstenite::tungstenite::handshake::server::Response,
+) -> Result<
+    tokio_tungstenite::tungstenite::handshake::server::Response,
+    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+> {
+    assert_eq!(req.headers()["origin"], "apex-daemon");
+    Ok(response)
 }

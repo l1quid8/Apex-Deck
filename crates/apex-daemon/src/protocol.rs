@@ -552,7 +552,7 @@ where
                         match need {
                             Ok(need) => {
                                 in_flight += 1;
-                                run(Arc::clone(&daemon.host), id, command, need, replies_tx.clone(), hello.client_capability);
+                                run(Arc::clone(&daemon.host), id, *command, need, replies_tx.clone(), hello.client_capability);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -580,7 +580,7 @@ where
             Some((id,need,room,result))=voice_done.recv()=>{
                 in_flight -= 1;
                 let allowed = reading
-                    && guard.as_ref().map_or(true, |g| {
+                    && guard.as_ref().is_none_or(|g| {
                         g.device()
                             .is_some_and(|d| authority::check(&d, &need).is_ok())
                     });
@@ -604,8 +604,8 @@ where
             }
             Some(line)=voice.next_line(), if reading=>{
                 let denied = voice.room().is_some_and(|room| {
-                    guard.as_ref().map_or(false, |g| {
-                        g.device().map_or(true, |d| {
+                    guard.as_ref().is_some_and(|g| {
+                        g.device().is_none_or(|d| {
                             authority::check(
                                 &d,
                                 &authority::Need::Tier(Tier::Chat, authority::Scope::Thread(room.into())),
@@ -703,11 +703,18 @@ fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>
 #[derive(Debug, serde::Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
 enum DevicesRequest {
-    DevicesList {},
-    DevicesAdd { id: String, label: String, tier: Tier, threads: Option<Threads>, #[serde(default)] restore: bool },
-    DevicesSetTier { id: String, tier: Tier },
-    DevicesSetThreads { id: String, threads: Threads },
-    DevicesRevoke { id: String },
+    // The variants are named for the request and the wire command carries the
+    // `devices_` prefix the CLI and the phone send.
+    #[serde(rename = "devices_list")]
+    List {},
+    #[serde(rename = "devices_add")]
+    Add { id: String, label: String, tier: Tier, threads: Option<Threads>, #[serde(default)] restore: bool },
+    #[serde(rename = "devices_set_tier")]
+    SetTier { id: String, tier: Tier },
+    #[serde(rename = "devices_set_threads")]
+    SetThreads { id: String, threads: Threads },
+    #[serde(rename = "devices_revoke")]
+    Revoke { id: String },
 }
 
 /// Run a `devices_*` request given as `{ "cmd", "args" }`, as the CLI does
@@ -719,18 +726,20 @@ pub fn manage_json(devices: &Devices, request: Value) -> Result<Value, String> {
 fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
     let value = |v: Result<Device, String>| v.and_then(|d| serde_json::to_value(d).map_err(|e| e.to_string()));
     match request {
-        DevicesRequest::DevicesList {} => serde_json::to_value(devices.list()?).map_err(|e| e.to_string()),
-        DevicesRequest::DevicesAdd { id, label, tier, threads, restore } => value(devices.add(&id, &label, tier, threads.unwrap_or(Threads::ALL), restore)),
-        DevicesRequest::DevicesSetTier { id, tier } => value(devices.set_tier(&id, tier)),
-        DevicesRequest::DevicesSetThreads { id, threads } => value(devices.set_threads(&id, threads)),
-        DevicesRequest::DevicesRevoke { id } => devices.revoke(&id).map(|()| Value::Null),
+        DevicesRequest::List {} => serde_json::to_value(devices.list()?).map_err(|e| e.to_string()),
+        DevicesRequest::Add { id, label, tier, threads, restore } => value(devices.add(&id, &label, tier, threads.unwrap_or(Threads::ALL), restore)),
+        DevicesRequest::SetTier { id, tier } => value(devices.set_tier(&id, tier)),
+        DevicesRequest::SetThreads { id, threads } => value(devices.set_threads(&id, threads)),
+        DevicesRequest::Revoke { id } => devices.revoke(&id).map(|()| Value::Null),
     }
 }
 
 enum Request {
     Voice(crate::voice::session::VoiceRequest),
     VoiceFrame(Value),
-    Host(Command),
+    // Boxed: `Command` carries every field of every host request, and this
+    // enum is built for each frame the daemon reads.
+    Host(Box<Command>),
     Devices(DevicesRequest),
     Gateway(crate::gateway_cli::KeysRequest),
     GatewayAdmin(crate::gateway_admin::Request),
@@ -809,7 +818,7 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
         return Ok((id, Request::Pairing(request)));
     }
     let command = Command::from_json(value).map_err(|why| refusal(json!(id), why))?;
-    Ok((id, Request::Host(command)))
+    Ok((id, Request::Host(Box::new(command))))
 }
 
 struct Hello {

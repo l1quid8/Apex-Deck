@@ -195,7 +195,7 @@ pub fn codex_models_from_cache(json: &str) -> Vec<ModelChoice> {
         let Some(id) = model.get("slug").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
             continue;
         };
-        let visible = model.get("visibility").and_then(Value::as_str).map_or(true, |v| v == "list");
+        let visible = model.get("visibility").and_then(Value::as_str).is_none_or(|v| v == "list");
         if !visible || found.iter().any(|(_, m)| m.id == id) {
             continue;
         }

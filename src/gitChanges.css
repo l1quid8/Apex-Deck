@@ -49,4 +49,9 @@
 .git-confirm p { margin: 0 0 8px; font-size: 11px; overflow-wrap: anywhere; }
 .git-confirm > button + button { margin-left: 6px; }
 
+.git-unselected-group { margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 6px; }
+.git-unselected-toggle { border: 0; background: transparent; color: var(--muted); font-size: 10px; padding: 4px 2px; cursor: pointer; }
+.git-unselected-toggle:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.git-file-entry.is-unselected { opacity: 0.72; }
+
 .git-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

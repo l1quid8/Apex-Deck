@@ -134,6 +134,9 @@ impl Default for MonitorDocument {
 }
 
 impl ProjectMonitor {
+    // The monitor's identity and the folder it watches; every one of them is
+    // part of what makes two monitors the same one.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         workspace_id: String,
         conversation_id: String,

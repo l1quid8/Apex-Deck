@@ -134,6 +134,7 @@ fn plan(name: &str, used_percent: f64, minutes: Option<u64>, resets_at: Option<u
             resets_at,
         }],
         partial: false,
+        reset_credits: None,
     }
 }
 

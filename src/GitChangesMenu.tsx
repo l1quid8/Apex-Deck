@@ -35,6 +35,7 @@ export function GitChangesMenu({ backend, room, cwd, active, ready, revision, re
   const serial = useRef(0);
   const reading = useRef(false);
   const observed = useRef<GitState | null>(null);
+  const [showUnselected, setShowUnselected] = useState(false);
   const refresh = useCallback(async () => {
     if (reading.current) return;
     reading.current = true;
@@ -112,37 +113,58 @@ export function GitChangesMenu({ backend, room, cwd, active, ready, revision, re
   };
   const gates = state ? gitGates(state) : { checks: false, pr: false, merge: false };
   const blocked = Boolean(!ready || busy || loading);
-  const committed = Boolean(state?.clean && state.ahead > 0);
+  const committed = Boolean(state && state.ahead > 0);
   const steps = [committed, Boolean(state?.checksPassed), false];
   const currentStep = steps.findIndex(done => !done);
-  const mergeReason = !state ? 'Read repository state first.' : !state.branch ? 'Check out a branch.' : !state.target ? 'No local target branch.' : state.branch === state.target ? 'Already on the target branch.' : !state.clean ? 'Commit or resolve working changes first.' : !state.ahead ? 'No commits to merge.' : state.behind ? 'Update from the target, then rerun checks.' : !state.checksPassed ? 'Run checks on the latest commit.' : `Merge into ${state.target} and delete ${state.branch}`;
+  const mergeReason = !state ? 'Read repository state first.' : !state.branch ? 'Check out a branch.' : !state.target ? 'No local target branch.' : state.branch === state.target ? 'Already on the target branch.' : !state.ahead ? 'No commits to merge.' : state.behind ? 'Update from the target, then rerun checks.' : !state.checksPassed ? 'Run checks on this commit.' : state.files.length > 0 ? `Ready: fast-forward ${state.branch} → ${state.target}. ${state.files.length} uncommitted file${state.files.length === 1 ? '' : 's'} stay untouched.` : `Merge into ${state.target} and delete ${state.branch}`;
+  const canRunChecks = gates.checks;
   return <>
     <button ref={button} type="button" className={`ghost small git-changes-trigger${state?.clean ? ' is-clean' : ''}`} aria-label={`Changes${state ? ` · ${state.files.length}` : ''}`} aria-expanded={open} aria-controls={id} disabled={!ready || (!open && !canOpen)} title="Working tree changes" onClick={() => { button.current?.focus(); setConfirm(null); onOpen(); }}>
       <span className="git-state-dot" aria-hidden="true" /><span>{state ? state.files.length : '±'}</span><span className="count-label"> {state?.files.length === 1 ? 'change' : 'changes'}</span>
     </button>
     {open && target && createPortal(<div id={id} ref={menu} tabIndex={-1} className="git-changes-menu" role="region" aria-label="Working tree changes" aria-busy={Boolean(busy)}>
       <header className="git-menu-head"><span className="git-state-dot" aria-hidden="true" /><strong>{state ? `${state.files.length} changes` : 'Changes'}</strong><span className="git-card-branch">{onWorktrees ? <button type="button" className="ghost" title="Show worktrees" onClick={onWorktrees}><code>{state?.branch ?? (state ? 'Detached HEAD' : '')}</code></button> : <code>{state?.branch ?? (state ? 'Detached HEAD' : '')}</code>}{state?.target ? ` → ${state.target}` : ''}</span><span className="git-live-label">live now</span><button type="button" className="git-icon" aria-label="Refresh changes" disabled={blocked} onClick={() => void refresh()}>↻</button><button type="button" className="git-icon" aria-label="Close changes" onClick={closeCard}>×</button></header>
-      {state && <>
+      {state && (() => {
+        const selectedSet = new Set(selected);
+        const selectedFiles = state.files.filter(f => selectedSet.has(f.path));
+        const unselectedFiles = state.files.filter(f => !selectedSet.has(f.path));
+        return <>
         <div className="git-file-list" aria-label="Current changed files">
           {state.files.length === 0 && <p className="git-empty">{state.clean ? 'Nothing to commit' : 'Resolve staged changes in Git first.'}</p>}
-          {state.files.map(file => <div key={file.path} className="git-file-entry">
+          {selectedFiles.map(file => <div key={file.path} className="git-file-entry">
             <div className="git-file-row">
-              <input id={`${id}-${file.path}`} type="checkbox" aria-label={`Include ${file.path} in commit`} checked={selected.includes(file.path)} disabled={blocked || file.stagedOnly} onChange={e => choose(file.path, e.target.checked)} />
+              <input id={`${id}-${file.path}`} type="checkbox" aria-label={`Include ${file.path} in commit`} checked={true} disabled={blocked || file.stagedOnly} onChange={e => choose(file.path, e.target.checked)} />
               <button type="button" className="git-file-name" title={file.stagedOnly ? `${file.path} · staged changes differ from working copy; resolve staging in Git first` : file.path} aria-expanded={expanded === file.path} onClick={() => setExpanded(v => v === file.path ? null : file.path)}>{file.path}</button>
               {request?.paths && selectTurnFiles([file], request.paths, state.root, cwd).length > 0 && <span className="git-turn-mark" title="Changed in this turn" aria-label="Changed in this turn" />}
               <span className="git-file-stat" title={file.stagedOnly ? 'Staged only' : undefined}><span className="plus">+{file.added}</span> <span className="minus">−{file.removed}</span>{file.stagedOnly ? ' *' : ''}</span>
             </div>
             {expanded === file.path && <div className="git-file-patch"><Diff text={file.patch} /></div>}
           </div>)}
+          {unselectedFiles.length > 0 && <div className="git-unselected-group">
+            <button type="button" className="git-unselected-toggle" aria-expanded={showUnselected} aria-label={`${showUnselected ? 'Hide' : 'Show'} ${unselectedFiles.length} unselected file${unselectedFiles.length === 1 ? '' : 's'}`} onClick={() => setShowUnselected(v => !v)}>{showUnselected ? '▼' : '▶'} {unselectedFiles.length} unselected file{unselectedFiles.length === 1 ? '' : 's'}</button>
+            {showUnselected && unselectedFiles.map(file => <div key={file.path} className="git-file-entry is-unselected">
+              <div className="git-file-row">
+                <input id={`${id}-${file.path}`} type="checkbox" aria-label={`Include ${file.path} in commit`} checked={false} disabled={blocked || file.stagedOnly} onChange={e => choose(file.path, e.target.checked)} />
+                <button type="button" className="git-file-name" title={file.stagedOnly ? `${file.path} · staged changes differ from working copy; resolve staging in Git first` : file.path} aria-expanded={expanded === file.path} onClick={() => setExpanded(v => v === file.path ? null : file.path)}>{file.path}</button>
+                <span className="git-file-stat" title={file.stagedOnly ? 'Staged only' : undefined}><span className="plus">+{file.added}</span> <span className="minus">−{file.removed}</span>{file.stagedOnly ? ' *' : ''}</span>
+              </div>
+              {expanded === file.path && <div className="git-file-patch"><Diff text={file.patch} /></div>}
+            </div>)}
+          </div>}
         </div>
         {state.files.some(f => !f.stagedOnly) && <form className="git-commit-row" onSubmit={e => { e.preventDefault(); void perform('commit'); }}>
           <label className="git-sr-only" htmlFor={`${id}-message`}>Commit message</label><input id={`${id}-message`} aria-label="Commit message" placeholder="Commit message" maxLength={500} value={message} disabled={Boolean(busy)} onChange={e => setMessage(e.target.value)} />
           <button type="submit" className="git-primary" disabled={blocked || !selected.length || !message.trim() || !state.branch} title="Commit the full current contents of selected files">{busy === 'commit' ? 'Committing…' : selected.length === state.files.length ? 'Commit' : `Commit ${selected.length} of ${state.files.length}`}</button>
         </form>}
-        <ol className="git-step-rail" aria-label="Steps to merge">{['Commit', 'Checks', 'Merge'].map((label, i) => <li key={label} className={steps[i] ? 'done' : currentStep === i ? 'current' : ''} aria-current={currentStep === i ? 'step' : undefined}><span className="git-step-dot" aria-hidden="true">{steps[i] ? '✓' : ''}</span>{i === 1 && committed && !state.checksPassed ? <button type="button" disabled={blocked || !gates.checks} title="Run npx --no-install tsc --noEmit" onClick={() => void perform('checks')}>{busy === 'checks' ? 'Checking…' : 'Run checks'}</button> : label}</li>)}</ol>
+        <ol className="git-step-rail" aria-label="Steps to merge">
+          <li className={steps[0] ? 'done' : currentStep === 0 ? 'current' : ''} aria-current={currentStep === 0 ? 'step' : undefined}><span className="git-step-dot" aria-hidden="true">{steps[0] ? '✓' : ''}</span>Commit</li>
+          <li className={steps[1] ? 'done' : currentStep === 1 ? 'current' : ''} aria-current={currentStep === 1 ? 'step' : undefined}><span className="git-step-dot" aria-hidden="true">{steps[1] ? '✓' : ''}</span>{canRunChecks ? <button type="button" disabled={blocked} title="Run npx --no-install tsc --noEmit on an isolated checkout of the commit, so uncommitted files cannot change the result" onClick={() => void perform('checks')}>{busy === 'checks' ? 'Checking…' : 'Run checks'}</button> : 'Checks'}</li>
+          <li className={steps[2] ? 'done' : currentStep === 2 ? 'current' : ''} aria-current={currentStep === 2 ? 'step' : undefined}><span className="git-step-dot" aria-hidden="true">{steps[2] ? '✓' : ''}</span>Merge</li>
+        </ol>
         <div className="git-branch-actions"><button type="button" disabled={blocked || !gates.pr} title="Publish this branch to origin and create or find its GitHub PR" onClick={() => setConfirm('pr')}>Open PR</button><button type="button" className={gates.merge ? 'git-primary' : ''} disabled={blocked || !gates.merge} title={mergeReason} onClick={() => setConfirm('merge')}>Merge</button></div>
-        {confirm && <div className="git-confirm"><p>{confirm === 'merge' ? `Merge ${state.ahead} commit${state.ahead === 1 ? '' : 's'} into ${state.target} and delete ${state.branch}?` : `Publish ${state.ahead} commit${state.ahead === 1 ? '' : 's'} to origin and open a PR into ${state.target}? Uncommitted files are excluded.`}</p><button type="button" className="git-primary" disabled={blocked} onClick={() => void perform(confirm)}>{confirm === 'merge' ? 'Confirm merge' : 'Publish & open PR'}</button><button type="button" disabled={blocked} onClick={() => setConfirm(null)}>Cancel</button></div>}
-      </>}
+        <p className="git-menu-status" role="status" title={mergeReason}>{mergeReason}</p>
+        {confirm && <div className="git-confirm"><p>{confirm === 'merge' ? `Merge ${state.ahead} commit${state.ahead === 1 ? '' : 's'} into ${state.target} and delete ${state.branch}? Uncommitted files are not touched.` : `Publish ${state.ahead} commit${state.ahead === 1 ? '' : 's'} to origin and open a PR into ${state.target}? Uncommitted files are excluded.`}</p><button type="button" className="git-primary" disabled={blocked} onClick={() => void perform(confirm)}>{confirm === 'merge' ? 'Confirm merge' : 'Publish & open PR'}</button><button type="button" disabled={blocked} onClick={() => setConfirm(null)}>Cancel</button></div>}
+      </>; })()}
       {loading && !state && <p className="git-empty" role="status">Reading Git state…</p>}
       <div className="git-menu-foot"><span>{state ? `${state.ahead} ahead${state.behind ? ` · ${state.behind} behind` : ''}` : ''}</span><button type="button" onClick={() => { onClose(); onReview(); }}>Thread diff</button></div>
       {error && <p className="git-menu-error" role="alert">{error}</p>}

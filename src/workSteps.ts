@@ -59,7 +59,7 @@ export const isUnknownStepsCommand = (error: unknown): boolean =>
 
 const KINDS = ["command", "read", "search", "list", "edit", "web", "tool", "helper", "thinking", "other"];
 const STATUSES = ["running", "done", "failed", "stopped"];
-const TODO_STATUSES = ["pending", "in_progress", "completed"];
+const TODO_STATUSES = ["pending", "in_progress", "completed", "cancelled"];
 
 const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
 const str = (v: unknown): v is string => typeof v === "string";

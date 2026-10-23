@@ -13,10 +13,12 @@ use std::{
     time::Duration,
 };
 use tokio::sync::watch;
+/// Free space left on the filesystem holding a path.
+pub type FreeBytes = Arc<dyn Fn(&Path) -> Result<u64, String> + Send + Sync>;
 pub struct Deps {
     pub fetch: Arc<dyn install::Fetch>,
     pub run: Arc<dyn install::Run>,
-    pub free_bytes: Arc<dyn Fn(&Path) -> Result<u64, String> + Send + Sync>,
+    pub free_bytes: FreeBytes,
     pub launch: Arc<dyn Launch>,
     pub idle: Duration,
 }
@@ -408,7 +410,7 @@ fn free_bytes(path: &Path) -> Result<u64, String> {
             return Err(std::io::Error::last_os_error().to_string());
         }
         let s = unsafe { stat.assume_init() };
-        Ok(s.f_bavail as u64 * s.f_frsize as u64)
+        Ok(s.f_bavail as u64 * s.f_frsize)
     }
     #[cfg(not(unix))]
     {

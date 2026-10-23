@@ -216,6 +216,18 @@ test('a bot\'s models and balance are asked for by thread and bot, never by addr
   assert.equal(await commandBackend({ ...transport, call: async () => 'x' }, stubShell()).roomBotBalance('r', 'deep'), null);
 });
 
+test('a usage reset is asked for by thread and provider', async () => {
+  const transport = recording();
+  transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return 'reset'; };
+  const backend = commandBackend(transport, stubShell());
+  assert.equal(await backend.roomPlanReset('r', 'codex', 'c1', 'k1'), 'reset');
+  await backend.roomPlanReset('r', 'codex', null, 'k2');
+  assert.deepEqual(transport.calls, [
+    { cmd: 'room_plan_reset', args: { room: 'r', tool: 'codex', credit: 'c1', key: 'k1' } },
+    { cmd: 'room_plan_reset', args: { room: 'r', tool: 'codex', credit: null, key: 'k2' } },
+  ]);
+});
+
 test('phone methods send the phone commands', async () => {
   const transport = recording();
   const { phone } = commandBackend(transport, stubShell());
@@ -231,6 +243,6 @@ test('phone methods send the phone commands', async () => {
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });

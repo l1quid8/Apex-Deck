@@ -72,6 +72,9 @@ pub enum TodoStatus {
     Pending,
     InProgress,
     Completed,
+    /// Called off before it ran. Muse reports these; they stay in the list
+    /// rather than vanishing from it.
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,7 +145,7 @@ impl ReplySteps {
     /// without output keeps the earlier output.
     pub fn push(&mut self, mut step: WorkStep) {
         if let Some(old) = self.steps.iter_mut().find(|s| s.key == step.key) {
-            if step.output.as_deref().map_or(true, str::is_empty) && old.output.as_deref().is_some_and(|o| !o.is_empty()) {
+            if step.output.as_deref().is_none_or(str::is_empty) && old.output.as_deref().is_some_and(|o| !o.is_empty()) {
                 step.output = old.output.take();
                 step.output_cut = old.output_cut;
             }

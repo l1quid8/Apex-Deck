@@ -18,6 +18,10 @@ use crate::Host;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
+// Commands arrive one at a time from the UI and are matched once, so the
+// largest payload stays inline: a box would add an indirection to every
+// command to shrink a value that is built, matched and dropped in one call.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Exact root-attested command; never an arbitrary nested command.
     ProvenanceExecute { receipt: apex_provenance::Signed },
@@ -174,6 +178,7 @@ pub enum Command {
     AgentModels { tool: AgentTool },
     RoomBotModels { room: String, participant: ParticipantId },
     RoomBotBalance { room: String, participant: ParticipantId },
+    RoomPlanReset { room: String, tool: AgentTool, #[serde(default)] credit: Option<String>, #[serde(default)] key: Option<String> },
     OpenTarget { target: String, cwd: Option<String>, reveal: Option<bool> },
     WorkspaceRead { target: String, cwd: Option<String> },
     PathsExist { targets: Vec<String>, cwd: Option<String> },
@@ -491,6 +496,7 @@ impl Host {
             AgentModels { tool } => reply(self.agent_models(tool)),
             RoomBotModels { room, participant } => reply(self.room_bot_models(&room, &participant).await?),
             RoomBotBalance { room, participant } => reply(self.room_bot_balance(&room, &participant).await?),
+            RoomPlanReset { room, tool, credit, key } => reply(self.room_plan_reset(&room, tool, credit, key).await?),
             OpenTarget { target, cwd, reveal } => reply(self.open_target(target, cwd, reveal)?),
             WorkspaceRead { target, cwd } => reply(self.workspace_read(target, cwd)),
             PathsExist { targets, cwd } => reply(self.paths_exist(targets, cwd)),
@@ -624,10 +630,11 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 169);
+        assert_eq!(names.len(), 170);
         for name in ["personal_avatar_options", "personal_avatar_generate", "personal_avatar_status", "personal_avatar_cancel", "personal_avatar_asset"] { assert!(names.contains(&name.to_owned())); }
         for name in ["legacy_import_preview", "legacy_import_apply", "legacy_import_history"] { assert!(names.contains(&name.to_owned())); }
         for name in ["project_memory_list", "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote"] { assert!(names.contains(&name.to_owned())); }
+        assert!(names.contains(&"room_plan_reset".to_string()));
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));

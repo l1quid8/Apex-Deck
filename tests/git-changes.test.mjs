@@ -11,9 +11,15 @@ test('refresh preserves explicit deselection and never silently selects new file
   assert.deepEqual(selectTurnFiles(files, ['gone.ts'], '/repo', '/repo'), []);
 });
 const state={branch:'feat/test',target:'main',ahead:2,behind:0,clean:true,checksPassed:true,files:[]};
-test('merge requires a checked clean branch ahead of its target and blocks detached or behind branches', () => {
+test('merge needs a checked branch ahead of its target and ignores unrelated uncommitted files', () => {
   assert.equal(gitGates(state).merge, true);
-  for(const change of [{clean:false},{checksPassed:false},{branch:null},{branch:'main'},{target:null},{ahead:0},{behind:1}]) assert.equal(gitGates({...state,...change}).merge, false);
+  for(const change of [{checksPassed:false},{branch:null},{branch:'main'},{target:null},{ahead:0},{behind:1}]) assert.equal(gitGates({...state,...change}).merge, false);
+  // A dirty tree is not a blocker: checks are recorded against the commit, and the
+  // merge is a ref-only fast-forward that leaves working files alone.
+  assert.equal(gitGates({...state,clean:false}).merge, true);
   assert.equal(gitGates({...state,clean:false}).pr, true);
-  assert.equal(gitGates({...state,clean:false}).checks, false);
+  assert.equal(gitGates({...state,checksPassed:false}).checks, true);
+  assert.equal(gitGates({...state,clean:false,checksPassed:false}).checks, true);
+  assert.equal(gitGates({...state,checksPassed:true}).checks, false);
+  assert.equal(gitGates({...state,ahead:0}).checks, false);
 });

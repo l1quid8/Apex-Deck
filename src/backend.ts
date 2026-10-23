@@ -10,7 +10,7 @@ import { mentionTarget } from "./recipients";
 import { mentionFor } from "./slug";
 import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
-import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PhoneInput, PhoneStatus, PhoneView, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PhoneInput, PhoneStatus, PhoneView, PreviewProbe, ProposedAction, ResetCredits, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
 
 export type Unlisten = () => void;
 
@@ -99,6 +99,10 @@ export interface Backend {
   roomBotModels?(room: string, participant: string): Promise<ApiModel[]>;
   /** What is left on API bot `participant`'s account, in US dollars. Null when the provider has no balance check. */
   roomBotBalance?(room: string, participant: string): Promise<number | null>;
+  /** Use one of `tool`'s usage resets (`credit`, or the next one) for the account a bot in `room` is signed in to.
+   *  Every open chat then gets the plan as it stands after. Codex and Claude offer them. `key` names this attempt:
+   *  send the same one to try again, so a reset that went through unseen isn't spent twice. */
+  roomPlanReset?(room: string, tool: AgentTool, credit: string | null, key: string): Promise<import("./resetCredits").ResetOutcome>;
   /** Models a coding agent lists for the account it is signed in to. Empty if it keeps no list. */
   agentModels(tool: AgentTool): Promise<ModelChoice[]>;
   /** Have `writer` write a name and persona for a new agent from `idea`. `taken` are names already in use. Nothing is saved. */
@@ -365,6 +369,18 @@ function demoBackend(): Backend {
   const planUsed: Record<PlanTool, number> = { claude_code: 36, codex: 58, grok: 22, gemini: 41, muse: 12 };
   const isPlanTool = (tool: AgentTool): tool is PlanTool => (PLAN_TOOLS as readonly string[]).includes(tool);
   const hours = (n: number) => Math.floor(Date.now() / 1000 + n * 3600);
+  // Two granted resets with fixed deadlines, so their countdowns run steadily.
+  const demoCredits: Partial<Record<AgentTool, ResetCredits>> = {
+    codex: {
+      available: 2,
+      credits: [
+        { id: "demo-reset-1", title: "Full reset", description: "Granted by the browser demo.", granted_at: hours(-300), expires_at: hours(26.5) },
+        { id: "demo-reset-2", title: "Full reset", description: "Granted by the browser demo.", granted_at: hours(-120), expires_at: hours(158.25) },
+      ],
+    },
+    claude_code: { available: 1, credits: [{ id: "demo_grant", title: "Full reset", granted_at: 0, expires_at: hours(71) }] },
+  };
+  const creditsOf = (tool: AgentTool) => { const c = demoCredits[tool]; return c ? { ...c, credits: [...c.credits] } : undefined; };
   const reportContext = (room: string, p: ParticipantConfig, grow: number) => {
     if (p.backend.kind !== "agent") return;
     const window = WINDOWS[p.backend.tool];
@@ -376,12 +392,12 @@ function demoBackend(): Backend {
   };
   const reportPlan = (room: string, tool: AgentTool) => {
     if (tool === "claude_code") {
-      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
+      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, reset_credits: creditsOf(tool), windows: [
         { name: "five_hour", used_percent: planUsed.claude_code, window_minutes: 300, resets_at: hours(2) },
         { name: "seven_day", used_percent: 19, window_minutes: 10_080, resets_at: hours(80) },
       ] });
     } else if (tool === "codex") {
-      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
+      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, reset_credits: creditsOf(tool), windows: [
         { name: "primary", used_percent: planUsed.codex, window_minutes: 10_080, resets_at: hours(100) },
       ] });
     } else if (tool === "grok") {
@@ -747,6 +763,19 @@ function demoBackend(): Backend {
     apiBalance: async () => null,
     apiQuote: async () => null,
     agentModels: async () => [],
+    roomPlanReset: async (room, tool, credit) => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const credits = demoCredits[tool];
+      if (!credits || !isPlanTool(tool)) throw new Error("only Codex and Claude offer usage resets");
+      const index = credit ? credits.credits.findIndex((c) => c.id === credit) : 0;
+      if (credits.available === 0 || index < 0) return "no_credit";
+      if (planUsed[tool] === 0) return "nothing_to_reset";
+      credits.credits.splice(index, 1);
+      credits.available -= 1;
+      planUsed[tool] = 0;
+      reportPlan(room, tool);
+      return "reset";
+    },
     personaDraft: async (_writer, idea) => {
       await new Promise((resolve) => setTimeout(resolve, 600));
       return { name: "Sketch", persona: `You are Sketch, a stand-in written by the browser demo for: ${idea.trim().slice(0, 80)}` };

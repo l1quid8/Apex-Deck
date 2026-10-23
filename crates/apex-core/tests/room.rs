@@ -363,6 +363,7 @@ impl Participant for WorkingBot {
             provider: AgentTool::Codex,
             windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
             partial: true,
+            reset_credits: None,
         }));
         Ok(Reply { text: "Done.".into(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false })
     }
@@ -418,6 +419,8 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
                 provider: AgentTool::Codex,
                 windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
                 partial: true,
+                model: None,
+                reset_credits: None,
             },
             &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false },
             &RoomEvent::MessageAdded {

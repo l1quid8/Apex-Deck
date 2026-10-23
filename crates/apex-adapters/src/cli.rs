@@ -207,6 +207,11 @@ impl CliParticipant {
         if program == "muse" {
             command.env_remove(muse_server::API_KEY_ENV);
         }
+        // Claude ships the tools that keep a bot's to-do list switched off.
+        // They change no file and run nothing: they only record the plan.
+        if matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
+            command.env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
+        }
 
         // Keep colour codes and progress animations out of the reply.
         command.env("NO_COLOR", "1").env("TERM", "dumb");
@@ -306,6 +311,8 @@ impl CliParticipant {
     }
 
     /// A Muse Code turn through its session host. See muse_server.rs.
+    // Eight parts of one turn, for the same reason as `run_with_images`.
+    #[allow(clippy::too_many_arguments)]
     async fn run_muse_server(
         &self,
         program: &str,

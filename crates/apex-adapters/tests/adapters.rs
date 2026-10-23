@@ -622,6 +622,110 @@ async fn api_reply_reports_context_fill_and_the_servers_cost() {
     assert_eq!(*context.lock().unwrap(), Some((250, 1000)));
 }
 
+/// A real `deepseek-chat` turn captured through this adapter on 2026-10-22
+/// (see `probe-notes-all-providers.md`): round one is the model calling
+/// `todo_write` with four steps, round two is its reply after Deck ran the
+/// tool. Replaying the raw SSE keeps the whole path covered without a key.
+const DEEPSEEK_TODO_CALL: &[u8] =
+    include_bytes!("fixtures/work_steps/deepseek_todo_write.1.sse");
+const DEEPSEEK_AFTER_TOOL: &[u8] =
+    include_bytes!("fixtures/work_steps/deepseek_todo_write.2.sse");
+
+/// Read one HTTP request: headers, then the body its `content-length` names.
+async fn read_http_request(socket: &mut tokio::net::TcpStream) -> String {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = socket.read(&mut chunk).await.unwrap();
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        let text = String::from_utf8_lossy(&buffer);
+        if let Some(split) = text.find("\r\n\r\n") {
+            let length = text[..split]
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            if buffer.len() >= split + 4 + length {
+                break;
+            }
+        }
+    }
+    String::from_utf8_lossy(&buffer).into_owned()
+}
+
+#[tokio::test]
+async fn deepseek_todo_write_becomes_the_bots_todo_list() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let mut chats: Vec<String> = Vec::new();
+        for _ in 0..4 {
+            let Ok(Ok((mut socket, _))) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await else { break };
+            let request = read_http_request(&mut socket).await;
+            let (kind, body): (&str, &[u8]) = if request.starts_with("GET ") {
+                ("application/json", br#"{"data":[{"id":"test-model"}]}"#)
+            } else if chats.is_empty() {
+                chats.push(request);
+                ("text/event-stream", DEEPSEEK_TODO_CALL)
+            } else {
+                chats.push(request);
+                ("text/event-stream", DEEPSEEK_AFTER_TOOL)
+            };
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(body).await.unwrap();
+            socket.shutdown().await.unwrap();
+        }
+        chats
+    });
+
+    // `build` gives the bot its tool box; a bare participant would send no
+    // tools and the captured call would never run.
+    let context = BuildContext {
+        cwd: Some(std::env::temp_dir()),
+        path: None,
+        codex_hook: None,
+        temp: None,
+        process_registry: None,
+        cargo_target_dir: None,
+        media_dir: None,
+        attachment_roots: vec![],
+        phone: None,
+    };
+    let bot = build(config("deepseek", api(address, None)), &context);
+    let lists = std::sync::Mutex::new(Vec::new());
+    let reply = bot
+        .respond_with_progress(request("set up a plan to move SQLite to Postgres"), &|update| {
+            if let apex_core::Progress::Todo(items) = update {
+                lists.lock().unwrap().push(items.to_vec());
+            }
+        })
+        .await
+        .unwrap();
+
+    let seen = lists.into_inner().unwrap();
+    let list = seen.last().expect("the model's todo_write should surface as a list");
+    assert_eq!(list.len(), 4, "{list:?}");
+    assert_eq!(list[0].status, apex_core::work_steps::TodoStatus::InProgress, "{list:?}");
+    assert_eq!(list[1].status, apex_core::work_steps::TodoStatus::Pending, "{list:?}");
+    assert!(!reply.text.is_empty());
+
+    // Deck ran the tool before asking again: the second request carries the
+    // tool result, not just the model's arguments.
+    let chats = server.await.unwrap();
+    assert!(chats[1].contains(r#""role":"tool""#), "{}", &chats[1][..200.min(chats[1].len())]);
+    assert!(chats[1].contains("The to-do list has 4 items."), "{}", &chats[1][..400.min(chats[1].len())]);
+}
+
 #[tokio::test]
 async fn model_list_reports_a_server_that_is_not_running() {
     // Port 9 (discard) is not listening on a normal machine.
@@ -1616,8 +1720,8 @@ async fn claude_questions_reach_the_person_and_the_answer_goes_back() {
         *person.said.lock().unwrap() = Some(Answer::Answered(vec![vec!["blue".into()], vec!["apple".into(), "pear".into()]]));
         let (result, _, _) = work_asking(bot.as_ref(), &person).await;
         assert_eq!(result.unwrap().text, "blue with apple, pear");
-        let asked = person.questions.lock().unwrap();
-        assert_eq!(asked.iter().map(|q| q.question.as_str()).collect::<Vec<_>>(), ["Which colour?", "Which fruit?"]);
+        let asked: Vec<String> = person.questions.lock().unwrap().iter().map(|q| q.question.clone()).collect();
+        assert_eq!(asked, ["Which colour?", "Which fruit?"]);
         assert!(person.asked.lock().unwrap().is_empty(), "a question is not an approval card");
 
         let (result, _, _) = work_asking(bot.as_ref(), &Fixed::new(Decision::Approve)).await;
@@ -1705,9 +1809,9 @@ async fn a_planning_claude_asks_before_it_starts_the_work() {
     let yes = Fixed::new(Decision::Approve);
     let (result, _, _) = work_asking_with(bot.as_ref(), &yes, planning("hi")).await;
     assert_eq!(result.unwrap().text, "working", "approved: Claude goes on with its own Full access");
-    let asked = yes.asked.lock().unwrap();
+    let asked: Vec<_> = yes.asked.lock().unwrap().iter().map(|a| (a.kind, a.title.clone(), a.detail.clone())).collect();
     assert_eq!(asked.len(), 1);
-    assert_eq!((asked[0].kind, asked[0].title.as_str(), asked[0].detail.as_str()), (ActionKind::Plan, "Start the work?", "1. Make hello.txt"));
+    assert_eq!((asked[0].0, asked[0].1.as_str(), asked[0].2.as_str()), (ActionKind::Plan, "Start the work?", "1. Make hello.txt"));
 
     let no = Fixed::new(Decision::Reject);
     let (result, _, _) = work_asking_with(bot.as_ref(), &no, planning("hi")).await;

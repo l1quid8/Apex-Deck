@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use apex_core::work_steps::{StepStatus, TodoItem, WorkStep, STEPS_PER_REPLY_MAX};
 use apex_core::{
-    ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction,
+    ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction, ResetCredit, ResetCredits,
 };
 use serde_json::Value;
 
@@ -364,7 +364,7 @@ impl EventReader {
     fn claude(&mut self, event: &Value, steps: &mut Vec<Step>) {
         // Work done by a helper agent is reported with the id of the tool
         // call that started it. Its text is not part of this reply.
-        let own = event.get("parent_tool_use_id").map_or(true, Value::is_null);
+        let own = event.get("parent_tool_use_id").is_none_or(Value::is_null);
         match event["type"].as_str() {
             Some("stream_event") if own => {
                 let inner = &event["event"];
@@ -569,6 +569,11 @@ impl EventReader {
         input: &Value,
         steps: &mut Vec<Step>,
     ) {
+        if work_feed::grok_todo_tool(name) {
+            // The list arrives in the result; see `claude_tool_result`.
+            self.todo_calls.insert(id.to_string(), (name.to_string(), input.clone()));
+            return;
+        }
         if work_feed::claude_todo_tool(name) {
             match name {
                 // A helper's list would replace the bot's own.
@@ -593,6 +598,18 @@ impl EventReader {
         let failed = block["is_error"].as_bool().unwrap_or(false);
         let text = work_feed::claude_result_text(&block["content"]);
         if let Some((tool, input)) = self.todo_calls.remove(id) {
+            if work_feed::grok_todo_tool(&tool) {
+                match work_feed::grok_todos(&text).filter(|_| !failed) {
+                    Some(list) => steps.push(Step::Todo(list)),
+                    // The list came back in a shape Deck doesn't know: show
+                    // the call rather than drop it without a trace.
+                    None => {
+                        let step = work_feed::claude_step(id, None, &tool, &input, self.cwd.as_deref());
+                        self.work_step(step, steps);
+                    }
+                }
+                return;
+            }
             if !failed && work_feed::fold_task(&mut self.tasks, &tool, &input, meta, &text) {
                 steps.push(Step::Todo(self.tasks.iter().map(|(_, item)| item.clone()).collect()));
             }
@@ -843,15 +860,12 @@ impl EventReader {
                 return;
             }
         }
-        match message["method"].as_str() {
-            Some(method @ ("item/started" | "item/completed")) => {
-                let done = method == "item/completed";
-                self.codex_item_step(item, None, done, steps);
-                if kind == Some("subAgentActivity") {
-                    self.codex_helper_box(item, steps);
-                }
+        if let Some(method @ ("item/started" | "item/completed")) = message["method"].as_str() {
+            let done = method == "item/completed";
+            self.codex_item_step(item, None, done, steps);
+            if kind == Some("subAgentActivity") {
+                self.codex_helper_box(item, steps);
             }
-            _ => {}
         }
         match message["method"].as_str() {
             Some("item/agentMessage/delta") => {
@@ -1304,10 +1318,11 @@ pub(crate) fn claude_plan(info: &Value) -> Option<PlanUsage> {
                 .and_then(|name| window(name, info)),
         );
     }
-    (!windows.is_empty()).then(|| PlanUsage {
+    (!windows.is_empty()).then_some(PlanUsage {
         provider: AgentTool::ClaudeCode,
         windows,
         partial: false,
+        reset_credits: None,
     })
 }
 
@@ -1337,7 +1352,33 @@ pub(crate) fn codex_plan(snapshot: &Value, partial: bool) -> Option<PlanUsage> {
         provider: AgentTool::Codex,
         windows,
         partial,
+        reset_credits: None,
     })
+}
+
+/// The usage resets in an `account/rateLimits/read` answer
+/// (`rateLimitResetCredits`), soonest to expire first. Only ones still
+/// available that reset Codex's rate limits are kept. `None` when the answer didn't include them.
+pub(crate) fn codex_reset_credits(summary: &Value) -> Option<ResetCredits> {
+    let available = summary["availableCount"].as_u64()?;
+    let mut credits: Vec<ResetCredit> = summary["credits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|credit| credit["status"].as_str().is_none_or(|status| status == "available"))
+        .filter(|credit| credit["resetType"].as_str().is_none_or(|kind| kind == "codexRateLimits"))
+        .filter_map(|credit| {
+            Some(ResetCredit {
+                id: credit["id"].as_str()?.to_string(),
+                title: credit["title"].as_str().map(str::to_string),
+                description: credit["description"].as_str().map(str::to_string),
+                granted_at: credit["grantedAt"].as_u64().unwrap_or(0),
+                expires_at: credit["expiresAt"].as_u64(),
+            })
+        })
+        .collect();
+    credits.sort_by_key(|credit| credit.expires_at.unwrap_or(u64::MAX));
+    Some(ResetCredits { available, credits })
 }
 
 /// The message of an app server error, with its detail when the message
@@ -1977,6 +2018,7 @@ mod tests {
                     window("seven_day", 58, Some(10_080), Some(1791396000)),
                 ],
                 partial: false,
+                reset_credits: None,
             }]
         );
     }
@@ -2066,7 +2108,8 @@ mod tests {
             Some(PlanUsage {
                 provider: AgentTool::Codex,
                 windows: vec![window("primary", 15, Some(10_080), Some(1791580627))],
-                partial: false
+                partial: false,
+                reset_credits: None
             })
         );
         let both = json!({ "primary": { "usedPercent": 40, "windowDurationMins": 300, "resetsAt": 5 }, "secondary": { "usedPercent": 19 } });
@@ -2088,6 +2131,25 @@ mod tests {
     }
 
     #[test]
+    fn codex_reset_credits_are_the_available_ones_soonest_to_expire_first() {
+        // The shape `codex app-server` 0.162 answers with.
+        let summary = json!({ "availableCount": 3, "credits": [
+            { "id": "late", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1791417037, "expiresAt": 1794009037, "title": "Full reset", "description": "Thanks for using Codex!" },
+            { "id": "used", "resetType": "codexRateLimits", "status": "redeemed", "grantedAt": 1790000000, "expiresAt": 1792000000, "title": null },
+            { "id": "other", "resetType": "unknown", "status": "available", "grantedAt": 1790000000, "expiresAt": 1791000000 },
+            { "id": "forever", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1790000000, "expiresAt": null },
+            { "id": "soon", "resetType": "codexRateLimits", "status": "available", "grantedAt": 1790710015, "expiresAt": 1793302015, "title": "Full reset" }
+        ] });
+        let credits = codex_reset_credits(&summary).unwrap();
+        assert_eq!(credits.available, 3);
+        assert_eq!(credits.credits.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["soon", "late", "forever"]);
+        assert_eq!(credits.credits[0], ResetCredit { id: "soon".into(), title: Some("Full reset".into()), description: None, granted_at: 1790710015, expires_at: Some(1793302015) });
+        // Only a count is known.
+        assert_eq!(codex_reset_credits(&json!({ "availableCount": 1, "credits": null })), Some(ResetCredits { available: 1, credits: vec![] }));
+        assert_eq!(codex_reset_credits(&Value::Null), None);
+    }
+
+    #[test]
     fn codex_rate_limit_updates_replace_the_snapshot_including_null_windows() {
         let update = format!("{{\"method\":\"account/rateLimits/updated\",\"params\":{{\"rateLimits\":{CODEX_RATE_LIMITS}}}}}\n");
         let empty = "{\"method\":\"account/rateLimits/updated\",\"params\":{\"rateLimits\":{\"primary\":null,\"secondary\":null}}}\n";
@@ -2100,12 +2162,14 @@ mod tests {
                 PlanUsage {
                     provider: AgentTool::Codex,
                     windows: vec![window("primary", 15, Some(10_080), Some(1791580627))],
-                    partial: false
+                    partial: false,
+                    reset_credits: None
                 },
                 PlanUsage {
                     provider: AgentTool::Codex,
                     windows: vec![],
-                    partial: false
+                    partial: false,
+                    reset_credits: None
                 }
             ]
         );
@@ -2179,6 +2243,7 @@ mod tests {
         include_str!("../tests/fixtures/work_steps/claude_background.jsonl");
     const CODEX_FIXTURE: &str = include_str!("../tests/fixtures/work_steps/codex_turn.jsonl");
     const CODEX_PLAN_ONLY: &str = include_str!("../tests/fixtures/work_steps/codex_plan_only.jsonl");
+    const GROK_FIXTURE: &str = include_str!("../tests/fixtures/work_steps/grok_turn.jsonl");
     const CODEX_MAIN: &str = "01a14863-3c1a-76f2-a8b5-d5b52a9af162";
     const CODEX_HELPER: &str = "01a14863-5be9-75b1-ad9d-4cedc4b0b31d";
 
@@ -2452,6 +2517,43 @@ mod tests {
         assert_eq!((step(&all, "H1").label.as_str(), step(&all, "H1").status), ("fix_tests", StepStatus::Failed));
         assert_eq!(step(&all, "H2").status, StepStatus::Stopped);
         assert!(!reader.turn_over() && !reader.failed());
+    }
+
+    #[test]
+    fn grok_todo_write_feeds_the_todo_list() {
+        let steps = claude_steps(GROK_FIXTURE, "/tmp/probe");
+        let lists = todos(&steps);
+        assert_eq!(lists.len(), 4, "one list per todo_write result: {lists:?}");
+        assert_eq!(
+            lists[0],
+            [
+                ("Read a.txt".to_string(), TodoStatus::InProgress),
+                ("Run ls sub".to_string(), TodoStatus::Pending),
+                ("Run cat missing.txt".to_string(), TodoStatus::Pending),
+                ("Search folder for alpha".to_string(), TodoStatus::Pending),
+                ("Append 'probe' to a.txt".to_string(), TodoStatus::Pending),
+                ("Start helper to count lines in a.txt".to_string(), TodoStatus::Pending),
+            ]
+        );
+        // The later calls send only the items that changed; the result is
+        // still the whole merged list.
+        assert_eq!(lists[2][3].1, TodoStatus::Completed);
+        assert!(lists[3].iter().all(|(_, status)| *status == TodoStatus::Completed), "{lists:?}");
+        // The calls themselves are not work.
+        assert!(work(&steps).iter().all(|s| !s.label.contains("todo_write")), "{:#?}", work(&steps));
+    }
+
+    #[test]
+    fn a_todo_write_result_deck_cannot_read_still_shows_the_call() {
+        let stream = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"todo_write","input":{"todos":[]}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Updated the todo list"}]}}"#,
+            "\n",
+        );
+        let steps = claude_steps(stream, "/tmp/probe");
+        assert!(todos(&steps).is_empty(), "no list to show: {steps:#?}");
+        assert_eq!(work(&steps).len(), 1, "the call itself is shown: {steps:#?}");
     }
 
     #[test]

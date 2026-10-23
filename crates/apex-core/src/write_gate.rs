@@ -114,19 +114,17 @@ impl CheckoutWriteGate {
         let (ticket, mut receiver, was_retained) = {
             let mut state = self.state.lock().unwrap();
             if let Some(held) = &state.owner {
-                if held == &owner {
-                    if !state.active {
-                        state.active = true;
-                        if retained {
-                            state.retained = true;
-                        }
-                        return Ok(WriteLease {
-                            gate: self.clone(),
-                            owner,
-                            release_on_drop: !state.retained,
-                            active: true,
-                        });
+                if held == &owner && !state.active {
+                    state.active = true;
+                    if retained {
+                        state.retained = true;
                     }
+                    return Ok(WriteLease {
+                        gate: self.clone(),
+                        owner,
+                        release_on_drop: !state.retained,
+                        active: true,
+                    });
                 }
             } else if state.queue.is_empty() {
                 state.owner = Some(owner.clone());

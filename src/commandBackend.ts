@@ -84,6 +84,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
       const amount = await call<unknown>("room_bot_balance", { room, participant });
       return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
     },
+    roomPlanReset: (room, tool, credit, key) => call("room_plan_reset", { room, tool, credit, key }),
     agentModels: (tool) => call<ModelChoice[]>("agent_models", { tool }),
     personaDraft: (writer, idea, taken) => call<PersonaDraftResult>("persona_draft", { writer, idea, taken }),
     workspaceRead: (target, cwd) => call<string | null>("workspace_read", { target, cwd }),

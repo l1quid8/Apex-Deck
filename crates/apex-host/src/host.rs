@@ -650,21 +650,25 @@ impl Host {
 
     /// Read the plan usage of each provider in `configs` that can report it
     /// outside a turn, and send it to the chat as a `plan_usage` event.
-    /// Runs in the background; it asks no model anything.
+    /// Runs in the background; it asks no model anything. A provider can put a
+    /// model in a quota group of its own, so each model is read separately.
     fn read_plans(self: &Arc<Self>, room: &str, configs: &[ParticipantConfig], context: &BuildContext) {
-        let mut tools: Vec<AgentTool> = Vec::new();
+        let mut reads: Vec<(AgentTool, Option<String>)> = Vec::new();
         for config in configs {
-            if let apex_core::Backend::Agent { tool, .. } = config.backend {
-                if !tools.contains(&tool) {
-                    tools.push(tool);
+            if let apex_core::Backend::Agent { tool, model } = &config.backend {
+                let read = (*tool, model.clone());
+                if !reads.contains(&read) {
+                    reads.push(read);
                 }
             }
         }
-        for tool in tools {
+        for (tool, model) in reads {
             let (host, room, context) = (Arc::clone(self), room.to_string(), context.clone());
             self.runtime.spawn(async move {
-                if let Some(plan) = apex_adapters::plan_usage(tool, &context).await {
-                    host.room_event(&room, RoomEvent::plan(&plan));
+                if let Some(plan) = apex_adapters::plan_usage(tool, model.as_deref(), &context).await {
+                    // The model rides along so a chat with two models of one
+                    // provider shows each its own group.
+                    host.room_event(&room, RoomEvent::plan_for(&plan, model));
                 }
             });
         }
@@ -994,7 +998,7 @@ impl Host {
         let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
         if !handle.approvals.forget(&rule) { return Err("that was no longer always allowed".to_string()); }
         let event = RoomEvent::AllowedChanged { allowed: handle.approvals.allowed() };
-        self.persist_and_emit(&id, &handle, event)?;
+        self.persist_and_emit(&id, handle, event)?;
         Ok(())
     }
 
@@ -1259,6 +1263,30 @@ impl Host {
     pub async fn room_bot_balance(&self, room: &str, participant: &ParticipantId) -> Result<Option<f64>, String> {
         let (base_url, api_key_env) = self.bot_api_account(room, participant)?;
         apex_adapters::api_balance(&base_url, api_key_env.as_deref()).await
+    }
+
+    /// Use one of `tool`'s usage resets (`credit`, or the next one) for the
+    /// account a bot in `room` is signed in to, then send every open chat the
+    /// plan as it stands after. `key` names the person's attempt, so a retry
+    /// can't spend a second credit. Gives what the provider said happened.
+    pub async fn room_plan_reset(&self, room: &str, tool: AgentTool, credit: Option<String>, key: Option<String>) -> Result<apex_adapters::ResetOutcome, String> {
+        let context = {
+            let handle = self.handle(room)?;
+            let saved = handle.checkpoint.lock().unwrap();
+            if !saved.snapshot.participants.iter().any(|p| matches!(p.backend, apex_core::Backend::Agent { tool: t, .. } if t == tool)) {
+                return Err("no bot in this chat uses that provider".to_string());
+            }
+            handle.context.clone()
+        };
+        let (outcome, plan) = apex_adapters::use_plan_reset(tool, credit.as_deref(), key.as_deref(), &context).await?;
+        if let Some(plan) = plan {
+            // The plan is the account's, so every open chat shows the change.
+            let open: Vec<String> = self.rooms.lock().unwrap().keys().cloned().collect();
+            for id in open {
+                self.room_event(&id, RoomEvent::plan(&plan));
+            }
+        }
+        Ok(outcome)
     }
 
     /// The models a coding agent lists for the account it is signed in to, for
@@ -1638,7 +1666,7 @@ impl Host {
             let _ = std::fs::remove_dir_all(&staging);
             std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
             let copied = PathBuf::from(copy_folder_attachment(&staging, Path::new(source.trim_end_matches('/')))?.trim_end_matches('/'));
-            let checked = mods::mod_read(copied.to_string_lossy().into_owned()).map_err(|e| { let _ = std::fs::remove_dir_all(&staging); e })?;
+            let checked = mods::mod_read(copied.to_string_lossy().into_owned()).inspect_err(|_e| { let _ = std::fs::remove_dir_all(&staging); })?;
             let name = checked.manifest.get("name").and_then(|n| n.as_str()).map(str::to_owned)
                 .unwrap_or_else(|| copied.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "mod".into()));
             let target = root.join(export::safe_file_name(&name)?);

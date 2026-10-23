@@ -141,3 +141,18 @@ Yes. Tool `write_todos {todos:[{status:"in_progress"|"pending"|"completed"|"canc
 
 ### Deck today
 `muse_server.rs` `run()` only shows a one-line activity from `item/started` toolCall. It ignores `item/completed` for tools, `session/todoListChanged` and `reasoning`. The `events.rs` `muse()` reader handles an older `kind:"run_output_delta"/"run_terminal"` shape that `muse serve` does not send.
+
+## DeepSeek (OpenAI-compatible API, 2026-10-22)
+
+First API-provider capture in this folder. Taken through Deck's own adapter (`OpenAiCompatParticipant`) with a local pass-through proxy recording the raw SSE, one live turn, access Read, model `deepseek-chat` (the server reports `deepseek-flash`, "DeepSeek-V4.1-Flash", 1,048,576-token context). Key read from the Keychain, never written to disk. Fixtures: `deepseek_todo_write.1.sse` (the tool call) and `deepseek_todo_write.2.sse` (the reply after Deck ran the tool). Prompt: "Before anything else, call the todo_write tool with a four-step plan for moving a project from SQLite to Postgres, mark the first step in_progress, then reply with one sentence."
+
+### To-do list: yes, but only when asked
+
+- Tool: `todo_write {todos:[{content, status}]}`, statuses `pending`/`in_progress`/`completed` — the same shape Deck's own API-bot tool uses, executed by `api_tools`, so `Progress::Todo` reaches the room and the pinned list updates.
+- The follow-up request Deck sent carries `{"role":"tool","content":"The to-do list has 4 items."}` — the tool really ran, it was not just called.
+- **A plan-shaped prompt does not produce a call.** The same seven tools, with "Plan only, don't read or change any files … keep your to-do list up to date as you go", got 901 frames, `finish_reason:"stop"` and **zero `tool_calls`**: the model wrote the list as prose and signed off with "The to-do list above is marked done for the planning stage". Only the explicit instruction produced a call. Treat a DeepSeek bot's checklist as opt-in.
+- Regression test: `deepseek_todo_write_becomes_the_bots_todo_list` in `tests/adapters.rs` replays both fixtures and asserts the 4-item list, `in_progress` first, and the tool result in the second request.
+
+### Caveat
+
+`is_deepseek()` keys off the host name, so a capture taken through a `127.0.0.1` proxy never exercises the `reasoning_content` echo path. It made no difference here (round one carried no reasoning and the follow-up was accepted), but a real DeepSeek turn with thinking on and tool calls may still behave differently. Not captured.

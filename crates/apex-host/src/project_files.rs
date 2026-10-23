@@ -79,7 +79,7 @@ fn inside(root: &Path, path: &Path) -> Result<PathBuf, String> {
     if !target.starts_with(&root) {
         return Err("That path is outside the project folder.".into());
     }
-    if has_git_component(&target.strip_prefix(&root).unwrap_or(&target)) {
+    if has_git_component(target.strip_prefix(&root).unwrap_or(&target)) {
         return Err("Files inside .git are not available here.".into());
     }
     Ok(target)
@@ -442,11 +442,9 @@ fn walk_files(root: &Path, folder: &Path, files: &mut Vec<String>) -> Result<(),
             if !skipped_dir(&name) {
                 walk_files(root, &path, files)?;
             }
-        } else if ty.is_file() {
-            if name != ".DS_Store" {
-                if let Ok(path) = path.strip_prefix(root) {
-                    files.push(path.to_string_lossy().replace('\\', "/"));
-                }
+        } else if ty.is_file() && name != ".DS_Store" {
+            if let Ok(path) = path.strip_prefix(root) {
+                files.push(path.to_string_lossy().replace('\\', "/"));
             }
         }
     }

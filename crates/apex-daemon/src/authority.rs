@@ -109,6 +109,8 @@ pub fn command_needs(command: &Command) -> Need {
         RoomUnpin { id, .. } => full(thread(id)),
         RoomCompact { id } => full(thread(id)),
         RoomClose { id } => full(thread(id)),
+        // Spends one of the account's usage resets, which can't be given back.
+        RoomPlanReset { room, .. } => full(thread(room)),
         ArtifactsSave { room, .. } => full(thread(room)),
         ListToolServers { room, .. } => full(thread(room)),
         GenerateImage { room, .. } => full(thread(room)),
@@ -235,6 +237,16 @@ pub fn filter_session(threads: &Threads, session: Value) -> Value {
     Value::Object(session)
 }
 
+/// Access required for daemon-owned voice commands.
+pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
+    use crate::voice::session::VoiceRequest::*;
+    match request {
+        VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
+        VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
+        VoiceServerWarm { room } | VoiceServerOpen { room } => chat(thread(room)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,10 +261,14 @@ mod tests {
         device(tier, Threads::Only(vec!["mine".into()]))
     }
 
+    /// One row of the table: the command, what it needs, and arguments that
+    /// name thread `mine` wherever a thread is named.
+    type Row = (&'static str, Option<(Tier, &'static str)>, Value);
+
     /// What every command needs, by name: `None` is never, `Some((tier,
     /// "thread" | "global" | "global_read"))` otherwise. Each comes with
     /// arguments that name thread `mine` wherever a thread is named.
-    fn table() -> Vec<(&'static str, Option<(Tier, &'static str)>, Value)> {
+    fn table() -> Vec<Row> {
         use Tier::*;
         let participant = json!({ "id": "null", "display_name": "Null", "backend": { "kind": "agent", "tool": "claude_code" } });
         let options = json!({ "policy": "mention", "max_bot_hops": 0 });
@@ -325,6 +341,7 @@ mod tests {
             ("room_steps", Some((ReadOnly, "thread")), json!({"room":"mine"})),
             ("room_bot_models", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
             ("room_bot_balance", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
+            ("room_plan_reset", Some((Full, "thread")), json!({ "room": "mine", "tool": "codex" })),
             ("answer_save", Some((Chat, "thread")), json!({ "room": "mine", "key": "1:hosting", "fingerprint": "0a1b2c3d", "inputs": {}, "revision": 0 })),
             ("voice_capabilities", Some((ReadOnly, "global_read")), json!({})),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
@@ -544,15 +561,5 @@ mod tests {
         }
         assert_eq!(filter_session(&Threads::ALL, session.clone()), session);
         assert_eq!(filter_session(&Threads::Only(vec![]), Value::Null), Value::Null);
-    }
-}
-
-/// Access required for daemon-owned voice commands.
-pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
-    use crate::voice::session::VoiceRequest::*;
-    match request {
-        VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
-        VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
-        VoiceServerWarm { room } | VoiceServerOpen { room } => chat(thread(room)),
     }
 }
