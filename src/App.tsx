@@ -1,3 +1,6 @@
+import { assistantSidebarPanes, assistantThreadKey } from './assistantSidebar';
+import { assistantTaskActionArgs } from './assistantTaskModel';
+import { AssistantBrowser, type AssistantBrowserPresentation } from './AssistantBrowser';
 import { chatFolder } from "./worktreeMount";
 import { useWorktreeMount } from "./useWorktreeMount";
 import { canvasPanes } from "./canvasPanes.ts";
@@ -73,7 +76,7 @@ import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssist
 import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
 import { assistantStatus, assistantWorkItems, delegatedTasksForAssistant, type WorkItem } from "./assistantStatus";
 import { AssistantWork } from "./AssistantWork";
-import { personalTaskKey } from "./apexAgentTaskView";
+import { personalTaskKey, projectTaskKey } from "./apexAgentTaskView";
 import { prefillAssistantComposer } from "./assistantComposerDrafts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
@@ -176,6 +179,7 @@ export function App() {
   const [assistantProjectAliases,setAssistantProjectAliases]=useState<Record<string,{route:Backend;project:ProjectRef}>>({});
   const [assistantProjectDiscoveryProblems,setAssistantProjectDiscoveryProblems]=useState<Record<string,string>>({});
   const [creatingAssistant, setCreatingAssistant] = useState(false);
+  const [restoringAssistant,setRestoringAssistant]=useState<string|null>(null);
   const [assistantNotebookProject,setAssistantNotebookProject]=useState<ProjectRef>();
   const [creationHost, setCreationHost] = useState("local");
   /** Bumped by the title bar's + New agent button. */
@@ -215,7 +219,7 @@ export function App() {
   const globalTaskFeed = useRef<{ rows: WorkspaceTaskRow[]; problems: string[] }>({ rows: [], problems: [] });
   const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
   const [assistantTaskSignals, setAssistantTaskSignals] = useState<Record<string, Signal>>({});
-  const [assistantTaskNeedsDetails, setAssistantTaskNeedsDetails] = useState<Record<string, string[]>>({});
+  const [, setAssistantTaskNeedsDetails] = useState<Record<string, string[]>>({});
   const [, setAssistantTaskCounts] = useState<Record<string, number>>({});
   // Each project task's status, keyed by project and task, so a worker chat's menu knows whether its task is still going.
   const [assistantTaskStatuses, setAssistantTaskStatuses] = useState<Record<string, string>>({});
@@ -244,6 +248,8 @@ export function App() {
     try { localStorage.setItem("apex-agent-task-pane-titles", JSON.stringify(next)); } catch { /* Lasts for this window. */ }
     return next;
   });
+  const [keptAssistantThreads,setKeptAssistantThreads]=useState<Set<string>>(()=>{try{return new Set(JSON.parse(localStorage.getItem('apex-assistant-kept-threads')??'[]'));}catch{return new Set();}});
+  const keepAssistantThread=(pane:Pane&{hostId?:string})=>setKeptAssistantThreads(old=>{const next=new Set(old);next.add(assistantThreadKey(pane));localStorage.setItem('apex-assistant-kept-threads',JSON.stringify([...next]));return next;});
   const viewPanes = useMemo(() => {
     const closed = new Set(closedTaskPanes);
     return mergeAssistantPanes(panes, currentAssistantRegistry).map((pane) => {
@@ -421,7 +427,8 @@ export function App() {
   const pendingSection = useRef<DetailsSection | undefined>(undefined);
   const detailsWidth = sidebarWidths.details ?? SIDEBAR_DEFAULT.details;
   // Full screen fills the work area, so it never floats over the canvas as an overlay.
-  const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth);
+  // Assistant views reflow below the Threads pane minimum. Keep their controls visible beside a docked panel.
+  const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth, mainView.kind === "assistant" ? 400 : 560);
   /** Runs `action` now, or after the user agrees to drop unsaved edits in the Files tab. */
   const guardUnsavedEdits = (action: () => void) => {
     const file = unsavedEditName();
@@ -1119,14 +1126,7 @@ export function App() {
     };
   };
   const sectionFlags: Record<"agents" | "code" | "threads", SectionFlag> = {
-    agents: {
-      ...summarize(Object.values(assistantTaskSignals).filter((signal) => signal.kind === "needs_input")),
-      rows: Object.entries(assistantTaskSignals).flatMap(([workspaceId, signal]) => {
-        const workspace = workspaces.find((item) => item.id === workspaceId && !item.hidden);
-        if (!workspace || signal.kind !== "needs_input") return [];
-        return (assistantTaskNeedsDetails[workspaceId] ?? [signal.note]).map((detail, index) => ({ key: `${workspaceId}:${index}`, title: detail, note: "Needs you", meta: `${workspace.name} · Agents`, kind: "needs_input" as const, at: signal.at, paneId: `apex-task:${workspaceId}` }));
-      }),
-    },
+    agents: {count:0,worst:null,rows:[]},
     code: flagFor("Code"),
     threads: flagFor("Threads"),
   };
@@ -1906,6 +1906,12 @@ export function App() {
     if (!bridge) return;
     for (const rec of poppedTabs) if (rec.tab.kind === 'tasks') void bridge.update(rec.token, { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems }).catch(() => {});
   }, [globalTaskFeedVersion, poppedTabs]);
+  const [assistantBrowser,setAssistantBrowser]=useState<AssistantBrowserPresentation>('closed');
+  const [assistantVoiceHost,setAssistantVoiceHost]=useState<HTMLElement|null>(null);
+  const [workDetail,setWorkDetail]=useState(false);
+  const [workProjectsOpen,setWorkProjectsOpen]=useState(false);
+  const [workNewTaskRequest,setWorkNewTaskRequest]=useState(0);
+  const [workDetailOrigin,setWorkDetailOrigin]=useState<'chat'|'work'>('work');
   const selectedAssistant = mainView.kind === 'assistant' ? assistants.lane(mainView.assistant) : null;
   const openAssistant = (ref:AssistantRef) => { assistants.select(ref); setMainView({kind:'assistant',assistant:ref,section:'chat'}); setCreatingAssistant(false); setSettingsOpen(null); closeApexAgent(); };
   const assistantHost = mainView.kind === 'assistant' ? assistants.hosts.find(host=>host.hostId===mainView.assistant.hostId) : undefined;
@@ -1929,14 +1935,22 @@ export function App() {
   const projectUnavailable = (project:ProjectRef):string|undefined => resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) ? undefined : 'This exact project is unavailable. Reconnect its machine or restore its assigned folder.';
   const [workFocus,setWorkFocus]=useState<{project:ProjectRef;taskId:string;nonce:number}|null>(null);
   const workFocusOwner=mainView.kind==='assistant'?assistantIdentityKey(mainView.assistant):'';
-  const [chatFocus,setChatFocus]=useState<{key:string;nonce:number}|null>(null);
-  useEffect(()=>{setWorkFocus(null);setChatFocus(null);},[workFocusOwner]);
+  const [chatFocus,setChatFocus]=useState<{key:string;nonce:number;origin?:'chat'|'work'}|null>(null);
+  useEffect(()=>{setWorkFocus(null);setChatFocus(null);setWorkDetail(false);setWorkDetailOrigin('work');setWorkProjectsOpen(false);setAssistantBrowser('closed');},[workFocusOwner]);
   const assistantProjectName=(project:ProjectRef)=>workspaces.find(workspace=>workspace.id===project.workspaceId)?.name??project.cwd.split('/').filter(Boolean).at(-1)??project.cwd;
   /** Work opens delegated tasks in their project card and personal tasks in Chat's task details. */
-  const openWorkItem=(item:WorkItem)=>{if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId,nonce:Date.now()});navigateAssistant('work');return;}const owner=selectedAssistant?.assistant;if(owner)setChatFocus({key:personalTaskKey(owner.hostId,item.taskId,selectedAssistant?.ref?.assistantId),nonce:Date.now()});navigateAssistant('chat');};
-  const navigateAssistant = (section:AssistantSection) => setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);
+  const openWorkItem=(item:WorkItem,origin:'chat'|'work'='work')=>{setWorkDetailOrigin(origin);if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId,nonce:Date.now()});setWorkDetail(true);navigateAssistant('work');return;}const owner=selectedAssistant?.assistant;if(owner)setChatFocus({key:personalTaskKey(owner.hostId,item.taskId,selectedAssistant?.ref?.assistantId),nonce:Date.now(),origin});navigateAssistant('chat');};
+  const navigateAssistant = (section:AssistantSection) => {if(section!=='work')setWorkDetail(false);setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);};
+  const openAssistantBrowser=()=>{navigateAssistant('chat');setAssistantBrowser('popup');};
+  const mutateTaskLifecycle=async(action:'delete'|'restore'|'empty',item?:WorkItem,keys?:string[])=>{
+    try{if(!selectedAssistant?.taskLifecycle)throw Error('Update this assistant’s machine to manage deleted tasks.');
+      if(action==='delete'&&!window.confirm(`Delete “${item?.title}”? Pending work will be cancelled. You can restore it from Deleted tasks.`))return;
+      await selectedAssistant.taskLifecycle(action,item?{source:item.source,taskId:item.taskId,revision:item.revision}:undefined,keys);await assistants.refresh();
+    }catch(error){toast(String(error));}
+  };
+  const cancelAssistantWork=async(item:WorkItem)=>{try{if(!window.confirm(`Cancel “${item.title}”? Its history will remain.`))return;if(item.source==='personal')await selectedAssistant?.cancel(item.taskId);else{const task=selectedDelegatedTasks.find(t=>t.id===item.taskId);if(!task||task.revision!==item.revision||!assistantBackend)throw Error('Task changed. Refresh before cancelling.');await assistantBackend.call('assistant_task_action',assistantTaskActionArgs(task,'cancel'));}await assistants.refresh();}catch(error){toast(String(error));}};
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
-  const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects) : [];
+  const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
   // Only ambiguous assignments need an owning-host folder read; no global scan or polling.
   const aliasCandidates=assignedProjects.flatMap(binding=>workspaces.filter(workspace=>!workspace.hidden&&workspace.id===binding.project.workspaceId&&workspace.path!==binding.project.cwd&&authenticatedProjectHost(workspaceHost(workspace))===binding.project.hostId&&!snapshotProjectForWorkspace(workspace)).map(workspace=>({workspace,project:binding.project})));
   const aliasCandidatesKey=JSON.stringify(aliasCandidates.map(({workspace,project})=>[projectAliasKey(workspace,project.hostId),project.cwd]));
@@ -2269,7 +2283,7 @@ export function App() {
     }
     // Any other deck shortcut is about the deck, so it closes settings first.
     setSettingsOpen(null);
-    if (action.kind === "section") { setSection(action.section); setPicking(false); setMaximized(null); }
+    if (action.kind === "section") { setMainView({kind:"workspace"});setCreatingAssistant(false);setSection(action.section); setPicking(false); setMaximized(null); }
     else if (action.kind === "new_terminal") { if (current) { setSection("code"); setNewMenuRequest((n) => n + 1); } }
     else if (action.kind === "new_thread") { if (current) addPane("chat", "Group chat"); }
     else if (action.kind === "next_attention") {
@@ -2449,7 +2463,7 @@ export function App() {
         </button>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         </div>
-        <SectionNavigation section={section} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
+        <SectionNavigation section={mainView.kind==='workspace'&&!creatingAssistant?section:null} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
         <LayoutPicker value={layoutPreset} disabled={section === "agents" || visiblePanes.length < 2} onSelect={arrange} />
         {section === "agents" && <button className="primary titlebar-new" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
@@ -2485,7 +2499,7 @@ export function App() {
             onOpenAssistant={openAssistant}
             onCreateAssistant={()=>{setCreatingAssistant(true);setMainView({kind:'workspace'});}}
             section={section}
-            panes={viewPanes}
+            panes={assistantSidebarPanes(viewPanes,currentAssistantRegistry,keptAssistantThreads)}
             workspaces={workspaces}
             deleting={deleting}
             activeWorkspace={activeWorkspace}
@@ -2640,9 +2654,9 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
           </div>
-          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace profiles={profiles} onOpenBrowser={openAssistantBrowser} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
             memoryProject={assistantNotebookProject}
-            work={<AssistantWork items={assistantWorkItems(selectedAssistant.assistant?.tasks??[],selectedDelegatedTasks,assistantProjectName)} onOpenTask={openWorkItem} projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
+            work={<div className={`assistant-work-region${workDetail?' is-detail':''}`}><AssistantWork projectCount={selectedAssistant.assistant?.projects?.length??0} projectsOpen={workProjectsOpen} onProjectsToggle={()=>setWorkProjectsOpen(open=>!open)} onNewTask={()=>{setWorkDetailOrigin('work');setWorkNewTaskRequest(before=>Math.max(Date.now(),before+1));}} newTaskDisabledReason={selectedAssistant.offline?"Reconnect this assistant’s machine to start a task.":selectedAssistant.assistant?.paused?"Resume this assistant before starting a task.":!selectedAssistant.assistant?.projects?.some(project=>project.tools!=='off')?"Assign a project first.":undefined} lifecycleDisabled={!!selectedAssistant.offline} lifecycleProblem={!selectedAssistant.taskLifecycle?'Update the assistant’s machine to manage deleted tasks.':undefined} onCancelTask={item=>void cancelAssistantWork(item)} onDeleteTask={item=>void mutateTaskLifecycle('delete',item)} onRestoreTask={item=>void mutateTaskLifecycle('restore',item)} onEmptyDeleted={keys=>void mutateTaskLifecycle('empty',undefined,keys)} items={assistantWorkItems(selectedAssistant.assistant?.tasks??[],selectedDelegatedTasks,assistantProjectName,id=>profiles.find(p=>p.id===id)?.display_name??'Worker unavailable')} onOpenTask={item=>openWorkItem(item)} projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact managementOpen={workProjectsOpen} newTaskRequest={workNewTaskRequest} onDetailChange={setWorkDetail} detailBackLabel={workDetailOrigin==='chat'?'Chat':'Work'} onDetailBack={()=>{setWorkDetail(false);if(workDetailOrigin==='chat')navigateAssistant('chat');}} focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
               onEnsureCoordinator={async(project)=>{
                 const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
                 if(!workspace||!selectedAssistant.assistant?.profile)throw new Error('Reconnect the assigned project before delegating.');
@@ -2662,7 +2676,7 @@ export function App() {
                 if(!workspace)throw new Error('Reconnect this project before choosing a worker.');
                 const route=hostBackend(workspaceHost(workspace));const threadId=newId('pane');
                 await route.roomCreate(threadId,[profile],settings.newThread,project.cwd);
-                setPanes(list=>[...list,{id:threadId,workspaceId:workspace.id,kind:'chat',title:`${profile.display_name} · ${selectedAssistant.name}`,started:true,participants:[profile],options:settings.newThread}]);
+                setPanes(list=>[...list,{id:threadId,workspaceId:workspace.id,kind:'chat',assistantDraftFor:selectedAssistant.ref,title:`${profile.display_name} · ${selectedAssistant.name}`,started:true,participants:[profile],options:settings.newThread}]);
                 return threadId;
               }}
               projects={assignedProjects.map(binding=>({project:binding.project,name:workspaces.find(workspace=>workspace.id===binding.project.workspaceId)?.name??binding.project.cwd.split('/').at(-1)??'Project',unavailable:projectUnavailable(binding.project)}))}
@@ -2671,10 +2685,11 @@ export function App() {
               taskScopes={Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.project&&assignedProjects.some(binding=>binding.project.hostId===entry.snapshot?.project?.hostId&&binding.project.workspaceId===entry.snapshot?.project?.workspaceId&&binding.project.cwd===entry.snapshot?.project?.cwd)?[{project:entry.snapshot.project,owner:entry.owner,snapshot:entry.snapshot}]:[])}
               onOpenProject={openAssistantProjectCanvas}
               onOpenNotebook={project=>{setAssistantNotebookProject(project);navigateAssistant('memory');}}
+              onKeepThread={(project,id)=>{const pane=viewPanes.find(p=>p.id===id&&p.workspaceId===project.workspaceId);if(pane)keepAssistantThread(pane);else toast('Reconnect this task conversation before keeping it.');}}
               onOpenThread={(project,id)=>{const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);const destination=workspace?assistantWorkerThreadDestination(workspace,id,viewPanes,new Set([...deleting,...poppedIds])):null;if(!destination?.pane){toast('Reconnect this project or return its worker thread to Deck to open it.');return;}focusPane(destination.pane);setMaximized(destination.maximized);}}
-            />:undefined}/>}
-            editor={assistantBackend ? <AssistantEditor key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;})} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
-            chat={<ApexAgentAll key={selectedAssistant.draftKey} focusTask={chatFocus} onFocusHandled={()=>setChatFocus(null)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} draftKey={selectedAssistant.draftKey} assistantAvatar={<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={panel=>navigateAssistant(panel==='activity'?'work':panel)} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
+            />:undefined}/></div>}
+            editor={assistantBackend ? <AssistantEditor onArchived={()=>setMainView({kind:'workspace'})} onOpenBrowser={openAssistantBrowser} machineName={selectedAssistant.hostName} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;})} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
+            chat={<ApexAgentAll delegatedTasks={selectedDelegatedTasks} voiceBackend={assistantBackend??undefined} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} voiceHeader={assistantVoiceHost} onVoiceFocus={()=>navigateAssistant('chat')} onOpenBrowser={openAssistantBrowser} onOpenProjectTask={key=>{const task=selectedDelegatedTasks.find(t=>projectTaskKey(t.owner.hostId,t.owner.workspaceId,t.id)===key);if(!task)return false;const lists=assistantWorkItems([], [task],assistantProjectName);const item=Object.values(lists).flat().find(i=>i.taskId===task.id);if(!item)return false;openWorkItem(item,'chat');return true;}} key={selectedAssistant.draftKey} focusTask={chatFocus} onFocusHandled={()=>setChatFocus(null)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} draftKey={selectedAssistant.draftKey} assistantAvatar={<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={panel=>navigateAssistant(panel==='activity'?'work':panel)} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
             offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence}  overviewEntries={[]} personal={selectedAssistant}
             taskContext={assistantTaskContext && scopedAssistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
             tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, scopedAssistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
@@ -2711,8 +2726,8 @@ export function App() {
           {creatingAssistant && <AssistantCreationDialog onClose={()=>setCreatingAssistant(false)}>{(()=>{
             const machinePicker=<label className="assistant-setting-row"><span>Machine</span><select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label>;
             const host=assistants.hosts.find(host=>host.routeHostId===creationHost);
-            return host?.hostId ? <AssistantEditor key={host.hostId} backend={hostBackend(host.routeHostId)} profiles={profiles} disabledProviders={disabledProviders} hostId={host.hostId} projects={[]} machinePicker={machinePicker} onCreate={async input=>{const {request,brief}=splitFirstBrief(input);const ref=await assistants.create(host.routeHostId,request);if(brief)prefillAssistantComposer(assistantIdentityKey(ref),brief);return ref;}} onSaved={ref=>{if(ref)openAssistant(ref);}}/> : <>{machinePicker}<p role="status">Connect a machine with assistant workspace support to create a teammate.</p></>;
-          })()}</AssistantCreationDialog>}
+            return host?.hostId ? <AssistantEditor key={host.hostId} backend={hostBackend(host.routeHostId)} profiles={profiles} disabledProviders={disabledProviders} hostId={host.hostId} projects={[]} machineName={host.name} machinePicker={machinePicker} onCreate={async input=>{const {request,brief}=splitFirstBrief(input);const ref=await assistants.create(host.routeHostId,request);if(brief)prefillAssistantComposer(assistantIdentityKey(ref),brief);return ref;}} onSaved={ref=>{if(ref)openAssistant(ref);}}/> : <>{machinePicker}<p role="status">Connect a machine with assistant workspace support to create a teammate.</p></>;
+          })()}<details className="assistant-archived-list"><summary>Archived assistants ({assistants.archivedAssistants.length})</summary><p className="muted">Restore keeps the same history and projects. Restored assistants stay paused.</p>{assistants.archivedAssistants.map(item=><div className="assistant-archived-row" key={assistantIdentityKey(item.ref)}><span><strong>{item.name}</strong><small>{item.hostName}{item.offline?' · Offline':''}</small></span><button type="button" disabled={item.offline||restoringAssistant!==null} onClick={()=>{setRestoringAssistant(assistantIdentityKey(item.ref));void assistants.restoreAssistant(item.ref,item.revision).then(()=>toast('Assistant restored and paused. Open it from Your team.')).catch(error=>toast(String(error))).finally(()=>setRestoringAssistant(null));}}>Restore</button></div>)}{!assistants.archivedAssistants.length&&<p className="muted">No archived assistants.</p>}</details></AssistantCreationDialog>}
         {apexAgentWorkspace && typeof apexAgentWorkspace!=='string' && !apexWorkspace && <aside className="assistant-source-view"><p role="alert">This exact project is unavailable. Reconnect its machine or restore its assigned folder.</p><button onClick={closeApexAgentAndReturnFocus}>Back</button></aside>}
         {apexWorkspace && <aside className="assistant-source-view" aria-label={`ApexAgent for ${apexWorkspace.name}`}>
           {apexAgentBackend

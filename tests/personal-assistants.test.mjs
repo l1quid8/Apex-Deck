@@ -115,3 +115,36 @@ test('creation rejects a route rebound to another authenticated owner before com
  f.routes.a.host.connection.get=()=>({status:{kind:'connected',hostId:'different'}});pending.resolve(record('alpha','new'));
  await assert.rejects(creating,/identity changed/);assert.equal(f.collection.lane(ref('alpha','new')),null);
 });
+
+test('archive disappears only after the owning host confirms and restore retains the same durable identity',async()=>{
+ const f=fixture();f.routes.a.supports=cap=>cap==='assistant_archive_v1';await f.collection.refresh();f.collection.select(ref('alpha'));const lane=f.collection.lane(ref('alpha'));assert.equal(typeof lane.archiveAssistant,'function');
+ const pending=defer();f.handlers['a:personal_archive']=()=>pending.promise;const removing=lane.archiveAssistant(1);assert.equal(f.collection.snapshot().assistants.some(row=>row.ref.hostId==='alpha'&&row.ref.assistantId==='asst-1'),true);
+ const archived={...record('alpha','asst-1',2),archivedAt:123,paused:true};pending.resolve({assistant:archived});await removing;
+ assert.equal(f.collection.snapshot().assistants.some(row=>row.ref.hostId==='alpha'&&row.ref.assistantId==='asst-1'),false);assert.equal(f.collection.snapshot().archivedAssistants[0].archivedAt,123);assert.equal(f.collection.lane(ref('alpha')),null);assert.throws(()=>f.collection.select(ref('alpha')),/archiv|removed/i);await assert.rejects(lane.send('stale composer'),/archiv|removed/i);
+ f.handlers['a:personal_archive']=args=>{assert.deepEqual(args,{assistantId:'asst-1',expectedRevision:2,archived:false});return {assistant:{...record('alpha','asst-1',3),paused:true}};};
+ await f.collection.restoreAssistant(ref('alpha'),2);assert.equal(f.collection.snapshot().archivedAssistants.length,0);assert.equal(f.collection.lane(ref('alpha')).assistant.paused,true);assert.deepEqual(f.calls.find(([,cmd])=>cmd==='personal_archive'),['a','personal_archive',{assistantId:'asst-1',expectedRevision:1,archived:true}]);
+});
+test('archived assistants stay out of restored selection, notifications, machine bridges and active roster after restart',async()=>{
+ const f=fixture();f.lists.local[0]={...f.lists.local[0],archivedAt:10,paused:true,machines:[{hostId:'mac',name:'Mac',folder:'/folder'}]};f.storage.value=JSON.stringify(ref('mac'));await f.collection.refresh();assert.deepEqual(f.collection.snapshot().selected,ref('alpha'));assert.equal(f.collection.snapshot().archivedAssistants.length,1);
+ f.collection.openNotification({notification:{data:{hostId:'mac',assistantId:'asst-1'}}});assert.deepEqual(f.collection.snapshot().selected,ref('alpha'));await f.collection.bridge();assert.equal(f.calls.some(([route,cmd])=>route==='local'&&cmd==='personal_machine_claim'),false);
+});
+
+test('task lifecycle wire payload is minimal, revision bound and captured to its assistant',async()=>{
+ const f=fixture();f.routes.a.supports=cap=>cap==='assistant_task_lifecycle_v1';await f.collection.refresh();const lane=f.collection.lane(ref('alpha'));
+ f.collection.select(ref('beta'));
+ await lane.taskLifecycle('delete',{source:'delegated',taskId:'task-1',revision:7,key:'delegated:task-1',title:'Display title',project:{cwd:'/irrelevant'}});
+ const command=f.calls.find(([,cmd])=>cmd==='personal_task_lifecycle');
+ assert.deepEqual(command,['a','personal_task_lifecycle',{assistantId:'asst-1',expectedRevision:1,action:'delete',task:{source:'delegated',taskId:'task-1',revision:7},expectedDeleted:undefined}]);
+ assert.equal(f.collection.lane(ref('beta')).taskLifecycle,undefined);
+});
+
+test('a newer task tombstone snapshot updates at the same assistant revision without regressing settings',async()=>{
+ const f=fixture();await f.collection.refresh();f.lists.a[0]={...record('alpha'),name:'old list value',purgedDelegatedTaskIds:['task-1'],taskLifecycleSnapshotRevision:4};await f.collection.refresh();
+ const snapshot=f.collection.lane(ref('alpha')).assistant;
+ assert.deepEqual(snapshot.purgedDelegatedTaskIds,['task-1']);assert.equal(snapshot.name,'alpha/asst-1');
+ f.lists.a[0]={...record('alpha'),purgedDelegatedTaskIds:[],taskLifecycleSnapshotRevision:3};await f.collection.refresh();assert.deepEqual(f.collection.lane(ref('alpha')).assistant.purgedDelegatedTaskIds,['task-1']);
+});
+
+test('an archive response without persisted archivedAt cannot report successful removal',async()=>{
+ const f=fixture();f.routes.a.supports=cap=>cap==='assistant_archive_v1';await f.collection.refresh();await assert.rejects(f.collection.lane(ref('alpha')).archiveAssistant(1),/confirm|archiv/i);assert.ok(f.collection.snapshot().assistants.some(row=>row.ref.hostId==='alpha'));
+});

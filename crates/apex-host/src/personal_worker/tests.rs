@@ -1360,3 +1360,138 @@ async fn delegation_catalog_uses_saved_project_chats_and_canonical_aliases() {
     assert!(prompts[0].contains("\"threadId\":\"coder-room\""),"saved project chats must be discoverable without adding them as monitor evidence");
     assert!(prompts[0].contains("\"workers\":[\"coder\"]"));
 }
+
+#[test]
+fn lifecycle_personal_deleted_marker_survives_roundtrip() {
+    let task: PersonalTask = serde_json::from_value(serde_json::json!({"id":"pt-1","goal":"test","completionCriteria":[],"targetHost":"h","status":"cancelled","fromEvent":"pe-1","maxAttempts":3,"createdAt":0,"updatedAt":0,"deletedAt":123})).unwrap();
+    assert_eq!(serde_json::to_value(&task).unwrap()["deletedAt"], 123);
+}
+
+#[tokio::test]
+async fn stopping_a_reply_cancels_the_exact_provider_future_and_preserves_the_next_turn() {
+    let f = Fixture::new(); let fake = Fake::new(true);
+    fake.model_hangs.store(true, Ordering::SeqCst);
+    let first=f.host.personal_send(&f.id,"voice-stop-first","First question").unwrap();
+    f.host.start_personal_worker_with(fake.tools()).unwrap();
+    f.until("provider is running", |_|fake.reason_calls.load(Ordering::SeqCst)==1).await;
+    f.host.personal_reply_cancel(&f.id,"stop-first",&first.event_id).unwrap();
+    fake.model_hangs.store(false,Ordering::SeqCst);
+    f.host.personal_send(&f.id,"voice-next","Next question").unwrap();
+    f.until("replacement reply",|a|a.messages.iter().any(|m|m.role=="assistant"&&m.kind=="chat")).await;
+    assert!(!f.get().messages.iter().any(|m|m.role=="assistant"&&m.event_id.as_deref()==Some(first.event_id.as_str())));
+    assert_eq!(f.get().events.iter().find(|e|e.id==first.event_id).unwrap().state,EventState::Failed);
+    assert!(f.get().tasks.is_empty());
+}
+#[tokio::test]
+async fn stopped_reply_is_not_recovered_or_replayed_and_cannot_cancel_control_events() {
+    let mut f=Fixture::new();let a=f.host.personal_send(&f.id,"voice-before-start","Question").unwrap();
+    f.host.personal_reply_cancel(&f.id,"stop-before-start",&a.event_id).unwrap();
+    f.host.personal_reply_cancel(&f.id,"stop-before-start",&a.event_id).unwrap();
+    f.restart();assert_eq!(f.get().events.iter().find(|e|e.id==a.event_id).unwrap().state,EventState::Failed);
+    let control=f.host.personal_pause(&f.id,"pause-control",true).unwrap();
+    assert!(f.host.personal_reply_cancel(&f.id,"cannot-stop-control",&control.event_id).is_err());
+    assert!(f.host.personal_reply_cancel(&f.id,"stop-before-start",&control.event_id).is_err());
+    f.drain(&Fake::new(true).tools()).await;assert_eq!(f.lines("assistant","chat"),0);
+}
+
+async fn lifecycle(f: &Fixture, action: &str, task: Option<serde_json::Value>, keys: Vec<String>) -> Result<serde_json::Value, String> {
+    f.host.personal_task_lifecycle(serde_json::from_value(serde_json::json!({"assistantId":f.id,"expectedRevision":f.get().revision,"action":action,"task":task,"expectedDeleted":keys})).unwrap()).await
+}
+
+#[tokio::test]
+async fn lifecycle_delete_restore_pending_never_runs_after_restart() {
+    let mut f=Fixture::new(); let fake=Fake::new(true);fake.say(DISK_TASK);
+    f.host.personal_send(&f.id,"lifecycle-human","Check disk").unwrap();f.drain(&fake.tools()).await;
+    let original=f.task();
+    lifecycle(&f,"delete",Some(serde_json::json!({"source":"personal","taskId":original.id})),vec![]).await.unwrap();
+    assert_eq!(f.task().status,TaskStatus::Cancelled);assert!(f.task().deleted_at.is_some());
+    assert_eq!(f.task().decision.unwrap().status,DecisionStatus::Superseded);
+    f.restart();
+    lifecycle(&f,"restore",Some(serde_json::json!({"source":"personal","taskId":original.id})),vec![]).await.unwrap();
+    assert_eq!(f.task().status,TaskStatus::Cancelled);assert!(f.task().deleted_at.is_none());
+    f.drain(&fake.tools()).await;assert_eq!(fake.runs(),0);
+}
+
+#[tokio::test]
+async fn lifecycle_delete_terminal_preserves_result_and_purge_requires_exact_set() {
+    for status in [TaskStatus::Done,TaskStatus::Failed,TaskStatus::Cancelled] {
+        let f=Fixture::new(); let fake=Fake::new(true);fake.say(DISK_TASK);
+        f.host.personal_send(&f.id,"lifecycle-human","Check disk").unwrap();f.drain(&fake.tools()).await;
+        let id=f.task().id;
+        f.host.change_assistant(&f.id,|a|{a.task_mut(&id).unwrap().status=status;a.task_mut(&id).unwrap().last_update=Some("Original result".into());a.post("assistant","result","Task result".into(),Some(id.clone()),None,1);Ok(())}).unwrap();
+        lifecycle(&f,"delete",Some(serde_json::json!({"source":"personal","taskId":id})),vec![]).await.unwrap();
+        assert_eq!(f.task().status,status);assert_eq!(f.task().last_update.as_deref(),Some("Original result"));
+        assert!(lifecycle(&f,"empty",None,vec!["personal:wrong".into()]).await.is_err());
+        assert_eq!(f.get().tasks.len(),1);
+        lifecycle(&f,"empty",None,vec![format!("personal:{id}")]).await.unwrap();
+        assert!(f.get().tasks.is_empty());assert!(!f.get().messages.iter().any(|m|m.task_id.as_deref()==Some(&id)));
+        assert!(lifecycle(&f,"restore",Some(serde_json::json!({"source":"personal","taskId":id})),vec![]).await.is_err());
+        f.host.personal_send(&f.id,"lifecycle-human","Check disk").unwrap();f.drain(&fake.tools()).await;
+        assert!(f.get().tasks.is_empty());assert_eq!(fake.runs(),0,"purged source request must not replay");
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_deletion_is_revision_bound_and_keeps_unsettled_receipts() {
+    let f=Fixture::new();let fake=Fake::new(true);fake.say(DISK_TASK);
+    f.host.personal_send(&f.id,"lifecycle-human","Check disk").unwrap();f.drain(&fake.tools()).await;
+    let id=f.task().id;let stale=f.get().revision;
+    f.host.change_assistant(&f.id,|a|{a.name="Changed".into();Ok(())}).unwrap();
+    assert!(f.host.personal_task_lifecycle(serde_json::from_value(serde_json::json!({"assistantId":f.id,"expectedRevision":stale,"action":"delete","task":{"source":"personal","taskId":id}})).unwrap()).await.is_err());
+    assert!(f.task().deleted_at.is_none());
+    f.host.change_assistant(&f.id,|a|{let t=a.task_mut(&id).unwrap();t.status=TaskStatus::Running;t.receipts.push(serde_json::from_value(serde_json::json!({"opId":"once","paramsHash":"sha256:once","phase":"attempted","outputExcerpt":"","rerunAfterRestart":false,"startedAt":1})).unwrap());Ok(())}).unwrap();
+    lifecycle(&f,"delete",Some(serde_json::json!({"source":"personal","taskId":id})),vec![]).await.unwrap();
+    assert_eq!(f.task().status,TaskStatus::Cancelled);
+    assert!(lifecycle(&f,"empty",None,vec![format!("personal:{id}")]).await.unwrap_err().contains("final receipt"));
+    assert_eq!(f.task().receipts[0].op_id,"once");
+}
+
+#[tokio::test]
+async fn lifecycle_purge_tombstone_rejects_replay_after_event_pruning() {
+    let f=Fixture::new();let fake=Fake::new(true);fake.say(DISK_TASK);
+    f.host.personal_send(&f.id,"lifecycle-human","Check disk").unwrap();f.drain(&fake.tools()).await;let id=f.task().id;
+    lifecycle(&f,"delete",Some(serde_json::json!({"source":"personal","taskId":id})),vec![]).await.unwrap();
+    lifecycle(&f,"empty",None,vec![format!("personal:{id}")]).await.unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.clear();Ok(())}).unwrap();
+    assert!(f.host.personal_send(&f.id,"lifecycle-human","Check disk").is_err(),"purged event receipt must outlive normal event pruning");
+}
+
+#[tokio::test]
+async fn lifecycle_deleted_tasks_are_retained_when_normal_history_is_pruned() {
+    let f=Fixture::new();let fake=Fake::new(true);fake.say(DISK_TASK);
+    f.host.personal_send(&f.id,"lifecycle-human","Check disk").unwrap();f.drain(&fake.tools()).await;
+    let id=f.task().id;
+    lifecycle(&f,"delete",Some(serde_json::json!({"source":"personal","taskId":id})),vec![]).await.unwrap();
+    f.host.change_assistant(&f.id,|a|{let deleted=a.tasks[0].clone();for n in 0..1000 {let mut task=deleted.clone();task.id=format!("old-{n}");task.deleted_at=None;a.tasks.push(task);}a.prune_tasks();Ok(())}).unwrap();
+    assert!(f.get().tasks.iter().any(|task|task.id==id && task.deleted_at.is_some()),"Deleted tasks must persist until explicit Empty");
+}
+
+#[tokio::test]
+async fn lifecycle_delegated_api_rejects_other_assistant_and_retains_detached_deleted_tasks() {
+    let f=Fixture::new();let a=f.get();
+    let owner=crate::assistant_tasks::TaskOwner{workspace_id:"w".into(),host_id:a.host_id.clone(),cwd:f.root.to_string_lossy().into_owned(),conversation_id:"c".into()};
+    let reference=crate::personal_workspace::AssistantRef{host_id:a.host_id.clone(),assistant_id:a.id.clone()};
+    let make=|request_id:&str,assistant|f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation{request_id:request_id.into(),batch_id:"b".into(),owner:owner.clone(),revision:1,original_request:"Inspect".into(),brief:"Inspect".into(),destination:crate::assistant_tasks::TaskDestination{thread_id:Some("parent".into()),workers:vec!["worker".into()],new_thread:false},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],lineage:Some(crate::assistant_tasks::AssistantLineage{assistant,project:crate::personal_workspace::ProjectRef{workspace_id:"w".into(),host_id:a.host_id.clone(),cwd:owner.cwd.clone()},source_event_id:"e".into(),delegation_id:request_id.into()}),context:None}).unwrap();
+    let foreign=make("foreign",crate::personal_workspace::AssistantRef{assistant_id:"other".into(),..reference.clone()});
+    assert!(lifecycle(&f,"delete",Some(serde_json::json!({"source":"delegated","taskId":foreign.id,"revision":foreign.revision})),vec![]).await.unwrap_err().contains("different assistant"));
+    let task=make("own",reference);
+    assert!(lifecycle(&f,"delete",Some(serde_json::json!({"source":"delegated","taskId":task.id,"revision":task.revision-1})),vec![]).await.is_err());
+    lifecycle(&f,"delete",Some(serde_json::json!({"source":"delegated","taskId":task.id,"revision":task.revision})),vec![]).await.unwrap();
+    let deleted=f.host.assistant_tasks.get(&task.id).unwrap().unwrap();assert_eq!(deleted.status,crate::assistant_tasks::TaskStatus::Cancelled);
+    assert!(f.get().projects.is_empty());assert_eq!(f.get().extra["deletedDelegatedTasks"][0]["id"],task.id);
+    lifecycle(&f,"empty",None,vec![format!("delegated:{}",task.id)]).await.unwrap();
+    assert!(f.host.assistant_tasks.get(&task.id).unwrap().is_none());assert!(f.host.assistant_tasks.get(&foreign.id).unwrap().is_some());
+    assert!(f.get().extra.get("deletedDelegatedTasks").is_none());
+}
+
+#[tokio::test]
+async fn stopping_a_cost_held_reply_supersedes_its_spend_approval() {
+ let f=Fixture::new();let fake=Fake::new(true);
+ f.host.change_assistant(&f.id,|a|{a.budget.daily_limit_micros=Some(0);Ok(())}).unwrap();
+ let sent=f.host.personal_send(&f.id,"held-reply","Question").unwrap();f.drain(&fake.tools()).await;
+ assert_eq!(f.get().events.iter().find(|e|e.id==sent.event_id).unwrap().state,EventState::Held);
+ f.host.personal_reply_cancel(&f.id,"stop-held",&sent.event_id).unwrap();
+ assert!(f.get().tasks.iter().all(|t|t.status==TaskStatus::Cancelled));
+ assert!(f.get().tasks.iter().all(|t|t.decision.as_ref().is_none_or(|d|d.status!=DecisionStatus::Open)));
+ assert_eq!(fake.reason_calls.load(Ordering::SeqCst),0);
+}

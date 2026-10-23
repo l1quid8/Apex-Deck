@@ -1,3 +1,8 @@
+import { sharedComposerSurface } from './helpers/shared-composer-surface.mjs';
+import { taskMessageDeleted } from '../src/assistantTaskVisibility.ts';
+import { composerButton } from '../src/voice/callView.ts';
+import { readVoiceSettings } from '../src/voice/settings.ts';
+import { withTldr, TLDR_LINE } from '../src/tldr.ts';
 import { assistantComposerDraftFor, draftHookFor } from './helpers/assistant-draft-hook.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,7 +20,7 @@ const require = createRequire(import.meta.url);
 const { transform } = require('sucrase');
 const source = fs.readFileSync(new URL('../src/ApexAgentAll.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
+const { React, ThreadComposerBox, ComposerModeControls } = sharedComposerSurface();
 const textOf = node => node?.type === LegacyBadgeStub ? 'Imported · unverified' : typeof node === 'string' || typeof node === 'number' ? String(node) : node?.type === MarkdownStub ? node.props.text : node?.children?.map(textOf).join('') ?? '';
 const find = (node, predicate) => !node || typeof node !== 'object' ? null : predicate(node) ? node : node.children?.map(child => find(child, predicate)).find(Boolean) ?? null;
 const evidence = { sourceId: 'file:test-report.md', label: 'test-report.md', observedAt: 1, excerpt: 'Login tests failed.' };
@@ -32,9 +37,13 @@ const PersonalCallStub = (props) => ({ type: PersonalCallStub, props, children: 
 const ApexAgentMessageActionsStub = (props) => ({ type: ApexAgentMessageActionsStub, props, children: [] });
 const ApexAgentReplyQuoteStub = (props) => ({ type: ApexAgentReplyQuoteStub, props, children: [] });
 const ApexAgentComposerToolsStub = (props) => ({ type: ApexAgentComposerToolsStub, props, children: [] });
+const VoiceCallBarStub = () => null;
+const VoiceCallControlsStub = () => null;
+const VoiceCallCapsuleStub = () => null;
+globalThis.window ??= {};
 globalThis.requestAnimationFrame ??= callback => callback();
 
-function harness(props, { effects = false } = {}) {
+function harness(props, { effects = false, voice = {} } = {}) {
   const states = [], refs = [], queuedEffects = [], effectDeps = [];
   let cursor = 0;
   const hooks = {
@@ -44,7 +53,14 @@ function harness(props, { effects = false } = {}) {
     useEffect(fn, deps) { const i = cursor++; if (effects && (!effectDeps[i] || deps.some((v, j) => v !== effectDeps[i][j]))) { queuedEffects.push(fn); effectDeps[i] = deps; } },
     useCallback(fn) { cursor++; return fn; },
   };
-  const component = new Function('assistantComposerDraftFor', 'useAssistantComposerDraftState', 'React', 'Markdown', 'LegacyBadge', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'withoutLaneMentions', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', 'LandingTexture', `${compiled}\nreturn ApexAgentAll;`)(assistantComposerDraftFor, draftHookFor(hooks), React, MarkdownStub, LegacyBadgeStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTextureStub);
+  // The voice coordinator has external stores and a native audio transport;
+  // this harness exercises its caller boundary without starting either one.
+  const useAssistantVoice = input => {
+    const settings = readVoiceSettings(input.settings);
+    return { settings, candidates: [], slot: { live: false, look: settings.look }, hint: undefined, who: () => undefined, ...voice };
+  };
+  const bindings = { taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, createPortal: children => children };
+  const component = new Function(...Object.keys(bindings), `${compiled}\nreturn ApexAgentAll;`)(...Object.values(bindings));
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, flushEffects() { queuedEffects.splice(0).forEach(fn => fn()); }, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
@@ -992,7 +1008,8 @@ test('embedded task details keep the composer and offer a way back to chat', () 
  const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[]});
  let tree=openFirstTaskLink(h);
  assert.equal(find(tree,n=>n.type==='form').props.hidden,false);
- const back=find(tree,n=>n.props?.className==='assistant-chat-back');assert.equal(textOf(back),'‹ Chat');
+ const back=find(tree,n=>n.props?.className==='apex-agent-back');assert.equal(textOf(back),'‹ Chat');
+ assert.equal(collectAll(tree,n=>n.type==='button'&&textOf(n)==='‹ Chat').length,1,'one way back to the source');
  back.props.onClick();tree=h.render();assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null);
  assert.ok(find(tree,n=>n.props?.className==='apex-agent-task-link'),'transcript is back');
 });
@@ -1030,6 +1047,43 @@ test('Work can open a personal task in embedded chat, once', () => {
  const {lane}=personalLane([personalTask('needsYou')],messages);const key='focus-owner';const handled=[];
  const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[],focusTask:{key:personalTaskKey('vps','pt-1',undefined),nonce:1},onFocusHandled:()=>handled.push(1)},{effects:true});
  h.render();h.flushEffects();const tree=h.render();
- assert.ok(find(tree,n=>n.props?.className==='assistant-chat-back'),'task details are open');
+ assert.ok(find(tree,n=>n.props?.className==='apex-agent-back'),'task details are open');
+ assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null,'no duplicate back control');
  assert.equal(handled.length,1);h.flushEffects();h.render();h.flushEffects();assert.equal(handled.length,1);
+});
+
+test('embedded shared composer forwards one voice candidate and switches empty mic to Send while preserving the draft', () => {
+ const previous=window.apexDeck;window.apexDeck={voice:{}};
+ try {
+  const {lane}=personalLane(),candidate={hostId:'vps',roomId:'assistant:asst-1',participantId:'asst-1',profileId:'assistant:asst-1',name:'Assistant'};
+  const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[]},{voice:{candidates:[candidate]}});
+  let tree=h.render();const box=find(tree,n=>n.props?.className==='composer-box');assert.ok(box);assert.ok(find(box,n=>n.type==='textarea'));
+  const control=find(box,n=>n.type===VoiceCallControlsStub);assert.deepEqual(control.props.candidates,[candidate]);assert.equal(control.props.disabled,false);assert.equal(find(box,n=>n.type==='button'&&n.props['aria-label']==='Send'),null);
+  find(box,n=>n.type==='textarea').props.onChange({target:{value:'Keep my draft'}});tree=h.render();assert.equal(find(tree,n=>n.type===VoiceCallControlsStub),null);assert.ok(find(tree,n=>n.type==='button'&&n.props['aria-label']==='Send'));assert.equal(find(tree,n=>n.type==='textarea').props.value,'Keep my draft');
+ } finally {window.apexDeck=previous;}
+});
+
+test('the real shared TLDR control decorates the exact personal reply without altering its destination',async()=>{
+ const {lane,calls}=personalLane();const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[]});let tree=h.render();
+ find(tree,n=>n.type==='button'&&n.props['aria-label']==='TL;DR mode').props.onClick();tree=h.render();assert.equal(find(tree,n=>n.props['aria-label']==='TL;DR mode').props['aria-pressed'],true);
+ find(tree,n=>n.type==='textarea').props.onChange({target:{value:'Explain this result'}});tree=h.render();find(tree,n=>n.type==='form').props.onSubmit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(calls,[['send',`Explain this result\n\n${TLDR_LINE}`]]);assert.equal(h.replies.length,0);
+});
+
+test('Escape with a pending reply on an older host preserves the draft without calling unsupported Stop',async()=>{
+ const {lane}=personalLane();lane.assistant.events=[{id:'pending',source:{kind:'human'},state:'processing'}];
+ const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[]});let tree=h.render();find(tree,n=>n.type==='textarea').props.onChange({target:{value:'Keep this draft'}});tree=h.render();
+ assert.doesNotThrow(()=>find(tree,n=>n.type==='textarea').props.onKeyDown({key:'Escape',preventDefault(){}}));
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(find(h.render(),n=>n.type==='textarea').props.value,'Keep this draft');assert.doesNotMatch(textOf(h.render()),/cancelReply|not a function/);
+});
+
+
+test('opening the shared browser closes the tools sheet and preserves the chat draft',()=>{
+ const {lane}=personalLane([],[]);let opened=0;
+ const h=harness({embedded:true,personal:lane,workspaces:[],monitors:[],onOpenBrowser:()=>opened++});
+ let tree=h.render();find(tree,n=>n.type==='textarea').props.onChange({target:{value:'Keep this browser task draft'}});tree=h.render();
+ find(tree,n=>n.type===ApexAgentComposerToolsStub).props.onTools();tree=h.render();
+ const panel=find(tree,n=>n.type===PersonalPanelsStub);assert.equal(panel.props.initial,'connections');panel.props.onOpenBrowser();tree=h.render();
+ assert.equal(opened,1);assert.equal(find(tree,n=>n.type===PersonalPanelsStub),null,'browser opens over chat, with the tools sheet dismissed');
+ assert.equal(find(tree,n=>n.type==='textarea').props.value,'Keep this browser task draft');
 });

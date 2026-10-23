@@ -749,3 +749,17 @@ test("muting the microphone does not discard a request confirmed by tapping a th
   assert.equal(f.c.getState().muted, true);
   await f.c.end();
 });
+
+test('latest mute intent survives delayed runtime, audio and connection readiness without accepting muted input',async()=>{
+ for(const phase of ['runtime','audio','connect'])for(const finalMuted of [true,false]){
+  let release,entered;const gate=new Promise(resolve=>{release=resolve;}),atGate=new Promise(resolve=>{entered=resolve;});let helper,frame;const mutes=[],frames=[],sent=[],scope={hostId:'mute-host',roomId:'room',participantId:'agent'};
+  const wait=async name=>{if(phase===name){entered();await gate;}};
+  const controller=createVoiceController({runtime:{status:async()=>({installed:true,supported:true}),start:async()=>{await wait('runtime');return {};},stop:async()=>{}},openAudio:async onFrame=>{frame=onFrame;await wait('audio');return{mute:value=>mutes.push(value),play(){},segmentEnd(){},flush(){},close(){},echoCancellation:true};},connect:async(_runtime,onEvent)=>{helper=onEvent;await wait('connect');return{send:message=>sent.push(message),audio:pcm=>frames.push(pcm),close(){}};},candidates:()=>[],bridge(){},voice:()=> 'am_michael',silence:()=>100,focus(){}});
+  const started=controller.start(scope);await atGate;controller.mute(true);if(!finalMuted)controller.mute(false);release();await started;
+  const start=sent.find(message=>message.type==='start');assert.ok(start);
+  helper({type:'ready',callId:start.callId,generation:start.generation,voices:['am_michael']});
+  assert.equal(controller.getState().muted,finalMuted,`${phase}: helper readiness preserves intent`);assert.equal(mutes.at(-1),finalMuted,`${phase}: audio acquisition follows the latest mute intent`);
+  frame(new Int16Array([1]));assert.equal(frames.length,finalMuted?0:1,`${phase}: microphone forwarding follows intent`);
+  await controller.end();
+ }
+});

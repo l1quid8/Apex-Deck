@@ -1575,16 +1575,44 @@ impl Host {
         if task.owner != input.owner || task.revision != input.revision {
             return Err("Task ownership or revision is stale.".into());
         }
-        if matches!(input.action.as_str(), "approve" | "retry" | "continue" | "request_changes" | "resume") {
+        if task.result_data.as_ref().is_some_and(|data| data["deletedAtMs"].is_number()) { return Err("Restore this deleted task before acting.".into()); }
+        if matches!(input.action.as_str(), "approve" | "retry" | "continue" | "request_changes" | "resume" | "revise_startup") {
             if let Some(lineage) = &task.lineage {
                 self.validate_delegated_task(lineage, true)?;
-                if input.action != "approve" { self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&task)?)?; }
+                if input.action != "approve" && input.action != "revise_startup" { self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&task)?)?; }
             }
             let cancelled_retry = input.action == "retry" && task.status == TaskStatus::Cancelled
                 && task.control.desired_state == crate::assistant_tasks::DesiredState::Cancelled;
             if input.action != "resume" && !cancelled_retry && task.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("Resume this task before starting work.".into()); }
         }
         match input.action.as_str() {
+            "revise_startup" => {
+                let _lock=self.assistant_apply.lock().await;
+                if !matches!(task.status,TaskStatus::NeedsYou|TaskStatus::Proposed) || !task.attempts.is_empty() || task.result_data.as_ref().is_none_or(|data|data["startup"].is_null() && !data["startupPreflight"].is_object()) {return Err("Only blocked startup before execution can receive a revised plan.".into());}
+                if input.mode.is_some_and(|mode|mode!=task.mode) {return Err("A revised startup plan must retain its approved access mode. No automatic downgrade is allowed.".into());}
+                if input.checks.is_some() || !input.new_worker_profiles.is_empty() {return Err("Keep the existing checks and select a saved worker configuration.".into());}
+                let destination=input.destination.clone().ok_or("Choose a configured worker before checking a revised plan.")?;
+                if destination.new_thread || destination.workers.len()!=1 {return Err("Choose one configured worker in a saved project chat.".into());}
+                let parent=destination.thread_id.as_deref().ok_or("Choose a saved project worker chat.")?;
+                let saved=self.store().room(parent)?.ok_or("Worker configuration is unavailable.")?;
+                if !saved.cwd.as_deref().is_some_and(|cwd|same_project_folder(cwd,&input.owner.cwd)) {return Err("Worker chat is outside this task’s exact project folder.".into());}
+                let selected:Vec<_>=saved.snapshot.participants.into_iter().filter(|profile|destination.workers.contains(&profile.id.to_string())).collect();
+                if selected.len()!=1 {return Err("Selected worker is not in that project chat.".into());}
+                verify_task_workers(&selected)?;
+                if let Some(lineage)=&task.lineage {self.validate_delegated_task(lineage,true)?;self.validate_delegated_worker_profiles(lineage,&selected)?;}
+                let folder=Path::new(&input.owner.cwd).canonicalize().map_err(|error|format!("Project folder is unavailable: {error}"))?;
+                if !folder.is_dir(){return Err("Project folder is unavailable.".into());}
+                self.wait_for_run_to_settle(&task.id).await?;
+                self.recover_task_operations(&task.id)?;
+                let (_stop_sender,mut stop)=watch::channel(false);
+                let readiness=if task.mode==TaskMode::Isolated {serde_json::to_value(crate::assistant_isolation::verify_workers(&selected,&mut stop).await.map_err(|reason|reason.message)?).map_err(|error|error.to_string())?} else {json!({"configuration":"validated","startup":"rechecked when approved"})};
+                let monitor=self.monitor_get(&task.owner.workspace_id)?.ok_or("Project coordinator is unavailable.")?;
+                if monitor.cwd!=task.owner.cwd || monitor.host_id!=task.owner.host_id || monitor.conversation_id!=task.owner.conversation_id {return Err("Task belongs to a previous project assignment.".into());}
+                if let Some(lineage)=&task.lineage {self.validate_delegated_task(lineage,true)?;self.validate_delegated_worker_profiles(lineage,&selected)?;}
+                let preflight=json!({"profiles":selected,"workers":readiness,"mode":task.mode,"cwd":input.owner.cwd,"checkedAtMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64});
+                let updated=self.assistant_tasks.revise_startup(&task.id,input.revision,&input.owner,destination,preflight,monitor.revision).map_err(|error|error.to_string())?;
+                self.assistant_changed(&task.owner.workspace_id);Ok(updated)
+            }
             "pause" | "resume" => {
                 use crate::assistant_tasks::{DesiredState, PauseReason};
                 if input.action == "resume" { self.wait_for_run_to_settle(&task.id).await?; }
@@ -2257,6 +2285,7 @@ impl Host {
                 Ok(result)
             }
             "approve" | "clarify" => {
+                if task.result_data.as_ref().is_some_and(|data|data["startupPreflight"].is_object()) && (input.destination != task.destination || !input.new_worker_profiles.is_empty() || input.checks.as_ref().is_some_and(|checks|json!(checks)!=task.result_data.as_ref().unwrap()["checks"])) { return Err("Approve the exact preflighted worker, checks and project plan revision.".into()); }
                 let approved = self.change_monitors(|monitors| {
                 if task.result_data.as_ref().is_some_and(|data| data["batchId"].is_string()) {
                     let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("Handoff project assignment is unavailable.")?;
@@ -2316,11 +2345,15 @@ impl Host {
                     }
                     let selected: Vec<_> = saved.snapshot.participants.into_iter().filter(|profile| destination.workers.contains(&profile.id.to_string())).collect();
                     verify_task_workers(&selected)?;
+                    if let Some(preflight)=task.result_data.as_ref().and_then(|data|data.get("startupPreflight")) {
+                        if preflight["profiles"] != json!(&selected) { return Err("Worker configuration changed since preflight. Check a revised plan again.".into()); }
+                    }
                     if let Some(lineage) = &task.lineage { self.validate_delegated_worker_profiles(lineage, &selected)?; }
                 }
                 let requested_mode = task.result_data.as_ref()
                     .and_then(|data| serde_json::from_value(data["mode"].clone()).ok()).unwrap_or(task.mode);
                 let mode = input.mode.unwrap_or(requested_mode);
+                if task.result_data.as_ref().is_some_and(|data|data["startupPreflight"].is_object()) && mode != task.mode { return Err("Revised plan approval must retain its preflighted access mode.".into()); }
                 let check_commands: Vec<Vec<String>> = input.checks.clone().unwrap_or_else(|| task.result_data.as_ref()
                     .and_then(|data| serde_json::from_value(data["checks"].clone()).ok()).unwrap_or_default());
                 if mode == TaskMode::ReadOnly && !check_commands.is_empty() {
@@ -2396,7 +2429,7 @@ fn task_monitor(task: Option<&AssistantTask>) -> Value {
     json!({"status":task.and_then(|t|serde_json::to_value(t.status).ok()),"taskId":task.map(|t|t.id.as_str()),"revision":task.map(|t|t.revision)})
 }
 
-fn has_pending_integration(task: &AssistantTask) -> bool {
+pub(crate) fn has_pending_integration(task: &AssistantTask) -> bool {
     task.mode == TaskMode::Isolated
         && matches!(task.status, TaskStatus::Applying | TaskStatus::Interrupted)
         && task.result_data.as_ref().is_some_and(|data| {
@@ -3414,6 +3447,32 @@ mod tests {
                 task.status, task.result
             )
         })
+    }
+
+    #[test]
+    fn revise_startup_preflights_same_task_then_requires_new_approval() {
+        let f=fixture();
+        let task=f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {request_id:"revised-startup".into(),batch_id:"batch".into(),owner:f.owner.clone(),revision:f.host.monitor_get("workspace").unwrap().unwrap().revision,original_request:"Fix login".into(),brief:"Fix login".into(),destination:TaskDestination{thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::Isolated,review_criteria:vec!["Tests pass".into()],lineage:None,context:None}).unwrap();
+        let task=f.host.assistant_tasks.set_destination(&task.id,task.revision,&f.owner,task.destination.clone().unwrap(),task.brief.clone()).unwrap();
+        let task=f.host.assistant_tasks.transition(&task.id,task.revision,&f.owner,TaskStatus::NeedsYou,Some("Could not start".into())).unwrap();
+        let mut data=task.result_data.clone().unwrap();data["startup"]=json!({"message":"Unsupported original worker"});
+        let task=f.host.assistant_tasks.set_result_data(&task.id,task.revision,&f.owner,Some(data)).unwrap();
+        let action=|revision,mode|AssistantActionInput {task_id:task.id.clone(),revision,owner:f.owner.clone(),action:"revise_startup".into(),mode:Some(mode),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None};
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action(task.revision-1,TaskMode::Isolated))).is_err());
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action(task.revision,TaskMode::ReadOnly))).is_err(),"scope must never silently downgrade");
+        f.host.room_create("unsupported-revision".into(),vec![profile("codex",Backend::Agent{tool:apex_core::AgentTool::Codex,model:None},Access::Edits)],RoomOptions::default(),Some(f.owner.cwd.clone())).unwrap();
+        let mut unsupported=action(task.revision,TaskMode::Isolated);unsupported.destination=Some(TaskDestination{thread_id:Some("unsupported-revision".into()),workers:vec!["codex".into()],new_thread:false});
+        assert!(f.runtime.block_on(f.host.assistant_task_action(unsupported)).unwrap_err().contains("trust"));
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().revision,task.revision,"failed preflight cannot change the plan");
+        let revised=f.runtime.block_on(f.host.assistant_task_action(action(task.revision,TaskMode::Isolated))).expect("supported worker should preflight");
+        assert_eq!(revised.id,task.id);assert_eq!(revised.original_request,task.original_request);assert_eq!(revised.mode,TaskMode::Isolated);assert_eq!(revised.status,TaskStatus::Proposed);assert!(revised.attempts.is_empty());
+        assert_eq!(revised.result_data.as_ref().unwrap()["humanApproved"],false);assert!(revised.result_data.as_ref().unwrap()["startupPreflight"].is_object());
+        assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
+        let mut altered=action(revised.revision,TaskMode::Isolated);altered.action="approve".into();altered.destination=Some(TaskDestination{thread_id:Some("unsupported-revision".into()),workers:vec!["codex".into()],new_thread:false});
+        assert!(f.runtime.block_on(f.host.assistant_task_action(altered)).is_err(),"approval may not replace preflighted worker");
+        let mut approve=action(revised.revision,TaskMode::Isolated);approve.action="approve".into();
+        f.runtime.block_on(f.host.assistant_task_action(approve)).unwrap();
+        let finished=wait_for(&f,&task.id);assert_eq!(finished.id,task.id);assert_eq!(finished.status,TaskStatus::ReadyForReview);assert_eq!(finished.mode,TaskMode::Isolated);
     }
 
     fn isolated_task(f: &Fixture, request_id: &str) -> AssistantTask {

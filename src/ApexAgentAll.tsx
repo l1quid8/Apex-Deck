@@ -1,3 +1,13 @@
+import { taskMessageDeleted } from './assistantTaskVisibility';
+import type { AssistantTask } from './assistantTaskModel';
+import { createPortal } from 'react-dom';
+import type { Backend } from './backend';
+import type { VoiceSettings } from './voice/types';
+import { useAssistantVoice } from './voice/useAssistantVoice';
+import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls } from './voice/VoiceCallControls';
+import { composerButton } from './voice/callView';
+import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
+import { withTldr } from './tldr';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Markdown } from './Markdown';
@@ -51,8 +61,16 @@ function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) =
 }
 
 /** One conversation across every watched project. Replies go to the project they name, or the last one discussed. */
-export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled }: {
+export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled, voiceBackend, voiceSettings, onVoiceSettings, voiceHeader, onOpenBrowser, onVoiceFocus, onOpenProjectTask, delegatedTasks=[] }: {
   /** The personal assistant on its durable host, shown as one more lane in this conversation. */
+  delegatedTasks?: AssistantTask[];
+  onVoiceFocus?: () => void;
+  onOpenProjectTask?: (key: string) => boolean;
+  voiceBackend?: Backend;
+  voiceSettings?: VoiceSettings;
+  onVoiceSettings?: (settings: VoiceSettings) => void;
+  voiceHeader?: HTMLElement | null;
+  onOpenBrowser?: () => void;
   personal?: PersonalLane | null;
   personalLaneId?: string;
   onNavigatePanel?: (section: 'memory' | 'settings' | 'activity') => void;
@@ -70,7 +88,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   /** The glyph rain a new teammate's empty chat shows, as new threads do. */
   landingTexture?: LandingTextureSettings;
   /** A task Work asked to open; handled once per nonce. */
-  focusTask?: { key: string; nonce: number } | null;
+  focusTask?: { key: string; nonce: number; origin?:'chat'|'work' } | null;
   onFocusHandled?: () => void;
   offlineWorkspaceIds?: string[];
   onOpenEvidence?: (workspaceId: string, evidence: MonitorEvidence) => Promise<void>;
@@ -107,10 +125,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   // Projects plus the personal assistant: a reply goes to whichever is named, or the last one discussed.
   const lanes = [...watched.map((workspace) => ({ id: workspace.id, name: workspace.name })), ...(assistant ? [{ id: PERSONAL, name: personal!.name }] : [])];
   const laneNames: Record<string, string> = assistant ? { ...names, [PERSONAL]: personalTag } : names;
-  const personalEntries = useMemo(() => (assistant?.messages ?? []).map((item: PersonalMessage) => ({
+  const personalEntries = useMemo(() => (assistant?.messages ?? []).filter(m=>!taskMessageDeleted(m,assistant?.tasks??[],delegatedTasks,assistant?.purgedDelegatedTaskIds??[])).map((item: PersonalMessage) => ({
     workspaceId: PERSONAL, project: personalTag, personal: item,
     message: { id: item.id, role: item.role === 'human' ? 'human' : 'assistant', text: item.text, at: item.at, evidence: [] as MonitorEvidence[], reactions: item.reactions },
-  })), [assistant, personalTag]);
+  })), [assistant, personalTag, delegatedTasks]);
   const conversationName = embedded && personal?.assistant ? personal.name : 'ApexAgent';
   const allEntries = useMemo(() => [...(embedded ? [] : mergeProjectConversations(monitors, names)), ...overviewEntries, ...personalEntries].sort((a, b) => a.message.at - b.message.at), [embedded, monitors, names, overviewEntries, personalEntries]);
   const entries = useMemo(() => allEntries.filter((entry) => entry.message.at > clearedAt && (!filterWorkspaceId || entry.workspaceId === filterWorkspaceId) && !('personal' in entry && entry.personal.kind === 'notice')), [allEntries, clearedAt, filterWorkspaceId]);
@@ -144,6 +162,9 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   // The assistant's detail panels open as a sheet over the transcript.
   const [panelOpen, setPanelOpen] = useState<PanelName | null>(null);
   const [calling, setCalling] = useState(false);
+  const [tldr,setTldr]=useAssistantComposerDraftState(draftKey,'tldr',false);
+  const [planOn,setPlanOn]=useAssistantComposerDraftState(draftKey,'planOn',false);
+  const voice=useAssistantVoice({lane:personal,backend:voiceBackend,settings:voiceSettings,onSettings:onVoiceSettings,onFocus:onVoiceFocus});
   // One conversation, plus a Tasks view. Each project's task components report their rows here by store.
   const [savedView, setSavedView] = useAssistantComposerDraftState<'chat' | 'tasks' | 'notifications'>(draftKey, 'view', 'chat');
   // Embedded in the assistant workspace there are no view tabs, so a saved
@@ -156,6 +177,8 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const [reported, setReported] = useState<Record<string, TaskSummary[]>>({});
   const [noticesSeenThrough, setNoticesSeenThrough] = useState(0);
   const scroller = useRef<HTMLDivElement | null>(null);
+  const composerShell=useRef<HTMLFormElement|null>(null);
+  useEffect(()=>{const el=composerShell.current;if(!el||!embedded||typeof ResizeObserver==='undefined')return;const place=()=>{const workspace=el.closest<HTMLElement>('.assistant-workspace');if(workspace)workspace.style.setProperty('--assistant-browser-bottom',`${el.getBoundingClientRect().height+12}px`);};place();const watch=new ResizeObserver(place);watch.observe(el);return()=>watch.disconnect();},[embedded]);
   const composerInput = useRef<HTMLTextAreaElement | null>(null);
   const composerMenu = useRef<ComposerMenuHandle | null>(null);
   const composerTools = useRef<ApexAgentComposerToolsHandle | null>(null);
@@ -164,7 +187,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     const input = composerInput.current;
     if (!input) return;
     input.style.height = '0px';
-    input.style.height = `${Math.min(input.scrollHeight, 144)}px`;
+    input.style.height = `${Math.min(input.scrollHeight, embedded ? 200 : 144)}px`;
   }, [text, view]);
   // Scroll positions are remembered per view; null means the chat has not been left yet.
   const scrollDraft = assistantComposerDraftFor(draftKey);
@@ -232,15 +255,17 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     }
     setView(next); setSelectedKey(null);
   };
+  const [detailOrigin,setDetailOrigin]=useState<'chat'|'work'>('chat');
   const openTask = useCallback((key: string) => {
+    if(onOpenProjectTask?.(key))return;setDetailOrigin('chat');
     const current = stateRef.current;
     const top = scroller.current?.scrollTop ?? 0;
     if (current.view === 'chat') chatScroll.current = top;
     else if (current.view === 'tasks' && !current.selectedKey) tasksScroll.current = top;
     else if (current.view === 'notifications') notificationsScroll.current = top;
     setView('tasks'); setSelectedKey(key);
-  }, []);
-  useEffect(() => { if (!focusTask) return; openTask(focusTask.key); onFocusHandled?.(); }, [focusTask?.nonce]);
+  }, [onOpenProjectTask]);
+  useEffect(() => { if (!focusTask) return; openTask(focusTask.key);setDetailOrigin(focusTask.origin??'chat'); onFocusHandled?.(); }, [focusTask?.nonce]);
   // Rows are replaced per store. Identical rows keep the same state, so a store reporting on every render cannot loop.
   const report = useCallback((storeKey: string, rows: TaskSummary[]) => {
     setReported((current) => JSON.stringify(current[storeKey]) === JSON.stringify(rows) ? current : { ...current, [storeKey]: rows });
@@ -263,6 +288,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };
   const runCommand = (command: Command, lane: string) => {
+    if(embedded&&command.name==='plan'){setPlanOn(!planOn);return;}
     if (command.name === 'clear') {
       if (onClear && window.confirm('Hide this conversation on this Mac? Tasks and notifications stay available.')) onClear();
       return;
@@ -291,7 +317,8 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     const capturedQuotes = replyQuotes;
     const sendLane = attachmentLane ?? capturedQuotes[0]?.laneId ?? target;
     const withQuote = capturedQuotes.length ? `${formatApexAgentQuote(capturedQuotes)}${message}` : message;
-    const outgoing = capturedTools?.decorate(withQuote) ?? withQuote;
+    const decorated=capturedTools?.decorate(withQuote) ?? withQuote;
+    const outgoing=withTldr(planOn?`Plan only. Inspect and propose a plan; do not execute or edit files.\n\n${decorated}`:decorated,tldr);
     setText(''); setDraftFallback(null); setDraftTaskContext(undefined); setFocus(globalReply ? '*' : sendLane);
     void run(async () => {
       try {
@@ -320,7 +347,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     failed.length ? `${failed.length} check${failed.length === 1 ? '' : 's'} failed` : '',
     findings.length ? `${findings.length} need${findings.length === 1 ? 's' : ''} you` : '',
   ].filter(Boolean).join(' · ');
-  const personalWaiting = (assistant?.tasks ?? []).filter((task) => task.status === 'needsYou' && task.decision?.status === 'open').length;
+  const personalWaiting = (assistant?.tasks ?? []).filter((task) => task.deletedAt==null&&task.status === 'needsYou' && task.decision?.status === 'open').length;
   const proposedSchedules = (assistant?.schedules ?? []).filter((schedule) => schedule.status === 'proposed' && schedule.decision?.status === 'open');
   const personalStatus = !personal || filterWorkspaceId ? '' : personal.offline ? `${personal.name} on ${personal.hostName} · Offline` : assistant ? `${personal.name} on ${personal.hostName}${assistant.paused ? ' · Paused' : ''}${personalWaiting ? ` · ${personalWaiting} need${personalWaiting === 1 ? 's' : ''} you` : ''}` : '';
   const headline = [monitors.length || !personalStatus ? status : '', personalStatus].filter(Boolean).join(' · ');
@@ -343,7 +370,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     </>;
   };
   const cadenceOf = (schedule: { everyMs?: number; dailyAt?: string }) => schedule.everyMs ? everyText(schedule.everyMs) : schedule.dailyAt ? `Daily at ${schedule.dailyAt}` : 'Scheduled';
-  const taskOf = (id?: string): PersonalTask | undefined => assistant?.tasks.find((task) => task.id === id);
+  const taskOf = (id?: string): PersonalTask | undefined => assistant?.tasks.find((task) => task.id === id&&task.deletedAt==null);
   // In the conversation, a task's approval, result and app lines collapse into one link, placed at its first such line.
   const collapsesToLink = (item: PersonalMessage) => !!item.taskId && !!taskOf(item.taskId) && (item.kind === 'approval' || item.kind === 'result' || item.role === 'system');
   const linkLine = new Map<string, string>();
@@ -354,7 +381,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const clock = (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   const plain = (text: string) => text.split('```').filter((_, index) => index % 2 === 0).join(' ').replace(/`/g, '').replace(/\s+/g, ' ').trim();
   // Every personal task as a Tasks row, with its owning host in the key.
-  const personalRows: TaskSummary[] = !assistant ? [] : assistant.tasks.map((task) => {
+  const personalRows: TaskSummary[] = !assistant ? [] : assistant.tasks.filter(task=>task.deletedAt==null).map((task) => {
     const results = (assistant.messages ?? []).filter((line) => line.taskId === task.id && line.kind === 'result');
     return {
       key: personalTaskKey(assistant.hostId, task.id, personal?.ref?.assistantId), source: 'personal', hostId: assistant.hostId, workspaceId: '', id: task.id,
@@ -439,7 +466,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const notificationCount = findings.length + failed.filter((monitor) => inView(monitor.workspaceId)).length + projectNeeds.length + visiblePersonalWaiting + visibleSchedules.length + unseenNotices;
   const selectedRow = selectedKey ? allRows.find((row) => row.key === selectedKey) ?? null : null;
   const selectedTask = selectedRow?.source === 'personal' ? assistant?.tasks.find((task) => task.id === selectedRow.id) ?? null : null;
-  const closeDetail = () => setSelectedKey(null);
+  const closeDetail = () => {setSelectedKey(null);if(embedded){setView('chat');if(detailOrigin==='work')onNavigatePanel?.('activity');}};
   // Escape closes one layer: a detail goes back to the list, and the list goes back to the conversation.
   const onEscape = (event: React.KeyboardEvent) => {
     if (event.key !== 'Escape') return;
@@ -479,7 +506,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   };
   // The Tasks view below the header: one back bar and one detail, or the list. Project details render inside their own components.
   const tasksSlot = <>
-    {selectedKey && <div className="apex-agent-task-bar"><button type="button" className="apex-agent-back" onClick={closeDetail}>‹ Tasks</button>{selectedRow && <span>{selectedRow.title}</span>}</div>}
+    {selectedKey && <div className="apex-agent-task-bar"><button type="button" className="apex-agent-back" onClick={closeDetail}>{embedded?(detailOrigin==='work'?'‹ Work':'‹ Chat'):'‹ Tasks'}</button>{selectedRow && <span>{selectedRow.title}</span>}</div>}
     {!selectedKey ? tasksHome() : selectedTask ? taskCard(selectedTask, linesOf(selectedTask), true) : !selectedRow && <p className="apex-agent-muted apex-agent-task-missing">This task is no longer available.</p>}
   </>;
 
@@ -539,9 +566,12 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     setText(value); setReplyQuotes([]); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(lane); setDraftFallback(lane);
     requestAnimationFrame(() => composerInput.current?.focus());
   };
+  const pendingReplies=(assistant?.events??[]).filter(e=>e.source?.kind==='human'&&['received','processing'].includes(e.state));
+  const pendingReply=pendingReplies.find(e=>e.state==='processing')??pendingReplies[0];
+  const round=composerButton({hasContent:!!text.trim()||!!attachmentState.paths.length,canCall:!!window.apexDeck?.voice&&voice.candidates.length>0,live:voice.slot.live,look:voice.slot.look});
   const composerLane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;
 
-  return <TaskViewContext.Provider value={taskContextValue}><section className={`apex-agent ${embedded ? 'assistant-conversation' : 'widget'} apex-agent-all`} role="region" aria-label={conversationName} onKeyDown={onEscape}>
+  return <TaskViewContext.Provider value={taskContextValue}><section className={`apex-agent ${embedded ? 'assistant-conversation thread-chat' : 'widget'} apex-agent-all`} role="region" aria-label={conversationName} onKeyDown={onEscape}>
     {!embedded && <header className="apex-agent-head">
       <div className="apex-agent-head-row">
         <div className="apex-agent-brand"><h1>{embedded ? personal?.name ?? 'Assistant' : 'ApexAgent'}</h1></div>
@@ -575,7 +605,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       else if (current.view === 'tasks') tasksScroll.current = event.currentTarget.scrollTop;
       else notificationsScroll.current = event.currentTarget.scrollTop;
     }}><div className="assistant-chat-transcript" aria-live="polite">
-      {embedded && view !== 'chat' && <button type="button" className="assistant-chat-back" onClick={() => switchView('chat')}>‹ Chat</button>}
+      {embedded && view !== 'chat' && !selectedKey && <button type="button" className="assistant-chat-back" onClick={() => switchView('chat')}>‹ Chat</button>}
       {view === 'chat' ? <>
       {firstRun && <div className="assistant-first-run">
         {landingTexture && <LandingTexture settings={landingTexture} />}
@@ -630,13 +660,15 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     </div></div>
     {/* Over the whole popup, not inside the scrolling transcript. */}
     {panelOpen && personal && <div className="apex-agent-panels-sheet">
-      <PersonalPanels key={panelOpen} lane={personal} initial={panelOpen} onClose={() => setPanelOpen(null)} />
+      <PersonalPanels onOpenBrowser={onOpenBrowser ? () => { setPanelOpen(null); onOpenBrowser(); } : undefined} key={panelOpen} lane={personal} initial={panelOpen} onClose={() => setPanelOpen(null)} />
     </div>}
-    {(!!watched.length || !!selectedTaskContext || !!assistant) && <form className="apex-agent-all-composer" onSubmit={send} hidden={!embedded && view !== 'chat'}>
+    {(!!watched.length || !!selectedTaskContext || !!assistant) && <form ref={composerShell} className={embedded?`composer assistant-thread-composer${tldr?' tldr':''}${planOn?' plan':''}`:'apex-agent-all-composer'} onSubmit={send} hidden={!embedded && view !== 'chat'}>
+      {embedded&&<VoiceCallBar settings={voice.settings} candidates={voice.candidates} who={voice.who}/>}
+      {pendingReply&&personal?.cancelReply&&<div className="assistant-reply-progress" role="status"><span>{pendingReplies.length>1?`Replying · ${pendingReplies.length-1} queued`:'Replying…'}</span><button type="button" className="round-send stop" aria-label="Stop reply" onClick={()=>void run(()=>personal.cancelReply!(pendingReply.id))}>■ Stop</button></div>}
       {selectedTaskContext && <div className="assistant-composer-heading"><strong>{selectedTaskContext.project} · {selectedTaskContext.label}</strong><button type="button" onClick={() => { setDraftTaskContext(null); setFocus(null); setDraftFallback(null); onClearTaskContext?.(); }}>New message</button></div>}
       <ApexAgentReplyQuote quotes={replyQuotes} onClear={() => setReplyQuotes([])} onRemove={(index) => setReplyQuotes((list) => list.filter((_, i) => i !== index))} />
-      <div className="apex-agent-all-compose-box">
-        <ApexAgentComposerTools draftKey={draftKey} ref={composerTools} value={text} disabled={busy} onChange={(value) => { setText(value); setCaret(composerInput.current?.selectionStart ?? value.length); }} inputRef={composerInput} menuRef={composerMenu} participants={lanes.map((lane) => ({ id: lane.id, display_name: lane.name, mention: laneHandles.get(lane.id) }))} servers={serversByLane[composerLane] ?? []} serverStatus={serverStatusByLane[composerLane]} includeAll={!!onOverview && !filterWorkspaceId} allMentionDetail="Ask across projects" onTools={composerLane === PERSONAL && assistant ? () => setPanelOpen('connections') : undefined} folderUnavailableReason={pickFolderUnavailableReason} filesUnavailableReason={!saveAttachment ? 'File attachments are unavailable on this destination.' : undefined} trigger={findTrigger(text, caret)}
+      <ThreadComposerBox>
+        <ApexAgentComposerTools draftKey={draftKey} ref={composerTools} value={text} disabled={busy} onChange={(value) => { setText(value); setCaret(composerInput.current?.selectionStart ?? value.length); }} inputRef={composerInput} menuRef={composerMenu} planOn={planOn} participants={lanes.map((lane) => ({ id: lane.id, display_name: lane.name, mention: laneHandles.get(lane.id) }))} servers={serversByLane[composerLane] ?? []} serverStatus={serverStatusByLane[composerLane]} includeAll={!!onOverview && !filterWorkspaceId} allMentionDetail="Ask across projects" onTools={composerLane === PERSONAL && assistant ? () => setPanelOpen('connections') : undefined} folderUnavailableReason={pickFolderUnavailableReason} filesUnavailableReason={!saveAttachment ? 'File attachments are unavailable on this destination.' : undefined} trigger={findTrigger(text, caret)}
           saveAttachment={saveAttachment && !selectedTaskContext ? (name, bytes) => {
             if (busy || sending.current) throw new Error('Wait until the current message finishes before adding attachments.');
             const lane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;
@@ -653,17 +685,21 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
               compact: 'The ApexAgent host does not expose conversation compaction.',
               fork: 'ApexAgent does not expose thread forking.',
               diff: 'Choose a project change action from its project controls.',
-              plan: 'ApexAgent does not expose a host planning switch.',
+              ...(!embedded?{plan: 'ApexAgent does not expose a host planning switch.'}:{}),
               image: 'Image generation is not connected to this conversation.',
             } : {}),
           }}
           onCommand={(command) => runCommand(command, attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL)} />
-        <textarea ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(filterWorkspaceId ?? focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); setCaret(event.currentTarget?.selectionStart ?? value.length); }} onClick={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} onKeyUp={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} rows={1} aria-label={`Message ${conversationName}`} placeholder={firstRun ? `Give ${personal!.name} its first brief` : selectedTaskContext ? 'Reply to this task…' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…'}
-          onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-      </div>
-      <div className="apex-agent-all-compose-row"><small className="apex-agent-muted apex-agent-all-destination">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `To ${personalTag}` : attachmentLane || replyQuotes.length ? `About ${laneNames[attachmentLane ?? replyQuotes[0]!.laneId] ?? 'Project'} · fixed for this reply` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 && !replyQuotes.length && !attachmentLane ? ' · name a project to switch' : ''}{attachmentState.paths.length ? ` · ${attachmentState.paths.length} attachment${attachmentState.paths.length === 1 ? '' : 's'}` : ''}</small><button className="primary apex-agent-all-send" disabled={busy || (!text.trim() && !attachmentState.paths.length) || attachmentState.pending || attachmentState.hasErrors || (!selectedTaskContext && !target && !globalReply)}>{embedded?<><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V4m-6 6 6-6 6 6"/></svg><span className="sr-only">{busy?'Sending…':'Send'}</span></>:busy ? 'Sending…' : 'Send'}</button></div>
+        <div className="composer-field"><textarea onPaste={event=>{const files=Array.from(event.clipboardData.files);if(files.length){event.preventDefault();composerTools.current?.attachFiles(files);}}} ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(filterWorkspaceId ?? focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); setCaret(event.currentTarget?.selectionStart ?? value.length); }} onClick={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} onKeyUp={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} rows={1} aria-label={`Message ${conversationName}`} placeholder={voice.hint ?? (firstRun ? `Give ${personal!.name} its first brief` : selectedTaskContext ? 'Reply to this task…' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…')}
+          onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if((event.metaKey||event.ctrlKey)&&event.shiftKey&&event.key.toLowerCase()==='t'){event.preventDefault();setTldr(!tldr);return;} if (event.key === 'Escape' && pendingReply && personal?.cancelReply) {event.preventDefault();void run(()=>personal!.cancelReply!(pendingReply.id));return;} if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /></div>
+        <ComposerModeControls planOn={planOn} onPlan={()=>setPlanOn(false)} tldr={tldr} onTldr={()=>{setTldr(!tldr);composerInput.current?.focus();}}/>
+        {embedded&&round.mic&&<VoiceCallControls settings={voice.settings} candidates={voice.candidates} who={voice.who} disabled={!!personal?.offline}/>}
+        {embedded&&round.send&&<button type="submit" className="round-send" aria-label="Send" disabled={busy||attachmentState.pending||attachmentState.hasErrors||(!text.trim()&&!attachmentState.paths.length)}>↑</button>}
+      </ThreadComposerBox>
+      <div className="apex-agent-all-compose-row" hidden={embedded}><small className="apex-agent-muted apex-agent-all-destination">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `To ${personalTag}` : attachmentLane || replyQuotes.length ? `About ${laneNames[attachmentLane ?? replyQuotes[0]!.laneId] ?? 'Project'} · fixed for this reply` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 && !replyQuotes.length && !attachmentLane ? ' · name a project to switch' : ''}{attachmentState.paths.length ? ` · ${attachmentState.paths.length} attachment${attachmentState.paths.length === 1 ? '' : 's'}` : ''}</small><button className="primary apex-agent-all-send" disabled={busy || (!text.trim() && !attachmentState.paths.length) || attachmentState.pending || attachmentState.hasErrors || (!selectedTaskContext && !target && !globalReply)}>{embedded?<><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V4m-6 6 6-6 6 6"/></svg><span className="sr-only">{busy?'Sending…':'Send'}</span></>:busy ? 'Sending…' : 'Send'}</button></div>
     </form>}
-    {calling && personal && <PersonalCall lane={personal} onEnd={() => setCalling(false)} />}
+    {!embedded && calling && personal && <PersonalCall lane={personal} onEnd={() => setCalling(false)} />}
+    {embedded&&voiceHeader&&createPortal(<VoiceCallCapsule settings={voice.settings} candidates={voice.candidates} who={voice.who}/>,voiceHeader)}
     {busy && <div className="apex-agent-busy" role="status">Saving…</div>}
   </section></TaskViewContext.Provider>;
 }

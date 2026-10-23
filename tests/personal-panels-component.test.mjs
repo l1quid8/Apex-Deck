@@ -291,3 +291,12 @@ test('native request history without atMs cannot crash the Activity renderer', (
   assert.equal(findAll(row, node => node.type === 'time').length, 2, 'only the task update and dated worker event receive timestamps');
   assert.doesNotMatch(textOf(row), /Invalid Date/);
 });
+
+
+test('Connections browser action opens the shared Chat browser without mounting a second browser', () => {
+  const { lane } = fakeLane({ browserView: async () => ({}) });
+  let opens = 0;
+  const h = mount({ lane, initial: 'connections', onOpenBrowser() { opens++; } });
+  button(h.render(), 'Open browser / Take over').props.onClick();
+  assert.equal(opens, 1);
+});

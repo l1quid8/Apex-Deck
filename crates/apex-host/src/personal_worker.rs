@@ -582,6 +582,7 @@ impl Host {
         self.change_personal(|assistants| {
             let mut tick = Tick { next: None, pushes: vec![] };
             for assistant in assistants.iter_mut() {
+                if assistant.archived_at.is_some(){continue;}
                 let before = assistant.clone();
                 let (next, pushes) = tick_assistant(assistant, &local, at);
                 tick.next = match (tick.next, next) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
@@ -602,6 +603,7 @@ impl Host {
             let mut out = Vec::new();
             let mut heavy = 0;
             for assistant in assistants.iter_mut() {
+                if assistant.archived_at.is_some(){continue;}
                 let id = assistant.id.clone();
                 let mut events = Vec::new();
                 for event in assistant.events.iter_mut().filter(|e| e.state == EventState::Received) {
@@ -706,7 +708,18 @@ impl Host {
         // No lock is held across the model call. A restart here leaves the
         // event `Processing`, which recovery turns back into `Received`; the
         // call has no side effects, so running it again commits one reply.
-        match (tools.reason)(profile.clone(), read_only_request(system)).await {
+        let key=format!("reply:{}:{}",snapshot.id,event.id);
+        let stop=Arc::new(tokio::sync::Notify::new());
+        self.personal_stops.lock().unwrap().insert(key.clone(),stop.clone());
+        let active=self.personal_get(&snapshot.id)?.events.iter().any(|e|e.id==event.id&&e.state==EventState::Processing);
+        if !active { self.personal_stops.lock().unwrap().remove(&key); return Ok(()); }
+        let answer=tokio::select! {
+            output=(tools.reason)(profile.clone(),read_only_request(system))=>Some(output),
+            _=stop.notified()=>None,
+        };
+        self.personal_stops.lock().unwrap().remove(&key);
+        let Some(answer)=answer else { return Ok(()); };
+        match answer {
             Ok(out) => {
                 let cost = cost_entry("reply", &out, bytes, endpoint(&profile), now());
                 self.commit_reply(tools, &snapshot.id, &event.id, &text, parse_reply(&out.text), cost)
@@ -831,6 +844,7 @@ impl Host {
                 for assignment in helpers {
                     let task_id = assistant.next_task_id();
                     assistant.tasks.push(PersonalTask {
+        deleted_at: None,
                         id: task_id, goal: format!("Helper: {}", assignment.chars().take(120).collect::<String>()),
                         completion_criteria: vec!["a written report".into()], target_host: assistant.host_id.clone(),
                         status: TaskStatus::Queued, operation: None, decision: None, receipts: vec![],
@@ -965,6 +979,7 @@ enum Claimed {
 /// Re-check a queued task in the gateway and, if it may run, save the
 /// attempt. Everything the human or a rule allowed is checked again here.
 fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &str, local: &str, at: u64) -> Option<Claimed> {
+    if assistant.archived_at.is_some(){return None;}
     let task = assistant.tasks.iter().find(|t| t.id == task_id && t.status == TaskStatus::Queued).cloned()?;
     if task.kind == TaskKind::Helper {
         let Some(profile) = assistant.profile.clone() else { return fail(assistant, task_id, "This assistant has no model profile.", at) };
@@ -1292,6 +1307,7 @@ fn tick_assistant(assistant: &mut PersonalAssistant, local_id: &str, at: u64) ->
         let task_id = assistant.next_task_id();
         let decision_id = assistant.next_decision_id();
         assistant.tasks.push(PersonalTask {
+        deleted_at: None,
             id: task_id.clone(), goal: schedule.goal.clone(), completion_criteria: vec![], target_host: assistant.host_id.clone(),
             status: TaskStatus::Queued, class: gateway::classify(&operation, &assistant.allowed_folders).0, operation: Some(operation.clone()),
             decision: Some(PendingDecision {
@@ -1390,6 +1406,7 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
     let task_id = assistant.next_task_id();
     let goal = proposed.goal.trim().chars().take(300).collect::<String>();
     let mut task = PersonalTask {
+        deleted_at: None,
         id: task_id.clone(),
         goal: if goal.is_empty() { shown(&operation) } else { goal },
         completion_criteria: proposed.criteria.into_iter().take(8).map(|c| c.chars().take(300).collect()).collect(),
@@ -1569,6 +1586,7 @@ fn hold_for_spend(assistant: &mut PersonalAssistant, event_id: &str, prompt: Str
     let mut decision = open_decision(assistant, DecisionKind::Spend, &operation, at);
     decision.prompt = prompt.clone();
     assistant.tasks.push(PersonalTask {
+        deleted_at: None,
         id: task_id.clone(), goal: "Reply to your message".into(), completion_criteria: vec![], target_host: assistant.host_id.clone(),
         status: TaskStatus::NeedsYou, class: ToolClass::Spend, operation: Some(operation), decision: Some(decision), receipts: vec![],
         from_event: event_id.to_owned(), max_attempts: 1, created_at: at, updated_at: at, last_update: Some("Waiting for your OK to spend.".into()),
@@ -1609,7 +1627,7 @@ fn cascade(assistant: &PersonalAssistant, root: &str) -> Vec<String> {
 
 /// Decisions and cancellations, in code, with no model call. Returns the
 /// running tasks whose operations must now be stopped.
-fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) -> Vec<String> {
+pub(crate) fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) -> Vec<String> {
     let at = now();
     let local = assistant.host_id.clone();
     let mut stop = Vec::new();

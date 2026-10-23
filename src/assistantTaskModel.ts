@@ -47,7 +47,7 @@ export interface AssistantTask {
   /** Present when this record was imported from an older copy. Never presented as verified. */
   legacy?: import('./legacyImport').LegacyMarker | null;
   result: string | null;
-  resultData?: { reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; dismissedAtMs?: number; worktreeDiskBytes?: number; spendLimitMicros?: number | null; budgetPaused?: boolean; taskHistory?: TaskHistoryEntry[] } | null;
+  resultData?: { deletedAtMs?: number; reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; startupPreflight?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; dismissedAtMs?: number; worktreeDiskBytes?: number; spendLimitMicros?: number | null; budgetPaused?: boolean; taskHistory?: TaskHistoryEntry[] } | null;
   revision: number;
   mode: AssistantTaskMode;
   usage: TaskUsage | null;

@@ -359,7 +359,25 @@ async fn run_owned(
     stop: &mut watch::Receiver<bool>,
     registry: &OwnedProcessRegistry,
 ) -> Result<Output, String> {
+    let login_path = crate::agents::login_path();
+    run_owned_with_path(program, args, cwd, limit, stop, registry, login_path.as_deref()).await
+}
+
+async fn run_owned_with_path(
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    limit: Duration,
+    stop: &mut watch::Receiver<bool>,
+    registry: &OwnedProcessRegistry,
+    login_path: Option<&str>,
+) -> Result<Output, String> {
     let mut command = TokioCommand::new(program);
+    // GUI/LaunchAgent hosts may have a minimal PATH. Match the normal worker
+    // launch context without mutating the daemon's global environment.
+    if let Some(path) = login_path {
+        command.env("PATH", path);
+    }
     command
         .current_dir(cwd)
         .args(args)
@@ -500,6 +518,19 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::sync::{oneshot, watch};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn owned_worker_uses_the_injected_login_path_without_changing_parent_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let root=std::env::temp_dir().join(format!("apex-login-worker-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let worker=root.join("apex-qa-fake-worker");std::fs::write(&worker,"#!/bin/sh\nprintf 'owned-worker-ready'\n").unwrap();std::fs::set_permissions(&worker,std::fs::Permissions::from_mode(0o755)).unwrap();
+        let before=std::env::var_os("PATH");let registry=OwnedProcessRegistry::new(Some(root.join("registry")));let (_tx,mut stop)=watch::channel(false);
+        let output=run_owned_with_path("apex-qa-fake-worker",&[],&root,Duration::from_secs(3),&mut stop,&registry,Some(root.to_str().unwrap())).await;
+        assert_eq!(std::env::var_os("PATH"),before,"only the child receives the login PATH");
+        let output=output.expect("worker installed only on the login PATH must start");assert!(output.status.success());assert_eq!(output.stdout,b"owned-worker-ready");let _=std::fs::remove_dir_all(root);
+    }
 
     #[cfg(unix)]
     #[tokio::test]

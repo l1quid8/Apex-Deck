@@ -1,0 +1,12 @@
+.assistant-runtime-provider { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.assistant-runtime-provider label { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.assistant-runtime-provider select { flex: 1; min-width: 0; max-width: 210px; border: 1px solid var(--line); border-radius: 6px; padding: 5px; background: var(--bg); color: var(--text); font: inherit; }
+.assistant-runtime-provider > p { flex-basis: 100%; margin: 0; font-size: 11px; }
+.assistant-runtime-meters { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; font-size: 10px; color: var(--muted); }
+.assistant-runtime-confirm { width: 100%; padding: 10px; border-radius: 8px; background: var(--panel-2, var(--bg)); }
+.assistant-runtime-confirm p { margin: 0 0 8px; }
+.assistant-runtime-confirm ul { padding-left: 16px; overflow-wrap: anywhere; }
+.assistant-runtime-confirm button + button { margin-left: 6px; }
+.assistant-runtime-resets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.assistant-runtime-resets p { flex-basis: 100%; margin: 0; }
+.assistant-runtime-resets button:disabled { opacity: .5; }

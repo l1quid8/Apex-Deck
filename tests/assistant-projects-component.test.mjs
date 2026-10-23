@@ -23,10 +23,11 @@ function harness(extra={},initialTask=null,routingThreads=[]){
   const hooks={useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return [states[i],next=>{states[i]=typeof next==='function'?next(states[i]):next;}];},useRef(initial){const i=cursor++;return refs[i]??={current:initial};},useEffect(fn,deps){const i=cursor++,before=effects[i];if(!before||deps.some((value,index)=>!Object.is(value,before.deps[index])))effects[i]={fn,deps,changed:true,cleanup:before?.cleanup};}};
   const deps={...identity,...model,...tasks,...status};
   const component=new Function('React',...Object.keys(hooks),...Object.keys(deps),`${compiled};return AssistantProjects;`)(React,...Object.values(hooks),...Object.values(deps));
-  const backend={demo:false,call:async(cmd,args)=>{calls.push({cmd,args});if(cmd==='assistant_tasks_list')return {project,workspaceId:'workspace',tasks:Array.isArray(task)?task:task?[task]:[],routingThreads,executions:[],revision:1};if(cmd==='assistant_task_action'){task={...task,status:args.action==='pause'?task.status:args.action==='resume'?task.status:args.action==='accept'||args.action==='review'?'done':'cancelled',desiredState:args.action==='pause'?'paused':'running',revision:task.revision+1};return task;}return {taskId:'new',status:'proposed'};}};
+  const backend={demo:false,call:async(cmd,args)=>{calls.push({cmd,args});if(cmd==='assistant_tasks_list')return {project,workspaceId:'workspace',tasks:Array.isArray(task)?task:task?[task]:[],routingThreads,executions:[],revision:1};if(cmd==='assistant_task_action'){task={...task,status:args.action==='pause'?task.status:args.action==='resume'?task.status:args.action==='accept'||args.action==='review'?'done':'cancelled',desiredState:args.action==='pause'?'paused':'running',revision:task.revision+1};return task;}if(cmd==='personal_project_delegate_ui'){task={...baseTask,id:'new',status:'proposed',originalRequest:args.brief,brief:args.brief,reviewCriteria:args.reviewCriteria,destination:args.destination,mode:args.mode};return {taskId:task.id,status:'proposed'};}return {taskId:'new',status:'proposed'};}};
   const props={lane:{assistant:record,name:'Ada',offline:false},backend,projects:[{project,name:'Project'}],availableProjects:[{project,name:'Project'}],taskScopes:[],profiles:[profile],...extra};
   const render=()=>{cursor=0;const tree=component(props);for(const effect of effects)if(effect?.changed){effect.changed=false;effect.cleanup?.();effect.cleanup=effect.fn();}return tree;};
-  return {render,calls,backend,props};
+  const remount=()=>{for(const effect of effects)effect?.cleanup?.();states.length=0;refs.length=0;effects.length=0;cursor=0;};
+  return {render,calls,backend,props,remount};
 }
 test('first delegation explicitly creates coordinator, shows live worker picker, refreshes new room then proposes without a model send',async()=>{
   let ensured=0,created=0;
@@ -37,7 +38,7 @@ test('first delegation explicitly creates coordinator, shows live worker picker,
   find(tree,node=>node.type==='select'&&node.props['aria-label']==='Worker').props.onChange({target:{value:'worker'}});
   find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.onChange({target:{value:'Inspect login'}});
   tree=h.render();find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();tree=h.render();await tick();tree=h.render();
-  assert.equal(created,1);const proposal=h.calls.find(call=>call.cmd==='personal_project_delegate_ui');assert.ok(proposal);assert.equal(proposal.args.destination.threadId,'new-thread');assert.equal(proposal.args.brief,'Inspect login');assert.equal(proposal.args.mode,'read_only');assert.ok(h.calls.findIndex(call=>call.cmd==='assistant_tasks_list')<h.calls.indexOf(proposal));assert.ok(!h.calls.some(call=>call.cmd==='personal_send'));assert.match(text(tree),/Proposal saved/);
+  assert.equal(created,1);const proposal=h.calls.find(call=>call.cmd==='personal_project_delegate_ui');assert.ok(proposal);assert.equal(proposal.args.destination.threadId,'new-thread');assert.equal(proposal.args.brief,'Inspect login');assert.equal(proposal.args.mode,'read_only');assert.ok(h.calls.findIndex(call=>call.cmd==='assistant_tasks_list')<h.calls.indexOf(proposal));assert.ok(!h.calls.some(call=>call.cmd==='personal_send'));assert.ok(button(tree,'Approve and start'));assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false);
 });
 test('task pause and resume use the recorded task owner and current revision',async()=>{
   const h=harness({taskScopes:[{project,owner}]},baseTask);let tree=h.render();await tick();tree=h.render();
@@ -53,7 +54,7 @@ test('accepting a result requires opening evidence and acknowledging the current
   tree=h.render();assert.equal(find(tree,node=>node.type==='label'&&text(node).includes('I opened and reviewed revision')),null);assert.equal(button(tree,'Mark reviewed').props.disabled,false);
   button(tree,'Mark reviewed').props.onClick();await tick();const action=h.calls.find(call=>call.cmd==='assistant_task_action');assert.equal(action.args.action,'review');assert.equal(action.args.revision,2);
 });
-for(const [status,label,action] of [['running','Cancel task','cancel'],['failed','Retry task','retry'],['proposed','Approve task','approve']])test(`${label} submits the host-owned task revision`,async()=>{
+for(const [status,label,action] of [['running','Cancel task','cancel'],['failed','Retry task','retry'],['proposed','Approve and start','approve']])test(`${label} submits the host-owned task revision`,async()=>{
   const h=harness({taskScopes:[{project,owner}]},{...baseTask,status});let tree=h.render();await tick();tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();assert.equal(button(tree,label).props.disabled,false);button(tree,label).props.onClick();await tick();const call=h.calls.find(call=>call.cmd==='assistant_task_action');assert.equal(call.args.action,action);assert.equal(call.args.taskId,baseTask.id);assert.equal(call.args.revision,baseTask.revision);assert.deepEqual(call.args.owner,owner);if(action==='approve')assert.deepEqual(call.args.destination,baseTask.destination);
 });
 for(const changed of [false,true])test(`delegation ${changed?'creates current worker room when saved config changed':'reuses saved worker only with identical complete configuration'}`,async()=>{
@@ -154,4 +155,172 @@ test('a paused worker card says Paused, matching the shared status',async()=>{
   const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'running',desiredState:'paused'});let tree=h.render();await tick();tree=h.render();
   const card=find(tree,node=>node.props?.className==='assistant-project-card');
   assert.doesNotMatch(text(card),/1\s*working/);assert.match(text(find(card,node=>node.props?.className==='assistant-project-status')),/Paused/);
+});
+
+test('task detail returns to its actual source and exposes host backed deletion',async()=>{
+ const opened=[],back=[],deleted=[];
+ const h=harness({taskScopes:[{project,owner}],detailBackLabel:'Work',onDetailChange:value=>opened.push(value),onDetailBack:()=>back.push(1),lane:{assistant:record,name:'Ada',offline:false,taskLifecycle:async(...args)=>deleted.push(args)}},{...baseTask,status:'done',result:'Verified result'});
+ let tree=h.render();await tick();tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.ok(button(tree,'← Work')); assert.ok(opened.includes(true));
+ button(tree,'Delete').props.onClick();await tick();assert.deepEqual(deleted,[['delete',{source:'delegated',taskId:'task',revision:2}]]);
+ button(h.render(),'← Work').props.onClick();assert.deepEqual(back,[1]);
+});
+
+test('deleted task details expose restore without execution actions and are absent from project rows',async()=>{
+ const restored=[];
+ const deleted={...baseTask,status:'cancelled',resultData:{deletedAtMs:2}};
+ const h=harness({taskScopes:[{project,owner}],focusTask:{project,taskId:'task',nonce:1},lane:{assistant:record,name:'Ada',offline:false,taskLifecycle:async(...args)=>restored.push(args)}},deleted);
+ h.render();await tick();h.render();const tree=h.render();
+ assert.ok(button(tree,'Restore'));assert.equal(button(tree,'Resume task'),null);assert.equal(button(tree,'Retry task'),null);assert.equal(button(tree,'Approve and start'),null);
+ button(tree,'Restore').props.onClick();await tick();assert.deepEqual(restored,[['restore',{source:'delegated',taskId:'task',revision:2}]]);
+});
+
+test('startup failure leads with cause and states execution has not started',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'needs_you',attempts:[],result:'Worker failed.',resultData:{startup:{message:'Separate-copy mode is unsupported by this worker.'}}});
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.match(text(tree),/Couldn’t start/);assert.match(text(tree),/Separate-copy mode is unsupported/);assert.match(text(tree),/Execution has not started/);assert.equal(button(tree,'Retry task'),null);
+});
+
+test('blocked startup checks a revised worker plan before a separate explicit approval',async()=>{
+ const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=> 'supported-thread'},{...baseTask,status:'needs_you',attempts:[],resultData:{startup:{message:'Unsupported worker'}}});
+ h.backend.supports=cap=>cap==='assistant_task_revise_startup_v1';
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ const select=find(tree,node=>node.type==='select'&&node.props['aria-label']==='Revised task worker');assert.ok(select);select.props.onChange({target:{value:'worker'}});
+ button(h.render(),'Check revised plan').props.onClick();await tick();
+ const action=h.calls.find(call=>call.cmd==='assistant_task_action');assert.equal(action.args.action,'revise_startup');assert.equal(action.args.taskId,'task');assert.equal(action.args.revision,2);assert.equal(action.args.mode,'read_only');assert.deepEqual(action.args.destination,{threadId:'supported-thread',workers:['worker'],newThread:false});
+ assert.ok(!h.calls.some(call=>call.args?.action==='approve'),'checking the plan must not approve or start it');
+});
+
+test('editable acceptance requires separate Changes and Checks inspection and exact revision confirmation',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'ready_for_review',mode:'isolated',result:'Code result',reviewCriteria:[],resultData:{reviewDiff:'diff',checkResults:[{success:true}]}});
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ find(tree,node=>node.type==='details'&&text(node).includes('Inspect result, changes and checks')).props.onToggle({currentTarget:{open:true}});tree=h.render();
+ assert.equal(button(tree,'Accept changes').props.disabled,true);
+ find(tree,node=>node.type==='details'&&node.children[0]?.type==='summary'&&text(node.children[0])==='Changes').props.onToggle({currentTarget:{open:true}});
+ find(tree,node=>node.type==='details'&&node.children[0]?.type==='summary'&&text(node.children[0])==='Checks').props.onToggle({currentTarget:{open:true}});tree=h.render();assert.equal(button(tree,'Accept changes').props.disabled,false);
+ const previous=globalThis.window;try {globalThis.window={confirm:()=>false};button(tree,'Accept changes').props.onClick();await tick();assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false);let prompt='';globalThis.window.confirm=text=>(prompt=text,true);button(h.render(),'Accept changes').props.onClick();await tick();assert.match(prompt,/revision 2/);assert.equal(h.calls.find(call=>call.cmd==='assistant_task_action').args.revision,2);}finally{globalThis.window=previous;}
+});
+
+test('keeping a worker conversation in sidebar is an explicit exact-thread action',async()=>{
+ const kept=[];const h=harness({taskScopes:[{project,owner}],onKeepThread:(...args)=>kept.push(args)},{...baseTask,executionThreadId:'exact-worker'});
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.deepEqual(kept,[]);button(tree,'Keep conversation in sidebar').props.onClick();assert.deepEqual(kept,[[project,'exact-worker']]);
+});
+
+test('offline detail keeps the cached task and disables host actions',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'ready_for_review',result:'Cached worker result'});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ h.props.lane={...h.props.lane,offline:true};h.render();await tick();tree=h.render();assert.match(text(tree),/Cached worker result/);assert.equal(button(tree,'Cancel task').props.disabled,true);
+});
+
+test('task questions and approvals stay in the detail with exact worker request identities',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'needs_you',executionThreadId:'execution',resultData:{pendingQuestions:[{request:'question-1',questions:[{header:'Target',question:'Which target?',options:[{label:'Staging'}],multi_select:false}]}],pendingApprovals:[{request:'approval-1',action:{title:'Run check',detail:'Run the selected test command'}}]}});
+ h.backend.roomAnswer=async(...args)=>h.calls.push({cmd:'room_answer',args});h.backend.roomDecide=async(...args)=>h.calls.push({cmd:'room_decide',args});
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.match(text(tree),/Which target\?/);assert.match(text(tree),/Run the selected test command/);
+ assert.equal(button(tree,'Send answers').props.disabled,true);
+ find(tree,node=>node.type==='input'&&node.props['aria-label']==='Your answer 1').props.onChange({target:{value:'Staging'}});tree=h.render();assert.equal(button(tree,'Send answers').props.disabled,false);button(tree,'Send answers').props.onClick();await tick();assert.deepEqual(h.calls.find(call=>call.cmd==='room_answer').args,['execution','question-1',[['Staging']]]);
+ button(h.render(),'Approve this action').props.onClick();await tick();assert.deepEqual(h.calls.find(call=>call.cmd==='room_decide').args,['execution','approval-1',true,false]);
+});
+
+test('a stale task revision cannot approve an old worker request',async()=>{
+ const task={...baseTask,status:'needs_you',executionThreadId:'execution',resultData:{pendingApprovals:[{request:'approval-1',action:{title:'Run check',detail:'Run the selected test command'}}]}};
+ const h=harness({taskScopes:[{project,owner}]},task);let decisions=0;h.backend.roomDecide=async()=>decisions++;
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ h.backend.call=async()=>({project,workspaceId:'workspace',tasks:[{...task,revision:3}],routingThreads:[],executions:[],revision:2});
+ button(tree,'Approve this action').props.onClick();await tick();assert.equal(decisions,0);assert.match(text(h.render()),/changed.*Refresh before responding/);
+});
+
+test('direct delegation reviews one durable task immediately and only explicit Approve and start executes it',async()=>{
+ const opened=[];const h=harness({onDetailChange:open=>opened.push(open),taskScopes:[{project,owner}],onCreateWorkerThread:async()=> 'chosen-worker'});
+ const original=h.backend.call;let proposed=null;
+ h.backend.call=async(cmd,args)=>{
+  if(cmd==='personal_project_delegate_ui'){h.calls.push({cmd,args});proposed={...baseTask,id:'direct-human',status:'proposed',brief:args.brief,originalRequest:args.brief,reviewCriteria:args.reviewCriteria,mode:args.mode,destination:args.destination};return {taskId:proposed.id,status:'proposed'};}
+  if(cmd==='assistant_tasks_list'&&proposed){h.calls.push({cmd,args});return {project,workspaceId:'workspace',tasks:[proposed],routingThreads:[],executions:[],revision:2};}
+  if(cmd==='assistant_task_action'){h.calls.push({cmd,args});return {...proposed,status:'queued',revision:3};}
+  return original(cmd,args);
+ };
+ h.render();await tick();let tree=h.render();await button(tree,'Delegate a task').props.onClick();h.render();await tick();tree=h.render();
+ find(tree,node=>node.type==='select'&&node.props['aria-label']==='Worker').props.onChange({target:{value:'worker'}});find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.onChange({target:{value:'Inspect auth without edits'}});tree=h.render();
+ assert.ok(button(tree,'Review plan'));find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();tree=h.render();
+ assert.equal(find(tree,node=>node.props.role==='dialog'),null);assert.ok(opened.includes(true));assert.ok(find(tree,node=>node.type==='article'&&node.props.className==='assistant-project-detail'));assert.match(text(tree),/Inspect auth without edits/);assert.match(text(tree),/\/work\/project/);assert.ok(button(tree,'Approve and start'));
+ assert.equal(h.calls.filter(call=>call.cmd==='personal_project_delegate_ui').length,1);assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false);
+ button(tree,'Approve and start').props.onClick();await tick();assert.equal(h.calls.find(call=>call.cmd==='assistant_task_action').args.taskId,'direct-human');assert.equal(h.calls.find(call=>call.cmd==='assistant_task_action').args.action,'approve');
+});
+
+test('failed direct plan preparation keeps the delegation draft and does not execute',async()=>{
+ const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=> 'chosen-worker'});const original=h.backend.call;
+ h.backend.call=async(cmd,args)=>{if(cmd==='personal_project_delegate_ui'){h.calls.push({cmd,args});throw new Error('Worker configuration unavailable.');}return original(cmd,args);};
+ h.render();await tick();let tree=h.render();await button(tree,'Delegate a task').props.onClick();h.render();await tick();tree=h.render();
+ find(tree,node=>node.type==='select'&&node.props['aria-label']==='Worker').props.onChange({target:{value:'worker'}});find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.onChange({target:{value:'Retain my task draft'}});tree=h.render();find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();tree=h.render();
+ assert.ok(find(tree,node=>node.props.role==='dialog'));assert.equal(find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.value,'Retain my task draft');assert.equal(find(tree,node=>node.type==='select'&&node.props['aria-label']==='Worker').props.value,'worker');assert.match(text(tree),/Worker configuration unavailable/);assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false);
+});
+
+test('a lost plan read keeps the draft and retry reopens the same durable proposal and worker chat',async()=>{
+ let created=0,saved=null,failRead=true;const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=>{created++;return 'only-worker-thread';}});const original=h.backend.call;
+ h.backend.call=async(cmd,args)=>{
+  if(cmd==='personal_project_delegate_ui'){h.calls.push({cmd,args});saved??={...baseTask,id:'saved-once',status:'proposed',brief:args.brief,originalRequest:args.brief,destination:args.destination,mode:args.mode};return {taskId:saved.id,status:'proposed'};}
+  if(cmd==='assistant_tasks_list'&&saved){h.calls.push({cmd,args});if(failRead){failRead=false;throw new Error('Plan saved; snapshot unavailable.');}return {project,workspaceId:'workspace',tasks:[saved],routingThreads:[],executions:[],revision:2};}
+  return original(cmd,args);
+ };
+ h.render();await tick();let tree=h.render();await button(tree,'Delegate a task').props.onClick();h.render();await tick();tree=h.render();find(tree,node=>node.type==='select'&&node.props['aria-label']==='Worker').props.onChange({target:{value:'worker'}});find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.onChange({target:{value:'Keep the saved scope'}});tree=h.render();find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();tree=h.render();
+ assert.ok(find(tree,node=>node.props.role==='dialog'));assert.equal(find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.value,'Keep the saved scope');assert.match(text(tree),/snapshot unavailable/);
+ find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();tree=h.render();assert.ok(button(tree,'Approve and start'));assert.equal(created,1);
+ const proposals=h.calls.filter(call=>call.cmd==='personal_project_delegate_ui');assert.equal(proposals.length,2);assert.equal(proposals[0].args.delegationId,proposals[1].args.delegationId);assert.equal(proposals[1].args.destination.threadId,'only-worker-thread');assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false);
+});
+
+test('task detail has a compact header and one primary action with secondary controls disclosed',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'proposed'});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ const header=find(tree,node=>node.props.className==='assistant-task-heading');assert.ok(header);assert.ok(find(header,node=>node.type==='h2'));assert.ok(find(tree,node=>node.props.className==='assistant-task-back'));
+ const actions=find(tree,node=>node.type==='details'&&node.props.className==='assistant-task-actions-menu');assert.ok(actions);assert.ok(button(actions,'Pause task'));assert.ok(button(actions,'Dismiss proposal'));assert.equal(button(actions,'Approve and start'),null);
+ assert.equal(find(tree,node=>node.props['aria-label']==='Task plan').children.some(node=>node?.type==='p'&&text(node)===baseTask.brief),false);
+});
+
+test('review result renders one result body before evidence and secondary project knowledge',async()=>{
+ const result='Unique finished report body';const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'ready_for_review',result});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.equal(text(tree).split(result).length-1,1);assert.ok(find(tree,node=>node.type==='button'&&text(node)==='Mark reviewed'&&node.props.className==='primary assistant-task-primary'));
+});
+
+test('blocked startup shows one human reason with the saved worker name and keeps raw data in diagnostics',async()=>{
+ const reason='The current adapter cannot establish isolated folder trust.';
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'needs_you',result:`Task startup needs you. worker: ${reason}`,resultData:{startup:{message:`Task startup needs you. worker: ${reason}`,workers:[{needsYou:{profile_id:'worker',detail:reason}}]}}});h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ const startup=find(tree,node=>node.type==='section'&&node.props.className==='assistant-project-outcome');assert.ok(startup.children.some(node=>node?.type==='p'&&text(node)===`Codex: ${reason}`));assert.equal(find(tree,node=>node.props.className==='assistant-task-result-body'),null);
+});
+
+
+test('failed startup preflight retries the same exact worker room without creating duplicate chats',async()=>{
+ let created=0,attempt=0;
+ const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=> `retry-worker-${++created}`},{...baseTask,status:'needs_you',attempts:[],resultData:{startup:{message:'Unsupported worker'}}});
+ h.backend.supports=cap=>cap==='assistant_task_revise_startup_v1';
+ const call=h.backend.call;h.backend.call=async(cmd,args)=>{if(cmd==='assistant_task_action'&&args.action==='revise_startup'){h.calls.push({cmd,args});if(++attempt===1)throw new Error('Worker temporarily unavailable');return {...baseTask,status:'proposed',revision:3};}return call(cmd,args);};
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ find(tree,node=>node.type==='select'&&node.props['aria-label']==='Revised task worker').props.onChange({target:{value:'worker'}});
+ button(h.render(),'Check revised plan').props.onClick();await tick();assert.match(text(h.render()),/Worker temporarily unavailable/);
+ button(h.render(),'Check revised plan').props.onClick();await tick();
+ assert.equal(created,1,'a failed preflight does not create another worker chat');
+ const attempts=h.calls.filter(call=>call.cmd==='assistant_task_action');assert.equal(attempts.length,2);assert.deepEqual(attempts[1].args,attempts[0].args,'same task revision and exact destination on retry');
+ assert.ok(!attempts.some(call=>call.args.action==='approve'));
+});
+
+test('compact project management shows connection and access without repeating Work tasks or boilerplate',async()=>{
+ const h=harness({compact:true,taskScopes:[{project,owner}],lane:{assistant:record,name:'Ada',offline:false,configureWorkspace:async()=>{}}},[{...baseTask,id:'active',brief:'Active task'}, {...baseTask,id:'done',brief:'Finished task',status:'done'}]);h.render();await tick();const tree=h.render();
+ assert.equal(find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task'),null);assert.doesNotMatch(text(tree),/Active task|Finished task|No project goal recorded|No active assignments|Completed and previous assignments/);assert.match(text(tree),/Connected/);assert.match(text(tree),/Ask first/);assert.match(text(tree),/\/work\/project/);assert.ok(button(tree,'Assign projects'));assert.ok(button(tree,'Manage access'));assert.equal(button(tree,'Delegate a task'),null);
+});
+
+test('creation requests open the normal modal while management is collapsed, once across rerender and remount',async()=>{
+ let ensured=0;const h=harness({compact:true,managementOpen:false,onEnsureCoordinator:async()=>{ensured++;return {project,owner};}});
+ h.render();await tick();let tree=h.render();assert.equal(find(tree,node=>node.props.className==='assistant-project-management').props.hidden,true);assert.equal(find(tree,node=>node.props.role==='dialog'),null);
+ h.props.newTaskRequest=1001;h.render();await tick();tree=h.render();assert.ok(find(tree,node=>node.props.role==='dialog'));assert.equal(ensured,1);
+ button(tree,'Review plan');find(tree,node=>node.type==='button'&&node.props['aria-label']==='Close dialog').props.onClick();h.render();h.render();assert.equal(ensured,1);assert.equal(find(h.render(),node=>node.props.role==='dialog'),null);
+ h.remount();h.render();await tick();tree=h.render();assert.equal(ensured,1);assert.equal(find(tree,node=>node.props.role==='dialog'),null);
+ h.props.newTaskRequest=1002;h.render();await tick();tree=h.render();assert.equal(ensured,2);assert.ok(find(tree,node=>node.props.role==='dialog'));
+});
+
+test('a focused task detail stays visible when compact project management is closed',async()=>{
+ const h=harness({compact:true,managementOpen:false,taskScopes:[{project,owner}],focusTask:{project,taskId:'task',nonce:42}},{...baseTask,status:'proposed'});h.render();await tick();h.render();const tree=h.render();
+ assert.ok(find(tree,node=>node.type==='article'&&node.props.className==='assistant-project-detail'));assert.ok(button(tree,'Approve and start'));assert.equal(find(tree,node=>node.props.className==='assistant-project-card'),null);
+});
+
+test('mounting with an already existing creation nonce does not invent a fresh click',async()=>{
+ let ensured=0;const h=harness({compact:true,managementOpen:false,newTaskRequest:2001,onEnsureCoordinator:async()=>{ensured++;return {project,owner};}});h.render();await tick();let tree=h.render();assert.equal(ensured,0);assert.equal(find(tree,node=>node.props.role==='dialog'),null);
+ h.props.newTaskRequest=2002;h.render();await tick();tree=h.render();assert.equal(ensured,1);assert.ok(find(tree,node=>node.props.role==='dialog'));
 });

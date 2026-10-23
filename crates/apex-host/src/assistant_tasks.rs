@@ -290,6 +290,8 @@ struct Document {
     executions: BTreeMap<String, ExecutionEntry>,
     #[serde(default)]
     handoffs: BTreeMap<String, HandoffReceipt>,
+    #[serde(default)]
+    purged_tasks: BTreeMap<String, AssistantLineage>,
     /// The one legacy source this ledger imported, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     legacy_import: Option<crate::legacy_import::LedgerImport>,
@@ -377,6 +379,60 @@ impl AssistantTasks {
             .tasks
             .get(task_id)
             .cloned())
+    }
+
+    /// A preflighted startup correction is still only a proposal. The same id,
+    /// source, project, mode and criteria survive; approval must target its new revision.
+    pub(crate) fn revise_startup(&self, id: &str, revision: u64, owner: &TaskOwner, destination: TaskDestination, preflight: serde_json::Value, monitor_revision: u64) -> Result<AssistantTask, TaskError> {
+        let mut document=self.inner.document.lock().unwrap();let before=document.clone();
+        let task=document.tasks.get_mut(id).ok_or_else(||TaskError::new(TaskErrorKind::NotFound,"Task not found."))?;
+        check_owner_revision(task,revision,owner)?;
+        if !matches!(task.status,TaskStatus::NeedsYou|TaskStatus::Proposed) || !task.attempts.is_empty() || task.result_data.as_ref().is_none_or(|data|(data["startup"].is_null() && !data["startupPreflight"].is_object()) || data["leaseHeld"]==true) {return Err(TaskError::new(TaskErrorKind::InvalidTransition,"Only blocked startup before execution can receive a revised worker plan."));}
+        let data=task.result_data.get_or_insert_with(||serde_json::json!({}));
+        let previous=serde_json::json!({"startup":data["startup"],"result":task.result,"workers":task.workers,"destination":task.destination});
+        let history=data.as_object_mut().unwrap().entry("previousStartup").or_insert_with(||serde_json::json!([]));
+        if let Some(history)=history.as_array_mut(){history.push(previous);}
+        data["startup"]=serde_json::Value::Null;data["startupPreflight"]=preflight;data["humanApproved"]=serde_json::json!(false);data["monitorRevision"]=serde_json::json!(monitor_revision);
+        data["workerProfiles"]=serde_json::json!([]);data["mode"]=serde_json::json!(task.mode);
+        task.workers=destination.workers.clone();task.parent_thread_id=destination.thread_id.clone();task.destination=Some(destination);task.result=None;task.status=TaskStatus::Proposed;task.revision+=1;task.updated_at_ms=now_ms();
+        let result=task.clone();save_mutation(&self.inner,&mut document,before)?;Ok(result)
+    }
+
+    /// Delete is a presentation lifecycle after cancellation has settled. Restore never
+    /// changes status, grants, approved scope or the execution registry.
+    pub(crate) fn lifecycle(&self, id: &str, revision: u64, owner: &TaskOwner, restore: bool) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        if &task.owner != owner || task.revision != revision { return Err(TaskError::new(TaskErrorKind::StaleRevision, "Task ownership or revision is stale.")); }
+        if !matches!(task.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Cancel this task before deleting it.")); }
+        let data = task.result_data.get_or_insert_with(|| serde_json::json!({}));
+        if restore {
+            if data["deletedAtMs"].is_null() { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "This task is not deleted.")); }
+            data.as_object_mut().ok_or_else(|| TaskError::new(TaskErrorKind::Storage, "Malformed task metadata."))?.remove("deletedAtMs");
+        } else { data["deletedAtMs"] = serde_json::json!(now_ms()); }
+        task.revision += 1; task.updated_at_ms = now_ms();
+        let result = task.clone(); save_mutation(&self.inner, &mut document, before)?; Ok(result)
+    }
+
+    /// Remove user-visible content while retaining request/handoff receipts and
+    /// execution ownership tombstones. Replaying an old receipt cannot recreate work.
+    pub(crate) fn purge_deleted(&self, assistant: &crate::personal_workspace::AssistantRef, expected: &[String]) -> Result<(), TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let ids: std::collections::BTreeSet<_> = document.tasks.values().filter(|task| task.lineage.as_ref().is_some_and(|lineage| &lineage.assistant == assistant) && task.result_data.as_ref().is_some_and(|data| data["deletedAtMs"].is_number())).map(|task|task.id.clone()).collect();
+        if ids != expected.iter().cloned().collect() || ids.len() != expected.len() { return Err(TaskError::new(TaskErrorKind::StaleRevision, "Deleted tasks changed. Review the new exact count before emptying.")); }
+        for id in &ids {
+            let task = &document.tasks[id];
+            if !matches!(task.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Wait for cancellation to finish before emptying deleted tasks.")); }
+        }
+        for id in &ids { if let Some(lineage)=document.tasks.get(id).and_then(|task|task.lineage.clone()) {document.purged_tasks.insert(id.clone(),lineage);} document.tasks.remove(id); }
+        for entry in document.executions.values_mut().filter(|entry| ids.contains(&entry.task_id)) { entry.tombstoned_at_ms.get_or_insert(now_ms()); }
+        save_mutation(&self.inner, &mut document, before)
+    }
+
+    pub(crate) fn purged_for_assistant(&self, assistant: &crate::personal_workspace::AssistantRef) -> Vec<String> {
+        self.inner.document.lock().unwrap().purged_tasks.iter().filter(|(_,lineage)|&lineage.assistant==assistant).map(|(id,_)|id.clone()).collect()
     }
 
     /// Keep the source revision stable until a notebook snapshot/receipt is durable.
@@ -1240,6 +1296,9 @@ fn check_owner_revision(
     expected_revision: u64,
     owner: &TaskOwner,
 ) -> Result<(), TaskError> {
+    if task.result_data.as_ref().is_some_and(|data| data["deletedAtMs"].is_number()) {
+        return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Restore this deleted task before acting."));
+    }
     if &task.owner != owner {
         return Err(TaskError::new(
             TaskErrorKind::NotOwner,
@@ -1473,6 +1532,39 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn deleted_task_authority_cannot_start_an_attempt() {
+        let path = folder(); let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("deleted-authority", "Inspect"), "Inspect".into(), Some(destination())).unwrap();
+        let task = store.set_result_data(&task.id, task.revision, &owner(), Some(serde_json::json!({"deletedAtMs": 1}))).unwrap();
+        assert!(store.begin_attempt(&task.id, task.revision, &owner()).is_err(), "deleted task must never execute");
+    }
+
+    #[test]
+    fn lifecycle_delegated_restore_is_inert_and_purge_keeps_replay_authority() {
+        let path=folder();let store=AssistantTasks::open(ledger(&path)).unwrap();
+        let assistant=crate::personal_workspace::AssistantRef{host_id:"h".into(),assistant_id:"a".into()};
+        let input=HandoffPreparation{request_id:"lifecycle-handoff".into(),batch_id:"batch".into(),owner:owner(),revision:1,original_request:"Inspect".into(),brief:"Inspect".into(),destination:destination(),mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:Some(AssistantLineage{assistant:assistant.clone(),project:crate::personal_workspace::ProjectRef{host_id:"h".into(),workspace_id:owner().workspace_id,cwd:owner().cwd},source_event_id:"e".into(),delegation_id:"d".into()}),context:None};
+        let task=store.prepare_handoff(input.clone()).unwrap();
+        assert!(store.lifecycle(&task.id,task.revision,&owner(),false).is_err());
+        let task=store.transition(&task.id,task.revision,&owner(),TaskStatus::Cancelled,None).unwrap();
+        let deleted=store.lifecycle(&task.id,task.revision,&owner(),false).unwrap();
+        assert!(store.prepare_cancelled_retry(&task.id,deleted.revision,&owner()).is_err());
+        let restarted=AssistantTasks::open(ledger(&path)).unwrap();
+        let restored=restarted.lifecycle(&task.id,deleted.revision,&owner(),true).unwrap();
+        assert_eq!(restored.status,TaskStatus::Cancelled);assert!(restored.attempts.is_empty());
+        let deleted=restarted.lifecycle(&task.id,restored.revision,&owner(),false).unwrap();
+        let wrong=crate::personal_workspace::AssistantRef{assistant_id:"other".into(),..assistant.clone()};
+        assert!(restarted.purge_deleted(&wrong,&[task.id.clone()]).is_err());
+        assert!(restarted.purge_deleted(&assistant,&[]).is_err());
+        restarted.purge_deleted(&assistant,&[task.id.clone()]).unwrap();
+        assert!(restarted.get(&task.id).unwrap().is_none());
+        assert_eq!(restarted.purged_for_assistant(&assistant),vec![task.id.clone()]);
+        let reopened=AssistantTasks::open(ledger(&path)).unwrap();assert_eq!(reopened.purged_for_assistant(&assistant),vec![task.id.clone()]);
+        assert!(restarted.prepare_handoff(input).is_err(),"old preparation cannot recreate purged task");
+        assert!(restarted.lifecycle(&task.id,deleted.revision,&owner(),true).is_err());
+    }
 
     fn folder() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

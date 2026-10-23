@@ -99,9 +99,9 @@ function settingsPatch(a: PersonalAssistantRecord, d: Draft): Partial<PersonalSe
 }
 
 /** One panel for the personal assistant: tabs on top, one scrollable view below. */
-export type PersonalPanelsProps = { lane: PersonalLane; initial?: PanelName; initialProject?: ProjectRef; delegatedTasks?: AssistantTask[]; onClose: () => void; embedded?: boolean };
+export type PersonalPanelsProps = { lane: PersonalLane; initial?: PanelName; initialProject?: ProjectRef; delegatedTasks?: AssistantTask[]; onClose: () => void; embedded?: boolean; onOpenBrowser?: () => void };
 
-export function PersonalPanels({ lane, initial = 'activity', initialProject, delegatedTasks = [], onClose, embedded = false }: PersonalPanelsProps) {
+export function PersonalPanels({ lane, initial = 'activity', initialProject, delegatedTasks = [], onClose, embedded = false, onOpenBrowser }: PersonalPanelsProps) {
   const ownerKey = JSON.stringify([lane.ref?.hostId ?? lane.assistant?.hostId, lane.ref?.assistantId ?? lane.assistant?.id]);
   const [panel, setPanel] = useState<PanelName>(initial);
   const [notebooks, setNotebooks] = useState<Record<string, string>>(initialProject ? { [ownerKey]: JSON.stringify([initialProject.hostId, initialProject.workspaceId, initialProject.cwd]) } : {});
@@ -547,7 +547,7 @@ export function PersonalPanels({ lane, initial = 'activity', initialProject, del
 
         <h4>Browser</h4>
         <p className="personal-panels-muted">{browser?.connected ? 'Available.' : 'Not available.'} The assistant can open pages; you can take over to click and sign in.</p>
-        {lane.browserView && <div className="personal-panels-actions"><button type="button" disabled={locked} onClick={() => setBrowserOpen(true)}>Open browser / Take over</button></div>}
+        {lane.browserView && <div className="personal-panels-actions"><button type="button" disabled={locked} onClick={() => onOpenBrowser ? onOpenBrowser() : setBrowserOpen(true)}>Open browser / Take over</button></div>}
       </>
     );
   };

@@ -369,6 +369,8 @@ export interface WorktreeList { root: string; items: Worktree[] }
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 
 export interface Pane {
+  /** A worker destination created for a named assistant; only opt-in lists it. */
+  assistantDraftFor?: {hostId:string;assistantId:string};
   /** This chat is mounted in another checkout of its project. */
   mount?: string;
   id: string;

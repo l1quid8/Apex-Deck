@@ -82,6 +82,7 @@ pub fn plan_delegation(
     owner: TaskOwner,
     monitor_revision: u64,
 ) -> Result<DelegationPlan, String> {
+    if assistant.archived_at.is_some(){return Err("This assistant is archived. Restore it before proposing work.".into());}
     if !bounded_identifier(&input.delegation_id) {
         return Err("A delegation needs an ID of up to 200 characters.".into());
     }
@@ -125,6 +126,7 @@ pub fn plan_delegation(
     if event.id != input.source_event_id {
         return Err("That source event does not match the delegation.".into());
     }
+    if event.state == crate::personal::EventState::Failed { return Err("A stopped or failed reply cannot propose project work.".into()); }
     let EventSource::Human { text } = &event.source else {
         return Err("Only a human conversation event may propose work.".into());
     };
@@ -186,6 +188,7 @@ impl crate::host::Host {
     pub(crate) fn validate_delegated_task(&self, lineage: &AssistantLineage, require_running: bool) -> Result<(), String> {
         self.change_personal(|assistants| {
             let assistant = assistants.iter().find(|a| a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("The owning assistant is unavailable.")?;
+            if assistant.archived_at.is_some(){return Err("The owning assistant is archived.".into());}
             if require_running && assistant.paused { return Err("The owning assistant is paused.".into()); }
             let binding = assistant.projects.iter().find(|b| b.project == lineage.project && b.tools != ProjectTools::Off).ok_or("Project delegation is no longer enabled.")?;
             let checked = self.validate_project_binding(assistant, binding.clone())?;
@@ -201,6 +204,7 @@ impl crate::host::Host {
             let profiles = self.delegated_worker_profiles(task)?;
             self.change_personal(|assistants| {
                 let assistant = assistants.iter().find(|a| a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("The owning assistant is unavailable.")?;
+                if assistant.archived_at.is_some(){return Err("The owning assistant is archived.".into());}
                 if assistant.paused { return Err("The owning assistant is paused.".into()); }
                 if assistant.workspace_config_version.is_some() && assistant.profile.as_ref().is_some_and(|p| p.access == apex_core::Access::Read) && task.mode != TaskMode::ReadOnly { return Err("This assistant now has read-only Project tools access.".into()); }
                 if !assistant.projects.iter().any(|b|b.project == lineage.project && b.tools != ProjectTools::Off) { return Err("Project tools are disabled for this assistant.".into()); }
@@ -216,13 +220,19 @@ impl crate::host::Host {
     pub(crate) fn reconcile_delegation_results(&self) -> Result<(), String> {
         let tasks = self.assistant_tasks.list(None).map_err(|e|e.to_string())?;
         self.change_personal(|assistants| {
-            for task in &tasks {
+            for snapshot in &tasks {
+                // Recheck under the personal lock so a deletion/purge that won
+                // the race cannot leak a stale worker update back into Chat.
+                let Some(task) = self.assistant_tasks.get(&snapshot.id).map_err(|e|e.to_string())? else { continue };
+                if task.result_data.as_ref().is_some_and(|data|data["deletedAtMs"].is_number()) { continue; }
                 let Some(lineage) = &task.lineage else { continue };
                 let Some(assistant) = assistants.iter_mut().find(|a| a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id) else { continue };
                 for attempt in task.attempts.iter().filter(|a| a.finished_at_ms.is_some()) {
                     let receipt = serde_json::to_string(&(&lineage.project, &task.id, &attempt.run_id)).map_err(|e| e.to_string())?;
                     if !assistant.delegated_result_receipts.insert(receipt.clone()) { continue; }
-                    assistant.post("system", "result", format!("Project {} · task {} · attempt {} ({:?}): {}", lineage.project.workspace_id, task.id, attempt.number, attempt.status, attempt.result.as_deref().unwrap_or("Worker stopped; inspect its result.")), Some(receipt), Some(lineage.source_event_id.clone()), crate::personal::now());
+                    let label = match attempt.status { crate::assistant_tasks::TaskStatus::Done => "Result available", crate::assistant_tasks::TaskStatus::ReadyForReview => "Result ready for your review", crate::assistant_tasks::TaskStatus::Cancelled => "Task cancelled", _ => "Task needs your attention" };
+                    let brief: String = task.brief.chars().take(140).collect();
+                    assistant.post("assistant", "result", format!("{label}: {brief}"), Some(task.id.clone()), Some(lineage.source_event_id.clone()), crate::personal::now());
                     assistant.revision += 1;
                 }
             }
@@ -339,6 +349,11 @@ mod tests {
         let input = DelegationInput { assistant_id:"a".into(), project:ProjectRef {host_id:"h".into(),workspace_id:"w".into(),cwd:"/repo".into()},source_event_id:"e".into(), delegation_id:"d".into(),brief:"Fix login".into(),destination:TaskDestination {thread_id:Some("chat".into()),workers:vec!["coder".into()],new_thread:false},mode:TaskMode::Isolated,review_criteria:vec![],expected_revision:4 };
         let owner = TaskOwner {workspace_id:"w".into(),cwd:"/repo".into(),host_id:"h".into(),conversation_id:"monitor".into()};
         (assistant,input,owner)
+    }
+    #[test]
+    fn archived_assistant_cannot_prepare_a_new_project_task() {
+        let (mut assistant,input,owner)=fixture();assistant.archived_at=Some(10);
+        assert!(plan_delegation(&assistant,&input,&assistant.events[0],owner,9).is_err());
     }
     #[test]
     fn a_human_event_without_verified_personal_message_cannot_delegate() {

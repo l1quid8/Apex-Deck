@@ -59,7 +59,7 @@ test('work items split, title, project name and newest first', () => {
   assert.deepEqual(items.needsYou.map(i => i.taskId), ['d-ready_for_review', 'd-failed', 'p-needsYou']);
   assert.equal(items.needsYou[0].title, 'Delegated ready_for_review');
   assert.equal(items.needsYou[0].projectName, 'repo');
-  assert.equal(items.needsYou[0].worker, 'hyke');
+  assert.equal(items.needsYou[0].worker, 'Worker unavailable');
   assert.equal(items.needsYou[0].source, 'delegated');
   assert.deepEqual(items.working.map(i => i.taskId), ['d-running']);
   assert.deepEqual(items.finished.map(i => i.taskId), ['p-done']);
@@ -85,4 +85,30 @@ test('isWorkingTask is the one rule for running work', async () => {
   assert.equal(isWorkingTask({ status: 'applying' }), true);
   assert.equal(isWorkingTask({ status: 'running', desiredState: 'paused' }), false);
   assert.equal(isWorkingTask({ status: 'ready_for_review' }), false);
+});
+
+test('deleted tasks leave active status and appear only in Deleted tasks', () => {
+  const p = personal('cancelled', { deletedAt: 123 });
+  const d = delegated('done', { resultData: { deletedAtMs: 124 } });
+  assert.equal(assistantStatus({ ...base, personalTasks: [p], delegatedTasks: [d] }).needsYou, 0);
+  const items = assistantWorkItems([p], [d], () => 'repo');
+  assert.equal(items.finished.length + items.cancelled.length, 0);
+  assert.deepEqual(items.deleted.map(i => i.taskId), ['d-done', 'p-cancelled']);
+});
+
+test('Work resolves saved worker names and never presents an internal id as a name', () => {
+  const task = delegated('running', {workers:['null']});
+  assert.equal(assistantWorkItems([], [task], () => 'repo', id => id === 'null' ? 'Sage' : undefined).working[0].worker, 'Sage');
+  assert.equal(assistantWorkItems([], [task], () => 'repo').working[0].worker, 'Worker unavailable');
+});
+
+test('Deleted tasks remain restorable after their project is unassigned', () => {
+  const task=delegated('cancelled',{resultData:{deletedAtMs:1}});
+  assert.deepEqual(delegatedTasksForAssistant({scope:{snapshot:{tasks:[task]}}},ref,[]).map(task=>task.id),[task.id]);
+});
+
+test('new deleted snapshot wins over an older project cache', () => {
+ const task=delegated('done',{revision:3});const deleted={...task,revision:4,resultData:{deletedAtMs:5}};
+ const merged=delegatedTasksForAssistant({scope:{snapshot:{tasks:[task]}}},ref,[{project,tools:'ask'}],[deleted]);
+ assert.equal(merged[0].resultData?.deletedAtMs,5);
 });

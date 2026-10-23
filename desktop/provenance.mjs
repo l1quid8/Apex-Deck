@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from 'node:util';
 export const ROOT='/Library/Application Support/Apex Deck Provenance';
 export const SOCKET='/var/run/dev.apexdeck.provenance.sock';
 const LIMIT=1024*1024;
-export const protectedCommands=new Set(['assistant_message','assistant_task_action','personal_send','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_project_delegate','personal_project_delegate_ui','personal_avatar_generate','personal_avatar_cancel','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_schedule_cancel','room_create','room_import','room_fork','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply']);
+export const protectedCommands=new Set(['assistant_message','assistant_task_action','personal_send','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_project_delegate','personal_project_delegate_ui','personal_avatar_generate','personal_avatar_cancel','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_task_lifecycle','personal_archive','personal_reply_cancel','personal_schedule_cancel','room_create','room_import','room_fork','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply']);
 
 export function assertTrustedStartup(packaged,argv,env){
   if (!packaged) return;
@@ -48,7 +48,7 @@ export function issue(request){
 export async function attestFrame(frame,{dataDir,uid=process.getuid(),publicKey:rawKey,issue:send=issue}={}){
   if(!protectedCommands.has(frame.cmd))return frame;
   const command={cmd:frame.cmd,args:frame.args??{}};
-  if(frame.cmd==='assistant_task_action') command.provenanceRequestId=`task-action:${command.args.action}`;
+  if(frame.cmd==='assistant_task_action') command.provenanceRequestId=command.args.action==='revise_startup'?'task-action:revise_startup:content-v1':`task-action:${command.args.action}`;
   else if(!['assistant_message','personal_send','personal_decide'].includes(frame.cmd)) command.provenanceRequestId=randomUUID();
   const key=rawKey??publicKey();
   const signed=await send({op:'issue',dataDir,command});

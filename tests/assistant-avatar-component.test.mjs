@@ -13,9 +13,10 @@ const settle=()=>new Promise(r=>setImmediate(r));
 function mount(props){
  let cursor=0;const state=[],effects=[],cleanup=[],deps=[];
  const useState=initial=>{const i=cursor++;if(!(i in state))state[i]=typeof initial==='function'?initial():initial;return[state[i],v=>state[i]=typeof v==='function'?v(state[i]):v];};
+ const useRef=initial=>{const i=cursor++;if(!(i in state))state[i]={current:initial};return state[i];};
  const useReducer=(reducer,initial,init)=>{const i=cursor++;if(!(i in state))state[i]=init?init(initial):initial;return[state[i],e=>state[i]=reducer(state[i],e)];};
  const useEffect=(fn,dep)=>{const i=cursor++;if(deps[i]&&dep.every((v,j)=>v===deps[i][j]))return;deps[i]=dep;effects.push(()=>{cleanup[i]?.();cleanup[i]=fn();});};
- const component=new Function('React','useState','useReducer','useEffect','Avatar','createAppearance','avatarOwnerKey','createAvatarEditor','reduceAvatarEditor',`${code};return OwnedEditor;`)(React,useState,useReducer,useEffect,()=>null,()=>({seed:'new'}),avatarOwnerKey,createAvatarEditor,reduceAvatarEditor);
+ const component=new Function('React','useState','useReducer','useEffect','useRef','Avatar','createAppearance','avatarOwnerKey','createAvatarEditor','reduceAvatarEditor',`${code};return OwnedEditor;`)(React,useState,useReducer,useEffect,useRef,()=>null,()=>({seed:'new'}),avatarOwnerKey,createAvatarEditor,reduceAvatarEditor);
  return {render(){cursor=0;const n=component(props);effects.splice(0).forEach(f=>f());return n;},close(){cleanup.forEach(f=>f?.());}};
 }
 const owner={kind:'creation',hostId:'host',draftId:'draft'};
@@ -55,4 +56,10 @@ test('ChatGPT avatar option explains plan usage without claiming API charges',as
  assert.match(text(tree),/Uses your ChatGPT\/Codex plan limits/);
  assert.doesNotMatch(text(tree),/provider may charge/);
  h.close();
+});
+
+
+test('closing the avatar editor cancels a pending generation for its captured owner',async()=>{
+ const requests=[],cancelled=[];const api={options:async()=>({options:[{providerProfileId:'p',modelId:'i',label:'Image',estimatedCostMicros:null}]}),generate:input=>{requests.push(input);return new Promise(()=>{});},cancel:async(owner,generationId)=>{cancelled.push({owner,generationId});},status:async()=>assert.fail('closed editor does not poll')};
+ const h=mount({owner,appearance:{seed:'s',color:'#123456'},api,onApply(){},onAppearanceChange(){}});h.render();await settle();let tree=h.render();button(tree,'AI generate').props.onClick();tree=h.render();find(tree,n=>n.type==='textarea').props.onChange({target:{value:'Robot'}});tree=h.render();button(tree,'Generate preview').props.onClick();h.render();h.close();assert.deepEqual(cancelled,[{owner,generationId:requests[0].generationId}]);
 });

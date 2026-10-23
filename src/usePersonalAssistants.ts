@@ -19,13 +19,26 @@ export type PersonalAssistantsOptions = {
 };
 export type PersonalAssistantSummary = {
   ref: AssistantRef; name: string; hostName: string; look?: AssistantLook;
-  offline: boolean; revision: number; lastSeen: number; legacy?: PersonalAssistantRecord["legacy"];
+  offline: boolean; revision: number; archivedAt?:number; lastSeen: number; legacy?: PersonalAssistantRecord["legacy"];
   paused: boolean; personalTasks: PersonalTask[]; projects: AssistantProjectBinding[];
 };
 type HostState = { routeHostId: string; hostId?: string; name: string; state: "ready" | "empty" | "offline" | "unsupported" | "error"; listedAfter?: number; problem?: string };
 type Row = { ref: AssistantRef; routeHostId: string; route: Backend; assistant: PersonalAssistantRecord; epoch: number; written: number; lastSeen: number };
 const selectionKey = "apex.personal-assistant.selection.v1";
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** Task tombstones live in a separate protected ledger. Adopt newer derived
+ * lifecycle data without letting an equal-revision list replace editor settings. */
+function newerAssistant(previous: PersonalAssistantRecord | undefined, next: PersonalAssistantRecord): PersonalAssistantRecord {
+  if (!previous) return next;
+  if (next.revision < previous.revision) return previous;
+  const oldLifecycle = previous.taskLifecycleSnapshotRevision ?? 0, newLifecycle = next.taskLifecycleSnapshotRevision ?? 0;
+  if (next.revision === previous.revision && newLifecycle <= oldLifecycle) return previous;
+  const base = next.revision > previous.revision ? next : previous;
+  const lifecycle = newLifecycle >= oldLifecycle ? next : previous;
+  if (base === previous && lifecycle === previous) return previous;
+  return { ...base, deletedDelegatedTasks: lifecycle.deletedDelegatedTasks, purgedDelegatedTaskIds: lifecycle.purgedDelegatedTaskIds, taskLifecycleSnapshotRevision: lifecycle.taskLifecycleSnapshotRevision };
+}
 
 /** A single store owns all host routes. View selection is never an execution owner. */
 export class PersonalAssistantsCollection {
@@ -59,7 +72,8 @@ export class PersonalAssistantsCollection {
   private choose() {
     if (this.pendingNotification) {
       const pending = this.rows.get(assistantIdentityKey(this.pendingNotification));
-      if (pending) { this.selected = { ...pending.ref }; this.persist(this.selected); this.pendingNotification = null; }
+      if (pending?.assistant.archivedAt!=null) { this.pendingNotification=null; }
+      else if (pending) { this.selected = { ...pending.ref }; this.persist(this.selected); this.pendingNotification = null; }
       else {
         const hosts = this.options.hosts.map(host => this.hosts.get(host.id));
         const authoritative = (host: HostState | undefined) => !!host && (host.listedAfter ?? -1) >= this.pendingAfter && (host.state === "ready" || host.state === "empty");
@@ -67,15 +81,15 @@ export class PersonalAssistantsCollection {
           || (hosts.length > 0 && hosts.every(authoritative))) this.pendingNotification = null;
       }
     }
-    if (this.selected && this.rows.has(assistantIdentityKey(this.selected))) return;
+    if (this.selected && this.rows.get(assistantIdentityKey(this.selected))?.assistant.archivedAt==null && this.rows.has(assistantIdentityKey(this.selected))) return;
     const desired = this.saved && this.rows.get(assistantIdentityKey(this.saved));
-    this.selected = desired?.ref ?? this.rows.values().next().value?.ref ?? null;
+    this.selected = (desired?.assistant.archivedAt==null?desired?.ref:undefined) ?? [...this.rows.values()].find(row=>row.assistant.archivedAt==null)?.ref ?? null;
     if (this.selected) this.persist(this.selected);
   }
   private persist(ref: AssistantRef) { this.saved = { ...ref }; try { this.storage()?.setItem(selectionKey, JSON.stringify(ref)); } catch { /* Optional session persistence. */ } }
   select = (ref: AssistantRef) => {
     const row = this.rows.get(assistantIdentityKey(ref));
-    if (!row) throw new Error("That assistant is no longer available.");
+    if (!row || row.assistant.archivedAt!=null) throw new Error("That assistant is removed. Restore it from Archived assistants first.");
     this.pendingNotification = null; this.selected = { ...row.ref }; this.persist(this.selected); this.emit();
   };
   private offline(row: Row) {
@@ -85,8 +99,10 @@ export class PersonalAssistantsCollection {
         || this.hosts.get(row.routeHostId)?.state === "error" || this.hosts.get(row.routeHostId)?.state === "unsupported";
     } catch { return true; }
   }
+  private summary(row:Row):PersonalAssistantSummary { return {ref:{...row.ref},name:row.assistant.name,legacy:row.assistant.legacy,look:row.assistant.look,revision:row.assistant.revision,archivedAt:row.assistant.archivedAt,hostName:this.hosts.get(row.routeHostId)?.name??row.routeHostId,offline:this.offline(row),paused:!!row.assistant.paused,personalTasks:row.assistant.tasks,projects:row.assistant.projects??[],lastSeen:row.lastSeen}; }
   snapshot = () => ({
-    assistants: [...this.rows.values()].map(row => ({ ref: { ...row.ref }, name: row.assistant.name, legacy: row.assistant.legacy, look: row.assistant.look, revision: row.assistant.revision, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), paused: !!row.assistant.paused, personalTasks: row.assistant.tasks, projects: row.assistant.projects ?? [], lastSeen: row.lastSeen } satisfies PersonalAssistantSummary)),
+    assistants: [...this.rows.values()].filter(row=>row.assistant.archivedAt==null).map(row=>this.summary(row)),
+    archivedAssistants: [...this.rows.values()].filter(row=>row.assistant.archivedAt!=null).map(row=>this.summary(row)),
     selected: this.selected ? { ...this.selected } : null,
     hosts: [...this.hosts.values()],
   });
@@ -128,7 +144,7 @@ export class PersonalAssistantsCollection {
           const ref = { hostId, assistantId: assistant.id }, key = assistantIdentityKey(ref), old = this.rows.get(key);
           if (old && old.routeHostId !== host.id && !this.offline(old)) continue;
           const rebound = old && (old.route !== route || old.routeHostId !== host.id);
-          this.rows.set(key, { ref, routeHostId: host.id, route, assistant: old && old.assistant.revision >= assistant.revision ? old.assistant : assistant, epoch: !rebound && old ? old.epoch : ++this.clock, written: old?.written ?? 0, lastSeen: Date.now() });
+          this.rows.set(key, { ref, routeHostId: host.id, route, assistant: newerAssistant(old?.assistant, assistant), epoch: !rebound && old ? old.epoch : ++this.clock, written: old?.written ?? 0, lastSeen: Date.now() });
         }
         this.hosts.set(host.id, { routeHostId: host.id, hostId, name: host.name, state: list.length ? "ready" : "empty", listedAfter: started });
         if (!host.remote) this.localHostId = hostId;
@@ -141,32 +157,34 @@ export class PersonalAssistantsCollection {
     this.choose(); this.emit();
     if (this.token) await this.registerPushToken(this.token);
   };
-  private captured(ref: AssistantRef) {
+  private captured(ref: AssistantRef, allowArchived=false) {
     const key = assistantIdentityKey(ref), row = this.rows.get(key);
-    if (!row) return null;
+    if (!row || (!allowArchived && row.assistant.archivedAt!=null)) return null;
     const route = row.route, epoch = row.epoch;
     const need = () => {
       const current = this.rows.get(key);
-      if (!current || current.epoch !== epoch) throw new Error("That assistant was removed or is no longer available.");
+      if (!current || current.epoch !== epoch || (!allowArchived && current.assistant.archivedAt!=null)) throw new Error("That assistant was removed or is no longer available.");
       if (this.offline(current)) throw new Error("This assistant's machine is offline.");
       if (this.options.hostBackend(row.routeHostId) !== route || this.owner(route) !== row.ref.hostId) throw new Error("This assistant's machine identity changed. Refresh before trying again.");
       return row.ref.assistantId;
     };
-    const after = async (cmd: string, args: Record<string, unknown>) => {
+    const afterResult = async (cmd: string, args: Record<string, unknown>) => {
       const assistantId = need();
-      const result = await route.call<{ assistant: PersonalAssistantRecord }>(cmd, { ...args, assistantId });
+      const result = await route.call<{ assistant: PersonalAssistantRecord; eventId?: string }>(cmd, { ...args, assistantId });
       this.validate(result?.assistant, row.ref.hostId);
       if (result.assistant.id !== assistantId) throw new Error("The host returned a different assistant owner.");
       const current = this.rows.get(key);
       if (current?.epoch === epoch && result.assistant.revision > current.assistant.revision) {
-        this.rows.set(key, { ...current, assistant: result.assistant, written: ++this.clock }); this.emit();
+        this.rows.set(key, { ...current, assistant: result.assistant, written: ++this.clock }); this.choose();this.emit();
       }
+      return result;
     };
-    return { key, row, route, need, after, epoch };
+    const after = async (cmd: string, args: Record<string, unknown>) => { await afterResult(cmd, args); };
+    return { key, row, route, need, after, afterResult, epoch };
   }
   lane = (ref: AssistantRef): PersonalLane | null => {
     const bound = this.captured(ref); if (!bound) return null;
-    const { key, row, route, need, after, epoch } = bound;
+    const { key, row, route, need, after, afterResult, epoch } = bound;
     const request = () => requestId(this.options.device ?? "mac");
     const call = <T,>(cmd: string, args: Record<string, unknown> = {}): Promise<T> => { need(); return route.call<T>(cmd, args); };
     const attachment = async (work: () => Promise<string>) => { need(); const result = await work(); if (this.rows.get(key)?.epoch !== epoch) throw new Error("The attachment's assistant was removed while saving."); return result; };
@@ -183,6 +201,18 @@ export class PersonalAssistantsCollection {
       ref: { ...row.ref }, draftKey: key, attachmentKey: key,
       name: row.assistant.name, assistant: row.assistant, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), problem: this.hosts.get(row.routeHostId)?.problem,
       send: text => after("personal_send", { requestId: request(), text }),
+      sendRequest: route.supports?.("assistant_voice_v1") !== true ? undefined : async (text, requestId) => {
+        const result = await afterResult("personal_send", { requestId, text });
+        if (!result.eventId) throw new Error("The host did not return the reply identity.");
+        return {eventId: result.eventId};
+      },
+      cancelReply: route.supports?.("assistant_voice_v1") !== true ? undefined : eventId => after("personal_reply_cancel", {requestId: request(), eventId}),
+      taskLifecycle: route.supports?.("assistant_task_lifecycle_v1") !== true ? undefined : (action, task, expectedDeleted) => after("personal_task_lifecycle", {expectedRevision: row.assistant.revision, action, task: task ? {source: task.source, taskId: task.taskId, ...(task.revision == null ? {} : {revision: task.revision})} : undefined, expectedDeleted}),
+      archiveAssistant: route.supports?.("assistant_archive_v1")!==true?undefined:async expectedRevision=>{
+        if(!Number.isSafeInteger(expectedRevision)||expectedRevision<0)throw new Error("Archive requires the saved assistant revision.");
+        const result=await afterResult("personal_archive",{expectedRevision,archived:true});
+        if(result.assistant.archivedAt==null||!Number.isSafeInteger(result.assistant.archivedAt)||result.assistant.revision<=expectedRevision)throw new Error("The host did not confirm saved assistant removal. Refresh before trying again.");
+      },
       react: async (messageId, emoji, enabled) => {
         try { await after("personal_react", { messageId, emoji, enabled }); }
         catch (error) { if (unsupportedCommand(error, "personal_react")) throw new Error("This host does not support saved ApexAgent reactions. Update its service to use reactions here."); throw error; }
@@ -196,7 +226,7 @@ export class PersonalAssistantsCollection {
       configureWorkspace: route.supports?.("assistant_workspace_v4") !== true ? undefined : configuration => {
         if (route.supports?.("assistant_workspace_v4") !== true) throw new Error("This machine no longer supports workspace settings. Reconnect and refresh.");
         if (!Number.isSafeInteger(configuration.expectedRevision) || configuration.expectedRevision < 0) throw new Error("Workspace settings require the editor's saved revision.");
-        return after("personal_workspace_configure", { ...configuration });
+        return afterResult("personal_workspace_configure", { ...configuration }).then(result=>result.assistant);
       },
       addRule: (text, cls, mode) => after("personal_rule_add", { text, class: cls, mode }),
       removeRule: ruleId => after("personal_rule_remove", { ruleId }),
@@ -265,6 +295,14 @@ export class PersonalAssistantsCollection {
         this.select(ref);
       } };
   };
+  restoreAssistant = async (ref:AssistantRef,expectedRevision:number):Promise<void> => {
+    const bound=this.captured(ref,true);
+    if(!bound || bound.row.assistant.archivedAt==null)throw new Error("This assistant is not archived. Refresh the assistant list.");
+    if(bound.route.supports?.("assistant_archive_v1")!==true)throw new Error("Update this machine’s service to restore assistants.");
+    if(!Number.isSafeInteger(expectedRevision)||expectedRevision<0)throw new Error("Restore requires the saved assistant revision.");
+    const result=await bound.afterResult("personal_archive",{expectedRevision,archived:false});
+    if(result.assistant.archivedAt!=null||result.assistant.revision<=expectedRevision)throw new Error("The host did not confirm restoration. Refresh and try again.");
+  };
   bridge = async () => {
     const local = this.options.hosts.find(h => !h.remote);
     if (!local || this.options.offlineHost(local.id)) return;
@@ -273,7 +311,7 @@ export class PersonalAssistantsCollection {
     try { localId = this.owner(localRoute); this.localHostId = localId; } catch { return; }
     await Promise.all([...this.rows.values()].map(async row => {
       const key = assistantIdentityKey(row.ref);
-      if (this.bridges.has(key) || this.offline(row) || !row.assistant.machines?.some(m => m.hostId === localId)) return;
+      if (row.assistant.archivedAt!=null || this.bridges.has(key) || this.offline(row) || !row.assistant.machines?.some(m => m.hostId === localId)) return;
       const bound = this.captured(row.ref); if (!bound) return;
       this.bridges.add(key);
       try {
@@ -291,7 +329,7 @@ export class PersonalAssistantsCollection {
     this.token = token;
     await Promise.all([...this.rows.values()].map(async row => {
       const key = JSON.stringify([assistantIdentityKey(row.ref), token]);
-      if (this.pushRegistered.has(key) || this.offline(row)) return;
+      if (row.assistant.archivedAt!=null || this.pushRegistered.has(key) || this.offline(row)) return;
       const bound = this.captured(row.ref); if (!bound) return;
       this.pushRegistered.add(key);
       try { await bound.route.call("personal_push_register", { assistantId: bound.need(), token }); }
@@ -305,7 +343,8 @@ export class PersonalAssistantsCollection {
       try {
         const candidate = { hostId: info.hostId, assistantId: info.assistantId };
         const row = this.rows.get(assistantIdentityKey(candidate));
-        if (row) { ref = { ...row.ref }; this.select(ref); }
+        if (row?.assistant.archivedAt!=null) { this.pendingNotification=null; }
+        else if (row) { ref = { ...row.ref }; this.select(ref); }
         else { this.pendingNotification = candidate; this.pendingAfter = ++this.clock; this.emit(); }
       } catch { /* Malformed notifications open the current safe view. */ }
     }
@@ -326,7 +365,7 @@ export class PersonalAssistantsCollection {
     if (timezone === "UTC") return;
     await Promise.all([...this.rows.values()].map(async row => {
       const key = assistantIdentityKey(row.ref);
-      if (this.zones.has(key) || this.offline(row) || (row.assistant.utcOffsetMinutes === utcOffsetMinutes && row.assistant.timezone !== "UTC")) return;
+      if (row.assistant.archivedAt!=null || this.zones.has(key) || this.offline(row) || (row.assistant.utcOffsetMinutes === utcOffsetMinutes && row.assistant.timezone !== "UTC")) return;
       this.zones.add(key);
       try { await this.lane(row.ref)?.configure?.({ timezone, utcOffsetMinutes }); } catch { /* Best effort, as before. */ }
     }));
@@ -372,5 +411,5 @@ export function usePersonalAssistants(options: PersonalAssistantsOptions) {
     pushStarted.current = true;
     void plugin.requestPermissions().then(permission => permission.receive === "granted" ? plugin.register() : undefined).catch(error => console.warn(`Notifications: ${message(error)}`));
   }, [options.device, snapshot.assistants.length]);
-  return { ...snapshot, select: collection.select, lane: collection.lane, refresh: collection.refresh, create: collection.create, emptyLane: collection.emptyLane, pendingLane: collection.pendingLane };
+  return { ...snapshot, select: collection.select, lane: collection.lane, refresh: collection.refresh, create: collection.create, restoreAssistant: collection.restoreAssistant, emptyLane: collection.emptyLane, pendingLane: collection.pendingLane };
 }
