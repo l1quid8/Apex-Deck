@@ -83,7 +83,14 @@ test('a popped-out chat waits for Deck, approves for both windows, and never clo
         assert.equal(await run(deck,()=>document.querySelector('textarea')?.disabled),false,'Deck chat still ready');
         // Control: the Deck window's own view does close its room when it goes away.
         await run(deck,()=>window.fixture.importedRecords());
-        await wait(deck,()=>document.querySelector('.legacy-room-marker')?.textContent.includes('Imported · unverified'),'import refresh and room marker');
+        await wait(deck,()=>document.querySelector('.legacy-room-marker summary')?.textContent.includes('Earlier history · unverified'),'import refresh and room marker');
+        await run(deck,()=>document.querySelector('.legacy-room-marker summary').click());
+        assert.equal(await run(deck,()=>document.querySelector('.legacy-room-marker details').open),true,'room explanation opens by native disclosure');
+        assert.equal(await run(deck,()=>document.querySelector('.legacy-room-marker').textContent.includes('does not label new messages as imported')),true,'disclosure explains historical scope');
+        await run(deck,()=>{window.fixture.importedRecords();window.fixture.emit({type:'message_added',message:{seq:7,speaker:{kind:'bot',id:'bot'},text:'Fresh message after import',at:1},recovery_seq:2});});
+        await wait(deck,()=>document.body.textContent.includes('Fresh message after import'),'new message after import refresh');
+        assert.equal(await run(deck,()=>document.querySelectorAll('.legacy-room-marker summary').length),1,'refresh retains one historical room marker');
+        assert.equal(await run(deck,()=>Array.from(document.querySelectorAll('.bubble')).filter(node=>node.textContent.includes('Fresh message after import')).some(node=>node.querySelector('.legacy-badge'))),false,'new message does not inherit historical record badge');
         await run(deck,()=>window.fixture.unmount());
         await wait(deck,()=>window.fixture.count('roomClose')===1,'Deck closes its own room');
         console.log('Chat attach Chromium checks passed'); app.exit(0);

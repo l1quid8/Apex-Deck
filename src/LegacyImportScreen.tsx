@@ -70,10 +70,11 @@ export function forgetPreview(api: LegacyImportApi): void {
 }
 
 /** The marker every imported record carries, wherever its status is shown. */
-export function LegacyBadge({ label = LEGACY_MARKER }: { label?: string }) {
+export function LegacyBadge({ label, scope = 'record' }: { label?: string; scope?: 'record' | 'room' }) {
+  if(scope==='room')return <details className="legacy-badge-disclosure"><summary className="legacy-badge" title="Earlier restored history lacks protected verification. Open for details.">{label ?? 'Earlier history · unverified'}</summary><p>Some earlier records in this conversation were restored from an older version of Apex Deck. They lack protected verification and may have been created on this same machine. This marker applies to that earlier history; it does not label new messages as imported or indicate an app error. Existing permissions and approval rules still apply.</p></details>;
   return (
-    <span className="legacy-badge" title="Saved by an older version of Apex Deck. This machine did not write it, so treat it as unverified.">
-      {label}
+    <span className="legacy-badge" title="Restored from records saved by an older version of Apex Deck. These records lack protected verification and may have been created on this same machine.">
+      {label ?? LEGACY_MARKER}
     </span>
   );
 }

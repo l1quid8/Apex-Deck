@@ -415,3 +415,8 @@ test('a panel without import capability renders nothing instead of dereferencing
  const h=harness();const backend={supports:()=>false,dataFolder:async()=>'/data'};
  assert.equal(h.renderPanel({backend}),null);h.unmount();
 });
+
+test('record badges retain unverified provenance while room disclosure scopes it to earlier restored history',()=>{
+ const h=harness();const recordBadge=h.built.LegacyBadge({});assert.equal(text(recordBadge),'Imported · unverified');assert.match(recordBadge.props.title,/same machine/);assert.doesNotMatch(recordBadge.props.title,/This machine did not write/);
+ const roomBadge=h.built.LegacyBadge({scope:'room'});assert.equal(roomBadge.type,'details');const summary=findAll(roomBadge,n=>n.type==='summary')[0];assert.equal(text(summary),'Earlier history · unverified');assert.match(text(roomBadge),/does not label new messages as imported or indicate an app error/);assert.match(text(roomBadge),/Existing permissions and approval rules still apply/);assert.match(text(roomBadge),/lack protected verification/);
+});
