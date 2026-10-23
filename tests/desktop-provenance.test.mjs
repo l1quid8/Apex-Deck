@@ -44,3 +44,23 @@ test('delivery IDs stay outside strict command argument objects',async()=>{
   assert.deepEqual(issued.args,frame.args);
   assert.match(issued.provenanceRequestId,/^[a-f0-9-]{36}$/);
 });
+
+test('legacy import apply is a protected UI intent; its preview and history are not',async()=>{
+  assert.ok(mod.protectedCommands.has('legacy_import_apply'));
+  assert.ok(!mod.protectedCommands.has('legacy_import_preview'));
+  assert.ok(!mod.protectedCommands.has('legacy_import_history'));
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const frame={id:9,cmd:'legacy_import_apply',args:{snapshot:'20261022-101501',sources:{'assistant-tasks-v1.json':'ab'}}};
+  let issued;
+  const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
+    issued=request.command;
+    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
+    return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
+  }});
+  assert.equal(result.cmd,'provenance_execute');
+  assert.deepEqual(issued.args,frame.args);
+  assert.match(issued.provenanceRequestId,/^[a-f0-9-]{36}$/);
+  const preview={id:10,cmd:'legacy_import_preview',args:{}};
+  assert.deepEqual(await mod.attestFrame(preview,{issue:()=>assert.fail('preview is read-only')}),preview);
+});
