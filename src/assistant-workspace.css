@@ -130,6 +130,12 @@
    pass underneath it. Taking it off to yank the transcript up hides the first
    message behind the capsule. */
 .assistant-workspace .apex-agent-tabpanel{padding-top:78px}
+/* One scroll box, and it is the panel. assistant-tasks.css gives the transcript
+   inside it `flex:1;overflow:auto`, which made a second scroll box that started
+   78px down and clipped messages at its own top edge: an empty band under the
+   strip, and pinning that never worked because every scroll read in
+   ApexAgentAll (onScroll, saved positions, isPinnedToBottom) is on the panel. */
+.assistant-workspace .assistant-chat-transcript{overflow:visible;flex:none;min-height:0}
 /* The composer floats too: the chat scrolls right up to and behind the message box, not to a ruled-off strip above it. */
 .assistant-workspace .assistant-conversation>.assistant-thread-composer{position:absolute;left:0;right:0;bottom:0;z-index:2;border-top:0;background:linear-gradient(to bottom,transparent,var(--bg) 10px)}
 .assistant-workspace .assistant-conversation:has(>.assistant-thread-composer:not([hidden])) .apex-agent-tabpanel{padding-bottom:calc(var(--assistant-browser-bottom,112px) + 12px)}

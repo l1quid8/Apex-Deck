@@ -20,6 +20,10 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
  import React from 'react';import {createRoot} from 'react-dom/client';
  import '/src/styles.css';import '/src/glass-theme.css';import '/src/apex-agent-panel.css';
  import '/src/apex-agent-dock.css';import '/src/apex-agent-message-actions.css';
+ // The real chat box also carries assistant-tasks.css, whose .assistant-chat-transcript
+ // rule (flex:1;overflow:auto) made an inner scroll box inside the panel. Without this
+ // import the fixture measured a page that does not exist.
+ import '/src/assistant-tasks.css';
  import {AssistantWorkspace} from '/src/AssistantWorkspace.tsx';
  const h=React.createElement;
  const lane={name:'Approved Flow QA',hostName:'local',assistant:{id:'qa',name:'Approved Flow QA',projects:[],tasks:[]}};
@@ -69,6 +73,9 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
   const rightRowAt=rightStack.some(name=>name.includes('apex-agent-message-row'))||rightStack.some(name=>name.includes('assistant-chat-message'));
   return {...g,panelTop:g.panel.top,padTop:getComputedStyle(panel).paddingTop,scrollTop:panel.scrollTop,probeY,sideX,probeW,rightX,rightW,stack,sideStack,rightStack,rowAt,sideRowAt,rightRowAt,firstTop,
    scrollHeight:panel.scrollHeight,clientHeight:panel.clientHeight,
+   transcriptScrollHeight:document.querySelector('.assistant-chat-transcript').scrollHeight,
+   transcriptClientHeight:document.querySelector('.assistant-chat-transcript').clientHeight,
+   transcriptOverflow:getComputedStyle(document.querySelector('.assistant-chat-transcript')).overflowY,
    chatBackground:getComputedStyle(document.querySelector('.apex-agent-tabpanel')).backgroundColor,
    stripBackground:getComputedStyle(document.querySelector('.assistant-workspace-head')).backgroundColor};};
  </script>`;
@@ -96,6 +103,13 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
    assert.ok(near(rest.panelTop,rest.ws.top,0.5),'the chat scroller is full-bleed to the top of the workspace, not pushed below the strip: panel '+rest.panelTop+' vs workspace '+rest.ws.top);
    assert.ok(rest.firstTop>=rest.strip.bottom-1,'the first message starts below the strip at rest (nothing hidden underneath): first '+rest.firstTop+' vs strip bottom '+rest.strip.bottom);
    assert.ok(parseFloat(rest.padTop)>=60,'the chat reserves room for the strip: padding-top '+rest.padTop);
+   // The panel must be the one scroll box. When the inner transcript kept
+   // flex:1;overflow:auto it clipped messages at its own top edge, 78px below the
+   // strip, which is the "band" that looked like a header. Every scroll read in
+   // the component (pinning, saved positions, onScroll) is on this panel.
+   assert.ok(rest.scrollHeight>rest.clientHeight+1,'the panel is the scroller, so it has content to scroll: '+rest.scrollHeight+' vs '+rest.clientHeight);
+   assert.ok(rest.transcriptScrollHeight<=rest.transcriptClientHeight+1,'the inner transcript does not scroll on its own: '+rest.transcriptScrollHeight+' vs '+rest.transcriptClientHeight);
+   assert.equal(rest.transcriptOverflow,'visible','the inner transcript leaves the scrolling to the panel: overflow-y '+rest.transcriptOverflow);
    // The area left of the capsule is empty chat, inside the strip band. If a band
    // were painted there it would differ from the chat just below it.
    const shotRest=await shot();
@@ -120,6 +134,13 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
   const drawnRight=shotScrolled.countDrawn(scrolled.rightX,scrolled.ws.top+16,scrolled.rightW,60,restPixels[1],10);
   console.log(JSON.stringify({drawnWhenScrolled,drawnRight,rightW:scrolled.rightW}));
   assert.ok(drawnRight>20,'text is painted in the strip band to the right of the capsule too: '+drawnRight+' pixels');
+  // Stay-pinned reads scrollHeight - scrollTop - clientHeight <= 40 on this
+  // panel. On the old layout that was 0-0-0, so the test was always true and
+  // scrolled nothing. It only means something once the panel is the scroll box.
+  const bottomFacts=await run('(()=>{const p=document.querySelector(".apex-agent-tabpanel");p.scrollTop=p.scrollHeight;return {top:p.scrollTop,gap:p.scrollHeight-p.scrollTop-p.clientHeight};})()');
+  console.log(JSON.stringify({bottomFacts}));
+  assert.ok(bottomFacts.top>0,'the panel can be scrolled to its own bottom: scrollTop '+bottomFacts.top);
+  assert.ok(bottomFacts.gap<=40,'the pinned-to-bottom condition the chat tests is meaningful here: gap '+bottomFacts.gap);
    app.exit(0);}catch(e){console.error(e.stack);app.exit(1);}});`);
  try{const result=await runElectronScenario(electron,main,temp,{attempts:1});assert.equal(result.code,0,result.output);}finally{await server.close();fs.rmSync(temp,{recursive:true,force:true});}
 });
@@ -137,6 +158,10 @@ test('a problem banner does not turn the floating strip into a solid band', {tim
  import React from 'react';import {createRoot} from 'react-dom/client';
  import '/src/styles.css';import '/src/glass-theme.css';import '/src/apex-agent-panel.css';
  import '/src/apex-agent-dock.css';import '/src/apex-agent-message-actions.css';
+ // The real chat box also carries assistant-tasks.css, whose .assistant-chat-transcript
+ // rule (flex:1;overflow:auto) made an inner scroll box inside the panel. Without this
+ // import the fixture measured a page that does not exist.
+ import '/src/assistant-tasks.css';
  import {AssistantWorkspace} from '/src/AssistantWorkspace.tsx';
  const h=React.createElement;
  // The wording dev shows when a write is refused.
@@ -193,6 +218,11 @@ test('a problem banner does not turn the floating strip into a solid band', {tim
    assert.ok(Math.abs(rest.panelTop-rest.ws.top)<=0.5,'the chat scroller stays full-bleed with a banner up, so nothing is clipped at a line below the strip: panel '+rest.panelTop+' vs workspace '+rest.ws.top);
    assert.equal(rest.banner.position,'absolute','the banner floats instead of joining the flow: position '+rest.banner.position);
    assert.ok(rest.firstTop>=rest.banner.bottom-1,'the first message clears the banner at rest: first '+rest.firstTop+' vs banner bottom '+rest.banner.bottom);
+   const scrollFacts=await run('(()=>{const p=document.querySelector(".apex-agent-tabpanel");const t=document.querySelector(".assistant-chat-transcript");const out={panelScrolls:p.scrollHeight>p.clientHeight+1,innerScrolls:t.scrollHeight>t.clientHeight+1,innerOverflow:getComputedStyle(t).overflowY};p.scrollTop=200;out.panelTop=p.scrollTop;p.scrollTop=0;return out;})()');
+   assert.ok(scrollFacts.panelScrolls,'the panel is the scroll box with a banner up');
+   assert.ok(scrollFacts.panelTop>0,'the panel really scrolls: scrollTop '+scrollFacts.panelTop);
+   assert.equal(scrollFacts.innerOverflow,'visible','the inner transcript leaves the scrolling to the panel');
+   assert.equal(scrollFacts.innerScrolls,false,'the inner transcript has no scroll of its own');
    assert.ok(rest.firstTop>=rest.strip.bottom-1,'the first message still clears the strip: first '+rest.firstTop+' vs strip bottom '+rest.strip.bottom);
    assert.equal(rest.error.position,'absolute','the chat error bar floats instead of pushing the transcript down: position '+rest.error.position);
    assert.ok(rest.firstTop>=rest.error.bottom-1,'the first message clears the chat error bar too: first '+rest.firstTop+' vs error bottom '+rest.error.bottom);
