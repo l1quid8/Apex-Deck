@@ -104,7 +104,26 @@
 .assistant-workspace{container-type:inline-size}
 .assistant-workspace .assistant-workspace-head{height:60px;min-height:60px;padding:0 18px;gap:10px;flex-wrap:nowrap}
 .assistant-workspace .assistant-session{padding:3px 10px 3px 4px;max-width:min(70%,480px)}
-.assistant-workspace .assistant-workspace-problem~.assistant-workspace-head{position:relative}
+/* A problem banner is an alert, not a layout change. It floats under the strip
+   and the scroller keeps its own 78px plus the banner's reserved height, so the
+   first message is never hidden behind either. It used to sit in the flow, which
+   pushed the scroller ~40px down and clipped messages at that line — the solid
+   band that read as a header bar. The old `.assistant-workspace-problem~
+   .assistant-workspace-head{position:relative}` rule could never match at all,
+   because the strip precedes the banner in the DOM. */
+.assistant-workspace{--assistant-problem-h:44px}
+.assistant-workspace-problem{position:absolute;left:0;right:0;top:60px;z-index:5;max-height:var(--assistant-problem-h);overflow:auto;margin:0;pointer-events:none}
+.assistant-workspace:has(>.assistant-workspace-problem) :is(.apex-agent-tabpanel,.assistant-workspace-subview){padding-top:calc(78px + var(--assistant-problem-h))}
+/* The chat has a second alert surface of its own — `.apex-agent-error`, which
+   ApexAgentAll renders in the flow directly above the scroller. In dev that one
+   is usually up as well, and an in-flow error bar pushes the transcript down by
+   its own height, producing the same band. It floats under the strip too, sits
+   below the workspace banner when both are up, and the transcript reserves room
+   for one or two alerts so the first message is never hidden. */
+.assistant-workspace .assistant-conversation>.apex-agent-error{position:absolute;left:0;right:0;top:60px;z-index:5;max-height:var(--assistant-problem-h);overflow:auto}
+.assistant-workspace:has(>.assistant-workspace-problem) .assistant-conversation>.apex-agent-error{top:calc(60px + var(--assistant-problem-h))}
+.assistant-workspace:has(.assistant-conversation>.apex-agent-error) :is(.apex-agent-tabpanel,.assistant-workspace-subview){padding-top:calc(78px + var(--assistant-problem-h))}
+.assistant-workspace:has(>.assistant-workspace-problem):has(.assistant-conversation>.apex-agent-error) :is(.apex-agent-tabpanel,.assistant-workspace-subview){padding-top:calc(78px + var(--assistant-problem-h) * 2)}
 /* Handoff 6.1: the strip floats and paints nothing, so the chat scrolls up
    behind it. The padding lives on the scroller, which means it scrolls away with
    the content: at rest the first message clears the strip, and older messages
