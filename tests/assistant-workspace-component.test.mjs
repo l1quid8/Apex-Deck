@@ -229,8 +229,17 @@ test('status counts work that needs you and failed work',()=>{
  const status=find(tree,n=>n.props?.className==='assistant-session-status');
  assert.equal(text(status),'Needs you · 1');assert.equal(status.props['data-state'],'needs_you');
 });
-test('menu holds Projects & access, Browser, Memory, Settings and Pause',()=>{
- assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Projects & access','Browser','Memory','Settings','Pause']);
+test('menu holds Projects & access, Browser, Memory, Model & access, Settings and Pause',()=>{
+ assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Projects & access','Browser','Memory','Model & access','Settings','Pause']);
+});
+test('the avatar is the Details toggle and reports whether Details is open',()=>{
+ const opened=[];const tree=header(headerLane(),{detailsOpen:false,onToggleDetails:()=>opened.push('toggle')});
+ const avatar=find(tree,n=>n.props?.['aria-label']==='Apex Assistant details');
+ assert.ok(avatar,'the capsule carries the details control');
+ assert.equal(avatar.props['aria-expanded'],false);
+ assert.equal(avatar.props['aria-controls'],'assistant-details');
+ avatar.props.onClick();assert.deepEqual(opened,['toggle']);
+ assert.equal(find(header(headerLane(),{detailsOpen:true}),n=>n.props?.['aria-label']==='Apex Assistant details').props['aria-expanded'],true);
 });
 test('the menu opens Projects & access as a subview',()=>{
  const opened=[];const tree=header(headerLane(),{onNavigate:s=>opened.push(s)});

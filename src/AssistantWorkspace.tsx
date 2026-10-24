@@ -24,7 +24,7 @@ export function AssistantWorkspaceAvatar({lane,backend}:{lane:PersonalLane;backe
  *  Everything else — the assistant's own settings, memory and project access —
  *  is a subview you reach from the ⋯ menu, and its details live in the app's
  *  right sidebar, never in a second one of its own. */
-export function AssistantWorkspace({lane,backend,section,onNavigate,chat,projects,editor,memoryProject,delegatedTasks=[],onSubviewBack,previousSection='chat',profiles=[],callControls,browser,onOpenBrowser}:{lane:PersonalLane;backend?:Backend;section:AssistantSection;onNavigate:(section:AssistantSection)=>void;chat:ReactNode;projects:ReactNode;editor:ReactNode;memoryProject?:ProjectRef;delegatedTasks?:AssistantTask[];onSubviewBack?:()=>void;previousSection?:AssistantSection;profiles?:ParticipantConfig[];callControls?:ReactNode;browser?:ReactNode;onOpenBrowser?:()=>void}) {
+export function AssistantWorkspace({lane,backend,section,onNavigate,chat,projects,editor,memoryProject,delegatedTasks=[],onSubviewBack,previousSection='chat',profiles=[],callControls,browser,onOpenBrowser,detailsOpen,onToggleDetails}:{lane:PersonalLane;backend?:Backend;section:AssistantSection;onNavigate:(section:AssistantSection)=>void;chat:ReactNode;projects:ReactNode;editor:ReactNode;memoryProject?:ProjectRef;delegatedTasks?:AssistantTask[];onSubviewBack?:()=>void;previousSection?:AssistantSection;profiles?:ParticipantConfig[];callControls?:ReactNode;browser?:ReactNode;onOpenBrowser?:()=>void;detailsOpen?:boolean;onToggleDetails?:()=>void}) {
  const record=lane.assistant;
  const ref=lane.ref??{hostId:record?.hostId??lane.hostName,assistantId:record?.id??lane.name};
  const look=assistantAppearance(ref,record?.look);
@@ -42,7 +42,7 @@ export function AssistantWorkspace({lane,backend,section,onNavigate,chat,project
  return <section className="assistant-workspace" aria-label={`${lane.name} workspace`}>
   <header className="assistant-workspace-head">
    <div className="assistant-session">
-    <button type="button" className="assistant-session-id" aria-label={`${lane.name}: runtime settings`} aria-haspopup="dialog" aria-expanded={!!runtimeAnchor} disabled={!!runtimeReason} title={runtimeReason||'Provider, model, reasoning, speed, access and usage'} onClick={event=>setRuntimeAnchor(runtimeAnchor?null:event.currentTarget)}>
+    <button type="button" className="assistant-session-id" aria-label={`${lane.name} details`} aria-expanded={!!detailsOpen} aria-controls="assistant-details" title={`${lane.name} details`} onClick={()=>{setRuntimeAnchor(null);onToggleDetails?.();}}>
      <Avatar seed={look.seed} color={look.color} image={look.kind==='image'?look.image:undefined} assistant={ref} avatarApi={avatarApi} working={status.working>0&&!record?.paused} size="md"/>
      <span className="assistant-session-text"><span className="assistant-session-name">{lane.name}</span><span className="assistant-session-status" data-state={status.state}>{status.label}</span></span>
     </button>
@@ -53,6 +53,7 @@ export function AssistantWorkspace({lane,backend,section,onNavigate,chat,project
      <button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);setRuntimeAnchor(null);onNavigate('projects');}}>Projects &amp; access</button>
      <button type="button" role="menuitem" disabled={!onOpenBrowser||!lane.browserView} title={!lane.browserView?'This host does not expose the assistant browser.':undefined} onClick={event=>{closeMenu(event.currentTarget);setRuntimeAnchor(null);onOpenBrowser?.();}}>Browser</button>
      <button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);setRuntimeAnchor(null);onNavigate('memory');}}>Memory</button>
+     <button type="button" role="menuitem" disabled={!!runtimeReason} title={runtimeReason||'Provider, model, reasoning, speed, access and usage'} onClick={event=>{closeMenu(event.currentTarget);setRuntimeAnchor(runtimeAnchor?null:event.currentTarget);}}>Model &amp; access</button>
      <button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);setRuntimeAnchor(null);onNavigate('settings');}}>Settings</button>
      {lane.pause&&<button type="button" role="menuitem" className="assistant-pause" disabled={pending||lane.offline} onClick={()=>void pause()}>{record?.paused?'Resume':'Pause'}</button>}
     </div></details>
