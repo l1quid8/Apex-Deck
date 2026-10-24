@@ -1,111 +1,178 @@
-// What an assistant actually made: the files inside the review patches its
-// tasks recorded. No new host command — this reads `resultData.reviewDiff`,
-// which the host already writes when a task stops for review, and turns it
-// into the same per-file shape Changes uses (path, +, −, patch, kind).
+// Outputs: what an assistant made for you — a document, an export, a page — not
+// what it changed in a repository. Code edits belong in Review, where the diff
+// and the file list already live.
 //
-// The parse mirrors the host's `changes::split_patch`: a file starts at a
-// "diff --git " line, and takes its name from "+++ b/…", falling back to the
-// header so a deleted file keeps the path it had.
+// Two recorded sources feed it, and nothing is inferred from prose:
+//  1. The thread's artifacts (artifacts.ts): HTML, SVG and Markdown it wrote,
+//     every version kept, which the app can open and preview.
+//  2. The files its threads touched that are deliverables rather than code:
+//     .json, .csv, .pdf, a config file. Only paths with a known deliverable
+//     extension appear; anything else, source code included, is left alone.
 
-export type OutputKind = 'created' | 'changed' | 'deleted';
+import { newestFirst, readArtifacts, type Artifact, type ArtifactFile, type ArtifactKind } from './artifacts';
+import type { DiffFile } from './types';
 
-export interface OutputFile {
-  /** Path as the patch names it, relative to the task's folder. */
-  path: string;
-  added: number;
-  removed: number;
-  patch: string;
-  kind: OutputKind;
-}
+/** What a deliverable is, for its mark and its label. */
+export type OutputKind = 'doc' | 'data' | 'view';
 
-/** One file for the person to look at, merged across every task that touched it. */
-export interface AssistantOutput extends OutputFile {
-  /** The tasks that recorded this file, oldest first. */
-  taskIds: string[];
-}
-
-export interface RecordedTask {
+export interface AssistantOutput {
   id: string;
-  resultData?: { reviewDiff?: string } | null;
+  /** What to show: the file's name, or an artifact's title when it has no path. */
+  name: string;
+  kind: OutputKind;
+  /** The folder it sits in, relative to the one the task worked in; empty at the top. */
+  folder: string;
+  /** The file, as the record names it. Absent for a page that only ever lived in a reply. */
+  path?: string;
+  /** The folder the task worked in, so the file can be opened. */
+  cwd?: string;
+  threadId?: string;
+  taskId?: string;
+  /** Milliseconds since the epoch; 0 when the record doesn't say. */
+  at: number;
+  /** Present for a page, picture or document the app can open and keep versions of. */
+  artifact?: Artifact;
 }
 
-const HEADER = 'diff --git ';
+/** Deliberate: code, archives and pictures are not in here, so they never show as an output. */
+const KIND_BY_EXTENSION: Record<string, OutputKind> = {
+  md: 'doc', markdown: 'doc', txt: 'doc', rtf: 'doc', pdf: 'doc',
+  json: 'data', csv: 'data', tsv: 'data', yaml: 'data', yml: 'data', xml: 'data', config: 'data',
+  html: 'view', htm: 'view', svg: 'view',
+};
 
-/** Split one recorded patch into its files, in the order the patch lists them. */
-export function parsePatchFiles(patch: string): OutputFile[] {
-  const files: OutputFile[] = [];
-  let current: OutputFile | null = null;
-  const lines = patch.split('\n');
-  // A patch that ends in a newline gets one empty trailing segment; keeping it
-  // would add a newline the patch never had.
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  for (const line of lines) {
-    if (line.startsWith(HEADER)) {
-      const header = line.slice(HEADER.length);
-      const split = header.indexOf(' b/');
-      current = { path: split < 0 ? header : header.slice(split + 3), added: 0, removed: 0, patch: '', kind: 'changed' };
-      files.push(current);
-    }
-    if (!current) continue;
-    current.patch += `${line}\n`;
-    if (line.startsWith('new file mode')) { current.kind = 'created'; continue; }
-    if (line.startsWith('deleted file mode')) { current.kind = 'deleted'; continue; }
-    if (line.startsWith('+++ ')) {
-      const target = line.slice(4).split('\t')[0];
-      // "+++ /dev/null" is a deletion; its name stays what the header gave.
-      if (target === '/dev/null') current.kind = 'deleted';
-      else if (target.startsWith('b/')) current.path = target.slice(2);
-      continue;
-    }
-    // A file header line, not a content line.
-    if (line.startsWith('--- ')) continue;
-    if (line.startsWith('+')) current.added += 1;
-    else if (line.startsWith('-')) current.removed += 1;
-  }
-  return files;
+const KIND_BY_ARTIFACT: Record<ArtifactKind, OutputKind> = { markdown: 'doc', html: 'view', svg: 'view' };
+
+export const OUTPUT_MARK: Record<OutputKind, string> = { doc: '▤', data: '{}', view: '◇' };
+export const OUTPUT_LABEL: Record<OutputKind, string> = { doc: 'Document', data: 'Data', view: 'View' };
+
+/** The output kind a path can be, from its extension; null for code and anything unknown. */
+export function kindOfOutputPath(path: string): OutputKind | null {
+  const ext = path.match(/\.([A-Za-z]+)$/)?.[1]?.toLowerCase();
+  return ext ? KIND_BY_EXTENSION[ext] ?? null : null;
 }
 
-/** Every file these tasks recorded making or changing, one row per path. */
-export function assistantOutputs(tasks: RecordedTask[]): AssistantOutput[] {
-  const byPath = new Map<string, AssistantOutput>();
-  for (const task of tasks) {
-    const patch = task.resultData?.reviewDiff;
-    if (typeof patch !== 'string' || patch.trim() === '') continue;
-    for (const file of parsePatchFiles(patch)) {
-      if (!file.path) continue;
-      const seen = byPath.get(file.path);
-      if (!seen) { byPath.set(file.path, { ...file, taskIds: [task.id] }); continue; }
-      seen.added += file.added;
-      seen.removed += file.removed;
-      if (file.patch.length > seen.patch.length) seen.patch = file.patch;
-      if (!seen.taskIds.includes(task.id)) seen.taskIds.push(task.id);
-      // A file the assistant created stays created even if a later task edited it.
-      if (file.kind === 'created') seen.kind = 'created';
-      else if (file.kind === 'deleted' && seen.kind === 'changed') seen.kind = 'deleted';
-    }
-  }
-  return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
-}
-
-/** "src/App.tsx" → { name: "App.tsx", folder: "src" }. */
+/** A path split for the row: its name, and the folder above it. */
 export function outputName(path: string): { name: string; folder: string } {
   const cut = path.lastIndexOf('/');
   return cut < 0 ? { name: path, folder: '' } : { name: path.slice(cut + 1), folder: path.slice(0, cut) };
 }
 
-/** "3 files · +48 −6", the same wording Changes uses. */
-export function outputsLine(files: { added: number; removed: number }[]): string {
-  const added = files.reduce((n, f) => n + f.added, 0);
-  const removed = files.reduce((n, f) => n + f.removed, 0);
-  return `${files.length === 1 ? '1 file' : `${files.length} files`} · +${added} −${removed}`;
+const lastAt = (artifact: Artifact) => artifact.versions[artifact.versions.length - 1].at;
+
+/** The text a row shows when opened: its newest version, cut to what a sidebar can render. */
+export const MAX_PREVIEW = 8000;
+export function previewSource(artifact: Artifact): string {
+  const source = artifact.versions[artifact.versions.length - 1].source;
+  return source.length > MAX_PREVIEW ? `${source.slice(0, MAX_PREVIEW)}\n…` : source;
 }
 
-/** The short mark Codex and git both use for a row. */
-export function outputMark(kind: OutputKind): string {
-  return kind === 'created' ? 'A' : kind === 'deleted' ? 'D' : 'M';
+/** Every artifact, newest first. */
+export function outputsFromArtifacts(file: ArtifactFile, threadId: string, cwd?: string, taskId?: string): AssistantOutput[] {
+  return newestFirst(file).map((artifact): AssistantOutput => {
+    const where = artifact.path ? outputName(artifact.path) : null;
+    return {
+      id: `artifact:${artifact.id}`,
+      name: where ? where.name : artifact.title,
+      kind: KIND_BY_ARTIFACT[artifact.kind],
+      folder: where ? where.folder : '',
+      ...(artifact.path ? { path: artifact.path } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(taskId ? { taskId } : {}),
+      threadId,
+      at: lastAt(artifact),
+      artifact,
+    };
+  });
 }
 
-/** Plain-language row text for the file list. */
-export function outputKindLabel(kind: OutputKind): string {
-  return kind === 'created' ? 'Created' : kind === 'deleted' ? 'Deleted' : 'Changed';
+/** The deliverable files among ones a thread changed; code and unknown types drop out. */
+export function outputsFromChanges(files: DiffFile[], threadId: string, cwd?: string, taskId?: string): AssistantOutput[] {
+  return files.flatMap((file): AssistantOutput[] => {
+    const kind = kindOfOutputPath(file.path);
+    if (!kind) return [];
+    const where = outputName(file.path);
+    return [{
+      id: `file:${file.path}`,
+      name: where.name,
+      kind,
+      folder: where.folder,
+      path: file.path,
+      ...(cwd ? { cwd } : {}),
+      ...(taskId ? { taskId } : {}),
+      threadId,
+      at: 0,
+    }];
+  });
+}
+
+/**
+ * Newest first, then by name. A path appears once: an artifact beats a bare file
+ * row for it, because the artifact carries its versions and can be opened.
+ */
+export function mergeOutputs(...lists: AssistantOutput[][]): AssistantOutput[] {
+  const byKey = new Map<string, AssistantOutput>();
+  for (const list of lists) {
+    for (const output of list) {
+      const key = output.path ?? `${output.threadId ?? ''}/${output.name}`;
+      const seen = byKey.get(key);
+      if (!seen || (!seen.artifact && output.artifact)) byKey.set(key, output);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => b.at - a.at || a.name.localeCompare(b.name));
+}
+
+export function outputsLine(list: AssistantOutput[]): string {
+  if (list.length === 0) return 'No deliverables yet';
+  return list.length === 1 ? '1 deliverable' : `${list.length} deliverables`;
+}
+
+/** What an output needs from a backend: the thread's artifacts, and what its folder changed. */
+export interface OutputsBackend {
+  artifactsLoad(room: string): Promise<unknown>;
+  roomDiff(room: string): Promise<{ files: DiffFile[] }>;
+}
+
+export interface OutputsTask {
+  id: string;
+  owner?: { cwd?: string };
+  destination?: { threadId: string | null } | null;
+}
+
+/** How many of this session's threads are worth asking; older ones are not this session. */
+export const MAX_OUTPUT_THREADS = 8;
+
+/**
+ * Read this session's outputs. A thread that can't be read contributes nothing
+ * rather than failing the list; a folder that isn't a repository has no file
+ * rows, which is normal for a task that only wrote a document.
+ */
+export async function loadOutputs(backend: OutputsBackend, tasks: OutputsTask[]): Promise<AssistantOutput[]> {
+  const seen = new Set<string>();
+  const wanted: { threadId: string; cwd?: string; taskId: string }[] = [];
+  for (const task of tasks) {
+    const threadId = task.destination?.threadId ?? null;
+    if (!threadId || seen.has(threadId)) continue;
+    seen.add(threadId);
+    wanted.push({ threadId, cwd: task.owner?.cwd, taskId: task.id });
+    if (wanted.length >= MAX_OUTPUT_THREADS) break;
+  }
+  const lists = await Promise.all(wanted.map(async ({ threadId, cwd, taskId }) => {
+    const [raw, diff] = await Promise.all([
+      backend.artifactsLoad(threadId).catch(() => null),
+      backend.roomDiff(threadId).catch(() => null),
+    ]);
+    const artifacts = raw === null ? [] : outputsFromArtifacts(readArtifactsSafe(raw), threadId, cwd, taskId);
+    return [...artifacts, ...outputsFromChanges(diff?.files ?? [], threadId, cwd, taskId)];
+  }));
+  return mergeOutputs(...lists);
+}
+
+// Kept separate so a damaged file degrades to "no artifacts" instead of throwing.
+function readArtifactsSafe(raw: unknown): ArtifactFile {
+  try {
+    return readArtifacts(raw);
+  } catch {
+    return { version: 1, artifacts: [] };
+  }
 }

@@ -36,6 +36,7 @@ import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
 import { AssistantDetails } from "./AssistantDetails";
+import { useAssistantOutputs } from "./useAssistantOutputs";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
 import { splitFirstBrief, rosterMessage, loadMainView, saveMainView, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, assistantProjectCanvasDestination, assistantWorkerThreadDestination, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
@@ -1942,6 +1943,8 @@ export function App() {
   const [assistantDetailsOpen,setAssistantDetailsOpen]=useState(false);
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
+  /** What this session's tasks made: documents, exports and pages from their threads. */
+  const assistantOutputsState = useAssistantOutputs(assistantBackend, selectedDelegatedTasks);
   // Only ambiguous assignments need an owning-host folder read; no global scan or polling.
   const aliasCandidates=assignedProjects.flatMap(binding=>workspaces.filter(workspace=>!workspace.hidden&&workspace.id===binding.project.workspaceId&&workspace.path!==binding.project.cwd&&authenticatedProjectHost(workspaceHost(workspace))===binding.project.hostId&&!snapshotProjectForWorkspace(workspace)).map(workspace=>({workspace,project:binding.project})));
   const aliasCandidatesKey=JSON.stringify(aliasCandidates.map(({workspace,project})=>[projectAliasKey(workspace,project.hostId),project.cwd]));
@@ -2712,7 +2715,7 @@ export function App() {
               };
               return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} assistantIdentity={{ref:mainView.assistant,name:selectedAssistant.name,avatar:<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>}} requestRecovery={requestRecovery} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
             })]}
-            />} />{assistantDetailsOpen&&<AssistantDetails lane={selectedAssistant} backend={assistantBackend??undefined} tasks={selectedDelegatedTasks} onClose={()=>setAssistantDetailsOpen(false)} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser}/>}</div>}
+            />} />{assistantDetailsOpen&&<AssistantDetails lane={selectedAssistant} outputs={assistantOutputsState.outputs} outputsLoading={assistantOutputsState.loading} outputsProblem={assistantOutputsState.problem} onOpenFile={(path,cwd)=>{void assistantBackend?.openTarget(path,cwd,false);}} onClose={()=>setAssistantDetailsOpen(false)} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser}/>}</div>}
           {mainView.kind==='assistant' && !selectedAssistant && <div className="picker"><p role="status">This assistant is unavailable. Refresh or reconnect its machine.</p><button onClick={()=>setMainView({kind:'workspace'})}>Back to Workspaces</button></div>}
           {creatingAssistant && <AssistantCreationDialog onClose={()=>setCreatingAssistant(false)}>{(()=>{
             const machinePicker=<label className="assistant-setting-row"><span>Machine</span><select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label>;
