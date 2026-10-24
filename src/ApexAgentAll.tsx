@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
 import type { VoiceSettings } from './voice/types';
 import { useAssistantVoice } from './voice/useAssistantVoice';
-import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls } from './voice/VoiceCallControls';
+import { VoiceCallBar, VoiceCallControls, VoiceSessionStrip } from './voice/VoiceCallControls';
 import { composerButton } from './voice/callView';
 import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
 import { withTldr } from './tldr';
@@ -834,13 +834,13 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         <div className="composer-field"><textarea onPaste={event=>{const files=Array.from(event.clipboardData.files);if(files.length){event.preventDefault();composerTools.current?.attachFiles(files);}}} ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(filterWorkspaceId ?? focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); setCaret(event.currentTarget?.selectionStart ?? value.length); }} onClick={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} onKeyUp={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} rows={1} aria-label={`Message ${conversationName}`} placeholder={voice.hint ?? (firstRun ? `Give ${personal!.name} its first brief` : selectedTaskContext ? 'Reply to this task…' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…')}
           onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if((event.metaKey||event.ctrlKey)&&event.shiftKey&&event.key.toLowerCase()==='t'){event.preventDefault();setTldr(!tldr);return;} if (event.key === 'Escape' && pendingReply && personal?.cancelReply) {event.preventDefault();void run(()=>personal!.cancelReply!(pendingReply.id));return;} if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /></div>
         <ComposerModeControls planOn={planOn} onPlan={()=>setPlanOn(false)} tldr={tldr} onTldr={()=>{setTldr(!tldr);composerInput.current?.focus();}}/>
-        {embedded&&round.mic&&<VoiceCallControls settings={voice.settings} candidates={voice.candidates} who={voice.who} disabled={!!personal?.offline}/>}
+        {embedded&&round.mic&&!(voice.slot.live && voice.slot.look === 'capsule')&&<VoiceCallControls settings={voice.settings} candidates={voice.candidates} who={voice.who} disabled={!!personal?.offline}/>}
         {embedded&&round.send&&<button type="submit" className="round-send" aria-label="Send" disabled={busy||attachmentState.pending||attachmentState.hasErrors||(!text.trim()&&!attachmentState.paths.length)}>↑</button>}
       </ThreadComposerBox>
       <div className="apex-agent-all-compose-row" hidden={embedded}><small className="apex-agent-muted apex-agent-all-destination">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `To ${personalTag}` : attachmentLane || replyQuotes.length ? `About ${laneNames[attachmentLane ?? replyQuotes[0]!.laneId] ?? 'Project'} · fixed for this reply` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 && !replyQuotes.length && !attachmentLane ? ' · name a project to switch' : ''}{attachmentState.paths.length ? ` · ${attachmentState.paths.length} attachment${attachmentState.paths.length === 1 ? '' : 's'}` : ''}</small><button className="primary apex-agent-all-send" disabled={busy || (!text.trim() && !attachmentState.paths.length) || attachmentState.pending || attachmentState.hasErrors || (!selectedTaskContext && !target && !globalReply)}>{embedded?<><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V4m-6 6 6-6 6 6"/></svg><span className="sr-only">{busy?'Sending…':'Send'}</span></>:busy ? 'Sending…' : 'Send'}</button></div>
     </form>}
     {!embedded && calling && personal && <PersonalCall lane={personal} onEnd={() => setCalling(false)} />}
-    {embedded&&voiceHeader&&createPortal(<VoiceCallCapsule settings={voice.settings} candidates={voice.candidates} who={voice.who}/>,voiceHeader)}
+    {embedded&&voiceHeader&&createPortal(<VoiceSessionStrip settings={voice.settings} candidates={voice.candidates} who={voice.who}/>,voiceHeader)}
     {busy && <div className="apex-agent-busy" role="status">Saving…</div>}
   </section></TaskViewContext.Provider>;
 }

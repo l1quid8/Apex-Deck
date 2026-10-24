@@ -103,7 +103,7 @@ function Wave({ mode }: { mode: WaveMode }) {
   );
 }
 
-function Clock({ since }: { since?: number }) {
+export function Clock({ since }: { since?: number }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -235,7 +235,7 @@ function NicknameInput({ aliases, onChange }: { aliases: string[]; onChange(alia
 }
 
 /** One settings panel for all three looks: who you're talking to, their voice, the pause, nicknames, and the look itself. */
-function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; candidates: VoiceCandidate[] }) {
+function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeof useCall>; candidates: VoiceCandidate[]; onPickLook?: () => void }) {
   const { scope, candidate, state, name } = call;
   if (!scope) return null;
   const r = voiceRegistration(scope);
@@ -297,7 +297,10 @@ function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; 
         <span>Call controls</span>
         <span className="voice-seg" role="group" aria-label="Call controls">
           {CALL_LOOKS.map((l) => (
-            <button type="button" key={l.id} aria-pressed={l.id === look} onClick={() => saveSettings({ look: l.id as CallLook })}>
+            <button type="button" key={l.id} aria-pressed={l.id === look} onClick={() => {
+              saveSettings({ look: l.id as CallLook });
+              onPickLook?.();
+            }}>
               {l.label}
             </button>
           ))}
@@ -361,6 +364,144 @@ export function VoiceCallCapsule(props: Props) {
       {call.ui.open && (
         <Popover anchor={capsule} align="center" onClose={() => setUi({ open: false })} className="voice-settings" label="Call settings">
           <CallSettings call={call} candidates={props.candidates} />
+        </Popover>
+      )}
+    </div>
+  );
+}
+
+/** Assistant session strip call controls (§6.3): floating capsule look. */
+export function VoiceSessionStrip(props: Props) {
+  const call = useCall(props);
+  const wrap = useRef<HTMLDivElement>(null);
+  const muteBtn = useRef<HTMLButtonElement>(null);
+  const wasMuted = useRef(call.state.muted);
+
+  useEffect(() => {
+    if (wasMuted.current !== call.state.muted) {
+      wasMuted.current = call.state.muted;
+      if (document.activeElement === muteBtn.current) {
+        muteBtn.current?.focus();
+      }
+    }
+  }, [call.state.muted]);
+
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const capsule = el.closest<HTMLElement>(".assistant-session");
+    if (!capsule) return;
+
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
+    const show = () => {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+      capsule.classList.add("show-ctrls");
+    };
+    const hide = () => {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        hideTimer = null;
+        if (!ui.open && !capsule.contains(document.activeElement) && !capsule.matches(":hover")) {
+          capsule.classList.remove("show-ctrls");
+        }
+      }, 200);
+    };
+
+    const onPointerEnter = () => show();
+    const onPointerLeave = () => hide();
+    const onFocusIn = () => show();
+    const onFocusOut = (e: FocusEvent) => {
+      if (!capsule.contains(e.relatedTarget as Node)) {
+        hide();
+      }
+    };
+
+    capsule.addEventListener("pointerenter", onPointerEnter);
+    capsule.addEventListener("pointerleave", onPointerLeave);
+    capsule.addEventListener("focusin", onFocusIn);
+    capsule.addEventListener("focusout", onFocusOut);
+
+    if (call.ui.open || capsule.matches(":hover") || capsule.contains(document.activeElement)) {
+      show();
+    }
+
+    return () => {
+      if (hideTimer) clearTimeout(hideTimer);
+      capsule.removeEventListener("pointerenter", onPointerEnter);
+      capsule.removeEventListener("pointerleave", onPointerLeave);
+      capsule.removeEventListener("focusin", onFocusIn);
+      capsule.removeEventListener("focusout", onFocusOut);
+      capsule.classList.remove("show-ctrls");
+    };
+  }, [call.ui.open]);
+
+  if (!window.apexDeck?.voice || !call.live || call.look !== "capsule") return null;
+
+  return (
+    <div
+      ref={wrap}
+      className={`voice-session-strip voice-capsule voice-call-ui dot-strip-ctrls${toneClass(call.line.tone)}`}
+      role="group"
+      aria-label="Call controls"
+      style={agentStyle(props.who, call.scope?.participantId)}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        ref={muteBtn}
+        type="button"
+        className="voice-callbtn"
+        aria-pressed={call.state.muted}
+        aria-label={call.state.muted ? "Unmute microphone" : "Mute microphone"}
+        title={call.state.muted ? "Unmute" : "Mute · the bot keeps talking"}
+        onClick={(e) => {
+          e.stopPropagation();
+          voiceController.mute(!call.state.muted);
+        }}
+      >
+        {call.state.muted ? Icon.micOff : Icon.mic}
+      </button>
+      <button
+        type="button"
+        className="voice-callbtn"
+        aria-expanded={call.ui.open}
+        aria-label="Call settings"
+        title="Call settings"
+        onClick={(e) => {
+          e.stopPropagation();
+          setUi({ open: !ui.open });
+        }}
+      >
+        {Icon.tune}
+      </button>
+      <button
+        type="button"
+        className="voice-end round"
+        aria-label="End call"
+        title="End call"
+        onClick={(e) => {
+          e.stopPropagation();
+          void voiceController.end();
+        }}
+      >
+        {Icon.hang}
+      </button>
+      {call.ui.open && (
+        <Popover
+          anchor={wrap}
+          align="center"
+          onClose={() => setUi({ open: false })}
+          className="voice-settings"
+          label="Call settings"
+        >
+          <CallSettings
+            call={call}
+            candidates={props.candidates}
+            onPickLook={() => setUi({ open: false })}
+          />
         </Popover>
       )}
     </div>

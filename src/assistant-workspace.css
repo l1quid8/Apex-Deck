@@ -29,7 +29,26 @@
 .assistant-session-status{font-size:11px;line-height:15px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .assistant-session-status[data-state=needs_you],.assistant-session-status[data-state=working]{color:var(--accent)}
 .assistant-session-status[data-state=failed]{color:var(--danger)}
-.assistant-session-call{display:contents}
+.assistant-session-status em{font-style:italic}
+.assistant-session-status[data-state=listening] em{color:var(--good)}
+.assistant-session-status[data-state=muted] em{color:var(--danger)}
+.assistant-strip-sep{color:var(--muted)}
+.assistant-session-status .voice-timer{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.assistant-session-call{display:flex;align-items:center;min-height:0;overflow:hidden;width:0;margin-left:-6px;transition:width .18s ease,margin-left .18s ease}
+.assistant-session.show-ctrls .assistant-session-call{width:112px;margin-left:4px}
+.voice-session-strip{display:flex;align-items:center;gap:2px;height:36px;opacity:0;pointer-events:none;transition:opacity .18s ease}
+.assistant-session.show-ctrls .voice-session-strip{opacity:1;pointer-events:auto}
+.voice-session-strip .voice-callbtn,
+.voice-session-strip .voice-end.round{width:36px;height:36px;min-height:0;padding:0;border:0;border-radius:10px;display:grid;place-items:center;background:transparent;color:var(--muted);box-shadow:none}
+.voice-session-strip .voice-callbtn:hover,
+.voice-session-strip .voice-callbtn:focus-visible{background:color-mix(in srgb,var(--text) 9%,transparent);color:var(--text);filter:none}
+.voice-session-strip .voice-callbtn[aria-pressed=true]{color:var(--danger)}
+.voice-session-strip .voice-end.round{color:color-mix(in srgb,var(--danger) 80%,var(--muted))}
+.voice-session-strip .voice-end.round:hover:not(:disabled),
+.voice-session-strip .voice-end.round:focus-visible{color:var(--danger)!important;background:color-mix(in srgb,var(--danger) 14%,transparent)!important;border-color:transparent!important;filter:none!important}
+.voice-session-strip svg{width:15px;height:15px}
+.voice-session-strip button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media (prefers-reduced-motion:reduce){.assistant-session-call,.voice-session-strip{transition:none}}
 .assistant-strip-right{margin-left:auto;display:flex;align-items:center;gap:8px}
 .assistant-strip-button,.assistant-workspace-menu>summary{width:36px;height:36px;box-sizing:border-box;display:grid;place-items:center;padding:0;border:1px solid var(--line);border-radius:50%;background:transparent;color:var(--muted);font-size:17px;line-height:1}
 .assistant-strip-button:hover,.assistant-workspace-menu>summary:hover,.assistant-workspace-menu[open]>summary{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--text)}
