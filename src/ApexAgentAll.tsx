@@ -226,6 +226,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   });
   const globalReply = !filterWorkspaceId && !replyQuotes.length && !attachmentLane && !!onOverview && (mentionsAll(text) || /\b(everywhere|all (?:my |the )?(?:projects|threads)|across (?:my |the )?projects|overall)\b/i.test(prose) || namedProjects.length > 1 || (!mentioned && !namedProjects.length && (fallbackLane === '*' || !fallbackLane)));
   const bottom = useRef<HTMLDivElement | null>(null);
+  const isPinnedToBottom = useRef(true);
   // `busy` only updates on the next render; this blocks a second Enter pressed before then.
   const sending = useRef(false);
   useEffect(() => {
@@ -233,8 +234,11 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     if (restoringScroll.current !== null) {
       if (scroller.current) scroller.current.scrollTop = restoringScroll.current;
       restoringScroll.current = null;
-    } else bottom.current?.scrollIntoView?.({ block: 'end' });
-  }, [entries.length, findings.length]);
+    } else if (isPinnedToBottom.current) {
+      if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
+      bottom.current?.scrollIntoView?.({ block: 'end' });
+    }
+  }, [entries.length, findings.length, assistant?.messages?.length, assistant?.tasks?.length]);
   // Returning to a view puts its list back where it was; a detail always starts at the top.
   useEffect(() => {
     const el = scroller.current;
@@ -265,7 +269,24 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     else if (current.view === 'notifications') notificationsScroll.current = top;
     setView('tasks'); setSelectedKey(key);
   }, [onOpenProjectTask]);
-  useEffect(() => { if (!focusTask) return; openTask(focusTask.key);setDetailOrigin(focusTask.origin??'chat'); onFocusHandled?.(); }, [focusTask?.nonce]);
+  useEffect(() => {
+    if (!focusTask) return;
+    if (embedded) {
+      const taskKey = focusTask.key;
+      const rawId = taskKey.includes(':') ? taskKey.split(':').pop()! : taskKey;
+      const el = scroller.current?.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(rawId)}"], [data-task-id="${CSS.escape(taskKey)}"], [data-message-id="${CSS.escape(taskKey)}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('is-highlighted');
+        setTimeout(() => el.classList.remove('is-highlighted'), 1500);
+        onFocusHandled?.();
+        return;
+      }
+    }
+    openTask(focusTask.key);
+    setDetailOrigin(focusTask.origin ?? 'chat');
+    onFocusHandled?.();
+  }, [focusTask?.nonce]);
   // Rows are replaced per store. Identical rows keep the same state, so a store reporting on every render cannot loop.
   const report = useCallback((storeKey: string, rows: TaskSummary[]) => {
     setReported((current) => JSON.stringify(current[storeKey]) === JSON.stringify(rows) ? current : { ...current, [storeKey]: rows });
@@ -299,6 +320,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   };
   const send = (event: React.FormEvent) => {
     event.preventDefault();
+    isPinnedToBottom.current = true;
     if (busy || sending.current || attachmentState.pending || attachmentState.hasErrors) return;
     const raw = text.trim();
     const parsed = parseComposer(raw);
@@ -597,13 +619,16 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     {filterWorkspaceId && <div className="apex-agent-filter-bar" role="status"><span>Showing {filterName} only</span><button type="button" onClick={() => onClearFilter?.()}>Show all</button></div>}
     {error && <div className="apex-agent-error" role="alert">{error}</div>}
     <div className="apex-agent-tabpanel" ref={scroller} onScroll={(event) => {
-      if (!savedScroll) return;
+      const el = event.currentTarget;
       const current = stateRef.current;
       if (current.view === 'tasks' && current.selectedKey) return;
-      savedScroll[current.view] = event.currentTarget.scrollTop;
-      if (current.view === 'chat') chatScroll.current = event.currentTarget.scrollTop;
-      else if (current.view === 'tasks') tasksScroll.current = event.currentTarget.scrollTop;
-      else notificationsScroll.current = event.currentTarget.scrollTop;
+      if (savedScroll) savedScroll[current.view] = el.scrollTop;
+      if (current.view === 'chat') {
+        chatScroll.current = el.scrollTop;
+        isPinnedToBottom.current = (el.scrollHeight - el.scrollTop - el.clientHeight <= 40);
+      }
+      else if (current.view === 'tasks') tasksScroll.current = el.scrollTop;
+      else notificationsScroll.current = el.scrollTop;
     }}><div className="assistant-chat-transcript" aria-live="polite">
       {embedded && view !== 'chat' && !selectedKey && <button type="button" className="assistant-chat-back" onClick={() => switchView('chat')}>‹ Chat</button>}
       {view === 'chat' ? <>
@@ -621,7 +646,93 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         const item = 'personal' in entry ? entry.personal as PersonalMessage : null;
         if (item) {
           const task = taskOf(item.taskId);
-          if (task && collapsesToLink(item)) return linkLine.get(task.id) === item.id ? <p className="apex-agent-task-line" key={`${workspaceId}:${message.id}`}><button type="button" className="apex-agent-task-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>{taskLinkText(task)}</button></p> : null;
+          if (task && collapsesToLink(item)) {
+            if (linkLine.get(task.id) !== item.id) return null;
+            if (!embedded) {
+              return <p className="apex-agent-task-line" key={`${workspaceId}:${message.id}`}><button type="button" className="apex-agent-task-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>{taskLinkText(task)}</button></p>;
+            }
+            const asking = task.status === 'needsYou' && task.decision?.status === 'open';
+            const decision = task.decision;
+            const answered = decision && decision.status !== 'open';
+            const off = busy || personal!.offline;
+            const answer = (approve: boolean) => () => void run(() => personal!.decide(decision!.id, decision!.paramsHash, approve));
+
+            const answerLabel = decision?.status === 'approved'
+              ? (decision.kind === 'handOff' ? 'I did it' : decision.kind === 'spend' ? 'Go ahead' : decision.kind === 'uncertain' ? 'Run again' : 'Approve')
+              : decision?.status === 'denied'
+              ? (decision.kind === 'handOff' ? 'Skip' : decision.kind === 'spend' ? 'Not now' : 'Decline')
+              : null;
+
+            const [primaryLabel, secondaryLabel] = decision?.kind === 'handOff'
+              ? ['I did it', 'Skip']
+              : decision?.kind === 'spend'
+              ? ['Go ahead', 'Not now']
+              : decision?.kind === 'uncertain'
+              ? ['Run again', 'Decline']
+              : ['Approve', 'Decline'];
+
+            const promptText = asking
+              ? (decision!.kind === 'handOff' ? 'Your turn: run this yourself, then tell me.' : (decision!.kind === 'spend' || decision!.kind === 'uncertain') && decision!.prompt ? decision!.prompt : task.goal ? `Approval needed: ${task.goal}` : 'Approval needed to run this:')
+              : null;
+
+            const lines = linesOf(task);
+            const latest = [...lines].reverse().find((line) => line.kind === 'result') ?? lines[lines.length - 1];
+            const resultText = latest ? plain(latest.text) : task.goal;
+            const noFiles = task.class !== 'write';
+
+            const operationDetails = task.operation && (
+              <details className="dot-details">
+                <summary>Details</summary>
+                <dl className="apex-agent-operation">
+                  {task.operation.argv && <><dt>Command</dt><dd><code>{task.operation.argv.join(' ')}</code></dd></>}
+                  {task.operation.cwd && <><dt>Folder</dt><dd><code>{task.operation.cwd}</code></dd></>}
+                  <dt>Machine</dt><dd>{machineOf(task)}</dd>
+                  {planRows(task.operation.plan)}
+                </dl>
+              </details>
+            );
+
+            return (
+              <div className="assistant-entry-group" key={`${workspaceId}:${message.id}`} data-task-id={task.id} data-message-id={message.id}>
+                {(entryIndex === 0 || new Date(entries[entryIndex - 1].message.at).toDateString() !== new Date(item.at).toDateString()) && (
+                  <div className="assistant-conversation-day">{new Date(item.at).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}</div>
+                )}
+                {asking ? (
+                  <article className="apex-agent-message-row assistant">
+                    <div className="assistant-chat-message assistant apex-agent-personal">
+                      <small className="apex-agent-message-meta">{assistantAvatar}{personal!.name}<time>{clock(task.updatedAt)}</time></small>
+                      <p>{promptText}</p>
+                      <div className="dot-actions">
+                        <button type="button" className="primary" disabled={off} onClick={answer(true)}>{primaryLabel}</button>
+                        <button type="button" disabled={off} onClick={answer(false)}>{secondaryLabel}</button>
+                      </div>
+                      {operationDetails}
+                    </div>
+                  </article>
+                ) : (
+                  <>
+                    {answered && answerLabel && (
+                      <article className="apex-agent-message-row human">
+                        <div className="assistant-chat-message human apex-agent-personal">
+                          <p>{answerLabel}</p>
+                        </div>
+                      </article>
+                    )}
+                    <article className="apex-agent-message-row assistant">
+                      <div className="assistant-chat-message assistant apex-agent-personal">
+                        <small className="apex-agent-message-meta">{assistantAvatar}{personal!.name}<time>{clock(task.updatedAt)}</time></small>
+                        <p>{resultText}</p>
+                        {task.status === 'done' && noFiles && <p className="dot-note muted">No files were changed.</p>}
+                        <div className="dot-actions">
+                          <button type="button" className="apex-agent-task-link plain dot-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>Open details ›</button>
+                        </div>
+                      </div>
+                    </article>
+                  </>
+                )}
+              </div>
+            );
+          }
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           const personalBubble = `assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
           const personalBody = <>
@@ -634,7 +745,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           const row=personalActions
             ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={personalBubble}>{personalBody}</div>{personalActions}</article>
             : <article className={personalBubble} key={`${workspaceId}:${message.id}`}>{personalBody}</article>;
-          return embedded ? <div className="assistant-entry-group" key={`${workspaceId}:${message.id}`}>{(entryIndex===0||new Date(entries[entryIndex-1].message.at).toDateString()!==new Date(item.at).toDateString())&&<div className="assistant-conversation-day">{new Date(item.at).toLocaleDateString(undefined,{month:'long',day:'numeric'})}</div>}{row}</div> : row;
+          return embedded ? <div className="assistant-entry-group" key={`${workspaceId}:${message.id}`} data-message-id={message.id}>{(entryIndex===0||new Date(entries[entryIndex-1].message.at).toDateString()!==new Date(item.at).toDateString())&&<div className="assistant-conversation-day">{new Date(item.at).toLocaleDateString(undefined,{month:'long',day:'numeric'})}</div>}{row}</div> : row;
         }
         const projectBubble = `assistant-chat-message ${message.role}`;
         const projectBody = <>
@@ -650,6 +761,36 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={projectBubble}>{projectBody}</div>{projectActions}</article>
           : <article className={projectBubble} key={`${workspaceId}:${message.id}`}>{projectBody}</article>;
       })}
+      {embedded && visibleSchedules.map((schedule) => {
+        const decision = schedule.decision!;
+        const off = busy || personal!.offline;
+        return (
+          <article className="apex-agent-message-row assistant" key={`schedule:${schedule.id}`} data-schedule-id={schedule.id}>
+            <div className="assistant-chat-message assistant apex-agent-personal">
+              <small className="apex-agent-message-meta">{assistantAvatar}{personal!.name}</small>
+              <p>Here’s what I’d set up. Nothing is scheduled yet.</p>
+              <div className="dot-draft">
+                <strong>{schedule.goal}</strong>
+                <span>Repeats: {cadenceOf(schedule)}</span>
+                <span>Command: <code>{schedule.argv.join(' ')}</code></span>
+                <span>Scope: read and summarize only</span>
+              </div>
+              <div className="dot-actions">
+                <button type="button" className="primary" disabled={off} onClick={() => void run(() => personal!.decide(decision.id, decision.paramsHash, true))}>Schedule it</button>
+                <button type="button" disabled={off} onClick={() => void run(() => personal!.decide(decision.id, decision.paramsHash, false))}>Not now</button>
+              </div>
+            </div>
+          </article>
+        );
+      })}
+      {embedded && pendingReply && (
+        <article className="apex-agent-message-row assistant" key="typing-indicator">
+          <div className="assistant-chat-message assistant apex-agent-personal">
+            <small className="apex-agent-message-meta">{assistantAvatar}{personal!.name}</small>
+            <div className="dot-typing" role="status" aria-label="Thinking"><i></i><i></i><i></i></div>
+          </div>
+        </article>
+      )}
       {!filterWorkspaceId && personal?.problem && <article className="assistant-chat-message assistant"><small>{personal.name} · {personal.hostName}</small><p>{personal.problem}</p></article>}
       {!filterWorkspaceId && personal?.setUp && !monitors.length && <div className="apex-agent-intro"><strong>Your assistant can live on {personal.hostName}.</strong><p>It keeps one conversation that stays there when this Mac is closed. Choose “Set up assistant on {personal.hostName}” from ⋯.</p></div>}
       {!monitors.length && !assistant && !personal?.setUp && <div className="apex-agent-intro"><strong>Hi, I’m ApexAgent.</strong><p>I keep up with all your projects in one conversation. Pick a project to watch from ⋯ and tell me what to keep on track.</p></div>}

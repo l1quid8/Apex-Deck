@@ -1002,16 +1002,31 @@ test('embedded chat ignores a stored tasks view and keeps its composer', () => {
  assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null);
 });
 
-test('embedded task details keep the composer and offer a way back to chat', () => {
+test('embedded chat renders tasks as plain messages with at most two action buttons and a details disclosure', async () => {
  const messages=[pm('pm-1','human','chat',1,'Disk?'),pm('pm-2','system','approval',2,'Approval needed: Run `df -h /`?','pt-1')];
- const {lane}=personalLane([personalTask('needsYou')],messages);const key='task-detail-owner';
+ const {lane,calls}=personalLane([personalTask('needsYou')],messages);const key='task-detail-owner';
  const h=harness({embedded:true,personal:lane,draftKey:key,personalLaneId:key,workspaces:[],monitors:[]});
- let tree=openFirstTaskLink(h);
- assert.equal(find(tree,n=>n.type==='form').props.hidden,false);
- const back=find(tree,n=>n.props?.className==='apex-agent-back');assert.equal(textOf(back),'‹ Chat');
- assert.equal(collectAll(tree,n=>n.type==='button'&&textOf(n)==='‹ Chat').length,1,'one way back to the source');
- back.props.onClick();tree=h.render();assert.equal(find(tree,n=>n.props?.className==='assistant-chat-back'),null);
- assert.ok(find(tree,n=>n.props?.className==='apex-agent-task-link'),'transcript is back');
+ const tree=h.render();
+ assert.equal(find(tree,n=>n.props?.className==='apex-agent-task-link'),null,'no boxed task link or pill');
+ assert.equal(find(tree,n=>/apex-agent-task-card/.test(n.props?.className??'')),null,'no bulky task card');
+ const buttons=collectAll(tree,n=>n.type==='button'&&(textOf(n)==='Approve'||textOf(n)==='Decline'));
+ assert.equal(buttons.length,2,'at most two decision buttons');
+ const details=find(tree,n=>n.type==='details'&&n.props?.className==='dot-details');
+ assert.ok(details,'details disclosure is present');
+ assert.match(textOf(details),/df -h \//);
+ buttons[0].props.onClick();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(calls.filter(c=>c[0]==='decide').length,1,'decide was called');
+});
+
+test('answered decision shows user reply bubble and hides buttons in embedded chat', () => {
+ const messages=[pm('pm-1','human','chat',1,'Disk?'),pm('pm-2','system','approval',2,'Approval needed: Run `df -h /`?','pt-1')];
+ const task=personalTask('done','approved');
+ const {lane}=personalLane([task],messages);
+ const tree=harness({embedded:true,personal:lane,workspaces:[],monitors:[]}).render();
+ assert.equal(find(tree,n=>n.type==='button'&&textOf(n)==='Approve'),null,'buttons disappear once answered');
+ const userMsgs=collectAll(tree,n=>n.props?.className==='apex-agent-message-row human');
+ assert.ok(userMsgs.some(m=>textOf(m).includes('Approve')),'user answer shows as chat bubble');
 });
 
 const rain={enabled:true,mode:'rainbow',color:'#3def91',rainbowSpeed:1,rippleShape:'diamond'};

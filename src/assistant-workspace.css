@@ -95,3 +95,96 @@
 }
 
 .assistant-workspace .assistant-session:has(.voice-capsule){max-width:min(86%,560px)}
+
+/* Dot-style plain task messages, actions, details and typing indicator */
+.assistant-workspace .dot-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.assistant-workspace .dot-details {
+  border: 0;
+  margin-top: 8px;
+}
+.assistant-workspace .dot-details summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+.assistant-workspace .dot-details summary::-webkit-details-marker {
+  display: none;
+}
+.assistant-workspace .dot-details summary::before {
+  content: '▸ ';
+}
+.assistant-workspace .dot-details[open] summary::before {
+  content: '▾ ';
+}
+.assistant-workspace .dot-details dl {
+  margin-top: 8px;
+}
+.assistant-workspace .dot-draft {
+  background: var(--panel, var(--raised));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.assistant-workspace .dot-draft strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.assistant-workspace .dot-link {
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+.assistant-workspace .dot-link:hover {
+  text-decoration: underline;
+}
+.assistant-workspace .dot-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.assistant-workspace .dot-typing {
+  display: flex;
+  gap: 4px;
+  padding: 6px 0;
+}
+.assistant-workspace .dot-typing i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: dotblink 1.2s infinite;
+}
+.assistant-workspace .dot-typing i:nth-child(2) {
+  animation-delay: .2s;
+}
+.assistant-workspace .dot-typing i:nth-child(3) {
+  animation-delay: .4s;
+}
+@keyframes dotblink {
+  0%, 80%, 100% { opacity: .25; }
+  40% { opacity: 1; }
+}
+@keyframes msg-highlight {
+  0% { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+  100% { background: transparent; }
+}
+.assistant-workspace .is-highlighted {
+  animation: msg-highlight 1.5s ease-out;
+  border-radius: 8px;
+}
+
