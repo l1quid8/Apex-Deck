@@ -271,7 +271,7 @@ pub(crate) async fn verify_workers_with_registry(
     Ok(workers)
 }
 
-fn dependency_setup(root: &Path) -> Result<DependencySetup, String> {
+pub(crate) fn dependency_setup(root: &Path) -> Result<DependencySetup, String> {
     let package = root.join("package.json");
     let lock = [
         root.join("package-lock.json"),
