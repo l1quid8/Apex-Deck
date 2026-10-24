@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use apex_core::{Access, 
@@ -96,12 +96,11 @@ pub struct CliParticipant {
     attachment_roots: Vec<PathBuf>,
     /// Deck's shared phone, for Claude and Codex bots. See phone_env.rs.
     phone: Option<PhoneEnv>,
-    session_cwd: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, session_cwd: Arc::new(Mutex::new(None)) }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None }
     }
 
     /// Start a text-only turn with tools disabled at both the CLI and
@@ -694,7 +693,6 @@ impl Participant for CliParticipant {
                 cargo_target_dir: self.cargo_target_dir.clone(),
                 attachment_roots: self.attachment_roots.clone(),
                 phone: self.phone.clone(),
-                session_cwd: self.session_cwd.clone(),
             };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
@@ -702,7 +700,7 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), session_cwd: self.session_cwd.clone() };
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -713,7 +711,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), session_cwd: self.session_cwd.clone() };
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -724,7 +722,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), session_cwd: self.session_cwd.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         if self.mcp_disabled && self.isolation.is_none() && (self.tools_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) || !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })) {
@@ -733,38 +731,13 @@ impl Participant for CliParticipant {
             let isolation = tokio::task::spawn_blocking(move || crate::gateway_sandbox::Isolation::new(&backend))
                 .await.map_err(|_| ParticipantError::Failed("Gateway isolation setup failed".into()))??;
             let isolation = std::sync::Arc::new(isolation);
-            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, session_cwd: self.session_cwd.clone() };
+            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
         let program = program.as_str();
         let images = crate::attachments::for_request(&request, &self.attachment_roots)?;
-        let is_claude = matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. });
-        let can_resume = if is_claude {
-            let mut session = self.session_cwd.lock().unwrap();
-            let resume = session.as_ref() == self.cwd.as_ref() && !request.unseen.is_empty();
-            if !resume {
-                *session = self.cwd.clone();
-            }
-            resume
-        } else {
-            false
-        };
-        if can_resume {
-            args.push("--resume".to_string());
-        }
-        let mut prompt = if can_resume {
-            let unseen_turns: Vec<apex_core::ViewTurn> = request.unseen.iter().map(|m| {
-                let content = match &m.speaker {
-                    apex_core::Speaker::Human => format!("[Human]: {}", m.text),
-                    apex_core::Speaker::Bot(id) => format!("[{}]: {}", id.as_str(), m.text),
-                };
-                apex_core::ViewTurn { role: apex_core::Role::User, content }
-            }).collect();
-            render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &unseen_turns)
-        } else {
-            render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &request.turns)
-        };
+        let mut prompt = render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &request.turns);
         let mut staged = None;
         if !images.is_empty() {
             match &self.config.backend {
