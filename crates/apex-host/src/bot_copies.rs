@@ -107,7 +107,7 @@ fn verify_git_repo(root: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-pub fn snapshot_tree(root: &Path) -> Result<String, String> {
+pub fn snapshot_tree_and_id(root: &Path) -> Result<(String, String), String> {
     let root = verify_git_repo(root)?;
     let git_dir_str = run_git(&root, &[], &["rev-parse", "--absolute-git-dir"])?;
     let git_dir = PathBuf::from(git_dir_str.trim());
@@ -166,7 +166,15 @@ pub fn snapshot_tree(root: &Path) -> Result<String, String> {
         )?
     };
 
-    Ok(commit)
+    Ok((commit, tree))
+}
+
+pub fn snapshot_tree(root: &Path) -> Result<String, String> {
+    snapshot_tree_and_id(root).map(|(commit, _)| commit)
+}
+
+pub fn snapshot_tree_id(root: &Path) -> Result<String, String> {
+    snapshot_tree_and_id(root).map(|(_, tree)| tree)
 }
 
 fn validate_identifier(name: &str, kind: &str) -> Result<(), String> {

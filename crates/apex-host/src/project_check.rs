@@ -91,6 +91,15 @@ pub async fn run_check_with_timeout(
     cmd: &str,
     timeout: Duration,
 ) -> CheckResult {
+    run_check_with_env(dir, cmd, timeout, &[]).await
+}
+
+pub async fn run_check_with_env(
+    dir: &Path,
+    cmd: &str,
+    timeout: Duration,
+    envs: &[(&str, &str)],
+) -> CheckResult {
     let mut command = if cfg!(windows) {
         let mut c = tokio::process::Command::new("cmd");
         c.args(["/C", cmd]);
@@ -100,6 +109,13 @@ pub async fn run_check_with_timeout(
         c.args(["-c", cmd]);
         c
     };
+
+    #[cfg(unix)]
+    command.process_group(0);
+
+    for (k, v) in envs {
+        command.env(k, v);
+    }
 
     command
         .current_dir(dir)
@@ -119,32 +135,36 @@ pub async fn run_check_with_timeout(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    let output_fut = async {
-        let mut combined = Vec::new();
+    let read_stdout = async {
+        let mut buf = Vec::new();
         if let Some(mut out) = stdout {
             use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
             let _ = out.read_to_end(&mut buf).await;
-            combined.extend(buf);
         }
+        buf
+    };
+
+    let read_stderr = async {
+        let mut buf = Vec::new();
         if let Some(mut err) = stderr {
             use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
             let _ = err.read_to_end(&mut buf).await;
-            combined.extend(buf);
         }
-        combined
+        buf
     };
 
     tokio::select! {
-        res = child.wait() => {
-            let output_bytes = output_fut.await;
-            match res {
+        (out_bytes, err_bytes, status_res) = async {
+            tokio::join!(read_stdout, read_stderr, child.wait())
+        } => {
+            let mut combined = out_bytes;
+            combined.extend(err_bytes);
+            match status_res {
                 Ok(status) => {
                     if status.success() {
                         CheckResult::Pass
                     } else {
-                        let text = String::from_utf8_lossy(&output_bytes);
+                        let text = String::from_utf8_lossy(&combined);
                         CheckResult::Fail {
                             output_tail: tail_chars(&text, 4000),
                         }
@@ -156,6 +176,12 @@ pub async fn run_check_with_timeout(
             }
         }
         _ = tokio::time::sleep(timeout) => {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
             let _ = child.kill().await;
             CheckResult::TimedOut
         }
@@ -167,9 +193,9 @@ async fn get_or_run_main_check(
     cmd: &str,
     timeout: Duration,
 ) -> CheckResult {
-    let commit = crate::bot_copies::snapshot_tree(main_dir).ok();
-    if let Some(commit_id) = &commit {
-        let key = (commit_id.clone(), cmd.to_string());
+    let tree = crate::bot_copies::snapshot_tree_id(main_dir).ok();
+    if let Some(tree_id) = &tree {
+        let key = (tree_id.clone(), cmd.to_string());
         if let Ok(cache) = MAIN_CHECK_CACHE.lock() {
             if let Some(res) = cache.get(&key) {
                 return res.clone();
@@ -179,8 +205,8 @@ async fn get_or_run_main_check(
 
     let res = run_check_with_timeout(main_dir, cmd, timeout).await;
 
-    if let Some(commit_id) = commit {
-        let key = (commit_id, cmd.to_string());
+    if let Some(tree_id) = tree {
+        let key = (tree_id, cmd.to_string());
         if let Ok(mut cache) = MAIN_CHECK_CACHE.lock() {
             cache.insert(key, res.clone());
         }
@@ -203,7 +229,14 @@ pub async fn check_blames_copy_with_timeout(
     cmd: &str,
     timeout: Duration,
 ) -> Option<String> {
-    let copy_res = run_check_with_timeout(copy_dir, cmd, timeout).await;
+    let copy_target = copy_dir.join("target");
+    let target_str = copy_target.to_string_lossy().to_string();
+    let copy_res = run_check_with_env(
+        copy_dir,
+        cmd,
+        timeout,
+        &[("CARGO_TARGET_DIR", &target_str)],
+    ).await;
     let output_tail = match copy_res {
         CheckResult::Fail { output_tail } => output_tail,
         CheckResult::Pass | CheckResult::TimedOut => return None,
@@ -333,5 +366,86 @@ mod tests {
         let cmd = "sleep 5";
         let res = run_check_with_timeout(temp.path(), cmd, Duration::from_millis(50)).await;
         assert_eq!(res, CheckResult::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn large_failing_output_is_fail_not_timeout() {
+        let temp = TempDir::new("large-fail");
+        let cmd = if cfg!(windows) {
+            "for /L %i in (1,1,5000) do @echo error message filling up the buffer >&2 & exit 1"
+        } else {
+            "yes 'error message long enough to fill buffers' | head -n 5000 >&2; exit 1"
+        };
+        let res = run_check_with_timeout(temp.path(), cmd, Duration::from_secs(10)).await;
+        match res {
+            CheckResult::Fail { output_tail } => {
+                assert!(!output_tail.is_empty());
+            }
+            other => panic!("Expected Fail, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn main_check_is_cached_for_unchanged_tree() {
+        let temp = TempDir::new("main-cache");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let run_git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        };
+        run_git(&["init"]);
+        run_git(&["config", "user.name", "Test"]);
+        run_git(&["config", "user.email", "test@test.com"]);
+        fs::write(repo.join("file.txt"), "hello").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-m", "init"]);
+
+        let counter_file = temp.path().join("counter.txt");
+        let counter_path = counter_file.to_string_lossy();
+        let cmd = format!("echo 1 >> \"{}\"", counter_path);
+
+        let res1 = get_or_run_main_check(&repo, &cmd, Duration::from_secs(10)).await;
+        assert_eq!(res1, CheckResult::Pass);
+
+        // Wait over 1 second so commit-tree timestamps would differ if commit id was used
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        let res2 = get_or_run_main_check(&repo, &cmd, Duration::from_secs(10)).await;
+        assert_eq!(res2, CheckResult::Pass);
+
+        let count = fs::read_to_string(&counter_file).unwrap();
+        assert_eq!(
+            count.lines().count(),
+            1,
+            "Expected main check to run only once due to tree cache"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn timeout_kills_process_group() {
+        let temp = TempDir::new("pg-kill");
+        let pid_file = temp.path().join("pid.txt");
+        let cmd = format!("sleep 30 & echo $! > \"{}\"; wait", pid_file.display());
+
+        let res = run_check_with_timeout(temp.path(), &cmd, Duration::from_millis(100)).await;
+        assert_eq!(res, CheckResult::TimedOut);
+
+        let pid_str = fs::read_to_string(&pid_file).expect("pid file should exist");
+        let bg_pid: i32 = pid_str.trim().parse().expect("valid pid");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let alive = unsafe { libc::kill(bg_pid, 0) == 0 };
+        assert!(
+            !alive,
+            "Background child pid {} should have been killed",
+            bg_pid
+        );
     }
 }
