@@ -7,7 +7,6 @@ import "./glass-theme.css";
 import "./clay-theme.css";
 import "./appearance-settings.css";
 import "./apex-agent-panel.css";
-import "./apex-agent-widget.css";
 import "./popout.css";
 import "./bot-chip-styles.css";
 
