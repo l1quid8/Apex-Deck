@@ -49,6 +49,7 @@ function mount(props = {}) {
         onNavigate: (section) => events.push(`nav:${section}`),
         onOpenBrowser: () => events.push('browser'),
         onOpenFile: (path, cwd) => events.push(`file:${path}:${cwd}`),
+        onGoToChat: (taskId) => events.push(`chat:${taskId}`),
       };
       return renderWith({ ...base, ...props, ...extra });    },
   };
@@ -72,7 +73,8 @@ test('each output is one row with its mark, folder and version', () => {
   assert.match(text(rows[0]), /notes · Document · v2/);
   assert.match(text(rows[1]), /out · Data$/);
   assert.deepEqual(byClass(tree, 'assistant-output-mark').map(text), ['▤', '{}']);
-  assert.equal(byClass(tree, 'assistant-details-fold-count').map(text)[0], '2 deliverables');
+  const outputsHead = byClass(tree, 'assistant-details-fold-head').find((node) => text(node).includes('Outputs'));
+  assert.match(text(outputsHead), /2 deliverables/);
 });
 
 test('an artifact row shows its newest version and folds away again', () => {
@@ -105,7 +107,7 @@ test('the section says what it is doing instead of showing nothing', () => {
 test('the Outputs fold closes and opens', () => {
   const harness = mount();
   let tree = harness.render();
-  const head = () => byClass(tree, 'assistant-details-fold-head')[0];
+  const head = () => byClass(tree, 'assistant-details-fold-head').find((node) => text(node).includes('Outputs'));
   assert.equal(head().props['aria-expanded'], true);
   assert.equal(byId(tree, 'assistant-outputs').props.open, true);
   head().props.onClick();
@@ -131,4 +133,37 @@ test('the browser card opens the browser when this host has one', () => {
   const without = mount().render({ onOpenBrowser: undefined });
   assert.equal(byClass(without, 'assistant-details-action').length, 0);
   assert.match(text(byClass(without, 'assistant-details-note')[0]), /does not show the assistant browser/);
+});
+
+const now = 1_700_000_000_000;
+const tasks = [
+  { id: 't1', brief: 'Rewrite the release notes', originalRequest: 'Rewrite the release notes', status: 'ready_for_review', result: 'Drafted a shorter note.', createdAtMs: now - 7_200_000, updatedAtMs: now - 120_000 },
+  { id: 't2', brief: 'Check the login flow', originalRequest: 'Check login', status: 'running', result: null, createdAtMs: now - 600_000, updatedAtMs: now - 60_000 },
+];
+
+test('Needs you lists only what is waiting, newest idea first, and hides when nothing waits', () => {
+  const tree = mount({ tasks }).render();
+  assert.deepEqual(byClass(byId(tree, 'assistant-needs'), 'assistant-activity-name').map(text), ['Rewrite the release notes']);
+  assert.match(text(byClass(byId(tree, 'assistant-needs'), 'assistant-activity-line')[0]), /Ready to review/);
+  assert.equal(byId(mount({ tasks: [] }).render(), 'assistant-needs'), undefined, 'nothing waiting means no section');
+});
+
+test('an activity row opens its detail inside Details, and Go to chat asks for the chat', () => {
+  const harness = mount({ tasks });
+  let tree = harness.render();
+  assert.deepEqual(byClass(byId(tree, 'assistant-activity'), 'assistant-activity-name').map(text), ['Check the login flow', 'Rewrite the release notes'], 'newest activity first');
+  byClass(byId(tree, 'assistant-activity'), 'assistant-activity-row').find((row) => text(row).includes('Rewrite')).props.onClick();
+  tree = harness.render();
+  const detail = byClass(tree, 'assistant-activity-detail')[0];
+  assert.match(text(detail), /Rewrite the release notes/);
+  assert.match(text(detail), /You asked/);
+  assert.match(text(detail), /Drafted a shorter note\./);
+  assert.match(text(detail), /Worked for/);
+  assert.deepEqual(byClass(tree, 'assistant-output-row'), [], 'the detail replaces the overview, it does not stack on it');
+  byClass(detail, 'assistant-details-action')[0].props.onClick();
+  assert.deepEqual(harness.events, ['chat:t1']);
+  byClass(tree, 'assistant-details-back')[0].props.onClick();
+  tree = harness.render();
+  assert.equal(byClass(tree, 'assistant-activity-detail').length, 0, 'Back returns to the overview');
+  assert.ok(byId(tree, 'assistant-outputs'), 'the overview is whole again');
 });

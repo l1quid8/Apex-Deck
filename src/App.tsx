@@ -459,7 +459,12 @@ export function App() {
     if (target) setDetailsCollapsed(old => ({ ...old, [target]: false }));
     setPanel((p) => openTab({ ...p, open: true }, "details", Date.now()));
   };
-  const detailsHostBase = { slot: detailsSlot, open: panel.open && detailsTabActive && section === "threads", overlay: overlayDetails, collapsed: detailsCollapsed,
+  /** The session strip's avatar: open the one side panel on Details, switch it to Details, or close it. */
+  const toggleAssistantDetails = () => {
+    if (panel.open && detailsTabActive) { closeDetails(); return; }
+    showDetails();
+  };
+  const detailsHostBase = { slot: detailsSlot, open: panel.open && detailsTabActive && (section === "threads" || mainView.kind === "assistant"), overlay: overlayDetails, collapsed: detailsCollapsed,
     toggle: (target: DetailsSection) => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
   useEffect(() => {
     const body = bodyRef.current;
@@ -1939,8 +1944,6 @@ export function App() {
   const openWorkItem=(item:WorkItem,origin:'chat'|'work'='work')=>{setWorkDetailOrigin(origin);if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId,nonce:Date.now()});navigateAssistant('projects');return;}const owner=selectedAssistant?.assistant;if(owner)setChatFocus({key:personalTaskKey(owner.hostId,item.taskId,selectedAssistant?.ref?.assistantId),nonce:Date.now(),origin});navigateAssistant('chat');};
   const navigateAssistant = (section:AssistantSection) => {setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);};
   const openAssistantBrowser=()=>{navigateAssistant('chat');setAssistantBrowser('popup');};
-  /** The assistant's Details sidebar, toggled by the avatar in the session strip. */
-  const [assistantDetailsOpen,setAssistantDetailsOpen]=useState(false);
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
   /** What this session's tasks made: documents, exports and pages from their threads. */
@@ -2648,7 +2651,7 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
           </div>
-          {mainView.kind==='assistant' && selectedAssistant && <div className="assistant-main"><AssistantWorkspace detailsOpen={assistantDetailsOpen} onToggleDetails={()=>setAssistantDetailsOpen(open=>!open)} profiles={profiles} onOpenBrowser={openAssistantBrowser} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} profiles={profiles} onOpenBrowser={openAssistantBrowser} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
             memoryProject={assistantNotebookProject}
             projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact managementOpen onDetailChange={()=>{}} detailBackLabel={workDetailOrigin==='chat'?'Chat':'Projects & access'} onDetailBack={()=>{if(workDetailOrigin==='chat')navigateAssistant('chat');}} focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
               onEnsureCoordinator={async(project)=>{
@@ -2715,7 +2718,7 @@ export function App() {
               };
               return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} assistantIdentity={{ref:mainView.assistant,name:selectedAssistant.name,avatar:<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>}} requestRecovery={requestRecovery} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
             })]}
-            />} />{assistantDetailsOpen&&<AssistantDetails lane={selectedAssistant} outputs={assistantOutputsState.outputs} outputsLoading={assistantOutputsState.loading} outputsProblem={assistantOutputsState.problem} onOpenFile={(path,cwd)=>{void assistantBackend?.openTarget(path,cwd,false);}} onClose={()=>setAssistantDetailsOpen(false)} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser}/>}</div>}
+            />} />}
           {mainView.kind==='assistant' && !selectedAssistant && <div className="picker"><p role="status">This assistant is unavailable. Refresh or reconnect its machine.</p><button onClick={()=>setMainView({kind:'workspace'})}>Back to Workspaces</button></div>}
           {creatingAssistant && <AssistantCreationDialog onClose={()=>setCreatingAssistant(false)}>{(()=>{
             const machinePicker=<label className="assistant-setting-row"><span>Machine</span><select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label>;
@@ -2768,7 +2771,9 @@ export function App() {
               artifacts: (_tab, visible) => detailsTarget
                 ? <div ref={setArtifactsSlot} tabIndex={-1} className="right-artifacts-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its artifacts.</p>,
-              details: (_tab, visible) => detailsTarget
+              details: (_tab, visible) => mainView.kind === "assistant" && selectedAssistant
+                ? <AssistantDetails lane={selectedAssistant} tasks={selectedDelegatedTasks} outputs={assistantOutputsState.outputs} outputsLoading={assistantOutputsState.loading} outputsProblem={assistantOutputsState.problem} onOpenFile={(path, cwd) => { void assistantBackend?.openTarget(path, cwd, false); }} onClose={closeDetails} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser} onGoToChat={() => { if (overlayDetails) closeDetails(); }} />
+                : detailsTarget
                 ? <div ref={setDetailsSlot} tabIndex={-1} className="right-details-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its details.</p>,
             }} />
