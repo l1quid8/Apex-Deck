@@ -1041,6 +1041,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         case "editor_changed":
           setEditor(event.id);
           break;
+        case "read_only_turn":
+          notify(`${nameOf(event.id)} is read-only this turn: ${nameOf(event.editor)} is editing and Deck couldn't make a separate copy (${event.reason}).`, "info");
+          break;
         case "participant_idle":
           setAnswered(({ [event.id]: _said, ...rest }) => rest);
           setPendingSettings(({ [event.id]: _applied, ...rest }) => rest);

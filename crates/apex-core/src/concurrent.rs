@@ -561,6 +561,7 @@ impl ConcurrentRoom {
             } else { None }
         };
         if request.access != Some(Access::Read) && editor.is_none() {
+            let held_by = self.editor.lock().unwrap().clone().unwrap_or_else(|| ParticipantId::new("unknown"));
             request.access = Some(Access::Read);
             let mut config = participant.config().clone();
             config.access = Access::Read;
@@ -572,6 +573,15 @@ impl ConcurrentRoom {
                 + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
                 + answer_guidance;
             if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+            let reason = "no copy available";
+            let line = read_only_line(ticket.id.as_str(), held_by.as_str(), reason);
+            request.system.push_str("\n\n");
+            request.system.push_str(&line);
+            sink(RoomEvent::ReadOnlyTurn {
+                id: ticket.id.clone(),
+                editor: held_by,
+                reason: reason.to_string(),
+            });
         }
         if let Some(hook) = &self.turn_start {
             hook.before_turn(&ticket.id).await;
@@ -645,6 +655,10 @@ impl ConcurrentRoom {
         });
         next
     }
+}
+
+pub fn read_only_line(bot: &str, editor: &str, reason: &str) -> String {
+    format!("{bot} is read-only this turn: {editor} is editing and Deck couldn't make a separate copy ({reason}).")
 }
 
 // Cancellation or a dropped task releases the reservation as well.

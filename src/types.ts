@@ -266,6 +266,7 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "turn_started"; id: string }
   | { type: "participant_idle"; id: string }
   | { type: "editor_changed"; id: string | null }
+  | { type: "read_only_turn"; id: string; editor: string; reason: string }
   | { type: "tool_servers"; id: string; servers: ToolServer[] }
   | { type: "delta"; id: string; text: string }
   /** What a participant is doing mid-turn, such as reading a file. */

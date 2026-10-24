@@ -216,6 +216,19 @@ fn room_event_shapes() {
     );
     assert_eq!(to_value(RoomEvent::Stopped).unwrap(), json!({ "type": "stopped" }));
     assert_eq!(to_value(RoomEvent::Idle).unwrap(), json!({ "type": "idle" }));
+    assert_eq!(
+        to_value(RoomEvent::ReadOnlyTurn {
+            id: ParticipantId::new("opus"),
+            editor: ParticipantId::new("opus"),
+            reason: "no copy available".into(),
+        }).unwrap(),
+        json!({
+            "type": "read_only_turn",
+            "id": "opus",
+            "editor": "opus",
+            "reason": "no copy available"
+        })
+    );
 }
 
 #[test]

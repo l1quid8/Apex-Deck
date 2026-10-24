@@ -20,7 +20,7 @@ mod view;
 mod write_gate;
 pub mod work_steps;
 
-pub use concurrent::{ConcurrentRoom, TurnBatch, TurnStartHook};
+pub use concurrent::{read_only_line, ConcurrentRoom, TurnBatch, TurnStartHook};
 pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
 pub use mention::{mention_clash, mention_for, mentioned_words, mentions_handle, names, parse_mentions, MentionTarget};
 pub use participant::{

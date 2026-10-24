@@ -54,6 +54,80 @@ fn setup() -> (ConcurrentRoom, oneshot::Sender<()>) {
 }
 
 #[test]
+fn second_writer_is_told_why_it_is_read_only() {
+    struct HoldFirstUntilSecondStarts {
+        tx: Mutex<Option<oneshot::Sender<()>>>,
+        rx: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl apex_core::TurnStartHook for HoldFirstUntilSecondStarts {
+        fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                if id.as_str() == "A" {
+                    let rx = self.rx.lock().unwrap().take();
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                } else if id.as_str() == "B" {
+                    let tx = self.tx.lock().unwrap().take();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+        }
+    }
+
+    block_on(async {
+        let (tx, rx) = oneshot::channel();
+        let make_writer = |id: &str| {
+            let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+            config.access = apex_core::Access::Full;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let bot_a = make_writer("A");
+        let bot_b = make_writer("B");
+
+        let room = Room::new(
+            vec![bot_a.clone(), bot_b.clone()],
+            RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let concurrent = ConcurrentRoom::new(room).with_turn_start(Arc::new(HoldFirstUntilSecondStarts {
+            tx: Mutex::new(Some(tx)),
+            rx: Mutex::new(Some(rx)),
+        }));
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+
+        let batch = concurrent.begin_post("hello", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+
+        let requests_b = bot_b.requests();
+        assert_eq!(requests_b.len(), 1);
+        let req = &requests_b[0];
+        assert_eq!(req.access, Some(apex_core::Access::Read));
+        let expected_line = apex_core::read_only_line("B", "A", "no copy available");
+        assert!(
+            req.system.contains(&expected_line),
+            "expected system prompt to contain '{}', got:\n{}",
+            expected_line,
+            req.system
+        );
+
+        let read_only_events: Vec<_> = events.lock().unwrap().iter().filter_map(|e| match e {
+            RoomEvent::ReadOnlyTurn { id, editor, reason } => Some((id.clone(), editor.clone(), reason.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(read_only_events, vec![(
+            ParticipantId::new("B"),
+            ParticipantId::new("A"),
+            "no copy available".to_string(),
+        )]);
+    });
+}
+
+#[test]
 fn answer_guidance_is_captured_when_a_batch_is_accepted() {
     block_on(async {
         let bot = Arc::new(ScriptedParticipant::new("bot", &["first", "second"]));
