@@ -344,6 +344,376 @@ pub fn remove_copy(data: &Path, copy: &BotCopy) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum FoldOutcome {
+    Clean {
+        files: Vec<String>,
+        ignored_skipped: Vec<String>,
+    },
+    Conflicts {
+        files: Vec<String>,
+    },
+    MainMoved,
+}
+
+#[derive(Debug, Clone)]
+struct DiffEntry {
+    old_mode: String,
+    new_mode: String,
+    old_sha: String,
+    new_sha: String,
+    status: char,
+    #[allow(dead_code)]
+    path: String,
+}
+
+fn diff_trees(
+    repo: &Path,
+    commit_a: &str,
+    commit_b: &str,
+) -> Result<std::collections::HashMap<String, DiffEntry>, String> {
+    let mut map = std::collections::HashMap::new();
+    let out = run_git(
+        repo,
+        &[],
+        &["diff-tree", "-r", "--raw", "--no-renames", commit_a, commit_b],
+    )?;
+    for line in out.lines() {
+        let line = line.trim();
+        if !line.starts_with(':') {
+            continue;
+        }
+        let parts: Vec<&str> = line[1..].splitn(5, ' ').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        let old_mode = parts[0].to_string();
+        let new_mode = parts[1].to_string();
+        let old_sha = parts[2].to_string();
+        let new_sha = parts[3].to_string();
+        let rest = parts[4];
+        let mut tab_split = rest.splitn(2, '\t');
+        let status_str = tab_split.next().unwrap_or("");
+        let path = tab_split.next().unwrap_or("").trim().to_string();
+        let status = status_str.chars().next().unwrap_or('M');
+
+        map.insert(
+            path.clone(),
+            DiffEntry {
+                old_mode,
+                new_mode,
+                old_sha,
+                new_sha,
+                status,
+                path,
+            },
+        );
+    }
+    Ok(map)
+}
+
+fn get_blob(repo: &Path, sha: &str) -> Result<Vec<u8>, String> {
+    if sha.chars().all(|c| c == '0') {
+        return Ok(Vec::new());
+    }
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo);
+    cmd.args(["cat-file", "-p", sha]);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("Could not run git cat-file: {e}"))?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(format!(
+            "git cat-file failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ))
+    }
+}
+
+fn is_binary(bytes: &[u8]) -> bool {
+    let check_len = bytes.len().min(8000);
+    bytes[..check_len].contains(&0)
+}
+
+fn get_ignored_new_in_work(root: &Path, work: &Path) -> Vec<String> {
+    let mut skipped = Vec::new();
+    let out = match Command::new("git")
+        .current_dir(work)
+        .args(["status", "--ignored", "--porcelain"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return skipped,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("!! ") {
+            let rel = rest.trim_end_matches('/');
+            if SHARED_SHORTCUT_PATHS.contains(&rel) || rel.starts_with("node_modules") {
+                continue;
+            }
+            if !root.join(rel).exists() {
+                skipped.push(rel.to_string());
+            }
+        }
+    }
+    skipped.sort();
+    skipped.dedup();
+    skipped
+}
+
+pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
+    let root = verify_git_repo(&copy.root)?;
+    let work = &copy.work;
+    let base_ref = format!("refs/apex-copies/{}/{}/base", copy.thread, copy.bot);
+    let base = match run_git(&root, &[], &["rev-parse", "--verify", &base_ref]) {
+        Ok(s) => s,
+        Err(_) => copy.base.clone(),
+    };
+
+    let m_commit = snapshot_tree(&root)?;
+    let c_commit = snapshot_tree(work)?;
+
+    let diff_m = diff_trees(&root, &base, &m_commit)?;
+    let diff_c = diff_trees(&root, &base, &c_commit)?;
+
+    let mut all_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for p in diff_m.keys() {
+        all_paths.insert(p.clone());
+    }
+    for p in diff_c.keys() {
+        all_paths.insert(p.clone());
+    }
+
+    let mut conflicts = Vec::new();
+
+    for path in &all_paths {
+        if SHARED_SHORTCUT_PATHS.contains(&path.as_str()) || path.starts_with("node_modules/") {
+            continue;
+        }
+        let m_opt = diff_m.get(path);
+        let c_opt = diff_c.get(path);
+
+        if let (Some(m), None) = (m_opt, c_opt) {
+            if m.old_mode == "160000" || m.new_mode == "160000" {
+                continue;
+            }
+            let target = work.join(path);
+            if m.status == 'D' {
+                if target.exists() {
+                    let _ = std::fs::remove_file(&target);
+                }
+            } else {
+                let bytes = get_blob(&root, &m.new_sha)?;
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("Could not create dir: {e}"))?;
+                }
+                std::fs::write(&target, bytes)
+                    .map_err(|e| format!("Could not write {}: {e}", target.display()))?;
+                #[cfg(unix)]
+                if m.new_mode == "100755" {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &target,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+            }
+        } else if let (None, Some(_c)) = (m_opt, c_opt) {
+            continue;
+        } else if let (Some(m), Some(c)) = (m_opt, c_opt) {
+            if m.old_mode == "160000"
+                || m.new_mode == "160000"
+                || c.old_mode == "160000"
+                || c.new_mode == "160000"
+            {
+                continue;
+            }
+            if m.new_sha == c.new_sha && m.new_mode == c.new_mode {
+                continue;
+            }
+            if m.status == 'D' || c.status == 'D' {
+                conflicts.push(path.clone());
+                continue;
+            }
+
+            let c_bytes = get_blob(&root, &c.new_sha)?;
+            let m_bytes = get_blob(&root, &m.new_sha)?;
+            let base_bytes = get_blob(&root, &c.old_sha)?;
+
+            if is_binary(&c_bytes) || is_binary(&m_bytes) || is_binary(&base_bytes) {
+                conflicts.push(path.clone());
+                continue;
+            }
+
+            let temp_dir = std::env::temp_dir().join(format!(
+                "apex-merge-{}-{}",
+                std::process::id(),
+                SNAPSHOT_INDEX_SEQ.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::create_dir_all(&temp_dir);
+            let c_file = temp_dir.join("c");
+            let base_file = temp_dir.join("base");
+            let m_file = temp_dir.join("m");
+            std::fs::write(&c_file, &c_bytes)
+                .map_err(|e| format!("Could not write temp c: {e}"))?;
+            std::fs::write(&base_file, &base_bytes)
+                .map_err(|e| format!("Could not write temp base: {e}"))?;
+            std::fs::write(&m_file, &m_bytes)
+                .map_err(|e| format!("Could not write temp m: {e}"))?;
+
+            let res = Command::new("git")
+                .args(["merge-file", "-p", "-L", "copy", "-L", "base", "-L", "main"])
+                .arg(&c_file)
+                .arg(&base_file)
+                .arg(&m_file)
+                .output()
+                .map_err(|e| format!("Could not run git merge-file: {e}"))?;
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
+
+            let target = work.join(path);
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&target, &res.stdout)
+                .map_err(|e| format!("Could not write merged file {}: {e}", target.display()))?;
+
+            if res.status.code() != Some(0) {
+                conflicts.push(path.clone());
+            }
+        }
+    }
+
+    if !conflicts.is_empty() {
+        conflicts.sort();
+        conflicts.dedup();
+        return Ok(FoldOutcome::Conflicts { files: conflicts });
+    }
+
+    // Clean: update base ref to M
+    run_git(&root, &[], &["update-ref", &base_ref, &m_commit])?;
+
+    let copy_json = work.parent().map(|p| p.join("copy.json"));
+    if let Some(json_path) = copy_json {
+        if json_path.exists() {
+            if let Ok(bytes) = std::fs::read(&json_path) {
+                if let Ok(mut stored) = serde_json::from_slice::<BotCopy>(&bytes) {
+                    stored.base = m_commit;
+                    let _ = std::fs::write(
+                        &json_path,
+                        serde_json::to_string_pretty(&stored).unwrap_or_default(),
+                    );
+                }
+            }
+        }
+    }
+
+    let diff_after = diff_trees(&root, &base, &snapshot_tree(work)?)?;
+    let mut files: Vec<String> = diff_after
+        .keys()
+        .filter(|p| !SHARED_SHORTCUT_PATHS.contains(&p.as_str()) && !p.starts_with("node_modules/"))
+        .cloned()
+        .collect();
+    files.sort();
+    let ignored_skipped = get_ignored_new_in_work(&root, work);
+
+    Ok(FoldOutcome::Clean {
+        files,
+        ignored_skipped,
+    })
+}
+
+pub fn apply_copy_to_main(copy: &BotCopy, main_at: &str) -> Result<FoldOutcome, String> {
+    let root = verify_git_repo(&copy.root)?;
+    let work = &copy.work;
+
+    let current_main_tree = snapshot_tree_id(&root)?;
+    let expected_tree = match run_git(
+        &root,
+        &[],
+        &["rev-parse", "--verify", &format!("{main_at}^{{tree}}")],
+    ) {
+        Ok(t) => t,
+        Err(_) => main_at.to_string(),
+    };
+    if current_main_tree != expected_tree {
+        return Ok(FoldOutcome::MainMoved);
+    }
+
+    let base_ref = format!("refs/apex-copies/{}/{}/base", copy.thread, copy.bot);
+    let base = match run_git(&root, &[], &["rev-parse", "--verify", &base_ref]) {
+        Ok(s) => s,
+        Err(_) => copy.base.clone(),
+    };
+
+    let c_prime = snapshot_tree(work)?;
+    let diff = diff_trees(&root, &base, &c_prime)?;
+
+    let mut files = Vec::new();
+
+    for (path, entry) in &diff {
+        if SHARED_SHORTCUT_PATHS.contains(&path.as_str()) || path.starts_with("node_modules/") {
+            continue;
+        }
+        if entry.old_mode == "160000" || entry.new_mode == "160000" {
+            continue;
+        }
+        let target = root.join(path);
+        if entry.status == 'D' {
+            if target.exists() {
+                let _ = std::fs::remove_file(&target);
+            }
+            files.push(path.clone());
+        } else {
+            let src = work.join(path);
+            if src.exists() {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("Could not create parent dir: {e}"))?;
+                }
+                let temp_name = format!(
+                    "{}.tmp-fold-{}-{}",
+                    target
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file"),
+                    std::process::id(),
+                    SNAPSHOT_INDEX_SEQ.fetch_add(1, Ordering::Relaxed)
+                );
+                let tmp = target.with_file_name(temp_name);
+                std::fs::copy(&src, &tmp)
+                    .map_err(|e| format!("Could not copy to {}: {e}", tmp.display()))?;
+                #[cfg(unix)]
+                if entry.new_mode == "100755" {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &tmp,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+                std::fs::rename(&tmp, &target)
+                    .map_err(|e| format!("Could not rename to {}: {e}", target.display()))?;
+                files.push(path.clone());
+            }
+        }
+    }
+
+    files.sort();
+    files.dedup();
+    let ignored_skipped = get_ignored_new_in_work(&root, work);
+
+    Ok(FoldOutcome::Clean {
+        files,
+        ignored_skipped,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +1006,337 @@ mod tests {
         assert!(
             !hook_marker.exists(),
             "post-checkout hook was run during worktree add"
+        );
+    }
+
+    #[test]
+    fn fold_different_files_clean() {
+        let (_tmp, root, data) = init_repo("fold-diff");
+        fs::write(root.join("a.txt"), "a content").unwrap();
+        fs::write(root.join("b.txt"), "b content").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "add a and b"]);
+
+        let copy = create_copy(&root, &data, "t-diff", "b-diff").unwrap();
+
+        fs::write(copy.work.join("a.txt"), "a modified by bot").unwrap();
+        fs::write(root.join("b.txt"), "b modified by human").unwrap();
+
+        let main_snapshot = snapshot_tree(&root).unwrap();
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Clean { files, .. } => {
+                assert!(files.contains(&"a.txt".to_string()));
+            }
+            other => panic!("Expected Clean, got {:?}", other),
+        }
+
+        let apply_outcome = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        assert!(matches!(apply_outcome, FoldOutcome::Clean { .. }));
+
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "a modified by bot");
+        assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "b modified by human");
+    }
+
+    #[test]
+    fn fold_same_file_different_lines_clean() {
+        let (_tmp, root, data) = init_repo("fold-diff-lines");
+        let initial = "line 1\nline 2\nline 3\nline 4\nline 5\n";
+        fs::write(root.join("file.txt"), initial).unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial lines"]);
+
+        let copy = create_copy(&root, &data, "t-lines", "b-lines").unwrap();
+
+        fs::write(copy.work.join("file.txt"), "line 1 - bot\nline 2\nline 3\nline 4\nline 5\n").unwrap();
+        fs::write(root.join("file.txt"), "line 1\nline 2\nline 3\nline 4\nline 5 - human\n").unwrap();
+
+        let main_snapshot = snapshot_tree(&root).unwrap();
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Clean { .. }));
+
+        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        assert!(matches!(apply, FoldOutcome::Clean { .. }));
+
+        let merged = fs::read_to_string(root.join("file.txt")).unwrap();
+        assert!(merged.contains("line 1 - bot"));
+        assert!(merged.contains("line 5 - human"));
+    }
+
+    #[test]
+    fn fold_same_lines_conflict_leaves_markers_in_copy_only() {
+        let (_tmp, root, data) = init_repo("fold-conflict");
+        fs::write(root.join("file.txt"), "original line\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "base"]);
+
+        let copy = create_copy(&root, &data, "t-conf", "b-conf").unwrap();
+
+        fs::write(copy.work.join("file.txt"), "bot line\n").unwrap();
+        fs::write(root.join("file.txt"), "human line\n").unwrap();
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Conflicts { files } => {
+                assert!(files.contains(&"file.txt".to_string()));
+            }
+            other => panic!("Expected Conflicts, got {:?}", other),
+        }
+
+        let copy_content = fs::read_to_string(copy.work.join("file.txt")).unwrap();
+        assert!(copy_content.contains("<<<<<<< copy"));
+        assert!(copy_content.contains(">>>>>>> main"));
+
+        let root_content = fs::read_to_string(root.join("file.txt")).unwrap();
+        assert_eq!(root_content, "human line\n");
+    }
+
+    #[test]
+    fn fold_edit_vs_delete_conflict() {
+        let (_tmp, root, data) = init_repo("fold-edit-del");
+        fs::write(root.join("file.txt"), "content\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "base"]);
+
+        let copy = create_copy(&root, &data, "t-ed", "b-ed").unwrap();
+
+        fs::write(copy.work.join("file.txt"), "edited by bot\n").unwrap();
+        fs::remove_file(root.join("file.txt")).unwrap();
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Conflicts { files } => {
+                assert!(files.contains(&"file.txt".to_string()));
+            }
+            other => panic!("Expected Conflicts, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fold_new_file_both_identical_clean() {
+        let (_tmp, root, data) = init_repo("fold-same-new");
+        let copy = create_copy(&root, &data, "t-ident", "b-ident").unwrap();
+
+        fs::write(copy.work.join("new.txt"), "identical\n").unwrap();
+        fs::write(root.join("new.txt"), "identical\n").unwrap();
+
+        let main_snapshot = snapshot_tree(&root).unwrap();
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Clean { .. }));
+
+        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        assert!(matches!(apply, FoldOutcome::Clean { .. }));
+
+        assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "identical\n");
+    }
+
+    #[test]
+    fn fold_binary_both_changed_conflict() {
+        let (_tmp, root, data) = init_repo("fold-bin");
+        fs::write(root.join("data.bin"), [0u8, 1, 2, 0, 4]).unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "bin"]);
+
+        let copy = create_copy(&root, &data, "t-bin", "b-bin").unwrap();
+
+        fs::write(copy.work.join("data.bin"), [0u8, 1, 99, 0, 4]).unwrap();
+        fs::write(root.join("data.bin"), [0u8, 1, 88, 0, 4]).unwrap();
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Conflicts { files } => {
+                assert!(files.contains(&"data.bin".to_string()));
+            }
+            other => panic!("Expected Conflicts, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fold_keeps_human_edit_made_in_main_meanwhile() {
+        let (_tmp, root, data) = init_repo("fold-human-keeps");
+        fs::write(root.join("bot.txt"), "bot base\n").unwrap();
+        fs::write(root.join("human.txt"), "human base\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "base"]);
+
+        let copy = create_copy(&root, &data, "t-keep", "b-keep").unwrap();
+
+        fs::write(copy.work.join("bot.txt"), "bot changed\n").unwrap();
+        fs::write(root.join("human.txt"), "human changed\n").unwrap();
+        fs::write(root.join("human2.txt"), "human added\n").unwrap();
+
+        let main_snapshot = snapshot_tree(&root).unwrap();
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Clean { .. }));
+
+        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        assert!(matches!(apply, FoldOutcome::Clean { .. }));
+
+        assert_eq!(fs::read_to_string(root.join("bot.txt")).unwrap(), "bot changed\n");
+        assert_eq!(fs::read_to_string(root.join("human.txt")).unwrap(), "human changed\n");
+        assert_eq!(fs::read_to_string(root.join("human2.txt")).unwrap(), "human added\n");
+    }
+
+    #[test]
+    fn fold_after_bot_commits_and_switches_branch_in_copy() {
+        let (_tmp, root, data) = init_repo("fold-branch");
+        let copy = create_copy(&root, &data, "t-br", "b-br").unwrap();
+
+        let run_copy = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&copy.work).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run_copy(&["checkout", "-b", "bot-branch"]);
+        fs::write(copy.work.join("feature.txt"), "feature by bot\n").unwrap();
+        run_copy(&["add", "."]);
+        run_copy(&["commit", "-m", "bot feature commit"]);
+
+        let main_snapshot = snapshot_tree(&root).unwrap();
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Clean { .. }));
+
+        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        assert!(matches!(apply, FoldOutcome::Clean { .. }));
+
+        let current_branch = run_git(&root, &[], &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap();
+        assert_eq!(current_branch, "main");
+        assert_eq!(fs::read_to_string(root.join("feature.txt")).unwrap(), "feature by bot\n");
+    }
+
+    #[test]
+    fn fold_reports_ignored_files_not_copied() {
+        let (_tmp, root, data) = init_repo("fold-ignored");
+        fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "add gitignore"]);
+
+        let copy = create_copy(&root, &data, "t-ign", "b-ign").unwrap();
+
+        fs::write(copy.work.join(".env"), "SECRET=true\n").unwrap();
+        fs::write(copy.work.join("allowed.txt"), "allowed\n").unwrap();
+
+        let main_snapshot = snapshot_tree(&root).unwrap();
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Clean { ignored_skipped, .. } => {
+                assert!(ignored_skipped.contains(&".env".to_string()));
+            }
+            other => panic!("Expected Clean, got {:?}", other),
+        }
+
+        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        match apply {
+            FoldOutcome::Clean { ignored_skipped, .. } => {
+                assert!(ignored_skipped.contains(&".env".to_string()));
+            }
+            other => panic!("Expected Clean, got {:?}", other),
+        }
+
+        assert!(!root.join(".env").exists(), ".env was unexpectedly copied to root");
+        assert_eq!(fs::read_to_string(root.join("allowed.txt")).unwrap(), "allowed\n");
+    }
+
+    #[test]
+    fn apply_returns_main_moved_when_main_changed_after_merge() {
+        let (_tmp, root, data) = init_repo("fold-main-moved");
+        let copy = create_copy(&root, &data, "t-mov", "b-mov").unwrap();
+
+        fs::write(copy.work.join("bot.txt"), "bot edit\n").unwrap();
+        let main_at = snapshot_tree(&root).unwrap();
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Clean { .. }));
+
+        // Main moves after merge
+        fs::write(root.join("new_main.txt"), "main edit\n").unwrap();
+
+        let apply = apply_copy_to_main(&copy, &main_at).unwrap();
+        assert_eq!(apply, FoldOutcome::MainMoved);
+    }
+
+    #[test]
+    fn apply_touches_only_changed_paths() {
+        let (_tmp, root, data) = init_repo("fold-mtime");
+        fs::write(root.join("untouched.txt"), "untouched\n").unwrap();
+        fs::write(root.join("changed.txt"), "orig\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+
+        let mtime_before = fs::metadata(root.join("untouched.txt")).unwrap().modified().unwrap();
+
+        let copy = create_copy(&root, &data, "t-mtime", "b-mtime").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(copy.work.join("changed.txt"), "changed\n").unwrap();
+
+        let main_snapshot = snapshot_tree(&root).unwrap();
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Clean { .. }));
+
+        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        assert!(matches!(apply, FoldOutcome::Clean { .. }));
+
+        let mtime_after = fs::metadata(root.join("untouched.txt")).unwrap().modified().unwrap();
+        assert_eq!(mtime_before, mtime_after, "untouched.txt mtime changed");
+        assert_eq!(fs::read_to_string(root.join("changed.txt")).unwrap(), "changed\n");
+    }
+
+    #[test]
+    fn fold_never_writes_over_shared_paths() {
+        let (_tmp, root, data) = init_repo("fold-shared-nm");
+        let pkg_dir = root.join("node_modules");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("pkg.txt"), "root pkg\n").unwrap();
+
+        let copy = create_copy(&root, &data, "t-nm", "b-nm").unwrap();
+        assert!(copy.work.join("node_modules").is_symlink());
+
+        fs::write(copy.work.join("file.txt"), "normal file\n").unwrap();
+
+        let main_snapshot = snapshot_tree(&root).unwrap();
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Clean { .. }));
+
+        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        assert!(matches!(apply, FoldOutcome::Clean { .. }));
+
+        assert!(root.join("node_modules").is_dir());
+        assert!(!root.join("node_modules").is_symlink());
+        assert_eq!(
+            fs::read_to_string(root.join("node_modules").join("pkg.txt")).unwrap(),
+            "root pkg\n"
         );
     }
 }
