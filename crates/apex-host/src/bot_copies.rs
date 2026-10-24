@@ -1,6 +1,6 @@
 //! Git snapshots and isolated worktrees for concurrent bot editing.
 
-use apex_core::{CopyProvider, ParticipantId, RoomEvent};
+use apex_core::{CopyProvider, Message, ParticipantId, RoomEvent, Speaker};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -778,6 +778,39 @@ pub fn apply_copy_to_main(copy: &BotCopy) -> Result<FoldOutcome, String> {
     })
 }
 
+pub fn human_note_line(bot: &str, files: &[String], reason: &str) -> String {
+    if files.is_empty() {
+        format!("{bot}'s changes couldn't be folded in ({reason}). Its copy is kept in the Worktrees tab.")
+    } else {
+        format!("{bot}'s changes to {} couldn't be folded in ({reason}). Its copy is kept in the Worktrees tab.", files.join(", "))
+    }
+}
+
+async fn wait_for_quiet_main(root: &Path, quiet_duration: std::time::Duration) -> Result<(), String> {
+    let mut last_tree = tokio::task::spawn_blocking({
+        let root = root.to_path_buf();
+        move || snapshot_tree_id(&root)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let mut quiet_start = tokio::time::Instant::now();
+
+    while quiet_start.elapsed() < quiet_duration {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let current_tree = tokio::task::spawn_blocking({
+            let root = root.to_path_buf();
+            move || snapshot_tree_id(&root)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if current_tree != last_tree {
+            last_tree = current_tree;
+            quiet_start = tokio::time::Instant::now();
+        }
+    }
+    Ok(())
+}
+
 pub struct FoldTask {
     pub thread: String,
     pub copy: BotCopy,
@@ -785,11 +818,22 @@ pub struct FoldTask {
     pub event_sink: Arc<dyn Fn(RoomEvent) + Send + Sync>,
 }
 
-#[derive(Default)]
 pub struct FoldQueue {
     queues: Mutex<HashMap<PathBuf, VecDeque<FoldTask>>>,
     workers: Mutex<HashSet<PathBuf>>,
     data: PathBuf,
+    quiet_duration: std::time::Duration,
+}
+
+impl Default for FoldQueue {
+    fn default() -> Self {
+        Self {
+            queues: Mutex::default(),
+            workers: Mutex::default(),
+            data: PathBuf::new(),
+            quiet_duration: std::time::Duration::from_secs(2),
+        }
+    }
 }
 
 impl FoldQueue {
@@ -798,7 +842,13 @@ impl FoldQueue {
             queues: Mutex::default(),
             workers: Mutex::default(),
             data,
+            quiet_duration: std::time::Duration::from_secs(2),
         }
+    }
+
+    pub fn with_quiet_duration(mut self, d: std::time::Duration) -> Self {
+        self.quiet_duration = d;
+        self
     }
 
     pub fn enqueue(self: &Arc<Self>, task: FoldTask) {
@@ -841,6 +891,24 @@ impl FoldQueue {
         }
     }
 
+    fn mark_needs_you(&self, copy: &BotCopy, task: &FoldTask, reason: &str, files: &[String]) {
+        let mut updated = copy.clone();
+        updated.state = CopyState::NeedsYou {
+            reason: reason.to_string(),
+        };
+        let _ = save_state(&self.data, &updated);
+        let note = human_note_line(&copy.bot, files, reason);
+        (task.event_sink)(RoomEvent::MessageAdded {
+            message: Message {
+                servers: Vec::new(),
+                seq: 0,
+                speaker: Speaker::Bot(ParticipantId::new("deck")),
+                text: note,
+                at: None,
+            },
+        });
+    }
+
     async fn process_task(&self, task: FoldTask) {
         let fold_owner = ParticipantId::new("deck-fold");
         loop {
@@ -865,24 +933,37 @@ impl FoldQueue {
         }
         let _guard = ReleaseGuard(Arc::clone(&task.editor_handle));
 
-        let copy = task.copy;
+        let copy = task.copy.clone();
         let mut retries = 0;
         loop {
-            let merge_outcome = match merge_main_into_copy(&copy) {
-                Ok(o) => o,
-                Err(_) => break,
+            let copy_clone = copy.clone();
+            let merge_outcome = match tokio::task::spawn_blocking(move || merge_main_into_copy(&copy_clone)).await {
+                Ok(Ok(o)) => o,
+                Ok(Err(e)) => {
+                    self.mark_needs_you(&copy, &task, &e, &[]);
+                    break;
+                }
+                Err(e) => {
+                    self.mark_needs_you(&copy, &task, &e.to_string(), &[]);
+                    break;
+                }
             };
             match merge_outcome {
                 FoldOutcome::Clean { .. } => {
                     let check_cmd = crate::project_check::resolve_check(&self.data, &copy.root);
                     if let Some(cmd) = check_cmd {
-                        if crate::project_check::check_blames_copy(&copy.root, &copy.work, &cmd).await.is_some() {
+                        if let Some(output) = crate::project_check::check_blames_copy(&copy.root, &copy.work, &cmd).await {
+                            self.mark_needs_you(&copy, &task, &format!("check failed: {output}"), &[]);
                             break;
                         }
                     }
-                    match apply_copy_to_main(&copy) {
-                        Ok(FoldOutcome::Clean { files: applied, .. }) => {
-                            let _ = remove_copy(&self.data, &copy);
+                    let copy_clone = copy.clone();
+                    let apply_res = tokio::task::spawn_blocking(move || apply_copy_to_main(&copy_clone)).await;
+                    match apply_res {
+                        Ok(Ok(FoldOutcome::Clean { files: applied, .. })) => {
+                            let data_clone = self.data.clone();
+                            let copy_clone = copy.clone();
+                            let _ = tokio::task::spawn_blocking(move || remove_copy(&data_clone, &copy_clone)).await;
                             for f in applied {
                                 (task.event_sink)(RoomEvent::Changed {
                                     id: ParticipantId::new(&copy.bot),
@@ -891,18 +972,48 @@ impl FoldQueue {
                             }
                             break;
                         }
-                        Ok(FoldOutcome::MainMoved) => {
+                        Ok(Ok(FoldOutcome::MainMoved)) => {
                             retries += 1;
                             if retries > 3 {
+                                self.mark_needs_you(&copy, &task, "main folder kept moving", &[]);
                                 break;
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            if let Err(e) = wait_for_quiet_main(&copy.root, self.quiet_duration).await {
+                                self.mark_needs_you(&copy, &task, &e, &[]);
+                                break;
+                            }
                             continue;
                         }
-                        _ => break,
+                        Ok(Ok(FoldOutcome::Conflicts { files })) => {
+                            self.mark_needs_you(&copy, &task, "merge conflicts", &files);
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            self.mark_needs_you(&copy, &task, &e, &[]);
+                            break;
+                        }
+                        Err(e) => {
+                            self.mark_needs_you(&copy, &task, &e.to_string(), &[]);
+                            break;
+                        }
                     }
                 }
-                _ => break,
+                FoldOutcome::Conflicts { files } => {
+                    self.mark_needs_you(&copy, &task, "merge conflicts", &files);
+                    break;
+                }
+                FoldOutcome::MainMoved => {
+                    retries += 1;
+                    if retries > 3 {
+                        self.mark_needs_you(&copy, &task, "main folder kept moving", &[]);
+                        break;
+                    }
+                    if let Err(e) = wait_for_quiet_main(&copy.root, self.quiet_duration).await {
+                        self.mark_needs_you(&copy, &task, &e, &[]);
+                        break;
+                    }
+                    continue;
+                }
             }
         }
     }
@@ -960,7 +1071,13 @@ impl CopyProvider for BotCopies {
                     return Ok(c.work.clone());
                 }
             }
-            let copy = create_copy(&self.root, &self.data, &self.thread, id.as_str())?;
+            let root = self.root.clone();
+            let data = self.data.clone();
+            let thread = self.thread.clone();
+            let bot = id.as_str().to_string();
+            let copy = tokio::task::spawn_blocking(move || create_copy(&root, &data, &thread, &bot))
+                .await
+                .map_err(|e| e.to_string())??;
             self.active.lock().unwrap().insert(id.clone(), copy.clone());
             Ok(copy.work)
         })
@@ -1922,5 +2039,87 @@ mod tests {
             fs::read_to_string(root.join("b_folded.txt")).unwrap(),
             "folded content\n"
         );
+    }
+
+    #[tokio::test]
+    async fn fold_error_marks_needs_you_and_tells_the_chat() {
+        let (_tmp, root, data) = init_repo("fold-err");
+        let copy = create_copy(&root, &data, "t1", "bot1").unwrap();
+        // Make merge fail by deleting the worktree directory
+        fs::remove_dir_all(&copy.work).unwrap();
+
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let ev_sink = {
+            let ev = Arc::clone(&events);
+            Arc::new(move |e| ev.lock().unwrap().push(e))
+        };
+        let task = FoldTask {
+            thread: "t1".into(),
+            copy: copy.clone(),
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: ev_sink,
+        };
+        fold_queue.enqueue(task);
+        fold_queue.wait_idle().await;
+
+        let copies = load_copies(&data);
+        assert_eq!(copies.len(), 1);
+        match &copies[0].state {
+            CopyState::NeedsYou { reason } => {
+                assert!(!reason.is_empty(), "reason should not be empty");
+            }
+            s => panic!("expected NeedsYou state, got {:?}", s),
+        }
+
+        let evs = events.lock().unwrap();
+        let note = evs.iter().find(|e| matches!(e, RoomEvent::MessageAdded { .. }));
+        assert!(note.is_some(), "chat line was not posted");
+        if let Some(RoomEvent::MessageAdded { message }) = note {
+            assert!(message.text.contains("bot1"));
+            assert!(message.text.contains("Worktrees tab"));
+        }
+    }
+
+    #[tokio::test]
+    async fn fold_retries_after_main_goes_quiet() {
+        let (_tmp, root, data) = init_repo("fold-quiet");
+        let copy = create_copy(&root, &data, "t-quiet", "bot-q").unwrap();
+        fs::write(copy.work.join("from_copy.txt"), "copy content").unwrap();
+
+        // Spawn a background task that keeps writing to main's seed.txt every 100ms for ~1s
+        let root_bg = root.clone();
+        let bg_handle = tokio::spawn(async move {
+            for i in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                fs::write(root_bg.join("seed.txt"), format!("bg edit {i}\n")).unwrap();
+            }
+        });
+
+        // Use a fold queue with quiet duration 500ms so the test runs promptly
+        let fold_queue = Arc::new(
+            FoldQueue::new(data.clone()).with_quiet_duration(std::time::Duration::from_millis(500)),
+        );
+        let task = FoldTask {
+            thread: "t-quiet".into(),
+            copy,
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: Arc::new(|_| {}),
+        };
+        fold_queue.enqueue(task);
+
+        let _ = bg_handle.await;
+        fold_queue.wait_idle().await;
+
+        assert!(
+            root.join("from_copy.txt").exists(),
+            "from_copy.txt was not folded into main"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("from_copy.txt")).unwrap(),
+            "copy content"
+        );
+        let seed = fs::read_to_string(root.join("seed.txt")).unwrap();
+        assert!(seed.starts_with("bg edit"), "human edit in seed.txt was lost");
     }
 }

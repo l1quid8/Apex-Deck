@@ -585,6 +585,7 @@ impl ConcurrentRoom {
         let mut is_copy_turn = false;
         if let Some(held_by) = held_by {
             let mut copy_granted = false;
+            let mut read_only_reason = None;
             if !request.plan {
                 if let Some(provider) = &self.copies {
                     match provider.copy_for(&ticket.id).await {
@@ -597,36 +598,23 @@ impl ConcurrentRoom {
                             is_copy_turn = true;
                         }
                         Err(reason) => {
-                            request.access = Some(Access::Read);
-                            let mut config = participant.config().clone();
-                            config.access = Access::Read;
-                            let room = self.room.lock().await;
-                            let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
-                            request.system = crate::view::system_prompt(&config, &room.configs())
-                                + &crate::view::pinned_section(room.pins())
-                                + &room.checklist_section(&ticket.id)
-                                + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
-                                + answer_guidance;
-                            if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
-                            let line = read_only_line(ticket.id.as_str(), held_by.as_str(), &reason);
-                            request.system.push_str("\n\n");
-                            request.system.push_str(&line);
-                            sink(RoomEvent::ReadOnlyTurn {
-                                id: ticket.id.clone(),
-                                editor: held_by.clone(),
-                                reason,
-                                line,
-                            });
-                            copy_granted = true;
+                            read_only_reason = Some(reason);
                         }
                     }
                 }
             }
             if !copy_granted {
+                let reason = read_only_reason.unwrap_or_else(|| "no copy available".to_string());
                 request.access = Some(Access::Read);
                 let mut config = participant.config().clone();
                 config.access = Access::Read;
                 let room = self.room.lock().await;
+                let (bot_name, editor_name) = {
+                    let configs = room.configs();
+                    let b = configs.iter().find(|c| c.id == ticket.id).map(|c| c.display_name.clone()).unwrap_or_else(|| ticket.id.to_string());
+                    let e = configs.iter().find(|c| c.id == held_by).map(|c| c.display_name.clone()).unwrap_or_else(|| held_by.to_string());
+                    (b, e)
+                };
                 let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
                 request.system = crate::view::system_prompt(&config, &room.configs())
                     + &crate::view::pinned_section(room.pins())
@@ -634,14 +622,13 @@ impl ConcurrentRoom {
                     + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
                     + answer_guidance;
                 if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
-                let reason = "no copy available";
-                let line = read_only_line(ticket.id.as_str(), held_by.as_str(), reason);
+                let line = read_only_line(&bot_name, &editor_name, &reason);
                 request.system.push_str("\n\n");
                 request.system.push_str(&line);
                 sink(RoomEvent::ReadOnlyTurn {
                     id: ticket.id.clone(),
                     editor: held_by,
-                    reason: reason.to_string(),
+                    reason,
                     line,
                 });
             }
