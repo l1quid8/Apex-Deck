@@ -11,8 +11,15 @@ function git(args: string[]): string | null {
   try { return execFileSync("git", args, { cwd: new URL(".", import.meta.url).pathname, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
   catch { return null; }
 }
-const commit = git(["rev-parse", "--short=12", "HEAD"]) || "unknown";
-const build = { commit, dirty: commit !== "unknown" && !!git(["status", "--porcelain", "--untracked-files=no"]) };
+// A packaging run pins the commit once (scripts/package-pinned.mjs) so this
+// bundle and the service binary carry the same stamp; only ask git when
+// nothing pinned us.
+const pinned = (process.env.APEX_BUILD_COMMIT ?? "").trim();
+const commit = pinned || git(["rev-parse", "--short=12", "HEAD"]) || "unknown";
+const dirty = process.env.APEX_BUILD_DIRTY !== undefined
+  ? process.env.APEX_BUILD_DIRTY === "true"
+  : commit !== "unknown" && !!git(["status", "--porcelain", "--untracked-files=no"]);
+const build = { commit, dirty };
 
 export default defineConfig({
   plugins: [react()],

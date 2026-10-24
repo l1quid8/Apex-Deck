@@ -56,7 +56,13 @@ test('with remote access on, serve adds --remote; off, it does not', () => {
 test('every script that builds the daemon for the desktop builds it with remote access', async () => {
   const fs = await import('node:fs');
   const { scripts } = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  // Packaging entry points hand off to scripts/package-pinned.mjs so the app
+  // and the service get one commit stamp; the daemon still has to be built
+  // with remote access inside that shared body.
+  const effective = (name) => (
+    /scripts\/package-pinned\.mjs/.test(scripts[name]) ? `${scripts[name]} && ${scripts['_desktop:package']}` : scripts[name]
+  );
   for (const name of ['desktop', 'desktop:dev', 'desktop:smoke', 'desktop:package', 'desktop:dmg', 'desktop:smoke:multi-host']) {
-    assert.match(scripts[name], /cargo build (--release )?-p apex-daemon --features remote/, name);
+    assert.match(effective(name), /cargo build (--release )?-p apex-daemon --features remote/, name);
   }
 });

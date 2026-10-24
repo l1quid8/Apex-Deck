@@ -17,11 +17,23 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()));
 
-    let commit = git(&manifest, &["rev-parse", "--short=12", "HEAD"]).filter(|s| !s.is_empty()).unwrap_or_else(|| "unknown".into());
-    let dirty = git(&manifest, &["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
+    // A packaging run resolves the commit once and exports it, so the service
+    // and the UI bundle are stamped with the same value even if the branch
+    // moves while they compile. Only ask git when nothing pinned us.
+    let commit = match std::env::var("APEX_BUILD_COMMIT") {
+        Ok(pinned) if !pinned.trim().is_empty() => pinned.trim().to_string(),
+        _ => git(&manifest, &["rev-parse", "--short=12", "HEAD"]).filter(|s| !s.is_empty()).unwrap_or_else(|| "unknown".into()),
+    };
+    let dirty = match std::env::var("APEX_BUILD_DIRTY") {
+        Ok(pinned) => pinned == "true",
+        Err(_) => git(&manifest, &["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty()),
+    };
 
     println!("cargo:rustc-env=APEX_BUILD_COMMIT={commit}");
     println!("cargo:rustc-env=APEX_BUILD_DIRTY={}", if dirty { "true" } else { "false" });
+    // A pinned commit differs from the last run's, so rerun and restamp.
+    println!("cargo:rerun-if-env-changed=APEX_BUILD_COMMIT");
+    println!("cargo:rerun-if-env-changed=APEX_BUILD_DIRTY");
 
     // A build folder that links its target/ to another checkout's shares this
     // script's last run, and with it that checkout's watch list below, so

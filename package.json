@@ -13,8 +13,9 @@
     "desktop:dev": "cargo build -p apex-daemon --features remote && node desktop/dev.mjs",
     "desktop:smoke": "cargo build -p apex-daemon --features remote && vite build && node desktop/run-smoke.mjs",
     "desktop:smoke:answers": "cargo build -p apex-daemon --features remote && npm run build && node desktop/run-answers-smoke.mjs",
-    "desktop:package": "cargo build --release -p apex-daemon --features remote && cargo build --release -p apex-provenance && vite build && node scripts/package-mac.mjs --dir",
-    "desktop:dmg": "cargo build --release -p apex-daemon --features remote && cargo build --release -p apex-provenance && vite build && node scripts/package-mac.mjs",
+    "_desktop:package": "cargo build --release -p apex-daemon --features remote && cargo build --release -p apex-provenance && vite build && node scripts/package-mac.mjs",
+    "desktop:package": "node scripts/package-pinned.mjs --dir",
+    "desktop:dmg": "node scripts/package-pinned.mjs",
     "desktop:smoke:multi-host": "cargo build -p apex-daemon --features remote && vite build && node --experimental-strip-types desktop/run-multi-host-smoke.mjs",
     "iphone:sync": "node scripts/build-phone.mjs && scripts/build-iroh-mobile.sh && cap sync ios",
     "iphone:open": "npm run iphone:sync && cap open ios"
