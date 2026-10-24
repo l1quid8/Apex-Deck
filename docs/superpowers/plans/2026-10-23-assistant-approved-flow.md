@@ -58,9 +58,11 @@
 
 ### Task 5: Approved Work v8 organization
 User approved the clickable v8 mockup with “lets build it”. Continue the existing task branch and preserve all unrelated files.
-- [ ] RED: urgency groups hide when empty; History/Projects collapsed; one row per task; New task action; compact project management has no duplicated tasks; programmatic detail/new-task requests remain reachable while management is collapsed.
-- [ ] GREEN: compact task rows, title + status/project/worker, one next action and overflow; Needs you/In progress; History/Projects drawers; quiet Deleted tasks. Keep actual backend lifecycle/approval actions. Move creation to the Work header and preserve modal visibility when Projects is closed.
-- [ ] Reset stale detail presentation when leaving Work; retain exact task/source Back routing.
-- [ ] Run focused tests, tsc and full frontend suite; review this increment.
+- [x] RED: urgency groups hide when empty; History/Projects collapsed; one row per task; New task action; compact project management has no duplicated tasks; programmatic detail/new-task requests remain reachable while management is collapsed.
+- [x] GREEN: compact task rows, title + status/project/worker, one next action and overflow; Needs you/In progress; History/Projects drawers; quiet Deleted tasks. Keep actual backend lifecycle/approval actions. Move creation to the Work header and preserve modal visibility when Projects is closed.
+- [x] Reset stale detail presentation when leaving Work; retain exact task/source Back routing.
+- [x] Run focused tests, tsc and full frontend suite; review this increment.
 - [ ] Build signed app from release, install using existing protected updater, compare native Work against v8 (wide/narrow/task/history/projects/creation/deleted). Reuse archived Approved Flow QA and existing results; avoid unnecessary new model calls.
 - [ ] Build final DMG from the exact verified signed app, verify mounted contents and deliver it. Five stale DMGs already removed; inventory again before building.
+
+Final disposition: signed installation, native repair geometry and DMG completed in the provider increment. See docs/verification/2026-10-23-assistant-providers.md; historical task reruns are limited by the missing disposable QA folder, so the broad every-workflow checklist above is not marked fully rerun.

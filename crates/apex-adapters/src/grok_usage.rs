@@ -105,7 +105,7 @@ pub(crate) fn session_token(json: &Value, now_unix: u64) -> Result<String, &'sta
 
 /// Unix seconds from an ISO time, or from a number that is already seconds
 /// (or milliseconds, when it is too big to be seconds).
-fn expiry_unix(value: &Value) -> Option<u64> {
+pub(crate) fn expiry_unix(value: &Value) -> Option<u64> {
     if let Some(text) = value.as_str() {
         return unix_seconds(text);
     }

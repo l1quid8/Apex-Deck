@@ -64,15 +64,49 @@ test('token totals explicitly describe saved assistant history across providers 
   assert.match(usage.tokens, /Saved assistant history across providers \(partial\)/);
 });
 
-test('runtime providers are loaded from the owning host and unsupported installed agents stay out',async()=>{
+test('runtime providers are loaded from the owning host and include known text agents',async()=>{
  const remote={id:'remote',display_name:'Remote account',backend:{kind:'open_ai_compatible',base_url:'https://remote.test/v1',model:'remote-text'}};
  const providers=await runtime.loadAssistantRuntimeProviders({sessionLoad:async()=>({profiles:[remote,{id:'codex',backend:{kind:'agent',tool:'codex'}},{id:'claude',backend:{kind:'agent',tool:'claude_code'}},{id:'image',media:{},backend:{kind:'open_ai_compatible',base_url:'https://remote.test'}}]})});
- assert.deepEqual(providers.map(p=>p.id),['remote','claude']);
+ assert.deepEqual(providers.map(p=>p.id),['remote','codex','claude']);
 });
 
-test('Claude assistant runtime accepts the actual claude discovery wire key and still fails closed for missing or unsupported workers',async()=>{
+test('assistant runtimes use actual discovery wire keys and fail closed for missing workers',async()=>{
  const models=[],backend={detectAgents:async()=>[{key:'claude',label:'Claude Code',program:'claude',found:true}],agentModels:async tool=>{models.push(tool);return[{id:'sonnet'}];}};
  assert.deepEqual(await runtime.assistantRuntimeModels(backend,profile),[{id:'sonnet'}]);assert.deepEqual(models,['claude_code']);
  await assert.rejects(runtime.assistantRuntimeModels({...backend,detectAgents:async()=>[{key:'claude',label:'Claude Code',program:'claude',found:false}]},profile),/not installed/);
- await assert.rejects(runtime.assistantRuntimeModels(backend,{...profile,backend:{kind:'agent',tool:'codex'}}),/does not support/);
+ assert.deepEqual(await runtime.assistantRuntimeModels({...backend,detectAgents:async()=>[{key:'codex',found:true}]},{...profile,backend:{kind:'agent',tool:'codex'}}),[{id:'sonnet'}]);
+});
+
+ test('installed providers appear even without a reusable agent profile, with configured accounts kept first',async()=>{
+ const api={id:'api',display_name:'Configured API',backend:{kind:'open_ai_compatible',base_url:'https://own.test/v1',model:'text'}};
+ const rows=await runtime.loadAssistantRuntimeProviders({sessionLoad:async()=>({profiles:[api]}),detectAgents:async()=>[{key:'claude',label:'Claude Code',program:'claude',found:true},{key:'codex',label:'Codex',program:'codex',found:true},{key:'gemini',label:'Antigravity / Gemini',program:'agy',found:true},{key:'grok',label:'Grok',program:'grok',found:false},{key:'muse',label:'Muse',program:'muse',found:true},{key:'unknown',label:'Custom',program:'custom',found:true}]});
+ assert.equal(rows[0].id,'api');assert.deepEqual(rows.slice(1).map(p=>p.backend.tool),['claude_code','codex','gemini','grok','muse']);
+ assert.equal(new Set(rows.map(p=>p.id)).size,rows.length);
+ });
+ test('Antigravity remains visible but shared background service cannot be selected as isolated Gemini inference',async()=>{
+ const candidate={...profile,backend:{kind:'agent',tool:'gemini'}};
+ await assert.rejects(runtime.assistantRuntimeModels({detectAgents:async()=>[{key:'gemini',program:'agy',found:true}],agentModels:async()=>{throw Error('must not discover shared service');}},candidate),/Antigravity.*Gemini CLI/);
+ });
+
+test('an older owning host keeps providers visible but refuses new agent runtimes with an update explanation',async()=>{
+ const codex={...profile,backend:{kind:'agent',tool:'codex'}};
+ const backend={supports:()=>false,detectAgents:async()=>[{key:'codex',found:true}],agentModels:async()=>[{id:'offered'}]};
+ await assert.rejects(runtime.assistantRuntimeModels(backend,codex),/Update.*assistant.*machine/);
+ const providers=await runtime.loadAssistantRuntimeProviders({...backend,sessionLoad:async()=>({profiles:[codex]})});
+ assert.equal(providers[0].backend.tool,'codex');
+});
+
+test('coinstalled Gemini CLI is selectable independently of Threads Antigravity preference',async()=>{
+ const candidate={...profile,backend:{kind:'agent',tool:'gemini',model:'antigravity-only'}};
+ const models=await runtime.assistantRuntimeModels({detectAgents:async()=>[{key:'gemini',program:'agy',assistantProgram:'gemini',found:true}],agentModels:async()=>{throw Error('must not reuse the Antigravity model catalog');}},candidate);
+ assert.deepEqual(models,[{id:'',label:'Provider default',efforts:[]}]);
+ const next=runtime.assistantProviderProfile(profile,candidate,models);
+ assert.equal(next.backend.model,null);assert.equal(next.effort,null);assert.equal(next.id,profile.id);
+});
+test('CLI without a catalog can use its provider default or retain an explicitly configured model',async()=>{
+ const backend={detectAgents:async()=>[{key:'claude',program:'claude',found:true}],agentModels:async()=>[]};
+ const defaults=await runtime.assistantRuntimeModels(backend,{...profile,backend:{kind:'agent',tool:'claude_code',model:null},effort:null});
+ assert.deepEqual(defaults,[{id:'',label:'Provider default',efforts:[]}]);
+ const saved=await runtime.assistantRuntimeModels(backend,profile);
+ assert.equal(saved[0].id,'old');assert.deepEqual(saved[0].efforts,['high']);
 });

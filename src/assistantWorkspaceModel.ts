@@ -52,7 +52,7 @@ export function reconcileEffort(effort:string|null, model:ModelChoice|undefined)
  const levels=model?.efforts;return levels?.length ? (effort && levels.includes(effort) ? effort : levels[0]) : null;
 }
 export function runtimeProfile(base:ParticipantConfig,name:string,model:string,access:ParticipantConfig['access'],effort:string|null):ParticipantConfig {
- const backend=base.backend.kind==='agent'||base.backend.kind==='open_ai_compatible'?{...base.backend,model}:base.backend;
+ const backend=base.backend.kind==='agent'?{...base.backend,model:model||null}:base.backend.kind==='open_ai_compatible'?{...base.backend,model}:base.backend;
  return {...base,display_name:name.trim(),backend,access,effort};
 }
 export function validateAssistantDraft(d:{name:string;color:string;profile:Pick<ParticipantConfig,'backend'|'access'>|undefined;model:ModelChoice|undefined;effort:string|null;providerReady:boolean}):string|null {

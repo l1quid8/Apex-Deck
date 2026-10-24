@@ -91,7 +91,7 @@ impl WorkerTools {
     pub fn real() -> Self {
         WorkerTools {
             reason: Arc::new(|config, request| Box::pin(async move {
-                crate::monitor_check::reason_reply(config, request).await.map(|reply| ReasonOut {
+                crate::assistant_inference::reply(config, request).await.map(|reply| ReasonOut {
                     text: reply.text, cost_micros: reply.cost_micros, input_tokens: reply.input_tokens, output_tokens: reply.output_tokens,
                 })
             })),

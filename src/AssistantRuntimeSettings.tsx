@@ -56,8 +56,9 @@ export function AssistantRuntimeSettings({ lane, backend, anchor, close, onSetti
 
   const save = async (next: ParticipantConfig, base: ParticipantConfig) => {
     if (lane.offline || !lane.configureWorkspace) throw new Error(reason || 'This assistant’s runtime cannot be changed on this host.');
+    if(next.backend.kind==='agent'&&next.backend.model==='')next={...next,backend:{...next.backend,model:null}};
     const offered = await assistantRuntimeModels(backend, next);
-    const modelId = 'model' in next.backend ? next.backend.model : undefined;
+    const modelId = 'model' in next.backend ? next.backend.model ?? '' : undefined;
     const model = offered.find(model => model.id === modelId);
     if (!model) throw new Error('Choose an offered text model from this provider.');
     if (next.effort && model.efforts && !model.efforts.includes(next.effort)) throw new Error('Choose a reasoning level supported by this model.');
@@ -103,7 +104,7 @@ export function AssistantRuntimeSettings({ lane, backend, anchor, close, onSetti
     </div>}
   </div>;
   return <BotSettings key={currentProvider} config={config} anchor={anchor} backend={backend} loadCurrent={session.loadCurrent} save={save} close={close} provider={provider}
-    disabledReason={providerBusy ? 'Saving provider…' : confirmation ? 'Confirm Full access above before applying this change.' : reason || undefined} textOnly allowManualModel={false} allowDefaultModel={false} offeredModels={offeredModels}
+    disabledReason={providerBusy ? 'Saving provider…' : confirmation ? 'Confirm Full access above before applying this change.' : reason || undefined} textOnly allowManualModel={false} allowDefaultModel={offeredModels.some(model=>model.id==='')} offeredModels={offeredModels}
     meters={<span className="assistant-runtime-meters"><span>{meters.context}</span><span>{meters.tokens}</span></span>}
     resets={<div className="assistant-runtime-resets"><p className="muted">{meters.resets}</p><button type="button" disabled title="This assistant host does not expose conversation compaction.">Compact unavailable</button><button type="button" disabled title="This assistant host does not expose conversation reset.">Reset unavailable</button></div>} />;
 }

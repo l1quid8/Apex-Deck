@@ -1,5 +1,5 @@
 import type { Backend } from './backend.ts';
-import type { ModelChoice, ParticipantConfig } from './types.ts';
+import type { AgentTool, ModelChoice, ParticipantConfig } from './types.ts';
 import type { PersonalAssistantRecord, PersonalLane } from './personalAssistant.ts';
 import { supportsSpeed } from './speed.ts';
 
@@ -20,7 +20,7 @@ export function assistantProviderProfile(current: ParticipantConfig, selected: P
   const backend = { ...selected.backend };
   const model = offered.find(item => item.id === backend.model) ?? offered[0];
   if (!model) throw new Error('No offered text models are available.');
-  backend.model = model.id;
+  if (backend.kind === 'agent') backend.model = model.id || null; else backend.model = model.id;
   const effort = model.efforts?.includes(current.effort ?? '') ? current.effort : model.efforts?.[0] ?? null;
   return { ...current, backend, effort, speed: supportsSpeed(backend) ? current.speed : null };
 }
@@ -60,13 +60,20 @@ export function createAssistantRuntimeSession(lane: PersonalLane, backend: Pick<
 }
 
 /** Capability discovery stays on the owning machine. It does not verify a CLI's sign-in. */
-export async function assistantRuntimeModels(backend: Pick<Backend, 'detectAgents' | 'agentModels' | 'apiKeyStatus' | 'apiModels'>, profile: ParticipantConfig): Promise<ModelChoice[]> {
+export async function assistantRuntimeModels(backend: Pick<Backend, 'detectAgents' | 'agentModels' | 'apiKeyStatus' | 'apiModels'> & Partial<Pick<Backend,'supports'>>, profile: ParticipantConfig): Promise<ModelChoice[]> {
   const provider = profile.backend;
   let models: ModelChoice[];
   if (provider.kind === 'agent') {
-    if(provider.tool!=='claude_code')throw new Error('This agent does not support assistant replies. Choose a supported provider in Settings.');
-    if (!(await backend.detectAgents()).some(agent => (agent.key === provider.tool || (provider.tool === 'claude_code' && agent.key === 'claude')) && agent.found)) throw new Error(`${provider.tool} is not installed on this machine. Open Settings to choose another provider.`);
-    models = await backend.agentModels(provider.tool);
+    if (provider.tool !== 'claude_code' && backend.supports?.('assistant_provider_conversations_v1') === false) throw new Error('Update this assistant’s machine to use its other connected providers.');
+    const installed=(await backend.detectAgents()).find(agent => agent.key === provider.tool || (provider.tool === 'claude_code' && agent.key === 'claude'));
+    if (!installed?.found) throw new Error(`${provider.tool} is not installed on this machine. Connect it in Settings or choose another provider.`);
+    if (provider.tool === 'gemini' && (installed.assistantProgram ?? installed.program) && (installed.assistantProgram ?? installed.program) !== 'gemini') throw new Error('Antigravity uses a shared background service. Assistant conversation requires the isolated Gemini CLI on this machine; your Antigravity provider remains available in Threads.');
+    const nativeGemini = provider.tool === 'gemini' && installed.assistantProgram === 'gemini' && installed.program !== 'gemini';
+    models = nativeGemini ? [] : await backend.agentModels(provider.tool);
+    if (!models.length) {
+      if (provider.model && !nativeGemini) return [{id:provider.model,label:`${provider.model} (configured model)`,efforts:profile.effort?[profile.effort]:[],note:'This CLI does not expose a model catalog. Account availability is checked when it replies.'},{id:'',label:'Provider default',efforts:[]}];
+      return [{id:'',label:'Provider default',efforts:[]}];
+    }
   } else if (provider.kind === 'open_ai_compatible') {
     if (provider.api_key_env) {
       const [status] = await backend.apiKeyStatus([provider.api_key_env]);
@@ -80,7 +87,18 @@ export async function assistantRuntimeModels(backend: Pick<Backend, 'detectAgent
 
 /** Provider credentials/configurations belong to the assistant's machine, not
  * the currently selected desktop project or local reusable agent catalog. */
-export async function loadAssistantRuntimeProviders(backend: Pick<Backend,'sessionLoad'>): Promise<ParticipantConfig[]> {
- const session=await backend.sessionLoad();
- return (session?.profiles??[]).filter(p=>!p.media&&(p.backend.kind==='open_ai_compatible'||p.backend.kind==='agent'&&p.backend.tool==='claude_code'));
+export const ASSISTANT_AGENT_TOOLS: readonly AgentTool[] = ['claude_code','codex','gemini','grok','muse'];
+export function assistantTextProvider(profile: ParticipantConfig): boolean {
+ return !profile.media && (profile.backend.kind==='open_ai_compatible'||profile.backend.kind==='agent'&&ASSISTANT_AGENT_TOOLS.includes(profile.backend.tool));
+}
+export async function loadAssistantRuntimeProviders(backend: Pick<Backend,'sessionLoad'> & Partial<Pick<Backend,'detectAgents'>>): Promise<ParticipantConfig[]> {
+ const [session, detected]=await Promise.all([backend.sessionLoad(),backend.detectAgents?.().catch(()=>[])??Promise.resolve([])]);
+ const profiles=(session?.profiles??[]).filter(assistantTextProvider);
+ for(const agent of detected){
+  const tool=(agent.key==='claude'?'claude_code':agent.key) as AgentTool;
+  if(!ASSISTANT_AGENT_TOOLS.includes(tool)||profiles.some(p=>p.backend.kind==='agent'&&p.backend.tool===tool))continue;
+  // Same host discovery/model adapters as Threads; never copy an unrelated room's credentials.
+  profiles.push({id:`assistant-provider-${tool}`,display_name:agent.label,persona:'',access:'ask',effort:null,backend:{kind:'agent',tool,model:null}});
+ }
+ return profiles;
 }

@@ -169,7 +169,7 @@ pub(crate) fn parse_profile(value: Value) -> Result<ParticipantConfig, String> {
         fields(appearance, &["seed", "color"])?;
     }
     let profile: ParticipantConfig = serde_json::from_value(value).map_err(|e| e.to_string())?;
-    crate::monitor_check::monitor_profile_ok(&profile)?;
+    apex_adapters::assistant_profile_ok(&profile)?;
 
     if !identifier(profile.id.as_str()) {
         return Err("The profile needs a non-secret identifier.".into());
@@ -294,8 +294,17 @@ impl Host {
                     .iter(),
             )
             .any(|saved| same_provider(saved, &profile));
-        if !configured {
-            return Err("That provider is not configured on this assistant's host. Configure a reusable Agents profile first.".into());
+        let detected_agent=if !configured {
+            if let Backend::Agent{tool,..}=&profile.backend {
+                let tool=*tool;
+                tokio::task::spawn_blocking(move||{
+                    let key=match tool {apex_core::AgentTool::ClaudeCode=>"claude",apex_core::AgentTool::Codex=>"codex",apex_core::AgentTool::Gemini=>"gemini",apex_core::AgentTool::Grok=>"grok",apex_core::AgentTool::Muse=>"muse"};
+                    crate::agents::detect().iter().any(|agent|agent.key==key&&agent.found&&(tool!=apex_core::AgentTool::Gemini||agent.assistant_program.as_deref().unwrap_or(&agent.program)=="gemini"))
+                }).await.map_err(|_|"Could not check providers on this assistant's machine.")?
+            } else {false}
+        } else {false};
+        if !configured && !detected_agent {
+            return Err("That provider is not configured on this assistant's host. Connect its account or choose an installed text provider first.".into());
         }
         let efforts = match &profile.backend {
             Backend::OpenAiCompatible {
@@ -321,8 +330,15 @@ impl Host {
             }
             Backend::Agent { tool, model } => {
                 let models = self.agent_models(*tool);
-                let offered=models.into_iter().find(|offered|Some(&offered.id)==model.as_ref()).ok_or("This agent's offered model capabilities are unavailable; the saved profile has been retained.")?;
-                offered.efforts
+                if models.is_empty() {
+                    let saved_choice=assistant.profile.iter().cloned().chain(profiles.iter().filter_map(|value|serde_json::from_value::<ParticipantConfig>(value.clone()).ok())).any(|saved|saved.backend==profile.backend&&saved.effort==profile.effort);
+                    if model.is_none()&&profile.effort.is_none() {Some(vec![])}
+                    else if saved_choice {Some(profile.effort.iter().cloned().collect())}
+                    else {return Err("This CLI does not expose a model catalog. Choose Provider default or retain a configured model.".into());}
+                } else {
+                    let offered=models.into_iter().find(|offered|Some(&offered.id)==model.as_ref()).ok_or("This agent's offered model capabilities are unavailable; the saved profile has been retained.")?;
+                    offered.efforts
+                }
             }
             _ => return Err("This runtime is unsupported.".into()),
         };
@@ -573,6 +589,39 @@ impl Host {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    #[ignore="requires installed Codex; no model call"]
+    async fn detected_codex_can_be_selected_without_creating_a_reusable_profile() {
+        use crate::{Host,HostPaths};use apex_core::{Backend,AgentTool};
+        let root=std::env::temp_dir().join(format!("assistant-detected-provider-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let host=Host::new(HostPaths{data:root.join("data"),downloads:None},tokio::runtime::Handle::current());
+        std::fs::write(root.join("data/host-id"),"qa").unwrap();
+        let mut profile:apex_core::ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"text"}})).unwrap();
+        let assistant=host.personal_create(serde_json::from_value(serde_json::json!({"name":"QA","style":"","folder":root.join("project"),"profile":profile})).unwrap()).unwrap();
+        profile.backend=Backend::Agent{tool:AgentTool::Codex,model:Some(host.agent_models(AgentTool::Codex).first().expect("Codex catalog available").id.clone())};
+        assert!(host.workspace_profile(&assistant,profile.clone()).await.is_ok(),"installed providers should not require a redundant reusable bot");
+        profile.backend=Backend::OpenAiCompatible{base_url:"http://127.0.0.1:8/v1".into(),model:"text".into(),api_key_env:None};
+        assert!(host.workspace_profile(&assistant,profile).await.unwrap_err().contains("not configured"),"API endpoints still require a configured account");
+        assert!(host.session().unwrap().is_none(),"selection does not create reusable bots");
+        drop(host);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cli_without_catalog_allows_default_or_retained_configuration_but_not_invented_models() {
+        use crate::{Host,HostPaths};use apex_core::{Backend,AgentTool};
+        let root=std::env::temp_dir().join(format!("assistant-default-provider-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let host=Host::new(HostPaths{data:root.join("data"),downloads:None},tokio::runtime::Handle::current());std::fs::write(root.join("data/host-id"),"qa").unwrap();
+        let mut profile:apex_core::ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"claude_code","model":"saved-model"},"effort":"high"})).unwrap();
+        let assistant=host.personal_create(serde_json::from_value(serde_json::json!({"name":"QA","style":"","folder":root.join("project"),"profile":profile})).unwrap()).unwrap();
+        assert_eq!(host.workspace_profile(&assistant,profile.clone()).await.unwrap(),profile);
+        profile.backend=Backend::Agent{tool:AgentTool::ClaudeCode,model:None};profile.effort=None;
+        assert!(host.workspace_profile(&assistant,profile.clone()).await.unwrap().backend==profile.backend);
+        profile.backend=Backend::Agent{tool:AgentTool::ClaudeCode,model:Some("invented-model".into())};
+        assert!(host.workspace_profile(&assistant,profile).await.is_err());
+        assert_eq!(host.personal_get(&assistant.id).unwrap(),assistant);
+        drop(host);let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn personal_workspace_accepts_existing_mixed_case_credential_references() {
         let profile = serde_json::json!({"id":"profile","display_name":"Profile","backend":{"kind":"open_ai_compatible","base_url":"https://api.example.com/v1","model":"text","api_key_env":"Venice_api_key"}});

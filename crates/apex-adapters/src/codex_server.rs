@@ -67,6 +67,7 @@ pub(crate) struct Turn<'a> {
     /// and changes nothing.
     pub plan: bool,
     pub mcp_disabled: bool,
+    pub tools_disabled: bool,
 }
 
 /// Why a turn through the app server did not produce a reply.
@@ -419,6 +420,9 @@ pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
         // Codex's saved sessions stops the history filling with them.
         "ephemeral": true,
     });
+    if turn.tools_disabled {
+        params["developerInstructions"] = json!("Answer as the assistant defined in the supplied conversation. This is a text-only conversation: no tools or subagents are available. Task execution belongs to the host approval workflow.");
+    }
     if let Some(tier) = turn.service_tier {
         params["serviceTier"] = json!(tier);
     }
@@ -664,6 +668,13 @@ pub(crate) async fn run_with_images(
     // Thread start is bookkeeping on every turn. The chat already says
     // Thinking until Codex reports a real step, so this is not announced.
     let mut start = thread_start(&turn);
+    let mut policy=policy;
+    if turn.tools_disabled {
+        for key in ["features.shell_tool", "features.unified_exec", "features.multi_agent", "features.plugins", "features.remote_plugin", "features.apps", "features.image_generation", "features.view_image", "tools.update_plan.enabled"] {
+            policy[key]=json!(false);
+        }
+        policy["web_search"]=json!("disabled");
+    }
     start["params"]["config"] = policy;
     send(&mut stdin, &start)
         .await
@@ -772,6 +783,9 @@ pub(crate) async fn run_with_images(
         };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
             let item = &message["params"]["item"];
+            if turn.tools_disabled && message["method"] == "item/started" && !matches!(item["type"].as_str(),Some("userMessage"|"agentMessage"|"reasoning"|"contextCompaction")) {
+                return Err(TurnError::Failed("A tool was requested during a text-only assistant reply; the turn was stopped.".into()));
+            }
             if message["method"] == "item/started" && item["type"] == "mcpToolCall" {
                 if let Some(id) = item["id"].as_str() {
                     pending_mcp.insert(id.to_string(), item.clone());
@@ -1133,12 +1147,37 @@ cat > /dev/null"#;
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
         let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true };
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, tools_disabled: false };
         let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
         match result {
             Ok(reply) => assert_eq!(reply.text, "Private MCP denied."),
             Err(_) => panic!("gateway accepted a late MCP call or failed the protocol"),
         }
+    }
+
+    #[tokio::test]
+    async fn assistant_stops_if_a_provider_attempts_a_tool() {
+        let script = r#"say() { echo "$1"; }
+read -r l; say '{"id":0,"result":{}}'
+read -r l; read -r l; read -r l
+say '{"id":110,"result":{"marketplaces":[]}}'
+say '{"id":10,"result":{"data":[],"nextCursor":null}}'
+read -r l; say '{"id":1,"result":{"thread":{"id":"T"}}}'
+read -r l
+say '{"method":"item/started","params":{"threadId":"T","item":{"type":"mcpToolCall","id":"c1","server":"probe","tool":"get_balance","arguments":{}}}}'
+say '{"id":99,"method":"mcpServer/elicitation/request","params":{"threadId":"T","serverName":"probe","_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{}}}}'
+read -r l
+case "$l" in *decline*) ;; *) exit 3 ;; esac
+say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"agentMessage","id":"m1","text":"Private MCP denied."}}}'
+say '{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"completed"}}}'
+read -r l; say '{"id":3,"result":{"rateLimits":{}}}'
+cat > /dev/null"#;
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+        let child = Registry::default().spawn(&mut command).unwrap();
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, tools_disabled: true };
+        let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
+        assert!(matches!(result,Err(TurnError::Failed(ref why)) if why.contains("tool was requested")),"assistant mode must stop unexpected tools before accepting any reply");
     }
 
     #[test]
@@ -1350,7 +1389,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         let policy = thread_start(&turn)["params"]["approvalPolicy"].clone();
@@ -1364,7 +1403,7 @@ cat > /dev/null"#;
 
     #[test]
     fn thread_start_sends_the_service_tier_only_when_chosen() {
-        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, plan: false };
+        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, tools_disabled: false, plan: false };
         assert_eq!(thread_start(&turn)["params"]["serviceTier"], "priority");
         turn.service_tier = None;
         assert!(thread_start(&turn)["params"].get("serviceTier").is_none());
@@ -1378,7 +1417,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Edits,
             cwd: Some("/work".into()),
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1393,7 +1432,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Ask,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1406,7 +1445,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Read,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1419,7 +1458,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1534,7 +1573,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         let reply = match run(child, turn, "go", &sink, &apex_core::NoApprover, None).await {
