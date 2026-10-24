@@ -67,7 +67,7 @@ function workspaceHarness() {
   return { props, events, render() { cursor = 0; return Component(props); } };
 }
 
-test('the avatar opens Details and the menu opens the shared runtime control', () => {
+test('the avatar opens Details and the runtime popover is gone from the workspace', () => {
   const h = workspaceHarness(); let tree = h.render();
   const trigger = find(tree, node => node.type === 'button' && /details$/.test(String(node.props['aria-label'] ?? '')));
   assert.ok(trigger, 'the session capsule carries one details control');
@@ -78,10 +78,10 @@ test('the avatar opens Details and the menu opens the shared runtime control', (
   assert.match(text(trigger), /Null/);
   assert.doesNotMatch(text(trigger), /Claude|Ask first|project/i, 'the runtime line moved into the Details sidebar');
   assert.ok(find(tree, node => node.type === 'summary' && text(node).includes('⋯')), 'the ⋯ menu is still the way into the subviews');
-  const runtime = find(tree, node => node.type === 'button' && text(node) === 'Model & access');
-  runtime.props.onClick({ currentTarget: { id: 'anchor', closest: () => ({ removeAttribute() {} }) } });
-  tree = h.render();
-  assert.ok(find(tree, node => node.type === AssistantRuntimeSettings));
+  // Model & access now folds open inside Details, so the ⋯ popover must be gone
+  // and nothing in the workspace may still mount the runtime controls.
+  assert.equal(find(tree, node => node.type === 'button' && text(node) === 'Model & access'), undefined);
+  assert.equal(find(tree, node => node.type === AssistantRuntimeSettings), undefined);
   assert.match(text(tree), /Shared voice control/);
   for (const label of ['Browser', 'Projects & access', 'Memory', 'Settings']) {
     find(tree, node => node.type === 'button' && text(node) === label).props.onClick({ currentTarget: { closest: () => ({ removeAttribute() {} }) } });

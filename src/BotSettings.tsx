@@ -18,7 +18,10 @@ type Change = { model?: string; effort?: string; speed?: Speed | null; access?: 
 interface Props {
   config: ParticipantConfig;
   roomId?: string;
-  anchor: HTMLElement;
+  /** The control this popover hangs from. Absent when `inline` is set. */
+  anchor?: HTMLElement | null;
+  /** Draw the same controls in the page instead of a floating panel. */
+  inline?: boolean;
   backend: Backend;
   save: (config: ParticipantConfig, base: ParticipantConfig) => Promise<void>;
   close: () => void;
@@ -40,7 +43,7 @@ interface Props {
   /** Owning-host text choices for a scoped assistant; no generic fallback models. */
   offeredModels?: ModelChoice[];
 }
-export function BotSettings({ config, roomId, anchor, backend, save, close, avatar, meters, accessPending = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
+export function BotSettings({ config, roomId, anchor = null, inline = false, backend, save, close, avatar, meters, accessPending = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const api = config.backend.kind === 'open_ai_compatible' ? config.backend : null;
@@ -83,6 +86,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const menuRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     // Placed again when it grows or shrinks, as when the Resets list opens, so it stays on screen.
+    if (inline || !anchor) return;
     const place = () => {
       const rect = anchor.getBoundingClientRect();
       const height = root.current?.offsetHeight ?? 260;
@@ -94,7 +98,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     const watch = new ResizeObserver(place);
     watch.observe(root.current);
     return () => watch.disconnect();
-  }, [anchor]);
+  }, [anchor, inline]);
   useEffect(() => {
     if (apiUrl === null) return;
     let active = true;
@@ -114,12 +118,13 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const [more, setMore] = useState(false);
   const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number; maxHeight: number; maxWidth?: number }>({ right: 0, maxHeight: 260 });
   useEffect(() => {
+    if (inline) return;
     const outside = (event: PointerEvent) => {
       const target = event.target as Node;
       if (menuRef.current?.contains(target)) return;
       if (triggerRef.current?.contains(target)) return;
       if (open) setOpen(false);
-      if (!root.current?.contains(target) && !anchor.contains(target)) close();
+      if (!root.current?.contains(target) && !anchor?.contains(target)) close();
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -131,7 +136,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
         }
         event.stopPropagation();
         close();
-        anchor.focus();
+        anchor?.focus();
       }
     };
     document.addEventListener('pointerdown', outside);
@@ -142,7 +147,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       document.removeEventListener('keydown', escape);
       window.removeEventListener('resize', close);
     };
-  }, [anchor, close, open]);
+  }, [anchor, close, open, inline]);
   // API metadata also controls pricing and media-specific settings.
   const rich = api !== null && apiList.length > 0;
   const groups = offeredModels ? [{ label: 'Models', models: offeredModels }] : tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : tool === 'grok' ? 'Grok' : tool === 'muse' ? 'Muse Code' : 'Antigravity') : rich ? apiModelGroups(apiList) : [];
@@ -289,7 +294,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       setOpen(false);
     }
   };
-  return createPortal(<div ref={root} className="bot-settings" style={position} onScroll={() => setOpen(false)} role="dialog" aria-label={`Settings for ${config.display_name}`}>
+  const panel = <div ref={root} className={inline ? 'bot-settings is-inline' : 'bot-settings'} style={inline ? undefined : position} onScroll={() => setOpen(false)} role={inline ? 'group' : 'dialog'} aria-label={`Settings for ${config.display_name}`}>
     <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
     {provider}
     {disabledReason && <p role="status" className="muted">{disabledReason}</p>}
@@ -336,5 +341,6 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       {note && <p className="muted">{note}</p>}
       {error && <p role="alert" className="danger-text">{error}</p>}
     </fieldset>
-  </div>, document.body);
+  </div>;
+  return inline ? panel : createPortal(panel, document.body);
 }

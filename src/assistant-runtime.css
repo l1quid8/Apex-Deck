@@ -10,3 +10,7 @@
 .assistant-runtime-resets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .assistant-runtime-resets p { flex-basis: 100%; margin: 0; }
 .assistant-runtime-resets button:disabled { opacity: .5; }
+
+/* The same runtime controls, drawn in the Details sidebar instead of a popover. */
+.bot-settings.is-inline{position:static;width:100%;max-width:none;max-height:none;overflow:visible;border:0;border-radius:0;background:none;box-shadow:none;padding:0}
+.bot-settings.is-inline .bot-settings-head{padding:0 0 6px}

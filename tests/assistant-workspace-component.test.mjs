@@ -231,8 +231,8 @@ test('status counts work that needs you and failed work',()=>{
  const status=find(tree,n=>n.props?.className==='assistant-session-status');
  assert.equal(text(status),'Needs you · 1');assert.equal(status.props['data-state'],'needs_you');
 });
-test('menu holds Projects & access, Browser, Memory, Model & access, Settings and Pause',()=>{
- assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Projects & access','Browser','Memory','Model & access','Settings','Pause']);
+test('menu holds Projects & access, Browser, Memory, Settings and Pause, with no runtime popover left',()=>{
+ assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Projects & access','Browser','Memory','Settings','Pause']);
 });
 test('the avatar is the Details toggle and reports whether Details is open',()=>{
  const opened=[];const tree=header(headerLane(),{detailsOpen:false,onToggleDetails:()=>opened.push('toggle')});

@@ -1945,6 +1945,23 @@ export function App() {
   const openWorkItem=(item:WorkItem,origin:'chat'|'work'='work')=>{setWorkDetailOrigin(origin);if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId,nonce:Date.now()});navigateAssistant('projects');return;}const owner=selectedAssistant?.assistant;if(owner)setChatFocus({key:personalTaskKey(owner.hostId,item.taskId,selectedAssistant?.ref?.assistantId),nonce:Date.now(),origin});navigateAssistant('chat');};
   const navigateAssistant = (section:AssistantSection) => {setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);};
   const openAssistantBrowser=()=>{navigateAssistant('chat');setAssistantBrowser('popup');};
+  /** Starts the assistant's voice call. The strip and Details share this one path. */
+  const startAssistantCall = () => {
+    if (!selectedAssistant) return;
+    const hostId = selectedAssistant.ref?.hostId ?? selectedAssistant.assistant?.hostId ?? selectedAssistant.hostName;
+    const id = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
+    const candidate = {
+      hostId,
+      roomId: `assistant:${id}`,
+      participantId: id,
+      profileId: `assistant:${id}`,
+      name: selectedAssistant.name,
+      roomTitle: selectedAssistant.name,
+      agentVoice: selectedAssistant.assistant?.profile?.voice,
+      aliases: [],
+    };
+    void voiceController.start(candidate);
+  };
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
   /** What this session's tasks and its own chat made: documents, exports and pages. */
@@ -2652,21 +2669,7 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
           </div>
-          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} profiles={profiles} onOpenBrowser={openAssistantBrowser} onStartCall={() => {
-            const hostId = selectedAssistant.ref?.hostId ?? selectedAssistant.assistant?.hostId ?? selectedAssistant.hostName;
-            const id = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
-            const candidate = {
-              hostId,
-              roomId: `assistant:${id}`,
-              participantId: id,
-              profileId: `assistant:${id}`,
-              name: selectedAssistant.name,
-              roomTitle: selectedAssistant.name,
-              agentVoice: selectedAssistant.assistant?.profile?.voice,
-              aliases: [],
-            };
-            void voiceController.start(candidate);
-          }} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
             memoryProject={assistantNotebookProject}
             projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact managementOpen onDetailChange={()=>{}} detailBackLabel={workDetailOrigin==='chat'?'Chat':'Projects & access'} onDetailBack={()=>{if(workDetailOrigin==='chat')navigateAssistant('chat');}} focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
               onEnsureCoordinator={async(project)=>{
@@ -2787,7 +2790,7 @@ export function App() {
                 ? <div ref={setArtifactsSlot} tabIndex={-1} className="right-artifacts-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its artifacts.</p>,
               details: (_tab, visible) => mainView.kind === "assistant" && selectedAssistant
-                ? <AssistantDetails lane={selectedAssistant} tasks={selectedDelegatedTasks} outputs={assistantOutputsState.outputs} outputsLoading={assistantOutputsState.loading} outputsProblem={assistantOutputsState.problem} onOpenFile={(path, cwd) => { void assistantBackend?.openTarget(path, cwd, false); }} onClose={closeDetails} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser} onGoToChat={() => { if (overlayDetails) closeDetails(); }} />
+                ? <AssistantDetails lane={selectedAssistant} backend={assistantBackend??undefined} profiles={profiles} tasks={selectedDelegatedTasks} outputs={assistantOutputsState.outputs} outputsLoading={assistantOutputsState.loading} outputsProblem={assistantOutputsState.problem} onOpenFile={(path, cwd) => { void assistantBackend?.openTarget(path, cwd, false); }} onClose={closeDetails} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} onGoToChat={() => { if (overlayDetails) closeDetails(); }} />
                 : detailsTarget
                 ? <div ref={setDetailsSlot} tabIndex={-1} className="right-details-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its details.</p>,

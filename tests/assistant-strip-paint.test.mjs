@@ -23,12 +23,23 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
  import {AssistantWorkspace} from '/src/AssistantWorkspace.tsx';
  const h=React.createElement;
  const lane={name:'Approved Flow QA',hostName:'local',assistant:{id:'qa',name:'Approved Flow QA',projects:[],tasks:[]}};
+ // Row 9 is deliberately one very wide, non-wrapping line: it must paint on both
+ // sides of the centred capsule, so a probe either side proves the strip is not
+ // covering half the column.
+ const wide='Row 9. '+Array(6).fill('wide transcript text that keeps painting past the capsule on the right').join(' ');
  const rows=Array.from({length:26},(_,i)=>h('div',{className:'apex-agent-message-row assistant'},
    h('div',{className:'apex-agent-message-meta'},h('span',null,'Approved Flow QA')),
-   h('div',{className:'assistant-chat-message assistant'},h('p',null,'Row '+i+'. A line of transcript long enough that we can tell whether it is painted underneath the session strip or clipped by it.'))));
+   h('div',{className:'assistant-chat-message assistant'},h('p',i===9?{style:{whiteSpace:'nowrap',maxWidth:'none',width:'max-content'}}:null,
+     i===9?wide:'Row '+i+'. A line of transcript long enough that we can tell whether it is painted underneath the session strip or clipped by it.'))));
  const chat=h('section',{className:'apex-agent assistant-conversation thread-chat apex-agent-all'},
    h('div',{className:'apex-agent-tabpanel'},h('div',{className:'assistant-chat-transcript'},rows)),
    h('div',{className:'assistant-thread-composer'},h('div',{className:'composer-box'},h('textarea',{defaultValue:'Ask anything'}))));
+ // Real replies are capped at a readable measure, which would leave the right of
+ // the capsule empty and make the two-sided check meaningless. This fixture asks
+ // for full-width text so both sides genuinely carry transcript.
+ const widen=document.createElement('style');
+ widen.textContent='.assistant-chat-transcript .assistant-chat-message{max-width:none!important}';
+ document.head.append(widen);
  createRoot(document.getElementById('root')).render(h('div',{className:'app assistant-active',style:{width:1200,height:820}},
    h('div',{className:'body'},h('aside',{style:{flex:'0 0 260px'}}),
    h('main',{className:'canvas section-threads'},h(AssistantWorkspace,{lane,section:'chat',onNavigate(){},chat,projects:null,editor:null})))));
@@ -44,13 +55,19 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
   const sideX=transcript.left+40;
   // Keep the probe region clear of the capsule itself, which is drawn on purpose.
   const probeW=Math.max(60,Math.min(240,g.capsule.left-24-sideX));
+  // The same check on the right of the capsule: text must reach past it on both
+  // sides, not only on the side that happens to be longer.
+  const rightX=g.capsule.right+24;
+  const rightW=Math.max(0,Math.min(240,transcript.right-24-rightX));
   const stack=document.elementsFromPoint(cx,probeY).map(e=>typeof e.className==='string'&&e.className?e.className:e.tagName);
   const sideStack=document.elementsFromPoint(sideX,probeY).map(e=>typeof e.className==='string'&&e.className?e.className:e.tagName);
   const rowAt=stack.some(name=>name.includes('apex-agent-message-row'))||stack.some(name=>name.includes('assistant-chat-message'));
   const sideRowAt=sideStack.some(name=>name.includes('apex-agent-message-row'))||sideStack.some(name=>name.includes('assistant-chat-message'));
   const first=document.querySelector('.apex-agent-message-row');
   const firstTop=first?first.getBoundingClientRect().top:null;
-  return {...g,panelTop:g.panel.top,padTop:getComputedStyle(panel).paddingTop,scrollTop:panel.scrollTop,probeY,sideX,probeW,stack,sideStack,rowAt,sideRowAt,firstTop,
+  const rightStack=rightW>20?document.elementsFromPoint(rightX+20,probeY).map(e=>typeof e.className==='string'&&e.className?e.className:e.tagName):[];
+  const rightRowAt=rightStack.some(name=>name.includes('apex-agent-message-row'))||rightStack.some(name=>name.includes('assistant-chat-message'));
+  return {...g,panelTop:g.panel.top,padTop:getComputedStyle(panel).paddingTop,scrollTop:panel.scrollTop,probeY,sideX,probeW,rightX,rightW,stack,sideStack,rightStack,rowAt,sideRowAt,rightRowAt,firstTop,
    scrollHeight:panel.scrollHeight,clientHeight:panel.clientHeight,
    chatBackground:getComputedStyle(document.querySelector('.apex-agent-tabpanel')).backgroundColor,
    stripBackground:getComputedStyle(document.querySelector('.assistant-workspace-head')).backgroundColor};};
@@ -85,7 +102,7 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
    const restPixels=[shotRest.at(rest.sideX,rest.ws.top+30),shotRest.at(rest.sideX,rest.strip.bottom+8)];
    console.log(JSON.stringify({restPixels}));
    for(const channel of [0,1,2])assert.ok(near(restPixels[0][channel],restPixels[1][channel],6),'no band across the strip at rest: '+JSON.stringify(restPixels[0])+' vs chat '+JSON.stringify(restPixels[1]));
-   const drawnAtRest=shotRest.countDrawn(rest.sideX,rest.ws.top+26,rest.probeW,22,restPixels[1],10);
+   const drawnAtRest=shotRest.countDrawn(rest.sideX,rest.ws.top+16,rest.probeW,60,restPixels[1],10);
    console.log(JSON.stringify({drawnAtRest}));
    assert.ok(drawnAtRest<=4,'nothing is drawn in the empty strip band at rest: '+drawnAtRest+' pixels');
    const scrolledTo=await run('scrollRowUnder(9)');assert.ok(scrolledTo>0,'the fixture actually scrolled: '+scrolledTo);
@@ -94,9 +111,15 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
    assert.ok(scrolled.rowAt,'a message is painted in the strip band once scrolled (elementsFromPoint at y=+30 finds a message row). Stack: '+JSON.stringify(scrolled.stack));
    assert.ok(scrolled.sideRowAt,'the same message reaches the strip band even away from the capsule. Stack: '+JSON.stringify(scrolled.sideStack));
    const shotScrolled=await shot();
-   const drawnWhenScrolled=shotScrolled.countDrawn(scrolled.sideX,scrolled.ws.top+26,scrolled.probeW,22,restPixels[1],10);
+   const drawnWhenScrolled=shotScrolled.countDrawn(scrolled.sideX,scrolled.ws.top+16,scrolled.probeW,60,restPixels[1],10);
    console.log(JSON.stringify({drawnWhenScrolled}));
    assert.ok(drawnWhenScrolled>20,'text really is painted inside the strip band once a message is scrolled under it: '+drawnWhenScrolled+' pixels (was '+drawnAtRest+' at rest)');
+  // Both sides of the frosted capsule, or the strip is only half transparent.
+  assert.ok(scrolled.rightW>20,'the column is wide enough to check the right of the capsule: '+scrolled.rightW);
+  assert.ok(scrolled.rightRowAt,'a message row is the topmost thing to the right of the capsule');
+  const drawnRight=shotScrolled.countDrawn(scrolled.rightX,scrolled.ws.top+16,scrolled.rightW,60,restPixels[1],10);
+  console.log(JSON.stringify({drawnWhenScrolled,drawnRight,rightW:scrolled.rightW}));
+  assert.ok(drawnRight>20,'text is painted in the strip band to the right of the capsule too: '+drawnRight+' pixels');
    app.exit(0);}catch(e){console.error(e.stack);app.exit(1);}});`);
  try{const result=await runElectronScenario(electron,main,temp,{attempts:1});assert.equal(result.code,0,result.output);}finally{await server.close();fs.rmSync(temp,{recursive:true,force:true});}
 });
