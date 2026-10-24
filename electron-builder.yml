@@ -49,7 +49,10 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
 dmg:
-  artifactName: Apex-Deck_${version}_${arch}.${ext}
+  # One fixed name, like the installer: each build overwrites the last one
+  # instead of leaving release/ full of near-identical disk images. The version
+  # and the stamped commit are in the bundle and in the .pkg manifest sidecar.
+  artifactName: Apex-Deck.${ext}
 
 # These are flipped before signing. JS startup checks are only a second layer.
 electronFuses:
