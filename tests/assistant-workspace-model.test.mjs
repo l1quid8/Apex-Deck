@@ -32,9 +32,9 @@ test('project resolution requires authenticated host, exact workspace and folder
  assert.equal(workspaceModel.resolveAssistantProject({hostId:'host-b',workspaceId:'shared',cwd:'/b'},rows,()=>undefined),null);assert.equal(workspaceModel.resolveAssistantProject({hostId:'host-b',workspaceId:'shared',cwd:'/b'},[{...rows[1],hidden:true}],hosts),null);
 });
 test('Memory and Settings Back restore preceding subviews including nested overflow navigation',()=>{
- let state={mainView:{kind:'assistant',assistant:a,section:'work'}};
+ let state={mainView:{kind:'assistant',assistant:a,section:'projects'}};
  state=assistantNavigation(state,{kind:'section',section:'memory'});state=assistantNavigation(state,{kind:'section',section:'settings'});
- state=assistantNavigation(state,{kind:'back'});assert.equal(state.mainView.section,'memory');state=assistantNavigation(state,{kind:'back'});assert.equal(state.mainView.section,'work');
+ state=assistantNavigation(state,{kind:'back'});assert.equal(state.mainView.section,'memory');state=assistantNavigation(state,{kind:'back'});assert.equal(state.mainView.section,'projects');
 });
 
 test('settings completion navigates only its captured owner and expected section',()=>{
@@ -72,8 +72,8 @@ test('fresh unassigned projects are canonicalized by their authenticated host wi
 test('cold restart restores the exact selected assistant and section while retaining unrelated sidebar preferences',()=>{
  const items=new Map([['apex-right-panel',JSON.stringify({open:true,active:'dashboard'})]]);
  const storage={getItem:key=>items.get(key)??null,setItem:(key,value)=>items.set(key,value)};
- for(const section of ['chat','work','memory','settings']){
-  workspaceModel.saveMainView({kind:'assistant',assistant:b,section,previousSections:['work'],grants:['ignored']},storage);
+ for(const section of ['chat','projects','memory','settings']){
+  workspaceModel.saveMainView({kind:'assistant',assistant:b,section,previousSections:['projects'],grants:['ignored']},storage);
   assert.deepEqual(workspaceModel.loadMainView(storage),{kind:'assistant',assistant:b,section});
  }
  assert.equal(items.size,2);assert.equal(items.get('apex-right-panel'),JSON.stringify({open:true,active:'dashboard'}));
@@ -109,15 +109,18 @@ test('worker thread route isolates the exact task pane and rejects foreign or un
  assert.equal(workspaceModel.assistantWorkerThreadDestination(workspace,foreign.id,[foreign,other,worker]),null);assert.equal(workspaceModel.assistantWorkerThreadDestination(workspace,worker.id,[worker],new Set([worker.id])),null);assert.equal(workspaceModel.assistantWorkerThreadDestination({...workspace,hidden:true},worker.id,[worker]),null);
 });
 
-test('legacy sections migrate to Chat and Work',()=>{
+test('legacy sections migrate to Chat and nothing reopens the retired Work view',()=>{
  const view=section=>workspaceModel.parseMainView(JSON.stringify({kind:'assistant',assistant:{hostId:'h',assistantId:'a'},section}));
- assert.equal(view('conversation').section,'chat');assert.equal(view('projects').section,'work');assert.equal(view('activity').section,'work');
+ assert.equal(view('conversation').section,'chat');assert.equal(view('work').section,'chat');assert.equal(view('activity').section,'chat');
+ // Saved 'projects' used to mean the Work tab's drawer; it now means Projects & access.
+ assert.equal(view('projects').section,'projects');
  assert.equal(view('memory').section,'memory');assert.equal(view('admin').kind,'workspace');
 });
-test('opening an assistant lands on chat; memory then back returns to work',()=>{
+test('opening an assistant lands on chat; memory then back returns to Projects & access',()=>{
  const a={hostId:'h',assistantId:'a'};let state=workspaceModel.assistantNavigation({mainView:{kind:'workspace'}},{kind:'open',assistant:a});assert.equal(state.mainView.section,'chat');
- state=workspaceModel.assistantNavigation(state,{kind:'section',section:'work'});state=workspaceModel.assistantNavigation(state,{kind:'section',section:'memory'});
- assert.equal(workspaceModel.assistantNavigation(state,{kind:'back'}).mainView.section,'work');
+ state=workspaceModel.assistantNavigation(state,{kind:'section',section:'projects'});state=workspaceModel.assistantNavigation(state,{kind:'section',section:'memory'});
+ assert.equal(workspaceModel.assistantNavigation(state,{kind:'back'}).mainView.section,'projects');
+ assert.equal(workspaceModel.assistantNavigation(workspaceModel.assistantNavigation(state,{kind:'back'}),{kind:'back'}).mainView.section,'chat');
 });
 
 test('dirtyFields lists changed settings in page order',()=>{

@@ -1,12 +1,13 @@
 import type { Backend } from './backend.ts';
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
 import type { ParticipantConfig, ModelChoice, Workspace, Pane } from './types.ts';
-export type AssistantSection = 'chat' | 'work' | 'memory' | 'settings';
+export type AssistantSection = 'chat' | 'projects' | 'memory' | 'settings';
 export type MainView = { kind: 'workspace' } | { kind: 'assistant'; assistant: AssistantRef; section: AssistantSection; previousSections?: AssistantSection[] };
 const MAIN_VIEW_STORAGE_KEY = 'apex-deck.main-view.v1';
-const ASSISTANT_SECTIONS:readonly AssistantSection[] = ['chat','work','memory','settings'];
-/** Views saved before Chat and Work replaced Conversation, Projects and Activity. */
-const LEGACY_SECTIONS:Record<string,AssistantSection> = {conversation:'chat',projects:'work',activity:'work'};
+const ASSISTANT_SECTIONS:readonly AssistantSection[] = ['chat','projects','memory','settings'];
+/** Views saved before the assistant became one chat. Work is gone, so anything
+ *  that used to open it now opens the chat; Projects & access keeps its name. */
+const LEGACY_SECTIONS:Record<string,AssistantSection> = {conversation:'chat',work:'chat',activity:'chat'};
 /** Local display preference only: restored identities still resolve through the live roster. */
 export function parseMainView(raw:string|null):MainView {
  try {
@@ -41,7 +42,7 @@ export function assistantNavigation<T extends {mainView:MainView}>(state:T,event
    const history=[...(previousSections??[])];const section=history.pop()??'chat';
    mainView={...view,section,...(history.length?{previousSections:history}:{})};
   } else if(event.section!==mainView.section) {
-   const history=event.section==='settings'||event.section==='memory'?[...(previousSections??[]),mainView.section]:[];
+   const history=event.section==='chat'?[]:[...(previousSections??[]),mainView.section];
    mainView={...view,section:event.section,...(history.length?{previousSections:history}:{})};
   }
  }

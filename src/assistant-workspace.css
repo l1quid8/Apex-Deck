@@ -1,3 +1,6 @@
+/* Task cards in the assistant chat still use these rules until the chat rewrite
+   in the one-chat plan turns them into plain messages. */
+@import "./assistant-work.css";
 /* Geometry, hierarchy and colors follow mockups/apex-dot. Keep host data and
    the independent workspace sidebar; only the assistant presentation changes. */
 .app.assistant-active{--shell:var(--bg);--raised:var(--panel-2);--border:var(--line);--dim:var(--muted);--mint:var(--accent);--amber:var(--warn);--hover:color-mix(in srgb,var(--text) 7%,transparent);font-size:13px;color:var(--text);background:var(--shell)}
@@ -10,15 +13,29 @@
 .assistant-workspace{flex:1;min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg,var(--panel));font:13px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text)}
 .assistant-workspace button{font:inherit;cursor:pointer;color:inherit}
 .assistant-workspace button:disabled{cursor:default;opacity:.5}
-.assistant-workspace-head{min-height:68px;display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--line)}
+/* The session strip: exactly 60px, floating over the chat with no fill or edge,
+   so messages scroll up behind it. The capsule is centred on the reading column
+   — the same centre as the transcript and the message box — not on the window. */
+.assistant-workspace-head{position:absolute;left:0;right:0;top:0;z-index:6;height:60px;min-height:60px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 18px;border:0;background:none;pointer-events:none}
+.assistant-workspace-head>*{pointer-events:auto}
 .assistant-workspace-head .identicon-lg{width:36px;height:36px;flex:none}
-.assistant-workspace-identity{flex:1 1 240px;min-width:0}.assistant-workspace-identity h1{margin:0;display:flex;align-items:center;gap:8px;font-size:16px;line-height:1.3;font-weight:650;letter-spacing:-.02em}
-.assistant-workspace-meta{margin:2px 0 0;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.assistant-workspace-flag{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:600;letter-spacing:0;color:var(--muted);background:color-mix(in srgb,currentColor 12%,transparent)}.assistant-workspace-flag:before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}.assistant-workspace-flag[data-state=needs_you]{color:var(--warn)}.assistant-workspace-flag[data-state=failed]{color:var(--danger)}.assistant-workspace-flag[data-state=working]{color:var(--accent)}
+.assistant-session{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:6px;max-width:min(70%,480px);min-width:0;padding:3px 10px 3px 4px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.assistant-session-id{display:flex;align-items:center;gap:9px;min-width:0;padding:2px 4px 2px 2px;border:0;border-radius:10px;background:none;text-align:left;line-height:1.25}
+.assistant-session-id:hover:not(:disabled){background:var(--hover)}
+.assistant-session-id:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.assistant-session-id>.identicon{width:36px;height:36px;flex:none}
+.assistant-session-text{display:flex;flex-direction:column;min-width:0}
+.assistant-session-name{font-size:13px;font-weight:600;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.assistant-session-status{font-size:11px;line-height:15px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.assistant-session-status[data-state=needs_you],.assistant-session-status[data-state=working]{color:var(--accent)}
+.assistant-session-status[data-state=failed]{color:var(--danger)}
+.assistant-session-call{display:contents}
+.assistant-strip-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.assistant-strip-button,.assistant-workspace-menu>summary{width:36px;height:36px;box-sizing:border-box;display:grid;place-items:center;padding:0;border:1px solid var(--line);border-radius:50%;background:transparent;color:var(--muted);font-size:17px;line-height:1}
+.assistant-strip-button:hover,.assistant-workspace-menu>summary:hover,.assistant-workspace-menu[open]>summary{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--text)}
+.assistant-strip-button:focus-visible,.assistant-workspace-menu>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-.assistant-workspace-actions{display:flex;align-items:center;gap:6px}.assistant-workspace-actions .assistant-pause{padding:7px 12px;border-radius:6px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font-size:13px}.assistant-workspace-actions .assistant-pause:hover:not(:disabled){border-color:color-mix(in srgb,var(--text) 22%,var(--line))}.assistant-workspace-actions .icon,.assistant-workspace-menu>summary{width:30px;height:30px;display:grid;place-items:center;border:0;background:none;border-radius:6px;padding:0;color:var(--muted);font-size:17px}
-.assistant-workspace-actions .icon:hover,.assistant-workspace-menu>summary:hover{background:var(--hover)}
-.assistant-workspace-menu{position:relative}.assistant-workspace-menu>summary{list-style:none;cursor:pointer}.assistant-workspace-menu>summary::-webkit-details-marker{display:none}.assistant-workspace-menu[open]>div{position:absolute;right:0;top:34px;z-index:30;min-width:188px;background:var(--shell);border:1px solid var(--line);border-radius:9px;padding:6px;box-shadow:0 12px 30px color-mix(in srgb,black 27%,transparent)}.assistant-workspace-menu [role=menuitem]{display:block;width:100%;text-align:left;padding:9px 10px;border:0;border-radius:5px;background:none;font-size:12px}.assistant-workspace-menu [role=menuitem]:hover{background:var(--hover)}
-.assistant-workspace-tabs{display:flex;padding:3px;gap:0;background:var(--bg);border:1px solid var(--line);border-radius:9px}.assistant-workspace-tabs button{display:inline-flex;align-items:center;gap:6px;border:1px solid transparent;background:none;color:var(--muted);padding:5px 12px;border-radius:6px;font-size:13px}.assistant-workspace-tabs button:hover{color:var(--text)}.assistant-workspace-tabs [aria-selected=true]{color:var(--text);background:var(--panel-2);border-color:var(--line)}.assistant-tab-count{min-width:17px;height:17px;box-sizing:border-box;display:inline-grid;place-items:center;padding:0 5px;border-radius:999px;background:var(--warn);color:var(--accent-ink);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
+.assistant-workspace-menu{position:relative}.assistant-workspace-menu>summary{list-style:none;cursor:pointer}.assistant-workspace-menu>summary::-webkit-details-marker{display:none}.assistant-workspace-menu[open]>div{position:absolute;right:0;top:42px;z-index:30;min-width:188px;background:var(--shell);border:1px solid var(--line);border-radius:9px;padding:6px;box-shadow:0 12px 30px color-mix(in srgb,black 27%,transparent)}.assistant-workspace-menu [role=menuitem]{display:block;width:100%;text-align:left;padding:9px 10px;border:0;border-radius:5px;background:none;font-size:12px}.assistant-workspace-menu [role=menuitem]:hover{background:var(--hover)}.assistant-workspace-menu .assistant-pause{border-top:1px solid var(--line);border-radius:0 0 5px 5px;margin-top:4px;padding-top:10px}
 .assistant-workspace-content{flex:1;min-height:0;display:flex}.assistant-workspace-content[hidden]{display:none}.assistant-workspace-problem{padding:10px 30px;margin:0;color:var(--amber);font-size:12px}
 .assistant-workspace .assistant-conversation{width:100%;height:100%;max-height:none;min-height:0;border:0;border-radius:0;box-shadow:none;background:transparent}
 .assistant-workspace .apex-agent-tabpanel{padding:22px 34px 10px}.assistant-workspace .assistant-chat-transcript{max-width:790px;margin:0 auto;padding:0;gap:22px;width:100%;display:flex;flex-direction:column;justify-content:flex-start}
@@ -64,28 +81,17 @@
 /* Pending approvals, errors and activity use the same fill-only card treatment. */
 .assistant-workspace :is(.assistant-task-waits,.apex-agent-needs-you,.apex-agent-check-failed,.apex-agent-helper,.assistant-activity-item),.assistant-workspace .apex-agent-task-history ol{border-left:0!important}
 
-/* The runtime selector is a compact identity row, using the original header hierarchy. */
+/* The session strip keeps one height in every state; the chat scrolls behind it. */
 .assistant-workspace{container-type:inline-size}
-.assistant-workspace .assistant-workspace-head{height:auto;min-height:72px;padding:12px 24px;gap:16px;flex-wrap:nowrap}
-.assistant-workspace .assistant-bot-chip{display:flex;align-items:center;gap:10px;flex:0 1 auto;min-width:0;max-width:480px;margin:0;padding:5px 8px 5px 0;border:0;border-radius:8px;background:transparent;box-shadow:none;text-align:left;line-height:1.3}
-.assistant-workspace .assistant-bot-chip:hover:not(:disabled),.assistant-workspace .assistant-bot-chip[aria-expanded=true]{background:var(--hover)}
-.assistant-workspace .assistant-bot-chip:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-.assistant-workspace .assistant-bot-chip>.identicon{width:34px;height:34px;flex:none}
-.assistant-workspace .assistant-bot-chip .assistant-workspace-identity{flex:1 1 auto;min-width:0}
-.assistant-workspace .assistant-bot-chip h1{min-width:0;gap:8px;font-size:15px;line-height:20px;letter-spacing:-.02em}
-.assistant-workspace-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.assistant-workspace .assistant-bot-chip .assistant-workspace-meta{margin:2px 0 0;font-size:11px;line-height:16px}
-.assistant-workspace .assistant-runtime-chevron{flex:none;color:var(--muted);font-size:12px;margin-left:2px}
-.assistant-workspace .assistant-workspace-flag{flex:none;font-size:10px;line-height:16px;padding:1px 7px}
-.assistant-workspace .assistant-workspace-tabs{margin-left:auto;flex:none}
-.assistant-workspace .assistant-workspace-actions{flex:none}
-.assistant-workspace .assistant-workspace-tabs button{font-size:12px;line-height:18px;padding:5px 10px}
+.assistant-workspace .assistant-workspace-head{height:60px;min-height:60px;padding:0 18px;gap:10px;flex-wrap:nowrap}
+.assistant-workspace .assistant-session{padding:3px 10px 3px 4px;max-width:min(70%,480px)}
+.assistant-workspace .assistant-workspace-problem~.assistant-workspace-head{position:relative}
+.assistant-workspace .apex-agent-tabpanel{padding-top:78px}
+.assistant-workspace .assistant-workspace-subview{padding-top:78px}
 @container (max-width:580px){
- .assistant-workspace .assistant-workspace-head{gap:8px;padding:10px 16px;flex-wrap:wrap}
- .assistant-workspace .assistant-bot-chip{max-width:none;flex:1 1 calc(100% - 50px)}
- .assistant-workspace .assistant-workspace-tabs{order:3;margin:0;flex-basis:100%;width:max-content;max-width:max-content}
- .assistant-workspace .assistant-workspace-actions{margin-left:auto}
+ .assistant-workspace .assistant-workspace-head{padding:0 14px;gap:8px}
+ .assistant-workspace .assistant-session{max-width:calc(100% - 92px)}
+ .assistant-workspace .assistant-session-name{max-width:96px}
 }
 
-.assistant-workspace .assistant-workspace-actions:has(.voice-capsule){flex:1 1 250px;min-width:0;max-width:100%}
-.assistant-workspace .assistant-workspace-actions .voice-capsule{flex:1 1 auto;min-width:0}
+.assistant-workspace .assistant-session:has(.voice-capsule){max-width:min(86%,560px)}

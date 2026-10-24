@@ -63,25 +63,25 @@ function workspaceHarness() {
   const useState = initial => { const i = cursor++; if (!(i in state)) state[i] = initial; return [state[i], value => state[i] = value]; };
   const bindings = { React, useState, useEffect() {}, useMemo: make => make(), AssistantRuntimeSettings, Avatar, PersonalPanels: () => null, createAssistantAvatarApi: () => undefined, assistantAppearance: () => ({ seed: 'a', color: '#fff' }), assistantStatus: () => ({ state: 'ready', label: 'Ready', working: 0, needsYou: 0, failed: 0 }), accessLabel: () => 'Ask first' };
   const Component = new Function(...Object.keys(bindings), workspaceCompiled + '\nreturn AssistantWorkspace;')(...Object.values(bindings));
-  const props = { lane: { name: 'Null', hostName: 'Mac', assistant: { id: 'a', hostId: 'h', name: 'Null', profile }, configureWorkspace: async () => {}, browserView: async () => {} }, backend: {}, section: 'chat', onNavigate: section => events.push(section), onOpenBrowser: () => events.push('browser'), chat: 'Draft retained', work: 'Work', editor: 'Settings', callControls: React.createElement('span', {}, 'Shared voice control') };
+  const props = { lane: { name: 'Null', hostName: 'Mac', assistant: { id: 'a', hostId: 'h', name: 'Null', profile }, configureWorkspace: async () => {}, browserView: async () => {} }, backend: {}, section: 'chat', onNavigate: section => events.push(section), onOpenBrowser: () => events.push('browser'), chat: 'Draft retained', projects: 'Projects', editor: 'Settings', callControls: React.createElement('span', {}, 'Shared voice control') };
   return { props, events, render() { cursor = 0; return Component(props); } };
 }
 
 test('header opens the shared runtime control and identity menu exposes Browser, Projects, Memory and Settings', () => {
   const h = workspaceHarness(); let tree = h.render();
-  const trigger = find(tree, node => node.type === 'button' && node.props['aria-label'] === 'Runtime settings');
+  const trigger = find(tree, node => node.type === 'button' && /runtime settings$/.test(String(node.props['aria-label'] ?? '')));
   assert.ok(trigger, 'one header runtime trigger exists');
   trigger.props.onClick({ currentTarget: { id: 'anchor' } });
   tree = h.render();
   assert.ok(find(tree, node => node.type === AssistantRuntimeSettings));
   assert.match(text(tree), /Shared voice control/);
   assert.match(text(trigger), /Null/);
-  assert.match(text(trigger), /one/);
+  assert.doesNotMatch(text(trigger), /Claude|Ask first|project/i, 'the runtime line moved into the Details sidebar');
   assert.equal(find(tree, node => node.type === 'summary' && text(node).includes('Null')), undefined);
-  for (const label of ['Browser', 'Projects', 'Memory', 'Settings']) {
+  for (const label of ['Browser', 'Projects & access', 'Memory', 'Settings']) {
     find(tree, node => node.type === 'button' && text(node) === label).props.onClick({ currentTarget: { closest: () => ({ removeAttribute() {} }) } });
   }
-  assert.deepEqual(h.events, ['browser', 'work', 'memory', 'settings']);
+  assert.deepEqual(h.events, ['browser', 'projects', 'memory', 'settings']);
 });
 
 test('nested Memory and Settings Back controls name their actual source',()=>{

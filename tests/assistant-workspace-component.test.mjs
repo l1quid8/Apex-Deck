@@ -173,10 +173,10 @@ test('legacy edits access stays explicit and is retained until the user chooses 
  input(h.render(),'Project tools').props.onChange({target:{value:'ask'}});tree=h.render();assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);await submit(h);assert.equal(h.calls[1].profile.access,'ask');assert.equal(h.calls[1].projects[0].tools,'ask');
 });
 
-test('failed and interrupted delegated work stays visible in assistant header attention status',()=>{
+test('failed and interrupted delegated work stays visible in the session strip status',()=>{
  for(const [status,label] of [['failed','Failed · 1'],['interrupted','Failed · 1'],['needs_clarification','Needs you · 1']]){
-  const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'work',onNavigate(){},chat:'chat',work:'work',editor:'editor',delegatedTasks:[{status}]});
-  assert.equal(text(find(tree,n=>n.props.className==='assistant-workspace-flag')),label);
+  const h=mount();const tree=h.workspace({lane:{name:'Null',hostName:'Mac',assistant:record,offline:false},section:'chat',onNavigate(){},chat:'chat',projects:'projects',editor:'editor',delegatedTasks:[{status}]});
+  assert.equal(text(find(tree,n=>n.props.className==='assistant-session-status')),label);
  }
 });
 
@@ -213,31 +213,46 @@ test('late folder grant cannot update an unmounted draft or a different owner',a
 });
 
 const headerLane=(over={})=>({name:'Apex Assistant',hostName:'Mac',offline:false,pause:async()=>{},assistant:{...record,name:'Apex Assistant',paused:false,profile:{...profile,backend:{kind:'open_ai_compatible',base_url:'x',model:'deepseek-v4.1-flash'},access:'ask'},projects:[{project:{hostId:'mac',workspaceId:'w',cwd:'/r'},tools:'ask'}],tasks:[],...over}});
-const header=(lane,extra={})=>mount().workspace({lane,section:'chat',onNavigate(){},chat:'chat',work:'work',editor:'editor',...extra});
-test('header shows model, access and project count',()=>{
- assert.match(text(find(header(headerLane()),n=>n.props?.className==='assistant-workspace-meta')),/^deepseek-v4\.1-flash · high · Asks first · 1 project$/);
- const two=headerLane({projects:[{project:{hostId:'mac',workspaceId:'w',cwd:'/r'},tools:'ask'},{project:{hostId:'mac',workspaceId:'v',cwd:'/s'},tools:'ask'}]});
- assert.match(text(header(two)),/2 projects/);assert.doesNotMatch(text(header(two)),/Ongoing conversation|Assistant ·/);
+const header=(lane,extra={})=>mount().workspace({lane,section:'chat',onNavigate(){},chat:'chat',projects:'projects',editor:'editor',...extra});
+test('the session strip shows the name and the status word, not a runtime line',()=>{
+ const tree=header(headerLane());
+ assert.equal(text(find(tree,n=>n.props?.className==='assistant-session-name')),'Apex Assistant');
+ assert.equal(text(find(tree,n=>n.props?.className==='assistant-session-status')),'Ready');
+ assert.doesNotMatch(text(tree),/deepseek-v4\.1-flash|projects/);
 });
-test('tabs are Chat and Work with an attention count',()=>{
+test('there is no Chat/Work tab strip at all',()=>{
+ assert.equal(find(header(headerLane()),n=>n.props?.role==='tablist'),null);
+ assert.equal(find(header(headerLane()),n=>n.props?.role==='tab'),null);
+});
+test('status counts work that needs you and failed work',()=>{
  const tree=header(headerLane({tasks:[{id:'t',status:'needsYou',goal:'g',updatedAt:1}]}),{delegatedTasks:[{id:'d',status:'failed',originalRequest:'x',workers:[],updatedAtMs:1}]});
- assert.deepEqual(all(find(tree,n=>n.props?.role==='tablist'),n=>n.props?.role==='tab').map(text),['Chat','Work2']);
- assert.match(text(find(tree,n=>n.props?.className==='assistant-workspace-flag')),/Needs you · 1/);
+ const status=find(tree,n=>n.props?.className==='assistant-session-status');
+ assert.equal(text(status),'Needs you · 1');assert.equal(status.props['data-state'],'needs_you');
 });
-test('a ready assistant shows no status flag',()=>{assert.equal(find(header(headerLane()),n=>n.props?.className==='assistant-workspace-flag'),null);});
-test('menu holds Projects, Browser, Memory, Settings and Pause',()=>{
- assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Projects','Browser','Memory','Settings','Pause']);
+test('menu holds Projects & access, Browser, Memory, Settings and Pause',()=>{
+ assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Projects & access','Browser','Memory','Settings','Pause']);
+});
+test('the menu opens Projects & access as a subview',()=>{
+ const opened=[];const tree=header(headerLane(),{onNavigate:s=>opened.push(s)});
+ find(tree,n=>n.props?.role==='menuitem'&&text(n)==='Projects & access').props.onClick({currentTarget:{closest:()=>null}});
+ assert.deepEqual(opened,['projects']);
+});
+test('the ⋯ button is a 36px circle with a border',()=>{
+ const css=fs.readFileSync(new URL('../src/assistant-workspace.css',import.meta.url),'utf8');
+ assert.match(css,/\.assistant-workspace-menu>summary\{[^}]*width:36px/);
+ assert.match(css,/\.assistant-workspace-menu>summary\{[^}]*border-radius:50%/);
 });
 test('pause is a labelled button',()=>{
  assert.ok(find(header(headerLane()),n=>n.type==='button'&&text(n)==='Pause'));
  assert.ok(find(header(headerLane({paused:true})),n=>n.type==='button'&&text(n)==='Resume'));
 });
-test('subview back says Chat or Work',()=>{
- const opened=[];const tree=header(headerLane(),{section:'memory',previousSection:'work',onNavigate:s=>opened.push(s)});
- find(tree,n=>n.type==='button'&&text(n)==='‹ Work').props.onClick();assert.deepEqual(opened,['work']);
+test('subview back names the section it returns to',()=>{
+ const opened=[];const tree=header(headerLane(),{section:'memory',previousSection:'projects',onNavigate:s=>opened.push(s)});
+ find(tree,n=>n.type==='button'&&text(n)==='‹ Projects & access').props.onClick();assert.deepEqual(opened,['projects']);
 });
-test('work panel renders the work slot',()=>{
- assert.match(text(header(headerLane(),{section:'work',work:'Work content'})),/Work content/);
+test('projects and memory panels render in the subview slot',()=>{
+ assert.match(text(header(headerLane(),{section:'projects',projects:'Projects content'})),/Projects content/);
+ assert.match(text(header(headerLane(),{section:'memory',memoryProject:undefined})),/‹ Chat/);
 });
 
 const settingsMount=(over={})=>mount({projects:[{id:'p',name:'Granted',path:'/existing/p'},{id:'q',name:'Outside',path:'/other/q'}],backend:{supports:cap=>cap==='assistant_project_folder_grant_v1',call:async()=>({assistant:{...record,allowedFolders:['/existing','/other/q'],revision:8}})},lane:{assistant:{...record,allowedFolders:['/existing']}},...over});
