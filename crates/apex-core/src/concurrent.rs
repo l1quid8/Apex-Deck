@@ -552,16 +552,21 @@ impl ConcurrentRoom {
                 room.approvals_handle(),
             )
         };
-        let mut editor = {
+        let (mut editor, held_by) = {
             let mut held = self.editor.lock().unwrap();
-            if request.access != Some(Access::Read) && held.is_none() {
-                *held = Some(ticket.id.clone());
-                sink(RoomEvent::EditorChanged { id: held.clone() });
-                Some(EditorGuard { editor: self.editor.clone(), sink, retained: false })
-            } else { None }
+            if request.access != Some(Access::Read) {
+                if held.is_none() {
+                    *held = Some(ticket.id.clone());
+                    sink(RoomEvent::EditorChanged { id: held.clone() });
+                    (Some(EditorGuard { editor: self.editor.clone(), sink, retained: false }), None)
+                } else {
+                    (None, held.clone())
+                }
+            } else {
+                (None, None)
+            }
         };
-        if request.access != Some(Access::Read) && editor.is_none() {
-            let held_by = self.editor.lock().unwrap().clone().unwrap_or_else(|| ParticipantId::new("unknown"));
+        if let Some(held_by) = held_by {
             request.access = Some(Access::Read);
             let mut config = participant.config().clone();
             config.access = Access::Read;

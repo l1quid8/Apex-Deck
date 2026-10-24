@@ -114,6 +114,7 @@ fn second_writer_is_told_why_it_is_read_only() {
             expected_line,
             req.system
         );
+        assert!(!req.system.contains("unknown is editing"));
 
         let read_only_events: Vec<_> = events.lock().unwrap().iter().filter_map(|e| match e {
             RoomEvent::ReadOnlyTurn { id, editor, reason } => Some((id.clone(), editor.clone(), reason.clone())),
@@ -124,6 +125,7 @@ fn second_writer_is_told_why_it_is_read_only() {
             ParticipantId::new("A"),
             "no copy available".to_string(),
         )]);
+        assert_ne!(read_only_events[0].1.as_str(), "unknown");
     });
 }
 
