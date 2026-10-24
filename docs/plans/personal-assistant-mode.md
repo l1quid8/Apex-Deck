@@ -96,7 +96,7 @@ Taken from Dot's Tasks and memory, Controls and Admin guide pages (read 2026-10-
 | Isolated git worktrees, verified integration, journalled apply with crash reconcile | `assistant_git.rs`, `assistant_isolation.rs` | [S][T] | `interrupted_isolated_apply_reconciles_after_host_restart` |
 | Spend limit per task, pause and resume at the limit | `assistant_service.rs` (`budget_exceeded`, `resume_budget`) | [S][T] | Unknown cost is **not** handled (section 1.6) |
 | Cross-project reasoning (`assistant_overview`) | `assistant_overview.rs`, `src/apexAgentOverview.ts` | [S][T] | Read-only |
-| Floating avatar + one combined conversation, `⌘K`, `⋯` menu, Retry/Discard | `src/ApexAgentAll.tsx`, `ApexAgentWidget.tsx`, `apex-agent-dock.css`, `apexAgentDockModel.ts` | [S][T][O] | `tests/apex-agent-all-component.test.mjs`; v3/v4 install reports |
+| Header avatar + one combined conversation, `⌘K`, `⋯` menu, Retry/Discard | `src/ApexAgentAll.tsx`, `src/AssistantWorkspace.tsx` (`AssistantWorkspaceAvatar`), `apex-agent-dock.css`, `apexAgentDockModel.ts` | [S][T][O] | `tests/apex-agent-all-component.test.mjs`; v3/v4 install reports |
 | Per-project assistant on the phone | `src/phone/PhoneApp.tsx:460-533` (calls `monitor_get`, `assistant_tasks_list`) | [S] | Never observed on a physical iPhone (`docs/apexagent-v3-validation-2026-10-09.md`, "Limits") |
 | Host event for task changes | `events.rs` `AssistantTasksChanged` | [S] | |
 | Daemon announces capabilities | `crates/apex-daemon/src/protocol.rs:303-306` (`version`, `capabilities`) | [S] | `version` is only `CARGO_PKG_VERSION`. It has no commit id. |
@@ -119,8 +119,8 @@ Taken from Dot's Tasks and memory, Controls and Admin guide pages (read 2026-10-
 |---|---|---|
 | Combined cross-project conversation history | Mac `localStorage` key `apex-agent-overview-history` (`src/apexAgentOverview.ts:34`) | Invisible to the phone. Lost if Mac storage is cleared. |
 | Handoff batches | Mac `localStorage` (`src/apexAgentOverview.ts:75-83`) | Same. |
-| Assistant name, colour, shape | Mac `localStorage` (`src/ApexAgentWidget.tsx:56-57`) | Identity isn't host-owned. |
-| Quiet hours | Mac `localStorage` (`src/ApexAgentWidget.tsx:60-61`) | Host-side proactivity can't respect them. |
+
+**No longer client-owned.** Assistant identity and proactivity settings moved to the host: `name`, `look` (seed, colour, shape, image) and `quiet_hours` are fields on the `PersonalAssistant` record (`crates/apex-host/src/personal.rs:320-359`) in `<data>/saved-chats-v1/personal-assistants.json`. Quiet hours are enforced host-side (`personal_worker/notify.rs:21`). The header avatar that renders the look is `AssistantWorkspaceAvatar` (`src/AssistantWorkspace.tsx:19`), which reads it through `assistantAppearance`. The old client-side `apex-agent-widget-look-v2` key and the floating-widget component are gone.
 
 ### 1.6 Concrete defects found during the audit (fix in place, no replacement needed)
 
