@@ -673,7 +673,7 @@ impl Room {
         let outsider = ParticipantId::new("");
         let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
-        let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false };
+        let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None };
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
@@ -818,6 +818,7 @@ impl Room {
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
             plan: false,
+            cwd: None,
         };
         if self.plan.load(Ordering::SeqCst) {
             request.plan = true;

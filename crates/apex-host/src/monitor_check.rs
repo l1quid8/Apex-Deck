@@ -193,6 +193,7 @@ INPUT: {input}"#
             plan: false,
             access: Some(apex_core::Access::Read),
             effort_override: None,
+            cwd: None,
         },
         aliases,
     )

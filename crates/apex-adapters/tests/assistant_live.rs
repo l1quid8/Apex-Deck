@@ -11,7 +11,7 @@ async fn live_assistant_provider_reply_history_and_file_boundary() {
     let model=std::env::var("APEX_ASSISTANT_SMOKE_MODEL").ok().or_else(||installed_models(tool).first().map(|m|m.id.clone()));
     let profile:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"qa","display_name":"QA Assistant","backend":{"kind":"agent","tool":tool,"model":model},"access":"full"})).unwrap();
     let bot=build_assistant(profile,&BuildContext{path:std::env::var("PATH").ok(),..Default::default()}).unwrap();
-    let request=|text:String|TurnRequest {access:None,effort_override:None,system:"You are QA Assistant. Reply briefly using only the supplied conversation. Do not use tools.".into(),turns:vec![ViewTurn{role:Role::User,content:"My test color is cobalt.".into()},ViewTurn{role:Role::Assistant,content:"Your test color is cobalt.".into()},ViewTurn{role:Role::User,content:text}],unseen:vec![],plan:false};
+    let request=|text:String|TurnRequest {access:None,effort_override:None,system:"You are QA Assistant. Reply briefly using only the supplied conversation. Do not use tools.".into(),turns:vec![ViewTurn{role:Role::User,content:"My test color is cobalt.".into()},ViewTurn{role:Role::Assistant,content:"Your test color is cobalt.".into()},ViewTurn{role:Role::User,content:text}],unseen:vec![],plan:false,cwd:None};
     let deltas=Mutex::new(String::new());
     let progress=|p:Progress<'_>|if let Progress::Text(text)=p {deltas.lock().unwrap().push_str(text)};
     let reply=tokio::time::timeout(std::time::Duration::from_secs(180),bot.respond_with_progress(request("State my test color and include ASSISTANT_PROVIDER_OK.".into()),&progress)).await.unwrap().unwrap();

@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn turn(unseen: Vec<Message>, turns: Vec<ViewTurn>) -> TurnRequest {
-        TurnRequest { access: None, effort_override: None, system: String::new(), turns, unseen, plan: false }
+        TurnRequest { access: None, effort_override: None, system: String::new(), turns, unseen, plan: false, cwd: None }
     }
 
     #[test]

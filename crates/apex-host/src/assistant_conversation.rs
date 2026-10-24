@@ -1375,6 +1375,7 @@ pub fn prompt(request: &ConversationRequest) -> TurnRequest {
         plan: false,
         access: Some(Access::Read),
         effort_override: None,
+        cwd: None,
     }
 }
 

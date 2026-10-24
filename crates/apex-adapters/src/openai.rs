@@ -319,7 +319,7 @@ impl Participant for OpenAiCompatParticipant {
         let mut turn = match &self.tools {
             Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
                 let access = request.access.unwrap_or(self.config.access);
-                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress))
+                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_cwd(request.cwd))
             }
             _ => None,
         };
@@ -751,7 +751,7 @@ mod tests {
 
     #[test]
     fn effort_is_only_in_the_request_when_set() {
-        let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false };
+        let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false, cwd: None };
         assert!(request_body("m", None, &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert!(request_body("m", Some("  "), &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert_eq!(request_body("m", Some("high"), &request, &[]).unwrap()["reasoning_effort"], "high");
@@ -798,7 +798,7 @@ mod tests {
         std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
         let text = format!("Describe this\nAttached image: {}", path.display());
         let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
-            turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false };
+            turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false, cwd: None };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][0]["type"], "text");
@@ -813,7 +813,7 @@ mod tests {
         let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text.clone() },
                 apex_core::ViewTurn { role: Role::Assistant, content: text.clone() }],
-            unseen: vec![apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false };
+            unseen: vec![apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false, cwd: None };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");

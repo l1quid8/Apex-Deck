@@ -49,6 +49,7 @@ fn request(text: &str) -> TurnRequest {
         turns: vec![ViewTurn { role: Role::User, content: format!("[Human]: {text}") }],
         unseen: vec![],
         plan: false,
+        cwd: None,
     }
 }
 

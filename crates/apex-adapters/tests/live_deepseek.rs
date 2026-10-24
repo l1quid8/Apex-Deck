@@ -69,6 +69,7 @@ fn request(content: String, think: bool) -> TurnRequest {
         }],
         unseen: vec![],
         plan: false,
+        cwd: None,
     }
 }
 
