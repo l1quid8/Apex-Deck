@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { newestFirst, readArtifacts } from '../src/artifacts.ts';
+import { fromReply, newestFirst, readArtifacts } from '../src/artifacts.ts';
 
 // assistantOutputs.ts imports './artifacts' without an extension, which the node
 // runner cannot resolve; it is stripped and the real artifact helpers are bound
@@ -14,8 +14,9 @@ const code = transform(source.replace(/^export /gm, ''), { transforms: ['typescr
 const api = new Function(
   'newestFirst',
   'readArtifacts',
-  `${code}\nreturn {kindOfOutputPath,outputName,outputsFromArtifacts,outputsFromChanges,mergeOutputs,outputsLine,previewSource,loadOutputs,OUTPUT_MARK,MAX_PREVIEW,MAX_OUTPUT_THREADS};`,
-)(newestFirst, readArtifacts);
+  'fromReply',
+  `${code}\nreturn {kindOfOutputPath,outputName,outputsFromArtifacts,outputsFromChanges,mergeOutputs,outputsLine,previewSource,loadOutputs,OUTPUT_MARK,MAX_PREVIEW,MAX_OUTPUT_THREADS,assistantRoomId,promoteReply};`,
+)(newestFirst, readArtifacts, fromReply);
 
 const art = (id, kind, at, path, source = 'body') => ({
   id,
@@ -137,4 +138,52 @@ test('only the most recent threads are asked', async () => {
   const tasks = Array.from({ length: api.MAX_OUTPUT_THREADS + 4 }, (_, i) => ({ id: `t${i}`, destination: { threadId: `thread-${i}` } }));
   await api.loadOutputs(backend, tasks);
   assert.equal(asked, api.MAX_OUTPUT_THREADS);
+});
+
+test('a live reply in the assistant chat becomes an output in its own room', () => {
+  const seen = new Set();
+  const reply = { id: 'm1', role: 'assistant', text: 'Here is the page.', at: 1700000000000 };
+  const first = api.promoteReply({ version: 1, artifacts: [] }, seen, reply, [{ language: 'html', text: '<h1>Report</h1>' }], 'asst-1', 'art-1');
+  assert.equal(first.added, true);
+  assert.equal(first.file.artifacts.length, 1);
+  assert.equal(first.file.artifacts[0].kind, 'html');
+  assert.equal(first.file.artifacts[0].versions[0].by, 'asst-1');
+  assert.equal(api.assistantRoomId('asst-1'), 'assistant:asst-1', 'the room key the store hex-encodes');
+  // The same reply, seen again on a re-render, adds nothing.
+  const again = api.promoteReply(first.file, seen, reply, [{ language: 'html', text: '<h1>Report</h1>' }], 'asst-1', 'art-2');
+  assert.equal(again.added, false);
+  assert.equal(again.file.artifacts.length, 1);
+});
+
+test('markdown fences, human messages and empty replies are not promoted', () => {
+  const seen = new Set();
+  const markdown = api.promoteReply({ version: 1, artifacts: [] }, seen, { id: 'm2', role: 'assistant', text: 'example', at: 1 }, [{ language: 'md', text: '# Title' }], 'asst-1', 'art-3');
+  assert.equal(markdown.added, false, 'a markdown fence is usually an example, so it waits');
+  const human = api.promoteReply({ version: 1, artifacts: [] }, seen, { id: 'm3', role: 'human', text: 'hi', at: 2 }, [{ language: 'html', text: '<p>hi</p>' }], 'asst-1', 'art-4');
+  assert.equal(human.added, false, 'the Human writes their own messages');
+  const none = api.promoteReply({ version: 1, artifacts: [] }, seen, { id: 'm4', role: 'assistant', text: 'no code', at: 3 }, [], 'asst-1', 'art-5');
+  assert.equal(none.added, false);
+});
+
+test('the assistant chat is read even when no task threads exist', async () => {
+  const asked = [];
+  const backend = {
+    artifactsLoad: async (room) => {
+      asked.push(room);
+      return room === 'assistant:asst-1' ? { version: 1, artifacts: [{ id: 'a1', title: 'Report', kind: 'html', versions: [{ n: 1, source: '<h1>Report</h1>', by: 'asst-1', seq: null, at: 5 }] }] } : null;
+    },
+    roomDiff: async () => ({ files: [] }),
+  };
+  const list = await api.loadOutputs(backend, [], 'asst-1');
+  assert.deepEqual(asked, ['assistant:asst-1'], 'the assistant room is the only thing asked');
+  assert.deepEqual(list.map((o) => o.name), ['Report']);
+  assert.equal(list[0].artifact.kind, 'html', 'an output row carries the artifact so it can be previewed');
+});
+
+test('a damaged assistant room degrades to no outputs instead of throwing', async () => {
+  const backend = {
+    artifactsLoad: async (room) => (room === 'assistant:asst-1' ? { nope: true } : null),
+    roomDiff: async () => ({ files: [] }),
+  };
+  assert.deepEqual(await api.loadOutputs(backend, [], 'asst-1'), []);
 });

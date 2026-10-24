@@ -1947,8 +1947,8 @@ export function App() {
   const openAssistantBrowser=()=>{navigateAssistant('chat');setAssistantBrowser('popup');};
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
-  /** What this session's tasks made: documents, exports and pages from their threads. */
-  const assistantOutputsState = useAssistantOutputs(assistantBackend, selectedDelegatedTasks);
+  /** What this session's tasks and its own chat made: documents, exports and pages. */
+  const assistantOutputsState = useAssistantOutputs(assistantBackend, selectedDelegatedTasks, selectedAssistant?.ref?.assistantId, selectedAssistant?.assistant?.messages ?? []);
   // Only ambiguous assignments need an owning-host folder read; no global scan or polling.
   const aliasCandidates=assignedProjects.flatMap(binding=>workspaces.filter(workspace=>!workspace.hidden&&workspace.id===binding.project.workspaceId&&workspace.path!==binding.project.cwd&&authenticatedProjectHost(workspaceHost(workspace))===binding.project.hostId&&!snapshotProjectForWorkspace(workspace)).map(workspace=>({workspace,project:binding.project})));
   const aliasCandidatesKey=JSON.stringify(aliasCandidates.map(({workspace,project})=>[projectAliasKey(workspace,project.hostId),project.cwd]));

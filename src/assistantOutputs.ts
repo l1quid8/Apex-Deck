@@ -9,8 +9,45 @@
 //     .json, .csv, .pdf, a config file. Only paths with a known deliverable
 //     extension appear; anything else, source code included, is left alone.
 
-import { newestFirst, readArtifacts, type Artifact, type ArtifactFile, type ArtifactKind } from './artifacts';
+import { fromReply, newestFirst, readArtifacts, type Artifact, type ArtifactFile, type ArtifactKind } from './artifacts';
 import type { DiffFile } from './types';
+
+/**
+ * The artifacts room the assistant's own chat keeps its outputs in. The store
+ * hex-encodes the room id into a filename, so any string is a valid key and
+ * this needs no host change; `assistant:<id>` is the id its calls already use.
+ */
+export function assistantRoomId(assistantId: string): string {
+  return `assistant:${assistantId}`;
+}
+
+/** A reply the assistant is making in its own chat, as far as outputs care. */
+export interface OutputReply {
+  id: string;
+  role: string;
+  text: string;
+  at: number;
+}
+
+/** One of a reply's fenced code blocks, as markdownText.parseBlocks returns it. */
+export interface ReplyCode {
+  language: string;
+  text: string;
+}
+
+/**
+ * Promote a live reply's HTML or SVG into the assistant's artifacts, the way a
+ * thread's replies are promoted. Only the kinds `fromReply` accepts become
+ * outputs — a markdown fence is usually an example, not a deliverable — and a
+ * reply is looked at once, tracked by id, so a re-render adds nothing twice.
+ */
+export function promoteReply(file: ArtifactFile, seen: Set<string>, reply: OutputReply, code: ReplyCode[], by: string, newId: string): { file: ArtifactFile; added: boolean } {
+  if (reply.role !== 'assistant' || seen.has(reply.id)) return { file, added: false };
+  seen.add(reply.id);
+  if (code.length === 0) return { file, added: false };
+  const out = fromReply(file, code, { source: '', by, seq: null, at: reply.at }, newId);
+  return { file: out.file, added: Boolean(out.artifact) };
+}
 
 /** What a deliverable is, for its mark and its label. */
 export type OutputKind = 'doc' | 'data' | 'view';
@@ -143,11 +180,12 @@ export interface OutputsTask {
 export const MAX_OUTPUT_THREADS = 8;
 
 /**
- * Read this session's outputs. A thread that can't be read contributes nothing
- * rather than failing the list; a folder that isn't a repository has no file
- * rows, which is normal for a task that only wrote a document.
+ * Read this session's outputs: the assistant's own chat first, then each task
+ * thread. A thread that can't be read contributes nothing rather than failing
+ * the list; a folder that isn't a repository has no file rows, which is normal
+ * for a task that only wrote a document.
  */
-export async function loadOutputs(backend: OutputsBackend, tasks: OutputsTask[]): Promise<AssistantOutput[]> {
+export async function loadOutputs(backend: OutputsBackend, tasks: OutputsTask[], assistantId?: string): Promise<AssistantOutput[]> {
   const seen = new Set<string>();
   const wanted: { threadId: string; cwd?: string; taskId: string }[] = [];
   for (const task of tasks) {
@@ -157,14 +195,19 @@ export async function loadOutputs(backend: OutputsBackend, tasks: OutputsTask[])
     wanted.push({ threadId, cwd: task.owner?.cwd, taskId: task.id });
     if (wanted.length >= MAX_OUTPUT_THREADS) break;
   }
-  const lists = await Promise.all(wanted.map(async ({ threadId, cwd, taskId }) => {
-    const [raw, diff] = await Promise.all([
-      backend.artifactsLoad(threadId).catch(() => null),
-      backend.roomDiff(threadId).catch(() => null),
-    ]);
-    const artifacts = raw === null ? [] : outputsFromArtifacts(readArtifactsSafe(raw), threadId, cwd, taskId);
-    return [...artifacts, ...outputsFromChanges(diff?.files ?? [], threadId, cwd, taskId)];
-  }));
+  const room = assistantId ? assistantRoomId(assistantId) : null;
+  const lists = await Promise.all([
+    // What the assistant made in its own chat: the main place things get made.
+    ...(room ? [backend.artifactsLoad(room).catch(() => null).then((raw) => (raw === null ? [] : outputsFromArtifacts(readArtifactsSafe(raw), room)))] : []),
+    ...wanted.map(async ({ threadId, cwd, taskId }) => {
+      const [raw, diff] = await Promise.all([
+        backend.artifactsLoad(threadId).catch(() => null),
+        backend.roomDiff(threadId).catch(() => null),
+      ]);
+      const artifacts = raw === null ? [] : outputsFromArtifacts(readArtifactsSafe(raw), threadId, cwd, taskId);
+      return [...artifacts, ...outputsFromChanges(diff?.files ?? [], threadId, cwd, taskId)];
+    }),
+  ]);
   return mergeOutputs(...lists);
 }
 
