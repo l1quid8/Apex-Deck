@@ -1901,18 +1901,34 @@ async fn tools_disabled_denies_ask_user_question_without_consulting_the_approver
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[tokio::test]
-async fn tools_disabled_fails_closed_for_agents_without_a_verified_tool_gate() {
+async fn tools_disabled_fails_closed_without_supported_process_isolation() {
     use apex_core::AgentTool;
     let dir = fake_tool("agent-tools-disabled-unsupported", "codex", "#!/bin/sh\necho ran > invoked\nexit 90\n");
-    for tool in [AgentTool::Codex, AgentTool::Grok] {
+    for tool in [AgentTool::Codex, AgentTool::Grok, AgentTool::Gemini, AgentTool::Muse] {
         let bot = CliParticipant::new(config("monitor", Backend::Agent { tool, model: None }))
             .with_context(&context_in(&dir)).with_tools_disabled();
         let (result, _) = ask(&bot, "inspect evidence").await;
         let error = result.unwrap_err().to_string();
-        assert!(error.contains("verified tool-free mode"), "{tool:?}: {error}");
+        assert!(error.contains("requires the macOS process sandbox"), "{tool:?}: {error}");
         assert!(!dir.join("invoked").exists(), "{tool:?} must fail before process launch");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn tools_disabled_rejects_planning_before_starting_any_known_agent() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("agent-tools-disabled-plan", "codex", "#!/bin/sh\necho ran > invoked\nexit 90\n");
+    for tool in [AgentTool::ClaudeCode, AgentTool::Codex, AgentTool::Grok, AgentTool::Gemini, AgentTool::Muse] {
+        let bot = CliParticipant::new(config("assistant", Backend::Agent { tool, model: None }))
+            .with_context(&context_in(&dir)).with_tools_disabled();
+        let result = bot.respond(planning("inspect evidence"), &|_| {}).await;
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("Text-only turns cannot request workspace access or planning tools"), "{tool:?}: {error}");
+        assert!(!dir.join("invoked").exists(), "{tool:?} must refuse planning before process launch");
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
