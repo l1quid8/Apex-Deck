@@ -106,6 +106,9 @@
 .assistant-workspace .assistant-session{padding:3px 10px 3px 4px;max-width:min(70%,480px)}
 .assistant-workspace .assistant-workspace-problem~.assistant-workspace-head{position:relative}
 .assistant-workspace .apex-agent-tabpanel{padding-top:0}
+/* The composer floats too: the chat scrolls right up to and behind the message box, not to a ruled-off strip above it. */
+.assistant-workspace .assistant-conversation>.assistant-thread-composer{position:absolute;left:0;right:0;bottom:0;z-index:2;border-top:0;background:linear-gradient(to bottom,transparent,var(--bg) 10px)}
+.assistant-workspace .assistant-conversation:has(>.assistant-thread-composer:not([hidden])) .apex-agent-tabpanel{padding-bottom:calc(var(--assistant-browser-bottom,112px) + 12px)}
 .assistant-workspace .assistant-workspace-subview{padding-top:78px}
 @container (max-width:580px){
  .assistant-workspace .assistant-workspace-head{padding:0 14px;gap:8px}
