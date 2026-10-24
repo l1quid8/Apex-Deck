@@ -160,3 +160,18 @@ test('fitTabs moves icons that still do not fit into the menu, never the open ta
   assert.deepEqual(fitTabs(ws, 1, 150, 'icons').shown, [true, true, true, true, true, false, false]);
   assert.deepEqual(fitTabs(ws, 0, 1000, 'all').shown, ws.map(() => true));
 });
+
+test('the assistant browser is one tab of its own, not the URL browser', () => {
+  const first = openTab(defaultPanel(), 'assistantbrowser', 100);
+  assert.deepEqual(kinds(first), ['dashboard', 'tasks', 'details', 'assistantbrowser'], 'it sits beside the fixed tabs');
+  assert.equal(first.active, 'assistantbrowser');
+  const twice = openTab(first, 'assistantbrowser', 200);
+  assert.equal(kinds(twice).filter((kind) => kind === 'assistantbrowser').length, 1, 'opening it again reuses the one tab');
+  assert.equal(twice.tabs.length, first.tabs.length);
+  const url = openTab(first, 'browser', 300, 'https://example.com');
+  assert.deepEqual(kinds(url).filter((kind) => kind === 'browser' || kind === 'assistantbrowser'), ['assistantbrowser', 'browser'], 'it never replaces or merges with the URL browser');
+  const closed = closeTab(first, first.active);
+  assert.equal(kinds(closed).includes('assistantbrowser'), false, 'its x closes only that tab');
+  assert.deepEqual(kinds(closed), ['dashboard', 'tasks', 'details'], 'the fixed tabs stay');
+  assert.equal(parsePanel(JSON.stringify(first)).tabs.some((tab) => tab.kind === 'assistantbrowser'), true, 'a saved panel keeps it');
+});

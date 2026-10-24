@@ -5,8 +5,10 @@ export type AssistantBrowserPresentation = BrowserPresentation | 'closed';
 export type AssistantBrowserProps = {
   lane: PersonalLane;
   presentation: AssistantBrowserPresentation;
-  onExpand: () => void;
-  onReturnToChat: () => void;
+  /** Omitted in the sidebar tab, where there is nowhere to expand to. */
+  onExpand?: () => void;
+  /** Omitted in the sidebar tab, where "return to chat" is the Details tab's job. */
+  onReturnToChat?: () => void;
   onClose: () => void;
 };
 

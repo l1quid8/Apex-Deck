@@ -101,7 +101,7 @@ import { RightBrowser } from "./RightBrowser";
 import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
-import { closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
+import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -439,7 +439,11 @@ export function App() {
   const closeDetails = () => guardUnsavedEdits(() => { setDetailsOpen(false); detailsToggle.current?.focus(); });
   const changePanel = (next: RightPanelState) => {
     const closesFiles = panel.tabs.some((tab) => tab.kind === "files") && !next.tabs.some((tab) => tab.kind === "files");
-    if (closesFiles) guardUnsavedEdits(() => setPanel(next)); else setPanel(next);
+    // Closing the assistant's browser tab goes back to Details. It never touches
+    // who controls the page, so closing the view cannot hand it back silently.
+    const closesAssistantBrowser = panel.tabs.some((tab) => tab.kind === "assistantbrowser") && !next.tabs.some((tab) => tab.kind === "assistantbrowser");
+    const settled = closesAssistantBrowser && mainView.kind === "assistant" ? activate(next, "details", Date.now()) : next;
+    if (closesFiles) guardUnsavedEdits(() => setPanel(settled)); else setPanel(settled);
   };
   // Esc leaves full screen. It never hides the panel, and it leaves typing and open menus or dialogs alone.
   useEffect(() => {
@@ -1945,6 +1949,10 @@ export function App() {
   const openWorkItem=(item:WorkItem,origin:'chat'|'work'='work')=>{setWorkDetailOrigin(origin);if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId,nonce:Date.now()});navigateAssistant('projects');return;}const owner=selectedAssistant?.assistant;if(owner)setChatFocus({key:personalTaskKey(owner.hostId,item.taskId,selectedAssistant?.ref?.assistantId),nonce:Date.now(),origin});navigateAssistant('chat');};
   const navigateAssistant = (section:AssistantSection) => {setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);};
   const openAssistantBrowser=()=>{navigateAssistant('chat');setAssistantBrowser('popup');};
+  /** The Browser card opens the assistant's browser as a tab beside Details, not a pop-up (§5.3). */
+  const openAssistantBrowserTab=()=>{setPanel(current=>openTab(current,'assistantbrowser',Date.now()));};
+  /** Closing that tab returns to Details; it leaves whoever controls the page in control. */
+  const closeAssistantBrowserTab=()=>{const tab=panel.tabs.find(item=>item.kind==='assistantbrowser');if(tab)changePanel(closeTab(panel,tab.id));};
   /** Starts the assistant's voice call. The strip and Details share this one path. */
   const startAssistantCall = () => {
     if (!selectedAssistant) return;
@@ -2771,6 +2779,9 @@ export function App() {
                 return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes} onOpenThread={id => { const workspace = row.project ? resolveAssistantProject(row.project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace) : null; const pane = workspace ? viewPanes.find(item => item.id === id && item.workspaceId === workspace.id) : undefined; if (pane) focusPane(pane); }} />;
               }} />,
               browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
+              assistantbrowser: (_tab, visible) => mainView.kind === "assistant" && selectedAssistant
+                ? <AssistantBrowser lane={selectedAssistant} presentation={visible ? "expanded" : "closed"} onClose={closeAssistantBrowserTab} />
+                : <p className="muted right-panel-empty">Open an assistant to see its browser.</p>,
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
               files: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
@@ -2790,7 +2801,7 @@ export function App() {
                 ? <div ref={setArtifactsSlot} tabIndex={-1} className="right-artifacts-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its artifacts.</p>,
               details: (_tab, visible) => mainView.kind === "assistant" && selectedAssistant
-                ? <AssistantDetails lane={selectedAssistant} backend={assistantBackend??undefined} profiles={profiles} tasks={selectedDelegatedTasks} outputs={assistantOutputsState.outputs} outputsLoading={assistantOutputsState.loading} outputsProblem={assistantOutputsState.problem} onOpenFile={(path, cwd) => { void assistantBackend?.openTarget(path, cwd, false); }} onClose={closeDetails} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} onGoToChat={() => { if (overlayDetails) closeDetails(); }} />
+                ? <AssistantDetails lane={selectedAssistant} backend={assistantBackend??undefined} profiles={profiles} tasks={selectedDelegatedTasks} outputs={assistantOutputsState.outputs} outputsLoading={assistantOutputsState.loading} outputsProblem={assistantOutputsState.problem} onOpenFile={(path, cwd) => { void assistantBackend?.openTarget(path, cwd, false); }} onClose={closeDetails} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser} onOpenBrowserTab={openAssistantBrowserTab} onRefresh={() => void assistants.refresh()} onStartCall={startAssistantCall} onGoToChat={() => { if (overlayDetails) closeDetails(); }} />
                 : detailsTarget
                 ? <div ref={setDetailsSlot} tabIndex={-1} className="right-details-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its details.</p>,
