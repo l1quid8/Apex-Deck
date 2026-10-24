@@ -169,50 +169,121 @@ pub fn snapshot_tree(root: &Path) -> Result<String, String> {
     Ok(commit)
 }
 
+fn validate_identifier(name: &str, kind: &str) -> Result<(), String> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(format!("Invalid {kind} name: cannot be empty, '.' or '..'"));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(format!(
+            "Invalid {kind} name: only letters, digits, '-', '_' and '.' are allowed"
+        ));
+    }
+    Ok(())
+}
+
+fn cleanup_copy_artifacts(root: &Path, data: &Path, thread: &str, bot: &str, work: &Path) {
+    let work_str = work.to_str().unwrap_or_default();
+    let _ = run_git(root, &[], &["worktree", "remove", "--force", work_str]);
+    let _ = run_git(root, &[], &["worktree", "prune"]);
+    if work.exists() {
+        let _ = std::fs::remove_dir_all(work);
+    }
+
+    let ref_name = format!("refs/apex-copies/{thread}/{bot}/base");
+    let _ = run_git(root, &[], &["update-ref", "-d", &ref_name]);
+
+    let bot_dir = data.join("bot-copies").join(thread).join(bot);
+    let _ = std::fs::remove_dir_all(&bot_dir);
+
+    let thread_dir = data.join("bot-copies").join(thread);
+    if let Ok(mut entries) = std::fs::read_dir(&thread_dir) {
+        if entries.next().is_none() {
+            let _ = std::fs::remove_dir(&thread_dir);
+        }
+    }
+}
+
 pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<BotCopy, String> {
+    validate_identifier(thread, "thread")?;
+    validate_identifier(bot, "bot")?;
+
     let root = verify_git_repo(root)?;
-    let base = snapshot_tree(&root)?;
 
     let copy_dir = data.join("bot-copies").join(thread).join(bot);
     let work = copy_dir.join("work");
+    let copy_json = copy_dir.join("copy.json");
 
-    std::fs::create_dir_all(&copy_dir)
-        .map_err(|e| format!("Could not create bot copy directory: {e}"))?;
+    if work.exists() || copy_json.exists() {
+        return Err("this bot already has a copy".into());
+    }
+
+    let base = snapshot_tree(&root)?;
 
     let ref_name = format!("refs/apex-copies/{thread}/{bot}/base");
-    run_git(&root, &[], &["update-ref", &ref_name, &base])?;
 
-    if work.exists() {
-        let _ = run_git(&root, &[], &["worktree", "remove", "--force", work.to_str().unwrap()]);
-        let _ = std::fs::remove_dir_all(&work);
-    }
+    let res = (|| -> Result<BotCopy, String> {
+        std::fs::create_dir_all(&copy_dir)
+            .map_err(|e| format!("Could not create bot copy directory: {e}"))?;
 
-    let work_str = work.to_str().ok_or("Invalid UTF-8 in worktree path")?;
-    run_git(&root, &[], &["worktree", "add", "--detach", "--lock", work_str, &base])?;
+        run_git(&root, &[], &["update-ref", &ref_name, &base])?;
 
-    for rel in SHARED_SHORTCUT_PATHS {
-        let target = root.join(rel);
-        let link = work.join(rel);
-        if link.exists() || link.is_symlink() {
-            let _ = std::fs::remove_file(&link);
-            let _ = std::fs::remove_dir_all(&link);
+        let work_str = work.to_str().ok_or("Invalid UTF-8 in worktree path")?;
+        run_git(
+            &root,
+            &[],
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "worktree",
+                "add",
+                "--detach",
+                "--lock",
+                work_str,
+                &base,
+            ],
+        )?;
+
+        for rel in SHARED_SHORTCUT_PATHS {
+            let target = root.join(rel);
+            let link = work.join(rel);
+            if link.exists() || link.is_symlink() {
+                let _ = std::fs::remove_file(&link);
+                let _ = std::fs::remove_dir_all(&link);
+            }
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&target, &link).map_err(|e| {
+                    format!(
+                        "Could not symlink {} to {}: {e}",
+                        target.display(),
+                        link.display()
+                    )
+                })?;
+            }
         }
-        #[cfg(unix)]
-        {
-            let _ = std::os::unix::fs::symlink(&target, &link);
+
+        let copy = BotCopy {
+            thread: thread.to_string(),
+            bot: bot.to_string(),
+            root: root.clone(),
+            work: work.clone(),
+            base,
+            state: CopyState::Working,
+        };
+        save_state(data, &copy)?;
+        Ok(copy)
+    })();
+
+    match res {
+        Ok(copy) => Ok(copy),
+        Err(err) => {
+            cleanup_copy_artifacts(&root, data, thread, bot, &work);
+            Err(err)
         }
     }
-
-    let copy = BotCopy {
-        thread: thread.to_string(),
-        bot: bot.to_string(),
-        root,
-        work,
-        base,
-        state: CopyState::Working,
-    };
-    save_state(data, &copy)?;
-    Ok(copy)
 }
 
 pub fn save_state(data: &Path, copy: &BotCopy) -> Result<(), String> {
@@ -261,26 +332,7 @@ pub fn load_copies(data: &Path) -> Vec<BotCopy> {
 }
 
 pub fn remove_copy(data: &Path, copy: &BotCopy) -> Result<(), String> {
-    if copy.work.exists() {
-        let work_str = copy.work.to_str().unwrap_or_default();
-        let _ = run_git(&copy.root, &[], &["worktree", "remove", "--force", work_str]);
-        let _ = run_git(&copy.root, &[], &["worktree", "prune"]);
-        let _ = std::fs::remove_dir_all(&copy.work);
-    }
-
-    let ref_name = format!("refs/apex-copies/{}/{}/base", copy.thread, copy.bot);
-    let _ = run_git(&copy.root, &[], &["update-ref", "-d", &ref_name]);
-
-    let bot_dir = data.join("bot-copies").join(&copy.thread).join(&copy.bot);
-    let _ = std::fs::remove_dir_all(&bot_dir);
-
-    let thread_dir = data.join("bot-copies").join(&copy.thread);
-    if let Ok(mut entries) = std::fs::read_dir(&thread_dir) {
-        if entries.next().is_none() {
-            let _ = std::fs::remove_dir(&thread_dir);
-        }
-    }
-
+    cleanup_copy_artifacts(&copy.root, data, &copy.thread, &copy.bot, &copy.work);
     Ok(())
 }
 
@@ -514,6 +566,68 @@ mod tests {
         assert!(
             run_git(&root, &[], &["rev-parse", "--verify", &ref_name]).is_err(),
             "Ref was not deleted"
+        );
+    }
+
+    #[test]
+    fn create_copy_refuses_when_a_copy_already_exists() {
+        let (_tmp, root, data) = init_repo("existing-copy");
+        let copy = create_copy(&root, &data, "thread-dup", "bot-dup").unwrap();
+
+        let work_file = copy.work.join("in_progress.txt");
+        fs::write(&work_file, "unsaved work in copy").unwrap();
+
+        let err = create_copy(&root, &data, "thread-dup", "bot-dup").unwrap_err();
+        assert!(
+            err.contains("already has a copy"),
+            "Expected already has a copy error, got: {err}"
+        );
+
+        assert!(
+            work_file.exists(),
+            "Work file was wiped when second create_copy was called"
+        );
+        assert_eq!(
+            fs::read_to_string(&work_file).unwrap(),
+            "unsaved work in copy"
+        );
+    }
+
+    #[test]
+    fn create_copy_rejects_unsafe_names() {
+        let (_tmp, root, data) = init_repo("unsafe-names");
+
+        for bad in &["", ".", "..", "../foo", "foo/bar", "a b", "a*b", "a?b"] {
+            assert!(
+                create_copy(&root, &data, bad, "bot1").is_err(),
+                "Expected error for thread name: {bad:?}"
+            );
+            assert!(
+                create_copy(&root, &data, "thread1", bad).is_err(),
+                "Expected error for bot name: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_copy_ignores_post_checkout_hook() {
+        let (_tmp, root, data) = init_repo("hook-check");
+        let hooks_dir = root.join(".git").join("hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_marker = root.join("hook_ran.txt");
+        let hook_script = format!("#!/bin/sh\ntouch \"{}\"\n", hook_marker.display());
+        let hook_file = hooks_dir.join("post-checkout");
+        fs::write(&hook_file, hook_script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook_file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let _copy = create_copy(&root, &data, "thread-hook", "bot-hook").unwrap();
+        assert!(
+            !hook_marker.exists(),
+            "post-checkout hook was run during worktree add"
         );
     }
 }
