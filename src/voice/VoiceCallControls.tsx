@@ -235,7 +235,7 @@ function NicknameInput({ aliases, onChange }: { aliases: string[]; onChange(alia
 }
 
 /** One settings panel for all three looks: who you're talking to, their voice, the pause, nicknames, and the look itself. */
-function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeof useCall>; candidates: VoiceCandidate[]; onPickLook?: () => void }) {
+function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeof useCall>; candidates: VoiceCandidate[]; onPickLook: () => void }) {
   const { scope, candidate, state, name } = call;
   if (!scope) return null;
   const r = voiceRegistration(scope);
@@ -299,7 +299,9 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
           {CALL_LOOKS.map((l) => (
             <button type="button" key={l.id} aria-pressed={l.id === look} onClick={() => {
               saveSettings({ look: l.id as CallLook });
-              onPickLook?.();
+              // Every look closes its own popup: the controls move to the new
+              // spot, and a popup left behind would reopen in the old one.
+              onPickLook();
             }}>
               {l.label}
             </button>
@@ -337,7 +339,7 @@ export function VoiceCallBar(props: Props) {
       <End />
       {call.ui.open && (
         <Popover anchor={tune} onClose={() => setUi({ open: false })} className="voice-settings" label="Call settings">
-          <CallSettings call={call} candidates={props.candidates} />
+          <CallSettings call={call} candidates={props.candidates} onPickLook={() => setUi({ open: false })} />
         </Popover>
       )}
     </div>
@@ -363,7 +365,7 @@ export function VoiceCallCapsule(props: Props) {
       <End round />
       {call.ui.open && (
         <Popover anchor={capsule} align="center" onClose={() => setUi({ open: false })} className="voice-settings" label="Call settings">
-          <CallSettings call={call} candidates={props.candidates} />
+          <CallSettings call={call} candidates={props.candidates} onPickLook={() => setUi({ open: false })} />
         </Popover>
       )}
     </div>
@@ -576,7 +578,7 @@ export function VoiceCallControls({ disabled = false, ...props }: Props & { disa
       ) : mic}
       {live && look === "pill" && call.ui.open && (
         <Popover anchor={mid} onClose={() => setUi({ open: false })} className="voice-settings" label="Call settings">
-          <CallSettings call={call} candidates={candidates} />
+          <CallSettings call={call} candidates={candidates} onPickLook={() => setUi({ open: false })} />
         </Popover>
       )}
       {menu && (

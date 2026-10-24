@@ -41,9 +41,19 @@ test('VoiceSessionStrip reveals on hover/focus and hides 200ms after leave', () 
   assert.ok(tsxSource.includes('200'));
 });
 
-test('CallSettings closes when look is picked if onPickLook is provided', () => {
-  assert.ok(tsxSource.includes('onPickLook?.()'));
-  assert.ok(tsxSource.includes('onPickLook={() => setUi({ open: false })}'));
+// Picking a look moves the controls, so the popup that offered the choice has to
+// close wherever it was opened — regular threads included, not just the
+// assistant's strip. Enforced by making the prop required: a new call site that
+// forgets it fails to type-check, so this counts them and checks each one.
+test('every call settings popup closes when a look is picked', () => {
+  const sites = tsxSource.split('<CallSettings').slice(1);
+  assert.ok(sites.length >= 4, `expected the bar, capsule, strip and pill popups, found ${sites.length}`);
+  for (const site of sites) {
+    const element = site.slice(0, site.indexOf('/>'));
+    assert.ok(element.includes('onPickLook'), `a call settings popup offers a look change without closing itself: ${element.slice(0, 80)}`);
+  }
+  assert.ok(!tsxSource.includes('onPickLook?:'), 'the prop stays required so no site can opt out silently');
+  assert.ok(tsxSource.includes('onPickLook();'), 'the pick actually closes the popup');
 });
 
 test('AssistantWorkspace displays italic Listening status and Clock when in call', () => {

@@ -19,7 +19,7 @@ function harness(){
  const useEffect=(effect)=>{cursor++;effects.push(effect);};
  const bindings={React,useState,useRef,useEffect,useLayoutEffect(){},useSyncExternalStore(){},voiceController:{subscribe(){return()=>{};}},voiceRegistration,warmVoice(){},chatVoice,preferenceFor,voiceFor,withChatPreference,CALL_LOOKS,callClock,callLine,pickNote,pickRows,readCallLook,voiceLabel,Avatar(){},popoverTop(){},createPortal:node=>node};
  const components=new Function(...Object.keys(bindings),`${code};return {CallSettings,NicknameInput:typeof NicknameInput==='undefined'?null:NicknameInput};`)(...Object.values(bindings));
- return {render(){cursor=0;let tree=components.CallSettings({call:{scope,candidate,state:{voices:['am_michael','af_heart']},name:'Helper'},candidates:[candidate]});if(components.NicknameInput){const node=find(tree,node=>node.type===components.NicknameInput);if(node){const rendered=components.NicknameInput(node.props);Object.assign(node,rendered);}}effects.splice(0).forEach(effect=>effect());return tree;}};
+ return {render(){cursor=0;let tree=components.CallSettings({call:{scope,candidate,state:{voices:['am_michael','af_heart']},name:'Helper'},candidates:[candidate],onPickLook(){}});if(components.NicknameInput){const node=find(tree,node=>node.type===components.NicknameInput);if(node){const rendered=components.NicknameInput(node.props);Object.assign(node,rendered);}}effects.splice(0).forEach(effect=>effect());return tree;}};
 }
 test('consecutive call setting edits retain nickname text and preceding edits before registration effects run',()=>{
  const saved=[],initial=readVoiceSettings({enabled:true,preferences:{other:{voice:'af_heart',aliases:['Other']}}});
