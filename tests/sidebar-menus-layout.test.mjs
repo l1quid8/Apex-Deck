@@ -25,7 +25,7 @@ test('add-project menu escapes sidebar clipping and worktree actions copy the fu
     ].map(w=>({head:'12345678',main:false,locked:false,prunable:false,changes:0,task:false,...w}));
     const backend={hosts:{list:async()=>[{id:'local',name:'This Mac',remote:false},{id:'remote',name:'Apex-Terminal with a very long machine name',remote:true}]},worktreeList:async()=>({root:items[0].path,items})};
     createRoot(document.getElementById('root')).render(h('div',{style:{display:'flex',height:'100%',gap:20}},
-      h('aside',{className:'rail',style:{width:180,height:400}},h('div',{className:'rail-sec'},'Projects',h(WorkspaceHostMenu,{backend,choose:async id=>{fixture.chosen.push(id);},manage:()=>{fixture.managed++;}})),h('div',{style:{height:800}},'Project list')),
+      h('aside',{className:'rail',style:{width:180,height:400}},h('div',{className:'rail-scroll'},h('div',{className:'rail-sec'},'Projects',h(WorkspaceHostMenu,{backend,choose:async id=>{fixture.chosen.push(id);},manage:()=>{fixture.managed++;}})),h('div',{style:{height:800}},'Project list'))),
       h('div',{style:{width:340,height:500}},h(RightWorktreesTab,{root:items[0].path,backend,visible:true,onOpen(){}}))));
   </script>`;
   const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { port: 0 }, logLevel: 'error', plugins: [{ name: 'sidebar-menus', configureServer(s) { s.middlewares.use('/__sidebar_menus', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await s.transformIndexHtml('/__sidebar_menus', html)); }); } }] });
@@ -63,11 +63,11 @@ test('add-project menu escapes sidebar clipping and worktree actions copy the fu
         await run('document.querySelector(".rail").style.width="360px"');await open();
         await run('document.querySelector(".rail").style.width="180px"');await frame();await inside('sidebar resized while open');await shot('project-menu');
         // Moving the scroll container and resizing must keep the popup attached and visible.
-        await run('document.querySelector(".rail").scrollTop=10');await frame();await inside('scrolled');
+        await run('document.querySelector(".rail-scroll").scrollTop=10');await frame();await inside('scrolled');
         await run('document.activeElement.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))');await frame();
         assert.equal(await run('!!document.querySelector("[data-machine-menu]")'),false,'Escape closes menu');
         assert.equal(await run('document.activeElement.hasAttribute("data-add-workspace")'),true,'Escape restores focus');
-        await run('document.querySelector(".rail").scrollTop=0');await open();
+        await run('document.querySelector(".rail-scroll").scrollTop=0');await open();
         win.setContentSize(300,300);await frame();await inside('small viewport');
         win.setContentSize(900,650);await frame();await inside('resized viewport');
         await run('document.querySelector("[data-machine-menu] p").dispatchEvent(new MouseEvent("mousedown",{bubbles:true}))');await frame();
