@@ -33,6 +33,8 @@ const assistantStatus = ({ offline, paused, delegatedTasks = [] }) => {
 const createAssistantAvatarApi = () => undefined;
 const AssistantAvatarEditor = () => React.createElement('div', { className: 'avatar-editor-stub' });
 const AssistantRuntimeSettings = (props) => React.createElement('div', { className: 'runtime-stub', 'data-inline': props.inline === true });
+// A child component, so the shallow harness records the element without expanding it.
+const AssistantReview = () => React.createElement('section', { className: 'review-stub' });
 const brief = {
   id: 'artifact:a', name: 'brief.md', kind: 'doc', folder: 'notes', at: 5,
   artifact: { id: 'a', title: 'Brief', kind: 'markdown', versions: [{ n: 1, source: '# Brief', by: null, seq: 1, at: 5 }, { n: 2, source: '# Brief v2', by: null, seq: 2, at: 6 }] },
@@ -54,6 +56,7 @@ function mount(props = {}) {
       cursor = 0;
       const base = {
         lane,
+        backend: { call: async () => ({}) },
         outputs: [brief, data],
         onClose: () => events.push('close'),
         onNavigate: (section) => events.push(`nav:${section}`),
@@ -65,9 +68,9 @@ function mount(props = {}) {
   };
   function renderWith(finalProps) {
     const local = new Function(
-      'React', 'useState', 'useMemo', 'Avatar', 'assistantAppearance', 'assistantStatus', 'createAssistantAvatarApi', 'AssistantAvatarEditor', 'AssistantRuntimeSettings', 'OUTPUT_MARK', 'OUTPUT_LABEL', 'outputsLine', 'previewSource',
+      'React', 'useState', 'useMemo', 'Avatar', 'assistantAppearance', 'assistantStatus', 'createAssistantAvatarApi', 'AssistantAvatarEditor', 'AssistantRuntimeSettings', 'AssistantReview', 'OUTPUT_MARK', 'OUTPUT_LABEL', 'outputsLine', 'previewSource',
       `${compiled}\nreturn AssistantDetails;`,
-    )(React, useState, (factory) => factory(), Avatar, assistantAppearance, assistantStatus, createAssistantAvatarApi, AssistantAvatarEditor, AssistantRuntimeSettings, OUTPUT_MARK, OUTPUT_LABEL, outputsLine, previewSource);
+    )(React, useState, (factory) => factory(), Avatar, assistantAppearance, assistantStatus, createAssistantAvatarApi, AssistantAvatarEditor, AssistantRuntimeSettings, AssistantReview, OUTPUT_MARK, OUTPUT_LABEL, outputsLine, previewSource);
     return local(finalProps);
   }
   return harness;
@@ -172,12 +175,33 @@ test('an activity row opens its detail inside Details, and Go to chat asks for t
   assert.match(text(detail), /Drafted a shorter note\./);
   assert.match(text(detail), /Worked for/);
   assert.deepEqual(byClass(tree, 'assistant-output-row'), [], 'the detail replaces the overview, it does not stack on it');
-  byClass(detail, 'assistant-details-action')[0].props.onClick();
+  const actions = byClass(detail, 'assistant-details-action');
+  assert.deepEqual(actions.map(text), ['Review changes', 'Go to chat'], 'a ready result offers Review changes before Go to chat');
+  actions.find((node) => text(node) === 'Go to chat').props.onClick();
   assert.deepEqual(harness.events, ['chat:t1']);
   byClass(tree, 'assistant-details-back')[0].props.onClick();
   tree = harness.render();
   assert.equal(byClass(tree, 'assistant-activity-detail').length, 0, 'Back returns to the overview');
   assert.ok(byId(tree, 'assistant-outputs'), 'the overview is whole again');
+});
+
+test('Review changes opens the review inside Details, and Back returns to the activity', () => {
+  const harness = mount({ tasks });
+  let tree = harness.render();
+  byClass(byId(tree, 'assistant-activity'), 'assistant-activity-row').find((row) => text(row).includes('Rewrite')).props.onClick();
+  tree = harness.render();
+  byClass(byClass(tree, 'assistant-activity-detail')[0], 'assistant-details-action').find((node) => text(node) === 'Review changes').props.onClick();
+  tree = harness.render();
+  const review = all(tree).find((node) => node.type === AssistantReview);
+  assert.ok(review, 'the review is mounted in the Details body, not a page of its own');
+  assert.equal(review.props.task.id, 't1');
+  assert.equal(review.props.name, 'Null');
+  assert.equal(typeof review.props.onDone, 'function');
+  assert.equal(byClass(tree, 'assistant-activity-detail').length, 0, 'the review replaces the overview inside the same tab');
+  review.props.onBack();
+  tree = harness.render();
+  assert.equal(all(tree).filter((node) => node.type === AssistantReview).length, 0, 'Back leaves the review');
+  assert.match(text(byClass(tree, 'assistant-activity-detail')[0]), /Rewrite the release notes/, 'and returns to the activity it came from');
 });
 
 const runtimeLane = {

@@ -12,6 +12,7 @@ import { createAssistantAvatarApi } from './assistantAvatar';
 import { Avatar } from './Avatar';
 import { AssistantAvatarEditor } from './AssistantAvatarEditor';
 import { AssistantRuntimeSettings } from './AssistantRuntimeSettings';
+import { AssistantReview } from './AssistantReview';
 import { OUTPUT_LABEL, OUTPUT_MARK, outputsLine, previewSource, type AssistantOutput } from './assistantOutputs';
 import type { AssistantSection } from './assistantWorkspaceModel';
 import type { ParticipantConfig } from './types';
@@ -96,7 +97,7 @@ export function accessSummary(access?: string, projects?: number): string {
   return `${level} · ${count === 1 ? '1 project' : `${count} projects`}`;
 }
 
-export function AssistantDetails({ lane, backend, profiles = [], tasks = [], outputs, outputsLoading = false, outputsProblem = '', onClose, onNavigate, onOpenBrowser, onOpenFile, onGoToChat, onStartCall }: {
+export function AssistantDetails({ lane, backend, profiles = [], tasks = [], outputs, outputsLoading = false, outputsProblem = '', onClose, onNavigate, onOpenBrowser, onOpenBrowserTab, onRefresh, onOpenFile, onGoToChat, onStartCall }: {
   lane: PersonalLane;
   backend?: Backend;
   profiles?: ParticipantConfig[];
@@ -107,6 +108,10 @@ export function AssistantDetails({ lane, backend, profiles = [], tasks = [], out
   onClose: () => void;
   onNavigate: (section: AssistantSection) => void;
   onOpenBrowser?: () => void;
+  /** Opens the assistant's browser as a tab in this same sidebar (§5.3). */
+  onOpenBrowserTab?: () => void;
+  /** Re-reads the assistant's tasks after accepting or asking for changes. */
+  onRefresh?: () => void;
   onOpenFile?: (path: string, cwd: string | null) => void;
   onGoToChat?: (taskId: string) => void;
   onStartCall?: () => void;
@@ -121,6 +126,8 @@ export function AssistantDetails({ lane, backend, profiles = [], tasks = [], out
   const [shownOutput, setShownOutput] = useState<string | null>(null);
   /** The task whose activity detail is showing, if any. */
   const [openedTask, setOpenedTask] = useState<string | null>(null);
+  /** The task whose result is being reviewed inside this tab (§5.4). */
+  const [reviewTask, setReviewTask] = useState<string | null>(null);
   /** Whether the pencil's avatar editor is showing. */
   const [avatarOpen, setAvatarOpen] = useState(false);
   const [avatarError, setAvatarError] = useState('');
@@ -133,6 +140,8 @@ export function AssistantDetails({ lane, backend, profiles = [], tasks = [], out
   const needs = tasks.filter((task) => WAITING.has(task.status));
   const recent = [...tasks].sort((a, b) => b.updatedAtMs - a.updatedAtMs).slice(0, 12);
   const detail = openedTask ? tasks.find((task) => task.id === openedTask) ?? null : null;
+  /** The result being reviewed, if the sidebar is showing one instead of the overview. */
+  const reviewing = reviewTask ? tasks.find((task) => task.id === reviewTask) ?? null : null;
   const schedules = record?.schedules ?? [];
   const activeSchedules = schedules.filter((schedule) => schedule.status === 'active');
   const draftSchedules = schedules.filter((schedule) => schedule.status === 'proposed');
@@ -203,7 +212,10 @@ export function AssistantDetails({ lane, backend, profiles = [], tasks = [], out
       ) : null}
 
       <div className="assistant-details-body">
-        {detail ? (
+        {reviewing ? (
+          backend ? <AssistantReview task={reviewing} name={lane.name} backend={backend} onBack={() => setReviewTask(null)} onDone={() => { setReviewTask(null); setOpenedTask(null); onRefresh?.(); }} />
+            : <p className="assistant-details-note">Reconnect this machine to review this result.</p>
+        ) : detail ? (
           <section className="assistant-activity-detail" aria-label={`${taskTitle(detail)} detail`}>
             <button type="button" className="assistant-details-back" onClick={() => setOpenedTask(null)}>‹ Recent activity</button>
             <h3 className="assistant-activity-title">{taskTitle(detail)}</h3>
@@ -213,7 +225,10 @@ export function AssistantDetails({ lane, backend, profiles = [], tasks = [], out
               {workedFor(detail.createdAtMs, detail.updatedAtMs) ? ` · Worked for ${workedFor(detail.createdAtMs, detail.updatedAtMs)}` : ''}
             </p>
             {detail.result ? <p className="assistant-activity-result">{detail.result}</p> : null}
-            <button type="button" className="assistant-details-action" onClick={() => onGoToChat?.(detail.id)}>Go to chat</button>
+            <div className="assistant-details-row">
+              {detail.status === 'ready_for_review' ? <button type="button" className="assistant-details-action" onClick={() => setReviewTask(detail.id)}>Review changes</button> : null}
+              <button type="button" className="assistant-details-action" onClick={() => onGoToChat?.(detail.id)}>Go to chat</button>
+            </div>
           </section>
         ) : (
           <>
@@ -223,8 +238,8 @@ export function AssistantDetails({ lane, backend, profiles = [], tasks = [], out
 
             <section className="assistant-details-card">
               <h3 className="assistant-details-card-title">Browser</h3>
-              <p className="assistant-details-note">{onOpenBrowser ? 'Ready' : 'This machine does not show the assistant browser.'}</p>
-              {onOpenBrowser ? <button type="button" className="assistant-details-action" onClick={onOpenBrowser}>Open browser</button> : null}
+              <p className="assistant-details-note">{onOpenBrowserTab || onOpenBrowser ? 'Ready · Opens as a tab beside Details.' : 'This machine does not show the assistant browser.'}</p>
+              {onOpenBrowserTab || onOpenBrowser ? <button type="button" className="assistant-details-action" onClick={() => (onOpenBrowserTab ?? onOpenBrowser)?.()}>Open browser</button> : null}
             </section>
 
             <section className="assistant-details-fold">
@@ -253,7 +268,7 @@ export function AssistantDetails({ lane, backend, profiles = [], tasks = [], out
                 </button>
                 <div id="assistant-needs" className="assistant-details-fold-body" hidden={!!folded.needs}>
                   {needs.map((task) => (
-                    <button key={task.id} type="button" className="assistant-activity-row is-waiting" onClick={() => onGoToChat?.(task.id)}>
+                    <button key={task.id} type="button" className="assistant-activity-row is-waiting" onClick={() => (task.status === 'ready_for_review' ? setReviewTask(task.id) : onGoToChat?.(task.id))}>
                       <span className="assistant-activity-mark" aria-hidden="true">{activityMark(task.status)}</span>
                       <span className="assistant-activity-text">
                         <span className="assistant-activity-name">{taskTitle(task)}</span>
