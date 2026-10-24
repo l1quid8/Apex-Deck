@@ -374,17 +374,44 @@ fn diff_trees(
     commit_b: &str,
 ) -> Result<std::collections::HashMap<String, DiffEntry>, String> {
     let mut map = std::collections::HashMap::new();
-    let out = run_git(
-        repo,
-        &[],
-        &["diff-tree", "-r", "--raw", "--no-renames", commit_a, commit_b],
-    )?;
-    for line in out.lines() {
-        let line = line.trim();
-        if !line.starts_with(':') {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo);
+    cmd.args(["diff-tree", "-r", "--raw", "--no-renames", "-z", commit_a, commit_b]);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("Could not run git diff-tree: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git diff-tree failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let stdout = out.stdout;
+    let mut i = 0;
+    while i < stdout.len() {
+        let next_null = match stdout[i..].iter().position(|&b| b == 0) {
+            Some(pos) => i + pos,
+            None => break,
+        };
+        let header_bytes = &stdout[i..next_null];
+        i = next_null + 1;
+        if header_bytes.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line[1..].splitn(5, ' ').collect();
+        let header_str = String::from_utf8_lossy(header_bytes);
+        let header_str = header_str.trim();
+        if !header_str.starts_with(':') {
+            continue;
+        }
+        let path_null = match stdout[i..].iter().position(|&b| b == 0) {
+            Some(pos) => i + pos,
+            None => break,
+        };
+        let path_bytes = &stdout[i..path_null];
+        i = path_null + 1;
+        let path = String::from_utf8_lossy(path_bytes).to_string();
+
+        let parts: Vec<&str> = header_str[1..].split_whitespace().collect();
         if parts.len() < 5 {
             continue;
         }
@@ -392,11 +419,7 @@ fn diff_trees(
         let new_mode = parts[1].to_string();
         let old_sha = parts[2].to_string();
         let new_sha = parts[3].to_string();
-        let rest = parts[4];
-        let mut tab_split = rest.splitn(2, '\t');
-        let status_str = tab_split.next().unwrap_or("");
-        let path = tab_split.next().unwrap_or("").trim().to_string();
-        let status = status_str.chars().next().unwrap_or('M');
+        let status = parts[4].chars().next().unwrap_or('M');
 
         map.insert(
             path.clone(),
@@ -442,17 +465,29 @@ fn get_ignored_new_in_work(root: &Path, work: &Path) -> Vec<String> {
     let mut skipped = Vec::new();
     let out = match Command::new("git")
         .current_dir(work)
-        .args(["status", "--ignored", "--porcelain"])
+        .args(["status", "--ignored", "--porcelain", "-z"])
         .output()
     {
         Ok(o) => o,
         Err(_) => return skipped,
     };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    for line in stdout.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("!! ") {
-            let rel = rest.trim_end_matches('/');
+    let stdout = out.stdout;
+    let mut i = 0;
+    while i < stdout.len() {
+        let next_null = match stdout[i..].iter().position(|&b| b == 0) {
+            Some(pos) => i + pos,
+            None => break,
+        };
+        let entry_bytes = &stdout[i..next_null];
+        i = next_null + 1;
+        if entry_bytes.len() < 3 {
+            continue;
+        }
+        let prefix = &entry_bytes[..3];
+        if prefix == b"!! " {
+            let rel_bytes = &entry_bytes[3..];
+            let rel = String::from_utf8_lossy(rel_bytes);
+            let rel = rel.trim_end_matches('/');
             if SHARED_SHORTCUT_PATHS.contains(&rel) || rel.starts_with("node_modules") {
                 continue;
             }
@@ -504,8 +539,9 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
             }
             let target = work.join(path);
             if m.status == 'D' {
-                if target.exists() {
-                    let _ = std::fs::remove_file(&target);
+                if target.exists() || target.is_symlink() {
+                    std::fs::remove_file(&target)
+                        .map_err(|e| format!("Could not remove {}: {e}", target.display()))?;
                 }
             } else {
                 let bytes = get_blob(&root, &m.new_sha)?;
@@ -513,15 +549,34 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("Could not create dir: {e}"))?;
                 }
-                std::fs::write(&target, bytes)
-                    .map_err(|e| format!("Could not write {}: {e}", target.display()))?;
-                #[cfg(unix)]
-                if m.new_mode == "100755" {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &target,
-                        std::fs::Permissions::from_mode(0o755),
-                    );
+                if target.exists() || target.is_symlink() {
+                    std::fs::remove_file(&target)
+                        .map_err(|e| format!("Could not remove existing {}: {e}", target.display()))?;
+                }
+                if m.new_mode == "120000" {
+                    #[cfg(unix)]
+                    {
+                        let link_target = String::from_utf8(bytes).map_err(|e| {
+                            format!("Invalid utf-8 in symlink {}: {e}", target.display())
+                        })?;
+                        std::os::unix::fs::symlink(Path::new(&link_target), &target).map_err(
+                            |e| format!("Could not symlink {}: {e}", target.display()),
+                        )?;
+                    }
+                } else {
+                    std::fs::write(&target, bytes)
+                        .map_err(|e| format!("Could not write {}: {e}", target.display()))?;
+                    #[cfg(unix)]
+                    if m.new_mode == "100755" {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(
+                            &target,
+                            std::fs::Permissions::from_mode(0o755),
+                        )
+                        .map_err(|e| {
+                            format!("Could not set permissions on {}: {e}", target.display())
+                        })?;
+                    }
                 }
             }
         } else if let (None, Some(_c)) = (m_opt, c_opt) {
@@ -599,22 +654,14 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
     // Clean: update base ref to M
     run_git(&root, &[], &["update-ref", &base_ref, &m_commit])?;
 
-    let copy_json = work.parent().map(|p| p.join("copy.json"));
-    if let Some(json_path) = copy_json {
-        if json_path.exists() {
-            if let Ok(bytes) = std::fs::read(&json_path) {
-                if let Ok(mut stored) = serde_json::from_slice::<BotCopy>(&bytes) {
-                    stored.base = m_commit;
-                    let _ = std::fs::write(
-                        &json_path,
-                        serde_json::to_string_pretty(&stored).unwrap_or_default(),
-                    );
-                }
-            }
-        }
+    if let Some(data_dir) = work.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+        let mut updated = copy.clone();
+        updated.base = m_commit.clone();
+        let _ = save_state(data_dir, &updated);
     }
 
-    let diff_after = diff_trees(&root, &base, &snapshot_tree(work)?)?;
+    let c_prime = snapshot_tree(work)?;
+    let diff_after = diff_trees(&root, &m_commit, &c_prime)?;
     let mut files: Vec<String> = diff_after
         .keys()
         .filter(|p| !SHARED_SHORTCUT_PATHS.contains(&p.as_str()) && !p.starts_with("node_modules/"))
@@ -629,29 +676,22 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
     })
 }
 
-pub fn apply_copy_to_main(copy: &BotCopy, main_at: &str) -> Result<FoldOutcome, String> {
+pub fn apply_copy_to_main(copy: &BotCopy) -> Result<FoldOutcome, String> {
     let root = verify_git_repo(&copy.root)?;
     let work = &copy.work;
 
-    let current_main_tree = snapshot_tree_id(&root)?;
-    let expected_tree = match run_git(
+    let base_ref = format!("refs/apex-copies/{}/{}/base", copy.thread, copy.bot);
+    let expected_tree = run_git(
         &root,
         &[],
-        &["rev-parse", "--verify", &format!("{main_at}^{{tree}}")],
-    ) {
-        Ok(t) => t,
-        Err(_) => main_at.to_string(),
-    };
+        &["rev-parse", "--verify", &format!("{base_ref}^{{tree}}")],
+    )?;
+    let current_main_tree = snapshot_tree_id(&root)?;
     if current_main_tree != expected_tree {
         return Ok(FoldOutcome::MainMoved);
     }
 
-    let base_ref = format!("refs/apex-copies/{}/{}/base", copy.thread, copy.bot);
-    let base = match run_git(&root, &[], &["rev-parse", "--verify", &base_ref]) {
-        Ok(s) => s,
-        Err(_) => copy.base.clone(),
-    };
-
+    let base = run_git(&root, &[], &["rev-parse", "--verify", &base_ref])?;
     let c_prime = snapshot_tree(work)?;
     let diff = diff_trees(&root, &base, &c_prime)?;
 
@@ -666,41 +706,61 @@ pub fn apply_copy_to_main(copy: &BotCopy, main_at: &str) -> Result<FoldOutcome, 
         }
         let target = root.join(path);
         if entry.status == 'D' {
-            if target.exists() {
-                let _ = std::fs::remove_file(&target);
+            if target.exists() || target.is_symlink() {
+                std::fs::remove_file(&target)
+                    .map_err(|e| format!("Could not remove file {}: {e}", target.display()))?;
             }
             files.push(path.clone());
         } else {
-            let src = work.join(path);
-            if src.exists() {
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("Could not create parent dir: {e}"))?;
+            let bytes = get_blob(&root, &entry.new_sha)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Could not create parent dir: {e}"))?;
+            }
+            let temp_name = format!(
+                "{}.tmp-fold-{}-{}",
+                target
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file"),
+                std::process::id(),
+                SNAPSHOT_INDEX_SEQ.fetch_add(1, Ordering::Relaxed)
+            );
+            let tmp = target.with_file_name(temp_name);
+            if tmp.exists() || tmp.is_symlink() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            if entry.new_mode == "120000" {
+                #[cfg(unix)]
+                {
+                    let link_target = String::from_utf8(bytes).map_err(|e| {
+                        format!("Invalid utf-8 in symlink {}: {e}", target.display())
+                    })?;
+                    std::os::unix::fs::symlink(Path::new(&link_target), &tmp).map_err(|e| {
+                        format!("Could not create symlink at {}: {e}", tmp.display())
+                    })?;
                 }
-                let temp_name = format!(
-                    "{}.tmp-fold-{}-{}",
-                    target
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("file"),
-                    std::process::id(),
-                    SNAPSHOT_INDEX_SEQ.fetch_add(1, Ordering::Relaxed)
-                );
-                let tmp = target.with_file_name(temp_name);
-                std::fs::copy(&src, &tmp)
-                    .map_err(|e| format!("Could not copy to {}: {e}", tmp.display()))?;
+            } else {
+                std::fs::write(&tmp, bytes)
+                    .map_err(|e| format!("Could not write to {}: {e}", tmp.display()))?;
                 #[cfg(unix)]
                 if entry.new_mode == "100755" {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
+                    std::fs::set_permissions(
                         &tmp,
                         std::fs::Permissions::from_mode(0o755),
-                    );
+                    )
+                    .map_err(|e| format!("Could not set permissions on {}: {e}", tmp.display()))?;
                 }
-                std::fs::rename(&tmp, &target)
-                    .map_err(|e| format!("Could not rename to {}: {e}", target.display()))?;
-                files.push(path.clone());
             }
+            std::fs::rename(&tmp, &target).map_err(|e| {
+                format!(
+                    "Could not rename {} to {}: {e}",
+                    tmp.display(),
+                    target.display()
+                )
+            })?;
+            files.push(path.clone());
         }
     }
 
@@ -1026,16 +1086,15 @@ mod tests {
         fs::write(copy.work.join("a.txt"), "a modified by bot").unwrap();
         fs::write(root.join("b.txt"), "b modified by human").unwrap();
 
-        let main_snapshot = snapshot_tree(&root).unwrap();
         let outcome = merge_main_into_copy(&copy).unwrap();
         match outcome {
             FoldOutcome::Clean { files, .. } => {
-                assert!(files.contains(&"a.txt".to_string()));
+                assert_eq!(files, vec!["a.txt".to_string()]);
             }
             other => panic!("Expected Clean, got {:?}", other),
         }
 
-        let apply_outcome = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        let apply_outcome = apply_copy_to_main(&copy).unwrap();
         assert!(matches!(apply_outcome, FoldOutcome::Clean { .. }));
 
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "a modified by bot");
@@ -1059,11 +1118,10 @@ mod tests {
         fs::write(copy.work.join("file.txt"), "line 1 - bot\nline 2\nline 3\nline 4\nline 5\n").unwrap();
         fs::write(root.join("file.txt"), "line 1\nline 2\nline 3\nline 4\nline 5 - human\n").unwrap();
 
-        let main_snapshot = snapshot_tree(&root).unwrap();
         let outcome = merge_main_into_copy(&copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        let apply = apply_copy_to_main(&copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         let merged = fs::read_to_string(root.join("file.txt")).unwrap();
@@ -1136,11 +1194,10 @@ mod tests {
         fs::write(copy.work.join("new.txt"), "identical\n").unwrap();
         fs::write(root.join("new.txt"), "identical\n").unwrap();
 
-        let main_snapshot = snapshot_tree(&root).unwrap();
         let outcome = merge_main_into_copy(&copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        let apply = apply_copy_to_main(&copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "identical\n");
@@ -1189,11 +1246,10 @@ mod tests {
         fs::write(root.join("human.txt"), "human changed\n").unwrap();
         fs::write(root.join("human2.txt"), "human added\n").unwrap();
 
-        let main_snapshot = snapshot_tree(&root).unwrap();
         let outcome = merge_main_into_copy(&copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        let apply = apply_copy_to_main(&copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         assert_eq!(fs::read_to_string(root.join("bot.txt")).unwrap(), "bot changed\n");
@@ -1215,11 +1271,10 @@ mod tests {
         run_copy(&["add", "."]);
         run_copy(&["commit", "-m", "bot feature commit"]);
 
-        let main_snapshot = snapshot_tree(&root).unwrap();
         let outcome = merge_main_into_copy(&copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        let apply = apply_copy_to_main(&copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         let current_branch = run_git(&root, &[], &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap();
@@ -1243,7 +1298,6 @@ mod tests {
         fs::write(copy.work.join(".env"), "SECRET=true\n").unwrap();
         fs::write(copy.work.join("allowed.txt"), "allowed\n").unwrap();
 
-        let main_snapshot = snapshot_tree(&root).unwrap();
         let outcome = merge_main_into_copy(&copy).unwrap();
         match outcome {
             FoldOutcome::Clean { ignored_skipped, .. } => {
@@ -1252,7 +1306,7 @@ mod tests {
             other => panic!("Expected Clean, got {:?}", other),
         }
 
-        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        let apply = apply_copy_to_main(&copy).unwrap();
         match apply {
             FoldOutcome::Clean { ignored_skipped, .. } => {
                 assert!(ignored_skipped.contains(&".env".to_string()));
@@ -1270,7 +1324,6 @@ mod tests {
         let copy = create_copy(&root, &data, "t-mov", "b-mov").unwrap();
 
         fs::write(copy.work.join("bot.txt"), "bot edit\n").unwrap();
-        let main_at = snapshot_tree(&root).unwrap();
 
         let outcome = merge_main_into_copy(&copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
@@ -1278,7 +1331,7 @@ mod tests {
         // Main moves after merge
         fs::write(root.join("new_main.txt"), "main edit\n").unwrap();
 
-        let apply = apply_copy_to_main(&copy, &main_at).unwrap();
+        let apply = apply_copy_to_main(&copy).unwrap();
         assert_eq!(apply, FoldOutcome::MainMoved);
     }
 
@@ -1301,11 +1354,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(copy.work.join("changed.txt"), "changed\n").unwrap();
 
-        let main_snapshot = snapshot_tree(&root).unwrap();
         let outcome = merge_main_into_copy(&copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        let apply = apply_copy_to_main(&copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         let mtime_after = fs::metadata(root.join("untouched.txt")).unwrap().modified().unwrap();
@@ -1325,11 +1377,10 @@ mod tests {
 
         fs::write(copy.work.join("file.txt"), "normal file\n").unwrap();
 
-        let main_snapshot = snapshot_tree(&root).unwrap();
         let outcome = merge_main_into_copy(&copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(&copy, &main_snapshot).unwrap();
+        let apply = apply_copy_to_main(&copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         assert!(root.join("node_modules").is_dir());
@@ -1337,6 +1388,80 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("node_modules").join("pkg.txt")).unwrap(),
             "root pkg\n"
+        );
+    }
+
+    #[test]
+    fn fold_handles_unusual_file_names() {
+        let (_tmp, root, data) = init_repo("fold-unusual-names");
+        let copy = create_copy(&root, &data, "t-unusual", "b-unusual").unwrap();
+
+        fs::write(copy.work.join("café.txt"), "cafe content\n").unwrap();
+        fs::write(copy.work.join(" lead.txt"), "lead content\n").unwrap();
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Clean { files, .. } => {
+                assert!(files.contains(&"café.txt".to_string()));
+                assert!(files.contains(&" lead.txt".to_string()));
+            }
+            other => panic!("Expected Clean, got {:?}", other),
+        }
+
+        let apply = apply_copy_to_main(&copy).unwrap();
+        assert!(matches!(apply, FoldOutcome::Clean { .. }));
+
+        assert_eq!(
+            fs::read_to_string(root.join("café.txt")).unwrap(),
+            "cafe content\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(" lead.txt")).unwrap(),
+            "lead content\n"
+        );
+    }
+
+    #[test]
+    fn fold_keeps_symlinks_as_links() {
+        let (_tmp, root, data) = init_repo("fold-symlinks");
+        let copy = create_copy(&root, &data, "t-symlink", "b-symlink").unwrap();
+
+        fs::write(copy.work.join("real.txt"), "real file content\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(Path::new("real.txt"), copy.work.join("link_working.txt"))
+                .unwrap();
+            std::os::unix::fs::symlink(
+                Path::new("non_existent.txt"),
+                copy.work.join("link_dangling.txt"),
+            )
+            .unwrap();
+        }
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Clean { .. }));
+
+        let apply = apply_copy_to_main(&copy).unwrap();
+        assert!(matches!(apply, FoldOutcome::Clean { .. }));
+
+        let link_working = root.join("link_working.txt");
+        let link_dangling = root.join("link_dangling.txt");
+
+        assert!(
+            link_working.is_symlink(),
+            "working link in root is not a symlink"
+        );
+        assert!(
+            link_dangling.is_symlink(),
+            "dangling link in root is not a symlink"
+        );
+        assert_eq!(
+            fs::read_link(&link_working).unwrap(),
+            PathBuf::from("real.txt")
+        );
+        assert_eq!(
+            fs::read_link(&link_dangling).unwrap(),
+            PathBuf::from("non_existent.txt")
         );
     }
 }
