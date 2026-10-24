@@ -105,7 +105,12 @@
 .assistant-workspace .assistant-workspace-head{height:60px;min-height:60px;padding:0 18px;gap:10px;flex-wrap:nowrap}
 .assistant-workspace .assistant-session{padding:3px 10px 3px 4px;max-width:min(70%,480px)}
 .assistant-workspace .assistant-workspace-problem~.assistant-workspace-head{position:relative}
-.assistant-workspace .apex-agent-tabpanel{padding-top:0}
+/* Handoff 6.1: the strip floats and paints nothing, so the chat scrolls up
+   behind it. The padding lives on the scroller, which means it scrolls away with
+   the content: at rest the first message clears the strip, and older messages
+   pass underneath it. Taking it off to yank the transcript up hides the first
+   message behind the capsule. */
+.assistant-workspace .apex-agent-tabpanel{padding-top:78px}
 /* The composer floats too: the chat scrolls right up to and behind the message box, not to a ruled-off strip above it. */
 .assistant-workspace .assistant-conversation>.assistant-thread-composer{position:absolute;left:0;right:0;bottom:0;z-index:2;border-top:0;background:linear-gradient(to bottom,transparent,var(--bg) 10px)}
 .assistant-workspace .assistant-conversation:has(>.assistant-thread-composer:not([hidden])) .apex-agent-tabpanel{padding-bottom:calc(var(--assistant-browser-bottom,112px) + 12px)}
