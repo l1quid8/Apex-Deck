@@ -2920,6 +2920,9 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* Now tier, stage 1: the Removed line sits at the foot of the rail. */
 .rail { display: flex; flex-direction: column; }
 .rail > * { flex-shrink: 0; }
+.rail { overflow: hidden; }
+.rail > .rail-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.rail-scroll > * { flex-shrink: 0; }
 .rail-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 8px 0; color: var(--muted); font-size: 11px; }
 .rail-foot button { padding: 2px 6px; font-size: 11px; }
 .rail-foot .pane-menu { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
@@ -3753,7 +3756,7 @@ button.mod-status:hover { color: var(--text); }
    and its coloured globe; rows show ⋯ and pin on hover; cards open beside. */
 .rail { padding: 14px 10px; }
 .rail-sec { display: flex; align-items: center; gap: 4px; padding: 12px 8px 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-.rail > .rail-sec:first-child { padding-top: 0; }
+.rail-scroll > .rail-sec:first-child { padding-top: 0; }
 .rail-sec-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; }
 .rail-sec-toggle svg { opacity: 0; transition: opacity .12s; }
 .rail-sec:hover .rail-sec-toggle svg, .rail-sec-toggle:focus-visible svg, .rail-sec-toggle[aria-expanded="false"] svg { opacity: 1; }
