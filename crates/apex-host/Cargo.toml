@@ -29,6 +29,7 @@ libc = "0.2"
 [dev-dependencies]
 # Integration tests assume verified UI admission through the restricted test seam.
 apex-host = { path = ".", features = ["test-support"] }
+async-trait.workspace = true
 
 [features]
 # Explicit in-process fixtures only; no environment or CLI switch enables this.

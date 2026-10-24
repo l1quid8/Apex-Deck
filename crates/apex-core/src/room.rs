@@ -71,7 +71,7 @@ pub enum RoomEvent {
     /// The participant holding the workspace edit reservation changed.
     EditorChanged { id: Option<ParticipantId> },
     /// A participant's turn was made read-only because another participant is editing.
-    ReadOnlyTurn { id: ParticipantId, editor: ParticipantId, reason: String },
+    ReadOnlyTurn { id: ParticipantId, editor: ParticipantId, reason: String, line: String },
     /// A participant started writing.
     TurnStarted { id: ParticipantId },
     /// A piece of a reply that is still being written.

@@ -12,6 +12,7 @@ use futures::{
     FutureExt,
 };
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -85,6 +86,10 @@ impl Drop for TurnBatch {
 pub trait TurnStartHook: Send + Sync {
     fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, ()>;
 }
+pub trait CopyProvider: Send + Sync {
+    fn copy_for<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Result<PathBuf, String>>;
+    fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> BoxFuture<'a, ()>;
+}
 #[derive(Clone)]
 pub struct ConcurrentRoom {
     retired: Arc<AtomicBool>,
@@ -96,6 +101,7 @@ pub struct ConcurrentRoom {
     write_owner: Option<String>,
     cleanup_holds: Arc<Mutex<HashMap<ParticipantId, (String, bool)>>>,
     turn_start: Option<Arc<dyn TurnStartHook>>,
+    copies: Option<Arc<dyn CopyProvider>>,
     voice_requests: VoiceRequests,
 }
 /// Voice turns waiting to start: who asked, the words, and their stop and
@@ -114,8 +120,18 @@ impl ConcurrentRoom {
             write_owner: None,
             cleanup_holds: Arc::default(),
             turn_start: None,
+            copies: None,
             voice_requests: Arc::default(),
         }
+    }
+    /// Attach a provider for per-bot workspace copies.
+    pub fn with_copies(mut self, copies: Arc<dyn CopyProvider>) -> Self {
+        self.copies = Some(copies);
+        self
+    }
+    /// Access the editor slot reservation.
+    pub fn editor_handle(&self) -> Arc<Mutex<Option<ParticipantId>>> {
+        Arc::clone(&self.editor)
     }
     /// Await `hook` before each participant starts a turn.
     pub fn with_turn_start(mut self, hook: Arc<dyn TurnStartHook>) -> Self {
@@ -566,27 +582,69 @@ impl ConcurrentRoom {
                 (None, None)
             }
         };
+        let mut is_copy_turn = false;
         if let Some(held_by) = held_by {
-            request.access = Some(Access::Read);
-            let mut config = participant.config().clone();
-            config.access = Access::Read;
-            let room = self.room.lock().await;
-            let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
-            request.system = crate::view::system_prompt(&config, &room.configs())
-                + &crate::view::pinned_section(room.pins())
-                + &room.checklist_section(&ticket.id)
-                + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
-                + answer_guidance;
-            if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
-            let reason = "no copy available";
-            let line = read_only_line(ticket.id.as_str(), held_by.as_str(), reason);
-            request.system.push_str("\n\n");
-            request.system.push_str(&line);
-            sink(RoomEvent::ReadOnlyTurn {
-                id: ticket.id.clone(),
-                editor: held_by,
-                reason: reason.to_string(),
-            });
+            let mut copy_granted = false;
+            if !request.plan {
+                if let Some(provider) = &self.copies {
+                    match provider.copy_for(&ticket.id).await {
+                        Ok(copy_path) => {
+                            request.cwd = Some(copy_path.clone());
+                            let copy_line = copy_turn_line(&copy_path);
+                            request.system.push_str("\n\n");
+                            request.system.push_str(&copy_line);
+                            copy_granted = true;
+                            is_copy_turn = true;
+                        }
+                        Err(reason) => {
+                            request.access = Some(Access::Read);
+                            let mut config = participant.config().clone();
+                            config.access = Access::Read;
+                            let room = self.room.lock().await;
+                            let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
+                            request.system = crate::view::system_prompt(&config, &room.configs())
+                                + &crate::view::pinned_section(room.pins())
+                                + &room.checklist_section(&ticket.id)
+                                + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
+                                + answer_guidance;
+                            if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+                            let line = read_only_line(ticket.id.as_str(), held_by.as_str(), &reason);
+                            request.system.push_str("\n\n");
+                            request.system.push_str(&line);
+                            sink(RoomEvent::ReadOnlyTurn {
+                                id: ticket.id.clone(),
+                                editor: held_by.clone(),
+                                reason,
+                                line,
+                            });
+                            copy_granted = true;
+                        }
+                    }
+                }
+            }
+            if !copy_granted {
+                request.access = Some(Access::Read);
+                let mut config = participant.config().clone();
+                config.access = Access::Read;
+                let room = self.room.lock().await;
+                let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
+                request.system = crate::view::system_prompt(&config, &room.configs())
+                    + &crate::view::pinned_section(room.pins())
+                    + &room.checklist_section(&ticket.id)
+                    + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
+                    + answer_guidance;
+                if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+                let reason = "no copy available";
+                let line = read_only_line(ticket.id.as_str(), held_by.as_str(), reason);
+                request.system.push_str("\n\n");
+                request.system.push_str(&line);
+                sink(RoomEvent::ReadOnlyTurn {
+                    id: ticket.id.clone(),
+                    editor: held_by,
+                    reason: reason.to_string(),
+                    line,
+                });
+            }
         }
         if let Some(hook) = &self.turn_start {
             hook.before_turn(&ticket.id).await;
@@ -641,6 +699,11 @@ impl ConcurrentRoom {
         }
         let mut room = self.room.lock().await;
         let cancelled = request_stop.load(Ordering::SeqCst);
+        if is_copy_turn {
+            if let Some(copies) = &self.copies {
+                copies.turn_finished(&ticket.id, cancelled).await;
+            }
+        }
         desk.reject_for(&ticket.id);
         room.record_changes(changes.into_inner().unwrap());
         let next = if cancelled {
@@ -664,6 +727,13 @@ impl ConcurrentRoom {
 
 pub fn read_only_line(bot: &str, editor: &str, reason: &str) -> String {
     format!("{bot} is read-only this turn: {editor} is editing and Deck couldn't make a separate copy ({reason}).")
+}
+
+pub fn copy_turn_line(path: &Path) -> String {
+    format!(
+        "You are working in your own copy of the project at {}. Deck folds your file changes back into the main folder when your turn ends. Don't commit, push, switch branches, or build installers here.",
+        path.display()
+    )
 }
 
 // Cancellation or a dropped task releases the reservation as well.

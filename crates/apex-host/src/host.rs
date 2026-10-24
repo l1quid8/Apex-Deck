@@ -153,6 +153,7 @@ pub struct Host {
     steps: crate::step_buffers::StepBuffers,
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
+    pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -246,6 +247,7 @@ impl Host {
         apex_adapters::allow_reading(&paths.data.join("attachments"));
         apex_adapters::keys::use_folder(&paths.data);
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
+        let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
         let host = Arc::new(Host {
             paths,
             _ownership: ownership,
@@ -274,6 +276,7 @@ impl Host {
             personal_stops: Mutex::default(),
             steps: Default::default(),
             phone,
+            fold_queue,
         });
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
             if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
@@ -745,6 +748,22 @@ impl Host {
         let mut runtime = ConcurrentRoom::new(room);
         if let Some(cwd) = &context.cwd {
             runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
+            let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
+                let this = Arc::clone(self);
+                let id = id.clone();
+                move |event| {
+                    this.room_event(&id, event);
+                }
+            });
+            let bot_copies = Arc::new(crate::bot_copies::BotCopies::new(
+                self.assistant_data_dir().to_path_buf(),
+                id.clone(),
+                cwd.clone(),
+                runtime.editor_handle(),
+                event_sink,
+                Arc::clone(&self.fold_queue),
+            ));
+            runtime = runtime.with_copies(bot_copies);
             // Only ApexAgent task threads share the checkout gate; ordinary chat
             // threads in the same folder run their turns concurrently.
             if let Some(owner) = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.map(|entry| entry.task_id) {

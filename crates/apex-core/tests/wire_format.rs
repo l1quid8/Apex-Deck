@@ -221,12 +221,14 @@ fn room_event_shapes() {
             id: ParticipantId::new("opus"),
             editor: ParticipantId::new("opus"),
             reason: "no copy available".into(),
+            line: "opus is read-only this turn: opus is editing and Deck couldn't make a separate copy (no copy available).".into(),
         }).unwrap(),
         json!({
             "type": "read_only_turn",
             "id": "opus",
             "editor": "opus",
-            "reason": "no copy available"
+            "reason": "no copy available",
+            "line": "opus is read-only this turn: opus is editing and Deck couldn't make a separate copy (no copy available)."
         })
     );
 }

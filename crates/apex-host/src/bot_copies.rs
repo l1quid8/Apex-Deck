@@ -1,10 +1,14 @@
 //! Git snapshots and isolated worktrees for concurrent bot editing.
 
+use apex_core::{CopyProvider, ParticipantId, RoomEvent};
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex},
 };
 
 pub const SHARED_SHORTCUT_PATHS: &[&str] = &["node_modules"];
@@ -774,6 +778,212 @@ pub fn apply_copy_to_main(copy: &BotCopy) -> Result<FoldOutcome, String> {
     })
 }
 
+pub struct FoldTask {
+    pub thread: String,
+    pub copy: BotCopy,
+    pub editor_handle: Arc<Mutex<Option<ParticipantId>>>,
+    pub event_sink: Arc<dyn Fn(RoomEvent) + Send + Sync>,
+}
+
+#[derive(Default)]
+pub struct FoldQueue {
+    queues: Mutex<HashMap<PathBuf, VecDeque<FoldTask>>>,
+    workers: Mutex<HashSet<PathBuf>>,
+    data: PathBuf,
+}
+
+impl FoldQueue {
+    pub fn new(data: PathBuf) -> Self {
+        Self {
+            queues: Mutex::default(),
+            workers: Mutex::default(),
+            data,
+        }
+    }
+
+    pub fn enqueue(self: &Arc<Self>, task: FoldTask) {
+        let root = task.copy.root.clone();
+        let key = crate::assistant_git::checkout_root(&root)
+            .unwrap_or_else(|_| std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()));
+        {
+            let mut queues = self.queues.lock().unwrap();
+            queues.entry(key.clone()).or_default().push_back(task);
+        }
+        self.spawn_worker_if_needed(key);
+    }
+
+    fn spawn_worker_if_needed(self: &Arc<Self>, key: PathBuf) {
+        let mut workers = self.workers.lock().unwrap();
+        if workers.contains(&key) {
+            return;
+        }
+        workers.insert(key.clone());
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            this.run_worker(key).await;
+        });
+    }
+
+    async fn run_worker(&self, key: PathBuf) {
+        loop {
+            let task = {
+                let mut queues = self.queues.lock().unwrap();
+                let q = queues.get_mut(&key);
+                match q.and_then(|q| q.pop_front()) {
+                    Some(t) => t,
+                    None => {
+                        self.workers.lock().unwrap().remove(&key);
+                        break;
+                    }
+                }
+            };
+            self.process_task(task).await;
+        }
+    }
+
+    async fn process_task(&self, task: FoldTask) {
+        let fold_owner = ParticipantId::new("deck-fold");
+        loop {
+            {
+                let mut held = task.editor_handle.lock().unwrap();
+                if held.is_none() {
+                    *held = Some(fold_owner.clone());
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        struct ReleaseGuard(Arc<Mutex<Option<ParticipantId>>>);
+        impl Drop for ReleaseGuard {
+            fn drop(&mut self) {
+                let mut held = self.0.lock().unwrap();
+                if *held == Some(ParticipantId::new("deck-fold")) {
+                    *held = None;
+                }
+            }
+        }
+        let _guard = ReleaseGuard(Arc::clone(&task.editor_handle));
+
+        let copy = task.copy;
+        let mut retries = 0;
+        loop {
+            let merge_outcome = match merge_main_into_copy(&copy) {
+                Ok(o) => o,
+                Err(_) => break,
+            };
+            match merge_outcome {
+                FoldOutcome::Clean { .. } => {
+                    let check_cmd = crate::project_check::resolve_check(&self.data, &copy.root);
+                    if let Some(cmd) = check_cmd {
+                        if crate::project_check::check_blames_copy(&copy.root, &copy.work, &cmd).await.is_some() {
+                            break;
+                        }
+                    }
+                    match apply_copy_to_main(&copy) {
+                        Ok(FoldOutcome::Clean { files: applied, .. }) => {
+                            let _ = remove_copy(&self.data, &copy);
+                            for f in applied {
+                                (task.event_sink)(RoomEvent::Changed {
+                                    id: ParticipantId::new(&copy.bot),
+                                    change: apex_core::FileChange::new(&f, ""),
+                                });
+                            }
+                            break;
+                        }
+                        Ok(FoldOutcome::MainMoved) => {
+                            retries += 1;
+                            if retries > 3 {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            continue;
+                        }
+                        _ => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        let workers = self.workers.lock().unwrap();
+        let queues = self.queues.lock().unwrap();
+        workers.is_empty() && queues.values().all(|q| q.is_empty())
+    }
+
+    pub async fn wait_idle(&self) {
+        while !self.is_idle() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
+pub struct BotCopies {
+    data: PathBuf,
+    thread: String,
+    root: PathBuf,
+    editor_handle: Arc<Mutex<Option<ParticipantId>>>,
+    event_sink: Arc<dyn Fn(RoomEvent) + Send + Sync>,
+    queue: Arc<FoldQueue>,
+    active: Mutex<HashMap<ParticipantId, BotCopy>>,
+}
+
+impl BotCopies {
+    pub fn new(
+        data: PathBuf,
+        thread: String,
+        root: PathBuf,
+        editor_handle: Arc<Mutex<Option<ParticipantId>>>,
+        event_sink: Arc<dyn Fn(RoomEvent) + Send + Sync>,
+        queue: Arc<FoldQueue>,
+    ) -> Self {
+        Self {
+            data,
+            thread,
+            root,
+            editor_handle,
+            event_sink,
+            queue,
+            active: Mutex::default(),
+        }
+    }
+}
+
+impl CopyProvider for BotCopies {
+    fn copy_for<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Result<PathBuf, String>> {
+        Box::pin(async move {
+            {
+                let active = self.active.lock().unwrap();
+                if let Some(c) = active.get(id) {
+                    return Ok(c.work.clone());
+                }
+            }
+            let copy = create_copy(&self.root, &self.data, &self.thread, id.as_str())?;
+            self.active.lock().unwrap().insert(id.clone(), copy.clone());
+            Ok(copy.work)
+        })
+    }
+
+    fn turn_finished<'a>(&'a self, id: &'a ParticipantId, _cancelled: bool) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let copy = self.active.lock().unwrap().remove(id);
+            if let Some(mut copy) = copy {
+                copy.state = CopyState::Folding;
+                let _ = save_state(&self.data, &copy);
+                let task = FoldTask {
+                    thread: self.thread.clone(),
+                    copy,
+                    editor_handle: Arc::clone(&self.editor_handle),
+                    event_sink: Arc::clone(&self.event_sink),
+                };
+                self.queue.enqueue(task);
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1462,6 +1672,255 @@ mod tests {
         assert_eq!(
             fs::read_link(&link_dangling).unwrap(),
             PathBuf::from("non_existent.txt")
+        );
+    }
+
+    #[tokio::test]
+    async fn two_writers_same_thread_both_land_in_main() {
+        let (_tmp, root, data) = init_repo("two-writers-land");
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+
+        struct FileWriterBot {
+            id: ParticipantId,
+            root: PathBuf,
+            file: String,
+            content: String,
+        }
+        #[async_trait::async_trait]
+        impl apex_core::Participant for FileWriterBot {
+            fn config(&self) -> &apex_core::ParticipantConfig {
+                Box::leak(Box::new(apex_core::ParticipantConfig {
+                    id: self.id.clone(),
+                    display_name: self.id.as_str().to_string(),
+                    backend: apex_core::Backend::Scripted { lines: vec![] },
+                    persona: String::new(),
+                    access: apex_core::Access::Full,
+                    effort: None,
+                    speed: None,
+                    voice: None,
+                    appearance: None,
+                    media: None,
+                }))
+            }
+            async fn respond(
+                &self,
+                request: apex_core::TurnRequest,
+                _: apex_core::DeltaSink<'_>,
+            ) -> Result<apex_core::Reply, apex_core::ParticipantError> {
+                let write_dir = request.cwd.unwrap_or_else(|| self.root.clone());
+                fs::write(write_dir.join(&self.file), &self.content).unwrap();
+                Ok(apex_core::Reply::text("done"))
+            }
+        }
+
+        struct HoldFirstUntilSecondStarts {
+            tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+            rx: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        }
+        impl apex_core::TurnStartHook for HoldFirstUntilSecondStarts {
+            fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+                Box::pin(async move {
+                    if id.as_str() == "A" {
+                        let rx = self.rx.lock().unwrap().take();
+                        if let Some(rx) = rx {
+                            let _ = rx.await;
+                        }
+                    } else if id.as_str() == "B" {
+                        let tx = self.tx.lock().unwrap().take();
+                        if let Some(tx) = tx {
+                            let _ = tx.send(());
+                        }
+                    }
+                })
+            }
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let bot_a = Arc::new(FileWriterBot {
+            id: ParticipantId::new("A"),
+            root: root.clone(),
+            file: "a.txt".into(),
+            content: "content a from bot A\n".into(),
+        });
+        let bot_b = Arc::new(FileWriterBot {
+            id: ParticipantId::new("B"),
+            root: root.clone(),
+            file: "b.txt".into(),
+            content: "content b from bot B\n".into(),
+        });
+
+        let room = apex_core::Room::new(
+            vec![bot_a, bot_b],
+            apex_core::RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = Arc::new(move |event| sink_events.lock().unwrap().push(event));
+
+        let mut concurrent = apex_core::ConcurrentRoom::new(room)
+            .with_turn_start(Arc::new(HoldFirstUntilSecondStarts {
+                tx: Mutex::new(Some(tx)),
+                rx: Mutex::new(Some(rx)),
+            }));
+        let bot_copies = Arc::new(BotCopies::new(
+            data.clone(),
+            "thread-two-writers".into(),
+            root.clone(),
+            concurrent.editor_handle(),
+            sink.clone(),
+            Arc::clone(&fold_queue),
+        ));
+        concurrent = concurrent.with_copies(bot_copies);
+
+        let s = move |e| (sink)(e);
+        let batch = concurrent.begin_post("start", None, &s).await.unwrap();
+        concurrent.run(batch, &s).await;
+
+        fold_queue.wait_idle().await;
+
+        assert_eq!(
+            fs::read_to_string(root.join("a.txt")).unwrap(),
+            "content a from bot A\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("b.txt")).unwrap(),
+            "content b from bot B\n"
+        );
+        assert!(load_copies(&data).is_empty(), "Copy was not removed after fold");
+    }
+
+    #[tokio::test]
+    async fn fold_waits_for_main_editor_to_finish() {
+        let (_tmp, root, data) = init_repo("fold-waits-editor");
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+
+        let (a_hold_tx, a_hold_rx) = tokio::sync::oneshot::channel();
+        let a_hold_rx = Arc::new(tokio::sync::Mutex::new(Some(a_hold_rx)));
+
+        let (b_started_tx, b_started_rx) = tokio::sync::oneshot::channel();
+        let b_started_tx = Arc::new(Mutex::new(Some(b_started_tx)));
+
+        struct WaitingBotA {
+            rx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+        }
+        #[async_trait::async_trait]
+        impl apex_core::Participant for WaitingBotA {
+            fn config(&self) -> &apex_core::ParticipantConfig {
+                Box::leak(Box::new(apex_core::ParticipantConfig {
+                    id: ParticipantId::new("A"),
+                    display_name: "A".into(),
+                    backend: apex_core::Backend::Scripted { lines: vec![] },
+                    persona: String::new(),
+                    access: apex_core::Access::Full,
+                    effort: None,
+                    speed: None,
+                    voice: None,
+                    appearance: None,
+                    media: None,
+                }))
+            }
+            async fn respond(
+                &self,
+                _: apex_core::TurnRequest,
+                _: apex_core::DeltaSink<'_>,
+            ) -> Result<apex_core::Reply, apex_core::ParticipantError> {
+                let rx = self.rx.lock().await.take();
+                if let Some(rx) = rx {
+                    let _ = rx.await;
+                }
+                Ok(apex_core::Reply::text("done A"))
+            }
+        }
+
+        struct FastBotB {
+            file: String,
+            content: String,
+            started: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        }
+        #[async_trait::async_trait]
+        impl apex_core::Participant for FastBotB {
+            fn config(&self) -> &apex_core::ParticipantConfig {
+                Box::leak(Box::new(apex_core::ParticipantConfig {
+                    id: ParticipantId::new("B"),
+                    display_name: "B".into(),
+                    backend: apex_core::Backend::Scripted { lines: vec![] },
+                    persona: String::new(),
+                    access: apex_core::Access::Full,
+                    effort: None,
+                    speed: None,
+                    voice: None,
+                    appearance: None,
+                    media: None,
+                }))
+            }
+            async fn respond(
+                &self,
+                request: apex_core::TurnRequest,
+                _: apex_core::DeltaSink<'_>,
+            ) -> Result<apex_core::Reply, apex_core::ParticipantError> {
+                let write_dir = request.cwd.expect("B should have received a copy cwd");
+                fs::write(write_dir.join(&self.file), &self.content).unwrap();
+                let started = self.started.lock().unwrap().take();
+                if let Some(tx) = started {
+                    let _ = tx.send(());
+                }
+                Ok(apex_core::Reply::text("done B"))
+            }
+        }
+
+        let bot_a = Arc::new(WaitingBotA { rx: a_hold_rx });
+        let bot_b = Arc::new(FastBotB {
+            file: "b_folded.txt".into(),
+            content: "folded content\n".into(),
+            started: b_started_tx,
+        });
+
+        let room = apex_core::Room::new(
+            vec![bot_a, bot_b],
+            apex_core::RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let sink = Arc::new(|_| {});
+        let mut concurrent = apex_core::ConcurrentRoom::new(room);
+        let bot_copies = Arc::new(BotCopies::new(
+            data.clone(),
+            "thread-waits".into(),
+            root.clone(),
+            concurrent.editor_handle(),
+            sink.clone(),
+            Arc::clone(&fold_queue),
+        ));
+        concurrent = concurrent.with_copies(bot_copies);
+
+        let s = move |e| (sink)(e);
+        let batch = concurrent.begin_post("start", None, &s).await.unwrap();
+        let handle = tokio::spawn(async move {
+            concurrent.run(batch, &s).await;
+        });
+
+        // Wait until B has finished writing its file and ended its turn
+        let _ = b_started_rx.await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // While A is still holding the editor, B's fold should not have applied to main yet
+        assert!(
+            !root.join("b_folded.txt").exists(),
+            "B's file was applied to main before A released the editor slot"
+        );
+
+        // Now release A so it finishes its turn and releases the editor slot
+        let _ = a_hold_tx.send(());
+        let _ = handle.await;
+
+        fold_queue.wait_idle().await;
+
+        // Now B's fold must have been applied to main
+        assert!(
+            root.join("b_folded.txt").exists(),
+            "B's file was not applied after editor was released"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("b_folded.txt")).unwrap(),
+            "folded content\n"
         );
     }
 }

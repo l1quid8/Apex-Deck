@@ -132,6 +132,7 @@ dependencies = [
  "apex-core",
  "apex-host",
  "apex-provenance",
+ "async-trait",
  "base64 0.22.1",
  "futures",
  "image",
