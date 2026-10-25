@@ -100,11 +100,16 @@ pub async fn run_check_with_env(
     timeout: Duration,
     envs: &[(&str, &str)],
 ) -> CheckResult {
-    let mut command = if cfg!(windows) {
+    #[cfg(windows)]
+    let mut command = {
         let mut c = tokio::process::Command::new("cmd");
-        c.args(["/C", cmd]);
+        // This is shell source, so C-runtime argument escaping would corrupt
+        // embedded quotes. /S strips only the wrapper around the raw command.
+        c.args(["/D", "/S", "/C"]).raw_arg(format!("\"{cmd}\""));
         c
-    } else {
+    };
+    #[cfg(not(windows))]
+    let mut command = {
         let mut c = tokio::process::Command::new("sh");
         c.args(["-c", cmd]);
         c

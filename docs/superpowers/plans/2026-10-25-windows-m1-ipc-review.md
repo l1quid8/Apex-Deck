@@ -3,7 +3,9 @@
 Status: M1 steps 1–2 were approved by Jigga. His three follow-ups are fixed,
 and the 15 IPC tests passed on Windows before the remaining callers moved.
 The caller migration is implemented on `feat/windows-11`, based on the
-`c48e7fb` catch-up, and awaits full Windows CI and Jigga's final review.
+`c48e7fb` catch-up. Native Windows run `40190900867` compiled all selected
+crates and targets, then exposed runtime failures. The source fixes below
+await another native Windows run and Jigga's final review.
 This checkpoint is not a completed Windows daemon or a Windows release.
 
 ## Interface
@@ -153,3 +155,111 @@ Never push or merge main from this checkpoint.
   The full local Rust CI suite passed again after these fixes (1,536 passed,
   13 ignored). The standalone mobile lockfile now includes the two Windows
   dependency entries; its 18 tests passed with `--locked` locally.
+
+## Native Windows runtime follow-up
+
+Run `40190900867` passed the macOS and both Linux CI jobs. Its required
+independent Windows IPC job passed all 24 transport, private-root, and private-file
+tests. The full Windows job compiled every selected crate and target, but its
+runtime tests failed. Compilation and the independent IPC result do not establish
+full Windows runtime support.
+
+The runtime failures identified these shared causes:
+
+- Storage writers attempted the Unix directory-open/fsync pattern on Windows,
+  producing `Could not save data: Access is denied. (os error 5)`. Avatar jobs
+  and generated assets also reopened temporary files read-only before flushing,
+  which Windows refuses. These failures caused many downstream poisoned-lock
+  errors. Shared helpers now write and flush through the same writable handle,
+  close it before atomic replacement, and retain parent-directory fsync on Unix.
+  Windows skips that directory operation; this does not promise equivalent
+  Windows directory-entry durability.
+- Windows whole-file locks prevented other handles from reading the owner
+  description in `owner.lock`. Windows now uses an exclusive, nonblocking
+  `LockFileEx` lock on one shared byte at offset `0x7fff_ffff_ffff_fffe`, beyond
+  the owner text. The description stays readable, the held handle retains
+  ownership, and closing it releases the lock. Only `ERROR_LOCK_VIOLATION`
+  maps to contention; other native errors remain failures. Unix locking is
+  unchanged. [Microsoft documents beyond-EOF byte-range locks](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex).
+- Git for Windows rejected Rust's verbatim canonical worktree paths. Ordinary
+  disk and UNC spellings are now supplied at external command and Git environment
+  boundaries; native paths remain internal. Test comparisons also account for
+  Git's slash spelling and Windows path components.
+- Platform fixtures assumed POSIX shell output, path separators, symlink
+  privileges, file modes, and deletion or recovery support. Portable behavior
+  remains tested; platform-specific expectations now match the implemented
+  boundary rather than bypassing it.
+
+Windows Git link materialization also remains unsupported: mode `120000` cannot
+reliably distinguish file targets from directory targets. Bot-copy merge and apply
+now refuse such entries before any destination writes. New Windows regressions
+check that an existing destination, an earlier ordinary-file change, and directory
+contents survive the refusal. A portable fixture constructs the Git link mode
+without requiring OS symlink privileges. Both Windows merge/apply refusal regressions passed in run `40193165652`.
+
+The remaining Windows limits are explicit and fail closed: protected-authority
+operations are unavailable; secure Codex/ChatGPT-generated avatar file reads
+require the Unix no-follow implementation; safe checkpoint deletion is unavailable;
+and orphan worker process-tree recovery requires manual cleanup. The orphan registry
+entry is preserved, and Windows startup refuses to claim recovery succeeded.
+These changes do not implement those missing capabilities.
+
+Current verification:
+
+- The full selected local Rust CI command passed after the runtime fixes:
+  1,536 passed, 13 ignored, zero failed. After the link-mode guard, the full
+  command passed again with 1,537 passed, 13 ignored, zero failed. TypeScript
+  also passed; the separate production-check target passed all three tests.
+- After adding the link-mode guard and regression fixtures, the focused bot-copy
+  suite passed 42 tests locally. This is separate from the preceding full-suite
+  count and does not execute the Windows-only cases on macOS.
+- Storage passed 18 focused macOS tests; avatar handling passed 13. The lock
+  filter passed 21 matches, including all three data-lock tests.
+- `cargo check --locked -p apex-ipc-check --tests --target x86_64-pc-windows-msvc`
+  passed with the real host lock source imported. The independent Windows harness
+  includes those three lock tests. Run `40193165652`, job `121168314462`,
+  executed all 27 tests successfully on Windows (zero failures).
+- A fresh read-only source review reported no remaining critical or important
+  findings after the link-materialization preflight fix. Final Jigga acceptance
+  remains pending.
+
+The next native Windows run and final Jigga review remain the acceptance gates.
+The full Windows runtime is not verified fixed; keep its `continue-on-error`
+setting until the job passes.
+
+## Second native runtime pass
+
+At `37bda05`, run `40193165652` passed macOS, Linux x64, Linux ARM, and
+the expanded 27-test Windows IPC/privacy/lock harness. All adapter tests passed.
+The Windows host library reached 632 passed, two failed, and four ignored; its
+new Git-path, directory-link refusal, storage, and locking cases passed. The run
+was cancelled after a host integration fixture stopped making progress, to
+retrieve diagnostics. The daemon test step had not started.
+
+The remaining source fixes are deliberately scoped:
+
+- Windows verification commands now use raw `cmd /D /S /C` shell source inside
+  an outer quote pair; ordinary process-argument escaping corrupted quoted
+  paths. The existing quoted counter-path regression stays enabled.
+- The failed-verification fixture creates the directory whose emptiness it
+  checks. Windows does not persist a process-recovery manifest there.
+- Headless PTY fixtures answer the initial ConPTY cursor-position query, as a
+  real terminal renderer does, and accumulate output across event boundaries.
+  [Microsoft documents this response requirement](https://learn.microsoft.com/en-us/windows/console/createpseudoconsole).
+- The failed room-replacement fixture uses sibling project and data folders,
+  avoiding snapshots of the host's own changing snapshot repositories. Its
+  failed-save injection and original-folder/history assertions remain intact.
+  Two integration fixtures now have external 90-second deadlines covering
+  synchronous calls and runtime teardown. Native execution must establish
+  whether these changes resolve the stall.
+- The 50-fold descriptor-count test runs only on Unix, where it measures real
+  descriptors; its previous Windows counter was a constant zero. Unix retains
+  the original 50 iterations and five-descriptor allowance.
+- The avatar RPC fixture's pending loop and the Windows CI job now have
+  deadlines. The avatar fixture had passed natively; its timeout is diagnostic
+  hardening, not an explanation of the integration stall.
+
+Focused local host integration tests passed 20/20; the quoted-command and
+failed-verification tests each passed, and Windows command construction compiled.
+The follow-up native Windows run remains required before removing
+`continue-on-error` or declaring M1 complete.

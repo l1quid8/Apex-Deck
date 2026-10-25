@@ -2900,6 +2900,7 @@ mod tests {
         assert!(!main_seed.contains("<<<<<<<"), "main should never contain conflict markers");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn fifty_folds_do_not_leak_file_descriptors() {
         // /dev/fd measures this entire process, including other tests' sockets
@@ -2934,12 +2935,9 @@ mod tests {
         run(&["add", "."]);
         run(&["commit", "-m", "init"]);
 
-        #[cfg(unix)]
         fn count_fds() -> usize {
             std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0)
         }
-        #[cfg(not(unix))]
-        fn count_fds() -> usize { 0 }
 
         let fold_queue = Arc::new(FoldQueue::new(data.clone()).with_quiet_duration(std::time::Duration::from_millis(10)));
         let editor_handle = Arc::new(Mutex::new(None));

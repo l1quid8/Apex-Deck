@@ -402,15 +402,44 @@ pub fn chat_terminal_and_approval(conn: &mut Conn) {
     let (_, decided) = conn.call("room_decide", json!({ "id": "t1", "request": "r-1", "approve": true }));
     assert_eq!(decided, Err("that request is no longer waiting for an answer".into()));
 
-    conn.call("pty_spawn", json!({ "id": "term", "agent": null, "cwd": null, "cols": 80, "rows": 24 })).1.unwrap();
+    let (spawn_events, spawned) = conn.call("pty_spawn", json!({ "id": "term", "agent": null, "cwd": null, "cols": 80, "rows": 24 }));
+    spawned.unwrap();
+    let mut terminal_output = String::new();
+    let append_terminal = |output: &mut String, frame: &Value| {
+        if frame["event"] == "pty-data" && frame["payload"]["id"] == "term" {
+            output.push_str(frame["payload"]["data"].as_str().unwrap_or_default());
+        }
+    };
+    for event in &spawn_events { append_terminal(&mut terminal_output, event); }
+    #[cfg(windows)]
+    {
+        // portable-pty requests the initial cursor position when creating
+        // ConPTY. Act as the terminal emulator, including split query frames.
+        let start = Instant::now();
+        while !terminal_output.contains("\x1b[6n") {
+            assert!(start.elapsed() < PATIENCE, "ConPTY did not request cursor position: {terminal_output:?}");
+            let frame = conn.frames.next().expect("closed before ConPTY cursor query");
+            append_terminal(&mut terminal_output, &frame);
+        }
+        let (events, replied) = conn.call("pty_write", json!({ "id": "term", "data": "\x1b[1;1R" }));
+        replied.unwrap();
+        for event in &events { append_terminal(&mut terminal_output, event); }
+    }
     #[cfg(unix)]
     let terminal_command = "echo apex-$((40+2))\n";
     // The Windows host uses COMSPEC (cmd.exe). Keep the expected output out of
     // the input so an echoed command cannot satisfy the terminal assertion.
     #[cfg(windows)]
     let terminal_command = "set /a apex_result=40+2\r\necho apex-%apex_result%\r\n";
-    conn.call("pty_write", json!({ "id": "term", "data": terminal_command })).1.unwrap();
-    conn.frames.until(|f| f["event"] == "pty-data" && f["payload"]["data"].as_str().unwrap_or_default().contains("apex-42"));
+    let (events, written) = conn.call("pty_write", json!({ "id": "term", "data": terminal_command }));
+    written.unwrap();
+    for event in &events { append_terminal(&mut terminal_output, event); }
+    let start = Instant::now();
+    while !terminal_output.contains("apex-42") {
+        assert!(start.elapsed() < PATIENCE, "terminal output did not arrive: {terminal_output:?}");
+        let frame = conn.frames.next().expect("closed before terminal output");
+        append_terminal(&mut terminal_output, &frame);
+    }
     conn.call("pty_kill", json!({ "id": "term" })).1.unwrap();
 
     conn.call("session_save", json!({ "session": { "version": 1, "panes": [{ "id": "t1", "kind": "chat" }] } })).1.unwrap();

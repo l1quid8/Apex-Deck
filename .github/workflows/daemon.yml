@@ -46,6 +46,7 @@ jobs:
   # failing the run. Remove continue-on-error once it passes.
   test-windows:
     runs-on: windows-latest
+    timeout-minutes: 20
     continue-on-error: true
     steps:
       # Keep LF line endings so files match the Mac and Linux checkouts.

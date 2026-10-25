@@ -1366,19 +1366,23 @@ mod tests {
         host.call_assuming_verified_ui_for_test(call("personal_avatar_generate", args))
             .await
             .unwrap();
-        let result = loop {
-            let j = host
-                .call_assuming_verified_ui_for_test(call(
-                    "personal_avatar_status",
-                    json!({"owner":owner,"generationId":"rpc-generation"}),
-                ))
-                .await
-                .unwrap();
-            if j["state"] != "pending" {
-                break j;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let j = host
+                    .call_assuming_verified_ui_for_test(call(
+                        "personal_avatar_status",
+                        json!({"owner":owner,"generationId":"rpc-generation"}),
+                    ))
+                    .await
+                    .unwrap();
+                if j["state"] != "pending" {
+                    break j;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            tokio::task::yield_now().await;
-        };
+        })
+        .await
+        .expect("fixture avatar generation finishes within 30 seconds");
         assert_eq!(result["state"], "preview");
         assert_eq!(adapter.calls(), 1);
         let updated=host.call_assuming_verified_ui_for_test(call("personal_workspace_configure",json!({"assistantId":a.id,"expectedRevision":a.revision,"settings":{"name":"RPC saved"},"avatar":{"kind":"image","generationId":"rpc-generation","assetId":result["candidate"]["assetId"]}}))).await.unwrap();
