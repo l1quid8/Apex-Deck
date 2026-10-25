@@ -404,6 +404,20 @@ where
         tokio::select! {
             frame = input.next(), if reading => match frame {
                 Some(Ok(text)) => match read_request(&text) {
+                    Ok((id, Request::InputClosed)) => {
+                        if trust != Trust::Local {
+                            if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), "not allowed from a remote connection")).await {
+                                return stop.into();
+                            }
+                            continue;
+                        }
+                        // Windows pipes cannot close only their write half.
+                        // Treat this local relay frame exactly like input EOF:
+                        // stop reading and drain replies already in flight.
+                        voice.close_all("connection closed");
+                        reading = false;
+                        drained.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
+                    }
                     Ok((_, Request::VoiceFrame(frame))) => {
                         if guard.as_ref().is_some_and(|g| g.device().is_none()) {
                             return Ended::Revoked;
@@ -735,6 +749,7 @@ fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
 }
 
 enum Request {
+    InputClosed,
     Voice(crate::voice::session::VoiceRequest),
     VoiceFrame(Value),
     // Boxed: `Command` carries every field of every host request, and this
@@ -781,6 +796,9 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
     }
     if value["cmd"] == "hello" {
         return Err(refusal(json!(id), "already said hello"));
+    }
+    if value["cmd"] == "input_closed" {
+        return Ok((id, Request::InputClosed));
     }
     if value["cmd"]
         .as_str()
@@ -1258,6 +1276,36 @@ mod tests {
         client.write.get_mut().shutdown().await.unwrap();
         assert_eq!(client.next().await.unwrap()["id"], 1);
         assert_eq!(client.next().await, None);
+    }
+
+    // A named pipe has no write-half EOF: the local relay must be able to
+    // drain outstanding answers while keeping its read handle open.
+    #[tokio::test]
+    async fn local_input_closed_drains_replies_and_ignores_later_requests() {
+        let mut client = connect(Trust::Local);
+        client.hello().await;
+        client.send(json!({ "id": 1, "cmd": "session_load", "args": {} })).await;
+        client.send(json!({ "id": 2, "cmd": "input_closed" })).await;
+        client.send(json!({ "id": 3, "cmd": "session_load", "args": {} })).await;
+        assert_eq!(client.next().await.unwrap()["id"], 1);
+        assert_eq!(client.next().await, None);
+    }
+
+    #[tokio::test]
+    async fn remote_input_closed_is_refused_without_ending_the_session() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let mut token = connect_to(&daemon, Trust::Token);
+        token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
+        token.next().await.unwrap();
+        let (mut device, _session) = connect_device(&daemon, &phone, 1 << 16);
+        device.hello().await;
+        for client in [&mut token, &mut device] {
+            client.send(json!({ "id": 1, "cmd": "input_closed" })).await;
+            assert_eq!(client.next().await.unwrap(), json!({ "id": 1, "err": "not allowed from a remote connection" }));
+            client.send(json!({ "id": 2, "cmd": "session_load", "args": {} })).await;
+            assert_eq!(client.next().await.unwrap()["id"], 2);
+        }
     }
 
     // ---- Remote devices ----

@@ -22,7 +22,7 @@ pub(crate) async fn read_plan() -> Result<PlanUsage, Failure> {
         .ok()
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|dir| PathBuf::from(dir).join(".grok")))
+        .or_else(|| std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|dir| PathBuf::from(dir).join(".grok")))
         .ok_or_else(|| short("no Grok login found".into()))?;
     let saved = tokio::fs::read_to_string(home.join("auth.json"))
         .await

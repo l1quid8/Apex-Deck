@@ -5,6 +5,17 @@ mod common;
 use common::*;
 use serde_json::json;
 
+#[cfg(unix)]
+#[test]
+fn in_process_stdio_supports_data_paths_too_long_for_a_socket() {
+    let data = temp_dir();
+    let folder = data.0.join("long-data-folder".repeat(8));
+    let mut client = StdioClient::spawn(&["--stdio"], &folder);
+    assert_eq!(client.hello(None)["protocol"], json!(1));
+    client.close_input();
+    assert!(client.wait().success());
+}
+
 #[test]
 fn a_chat_a_terminal_an_approval_and_a_restart_over_stdio() {
     let data = temp_dir();
