@@ -43,11 +43,56 @@ pub struct SavedRoom {
 /// Permission-bearing snapshot fields live separately from editable transcript data.
 #[derive(Clone,Serialize,Deserialize)]
 struct RoomAuthority {
+    #[serde(default, skip_serializing_if = "apex_core::RoomKind::is_work")]
+    kind: apex_core::RoomKind,
     cwd:Option<String>,participants:Vec<apex_core::ParticipantConfig>,options:apex_core::RoomOptions,
     allowed:Vec<apex_core::AllowedRule>,plan:bool,
     #[serde(default)] mounts:Vec<MountBoundary>,
     /// Set when this manifest was created from a pre-provenance room file. Never verified.
     #[serde(default, skip_serializing_if = "Option::is_none")] legacy:Option<crate::legacy_import::LegacyMarker>,
+}
+
+/// Destination when a chat room is moved to another paired machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMovedTo {
+    pub host: String,
+    pub room: String,
+}
+
+/// Machine-owned catalog metadata for a chat room or promoted work room.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRoomMeta {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub updated_at: u64,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<ChatMovedTo>,
+}
+
+/// One row returned by `chat_list`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatListEntry {
+    pub id: String,
+    pub kind: apex_core::RoomKind,
+    pub title: String,
+    pub participants: Vec<apex_core::ParticipantConfig>,
+    pub updated_at: u64,
+    pub archived: bool,
+    pub cwd: Option<String>,
+    pub folder_name: Option<String>,
+    pub promoted_from: Option<String>,
+    pub promoted_to: Option<String>,
+    pub moved_to: Option<ChatMovedTo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +293,7 @@ impl Store {
         // manifest existed keeps its own settings there, as it did before.
         if crate::authority_file::plain(&self.root)&&!authority.contains_key(id){return Ok(Some(room));}
         let trusted:RoomAuthority=serde_json::from_value(authority.get(id).cloned().ok_or("This legacy room has no verified authority manifest. It requires explicit reauthorization; its original file was preserved.")?).map_err(|e|e.to_string())?;
+        room.snapshot.kind=trusted.kind;
         room.cwd=trusted.cwd;
         room.snapshot.participants=trusted.participants;
         room.snapshot.options=trusted.options;
@@ -266,9 +312,15 @@ impl Store {
     }
     fn save_room_authority(&self,id:&str,room:&SavedRoom)->Result<(),String>{
         let mut authorities=self.room_authorities()?;
+        if let Some(existing) = authorities.get(id) {
+            let previous_kind: apex_core::RoomKind = existing.get("kind").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            if previous_kind.is_chat() && !room.snapshot.kind.is_chat() {
+                return Err("A talk-only chat room cannot be converted into a Work thread in place.".into());
+            }
+        }
         // A room restored from legacy data keeps saying so after later saves.
         let legacy=authorities.get(id).and_then(|entry|entry.get("legacy")).and_then(|marker|serde_json::from_value(marker.clone()).ok());
-        let manifest=RoomAuthority{cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone(),legacy};
+        let manifest=RoomAuthority{kind:room.snapshot.kind,cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone(),legacy};
         authorities.insert(id.into(),serde_json::to_value(manifest).map_err(|e|e.to_string())?);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
     }
@@ -570,6 +622,10 @@ impl Store {
         let mut authorities=self.room_authorities()?;
         authorities.remove(id);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let mut metas = self.chat_metas_held()?;
+        if metas.remove(id).is_some() {
+            self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
+        }
         for path in self.thread_paths(id) {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
@@ -578,6 +634,117 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    fn chat_metas_held(&self) -> Result< std::collections::BTreeMap<String, ChatRoomMeta>, String> {
+        Ok(self.read(&self.root.join("chat-meta-v1.json"))?.unwrap_or_default())
+    }
+
+    pub fn chat_meta(&self, id: &str) -> Result<Option<ChatRoomMeta>, String> {
+        Ok(self.chat_metas_held()?.remove(id))
+    }
+
+    pub fn save_chat_meta(&self, id: &str, meta: &ChatRoomMeta) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        metas.insert(id.into(), meta.clone());
+        self.write_held(&self.root.join("chat-meta-v1.json"), &metas)
+    }
+
+    pub fn update_chat_meta(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut ChatRoomMeta),
+    ) -> Result<ChatRoomMeta, String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        let mut meta = metas.remove(id).unwrap_or_default();
+        f(&mut meta);
+        metas.insert(id.into(), meta.clone());
+        self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
+        Ok(meta)
+    }
+
+    /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
+    pub fn chat_list(&self) -> Result<Vec<ChatListEntry>, String> {
+        let metas = self.chat_metas_held()?;
+        let authorities = self.room_authorities()?;
+        let mut candidate_ids: std::collections::BTreeSet<String> = metas.keys().cloned().collect();
+        for (id, entry) in &authorities {
+            let kind: apex_core::RoomKind = entry
+                .get("kind")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            if kind.is_chat() {
+                candidate_ids.insert(id.clone());
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(self.root.join("rooms")) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if let Some(id) = room_id_from_file(name) {
+                        candidate_ids.insert(id);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for id in candidate_ids {
+            let meta = metas.get(&id).cloned();
+            let saved = match self.room(&id) {
+                Ok(Some(saved)) => saved,
+                Ok(None) | Err(_) => continue,
+            };
+            if !saved.snapshot.kind.is_chat() && meta.is_none() {
+                continue;
+            }
+            let meta = meta.unwrap_or_default();
+            let last_msg_at = saved
+                .snapshot
+                .transcript
+                .iter()
+                .filter_map(|m| m.at)
+                .max()
+                .unwrap_or(0);
+            let updated_at = meta.updated_at.max(last_msg_at);
+            let title = if meta.title.trim().is_empty() {
+                "New chat".to_string()
+            } else {
+                meta.title
+            };
+            let folder_name = saved
+                .cwd
+                .as_deref()
+                .and_then(|p| Path::new(p).file_name())
+                .and_then(|n| n.to_str())
+                .map(str::to_owned);
+            let participants = saved
+                .snapshot
+                .participants
+                .into_iter()
+                .map(|mut p| {
+                    if let apex_core::Backend::OpenAiCompatible { ref mut api_key_env, .. } = p.backend {
+                        *api_key_env = None;
+                    }
+                    p
+                })
+                .collect();
+            out.push(ChatListEntry {
+                id,
+                kind: saved.snapshot.kind,
+                title,
+                participants,
+                updated_at,
+                archived: meta.archived,
+                cwd: saved.cwd,
+                folder_name,
+                promoted_from: meta.promoted_from,
+                promoted_to: meta.promoted_to,
+                moved_to: meta.moved_to,
+            });
+        }
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id)));
+        Ok(out)
     }
 }
 
@@ -634,7 +801,7 @@ pub(crate) fn plan_legacy_room(id: &str, bytes: &[u8]) -> Result<(LegacyRoom, us
         }
         true
     });
-    let authority = RoomAuthority { cwd: saved.cwd, participants: saved.snapshot.participants, options: saved.snapshot.options, allowed: vec![], plan: saved.snapshot.plan, mounts, legacy: None };
+    let authority = RoomAuthority { kind: apex_core::RoomKind::Work, cwd: saved.cwd, participants: saved.snapshot.participants, options: saved.snapshot.options, allowed: vec![], plan: saved.snapshot.plan, mounts, legacy: None };
     Ok((LegacyRoom { id: id.into(), authority, omitted_commands }, allowed, dropped))
 }
 

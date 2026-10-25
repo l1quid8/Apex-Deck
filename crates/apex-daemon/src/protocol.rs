@@ -159,6 +159,7 @@ struct Reply {
     result: Result<Value, String>,
     need: Option<authority::Need>,
     session: bool,
+    chat_list: bool,
 }
 
 /// A remote device's session: who it is, and word of revokes.
@@ -266,6 +267,7 @@ fn reply_frame(guard: &Option<Guard>, reply: Reply) -> Result<String, Stop> {
     let value = match (device, reply.result) {
         (_, Err(why)) => return Ok(refusal(json!(reply.id), why)),
         (Some(device), Ok(value)) if reply.session => authority::filter_session(&device.threads, value),
+        (Some(device), Ok(value)) if reply.chat_list => authority::filter_chat_list(&device.threads, value),
         (_, Ok(value)) => value,
     };
     Ok(json!({ "id": reply.id, "ok": value }).to_string())
@@ -741,6 +743,7 @@ where
 /// what a device needed to run it (`need`), to be checked again on delivery.
 fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>) {
     let session = matches!(command, Command::SessionLoad {});
+    let chat_list = matches!(command, Command::ChatList {});
     let task = {
         let host = Arc::clone(&host);
         tokio::spawn(async move {
@@ -755,7 +758,7 @@ fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>
             Ok(result) => result,
             Err(_) => Err("the command failed unexpectedly".to_string()),
         };
-        let _ = replies.send(Reply { after: host.events().last_seq(), id, result, need, session });
+        let _ = replies.send(Reply { after: host.events().last_seq(), id, result, need, session, chat_list });
     });
 }
 
@@ -1761,7 +1764,8 @@ mod tests {
         let command: Command = serde_json::from_value(command).unwrap();
         let guard = Guard { devices: Arc::clone(&daemon.devices), id: phone.to_string(), revokes: daemon.devices.subscribe() };
         let session = matches!(command, Command::SessionLoad {});
-        let reply = Reply { after: 0, id: 7, result: Ok(result), need: Some(authority::command_needs(&command)), session };
+        let chat_list = matches!(command, Command::ChatList {});
+        let reply = Reply { after: 0, id: 7, result: Ok(result), need: Some(authority::command_needs(&command)), session, chat_list };
         (Some(guard), reply)
     }
 

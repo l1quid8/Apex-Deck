@@ -351,9 +351,30 @@ pub(crate) fn remember_checklist(lists: &Checklists, id: &ParticipantId, seq: us
     }
 }
 
+/// Whether a room is a folder-backed Work thread or a folderless, talk-only chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomKind {
+    #[default]
+    Work,
+    Chat,
+}
+
+impl RoomKind {
+    pub fn is_work(&self) -> bool {
+        *self == Self::Work
+    }
+
+    pub fn is_chat(&self) -> bool {
+        *self == Self::Chat
+    }
+}
+
 /// Durable chat data. Running turns and provider processes are never resumed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomSnapshot {
+    #[serde(default, skip_serializing_if = "RoomKind::is_work")]
+    pub kind: RoomKind,
     pub participants: Vec<ParticipantConfig>,
     pub transcript: Vec<Message>,
     pub options: RoomOptions,
@@ -389,6 +410,7 @@ impl RoomSnapshot {
     pub fn fork(&self, upto: usize) -> Self {
         let upto = upto.min(self.transcript.len());
         Self {
+            kind: self.kind,
             participants: self.participants.clone(),
             transcript: self.transcript[..upto].to_vec(),
             options: self.options,
@@ -408,6 +430,7 @@ impl RoomSnapshot {
 
 /// One group chat.
 pub struct Room {
+    kind: RoomKind,
     checklists: Checklists,
     roster: Vec<Arc<dyn Participant>>,
     transcript: Vec<Message>,
@@ -439,8 +462,21 @@ impl Room {
         Arc::clone(&self.desk)
     }
 
+    pub fn kind(&self) -> RoomKind {
+        self.kind
+    }
+
+    pub fn with_kind(mut self, kind: RoomKind) -> Self {
+        self.kind = kind;
+        if kind.is_chat() {
+            self.plan.store(false, Ordering::SeqCst);
+        }
+        self
+    }
+
     pub fn snapshot(&self) -> RoomSnapshot {
         RoomSnapshot {
+            kind: self.kind,
             participants: self.configs(),
             transcript: self.transcript.clone(),
             options: self.options,
@@ -460,7 +496,9 @@ impl Room {
     pub fn restore(roster: Vec<Arc<dyn Participant>>, snapshot: RoomSnapshot) -> Self {
         let desk = ApprovalDesk::default();
         desk.set_allowed(snapshot.allowed);
+        let plan = !snapshot.kind.is_chat() && snapshot.plan;
         Self {
+            kind: snapshot.kind,
             roster,
             transcript: snapshot.transcript,
             checklists: Arc::new(Mutex::new(snapshot.checklists)),
@@ -473,7 +511,7 @@ impl Room {
             baseline: snapshot.baseline,
             usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
-            plan: Arc::new(AtomicBool::new(snapshot.plan)),
+            plan: Arc::new(AtomicBool::new(plan)),
             // Card guidance is always on.
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(desk),
@@ -482,6 +520,7 @@ impl Room {
 
     pub fn new(roster: Vec<Arc<dyn Participant>>, options: RoomOptions) -> Self {
         Self {
+            kind: RoomKind::Work,
             roster,
             transcript: Vec::new(),
             checklists: Arc::new(Mutex::new(HashMap::new())),

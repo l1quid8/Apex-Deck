@@ -38,6 +38,7 @@ mod tests {
                 cwd: "/p".into(),
                 named_only_workers: vec!["image-bot".into()],
                 snapshot: RoomSnapshot {
+                    kind: apex_core::RoomKind::Work,
                     participants: profiles,
                     transcript: vec![],
                     options: RoomOptions::default(),
@@ -688,6 +689,7 @@ mod tests {
         SavedRoom { mounts: vec![],
             cwd: Some(cwd.into()),
             snapshot: RoomSnapshot {
+                kind: apex_core::RoomKind::Work,
                 participants: vec![],
                 transcript: messages
                     .into_iter()

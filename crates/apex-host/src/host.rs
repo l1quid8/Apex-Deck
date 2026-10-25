@@ -3031,9 +3031,9 @@ mod host_tests {
             // Capture the real room's requests without a provider or live daemon.
             *host.handle("r").unwrap().room.lock().await = Room::new(vec![bot.clone()], RoomOptions::default());
             let verified = apex_core::GeneratedUiCapability::Verified;
-            let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None };
+            let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None, client_message_id: None };
             host.call_with_client_capability_assuming_verified_ui_for_test(post, verified).await.unwrap();
-            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None };
+            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None, client_message_id: None };
             host.call_with_client_capability_assuming_verified_ui_for_test(post_to, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
@@ -3043,7 +3043,7 @@ mod host_tests {
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
             }).await.unwrap();
-            let legacy = crate::Command::RoomPost { id: "r".into(), text: "phone follow-up".into(), interactive_answers: None };
+            let legacy = crate::Command::RoomPost { id: "r".into(), text: "phone follow-up".into(), interactive_answers: None, client_message_id: None };
             host.call_assuming_verified_ui_for_test(legacy).await.unwrap();
             let requests = bot.requests();
             assert_eq!(requests.len(), 4);

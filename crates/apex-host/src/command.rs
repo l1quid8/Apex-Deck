@@ -154,10 +154,21 @@ pub enum Command {
     LibraryRename { file: String, name: String },
     RoomMount { id: String, cwd: String },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
+    ChatProfiles {},
+    ChatList {},
+    ChatCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, #[serde(default)] title: Option<String> },
+    ChatUpdateMeta { id: String, #[serde(default)] title: Option<String>, #[serde(default)] archived: Option<bool>, #[serde(default)] moved_to: Option<Option<crate::storage::ChatMovedTo>> },
+    ChatAddParticipant { id: String, participant: ParticipantConfig },
+    ChatUpdateParticipant { id: String, participant: ParticipantConfig, #[serde(default)] base: Option<ParticipantConfig> },
+    ChatRemoveParticipant { id: String, participant: ParticipantId },
+    ChatImport { id: String, snapshot: RoomSnapshot, #[serde(default)] title: Option<String>, #[serde(default)] replace: Option<bool> },
+    ChatMessageClaim { id: String, client_message_id: String, text: String, #[serde(default)] targets: Option<Vec<ParticipantId>> },
+    ChatMergeHistory { id: String, messages: Vec<apex_core::Message> },
+    ChatPromote { source: String, target: String, cwd: String, #[serde(default)] upto: Option<usize> },
     RoomState { id: String },
-    RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
+    RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     RoomTargets { id: String, text: String },
-    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize> },
+    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     VoiceCapabilities {},
     RoomStopRequest { id: String, participant: ParticipantId, #[serde(alias = "client_turn_id")] client_turn_id: String },
     RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
@@ -217,7 +228,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -499,10 +510,11 @@ impl Host {
             LibraryRename { file, name } => reply(self.library_rename(file, name)?),
             RoomMount { id, cwd } => reply(self.room_mount(id, cwd)?),
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
+            ChatProfiles {} | ChatList {} | ChatCreate { .. } | ChatUpdateMeta { .. } | ChatAddParticipant { .. } | ChatUpdateParticipant { .. } | ChatRemoveParticipant { .. } | ChatImport { .. } | ChatMessageClaim { .. } | ChatMergeHistory { .. } | ChatPromote { .. } => Err("not built yet".into()),
             RoomState { id } => reply(self.room_state(id)?),
-            RoomPost { id, text, interactive_answers } => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
+            RoomPost { id, text, interactive_answers, client_message_id: _ } => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
-            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops } => {
+            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id: _ } => {
                 if let Some(request_id) = client_turn_id {
                     if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
                     reply(self.room_voice_post(id, text, targets[0].clone(), request_id).await?)
@@ -677,7 +689,22 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 176);
+        assert_eq!(names.len(), 187);
+        for name in [
+            "chat_profiles",
+            "chat_list",
+            "chat_create",
+            "chat_update_meta",
+            "chat_add_participant",
+            "chat_update_participant",
+            "chat_remove_participant",
+            "chat_import",
+            "chat_message_claim",
+            "chat_merge_history",
+            "chat_promote",
+        ] {
+            assert!(names.contains(&name.to_owned()), "{name}");
+        }
         for name in ["phone_devices", "phone_control"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"bot_copies_set_check".to_string()));
         for name in ["personal_task_lifecycle", "personal_reply_cancel", "personal_archive"] { assert!(names.contains(&name.to_owned())); }
