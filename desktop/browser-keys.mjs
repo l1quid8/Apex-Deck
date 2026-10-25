@@ -14,6 +14,7 @@ export const DECK_KEYS = [
   { code: 'BracketRight', shift: false },
   { code: 'Enter', shift: true },
   { code: 'Backslash', shift: true },
+  { code: 'Backquote', shift: true },
   { code: 'Comma', shift: false },
 ];
 

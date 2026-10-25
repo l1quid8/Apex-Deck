@@ -44,6 +44,12 @@ test('a key press in the page goes to the deck only when it is a deck shortcut',
   assert.equal(deckKey(press('KeyT', { control: true }), false), false, 'Ctrl+T stays with the page off macOS');
 });
 
+test('the terminal tool shortcut reaches the deck from a focused browser on both platforms', () => {
+  assert.equal(deckKey({ type: 'keyDown', code: 'Backquote', meta: true, control: false, shift: true, alt: false }, true), true);
+  assert.equal(deckKey({ type: 'keyDown', code: 'Backquote', meta: false, control: true, shift: true, alt: false }, false), true);
+  assert.equal(deckKey({ type: 'keyDown', code: 'Backquote', meta: true, control: false, shift: false, alt: false }, true), false);
+});
+
 test('the assistant key reaches the deck from a live native browser', () => {
   assert.equal(deckKey({ type: 'keyDown', code: 'KeyK', meta: true, control: false, shift: false, alt: false }, true), true);
   assert.deepEqual(shortcutFor({ code: 'KeyK', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false }, true), { kind: 'assistant' });
