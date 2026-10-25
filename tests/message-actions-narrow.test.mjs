@@ -99,7 +99,7 @@ async function inThreads(name, body, measure, checks) {
     const {app,BrowserWindow}=require('electron');
     const assert=require('node:assert/strict');
     app.whenReady().then(async()=>{
-      const win=new BrowserWindow({show:false,width:900,height:1500,webPreferences:{contextIsolation:true,sandbox:true}});
+      const win=new BrowserWindow({show:false,width:900,height:1500,webPreferences:{contextIsolation:true,sandbox:true,backgroundThrottling:false}});
       const run=code=>win.webContents.executeJavaScript(code);
       try {
         await win.loadURL(${JSON.stringify(url)});

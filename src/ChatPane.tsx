@@ -1,4 +1,5 @@
 import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
+import { isWindows, pathBase } from "./paths";
 import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
@@ -2993,7 +2994,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               <span className="hint">{accessNote}</span>
             </div>
           )}
-          <label className="voice-field">
+          {!isWindows && <label className="voice-field">
             Voice
             <span className="voice-pick">
               <select name="voice" value={draft.voice ?? ""} onChange={(e) => set("voice", e.target.value)}>
@@ -3005,7 +3006,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               <VoiceSampleButton voice={draft.voice || defaultVoiceOf(voiceConfig)} />
             </span>
             <span className="hint">How it sounds on calls. Default follows Settings. Picking a voice during a call changes only that chat.</span>
-          </label>
+          </label>}
           <PersonaDraft
             key={`persona:${editing ?? "new"}`}
             writers={personaWriters(
@@ -3827,7 +3828,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           {quickAdd === "dock" && quickAddMenu}
           <ComposerMenu ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
-            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
+            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)));
             if (item.kind === "command" && item.command) {
               const draft = text;
               runCommand(item.command);
@@ -3878,7 +3879,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
-            onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
+            onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
         </ThreadComposerBox>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
         {botChips}

@@ -1,5 +1,6 @@
 // src/RightPanel.tsx
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { isWindows } from "./paths";
 import { FIXED, KINDS, TAB_GAP, activate, closeTab, fitTabs, moveTab, openTab, outsideViewport, tabIndexAt, tabReleaseAction, type PanelTab, type RightPanelState, type TabFit, type TabKind } from "./rightPanelModel";
 import "./right-panel.css";
 
@@ -56,13 +57,14 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
   const widths = useRef(new Map<string, number>());
   const suppressClick = useRef(false);
   const now = () => Date.now();
-  const selectedTab = state.tabs.find((tab) => tab.id === state.active);
+  const tabs = isWindows ? state.tabs.filter((t) => t.kind !== "phone") : state.tabs;
+  const selectedTab = tabs.find((tab) => tab.id === state.active);
   const canRemove = !!selectedTab && !FIXED.includes(selectedTab.kind);
   // The window listeners below outlive the render that attached them.
   const live = useRef({ state, onChange, onPopoutDragOut });
   live.current = { state, onChange, onPopoutDragOut };
   const labelOf = (tab: PanelTab) => tab.kind === "browser" && tab.url ? hostOf(tab.url) : TAB_LABEL[tab.kind];
-  const labels = state.tabs.map(labelOf);
+  const labels = tabs.map(labelOf);
   const fitKey = `${labels.join("\n")}\n${state.active}`;
   const fitRef = useRef<() => void>(() => {});
   fitRef.current = () => {
@@ -81,8 +83,8 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
     const pad = getComputedStyle(bar);
     const avail = bar.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight) - ctl.getBoundingClientRect().width - TAB_GAP;
     setLayout((prev) => {
-      const next = fitTabs(ws, state.tabs.findIndex((t) => t.id === state.active), avail, prev.fit);
-      const hidden = state.tabs.filter((_, i) => !next.shown[i]).map((t) => t.id);
+      const next = fitTabs(ws, tabs.findIndex((t) => t.id === state.active), avail, prev.fit);
+      const hidden = tabs.filter((_, i) => !next.shown[i]).map((t) => t.id);
       return next.fit === prev.fit && hidden.join() === prev.hidden.join() ? prev : { fit: next.fit, hidden };
     });
   };
@@ -117,9 +119,9 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
     const b = button.getBoundingClientRect();
     setTip({ text, x: b.left - box.left + b.width / 2 });
   };
-  const overflow = state.tabs.filter((t) => layout.hidden.includes(t.id));
-  // Already-open tools are left out; Browser can open more than one.
-  const addable = KINDS.filter((k) => !FIXED.includes(k) && (k === "browser" || !state.tabs.some((t) => t.kind === k)));
+  const overflow = tabs.filter((t) => layout.hidden.includes(t.id));
+  // Already-open tools are left out; Browser can open more than one. Phone is hidden on Windows.
+  const addable = KINDS.filter((k) => !FIXED.includes(k) && !(isWindows && k === "phone") && (k === "browser" || !tabs.some((t) => t.kind === k)));
 
   /** Press a tab: past a small travel it is a drag — reorder inside, pop out past the
    *  window's edge — and without the travel it stays a plain click. Pointer capture
@@ -169,7 +171,7 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
   };
   return <div className="right-panel" data-fit={layout.fit} ref={panel}>
     <div className="right-panel-tabs" role="tablist" aria-label="Side panel" ref={strip}>
-      {state.tabs.map((tab, i) => {
+      {tabs.map((tab, i) => {
         const label = labels[i];
         const active = tab.id === state.active;
         // The flag belongs to the Tasks tab, not to being in front: it shows while tasks wait,
@@ -191,7 +193,7 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
         <button className="icon small" aria-label="Hide side panel" title="Close sidebar" onClick={() => { setMenuOpen(false); onClose(); }}>×</button>
       </div>
     </div>
-    <div className="right-panel-name" aria-hidden="true">{selectedTab ? labels[state.tabs.indexOf(selectedTab)] : ""}</div>
+    <div className="right-panel-name" aria-hidden="true">{selectedTab ? labels[tabs.indexOf(selectedTab)] : ""}</div>
     <span className="right-panel-tab-label right-panel-meter" ref={meter} aria-hidden="true" />
     {tip && <div className="right-panel-tip" ref={tipBox} aria-hidden="true">{tip.text}</div>}
     {menuOpen && <div className="right-panel-menu" role="menu" ref={menu}>
@@ -211,7 +213,7 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
         <button role="menuitem" onClick={() => { const id = context.id; setContext(null); onPopout?.(id); }}>Open in new window</button>
       </div>
     </div>}
-    {state.tabs.map((tab) => {
+    {tabs.map((tab) => {
       const visible = state.open && tab.id === state.active;
       const body = bodies[tab.kind];
       return <section key={tab.id} id={`right-body-${tab.id}`} role="tabpanel" aria-labelledby={`right-tab-${tab.id}`} className="right-panel-body" hidden={!visible}>

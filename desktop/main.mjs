@@ -19,8 +19,9 @@ import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
-import { answers, daemonBinary, dataFolder, localDaemon } from './sidecar.mjs';
+import { answers, daemonBinary, daemonEndpoint, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
+import { installLogonTask, removeLogonTask, startLogonTaskDaemon, usesLogonTask } from './winLogonTask.mjs';
 import { TRUSTED_DAEMON, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
@@ -86,25 +87,41 @@ let starting = null;
 /** The app's own settings. The old `remoteAccess` key is imported once, then deleted. */
 const desktopSettingsFile = () => path.join(app.getPath('userData'), 'desktop-settings.json');
 
-/** Whether the daemon can run as a LaunchAgent, which outlives the app (see launchAgent.mjs). */
-const agentMode = usesLaunchAgent({ packaged: app.isPackaged, dataDir });
-/** On a packaged Mac the LaunchAgent always runs the daemon, phone connections on or off. */
+/** Whether the daemon can run as a LaunchAgent or Windows logon task, which outlives the app. */
+const agentMode = process.platform === 'win32'
+  ? usesLogonTask({ packaged: app.isPackaged, dataDir })
+  : usesLaunchAgent({ packaged: app.isPackaged, dataDir });
+/** On a packaged Mac or Windows PC the background service always runs the daemon, phone connections on or off. */
 const agentWanted = () => agentMode;
 /** Where the agent's daemon writes its output: the app's logs folder. */
 const agentLogFile = () => path.join(app.getPath('logs'), 'apex-daemon.log');
-/** The daemon's `daemon.sock`, whichever way it was started. */
-const socketFile = async () => path.join(await dataFolder(bin, dataDir), 'daemon.sock');
+/** The daemon's connection address (`apex-daemon endpoint`), whichever way it was started. */
+const socketFile = async () => daemonEndpoint(bin, dataDir);
 
-/** Install the LaunchAgent (or leave it as it is) and attach to the daemon it runs. */
+/** Install the LaunchAgent or Windows logon task (or leave it as it is) and attach to the daemon it runs. */
 async function startAgent() {
+  const socket = await socketFile();
+  const folder = await dataFolder(bin, dataDir);
+  const infoFile = path.join(folder, 'daemon.json');
+  if (process.platform === 'win32') {
+    const stampFile = path.join(app.getPath('userData'), 'logon-task.stamp');
+    const got = await startLogonTaskDaemon({
+      socket,
+      infoFile,
+      answers,
+      install: () => installLogonTask({ bin: agentBin, dataDir, build: daemonBuild(agentBin), stampFile }),
+      remove: () => removeLogonTask({ stampFile }),
+    });
+    if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
+    return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
+  }
   const logFile = agentLogFile();
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  const socket = await socketFile();
   const plistPath = agentPlistPath();
   const uid = process.getuid();
   const got = await startAgentDaemon({
     socket,
-    infoFile: path.join(path.dirname(socket), 'daemon.json'),
+    infoFile,
     uid,
     answers,
     install: () => installAgent({ plistPath, plist: agentPlist({ bin: agentBin, dataDir, logFile, build: daemonBuild(agentBin) }), uid }),
@@ -563,8 +580,8 @@ handle('connection:references', async (entry, ids) => {
 });
 handle('connection:remove', async (entry, id) => {
   knownHost(id);
-  const daemon = await ensureLocal();
-  const file = path.join(path.dirname(daemon.socket), 'saved-chats-v1', 'session.json');
+  await ensureLocal();
+  const file = path.join(await dataFolder(bin, dataDir), 'saved-chats-v1', 'session.json');
   let session;
   try { session = JSON.parse(await fs.promises.readFile(file, 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') session = { workspaces: [] }; else throw new Error('Could not read the saved workspace list; the server was kept.'); }

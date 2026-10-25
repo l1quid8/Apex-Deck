@@ -54,8 +54,9 @@ export function issue(request){
     });
   });
 }
-export async function attestFrame(frame,{dataDir,uid=process.getuid(),publicKey:rawKey,issue:send=issue}={}){
+export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKey:rawKey,issue:send=issue}={}){
   if(!protectedCommands.has(frame.cmd))return frame;
+  if(typeof uid!=='number')throw new Error('Protected provenance service unavailable. Submission was not sent.');
   const command={cmd:frame.cmd,args:frame.args??{}};
   if(frame.cmd==='assistant_task_action') command.provenanceRequestId=command.args.action==='revise_startup'?'task-action:revise_startup:content-v1':`task-action:${command.args.action}`;
   else if(!['assistant_message','personal_send','personal_decide'].includes(frame.cmd)) command.provenanceRequestId=randomUUID();
