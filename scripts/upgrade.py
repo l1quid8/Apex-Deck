@@ -476,17 +476,25 @@ def queued():
         else: entry.unlink()
     return None
 
-def interrupted(entry):
-    # A queued request whose job folder exists: an earlier run was cut short.
-    rid=entry.name[:-5]
-    attention=(UPGRADES/'install.lock').exists()
-    result={'id':rid,'outcome':'needs-attention' if attention else 'failed','message':'The update was interrupted before it finished'+(', and the last install left a lock to inspect' if attention else ''),'finishedAt':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+def stopped(rid,message,attention=False):
+    # Whatever went wrong, say so where Deck looks, and never leave Deck closed.
+    result={'id':rid,'outcome':'needs-attention' if attention else 'failed','message':message,'finishedAt':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+    uid=None
     try:
         request=read_request(JOBS/rid/'request.json'); result['version']=request['version']; uid=request['uid']
-    except BaseException: uid=None
-    write_result(result)
-    if uid is not None: reopen(uid)
+    except BaseException:
+        console=os.stat('/dev/console').st_uid
+        if console>=500: uid=console
+    for step in (lambda:write_result(result),lambda:uid is not None and reopen(uid)):
+        try: step()
+        except BaseException as error: print('Apex Deck update cleanup: '+str(error),file=sys.stderr,flush=True)
+    print('Apex Deck update '+result['outcome']+': '+json.dumps(result),flush=True)
     return 1
+
+def interrupted(entry):
+    # A queued request whose job folder exists: an earlier run was cut short.
+    attention=(UPGRADES/'install.lock').exists()
+    return stopped(entry.name[:-5],'The update was interrupted before it finished'+(', and the last install left a lock to inspect' if attention else ''),attention)
 
 def serve_queue():
     entry=queued()
@@ -499,6 +507,8 @@ def serve_queue():
         job.mkdir(mode=0o700)
         shutil.copyfile(entry,job/'request.json'); os.chmod(job/'request.json',0o600)
         return auto(job/'request.json')
+    except BaseException as error:
+        return stopped(entry.name[:-5],'The update could not start: '+(str(error) or error.__class__.__name__))
     finally:
         # Last: until now the broker refuses another request.
         entry.unlink(missing_ok=True)

@@ -265,3 +265,13 @@ with tempfile.TemporaryDirectory() as directory:
  u.UPDATE_PLIST.write_bytes(b'old');u.RUNNING_AS_JOB=False;calls.clear();u.install_update_service()
  assert calls==[['print','system/dev.apexdeck.update'],['bootout','system/dev.apexdeck.update'],['bootstrap','system']]
 `));
+
+test('a job that fails before it can read its request still says so and reopens Deck for whoever is signed in', () => python(queueFixture + String.raw`
+u.os.stat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_uid=501) if p=='/dev/console' else real(p,*a,**k))(u.os.stat)
+(u.QUEUE/(rid+'.json')).write_text('not json')
+assert u.serve_queue()==1
+result=json.loads((u.RESULTS/'last-update.json').read_text())
+assert result['id']==rid and result['outcome']=='failed' and 'could not start' in result['message']
+assert seen==[('reopen',501)] and list(u.QUEUE.iterdir())==[]
+shutil.rmtree(directory)
+`));
