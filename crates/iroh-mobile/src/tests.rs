@@ -6,7 +6,7 @@ use apex_daemon::{
     protocol::Daemon,
     remote,
 };
-use apex_host::{Host, HostPaths};
+use apex_host::{test_support::isolated_host_assuming_verified_ui, HostPaths};
 use std::{path::PathBuf, time::Instant};
 
 /// A throwaway data folder, removed on drop.
@@ -97,7 +97,7 @@ struct Server {
 impl Server {
     async fn start() -> Server {
         let data = Folder::new();
-        let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
+        let host = isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
         let daemon = Arc::new(Daemon {
             host,
             host_id: "host-1".into(),
