@@ -82,7 +82,8 @@ class Engines:
         if not segments or all(s.no_speech_prob > .8 for s in segments):
             return ''
         text = ' '.join(s.text.strip() for s in segments).strip()
-        return '' if made_up(text, hints, [s.compression_ratio for s in segments]) else text
+        return '' if made_up(text, hints, [s.compression_ratio for s in segments],
+                             [s.no_speech_prob for s in segments], [s.avg_logprob for s in segments]) else text
 
     def synthesize(self, text, voice):
         import numpy as np
