@@ -101,6 +101,7 @@ import { RightBrowser } from "./RightBrowser";
 import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
+import { RightTerminalTab } from "./RightTerminal";
 import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
@@ -2783,6 +2784,13 @@ export function App() {
                 ? <AssistantBrowser lane={selectedAssistant} presentation={visible ? "expanded" : "closed"} onClose={closeAssistantBrowserTab} />
                 : <p className="muted right-panel-empty">Open an assistant to see its browser.</p>,
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
+              terminal: (_tab, visible) => {
+                const pane = listed.find((item) => item.id === focusedPane);
+                const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
+                let route: Backend | null = null;
+                try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
+                return <RightTerminalTab root={workspace?.path || chatFolder(pane, workspace) || null} backend={route} visible={visible} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />;
+              },
               files: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
