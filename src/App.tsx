@@ -101,6 +101,7 @@ import { RightBrowser } from "./RightBrowser";
 import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
+import { RightTerminalTab } from "./RightTerminal";
 import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
@@ -389,8 +390,11 @@ export function App() {
   const [railRename, setRailRename] = useState<Record<string, number>>({});
   /** Bumped to start a terminal again from its ⋯ menu. */
   const [startRequests, setStartRequests] = useState<Record<string, number>>({});
-  /** Text to type, not run, into a terminal the first time it starts: a code block's Open in terminal. */
-  const [typeIns, setTypeIns] = useState<Record<string, string>>({});
+  /** Text to type, not run, into a main terminal pane (kept for restored sessions). */
+  const [typeIns] = useState<Record<string, string>>({});
+  /** Code block -> right sidebar terminal tool. */
+  const [rightTypeIn, setRightTypeIn] = useState<string | undefined>(undefined);
+  const [rightTypeInSeq, setRightTypeInSeq] = useState(0);
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared once the thread takes it. */
   const [threadRequests, setThreadRequests] = useState<Record<string, { id: string; action: ThreadMenuRequest } | undefined>>({});
   const menuSeq = useRef(0);
@@ -901,10 +905,11 @@ export function App() {
     return pane.id;
   };
 
-  /** A code block's Open in terminal: a new shell in the thread's project, the command typed in and not run. */
-  const openTerminalWith = (workspaceId: string, command: string) => {
-    const id = addPane("terminal", "Terminal", undefined, workspaceId);
-    if (id) setTypeIns((all) => ({ ...all, [id]: command }));
+  /** A code block's Open in terminal: typed into the right sidebar terminal tool, not run. */
+  const openTerminalWith = (_workspaceId: string, command: string) => {
+    setRightTypeIn(command);
+    setRightTypeInSeq((n) => n + 1);
+    setPanel((p) => openTab({ ...p, open: true }, "terminal", Date.now()));
   };
 
   /** The sidebar's New thread (or terminal) in a project. */
@@ -2329,6 +2334,13 @@ export function App() {
       if (focusedPane && visiblePanes.some((p) => p.id === focusedPane)) setMaximized((m) => (m === focusedPane ? null : focusedPane));
     } else if (action.kind === "side_panel_full") {
       setSidePanelFull(!(panel.open && panel.full));
+    } else if (action.kind === "toggle_terminal_tool") {
+      setPanel((current) => {
+        const term = current.tabs.find((t) => t.kind === "terminal");
+        const showing = term && current.open && current.active === term.id;
+        if (showing) return closePanel(current);
+        return openTab(current, "terminal", Date.now());
+      });
     }
   };
   useEffect(() => {
@@ -2783,6 +2795,13 @@ export function App() {
                 ? <AssistantBrowser lane={selectedAssistant} presentation={visible ? "expanded" : "closed"} onClose={closeAssistantBrowserTab} />
                 : <p className="muted right-panel-empty">Open an assistant to see its browser.</p>,
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
+              terminal: (_tab, visible) => {
+                const pane = listed.find((item) => item.id === focusedPane);
+                const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
+                let route: Backend | null = null;
+                try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
+                return <RightTerminalTab root={workspace?.path || chatFolder(pane, workspace) || null} backend={route} visible={visible} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} typeIn={rightTypeIn} typeInRequest={rightTypeInSeq} />;
+              },
               files: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;

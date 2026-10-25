@@ -2219,6 +2219,16 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     const key = runKey(message, code);
     return <RunButton command={command} running={codeRuns.runs[key]?.state === "running"} onRun={() => codeRuns.run(key, command, cwd)} />;
   };
+  const terminalOpenAction = (code: CodeInfo) => {
+    if (!onOpenTerminal) return null;
+    const text = code.text.trim();
+    if (!text) return null;
+    return (
+      <button type="button" className="code-open-terminal" title="Open in right sidebar terminal" onClick={() => onOpenTerminal(text)}>
+        Open in terminal
+      </button>
+    );
+  };
   const runBelow = (message: { seq: number }, code: CodeInfo) => {
     const key = runKey(message, code);
     const run = codeRuns.runs[key];
@@ -3593,7 +3603,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 <span className="speaker">
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
-                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />
+                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}{terminalOpenAction(code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 {(() => {
