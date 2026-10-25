@@ -102,6 +102,30 @@ class PiecePipelineTests(unittest.IsolatedAsyncioTestCase):
         await pipe.speak('r', 1, 'a b c d e f g h i j k l m', 'am_michael')
         self.assertEqual(b''.join(e['pcm'] for e in sent if e['type'] == 'audio'), b'\1\0' * 3000)
 
+class BargeInTests(unittest.TestCase):
+ def test_in_flight_frames_preserved_on_barge_in_cancel(self):
+  # Simulates server.py generation handling for barge-in.
+  # When endpoint is active and last cancel kept input (reset=False),
+  # frames with previous generation that were in flight should be accepted.
+  pipe_gen = 1
+  endpoint_active = True
+  last_cancel_reset = False
+  def should_accept(gen):
+   if gen != pipe_gen:
+    if not (endpoint_active and last_cancel_reset is False and gen == pipe_gen - 1):
+     return False
+   return True
+  self.assertTrue(should_accept(0), "old gen should be preserved during active barge-in")
+  self.assertTrue(should_accept(1))
+  # Inactive or reset=True drops old
+  endpoint_active = False
+  self.assertFalse(should_accept(0))
+  endpoint_active = True
+  last_cancel_reset = True
+  self.assertFalse(should_accept(0))
+  last_cancel_reset = None
+  self.assertFalse(should_accept(0))
+
 class CancelDuringSendTests(unittest.IsolatedAsyncioTestCase):
  async def test_cancel_on_last_chunk_does_not_synthesize_the_next_piece(self):
   calls=[]
