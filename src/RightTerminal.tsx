@@ -3,13 +3,13 @@ import type { Backend } from "./backend";
 import { TerminalPane } from "./TerminalPane";
 import type { Pane } from "./types";
 
-export function RightTerminalTab({ root, backend, visible, fontSize, scrollback }: { root: string | null; backend: Backend | null; visible: boolean; fontSize?: number; scrollback?: number }) {
+export function RightTerminalTab({ root, backend, visible, fontSize, scrollback, typeIn, typeInRequest }: { root: string | null; backend: Backend | null; visible: boolean; fontSize?: number; scrollback?: number; typeIn?: string; typeInRequest?: number }) {
   if (!backend) return <p className="muted right-panel-empty">This project machine is unavailable.</p>;
   if (!root) return <p className="muted right-panel-empty">This project has no folder.</p>;
-  return <RightTerminal root={root} backend={backend} visible={visible} fontSize={fontSize} scrollback={scrollback} />;
+  return <RightTerminal root={root} backend={backend} visible={visible} fontSize={fontSize} scrollback={scrollback} typeIn={typeIn} typeInRequest={typeInRequest} />;
 }
 
-function RightTerminal({ root, backend, visible, fontSize, scrollback }: { root: string; backend: Backend; visible: boolean; fontSize?: number; scrollback?: number }) {
+function RightTerminal({ root, backend, visible, fontSize, scrollback, typeIn, typeInRequest }: { root: string; backend: Backend; visible: boolean; fontSize?: number; scrollback?: number; typeIn?: string; typeInRequest?: number }) {
   const [restart, setRestart] = useState(0);
   const pane = useMemo<Pane>(() => ({
     id: `right-terminal-${root}`,
@@ -32,6 +32,8 @@ function RightTerminal({ root, backend, visible, fontSize, scrollback }: { root:
           installed
           toolLabel="shell"
           startRequest={restart}
+          typeIn={typeIn}
+          typeInRequest={typeInRequest}
           onActivity={() => {}}
           onRun={() => {}}
           onTitle={() => {}}

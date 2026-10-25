@@ -32,6 +32,8 @@ interface Props {
   onRestartRequest?: (paneId: string) => void;
   /** Typed in, not run, once the first shell has started: a code block's Open in terminal. */
   typeIn?: string;
+  /** Bumped when `typeIn` should be typed into an already-running shell. */
+  typeInRequest?: number;
   onActivity: (paneId: string) => void;
   /** Told each time the program starts or ends. */
   onRun: (paneId: string, run: TerminalRun) => void;
@@ -73,7 +75,7 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, attachPtyId, onRestartRequest, typeIn, onActivity, onRun, onTitle, onRenamePane, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, attachPtyId, onRestartRequest, typeIn, typeInRequest, onActivity, onRun, onTitle, onRenamePane, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
   const connection = useHostConnection(backend);
   const available = installed && hostCanMutate(connection.status);
   /** Fit the terminal to its pane and tell the program its new size. Set up with the terminal below. */
@@ -348,6 +350,23 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
   useEffect(() => {
     if (startRequest) start.current();
   }, [startRequest]);
+
+  // A code block's Open in terminal while the shell is already running: paste it in.
+  useEffect(() => {
+    if (!typeInRequest) return;
+    if (!typeIn) return;
+    const id = currentPtyId.current;
+    if (!id) {
+      // No PTY yet (between restarts); keep it for the next spawn.
+      typeInLeft.current = typeIn;
+      return;
+    }
+    if (run.state !== "running") {
+      typeInLeft.current = typeIn;
+      return;
+    }
+    backend.ptyWrite(id, `\x1b[200~${typeIn}\x1b[201~`).catch(() => {});
+  }, [typeInRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (focused) terminal.current?.focus();
