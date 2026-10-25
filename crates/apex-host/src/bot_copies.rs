@@ -2654,6 +2654,153 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn check_failure_keeps_copy_posts_one_note_and_stops_repairing() {
+        let (_tmp, root, data) = init_repo("fold-check-fail");
+        // A saved check that passes in the main folder and fails once the bot's file is in its copy.
+        crate::project_check::save_check(&data, &root, Some("test ! -e broken.flag".into()))
+            .unwrap();
+
+        let mut copy = create_copy(&root, &data, "t-check", "null").unwrap();
+        copy.name = Some("Null".into());
+        fs::write(
+            copy.work.join("broken.flag"),
+            "the change that breaks the check",
+        )
+        .unwrap();
+
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        let queue_clone = Arc::clone(&fold_queue);
+        let data_clone = data.clone();
+        let attempts_seen = Arc::new(Mutex::new(0));
+        let attempts_cb = Arc::clone(&attempts_seen);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let ev_sink = {
+            let ev = Arc::clone(&events);
+            Arc::new(move |e| ev.lock().unwrap().push(e))
+        };
+        let ev_sink_cb = Arc::clone(&ev_sink);
+
+        let reconcile_starter: ReconcileStarter = Arc::new(move |thread, bot, _msg| {
+            let data_clone = data_clone.clone();
+            let queue = Arc::clone(&queue_clone);
+            let attempts_cb = Arc::clone(&attempts_cb);
+            let ev_sink = Arc::clone(&ev_sink_cb);
+            Box::pin(async move {
+                *attempts_cb.lock().unwrap() += 1;
+                // The bot answers without fixing the check, so the fold is attempted again.
+                let c = load_copies(&data_clone)
+                    .into_iter()
+                    .find(|c| c.thread == thread && c.bot == bot.as_str())
+                    .unwrap();
+                queue.enqueue(FoldTask {
+                    thread,
+                    copy: c,
+                    editor_handle: Arc::new(Mutex::new(None)),
+                    event_sink: ev_sink,
+                    reconcile: None,
+                });
+                Ok(())
+            })
+        });
+        fold_queue.set_reconcile(reconcile_starter);
+
+        fold_queue.enqueue(FoldTask {
+            thread: "t-check".into(),
+            copy: copy.clone(),
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: ev_sink,
+            reconcile: None,
+        });
+        fold_queue.wait_idle().await;
+
+        assert_eq!(
+            *attempts_seen.lock().unwrap(),
+            2,
+            "a failing check is sent back twice, then kept"
+        );
+
+        let copies = load_copies(&data);
+        assert_eq!(copies.len(), 1, "the copy is kept so its work is not lost");
+        match &copies[0].state {
+            CopyState::NeedsYou { reason } => assert_eq!(reason, "project check failed"),
+            s => panic!("expected NeedsYou state, got {s:?}"),
+        }
+        assert!(copy.work.exists(), "the kept copy stays on disk");
+        assert!(
+            !root.join("broken.flag").exists(),
+            "a change that fails the check must not be folded into main"
+        );
+
+        let evs = events.lock().unwrap();
+        let notes: Vec<_> = evs
+            .iter()
+            .filter_map(|e| match e {
+                RoomEvent::MessageAdded { message } => Some(message.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![
+                "Null's changes couldn't be folded in (project check failed). Its copy is kept in the Worktrees tab."
+                    .to_string()
+            ],
+            "exactly one Deck note names the check as the reason"
+        );
+    }
+
+    #[tokio::test]
+    async fn clean_fold_is_quiet_and_removes_the_copy() {
+        let (_tmp, root, data) = init_repo("fold-silent");
+        // Checks keep running with no setup: a passing saved check folds straight through.
+        crate::project_check::save_check(&data, &root, Some("git status".into())).unwrap();
+
+        let copy = create_copy(&root, &data, "t-silent", "bot-silent").unwrap();
+        fs::write(copy.work.join("from_copy.txt"), "copy content").unwrap();
+
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let ev_sink = {
+            let ev = Arc::clone(&events);
+            Arc::new(move |e| ev.lock().unwrap().push(e))
+        };
+        fold_queue.enqueue(FoldTask {
+            thread: "t-silent".into(),
+            copy: copy.clone(),
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: ev_sink,
+            reconcile: None,
+        });
+        fold_queue.wait_idle().await;
+
+        assert_eq!(
+            fs::read_to_string(root.join("from_copy.txt")).unwrap(),
+            "copy content"
+        );
+        assert!(
+            load_copies(&data).is_empty(),
+            "a folded copy leaves no row behind"
+        );
+        assert!(
+            !copy.work.exists(),
+            "the copy folder is removed after a clean fold"
+        );
+
+        let evs = events.lock().unwrap();
+        assert!(
+            !evs.iter()
+                .any(|e| matches!(e, RoomEvent::MessageAdded { .. })),
+            "a successful fold-back posts no chat message"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e, RoomEvent::Changed { .. })),
+            "folded files still reach the chat"
+        );
+    }
+
+    #[tokio::test]
     async fn restart_requeues_unfolded_copies() {
         let (_tmp, root, data) = init_repo("restart-requeue");
         let copy1 = create_copy(&root, &data, "t1", "bot1").unwrap();
