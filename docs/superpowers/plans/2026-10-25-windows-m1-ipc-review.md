@@ -24,7 +24,9 @@ stale-socket cleanup. In-process `--stdio` still works with a data path too
 long for a socket.
 
 Windows uses a pipe name containing the current user's SID and SHA-256 of
-the absolute, lexically normalized UTF-16 data path. The initial listener
+the canonical UTF-16 data path, after creating the directory. This collapses
+case differences and junction aliases. If canonicalization is unavailable,
+it falls back to the absolute, lexically normalized path. The initial listener
 requires the first pipe instance. Each instance has a protected, explicit
 current-user-only DACL and owner, rejects remote clients, and is not
 inheritable. Clients verify the opened pipe's owner before returning it and
@@ -87,10 +89,22 @@ inheritance cleared as well as being duplicated into noninheritable handles.
 3. Port or gate Unix-dependent fixtures, permissions, symlinks, and shell
    commands; run actual pipe ACL, owner, cancellation, retry, and EOF tests
    on the Windows runner.
-4. Confirm endpoint spelling rules before Electron integration: lexical
-   normalization does not collapse case differences or junction aliases.
+4. Endpoint spelling now uses the canonical Windows directory; keep endpoint
+   derivation in the daemon rather than duplicating it in JavaScript.
 5. Keep Windows `continue-on-error` until its full job passes. Linux and Mac
    CI must also pass. Implement/review secure Windows protected authority
    before claiming feature parity for protected assistant functionality.
 
 Never push or merge main from this checkpoint.
+
+## Jigga review fixes
+
+- Added a required independent `test-windows-ipc` CI job using `apex-ipc-check`,
+  which imports the production IPC module directly rather than a copy.
+- Documented that Windows `BlockingStream` clones cannot read and write
+  concurrently. Pairing continues to require async `Client`.
+- Run `40188870576` executed 15 tests on Windows: the 12 pre-existing transport
+  and security tests passed; three new regressions failed as expected on the
+  old endpoint implementation (directory creation, case, junction aliases).
+  Canonicalization is now implemented; the next Windows run is the gate
+  before migrating callers.

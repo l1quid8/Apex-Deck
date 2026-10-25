@@ -221,8 +221,25 @@ fn verify_server_owner(handle: RawHandle, expected: &str) -> io::Result<()> {
 }
 
 pub fn endpoint(data: &Path) -> io::Result<PathBuf> {
-    // Resolve drive-relative paths as well as ordinary relative paths without
-    // requiring that this directory already exists (unlike canonicalize).
+    // The data lock follows Windows' case-insensitive paths and junctions.
+    // Name the pipe from the same physical directory so every spelling finds
+    // its daemon. Keep lexical normalization as a fallback for filesystems
+    // that cannot return a canonical path.
+    std::fs::create_dir_all(data)?;
+    let normalized = std::fs::canonicalize(data).or_else(|_| lexical_absolute(data))?;
+    let mut hash = Sha256::new();
+    // Hash the original UTF-16 code units, including non-Unicode Windows paths.
+    for unit in normalized.as_os_str().encode_wide() {
+        hash.update(unit.to_le_bytes());
+    }
+    Ok(PathBuf::from(format!(
+        r"\\.\pipe\apex-deck-{}-{:x}",
+        current_user_sid()?,
+        hash.finalize()
+    )))
+}
+
+fn lexical_absolute(data: &Path) -> io::Result<PathBuf> {
     let absolute = std::path::absolute(data)?;
     let mut normalized = PathBuf::new();
     for component in absolute.components() {
@@ -239,16 +256,7 @@ pub fn endpoint(data: &Path) -> io::Result<PathBuf> {
             _ => normalized.push(component.as_os_str()),
         }
     }
-    let mut hash = Sha256::new();
-    // Hash the original UTF-16 code units, including non-Unicode Windows paths.
-    for unit in normalized.as_os_str().encode_wide() {
-        hash.update(unit.to_le_bytes());
-    }
-    Ok(PathBuf::from(format!(
-        r"\\.\pipe\apex-deck-{}-{:x}",
-        current_user_sid()?,
-        hash.finalize()
-    )))
+    Ok(normalized)
 }
 
 /// A LocalAlloc allocation, as returned by the Windows security conversion APIs.
@@ -355,7 +363,7 @@ fn owner_only_descriptor() -> io::Result<LocalAllocation> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use super::super::tests::TestEndpoint;
     use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
     use windows_sys::Win32::Security::{
         GetAce, GetSecurityDescriptorControl, ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION,
@@ -364,20 +372,10 @@ mod tests {
     use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
     use windows_sys::Win32::System::Pipes::{GetNamedPipeInfo, PIPE_REJECT_REMOTE_CLIENTS};
 
-    fn test_endpoint() -> PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        endpoint(&std::env::temp_dir().join(format!(
-            "apx-win-security-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        )))
-        .unwrap()
-    }
-
     #[tokio::test]
     async fn pipe_has_protected_current_user_only_dacl_and_noninheritable_handle() {
-        let path = test_endpoint();
-        let listener = listen(&path).unwrap();
+        let endpoint = TestEndpoint::new();
+        let listener = listen(&endpoint.path).unwrap();
         let handle = listener.pending.as_raw_handle();
         let mut owner = ptr::null_mut();
         let mut dacl = ptr::null_mut();
@@ -436,7 +434,8 @@ mod tests {
 
     #[tokio::test]
     async fn client_checks_the_actual_server_owner_and_refuses_a_mismatch() {
-        let path = test_endpoint();
+        let endpoint = TestEndpoint::new();
+        let path = &endpoint.path;
         let _listener = listen(&path).unwrap();
         let Stream::Client(client) = connect(&path).await.unwrap() else {
             panic!("client stream required")
@@ -458,7 +457,8 @@ mod tests {
 
     #[tokio::test]
     async fn every_pipe_instance_rejects_remote_clients() {
-        let path = test_endpoint();
+        let endpoint = TestEndpoint::new();
+        let path = &endpoint.path;
         let mut listener = listen(&path).unwrap();
         assert_rejects_remote(&listener.pending);
         let _client = connect(&path).await.unwrap();
@@ -471,7 +471,8 @@ mod tests {
 
     #[tokio::test]
     async fn busy_pipe_connect_retries_until_accept_creates_an_instance() {
-        let path = test_endpoint();
+        let endpoint = TestEndpoint::new();
+        let path = &endpoint.path;
         let mut listener = listen(&path).unwrap();
         let _first = connect(&path).await.unwrap();
         let second = connect(&path);
@@ -490,7 +491,8 @@ mod tests {
 
     #[tokio::test]
     async fn busy_pipe_connect_has_a_bounded_retry_deadline() {
-        let path = test_endpoint();
+        let endpoint = TestEndpoint::new();
+        let path = &endpoint.path;
         let _listener = listen(&path).unwrap();
         let _first = connect(&path).await.unwrap();
         let result = tokio::time::timeout(CONNECT_TIMEOUT + Duration::from_secs(1), connect(&path))
@@ -525,7 +527,8 @@ mod tests {
 
     #[test]
     fn endpoint_normalizes_parent_components_and_preserves_utf16() {
-        let base = std::env::temp_dir();
+        let fixture = TestEndpoint::new();
+        let base = &fixture.data;
         assert_eq!(
             endpoint(&base.join("a/../b")).unwrap(),
             endpoint(&base.join("b")).unwrap()

@@ -92,13 +92,13 @@ mod tests {
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    struct TestEndpoint {
-        data: PathBuf,
-        path: PathBuf,
+    pub(super) struct TestEndpoint {
+        pub(super) data: PathBuf,
+        pub(super) path: PathBuf,
     }
 
     impl TestEndpoint {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             #[cfg(unix)]
             let base = PathBuf::from("/tmp");
@@ -153,14 +153,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_endpoint_is_absolute_user_scoped_and_directory_specific() {
-        let relative = Path::new("apex-ipc-test-data");
+        let relative = Path::new(".");
         let absolute = std::env::current_dir().unwrap().join(relative);
         let first = endpoint(relative).unwrap();
         assert_eq!(first, endpoint(&absolute).unwrap());
-        assert_ne!(
-            first,
-            endpoint(Path::new("apex-ipc-test-other-data")).unwrap()
-        );
+        let other = TestEndpoint::new();
+        assert_ne!(first, other.path);
         let prefix = format!(
             r"\\.\pipe\apex-deck-{}-",
             windows::current_user_sid().unwrap()
