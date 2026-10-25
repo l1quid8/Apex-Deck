@@ -75,8 +75,10 @@ def update_config(config_path,ui,daemon):
     os.chmod(temporary,0o600)
     os.replace(temporary,config_path)
 
-def app_running():
-    return run('/usr/bin/pgrep','-x','Apex Deck',required=False).returncode == 0
+def app_running(uid=None):
+    # Any signed-in person's copy, or with `uid` only that person's: with Fast User Switching each has their own.
+    who=('-U',str(uid)) if uid is not None else ()
+    return run('/usr/bin/pgrep',*who,'-x','Apex Deck',required=False).returncode == 0
 
 def preflight(payload=False):
     if os.geteuid()!=0: raise RuntimeError('macOS Installer administrator authorization is required')
@@ -365,11 +367,11 @@ def use_manifest(manifest,staged):
     global M,STAGED
     M=manifest; STAGED=Path(staged)
 
-def closed_within(seconds):
+def closed_within(seconds,uid=None):
     for _ in range(seconds):
-        if not app_running(): return True
+        if not app_running(uid): return True
         time.sleep(1)
-    return not app_running()
+    return not app_running(uid)
 
 def wait_for_exit(seconds=EXIT_WAIT):
     if not closed_within(seconds): raise RuntimeError('Apex Deck did not close within '+str(seconds)+' seconds, so nothing was installed')
@@ -388,8 +390,9 @@ def write_result(result):
 def reopen(uid):
     # As the person, in their session; never as root. Nobody signed in, or someone else: leave it closed.
     # A refusal can come back while Deck is still quitting, and opening it then only brings
-    # the closing copy forward. Wait until it is gone; one that never closed needs no reopening.
-    if not closed_within(EXIT_WAIT): return
+    # the closing copy forward. Wait until theirs is gone; one that never closed needs no reopening.
+    # Another signed-in person's copy is theirs to keep open, and doesn't hold this one shut.
+    if not closed_within(EXIT_WAIT,uid): return
     if not TRUSTED.is_dir() or os.stat('/dev/console').st_uid!=uid: return
     user=pwd.getpwuid(uid)
     run('/bin/launchctl','asuser',str(uid),'/usr/bin/sudo','-n','-u',user.pw_name,'--','/usr/bin/open',TRUSTED,required=False)

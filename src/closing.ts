@@ -267,24 +267,37 @@ export function stillRunning(terminals: TerminalNow[], threads: ThreadNow[]): Ru
   return out;
 }
 
-/** A personal Assistant whose service is on this Mac, when the app is asked to quit. */
+/** A personal Assistant, as usePersonalAssistants lists it, when the app is asked to quit. */
 export interface AssistantNow {
   name: string;
-  tasks: readonly { goal: string; status: string; deletedAt?: number }[];
+  /** Its service is this Mac's. */
+  onThisMac: boolean;
+  /** Its machine isn't answering. */
+  offline: boolean;
+  /** `operation.host` is the machine a command runs on. */
+  personalTasks: readonly { goal: string; status: string; deletedAt?: number; operation?: { host: string } }[];
   /** Messages it took in; `received` or `processing` means a reply is on its way. */
   events: readonly { state: string }[];
 }
 
 /**
- * What stopping this Mac's service would end of an assistant's work: a reply
- * it is writing and each task running now. Queued, waiting and held work is
- * saved with the assistant and carries on after the service is back.
+ * What stopping this Mac's service would end of the assistants' work: for one
+ * whose service is here, a reply it is writing and each task running now; for
+ * one elsewhere, a command it is running on this Mac (`thisMac`, this Mac's
+ * host id). Queued, waiting and held work is saved with the assistant and
+ * carries on after the service is back. An assistant whose machine isn't
+ * answering is left out: here, nothing is running; elsewhere, a command's
+ * result couldn't reach it anyway.
  */
-export function assistantsRunning(assistants: AssistantNow[]): Running[] {
+export function assistantsRunning(assistants: readonly AssistantNow[], thisMac: string | undefined): Running[] {
   const out: Running[] = [];
   for (const a of assistants) {
-    if (a.events.some((e) => e.state === "received" || e.state === "processing")) out.push({ name: a.name, thread: "", workspace: "", state: "replying" });
-    for (const t of a.tasks) if (t.status === "running" && t.deletedAt == null) out.push({ name: a.name, thread: "", workspace: t.goal.slice(0, 60), state: "working" });
+    if (a.offline) continue;
+    if (a.onThisMac && a.events.some((e) => e.state === "received" || e.state === "processing")) out.push({ name: a.name, thread: "", workspace: "", state: "replying" });
+    for (const t of a.personalTasks) {
+      const here = a.onThisMac || (thisMac !== undefined && t.operation?.host === thisMac);
+      if (here && t.status === "running" && t.deletedAt == null) out.push({ name: a.name, thread: "", workspace: t.goal.slice(0, 60), state: "working" });
+    }
   }
   return out;
 }

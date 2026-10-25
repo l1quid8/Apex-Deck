@@ -28,6 +28,12 @@ test('summaries say which assistants run on this Mac and pass on the replies the
  assert.equal(mac.onThisMac,true);assert.deepEqual(mac.events.map(e=>e.state),['processing']);
  assert.equal(alpha.onThisMac,false);assert.deepEqual(alpha.events,[]);
 });
+test('the snapshot names this Mac, so a command an assistant elsewhere runs here can be told apart',async()=>{
+ const f=fixture();assert.equal(f.collection.snapshot().localHostId,undefined);
+ f.lists.a=[{...record('alpha'),tasks:[{id:'t',goal:'List',status:'running',operation:{tool:'host.command',host:'mac',cwd:'/f',argv:['ls']}}]}];await f.collection.refresh();
+ const snap=f.collection.snapshot();assert.equal(snap.localHostId,'mac');
+ const alpha=snap.assistants.find(a=>a.ref.hostId==='alpha');assert.equal(alpha.onThisMac,false);assert.equal(alpha.personalTasks[0].operation.host,snap.localHostId);
+});
 test('offline records retain freshness and selection; successful absence removes them and selects an existing identity',async()=>{
  const f=fixture();await f.collection.refresh();f.collection.select(ref('beta'));const seen=f.collection.snapshot().assistants[3].lastSeen;
  f.offline.add('b');f.lists.b=[];await f.collection.refresh();assert.deepEqual(f.collection.snapshot().selected,ref('beta'));assert.equal(f.collection.snapshot().assistants[3].offline,true);assert.equal(f.collection.snapshot().assistants[3].lastSeen,seen);

@@ -684,10 +684,10 @@ handle('updates:unsavedEdit', async ({ win }, file) => {
   else unsavedEdits.delete(win.id);
 });
 // The asking window has already asked about its own unsaved edits and stopping
-// work, and saved its session; edits in any other window stop the restart.
+// work, and saved its session; edits in any other window, pop-outs included, stop the restart.
 handle('updates:restart', async ({ win }) => {
   if (!updater) throw new Error('Updates are still starting.');
-  const blocked = editsElsewhere(unsavedEdits, win.id, (id) => windows.has(id));
+  const blocked = editsElsewhere(unsavedEdits, win.id, (id) => windows.has(id) || popoutWindows.has(id));
   if (blocked) throw new Error(blocked);
   await updater.restart();
   void finishQuit();

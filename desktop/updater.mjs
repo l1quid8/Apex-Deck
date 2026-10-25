@@ -131,20 +131,36 @@ export function fetchManifest(fetchImpl) {
  * Download `url` to `file`, never past `size`; resolves the SHA-256 of what was written.
  * pipeline() owns the file stream, so a failed open or write (a missing folder,
  * a full disk) rejects here for the retries instead of escaping as an uncaught error.
+ * It can't cancel the response's web stream itself, so the source cancels its own
+ * reader when pipeline aborts: a read still waiting on the network ends at once.
+ * Cancelling the body leaves Electron's request open, so the request is aborted too.
  */
 export function fetchDownload(fetchImpl, files = fs) {
   return async (url, file, { size, onProgress = () => {} }) => {
-    const response = await fetchImpl(url, { cache: 'no-store' });
+    const request = new AbortController();
+    const response = await fetchImpl(url, { cache: 'no-store', signal: request.signal });
     if (!response.ok || !response.body) throw new Error(`The download answered ${response.status}.`);
     const hash = crypto.createHash('sha256');
     let received = 0;
-    await pipeline(response.body, async function* (body) {
-      for await (const chunk of body) {
-        received += chunk.length;
-        if (received > size) throw new Error('The download is larger than the release says.');
-        hash.update(chunk);
-        yield chunk;
-        onProgress(received);
+    await pipeline(async function* ({ signal }) {
+      const reader = response.body.getReader();
+      // Cancel first, so a waiting read ends rather than failing with the abort.
+      const stop = () => { reader.cancel(signal.reason).catch(() => {}); request.abort(); };
+      signal.addEventListener('abort', stop, { once: true });
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          received += value.length;
+          if (received > size) throw new Error('The download is larger than the release says.');
+          hash.update(value);
+          yield value;
+          onProgress(received);
+        }
+      } finally {
+        // Also on "larger than promised": the rest is never read.
+        signal.removeEventListener('abort', stop);
+        stop();
       }
     }, files.createWriteStream(file, { mode: 0o600 }));
     if (received !== size) throw new Error('The download stopped early.');

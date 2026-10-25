@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Writable } from 'node:stream';
+import { runInNewContext } from 'node:vm';
 import {
   FEED_URL, Updater, assetUrl, compareVersions, disabledReason, editsElsewhere, fetchDownload, fetchManifest,
   packageFor, packageVerifier, parseManifest, teamFrom,
@@ -192,7 +193,7 @@ test('a disabled updater never checks', async (t) => {
 test('downloads stop at the promised size and report the hash of what was written', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-download-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const body = (chunks) => ({ ok: true, status: 200, body: (async function* () { yield* chunks; })() });
+  const body = (chunks) => ({ ok: true, status: 200, body: ReadableStream.from(chunks) });
   const download = fetchDownload(async () => body([bytes.subarray(0, 5), bytes.subarray(5)]));
   const seen = [];
   assert.equal(await download('u', path.join(dir, 'a'), { size: bytes.length, onProgress: (n) => seen.push(n) }), sha);
@@ -207,7 +208,7 @@ test('downloads stop at the promised size and report the hash of what was writte
 test('a file that cannot be written fails the download instead of crashing Deck, and the check retries', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-download-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const body = (chunks) => ({ ok: true, status: 200, body: (async function* () { for (const chunk of chunks) { await new Promise((done) => setTimeout(done, 5)); yield chunk; } })() });
+  const body = (chunks) => ({ ok: true, status: 200, body: ReadableStream.from((async function* () { for (const chunk of chunks) { await new Promise((done) => setTimeout(done, 5)); yield chunk; } })()) });
   // The folder is gone: opening the file fails after the stream is made.
   await assert.rejects(fetchDownload(async () => body([bytes]))('u', path.join(dir, 'missing', 'a'), { size: bytes.length }), { code: 'ENOENT' });
   // The disk fills partway through.
@@ -221,6 +222,38 @@ test('a file that cannot be written fails the download instead of crashing Deck,
   assert.equal(attempts, 3);
   assert.equal(status.state, 'error');
   assert.match(status.error, /no space/);
+});
+
+test('a file that cannot be written cancels the download’s pending network read, so the retries start', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-download-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // A slow network: the first read is still waiting when the file fails to open.
+  let cancelled = 0;
+  let request = null;
+  const stalled = () => ({ ok: true, status: 200, body: new ReadableStream({ pull: () => new Promise(() => {}), cancel: () => { cancelled += 1; } }) });
+  const outcome = await Promise.race([
+    fetchDownload(async (_url, init) => { request = init.signal; return stalled(); })('u', path.join(dir, 'missing', 'a'), { size: bytes.length }).then(() => 'finished', (error) => error.code),
+    new Promise((done) => setTimeout(done, 2000, 'still waiting on the network').unref()),
+  ]);
+  assert.equal(outcome, 'ENOENT');
+  assert.equal(cancelled, 1);
+  assert.equal(request.aborted, true, 'the request is closed as well');
+  // Partway through, with the disk full.
+  cancelled = 0;
+  const full = Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+  const files = { createWriteStream: () => new Writable({ write: (_chunk, _encoding, done) => setTimeout(done, 5, full) }) };
+  let sent = false;
+  const trickle = () => ({ ok: true, status: 200, body: new ReadableStream({
+    pull: (controller) => { if (!sent) { sent = true; controller.enqueue(bytes.subarray(0, 5)); return undefined; } return new Promise(() => {}); },
+    cancel: () => { cancelled += 1; },
+  }) });
+  const partway = await Promise.race([
+    fetchDownload(async (_url, init) => { request = init.signal; return trickle(); }, files)('u', path.join(dir, 'b'), { size: bytes.length }).then(() => 'finished', (error) => error.code),
+    new Promise((done) => setTimeout(done, 2000, 'still waiting on the network').unref()),
+  ]);
+  assert.equal(partway, 'ENOSPC');
+  assert.equal(cancelled, 1);
+  assert.equal(request.aborted, true);
 });
 
 test('the package check pins this app’s team and the promised version', async (t) => {
@@ -254,4 +287,30 @@ test('unsaved edits in another open window stop Restart to update; the asking wi
   assert.match(editsElsewhere(new Map([[1, 'notes.md'], [2, 'plan.md']]), 1, isOpen), /^plan\.md has unsaved changes in another Deck window\. Save or discard them there first\.$/);
   open.delete(2);
   assert.equal(editsElsewhere(new Map([[2, 'plan.md']]), 1, isOpen), null, 'a closed window holds nothing');
+});
+
+test('a popped-out Files tab’s unsaved edits stop Restart to update from the Deck window', async () => {
+  // The production handlers from main.mjs, run against fake windows.
+  const source = fs.readFileSync(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('const unsavedEdits = new Map();');
+  const end = source.indexOf('\n// ---', start);
+  assert.ok(start > 0 && end > start);
+  const handlers = new Map();
+  let restarts = 0;
+  const deck = { win: { id: 1 } };
+  const popout = { win: { id: 2 }, role: 'popout' };
+  runInNewContext(source.slice(start, end), {
+    windows: new Map([[1, deck]]),
+    popoutWindows: new Map([[2, popout]]),
+    editsElsewhere,
+    updater: { restart: async () => { restarts += 1; } },
+    finishQuit: async () => {},
+    handle: (channel, run) => handlers.set(channel, run),
+  });
+  await handlers.get('updates:unsavedEdit')(popout, 'plan.md');
+  await assert.rejects(handlers.get('updates:restart')(deck), /^Error: plan\.md has unsaved changes in another Deck window/);
+  assert.equal(restarts, 0);
+  await handlers.get('updates:unsavedEdit')(popout, null);
+  await handlers.get('updates:restart')(deck);
+  assert.equal(restarts, 1);
 });

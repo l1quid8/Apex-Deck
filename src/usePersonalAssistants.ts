@@ -107,6 +107,8 @@ export class PersonalAssistantsCollection {
     archivedAssistants: [...this.rows.values()].filter(row=>row.assistant.archivedAt!=null).map(row=>this.summary(row)),
     selected: this.selected ? { ...this.selected } : null,
     hosts: [...this.hosts.values()],
+    /** This Mac's host id once its service has answered; an assistant elsewhere runs commands here under it. */
+    localHostId: this.localHostId,
   });
   /** Only authenticated welcome identity can bind a transport alias such as `local`. */
   private owner(route: Backend): string {

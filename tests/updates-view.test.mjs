@@ -45,7 +45,7 @@ test('restarting to update asks first about unsaved file edits, which the quit w
 });
 
 test('restarting to update asks when only personal Assistant work is going', () => {
-  const asked = restartQuestions(null, assistantsRunning([{ name: 'Dot', tasks: [{ goal: 'Back up the photos', status: 'running' }], events: [] }]));
+  const asked = restartQuestions(null, assistantsRunning([{ name: 'Dot', onThisMac: true, offline: false, personalTasks: [{ goal: 'Back up the photos', status: 'running' }], events: [] }], 'mac'));
   assert.equal(asked.length, 1);
   assert.deepEqual(asked[0].rows, ['Dot · Back up the photos · Working']);
 });

@@ -2365,7 +2365,7 @@ export function App() {
     void settleSaves().then(() => backend.quitApp());
   };
 
-  /** Agents, terminals and personal Assistants on this Mac that quitting, or installing an update, would end. */
+  /** Agents, terminals and personal Assistant work on this Mac (an assistant elsewhere's commands included) that quitting, or installing an update, would end. */
   const busyHere = () => {
     const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
     return [
@@ -2373,7 +2373,7 @@ export function App() {
         listed.filter((p) => p.kind === "terminal" && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
         listed.filter((p) => p.kind === "chat" && !deleting.has(p.id) && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
       ),
-      ...assistantsRunning(assistants.assistants.filter((a) => a.onThisMac && !a.offline).map((a) => ({ name: a.name, tasks: a.personalTasks, events: a.events }))),
+      ...assistantsRunning(assistants.assistants, assistants.localHostId),
     ];
   };
 

@@ -158,14 +158,35 @@ with tempfile.TemporaryDirectory() as directory:
  u.time.sleep=lambda s:events.append('sleep')
  u.run=lambda *args,required=True:events.append('open') if '/usr/bin/open' in [str(a) for a in args] else None
  running=[True,True,False]
- u.app_running=lambda:(events.append('running?') or running.pop(0))
+ u.app_running=lambda uid=None:(events.append('running?' if uid==501 else 'anyone?') or running.pop(0))
  u.reopen(501)
  # A refusal comes back within seconds, while Deck is still quitting: opening then
  # would only bring the closing copy forward and leave Deck shut once it exits.
  assert events==['running?','sleep','running?','sleep','running?','open'],events
- events.clear();u.app_running=lambda:True
+ events.clear();u.app_running=lambda uid=None:True
  u.reopen(501)
  assert 'open' not in events and events.count('sleep')==u.EXIT_WAIT,'still open: nothing to reopen'
+`));
+
+test('reopening waits for the requester’s own Deck only; another signed-in person’s copy doesn’t keep it closed', () => python(String.raw`
+with tempfile.TemporaryDirectory() as directory:
+ u.TRUSTED=pathlib.Path(directory)/'Apex Deck.app';u.TRUSTED.mkdir()
+ u.os.stat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_uid=501) if p=='/dev/console' else real(p,*a,**k))(u.os.stat)
+ u.pwd.getpwuid=lambda uid:types.SimpleNamespace(pw_name='person')
+ events=[]
+ u.time.sleep=lambda s:events.append('sleep')
+ def run(*args,required=True):
+  args=[str(a) for a in args]
+  if '/usr/bin/open' in args: events.append('open'); return None
+  assert args[0]=='/usr/bin/pgrep',args
+  # Fast User Switching: uid 502's Deck is still open; the requester's (501) has quit.
+  mine=args[1:3]==['-U','501']
+  return types.SimpleNamespace(returncode=1 if mine else 0)
+ u.run=run
+ u.reopen(501)
+ assert events==['open'],events
+ # Installing still waits for every copy: the bundle being replaced is shared.
+ assert u.app_running()
 `));
 
 test('a failed transaction that could not roll back is reported as needing attention', () => python(jobFixture + String.raw`
