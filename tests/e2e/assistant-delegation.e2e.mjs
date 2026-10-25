@@ -80,7 +80,7 @@ cat >/dev/null
       try { return await p.host.client.call('personal_project_delegate', { ...p.input, expectedRevision: (await readAssistant(p.host)).revision }); }
       catch (error) { if (/changed|revision/i.test(error.message)) return false; throw error; }
     });
-    p.read = async () => (await p.host.client.call('assistant_tasks_list', { owner: p.owner })).tasks.find(task => task.id === p.receipt.taskId);
+    p.read = async () => (await p.host.client.call('assistant_tasks_list', { owner: p.owner, includeDiffs: true })).tasks.find(task => task.id === p.receipt.taskId);
     p.action = async (action, extra = {}) => { const task = await p.read(); return p.host.client.call('assistant_task_action', { taskId: task.id, revision: task.revision, owner: p.owner, action, ...extra }); };
     assert.equal(p.receipt.status, 'proposed'); assert.deepEqual((await p.read()).lineage.assistant, p.assistant);
     await p.action('approve', { mode: 'isolated', destination: p.destination, newWorkerProfiles: [], checks: [] });
@@ -302,7 +302,10 @@ test('assistant delegates once, survives pane detach, holds review for phone acc
   await desktop.call('room_close', { id: running.executionThreadId });
   const ready = await until('detached worker result', async () => { const task = await list(); return task.status === 'ready_for_review' ? task : null; });
   assert.equal(ready.attempts.length, 1);
-  assert.ok(ready.resultData.reviewDiff?.includes('result.txt'), JSON.stringify(ready.resultData));
+  assert.equal(ready.resultData.reviewDiff, undefined, 'phone task list leaves review diffs out');
+  assert.equal(ready.resultData.diff, undefined, 'phone task list leaves review diffs out');
+  const reviewed = (await desktop.call('assistant_tasks_list', { owner, includeDiffs: true })).tasks.find(task => task.id === taskId);
+  assert.ok(reviewed.resultData.reviewDiff?.includes('result.txt'), JSON.stringify(reviewed.resultData));
   assert.equal(ready.resultData.leaseHeld, true);
   assert.ok(events.length, 'phone receives task events');
   const registry = await phone.call('assistant_tasks_list', { owner });
@@ -401,7 +404,9 @@ cat >/dev/null
     await phone.call('room_decide', { id: task.executionThreadId, request: pending.request, approve: true, always: false });
   }
   const ready = await until('both isolated results ready', async () => { const tasks = await list(); return tasks.every(task => task.status === 'ready_for_review') ? tasks : null; });
-  assert.ok(ready.every(task => task.resultData.reviewDiff.includes('task-')));
+  assert.ok(ready.every(task => task.resultData.reviewDiff === undefined && task.resultData.diff === undefined), 'phone task list leaves review diffs out');
+  const reviewed = (await desktop.call('assistant_tasks_list', { owner, includeDiffs: true })).tasks;
+  assert.ok(reviewed.length === 2 && reviewed.every(task => task.resultData.reviewDiff.includes('task-')));
   fs.writeFileSync(path.join(cwd, 'human.txt'), 'staged human edit\n'); git('add', 'human.txt');
   const index = fs.readFileSync(path.join(cwd, '.git/index'));
   for (const id of [first.task.id, second.task.id]) {
@@ -524,7 +529,7 @@ cat >/dev/null
       await project.host.client.call('assistant_task_action', { taskId: replay.task.id, owner: project.owner, revision: replay.task.revision, action: 'approve', mode: 'isolated', destination: project.input.destination });
     }
     for (const project of projects) {
-      const read = async () => (await project.host.client.call('assistant_tasks_list', { owner: project.owner })).tasks.find(task => task.id === project.task.id);
+      const read = async () => (await project.host.client.call('assistant_tasks_list', { owner: project.owner, includeDiffs: true })).tasks.find(task => task.id === project.task.id);
       const ready = await until('project-local isolated result', async () => { const task = await read(); return task.status === 'ready_for_review' ? task : null; }).catch(async error => { error.message += `: ${JSON.stringify(await read())}`; throw error; });
       assert.equal(ready.attempts.length, 1); assert.notEqual(ready.resultData.executionPath, project.cwd);
       assert.equal(fs.existsSync(path.join(project.cwd, 'result.txt')), false); assert.match(ready.resultData.reviewDiff, /result.txt/);

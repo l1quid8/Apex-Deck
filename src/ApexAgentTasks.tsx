@@ -134,7 +134,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     const listVersion = ++listRequestVersion.current;
     try {
       const unsure = loadPendingRequest(window.localStorage, captured);
-      const snapshot = await backend.call<AssistantTaskSnapshot & { request?: { requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'legacy'; taskId?: string | null } | null }>('assistant_tasks_list', unsure ? { owner: captured, requestId: unsure.requestId } : { owner: captured });
+      const snapshot = await backend.call<AssistantTaskSnapshot & { request?: { requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'legacy'; taskId?: string | null } | null }>('assistant_tasks_list', unsure ? { owner: captured, requestId: unsure.requestId, includeDiffs: true } : { owner: captured, includeDiffs: true });
       const visible = assistantTasksForOwner(snapshot, captured);
       // Reconcile an unconfirmed message with what the service actually did, so Retry never stands beside work it already received.
       if (unsure && currentOwner(captured, version) && listRequestVersion.current === listVersion) {

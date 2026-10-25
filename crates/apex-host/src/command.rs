@@ -39,7 +39,8 @@ pub enum Command {
     AssistantHandoffPrepare { #[serde(flatten)] input: crate::assistant_tasks::HandoffPreparation },
     AssistantOverview { #[serde(flatten)] input: crate::assistant_overview::OverviewInput },
     AssistantMessage { #[serde(flatten)] input: crate::assistant_service::AssistantMessageInput },
-    AssistantTasksList { owner: crate::assistant_tasks::TaskOwner, #[serde(default)] request_id: Option<String> },
+    /// Review diffs are left out unless asked for: one can be megabytes and the phone never shows them.
+    AssistantTasksList { owner: crate::assistant_tasks::TaskOwner, #[serde(default)] request_id: Option<String>, #[serde(default)] include_diffs: bool },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
     /// Snapshot pre-provenance ledgers (originals untouched) and describe an import. Read-only.
     LegacyImportPreview {},
@@ -336,8 +337,8 @@ impl Host {
             AssistantHandoffPrepare { input } => reply(self.assistant_handoff_prepare(input).await?),
             AssistantOverview { input } => reply(self.assistant_overview(input).await?),
             AssistantMessage { input } => reply(self.assistant_message(input).await?),
-            AssistantTasksList { owner, request_id } => {
-                let mut snapshot = self.assistant_tasks_list(owner.clone())?;
+            AssistantTasksList { owner, request_id, include_diffs } => {
+                let mut snapshot = self.assistant_tasks_list(owner.clone(), include_diffs)?;
                 if let Some(request_id) = request_id { snapshot["request"] = self.assistant_request_receipt(&owner, &request_id)?; }
                 reply(snapshot)
             }
@@ -603,6 +604,14 @@ mod tests {
         assert!(matches!(post_to, Command::RoomPostTo { interactive_answers: Some(false), .. }));
         let retry = Command::from_json(json!({"cmd":"room_turn","args":{"id":"r","participants":["bot"],"interactive_answers":false}})).unwrap();
         assert!(matches!(retry, Command::RoomTurn { interactive_answers: Some(false), .. }));
+    }
+
+    #[test]
+    fn task_list_leaves_out_diffs_unless_asked() {
+        let phone = Command::from_json(json!({"cmd":"assistant_tasks_list","args":{"owner":{"workspaceId":"w","cwd":"/p","hostId":"local","conversationId":"c"}}})).unwrap();
+        assert!(matches!(phone, Command::AssistantTasksList { include_diffs: false, .. }), "a client that never asks gets the small list");
+        let desktop = Command::from_json(json!({"cmd":"assistant_tasks_list","args":{"owner":{"workspaceId":"w","cwd":"/p","hostId":"local","conversationId":"c"},"includeDiffs":true}})).unwrap();
+        assert!(matches!(desktop, Command::AssistantTasksList { include_diffs: true, .. }));
     }
 
     #[test]

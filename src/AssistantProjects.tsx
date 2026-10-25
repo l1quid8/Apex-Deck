@@ -86,7 +86,7 @@ export function AssistantProjects({lane,backend,projects,availableProjects=proje
       try {
         if (!record || lane.offline || backend.demo) throw new Error('Connect the assistant’s machine to read live assignments.');
         if (scope.project.hostId!==record.hostId) throw new Error('This assignment is on another machine.');
-        const snapshot=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner});
+        const snapshot=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner,includeDiffs:true});
         projectTasks(snapshot,scope.owner,scope.project,{hostId:record.hostId,assistantId:record.id}); loaded[key]=snapshot;
       } catch(cause) { failures[key]=message(cause); }
     }));
@@ -141,7 +141,7 @@ export function AssistantProjects({lane,backend,projects,availableProjects=proje
     if(current.current.ownerKey!==captured.ownerKey||current.current.backend!==captured.backend)throw new Error('The assistant changed while connecting its project.');
     if(!scope)return;
     if(projectIdentityKey(scope.project)!==projectIdentityKey(project))throw new Error('The coordinator returned a different project.');
-    const snapshot=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner});
+    const snapshot=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner,includeDiffs:true});
     if(current.current.ownerKey!==captured.ownerKey||current.current.backend!==captured.backend)throw new Error('The assistant changed while reading its project.');
     if(!record)throw new Error('The assistant is unavailable.');
     projectTasks(snapshot,scope.owner,project,{hostId:record.hostId,assistantId:record.id});
@@ -207,7 +207,7 @@ export function AssistantProjects({lane,backend,projects,availableProjects=proje
     const answers=approve===undefined&&questionGroup(wait)?answersFor(wait):null;
     if(approve===undefined&&(!answers||answers.some(answer=>!answer.length)))return;
     await run(async()=>{
-      const snapshot=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner});
+      const snapshot=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner,includeDiffs:true});
       if(current.current.ownerKey!==captured.ownerKey||current.current.backend!==captured.backend)throw new Error('The assistant changed before this response could be sent.');
       const latest=projectTasks(snapshot,scope.owner,project,{hostId:record.hostId,assistantId:record.id}).find(task=>task.id===target.id);
       const waits=approve===undefined?latest?.resultData?.pendingQuestions:latest?.resultData?.pendingApprovals;
@@ -288,7 +288,7 @@ export function AssistantProjects({lane,backend,projects,availableProjects=proje
         if(!threadId)throw new Error('Create a saved project chat for this worker first.');
         const proposal=await backend.call<{taskId:string}>('personal_project_delegate_ui',{assistantId:record.id,project:chosen.project,sourceEventId:'',delegationId:delegationId.current,brief:brief.trim(),destination:{threadId,workers:[choice.profile.id],newThread:false},mode:taskAccess,reviewCriteria:criteria.split('\n').map(line=>line.trim()).filter(Boolean),expectedRevision:record.revision});ensureCurrent();
         if(!proposal.taskId||!scope)throw new Error('The saved plan could not be identified. Your draft is kept; retry to reopen the same plan.');
-        const saved=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner});ensureCurrent();
+        const saved=await backend.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner:scope.owner,includeDiffs:true});ensureCurrent();
         const proposedTask=projectTasks(saved,scope.owner,chosen.project,{hostId:record.hostId,assistantId:record.id}).find(task=>task.id===proposal.taskId);
         if(!proposedTask)throw new Error('The saved plan is not available in this assistant’s task snapshot. Your draft is kept; retry to reopen it.');
         setSnapshots(before=>({...before,[projectIdentityKey(chosen.project)]:saved}));setDialog(null);setNotice('');openTask(chosen.project,proposedTask);

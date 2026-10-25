@@ -51,7 +51,7 @@ async fn linux_startup_must_recover_a_never_started_queued_task() {
     let host = Host::try_new(HostPaths { data: root.clone(), downloads: None }, tokio::runtime::Handle::current()).unwrap();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     let final_status = loop {
-        let list = host.assistant_tasks_list(owner.clone()).unwrap();
+        let list = host.assistant_tasks_list(owner.clone(), false).unwrap();
         let status = list["tasks"].as_array().unwrap().iter().find(|item| item["id"] == task.id).unwrap()["status"].as_str().unwrap().to_owned();
         if status != "queued" || tokio::time::Instant::now() >= deadline { break status; }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
