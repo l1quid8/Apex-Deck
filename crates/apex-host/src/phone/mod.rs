@@ -2,6 +2,7 @@
 //! picture, and turn-taking between the person and the bots.
 
 pub mod coords;
+pub mod screens;
 pub mod lock;
 pub mod types;
 pub mod axe;
@@ -52,6 +53,7 @@ pub struct Tools {
 /// The latest screen picture. `seq` goes up by one with each picture.
 #[derive(Debug, Clone)]
 pub struct Frame {
+    pub screen: Option<screens::Screen>,
     pub seq: u64,
     pub jpeg: Vec<u8>,
     pub width: u32,
@@ -66,6 +68,7 @@ enum Power {
 }
 
 struct State {
+    touch: Option<(PathBuf, String)>,
     power: Power,
     device: Option<SavedDevice>,
     tools: Option<Tools>,
@@ -98,6 +101,8 @@ pub struct Phone {
 
 /// What an input needs: the phone on, its screen size in points, and a picture.
 struct Ready {
+    screen: Option<screens::Screen>,
+    touch: Option<(PathBuf, String)>,
     tools: Tools,
     udid: String,
     points: (f64, f64),
@@ -166,6 +171,7 @@ impl Phone {
             clock: Instant::now(),
             me: me.clone(),
             state: Mutex::new(State {
+                touch: None,
                 power: Power::Off,
                 device,
                 tools,
@@ -208,7 +214,7 @@ impl Phone {
             holder,
             width,
             height,
-            problem: state.problem.clone(),
+            problem: state.problem.clone().or_else(|| (state.power == Power::On && width == 0).then(|| "Waiting for a live phone picture…".into())),
         }
     }
 
@@ -264,7 +270,9 @@ impl Phone {
                     Ok(Some((axe, udid))) => {
                         let frame = Arc::clone(&self.frame);
                         let seq = Arc::clone(&self.seq);
-                        state.stream = Some(self.runtime.spawn(stream(axe, udid, frame, seq)));
+                        state.stream = Some(if state.touch.is_some() {
+                            self.runtime.spawn(screens::stream(state.tools.as_ref().unwrap().xcrun.clone(), udid, frame, seq))
+                        } else { self.runtime.spawn(stream(axe, udid, frame, seq)) });
                         state.power = Power::On;
                     }
                     // Not reached: `None` means a stop or a newer start came first.
@@ -304,6 +312,9 @@ impl Phone {
             return Ok(None);
         }
         simctl(&tools.xcrun, &["bootstatus", &saved.udid, "-b"], axe::BOOT_LIMIT).await?;
+        let listing = simctl(&tools.xcrun, &["io", &saved.udid, "enumerate"], axe::SIMCTL_LIMIT).await?;
+        let touch = if screens::parse(&listing).len() > 1 { Some(install::ensure_touch(&self.data).await?) } else { None };
+        self.state().touch = touch;
         if saved.points.is_none() {
             let mut points = None;
             for tried in 0..MEASURE_TRIES {
@@ -414,14 +425,41 @@ impl Phone {
                 _ => return Err(OFF.into()),
             }
         };
-        let (width, height) = locked(&self.frame).as_ref().map(|f| (f.width, f.height)).ok_or(NO_PICTURE)?;
-        Ok(Ready { tools, udid, points, width, height })
+        let (width, height, screen) = locked(&self.frame).as_ref().map(|f| (f.width, f.height, f.screen.clone())).ok_or(NO_PICTURE)?;
+        let touch = self.state().touch.clone();
+        Ok(Ready { tools, udid, points, width, height, screen, touch })
     }
 
     /// Sends one input to the phone and says what was done.
     async fn act(&self, input: &Input) -> Result<String, String> {
         let ready = self.ready()?;
         let udid = ready.udid.as_str();
+        if let (Input::Type {text}, Some((program,developer))) = (input, &ready.touch) {
+            axe::check_text(text)?;
+            let args = vec![developer.clone(),udid.into(),"type".into()];
+            axe::run_tool(program,&args,Some(text),axe::INPUT_LIMIT).await?;
+            return Ok(format!("Typed {} characters.",text.len()));
+        }
+        if let (Input::Key {key}, Some((program,developer))) = (input, &ready.touch) {
+            let args = vec![developer.clone(),udid.into(),"key".into(),key.hid().to_string()];
+            axe::run_tool(program,&args,None,axe::INPUT_LIMIT).await?;
+            return Ok(format!("Pressed {}.",wire_name(key)));
+        }
+        if let (Some(screen), Some((program,developer))) = (&ready.screen, &ready.touch) {
+            let gesture = match input {
+                Input::Tap { x,y } => Some((*x,*y,*x,*y,100)),
+                Input::Swipe { x1,y1,x2,y2,ms } => Some((*x1,*y1,*x2,*y2,(*ms).clamp(100,1000))),
+                _ => None,
+            };
+            if let Some((x1,y1,x2,y2,ms)) = gesture {
+                ready.point(x1,y1)?; ready.point(x2,y2)?;
+                let (sx,sy) = screens::touch_ratio(screen,x1 as f64/ready.width as f64,y1 as f64/ready.height as f64);
+                let (ex,ey) = screens::touch_ratio(screen,x2 as f64/ready.width as f64,y2 as f64/ready.height as f64);
+                let args = vec![developer.clone(),udid.into(),screen.id.to_string(),sx.to_string(),sy.to_string(),ex.to_string(),ey.to_string(),ms.to_string()];
+                axe::run_tool(program,&args,None,axe::INPUT_LIMIT).await?;
+                return Ok("Sent the gesture to the displayed phone screen.".into());
+            }
+        }
         let (args, stdin, done) = match input {
             Input::Tap { x, y } => {
                 let (px, py) = ready.point(*x, *y)?;
@@ -609,6 +647,7 @@ impl Drop for Phone {
 async fn stream(axe: PathBuf, udid: String, frame: Arc<Mutex<Option<Frame>>>, seq: Arc<AtomicU64>) {
     loop {
         stream_once(&axe, &udid, &frame, &seq).await;
+        *locked(&frame) = None;
         tokio::time::sleep(STREAM_RETRY).await;
     }
 }
@@ -627,16 +666,16 @@ async fn stream_once(program: &Path, udid: &str, frame: &Mutex<Option<Frame>>, s
         let mut reader = coords::FrameReader::default();
         let mut chunk = vec![0u8; STREAM_CHUNK];
         loop {
-            let read = match out.read(&mut chunk).await {
-                Ok(0) | Err(_) => break,
-                Ok(read) => read,
+            let read = match tokio::time::timeout(Duration::from_secs(4), out.read(&mut chunk)).await {
+                Ok(Ok(read)) if read > 0 => read,
+                _ => break,
             };
             let Ok(jpegs) = reader.push(&chunk[..read]) else { break };
             for jpeg in jpegs {
                 let Some((width, height)) = coords::jpeg_size(&jpeg) else { continue };
                 let mut latest = locked(frame);
                 let next = seq.fetch_add(1, Ordering::Relaxed) + 1;
-                *latest = Some(Frame { seq: next, jpeg, width, height });
+                *latest = Some(Frame { seq: next, jpeg, width, height, screen: None });
             }
         }
     }
@@ -713,6 +752,39 @@ esac
         let log = calls(&tools);
         assert!(log.contains("xcrun simctl create"), "{log}");
         assert!(log.contains("xcrun simctl bootstatus FAKE-UDID -b"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn a_silent_capture_process_is_reconnected() {
+        let (data,tools)=fake("silent-capture");
+        let frame=Mutex::new(None);
+        tokio::time::timeout(Duration::from_secs(6),stream_once(&tools.axe,"U",&frame,&AtomicU64::new(0))).await.expect("a stalled stream must be killed, not held forever");
+        std::fs::remove_dir_all(data.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_inner_screen_tap_uses_frame_geometry_instead_of_saved_outer_points() {
+        let (data,tools)=fake("display-touch");
+        let phone=Phone::with_tools(data,tokio::runtime::Handle::current(),tools.clone());
+        phone.bot(ann(),BotRequest::Start).await.unwrap();
+        let helper=tools.axe.parent().unwrap().join("touch");
+        std::fs::write(&helper,"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/touch-args\"\n").unwrap();
+        std::fs::set_permissions(&helper,std::fs::Permissions::from_mode(0o755)).unwrap();
+        phone.state().touch=Some((helper,"developer".into()));
+        { let mut frame=locked(&phone.frame); let frame=frame.as_mut().unwrap(); frame.width=1000; frame.height=600; frame.screen=Some(screens::Screen { id:3,orientation:3 }); }
+        phone.act(&Input::Tap {x:400,y:480}).await.unwrap();
+        let args=std::fs::read_to_string(tools.axe.parent().unwrap().join("touch-args")).unwrap();
+        let args: Vec<_>=args.lines().collect();
+        assert_eq!(&args[..3], &["developer","FAKE-UDID","3"]);
+        assert_eq!(args[3].parse::<f64>().unwrap(),0.8);
+        assert_eq!(args[4].parse::<f64>().unwrap(),0.6);
+        phone.act(&Input::Key {key: Key::Backspace}).await.unwrap();
+        let args=std::fs::read_to_string(tools.axe.parent().unwrap().join("touch-args")).unwrap();
+        assert_eq!(args.lines().collect::<Vec<_>>(),vec!["developer","FAKE-UDID","key","42"]);
+        phone.act(&Input::Type {text:"OPEN".into()}).await.unwrap();
+        let args=std::fs::read_to_string(tools.axe.parent().unwrap().join("touch-args")).unwrap();
+        assert_eq!(args.lines().collect::<Vec<_>>(),vec!["developer","FAKE-UDID","type"]);
+        phone.stop().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

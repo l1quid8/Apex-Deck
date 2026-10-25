@@ -125,3 +125,23 @@ mod tests {
         );
     }
 }
+
+/// Compile Deck's small display-targeted touch bridge with the selected Xcode.
+/// Source-hashed names keep upgrades separate and never replace the pinned AXe.
+pub async fn ensure_touch(data: &Path) -> Result<(PathBuf, String), String> {
+    const SOURCE: &str = include_str!("touch.m");
+    let hash = format!("{:x}", Sha256::digest(SOURCE.as_bytes()));
+    let dir = data.join("tools").join(format!("deck-touch-{}", &hash[..16]));
+    let program = dir.join("deck-touch");
+    let developer = super::axe::run_tool(Path::new("/usr/bin/xcode-select"), &["-p".into()], None, Duration::from_secs(10)).await?;
+    if !is_file(&program) {
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+        let source = dir.join("touch.m");
+        tokio::fs::write(&source,SOURCE).await.map_err(|e| e.to_string())?;
+        let temporary = dir.join(format!("deck-touch-{}.part",std::process::id()));
+        let args = ["clang", "-fobjc-arc", "-fblocks", "-framework", "Foundation", source.to_str().ok_or("Invalid touch source path")?, "-o", temporary.to_str().ok_or("Invalid touch output path")?].map(String::from);
+        super::axe::run_tool(Path::new("/usr/bin/xcrun"), &args, None, Duration::from_secs(60)).await?;
+        tokio::fs::rename(&temporary,&program).await.map_err(|e| e.to_string())?;
+    }
+    Ok((program,developer))
+}

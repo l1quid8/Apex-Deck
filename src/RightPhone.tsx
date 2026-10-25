@@ -26,10 +26,12 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
   const queue = useRef<Promise<void>>(Promise.resolve());
   const acceptStatus = (next: PhoneStatus) => {
     setStatus(next);
-    if (!next.on) {
-      seq.current = 0;
+    if (!next.on || next.width === 0 || next.height === 0) {
       setShown(null);
       press.current = null;
+    }
+    if (!next.on) {
+      seq.current = 0;
       if (typeTimer.current !== null) clearTimeout(typeTimer.current);
       typeTimer.current = null;
       typed.current = "";

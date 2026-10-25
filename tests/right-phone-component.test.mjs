@@ -599,3 +599,15 @@ test('the chat hook runs only for a message that stayed queued, and after the co
   assert.ok(block.indexOf('setText(') < hook && block.indexOf('setAttached(') < hook && block.indexOf('askToSteer') < hook, 'it comes last');
   assert.ok(block.indexOf('A message queued while the person holds the phone tells waiting bots to end their turn.') > 0);
 });
+
+test('a lost live picture removes the old screen instead of leaving clickable stale video', async () => {
+  let response = { status: on(), frame: frame(1) };
+  const phone = fakePhone({ view: (...args) => { phone.calls.push(['view',...args]); return Promise.resolve(response); } });
+  const ui = mount({ visible: true, phone });
+  ui.render(); await settle();
+  assert.ok(screen(ui.render()));
+  response = { status: { ...on(), width: 0, height: 0, problem: 'Waiting for a live phone picture…' }, frame: null };
+  await new Promise(resolve => setTimeout(resolve, phoneModel.POLL_MS+30)); await settle();
+  assert.equal(screen(ui.render()), null);
+  assert.match(alertText(ui.render()), /Waiting for a live phone picture/);
+});
