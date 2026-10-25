@@ -544,7 +544,7 @@ impl Job<'_> {
 
 /// Nobody: a price quote is not a turn, so no message names it.
 fn quote_bot() -> ParticipantConfig {
-    ParticipantConfig { id: ParticipantId::new(""), display_name: String::new(), backend: apex_core::Backend::Scripted { lines: vec![] }, persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, appearance: None, media: None }
+    ParticipantConfig { id: ParticipantId::new(""), display_name: String::new(), backend: apex_core::Backend::Scripted { lines: vec![] }, persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None }
 }
 
 /// What one video costs with these choices, from Venice's own quote.
@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn turn(unseen: Vec<Message>, turns: Vec<ViewTurn>) -> TurnRequest {
-        TurnRequest { access: None, effort_override: None, system: String::new(), turns, unseen, plan: false }
+        TurnRequest { access: None, effort_override: None, system: String::new(), turns, unseen, plan: false, cwd: None }
     }
 
     #[test]
@@ -969,4 +969,28 @@ mod tests {
         let reply = run_job(&address, &video_model(), &dir, turn(vec![human("@allison a whale")], vec![])).await.0.unwrap();
         assert_eq!(reply.text, "The video wasn't made. Venice stopped making the video: CANCELLED. Job q10. Venice may still charge for it; quote this job number to Venice support for a refund.");
     }
+}
+
+/// Explicit avatar-generation entry point. Uses the same Venice schema,
+/// credential lookup, defaults and pricing as media turns; callers own approval,
+/// durable dispatch intent and cost accounting. No retries after dispatch.
+pub async fn generate_image_bytes(base_url:&str,key_env:Option<&str>,model:&str,prompt:&str)->Result<Vec<u8>,String>{
+    let key=key_env.and_then(crate::keys::lookup).ok_or("The image provider needs a saved credential.")?;
+    let offered=crate::list_models(base_url,key_env).await?;
+    let model=offered.iter().find(|m|m.id==model&&m.kind==ModelKind::Image).ok_or("The provider no longer offers this image model.")?;
+    let spec=model.media.as_ref().ok_or("The image model has no supported generation specification.")?;
+    let resolved=resolve(ModelKind::Image,spec,None);
+    let mut body=json!({"model":model.id,"prompt":prompt,"format":"png"});
+    for (field,value) in [("aspect_ratio",resolved.aspect_ratio),("resolution",resolved.resolution),("quality",resolved.quality)] {if let Some(value)=value{body[field]=json!(value)}}
+    let client=reqwest::Client::builder().timeout(Duration::from_secs(180)).build().map_err(|e|e.to_string())?;
+    let response=client.post(format!("{}/image/generate",base_url.trim_end_matches('/'))).bearer_auth(key).json(&body).send().await.map_err(|e|e.to_string())?;
+    let status=response.status();
+    // Cap the wire reply as well as the decoded image; no unbounded body buffering.
+    let mut stream=response.bytes_stream();let mut bytes=Vec::new();
+    use futures::StreamExt;
+    while let Some(chunk)=stream.next().await {let chunk=chunk.map_err(|e|e.to_string())?;if bytes.len()+chunk.len()>15*1024*1024{return Err("Image provider response exceeds 15 MiB.".into())}bytes.extend_from_slice(&chunk);}
+    if !status.is_success(){return Err(explain(status.as_u16(),&String::from_utf8_lossy(&bytes)))}
+    let reply:Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+    let encoded=reply["images"][0].as_str().ok_or("The provider sent no image.")?;
+    base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|e|e.to_string())
 }

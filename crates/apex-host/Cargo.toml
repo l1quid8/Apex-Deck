@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+apex-provenance = { path = "../apex-provenance" }
 apex-core = { path = "../apex-core" }
 apex-adapters = { path = "../apex-adapters" }
 portable-pty = "0.9"
@@ -15,6 +16,7 @@ tokio.workspace = true
 futures.workspace = true
 reqwest = { version = "0.13", features = ["json", "stream", "query", "form"] }
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 sha2 = "0.10"
 ring = "0.17"
 tokio-tungstenite = "0.28"
@@ -23,3 +25,12 @@ trash = "5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# Integration tests assume verified UI admission through the restricted test seam.
+apex-host = { path = ".", features = ["test-support"] }
+async-trait.workspace = true
+
+[features]
+# Explicit in-process fixtures only; no environment or CLI switch enables this.
+test-support = []

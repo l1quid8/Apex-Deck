@@ -19,16 +19,20 @@ import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
-import { answers, daemonBinary, dataFolder, localDaemon, remoteAccessSaved, saveRemoteAccess, waitForSocket } from './sidecar.mjs';
+import { answers, daemonBinary, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
-import { changeRemoteAccess } from './remoteSwitch.mjs';
+import { TRUSTED_DAEMON, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
+import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
+import { assertTrustedStartup, attestFrame, protectedCommands } from './provenance.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
+import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
 const dist = path.join(repo, 'dist');
 const env = process.env;
+assertTrustedStartup(app.isPackaged, process.argv, env);
 const smoke = env.APEX_DECK_SMOKE === '1';
 const devUrl = env.APEX_DECK_DEV_URL || '';
 /** Set for tests and the smoke run: the host's data folder. */
@@ -53,21 +57,39 @@ protocol.registerSchemesAsPrivileged([
 
 const bin = daemonBinary({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repo, env });
 
+/** Text of a file, or null when it isn't there: the LaunchAgent may not exist yet. */
+const readText = (file) => {
+  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+};
+
+/**
+ * What this launch does about the protected copy (see trustedInstall.mjs):
+ * hand off to it, carry on with the daemon it already runs, or say why the
+ * protected data can't be opened instead of quietly downgrading the agent.
+ */
+const plan = launchPlan({
+  packaged: app.isPackaged,
+  platform: process.platform,
+  dataDir,
+  bundle: app.getAppPath(),
+  version: app.getVersion(),
+  daemon: bin,
+  plist: readText(agentPlistPath()),
+});
+/** The daemon the LaunchAgent runs: the protected one whenever it is installed. */
+const agentBin = plan.daemon;
+
 /** The local daemon, once started or found. */
 let local = null;
 let starting = null;
-/** Set while the daemon on this Mac is stopping to start again with Remote access changed. */
-let restarting = null;
 
-/** Settings → Remote access, kept with the app's own settings. */
+/** The app's own settings. The old `remoteAccess` key is imported once, then deleted. */
 const desktopSettingsFile = () => path.join(app.getPath('userData'), 'desktop-settings.json');
-/** Read once the app is ready; the daemon serves `--remote` while it is on. */
-let remoteAccess = false;
 
 /** Whether the daemon can run as a LaunchAgent, which outlives the app (see launchAgent.mjs). */
 const agentMode = usesLaunchAgent({ packaged: app.isPackaged, dataDir });
-/** Whether the LaunchAgent should be the daemon right now: Remote access is on. */
-const agentWanted = () => agentMode && remoteAccess;
+/** On a packaged Mac the LaunchAgent always runs the daemon, phone connections on or off. */
+const agentWanted = () => agentMode;
 /** Where the agent's daemon writes its output: the app's logs folder. */
 const agentLogFile = () => path.join(app.getPath('logs'), 'apex-daemon.log');
 /** The daemon's `daemon.sock`, whichever way it was started. */
@@ -85,56 +107,52 @@ async function startAgent() {
     infoFile: path.join(path.dirname(socket), 'daemon.json'),
     uid,
     answers,
-    install: () => installAgent({ plistPath, plist: agentPlist({ bin, dataDir, logFile, build: daemonBuild(bin) }), uid }),
-    remove: () => removeAgent({ plistPath, uid }),
+    install: () => installAgent({ plistPath, plist: agentPlist({ bin: agentBin, dataDir, logFile, build: daemonBuild(agentBin) }), uid }),
+    remove: () => {
+      // launchd runs the protected daemon: leaving its job alone is better than
+      // taking protected assistants, tasks and conversations out of reach.
+      if (plistDaemonBin(readText(plistPath)) === TRUSTED_DAEMON) {
+        console.warn('apex-daemon: the protected background service did not answer; its LaunchAgent is left in place.');
+        return Promise.resolve();
+      }
+      return removeAgent({ plistPath, uid });
+    },
   });
   // A daemon Deck didn't start keeps its own flags; Settings says so.
   if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
   return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
 }
 
-/** Remove the LaunchAgent, so the daemon stops; wait until it has let go of the data folder. */
-async function stopAgent() {
-  const wasRunning = await removeAgent({ plistPath: agentPlistPath(), uid: process.getuid() });
-  if (wasRunning && !await waitForSocket(await socketFile(), { wanted: false })) {
-    throw new Error("The background apex-daemon didn't stop within 15 seconds.");
+/**
+ * Move `remoteAccess` out of the desktop settings once the daemon is up.
+ * Uses the socket already in hand. A failed call leaves the key, so the next
+ * launch tries again. Never calls `ensureLocal` from here.
+ */
+async function migrateRemoteAccess(socket) {
+  const file = desktopSettingsFile();
+  if (!hasRemoteAccessKey(file)) return;
+  try {
+    await importSavedRemoteAccess(file, (cmd, args) => callDaemon(socket, cmd, args));
+  } catch (error) {
+    console.warn(`apex-daemon: the old Remote access setting was left in place: ${error instanceof Error ? error.message : error}`);
   }
 }
 
-/** A daemon Deck can restart: one it started, or the LaunchAgent (launchctl restarts that one). */
-const restartable = (daemon) => daemon.owned || daemon.agent === true;
-
 /** The daemon on this Mac: the one Deck started if it's still running, else start or find one. */
 function ensureLocal() {
-  if (restarting) return restarting.then(() => ensureLocal());
   if (local?.owned && local.alive()) return Promise.resolve(local);
   // launchd keeps the agent's daemon up; windows reconnect to it by themselves.
   if (local?.agent && agentWanted()) return Promise.resolve(local);
   starting ??= (agentWanted()
     ? startAgent()
-    : localDaemon({ bin, dataDir, remote: remoteAccess, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }))
-    .then((daemon) => (local = daemon))
+    : localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }))
+    .then(async (daemon) => {
+      local = daemon;
+      await migrateRemoteAccess(daemon.socket);
+      return daemon;
+    })
     .finally(() => { starting = null; });
   return starting;
-}
-
-/**
- * Make this Mac's daemon match the Remote access setting, which is already
- * saved and set when this runs. The daemon Deck started is stopped; the
- * LaunchAgent is removed when Remote access is off, and started by
- * ensureLocal when it is on. A daemon Deck found running is left alone: it
- * keeps the flags it was started with. Windows reconnect by themselves.
- */
-async function restartLocal() {
-  if (starting) await starting.catch(() => {});
-  restarting ??= (async () => {
-    const old = local;
-    local = null;
-    if (old?.owned && old.alive()) await old.stop();
-    if (agentMode && !remoteAccess) await stopAgent();
-  })().finally(() => { restarting = null; });
-  await restarting;
-  return ensureLocal();
 }
 
 // ------------------------------------------------------------ hosts
@@ -282,12 +300,26 @@ ipcMain.handle('daemon:connect', async (event, hostId = LOCAL) => {
   }
   return links.connect(contents.id, hostId);
 });
-ipcMain.on('daemon:send', (event, hostId, gen, line) => {
+ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
   if (!fromUi(event) || typeof line !== 'string') return;
   let frame; try { frame = JSON.parse(line); } catch { return; }
   if (hostId !== LOCAL && ['session_save', 'settings_save'].includes(frame.cmd)) {
     event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: 'App preferences are owned by This Mac.' }));
     return;
+  }
+  // Existing ordinary remote coding rooms keep their authenticated SSH route.
+  // Remote assistant authority is unavailable until its own broker is deployed.
+  if (protectedCommands.has(frame.cmd) && !(hostId !== LOCAL && frame.cmd.startsWith('room_'))) {
+    try {
+      if (hostId !== LOCAL) throw new Error('Protected assistant submissions currently require the installed UI on the same Mac as the project host.');
+      const folder = fs.realpathSync(await dataFolder(bin, dataDir));
+      const signed = await attestFrame(frame, { dataDir: folder });
+      if (event.sender.isDestroyed() || !fromUi(event)) return;
+      line = JSON.stringify(signed);
+    } catch (error) {
+      if (!event.sender.isDestroyed()) event.sender.send('daemon:line', hostId, gen, JSON.stringify({id:frame.id,err:error.message}));
+      return;
+    }
   }
   links.send(event.sender.id, hostId, gen, line);
 });
@@ -358,6 +390,8 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
     const entry=[...windows.values(), ...popoutWindows.values()].find(e=>e.win.webContents===contents);
     const trusted=entry && [originOf(devUrl), 'app://deck'].includes(originOf(contents.getURL()));
+    // Copy buttons (worktree paths, thread Copy ›) write through navigator.clipboard, which asks here.
+    if(trusted&&permission==='clipboard-sanitized-write'){callback(true);return;}
     const audioOnly=permission==='media' && details.mediaTypes?.includes('audio') && !details.mediaTypes?.includes('video');
     if(!trusted||!audioOnly){callback(false);return;}
     if(process.platform==='darwin') void systemPreferences.askForMediaAccess('microphone').then(callback).catch(()=>callback(false));
@@ -372,26 +406,19 @@ handle('connection:current', async ({ host }) => {
   return { id: LOCAL, name: LOCAL_NAME, remote: false, owned: daemon?.owned ?? true };
 });
 
-/** Settings → Remote access: the saved switch, and whether Deck can restart the daemon (so can apply a change). */
+/** Settings → Phones: the daemon's live phone-connection switch. */
 handle('remote:get', async () => {
-  const daemon = await ensureLocal().catch(() => null);
-  return { on: remoteAccess, owned: daemon ? restartable(daemon) : true };
+  const daemon = await ensureLocal();
+  const info = await callDaemon(daemon.socket, 'remote_info', {});
+  return { on: info?.enabled === true, owned: true };
 });
 handle('remote:set', async (_entry, on) => {
-  const next = on === true;
-  if (next === remoteAccess) {
-    const daemon = await ensureLocal();
-    return { on: remoteAccess, owned: restartable(daemon) };
-  }
-  // A daemon that won't start with the change gets the old setting back, saved and running.
-  const daemon = await changeRemoteAccess({
-    from: remoteAccess,
-    to: next,
-    save: (value) => saveRemoteAccess(desktopSettingsFile(), value),
-    set: (value) => { remoteAccess = value; },
-    restart: restartLocal,
+  const daemon = await ensureLocal();
+  const info = await setPhoneConnections({
+    enabled: on === true,
+    call: (cmd, args) => callDaemon(daemon.socket, cmd, args),
   });
-  return { on: remoteAccess, owned: restartable(daemon) };
+  return { on: info?.enabled === true, owned: true };
 });
 
 handle('shell:pickPath', async ({ win }, kind, title) => {
@@ -428,6 +455,7 @@ handle('shell:exportPdf', async (_entry, name, html) => {
   const win = new BrowserWindow({
     show: false,
     webPreferences: {
+      devTools: !app.isPackaged,
       partition,
       javascript: false,
       sandbox: true,
@@ -649,7 +677,7 @@ function menu() {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' },
+        { role: 'reload' }, ...(!app.isPackaged ? [{ role: 'toggleDevTools' }] : []), { type: 'separator' },
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' },
       ],
     },
@@ -679,6 +707,7 @@ function createWindow(host, beside) {
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     show: !smoke,
     webPreferences: {
+      devTools: !app.isPackaged,
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,
@@ -748,8 +777,10 @@ function createWindow(host, beside) {
   return entry;
 }
 
-/** Every pop-out window by BrowserWindow id: `{ win, browser, ownerId, token }`. Kept apart from `windows`: pop-outs never save, never count for the badge, and never ask before quitting. */
+/** External views stay separate from Deck owners, badges and quit prompts. */
 const popoutWindows = new Map();
+const popoutLayout = new PopoutLayoutStore(path.join(app.getPath('userData'), 'popout-layout.json'));
+let popoutLayoutRestored = false;
 /** What the owner handed each pop-out, by token from its `?popout=` query. */
 const popoutSnapshots = new Map();
 
@@ -761,7 +792,7 @@ function popoutBounds(ownerEntry, bounds) {
   const wanted = bounds && Number.isFinite(bounds.width) && Number.isFinite(bounds.height) && bounds.width > 0 && bounds.height > 0
     ? { x: Math.round(bounds.x ?? 0), y: Math.round(bounds.y ?? 0), width: Math.round(bounds.width), height: Math.round(bounds.height) }
     : null;
-  if (wanted) return wanted;
+  if (wanted) return fitPopoutBounds(wanted, [screen.getPrimaryDisplay(), ...screen.getAllDisplays()].map(d => d.workArea));
   const owner = !ownerEntry.win.isDestroyed() ? ownerEntry.win.getBounds() : null;
   const displays = screen.getAllDisplays();
   const here = owner ? screen.getDisplayMatching(owner) : screen.getPrimaryDisplay();
@@ -785,7 +816,8 @@ function createPopout(ownerEntry, snapshot, bounds) {
     throw new Error('That pop-out has nothing to show.');
   }
   const token = crypto.randomBytes(16).toString('hex');
-  const at = popoutBounds(ownerEntry, bounds);
+  const saved = popoutLayout.get(snapshot.kind, snapshot.id);
+  const at = popoutBounds(ownerEntry, bounds ?? saved?.bounds);
   const win = new BrowserWindow({
     ...at,
     minWidth: 360,
@@ -794,6 +826,7 @@ function createPopout(ownerEntry, snapshot, bounds) {
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     show: !smoke,
     webPreferences: {
+      devTools: !app.isPackaged,
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,
@@ -818,6 +851,8 @@ function createPopout(ownerEntry, snapshot, bounds) {
   const ownerId = ownerEntry.win.id;
   popoutWindows.set(win.id, { win, browser, ownerId, token, role: 'popout' });
   popoutSnapshots.set(token, snapshot);
+  trackPopoutWindow(win, snapshot, popoutLayout, () => gate.confirmed || ownerEntry.win.isDestroyed());
+  if (!bounds && saved?.maximized) win.maximize();
   win.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     if ((details.isMainFrame ?? mainFrame) && !(details.isSameDocument ?? inPlace)) browser.hideAll();
   });
@@ -861,6 +896,11 @@ handle('popout:open', async (entry, snapshot, bounds) => {
   if (entry.role === 'popout') throw new Error('A pop-out cannot open another window.');
   return { token: createPopout(entry, snapshot, bounds) };
 });
+handle('popout:restore', async (entry, available) => {
+  if (entry.role === 'popout' || popoutLayoutRestored) return [];
+  popoutLayoutRestored = true;
+  return popoutLayout.restore(available ?? {});
+});
 handle('popout:snapshot', async (_entry, token) => {
   if (!validToken(token)) throw new Error('That pop-out has nothing to show.');
   const snapshot = popoutSnapshots.get(token);
@@ -888,6 +928,18 @@ handle('popout:close', async (entry, token) => {
   if (popout && !popout.win.isDestroyed()) popout.win.close();
 });
 
+/** Said out loud, before any window: the protected data needs the trusted install, not a quiet downgrade. */
+function showProtectedInstallNotice({ message, detail }) {
+  dialog.showMessageBoxSync({
+    type: 'warning',
+    message,
+    detail,
+    buttons: ['Continue'],
+    defaultId: 0,
+    cancelId: 0,
+  });
+}
+
 /**
  * Whether no Tauri Apex Deck is open, asking for it to be quit while one is.
  * v0.4.0 and before keep no lock on the data folder, so with both open each
@@ -910,6 +962,13 @@ function oldAppClosed() {
 }
 
 app.whenReady().then(async () => {
+  // A copy the broker can't trust never touches the daemon or the LaunchAgent:
+  // it opens the protected copy and steps aside (trustedInstall.mjs).
+  if (!await runLaunchPlan(plan, {
+    open: (target) => shell.openPath(target),
+    quit: () => app.exit(0),
+    notice: showProtectedInstallNotice,
+  })) return;
   protocol.handle('app', (request) => {
     const file = appFile(dist, request.url);
     if (!file) return new Response('Not found', { status: 404 });
@@ -919,22 +978,17 @@ app.whenReady().then(async () => {
     app.exit(0);
     return;
   }
-  remoteAccess = remoteAccessSaved(desktopSettingsFile());
   const { state, warnings } = loadHosts(hostsFile());
   hosts = state;
   warnings.forEach((warning) => console.warn(`hosts: ${warning}`));
   Menu.setApplicationMenu(menu());
-  // Remote access off but a LaunchAgent left from when it was on: stop it before the app starts its own daemon.
-  if (agentMode && !remoteAccess && fs.existsSync(agentPlistPath())) {
-    await stopAgent().catch((e) => console.warn(`launch agent: ${e.message}`));
-  }
-  // Started now rather than when a window asks, so paired phones can reach this Mac from the start.
+  // The LaunchAgent always runs on a packaged Mac. The daemon reads whether phone connections are on.
   if (agentWanted()) ensureLocal().catch((e) => console.warn(`apex-daemon: ${e.message}`));
   // Each window a step down from the one before, so none hides another.
   const first = createWindow(LOCAL);
   rememberWindows();
   if (smoke) {
-    const { runSmoke } = env.APEX_DECK_ANSWERS_SMOKE ? await import('./answers-smoke.mjs') : env.APEX_DECK_WIDGET_SMOKE ? await import('./widget-smoke.mjs') : env.APEX_DECK_MULTI_HOST_ROOT ? { runSmoke: (await import('./multi-host-smoke.mjs')).runMultiHostSmoke } : await import('./smoke.mjs');
+    const { runSmoke } = env.APEX_DECK_ANSWERS_SMOKE ? await import('./answers-smoke.mjs') : env.APEX_DECK_MULTI_HOST_ROOT ? { runSmoke: (await import('./multi-host-smoke.mjs')).runMultiHostSmoke } : await import('./smoke.mjs');
     const code = await runSmoke(first.win, { sidecar: () => local, browser: first.browser }).catch((e) => {
       console.error(`smoke: ${e.stack ?? e}`);
       return 1;

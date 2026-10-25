@@ -50,6 +50,7 @@ pub fn command_needs(command: &Command) -> Need {
     use Command::*;
     use Scope::{Global, GlobalRead};
     match command {
+        ProvenanceExecute { .. } => Need::Never, // Issued only for this Mac; never bypass paired-device scope.
         // Read-only.
         VoiceCapabilities {} => read(GlobalRead),
         SessionLoad {} => read(GlobalRead),
@@ -57,15 +58,17 @@ pub fn command_needs(command: &Command) -> Need {
         AssistantTasksList { .. } => read(Global),
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
-        PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalPause { .. }
-        | PersonalScheduleCancel { .. } | PersonalConfigure { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
+        ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
+        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. }
+        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
         | PersonalMachineResult { .. } | PersonalMachineAllow { .. } | PersonalMachineAllowed {} | PersonalExecuteLocal { .. }
         | PersonalConnectors {} | PersonalBrowserView {} | PersonalBrowserTakeOver { .. } | PersonalBrowserInput { .. } => full(Global),
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
         RoomState { id } => read(thread(id)),
-        RoomDiff { id } => read(thread(id)),
+        RoomDiff { id } | RoomGitStatus { id } => read(thread(id)),
+        RoomGitAction { .. } => full(Global),
         ArtifactsLoad { room } => read(thread(room)),
         AnswersLoad { room } => read(thread(room)),
         RoomSteps { room, .. } => read(thread(room)),
@@ -91,6 +94,7 @@ pub fn command_needs(command: &Command) -> Need {
         AnswerSave { room, .. } => chat(thread(room)),
 
         // Full, inside one thread.
+        RoomMount { id, .. } => full(thread(id)),
         RoomDelete { id } => full(thread(id)),
         RoomUpdateParticipant { id, .. } => full(thread(id)),
         RoomAddParticipant { id, .. } => full(thread(id)),
@@ -105,6 +109,8 @@ pub fn command_needs(command: &Command) -> Need {
         RoomUnpin { id, .. } => full(thread(id)),
         RoomCompact { id } => full(thread(id)),
         RoomClose { id } => full(thread(id)),
+        // Spends one of the account's usage resets, which can't be given back.
+        RoomPlanReset { room, .. } => full(thread(room)),
         ArtifactsSave { room, .. } => full(thread(room)),
         ListToolServers { room, .. } => full(thread(room)),
         GenerateImage { room, .. } => full(thread(room)),
@@ -112,7 +118,7 @@ pub fn command_needs(command: &Command) -> Need {
         // Full, and only for devices allowed every thread: terminals,
         // folders and files, new threads, and whole-session or settings writes.
         PtySpawn { .. } | PtyList { .. } | PtyRename { .. } | PtyAttach { .. } | PtyWrite { .. } | PtyResize { .. } | PtyKill { .. } => full(Global),
-        FolderList { .. } | FileRead { .. } | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileWrite { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. } | WorktreeList { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreeForget { .. } | WorktreePrune { .. } => full(Global),
+        FolderList { .. } | FileRead { .. } | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileWrite { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. } | BotCopiesSetCheck { .. } | WorktreeList { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreeForget { .. } | WorktreePrune { .. } => full(Global),
         WorkspaceRead { .. } => full(Global),
         PathsExist { .. } => full(Global),
         StartupFolders {} => full(Global),
@@ -144,8 +150,11 @@ pub fn command_needs(command: &Command) -> Need {
         ApiModels { .. } | ApiBalance { .. } | ApiQuote { .. } => Need::Never,
         PreviewProbe { .. } => Need::Never,
         // The phone is this Mac's simulator; paired devices can't drive it.
-        PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
+        PhoneDevices {} | PhoneControl { .. } | PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
         ModRead { .. } | ModInstall { .. } | ModProcessRun { .. } | ModHttpFetch { .. } | ModFsWrite { .. } | ModFsStat { .. } | ModEnvGet { .. } => Need::Never,
+        // Legacy migration reads every old ledger and transcript on this Mac, and
+        // its apply is a UI-attested intent issued only for this Mac.
+        LegacyImportPreview {} | LegacyImportApply { .. } | LegacyImportHistory { .. } => Need::Never,
     }
 }
 
@@ -228,6 +237,16 @@ pub fn filter_session(threads: &Threads, session: Value) -> Value {
     Value::Object(session)
 }
 
+/// Access required for daemon-owned voice commands.
+pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
+    use crate::voice::session::VoiceRequest::*;
+    match request {
+        VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
+        VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
+        VoiceServerWarm { room } | VoiceServerOpen { room } => chat(thread(room)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,14 +261,19 @@ mod tests {
         device(tier, Threads::Only(vec!["mine".into()]))
     }
 
+    /// One row of the table: the command, what it needs, and arguments that
+    /// name thread `mine` wherever a thread is named.
+    type Row = (&'static str, Option<(Tier, &'static str)>, Value);
+
     /// What every command needs, by name: `None` is never, `Some((tier,
     /// "thread" | "global" | "global_read"))` otherwise. Each comes with
     /// arguments that name thread `mine` wherever a thread is named.
-    fn table() -> Vec<(&'static str, Option<(Tier, &'static str)>, Value)> {
+    fn table() -> Vec<Row> {
         use Tier::*;
         let participant = json!({ "id": "null", "display_name": "Null", "backend": { "kind": "agent", "tool": "claude_code" } });
         let options = json!({ "policy": "mention", "max_bot_hops": 0 });
         vec![
+            ("provenance_execute", None, json!({"receipt":{"payload":"{}","signature":""}})),
             ("session_load", Some((ReadOnly, "global_read")), json!({})),
             ("monitor_list", Some((ReadOnly, "global")), json!({})),
             ("monitor_get", Some((ReadOnly, "global")), json!({ "workspaceId": "w" })),
@@ -266,13 +290,24 @@ mod tests {
             ("monitor_pause", Some((Full, "global")), json!({ "workspaceId": "w", "paused": true })),
             ("personal_list", Some((Full, "global")), json!({})),
             ("personal_get", Some((Full, "global")), json!({ "assistantId": "asst-1" })),
+            ("personal_avatar_options", Some((Full, "global")), json!({"owner":{"kind":"creation","hostId":"h","draftId":"d"}})),
+            ("personal_avatar_generate", Some((Full, "global")), json!({"owner":{"kind":"creation","hostId":"h","draftId":"d"},"generationId":"g","editorToken":"e","providerProfileId":"p","modelId":"m","prompt":"robot"})),
+            ("personal_avatar_status", Some((Full, "global")), json!({"owner":{"kind":"creation","hostId":"h","draftId":"d"},"generationId":"g"})),
+            ("personal_avatar_cancel", Some((Full, "global")), json!({"owner":{"kind":"creation","hostId":"h","draftId":"d"},"generationId":"g"})),
+            ("personal_avatar_asset", Some((Full, "global")), json!({"assistantId":"a","assetId":"x","sha256":"hash"})),
             ("personal_create", Some((Full, "global")), json!({ "name": "A", "folder": "/tmp/a", "profile": participant })),
             ("personal_send", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r1", "text": "hi" })),
             ("personal_react", Some((Full, "global")), json!({ "assistantId": "asst-1", "messageId": "m1", "emoji": "👍", "enabled": true })),
             ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
             ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),
+            ("personal_task_lifecycle", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "action": "delete", "task": { "source": "personal", "taskId": "pt-1" } })),
+            ("personal_archive", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "archived": true })),
+            ("personal_reply_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "eventId": "ev-1" })),
             ("personal_pause", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r4", "paused": true })),
             ("personal_schedule_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "scheduleId": "ps-1" })),
+            ("personal_project_delegate", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"pe-1","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
+            ("personal_project_delegate_ui", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
+            ("personal_workspace_configure", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "settings": {} })),
             ("personal_configure", Some((Full, "global")), json!({ "assistantId": "asst-1", "settings": {} })),
             ("personal_rule_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "ask", "class": "write", "mode": "ask" })),
             ("personal_memory_forget", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1" })),
@@ -283,6 +318,11 @@ mod tests {
             ("personal_memory_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "x" })),
             ("personal_memory_correct", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1", "text": "x" })),
             ("personal_notices_seen", Some((Full, "global")), json!({ "assistantId": "asst-1", "upTo": 1 })),
+            ("project_memory_list", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"}})),
+            ("project_memory_save", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"},"text":"x","kind":"fact"})),
+            ("project_memory_forget", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"},"id":"note-1","expectedVersion":1})),
+            ("project_memory_stage", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"},"taskId":"task-1","attempt":1,"runId":"run-1","expectedTaskRevision":1,"text":"x","kind":"fact"})),
+            ("project_memory_promote", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"},"taskId":"task-1","attempt":1,"runId":"run-1","expectedTaskRevision":1,"scratchId":"scratch-1","promotionId":"delivery-1"})),
             ("personal_push_register", Some((Full, "global")), json!({ "assistantId": "asst-1", "token": "ab" })),
             ("personal_machine_link", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac", "name": "Mac", "folder": "/x" })),
             ("personal_machine_unlink", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac" })),
@@ -297,11 +337,14 @@ mod tests {
             ("monitor_react", Some((Full, "global")), json!({ "workspaceId": "w", "messageId": "m1", "emoji": "👍", "enabled": true, "cwd": "/p", "hostId": "h", "conversationId": "c" })),
             ("room_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
             ("room_diff", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
+            ("room_git_status", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
+            ("room_git_action", Some((Full, "global")), json!({ "id": "mine", "action": { "kind": "checks", "expected": { "root": "/repo", "head": "abc", "tree": "tree", "branch": "feat/test", "target": "main", "targetHead": "base", "ahead": 1, "behind": 0, "files": [], "checksPassed": false, "clean": true } } })),
             ("artifacts_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
             ("answers_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
             ("room_steps", Some((ReadOnly, "thread")), json!({"room":"mine"})),
             ("room_bot_models", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
             ("room_bot_balance", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
+            ("room_plan_reset", Some((Full, "thread")), json!({ "room": "mine", "tool": "codex" })),
             ("answer_save", Some((Chat, "thread")), json!({ "room": "mine", "key": "1:hosting", "fingerprint": "0a1b2c3d", "inputs": {}, "revision": 0 })),
             ("voice_capabilities", Some((ReadOnly, "global_read")), json!({})),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
@@ -316,6 +359,7 @@ mod tests {
             ("room_answer", Some((Chat, "thread")), json!({ "id": "mine", "request": "r" })),
             ("room_set_plan", Some((Chat, "thread")), json!({ "id": "mine", "on": true })),
             ("save_attachment", Some((Chat, "thread")), json!({ "room": "mine", "name": "a", "data": "" })),
+            ("room_mount", Some((Full, "thread")), json!({ "id": "mine", "cwd": "/repo" })),
             ("room_delete", Some((Full, "thread")), json!({ "id": "mine" })),
             ("room_update_participant", Some((Full, "thread")), json!({ "id": "mine", "participant": participant })),
             ("room_add_participant", Some((Full, "thread")), json!({ "id": "mine", "participant": participant })),
@@ -349,6 +393,7 @@ mod tests {
             ("file_rename", Some((Full, "global")), json!({ "root": "/project", "path": "/project/old.txt", "name": "new.txt" })),
             ("file_duplicate", Some((Full, "global")), json!({ "root": "/project", "path": "/project/old.txt" })),
             ("file_trash", Some((Full, "global")), json!({ "root": "/project", "path": "/project/old.txt" })),
+            ("bot_copies_set_check", Some((Full, "global")), json!({ "root": "/p", "cmd": "cargo check" })),
             ("worktree_list", Some((Full, "global")), json!({ "path": "/p" })),
             ("worktree_add", Some((Full, "global")), json!({ "path": "/p", "branch": "feature/x", "newBranch": true })),
             ("worktree_remove", Some((Full, "global")), json!({ "path": "/p", "worktree": "/p-wt", "force": false })),
@@ -397,9 +442,14 @@ mod tests {
             ("phone_stop", None, json!({})),
             ("phone_view", None, json!({ "since": 0 })),
             ("phone_human", None, json!({ "input": { "kind": "tap", "x": 1, "y": 1 } })),
+            ("phone_devices", None, json!({})),
+            ("phone_control", None, json!({ "control": { "kind": "screenshot" } })),
             ("phone_give_back", None, json!({})),
             ("phone_bot", None, json!({ "room": "mine", "bot": "a", "name": "A", "request": { "kind": "look" } })),
             ("phone_chat_queued", None, json!({ "room": "mine" })),
+            ("legacy_import_preview", None, json!({})),
+            ("legacy_import_apply", None, json!({ "snapshot": "20261022-101501", "sources": {} })),
+            ("legacy_import_history", None, json!({ "snapshot": "20261022-101501", "requestId": "r" })),
         ]
     }
 
@@ -517,15 +567,5 @@ mod tests {
         }
         assert_eq!(filter_session(&Threads::ALL, session.clone()), session);
         assert_eq!(filter_session(&Threads::Only(vec![]), Value::Null), Value::Null);
-    }
-}
-
-/// Access required for daemon-owned voice commands.
-pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
-    use crate::voice::session::VoiceRequest::*;
-    match request {
-        VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
-        VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
-        VoiceServerWarm { room } | VoiceServerOpen { room } => chat(thread(room)),
     }
 }

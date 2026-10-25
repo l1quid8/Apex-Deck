@@ -26,7 +26,7 @@ async def run(args):
    if owner is not None:await ws.close(1008,'Call already active');return
    owner=ws
    if origin=='apex-daemon':await ws.send(json.dumps({'type':'authenticated','protocolVersion':1}))
-   sequence=0;last_input=-1;pending=set();chunks=[];speech_queue=asyncio.Queue(maxsize=512)
+   sequence=0;last_input=-1;pending=set();chunks=[];speech_queue=asyncio.Queue(maxsize=512);last_cancel_reset=None
    async def send(event):
     nonlocal sequence
     if event['type']=='audio':
@@ -60,7 +60,15 @@ async def run(args):
    async for raw in ws:
     if isinstance(raw,bytes):
      gen,seq,pcm=decode_audio(raw)
-     if gen!=pipe.generation:continue
+     if gen!=pipe.generation:
+      # Barge-in: the frames that triggered speechStart were sent with the
+      # old generation but may arrive after the cancel that bumped the
+      # generation. When the cancel kept the endpoint (resetInput is False),
+      # accept the immediately-preceding generation while speech is active
+      # so the start of an interruption is not truncated.
+      if not (endpoint.active and last_cancel_reset is False and gen==pipe.generation-1):
+       continue
+      gen=pipe.generation
      if not pipe.call_id or seq<=last_input or len(pcm)!=1024:raise ValueError('Invalid capture sequence')
      last_input=seq
      prob=await asyncio.to_thread(engines.probability,pcm)
@@ -96,8 +104,9 @@ async def run(args):
       if kind=='cancel':
        gen=msg.get('generation')
        if not isinstance(gen,int) or not 0<=gen<2**32:raise ValueError('Invalid generation')
+       last_cancel_reset = True if msg.get("resetInput") is True else False
        pipe.cancel(gen);credits.reset();credits=PlaybackCredits()
-       if msg.get("resetInput") is True:
+       if last_cancel_reset is True:
         endpoint=EndpointDetector(endpoint.silence_ms,semantic=engines.semantic_session is not None)
         for task in chunks:task.cancel()
         chunks.clear();await asyncio.to_thread(engines.reset)

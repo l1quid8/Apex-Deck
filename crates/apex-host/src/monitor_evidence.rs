@@ -354,6 +354,9 @@ fn fit_text(input: &str, budget: usize) -> (String, bool) {
     (input[..end].to_owned(), true)
 }
 
+// A git repository's contribution to an evidence list: everything it needs to
+// look itself up again and to be capped by the remaining budget.
+#[allow(clippy::too_many_arguments)]
 fn add_git_source(
     sources: &mut Vec<EvidenceSource>,
     warnings: &mut Vec<String>,
@@ -645,12 +648,12 @@ mod tests {
         let other = Temp::new();
         let mut room = Room::new(vec![], RoomOptions::default());
         room.post_human("timestamped", &|_| {}).await;
-        let mut saved = SavedRoom {
+        let mut saved = SavedRoom { mounts: vec![],
             cwd: Some(root.path().to_string_lossy().into_owned()),
             snapshot: room.snapshot(),
         };
         saved.snapshot.transcript[0].at = Some(42);
-        let wrong = SavedRoom {
+        let wrong = SavedRoom { mounts: vec![],
             cwd: Some(other.path().to_string_lossy().into_owned()),
             snapshot: saved.snapshot.clone(),
         };

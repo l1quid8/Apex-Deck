@@ -14,6 +14,7 @@ const find = (node, predicate) => !node || typeof node !== 'object' ? null : pre
 const findAll = (node, predicate, out = []) => { if (!node || typeof node !== 'object') return out; if (predicate(node)) out.push(node); node.children?.forEach(child => findAll(child, predicate, out)); return out; };
 const button = (tree, label) => find(tree, node => node.type === 'button' && textOf(node) === label);
 const settle = () => new Promise(resolve => setImmediate(resolve));
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
 const now = Date.now();
 const record = {
@@ -64,7 +65,8 @@ function mount(props) {
     return [states[i], value => { states[i] = typeof value === 'function' ? value(states[i]) : value; }];
   };
   const useEffect = (effect) => { cursor++; effect(); };
-  const component = new Function('React', 'useState', 'useEffect', 'PersonalBrowser', 'TASK_STATUS', 'CLASS_LABEL', 'MODE_LABEL', `${compiled}\nreturn PersonalPanels;`)(React, useState, useEffect, () => null, TASK_STATUS, CLASS_LABEL, MODE_LABEL);
+  const useRef = initial => { const i = cursor++; return states[i] ??= { current: initial }; };
+  const component = new Function('React', 'useState', 'useEffect', 'useRef', 'PersonalBrowser', 'ProjectMemoryPanel', 'TASK_STATUS', 'CLASS_LABEL', 'MODE_LABEL', `${compiled}\nreturn PersonalPanels;`)(React, useState, useEffect, useRef, () => null, () => null, TASK_STATUS, CLASS_LABEL, MODE_LABEL);
   return { render() { cursor = 0; return component({ onClose() {}, ...props }); } };
 }
 
@@ -112,6 +114,8 @@ test('memory hides the superseded fact from the main list and Forget calls forge
     const tab = find(tree, node => node.props?.role === 'tab' && textOf(node) === 'Memory');
     tab.props.onClick();
     tree = h.render();
+    assert.match(textOf(tree), /Private assistant memory/);
+    assert.match(textOf(tree), /f1.*revision 7/);
     const rows = findAll(tree, node => node.props?.className === 'personal-panels-row');
     assert.ok(rows.some(row => textOf(row).includes('Prefers morning meetings')));
     assert.ok(!rows.some(row => textOf(row).includes('Office is in Leeds')), 'superseded fact is not in the main list');
@@ -159,4 +163,140 @@ test('a failed mutation shows its message in the alert line', async () => {
   tree = h.render();
   const alert = find(tree, node => node.props?.role === 'alert');
   assert.match(textOf(alert), /Host refused the stop/);
+});
+
+test('private-memory drafts stay with their owner and a late save cannot clear another assistant draft', async () => {
+  const saving = deferred(), f = fakeLane({ remember: () => saving.promise }), props = { lane: f.lane, initial: 'memory' }, h = mount(props);
+  let tree = h.render(); find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.onChange({ target: { value: 'Alpha private draft' } }); tree = h.render();
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  props.lane = fakeLane({ assistant: { ...structuredClone(record), hostId: 'beta', name: 'Beta' } }).lane;
+  tree = h.render(); assert.equal(find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.value, '');
+  find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.onChange({ target: { value: 'Beta private draft' } });
+  saving.resolve(); await settle(); tree = h.render();
+  assert.equal(find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.value, 'Beta private draft');
+});
+
+test('a private correction uses the lane revision captured when editing began', async () => {
+  const calls = [], old = fakeLane({ correctFact: async (...args) => calls.push(['revision-7', ...args]) });
+  const props = { lane: old.lane, initial: 'memory' }, h = mount(props); let tree = h.render();
+  button(tree, 'Correct').props.onClick(); tree = h.render();
+  find(tree, node => node.props?.['aria-label'] === 'Corrected fact').props.onChange({ target: { value: 'Retained revision draft' } });
+  props.lane = { ...old.lane, assistant: { ...old.lane.assistant, revision: 8 }, correctFact: async (...args) => calls.push(['revision-8', ...args]) };
+  tree = h.render(); button(tree, 'Save').props.onClick(); await settle();
+  assert.deepEqual(calls, [['revision-7', 'f1', 'Retained revision draft']]);
+});
+
+test('a late private-memory error cannot appear under another selected assistant', async () => {
+  const saving = deferred(), old = fakeLane({ remember: () => saving.promise }), props = { lane: old.lane, initial: 'memory' }, h = mount(props);
+  let tree = h.render(); find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.onChange({ target: { value: 'Alpha preference' } }); tree = h.render();
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  props.lane = fakeLane({ assistant: { ...structuredClone(record), hostId: 'beta', name: 'Beta' } }).lane; h.render();
+  saving.reject(new Error('Alpha-only private error')); await settle(); tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Alpha-only private error/);
+});
+
+test('embedded memory selects one notebook and searching filters only personal notes', () => {
+  const { lane } = fakeLane();
+  lane.assistant.projects = [{ project: { hostId: 'alpha', workspaceId: 'repo', cwd: '/repo/apex-deck' }, tools: 'off' }];
+  const h = mount({ lane, embedded: true, initial: 'memory' });
+  let tree = h.render();
+  assert.ok(find(tree, node => node.props?.['aria-label'] === 'Memory notebook'));
+  assert.equal(findAll(tree, node => typeof node.type === 'function').length, 0, 'private notebook does not mount or read shared project memory');
+  assert.match(textOf(tree), /Prefers morning meetings/);
+  const search = find(tree, node => node.props?.['aria-label'] === 'Search notes');
+  search.props.onChange({ target: { value: 'missing' } });
+  tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Prefers morning meetings/);
+  assert.match(textOf(tree), /No notes match your search/);
+  find(tree, node => node.props?.['aria-label'] === 'Memory notebook').props.onChange({ target: { value: JSON.stringify(['alpha', 'repo', '/repo/apex-deck']) } });
+  tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Prefers morning meetings|Older versions/);
+  const projectPanel = find(tree, node => typeof node.type === 'function' && node.props?.selectedProject);
+  assert.deepEqual(projectPanel.props.selectedProject, lane.assistant.projects[0].project);
+  assert.ok(projectPanel.props.embedded);
+});
+
+test('embedded personal Add note and Edit use the real owner callbacks', async () => {
+  const { lane, calls } = fakeLane();
+  const h = mount({ lane, embedded: true, initial: 'memory' });
+  let tree = h.render();
+  assert.equal(find(tree, node => node.props?.['aria-label'] === 'Something to remember'), null);
+  button(tree, '＋ Add note').props.onClick(); tree = h.render();
+  find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.onChange({ target: { value: 'New personal preference' } }); tree = h.render();
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await settle(); tree = h.render();
+  assert.deepEqual(calls, [['remember', 'New personal preference']]);
+  button(tree, 'Edit').props.onClick(); tree = h.render();
+  find(tree, node => node.props?.['aria-label'] === 'Corrected fact').props.onChange({ target: { value: 'Prefers late meetings' } }); tree = h.render();
+  button(tree, 'Save').props.onClick(); await settle();
+  assert.deepEqual(calls[1], ['correctFact', 'f1', 'Prefers late meetings']);
+});
+
+test('embedded activity is chronological and exposes receipt history without fabricated events', () => {
+  const { lane } = fakeLane();
+  const h = mount({ lane, embedded: true });
+  let tree = h.render();
+  const rows = findAll(tree, node => node.props?.className === 'personal-panels-row assistant-activity-item');
+  assert.equal(rows.length, 2);
+  assert.match(textOf(rows[0]), /Draft the vendor reply/);
+  assert.ok(find(rows[0], node => node.type === 'time' && node.props.dateTime));
+  find(rows[0], node => node.type === 'button' && node.props['aria-expanded'] === false).props.onClick(); tree = h.render();
+  assert.match(textOf(tree), /Run history · 1.*verified · o1/s);
+  lane.assistant.tasks = []; tree = h.render();
+  assert.match(textOf(tree), /No activity yet/);
+});
+
+test('opening an assigned project notebook selects it immediately and never shows personal notes', () => {
+  const { lane } = fakeLane();
+  const project = { hostId: 'alpha', workspaceId: 'repo', cwd: '/repo/apex-deck' };
+  lane.assistant.projects = [{ project, tools: 'off' }];
+  const h = mount({ lane, embedded: true, initial: 'memory', initialProject: project });
+  let tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Prefers morning meetings/);
+  const panel = find(tree, node => typeof node.type === 'function' && node.props?.selectedProject);
+  assert.deepEqual(panel.props.initialProject, project);
+  assert.deepEqual(panel.props.selectedProject, project);
+  const select = panel.props.notebookControl;
+  assert.equal(select.props.value, JSON.stringify(['alpha', 'repo', '/repo/apex-deck']));
+  select.props.onChange({ target: { value: 'personal' } }); tree = h.render();
+  assert.match(textOf(tree), /Prefers morning meetings/);
+  assert.equal(findAll(tree, node => typeof node.type === 'function').length, 0);
+});
+
+test('embedded Activity combines real delegated task status and host history with private work', () => {
+  const { lane } = fakeLane();
+  const project = { hostId: record.hostId, workspaceId: 'repo', cwd: '/repo/apex-deck' };
+  const task = { id: 'delegated', brief: 'Review the release', updatedAtMs: now + 1000, revision: 3, status: 'ready_for_review', workers: ['sol'], lineage: { assistant: { hostId: record.hostId, assistantId: record.id }, project }, result: 'Review completed.', resultData: { taskHistory: [{ atMs: now + 100, kind: 'started', text: 'Worker started attempt 1' }, { atMs: now + 1000, kind: 'review', text: 'Worker returned its result for review' }] } };
+  const h = mount({ lane, embedded: true, delegatedTasks: [task, { ...task, id: 'other', brief: 'Another assistant secret', lineage: { ...task.lineage, assistant: { hostId: record.hostId, assistantId: 'another' } } }] });
+  const tree = h.render();
+  assert.match(textOf(tree), /3 tasks/);
+  assert.doesNotMatch(textOf(tree), /Another assistant secret/);
+  const rows = findAll(tree, node => node.props?.className === 'personal-panels-row assistant-activity-item');
+  assert.equal(rows[0].props['data-activity-source'], 'project');
+  assert.match(textOf(rows[0]), /Review the releaseReady for review.*Assistant → sol.*apex-deck.*Task history · 2.*revision 3.*Worker returned its result for review.*Worker started attempt 1.*Review completed/s);
+  assert.equal(button(rows[0], 'Stop task'), null, 'project task controls must not use the private-task cancellation API');
+});
+
+test('native request history without atMs cannot crash the Activity renderer', () => {
+  // The captured native assistant_tasks_list response includes an original
+  // request entry with kind/text only, followed by timestamped worker events.
+  const { lane } = fakeLane();
+  const project = { hostId: record.hostId, workspaceId: 'native-project', cwd: '/native/project' };
+  const delegated = { id: 'native-completed-task', brief: 'Read-only native QA', status: 'done', workers: ['deepgeek'], revision: 4, updatedAtMs: now, lineage: { assistant: { hostId: record.hostId, assistantId: record.id }, project }, resultData: { taskHistory: [{ kind: 'request', text: 'Original native request' }, { kind: 'completed', text: 'Worker completed read-only task', atMs: now }] } };
+  const h = mount({ lane, embedded: true, delegatedTasks: [delegated] });
+  const tree = h.render();
+  const row = find(tree, node => node.props?.['data-activity-source'] === 'project');
+  assert.match(textOf(row), /Original native request/);
+  assert.match(textOf(row), /Worker completed read-only task/);
+  assert.equal(findAll(row, node => node.type === 'time').length, 2, 'only the task update and dated worker event receive timestamps');
+  assert.doesNotMatch(textOf(row), /Invalid Date/);
+});
+
+
+test('Connections browser action opens the shared Chat browser without mounting a second browser', () => {
+  const { lane } = fakeLane({ browserView: async () => ({}) });
+  let opens = 0;
+  const h = mount({ lane, initial: 'connections', onOpenBrowser() { opens++; } });
+  button(h.render(), 'Open browser / Take over').props.onClick();
+  assert.equal(opens, 1);
 });

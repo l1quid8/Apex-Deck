@@ -102,6 +102,8 @@ pub(crate) struct Turn<'a> {
     progress: ProgressSink<'a>,
     jobs: shell::Jobs,
     servers: Vec<mcp_client::ServerSpec>,
+    cwd: Option<PathBuf>,
+    roots: files::Roots,
 }
 
 /// Whether a call may go ahead.
@@ -113,12 +115,22 @@ enum Need {
 
 impl<'a> Turn<'a> {
     pub fn new(tools: &'a ToolBox, access: Access, plan: bool, own: Access, approver: &'a dyn Approver, progress: ProgressSink<'a>) -> Self {
+        // Leave the MCP client's long-lived servers on the room folder across turns.
         let servers = tools.mcp.servers(tools.env.cwd.as_deref());
         if !servers.is_empty() {
             let menu: Vec<apex_core::server_request::ToolServer> = servers.iter().map(|s| s.name.clone().into()).collect();
             progress(Progress::ToolServers(&menu));
         }
-        Self { tools, access, plan, own, approver, progress, jobs: shell::Jobs::default(), servers }
+        let roots = tools.roots.clone();
+        Self { tools, access, plan, own, approver, progress, jobs: shell::Jobs::default(), servers, cwd: None, roots }
+    }
+
+    pub fn with_cwd(mut self, cwd: Option<PathBuf>) -> Self {
+        if let Some(c) = cwd.as_deref() {
+            self.roots = files::Roots::new(Some(c), &self.tools.roots.readable);
+        }
+        self.cwd = cwd;
+        self
     }
 
     fn can_change(&self) -> bool {
@@ -127,7 +139,7 @@ impl<'a> Turn<'a> {
 
     /// What to add to the bot's instructions, so it knows what it has.
     pub fn instructions(&self) -> String {
-        let folder = self.tools.roots.workspace.as_ref().map(|w| format!(" ({})", w.display())).unwrap_or_default();
+        let folder = self.roots.workspace.as_ref().map(|w| format!(" ({})", w.display())).unwrap_or_default();
         let mut out = format!(
             "\nYou have tools for working in the project folder{folder}: read, find and search files, edit files, run shell commands, and fetch web pages"
         );
@@ -369,7 +381,7 @@ impl<'a> Turn<'a> {
         match call.name.as_str() {
             "read_file" | "list_dir" | "glob" | "grep" => {
                 let raw = s("path");
-                let resolved = match self.tools.roots.resolve(&raw) {
+                let resolved = match self.roots.resolve(&raw) {
                     Ok(resolved) => resolved,
                     Err(why) => return (self.step(call, StepKind::Read, &call.name, &raw), Err(why)),
                 };
@@ -545,7 +557,7 @@ impl<'a> Turn<'a> {
     async fn change(&mut self, call: &ToolCall, args: &Value) -> (WorkStep, Result<Done, String>) {
         let raw = args["path"].as_str().unwrap_or("");
         let editing = call.name == "edit_file";
-        let resolved = match self.tools.roots.resolve(raw) {
+        let resolved = match self.roots.resolve(raw) {
             Ok(resolved) => resolved,
             Err(why) => return (self.step(call, StepKind::Edit, &call.name, raw), Err(why)),
         };
@@ -603,16 +615,23 @@ impl<'a> Turn<'a> {
         if let Err(why) = self.allowed(self.command_need(&command)).await {
             return (step, Err(why));
         }
+        let env = if let Some(cwd) = &self.cwd {
+            let mut e = self.tools.env.clone();
+            e.cwd = Some(cwd.clone());
+            e
+        } else {
+            self.tools.env.clone()
+        };
         if args["background"] == true {
             let result = self
                 .jobs
-                .start(&self.tools.env, &self.tools.processes, &command)
+                .start(&env, &self.tools.processes, &command)
                 .map(|id| Done::text(format!("Started {id} in the background. Read its output with job_output; it stops when your reply ends.")));
             return (step, result);
         }
         let timeout = args["timeout_seconds"].as_u64().map(Duration::from_secs).unwrap_or(COMMAND_DEFAULT).clamp(Duration::from_secs(1), COMMAND_MAX);
         (self.progress)(Progress::Activity(&format!("Running {}", step.label)));
-        let result = shell::run(&self.tools.env, &self.tools.processes, &command, timeout).await.map(|finished| {
+        let result = shell::run(&env, &self.tools.processes, &command, timeout).await.map(|finished| {
             let mut text = if finished.output.trim().is_empty() { "(no output)".to_string() } else { finished.output };
             if finished.timed_out {
                 text.push_str(&format!("\n[stopped after {} seconds; use a longer timeout_seconds or background]", timeout.as_secs()));
@@ -914,5 +933,20 @@ mod tests {
         let text = format!("{}{}", "a".repeat(RESULT_MAX), "b".repeat(100));
         let cut = cut_result(&text);
         assert!(cut.starts_with('a') && cut.ends_with('b') && cut.contains("characters cut"));
+    }
+
+    #[tokio::test]
+    async fn shell_tool_runs_in_request_cwd() {
+        let dir_context = scratch("ctx");
+        let dir_request = scratch("req");
+        let tools = toolbox(&dir_context);
+        let quiet = |_: Progress<'_>| {};
+        let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &NoApprover, &quiet)
+            .with_cwd(Some(dir_request.clone()));
+        let call = ToolCall { id: "1".into(), name: "run_command".into(), arguments: json!({"command": "pwd -P"}).to_string(), extra: None };
+        let output = turn.run(&call).await;
+        assert!(output.contains(&dir_request.to_string_lossy().to_string()), "expected {dir_request:?}, got {output}");
+        let _ = std::fs::remove_dir_all(dir_context);
+        let _ = std::fs::remove_dir_all(dir_request);
     }
 }

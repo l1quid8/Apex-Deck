@@ -12,6 +12,7 @@ use futures::{
     FutureExt,
 };
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -85,8 +86,16 @@ impl Drop for TurnBatch {
 pub trait TurnStartHook: Send + Sync {
     fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, ()>;
 }
+pub trait CopyProvider: Send + Sync {
+    fn copy_for<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Result<PathBuf, String>>;
+    fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> BoxFuture<'a, ()>;
+    fn active_copy<'a>(&'a self, _id: &'a ParticipantId) -> BoxFuture<'a, Option<PathBuf>> {
+        Box::pin(async move { None })
+    }
+}
 #[derive(Clone)]
 pub struct ConcurrentRoom {
+    retired: Arc<AtomicBool>,
     room: Arc<AsyncMutex<Room>>,
     slots: Arc<Mutex<HashMap<ParticipantId, Arc<Slot>>>>,
     pending: Arc<AtomicUsize>,
@@ -95,21 +104,37 @@ pub struct ConcurrentRoom {
     write_owner: Option<String>,
     cleanup_holds: Arc<Mutex<HashMap<ParticipantId, (String, bool)>>>,
     turn_start: Option<Arc<dyn TurnStartHook>>,
-    voice_requests: Arc<Mutex<HashMap<String, (ParticipantId, String, Arc<AtomicBool>, Arc<AtomicBool>)>>>,
+    copies: Option<Arc<dyn CopyProvider>>,
+    voice_requests: VoiceRequests,
 }
+/// Voice turns waiting to start: who asked, the words, and their stop and
+/// done flags.
+type VoiceRequests = Arc<Mutex<HashMap<String, (ParticipantId, String, Arc<AtomicBool>, Arc<AtomicBool>)>>>;
+
 impl ConcurrentRoom {
     pub fn new(room: Room) -> Self {
         Self {
             room: Arc::new(AsyncMutex::new(room)),
             slots: Arc::default(),
             pending: Arc::default(),
+            retired: Arc::default(),
             editor: Arc::default(),
             write_gate: None,
             write_owner: None,
             cleanup_holds: Arc::default(),
             turn_start: None,
+            copies: None,
             voice_requests: Arc::default(),
         }
+    }
+    /// Attach a provider for per-bot workspace copies.
+    pub fn with_copies(mut self, copies: Arc<dyn CopyProvider>) -> Self {
+        self.copies = Some(copies);
+        self
+    }
+    /// Access the editor slot reservation.
+    pub fn editor_handle(&self) -> Arc<Mutex<Option<ParticipantId>>> {
+        Arc::clone(&self.editor)
     }
     /// Await `hook` before each participant starts a turn.
     pub fn with_turn_start(mut self, hook: Arc<dyn TurnStartHook>) -> Self {
@@ -128,6 +153,19 @@ impl ConcurrentRoom {
     }
     pub fn busy(&self) -> bool {
         self.pending.load(Ordering::SeqCst) != 0
+    }
+    /// Retire only between turns, with persistence under the admission lock.
+    /// A stale handle cannot admit another post after this succeeds.
+    pub fn retire_if_idle<T>(&self, persist: impl FnOnce(&Room) -> Result<T, String>) -> Result<T, String> {
+        let room = self.room.try_lock().ok_or("room-busy: Wait for the current turn to finish.")?;
+        if self.busy() || !self.cleanup_holds.lock().unwrap().is_empty() { return Err("room-busy: Wait for the current turn to finish.".into()); }
+        if self.retired.load(Ordering::SeqCst) { return Err("The chat folder changed. Reopen the chat.".into()); }
+        let result = persist(&room)?;
+        self.retired.store(true, Ordering::SeqCst);
+        Ok(result)
+    }
+    fn check_open(&self) -> Result<(), String> {
+        if self.retired.load(Ordering::SeqCst) { Err("The chat folder changed. Reopen the chat.".into()) } else { Ok(()) }
     }
     /// Release a cleanup hold only after the caller has verified that every
     /// process owned by this participant has stopped. Durable task owners are
@@ -191,7 +229,17 @@ impl ConcurrentRoom {
         targets: Option<Vec<ParticipantId>>,
         sink: Sink<'_>,
     ) -> Result<TurnBatch, String> {
+        self.begin_post_with_speaker(Speaker::Human, text, targets, sink).await
+    }
+    pub async fn begin_post_with_speaker(
+        &self,
+        speaker: Speaker,
+        text: &str,
+        targets: Option<Vec<ParticipantId>>,
+        sink: Sink<'_>,
+    ) -> Result<TurnBatch, String> {
         let mut room = self.room.lock().await;
+        self.check_open()?;
         let resolved = room.resolve_targets(text);
         let targets = targets.unwrap_or(resolved.clone());
         if targets.iter().any(|id| !room.has(id)) {
@@ -201,7 +249,7 @@ impl ConcurrentRoom {
         for id in targets { if !unique.contains(&id) { unique.push(id); } }
         let targets = unique;
         room.remember_targets(targets.clone());
-        room.push(Speaker::Human, text.to_string(), sink);
+        room.push(speaker, text.to_string(), sink);
         Ok(self.batch(
             targets,
             room.options().policy == TurnPolicy::RoundRobin,
@@ -214,6 +262,7 @@ impl ConcurrentRoom {
     /// under the room lock. IDs are retained for this process lifetime (bounded).
     pub async fn begin_voice_post(&self, text: &str, id: ParticipantId, request_id: String, sink: Sink<'_>) -> Result<Option<TurnBatch>, String> {
         let mut room = self.room.lock().await;
+        self.check_open()?;
         if !room.has(&id) { return Err("voice recipient no longer exists".into()); }
         if request_id.is_empty() || request_id.len() > 128 || text.trim().is_empty() || text.len() > 32_000 { return Err("invalid voice request".into()); }
         let mut requests = self.voice_requests.lock().unwrap();
@@ -248,6 +297,7 @@ impl ConcurrentRoom {
     /// `Some(0)` buys exactly one reply each.
     pub async fn begin_turn(&self, ids: Vec<ParticipantId>, hops: Option<usize>) -> Result<TurnBatch, String> {
         let room = self.room.lock().await;
+        self.check_open()?;
         if ids.is_empty() {
             return Err("no one was named to answer".into());
         }
@@ -329,8 +379,8 @@ impl ConcurrentRoom {
             let mut next = Vec::new();
             if batch.sequential {
                 for ticket in tickets {
-                    self.admit_writer(&ticket, &batch, &mut write_lease).await;
-                    next.extend(self.run_one(ticket, None, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
+                    let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, None).await;
+                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -340,6 +390,9 @@ impl ConcurrentRoom {
                     tickets
                         .iter()
                         .map(|ticket| {
+                            // A queued bot can change access before its previous turn ends.
+                            // Resolve its execution snapshot only after that FIFO wait.
+                            ticket.previous.clone().now_or_never()?;
                             room.request_for_capability(&ticket.id, batch.answers, batch.generated_ui).map(|(p, r)| {
                                 (p, r, room.transcript().len(), room.approvals_handle())
                             })
@@ -351,14 +404,14 @@ impl ConcurrentRoom {
                     // keep roster order and share this batch's lease, without
                     // competing for the room-local editor reservation.
                     let (writers, readers): (Vec<_>, Vec<_>) = tickets.into_iter().zip(prepared).enumerate()
-                        .partition(|(_, (_, prepared))| prepared.as_ref().is_some_and(|(participant, request, _, _)| {
+                        .partition(|(_, (_, prepared))| prepared.as_ref().is_none_or(|(participant, request, _, _)| {
                             request.access != Some(Access::Read)
                                 || (request.plan && participant.config().access != Access::Read)
                         }));
                     let write_turns = async {
                         let mut ids = Vec::new();
                         for (index, (ticket, prepared)) in writers {
-                            self.admit_writer(&ticket, &batch, &mut write_lease).await;
+                            let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, prepared).await;
                             ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await));
                         }
                         ids
@@ -424,23 +477,29 @@ impl ConcurrentRoom {
             sink(RoomEvent::Idle);
         }
     }
-    async fn admit_writer(&self, ticket: &Ticket, batch: &TurnBatch, lease: &mut Option<crate::WriteLease>) {
-        let Some(gate) = &self.write_gate else { return; };
-        if lease.is_some() { return; }
+    async fn admit_writer(&self, ticket: &Ticket, batch: &TurnBatch, lease: &mut Option<crate::WriteLease>, prepared: Option<Prepared>) -> Option<Prepared> {
+        let Some(gate) = &self.write_gate else { return prepared; };
         ticket.previous.clone().await;
         {
             let _slots = self.slots.lock().unwrap();
-            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) || ticket.origin.as_ref().is_some_and(|(_, stop)| stop.load(Ordering::SeqCst)) { return; }
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) || ticket.origin.as_ref().is_some_and(|(_, stop)| stop.load(Ordering::SeqCst)) { return prepared; }
             ticket.slot.stop.store(false, Ordering::SeqCst);
         }
-        let should_admit = {
-            let room = self.room.lock().await;
-            room.request_for(&ticket.id).is_some_and(|(participant, request)| {
-                request.access != Some(Access::Read)
-                    || (request.plan && participant.config().access != Access::Read)
-            })
+        // Admission and execution must use the same participant/access snapshot.
+        // Later settings replacements belong to a subsequent turn.
+        let prepared = match prepared {
+            Some(prepared) => Some(prepared),
+            None => {
+                let room = self.room.lock().await;
+                room.request_for_capability(&ticket.id, batch.answers, batch.generated_ui)
+                    .map(|(p, r)| (p, r, room.transcript().len(), room.approvals_handle()))
+            }
         };
-        if !should_admit { return; }
+        let should_admit = prepared.as_ref().is_some_and(|(participant, request, _, _)| {
+            request.access != Some(Access::Read)
+                || (request.plan && participant.config().access != Access::Read)
+        });
+        if lease.is_some() || !should_admit { return prepared; }
         let stop = ticket.origin.as_ref().map(|(_,stop)| stop.clone()).unwrap_or_else(|| ticket.slot.stop.clone());
         // Cancellation while queued removes the waiter; never reduce access to Read.
         let acquired = if batch.retained_owner {
@@ -453,7 +512,11 @@ impl ConcurrentRoom {
             Err(crate::WriteWaitError::Cancelled) => {},
             Err(crate::WriteWaitError::Occupied(_)) => unreachable!("acquisition queues behind its owner"),
         }
+        prepared
     }
+    // Nine parts of one turn: the ticket it runs, the snapshot prepared for it,
+    // and the channels it reports through. Nothing here is optional.
+    #[allow(clippy::too_many_arguments)]
     async fn run_one(
         &self,
         ticket: Ticket,
@@ -517,25 +580,88 @@ impl ConcurrentRoom {
                 room.approvals_handle(),
             )
         };
-        let mut editor = {
-            let mut held = self.editor.lock().unwrap();
-            if request.access != Some(Access::Read) && held.is_none() {
-                *held = Some(ticket.id.clone());
-                sink(RoomEvent::EditorChanged { id: held.clone() });
-                Some(EditorGuard { editor: self.editor.clone(), sink, retained: false })
-            } else { None }
+        let existing_active_copy = if !request.plan && request.access != Some(Access::Read) {
+            if let Some(provider) = &self.copies {
+                provider.active_copy(&ticket.id).await
+            } else {
+                None
+            }
+        } else {
+            None
         };
-        if request.access != Some(Access::Read) && editor.is_none() {
-            request.access = Some(Access::Read);
-            let mut config = participant.config().clone();
-            config.access = Access::Read;
-            let room = self.room.lock().await;
-            let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
-            request.system = crate::view::system_prompt(&config, &room.configs())
-                + &crate::view::pinned_section(room.pins())
-                + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
-                + answer_guidance;
-            if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+
+        let (mut editor, held_by, mut is_copy_turn) = if let Some(copy_path) = existing_active_copy {
+            request.cwd = Some(copy_path.clone());
+            let copy_line = copy_turn_line(&copy_path);
+            request.system.push_str("\n\n");
+            request.system.push_str(&copy_line);
+            (None, None, true)
+        } else {
+            let (editor, held_by) = {
+                let mut held = self.editor.lock().unwrap();
+                if request.access != Some(Access::Read) {
+                    if held.is_none() {
+                        *held = Some(ticket.id.clone());
+                        sink(RoomEvent::EditorChanged { id: held.clone() });
+                        (Some(EditorGuard { editor: self.editor.clone(), sink, retained: false }), None)
+                    } else {
+                        (None, held.clone())
+                    }
+                } else {
+                    (None, None)
+                }
+            };
+            (editor, held_by, false)
+        };
+        if let Some(held_by) = held_by {
+            let mut copy_granted = false;
+            let mut read_only_reason = None;
+            if !request.plan {
+                if let Some(provider) = &self.copies {
+                    match provider.copy_for(&ticket.id).await {
+                        Ok(copy_path) => {
+                            request.cwd = Some(copy_path.clone());
+                            let copy_line = copy_turn_line(&copy_path);
+                            request.system.push_str("\n\n");
+                            request.system.push_str(&copy_line);
+                            copy_granted = true;
+                            is_copy_turn = true;
+                        }
+                        Err(reason) => {
+                            read_only_reason = Some(reason);
+                        }
+                    }
+                }
+            }
+            if !copy_granted {
+                let reason = read_only_reason.unwrap_or_else(|| "no copy available".to_string());
+                request.access = Some(Access::Read);
+                let mut config = participant.config().clone();
+                config.access = Access::Read;
+                let room = self.room.lock().await;
+                let (bot_name, editor_name) = {
+                    let configs = room.configs();
+                    let b = configs.iter().find(|c| c.id == ticket.id).map(|c| c.display_name.clone()).unwrap_or_else(|| ticket.id.to_string());
+                    let e = configs.iter().find(|c| c.id == held_by).map(|c| c.display_name.clone()).unwrap_or_else(|| held_by.to_string());
+                    (b, e)
+                };
+                let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
+                request.system = crate::view::system_prompt(&config, &room.configs())
+                    + &crate::view::pinned_section(room.pins())
+                    + &room.checklist_section(&ticket.id)
+                    + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
+                    + answer_guidance;
+                if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+                let line = read_only_line(&bot_name, &editor_name, &reason);
+                request.system.push_str("\n\n");
+                request.system.push_str(&line);
+                sink(RoomEvent::ReadOnlyTurn {
+                    id: ticket.id.clone(),
+                    editor: held_by,
+                    reason,
+                    line,
+                });
+            }
         }
         if let Some(hook) = &self.turn_start {
             hook.before_turn(&ticket.id).await;
@@ -550,6 +676,7 @@ impl ConcurrentRoom {
         sink(RoomEvent::TurnStarted {
             id: ticket.id.clone(),
         });
+        let checklists = self.room.lock().await.checklists_handle();
         let changes = Mutex::new(Vec::new());
         let progress = |update: Progress<'_>| {
             if let Progress::Change(change) = update {
@@ -561,6 +688,7 @@ impl ConcurrentRoom {
                     seq: shown,
                 });
             }
+            crate::room::remember_checklist(&checklists, &ticket.id, shown, update);
             sink(progress_event(&ticket.id, update));
         };
         let approver = RoomApprover {
@@ -588,6 +716,11 @@ impl ConcurrentRoom {
         }
         let mut room = self.room.lock().await;
         let cancelled = request_stop.load(Ordering::SeqCst);
+        if is_copy_turn {
+            if let Some(copies) = &self.copies {
+                copies.turn_finished(&ticket.id, cancelled).await;
+            }
+        }
         desk.reject_for(&ticket.id);
         room.record_changes(changes.into_inner().unwrap());
         let next = if cancelled {
@@ -607,6 +740,18 @@ impl ConcurrentRoom {
         });
         next
     }
+}
+
+pub fn read_only_line(bot: &str, editor: &str, reason: &str) -> String {
+    let reason = reason.trim_end().trim_end_matches('.');
+    format!("{bot} is read-only this turn: {editor} is editing and Deck couldn't make a separate copy ({reason}).")
+}
+
+pub fn copy_turn_line(path: &Path) -> String {
+    format!(
+        "You are working in your own copy of the project at {}. Deck folds your file changes back into the main folder when your turn ends. Don't commit, push, switch branches, or build installers here.",
+        path.display()
+    )
 }
 
 // Cancellation or a dropped task releases the reservation as well.

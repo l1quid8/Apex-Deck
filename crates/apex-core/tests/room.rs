@@ -363,6 +363,7 @@ impl Participant for WorkingBot {
             provider: AgentTool::Codex,
             windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
             partial: true,
+            reset_credits: None,
         }));
         Ok(Reply { text: "Done.".into(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false })
     }
@@ -379,6 +380,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
         access: Access::Read,
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     };
     let quiet = bot("quiet", &["hello"]);
@@ -417,6 +419,8 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
                 provider: AgentTool::Codex,
                 windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
                 partial: true,
+                model: None,
+                reset_credits: None,
             },
             &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false },
             &RoomEvent::MessageAdded {
@@ -564,6 +568,7 @@ fn asking_room() -> (Room, ParticipantId) {
         access: Access::Ask,
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     };
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(AskingBot(config))];
@@ -801,6 +806,7 @@ fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
         access: Access::Read,
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     };
     let quiet = bot("quiet", &["hello", "again"]);

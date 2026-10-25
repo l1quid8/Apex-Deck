@@ -4,6 +4,12 @@ import fs from 'node:fs/promises';
 import { transform } from 'sucrase';
 import * as model from '../src/assistantTaskModel.ts';
 import * as taskViewModule from '../src/apexAgentTaskView.ts';
+import { subscribeToImports } from '../src/legacyImportRefresh.ts';
+
+// A stand-in with its own identity, so "the marker is here" is an assertion about the
+// element rather than about a string that happens to be nearby.
+const LegacyBadge = function LegacyBadge() { return null; };
+const MarkdownStub = function Markdown() { return null; };
 
 // Exports the component imports from the shared Tasks contract. Only these names are passed in, so nothing collides with assistantTaskModel.
 const taskViewExports = { TaskViewContext: taskViewModule.TaskViewContext, projectTaskKey: taskViewModule.projectTaskKey, projectTaskGroup: taskViewModule.projectTaskGroup };
@@ -21,7 +27,7 @@ const task = (overrides = {}) => ({
 const snapshot = (tasks = [], executions = []) => ({ workspaceId: owner.workspaceId, revision: 1, tasks, executions });
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const find = (node, predicate) => { if (!node || typeof node !== 'object') return null; if (Array.isArray(node)) { for (const child of node) { const found = find(child, predicate); if (found) return found; } return null; } if (predicate(node)) return node; for (const child of node.children ?? []) { const found = find(child, predicate); if (found) return found; } return null; };
-const textOf = node => { if (node == null || typeof node === 'boolean') return ''; if (typeof node === 'string' || typeof node === 'number') return String(node); if (Array.isArray(node)) return node.map(textOf).join(' '); return textOf(node.children ?? []); };
+const textOf = node => { if (node == null || typeof node === 'boolean') return ''; if (node.type === MarkdownStub) return node.props.text; if (typeof node === 'string' || typeof node === 'number') return String(node); if (Array.isArray(node)) return node.map(textOf).join(' '); return textOf(node.children ?? []); };
 const findAll = (node, predicate, out = []) => { if (!node || typeof node !== 'object') return out; if (Array.isArray(node)) { node.forEach(item => findAll(item, predicate, out)); return out; } if (predicate(node)) out.push(node); (node.children ?? []).forEach(item => findAll(item, predicate, out)); return out; };
 const containsNode = (node, target) => node === target || !!(node && typeof node === 'object' && (Array.isArray(node) ? node.some(child => containsNode(child, target)) : (node.children ?? []).some(child => containsNode(child, target))));
 // Opens the first task card's details from the conversation.
@@ -41,7 +47,7 @@ function harness(backend, initial = {}, saved = new Map()) {
     // Stands in for <TaskViewContext.Provider value={initial.taskView}>; the Provider needs react-dom, which these tests do not load.
     useContext(context) { return context === taskViewExports.TaskViewContext ? (props.taskView ?? null) : null; },
   };
-  const component = new Function('React', ...Object.keys(hooks), ...Object.keys(model), ...Object.keys(taskViewExports), 'window', `${compiled}; return ApexAgentTasks;`)(React, ...Object.values(hooks), ...Object.values(model), ...Object.values(taskViewExports), { crypto: { randomUUID: () => 'request-fixed' }, localStorage: { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) } });
+  const component = new Function('React', ...Object.keys(hooks), ...Object.keys(model), ...Object.keys(taskViewExports), 'subscribeToImports', 'LegacyBadge', 'Markdown', 'window', `${compiled}; return ApexAgentTasks;`)(React, ...Object.values(hooks), ...Object.values(model), ...Object.values(taskViewExports), subscribeToImports, LegacyBadge, MarkdownStub, { crypto: { randomUUID: () => 'request-fixed' }, localStorage: { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) } });
   props = { backend, owner, panes: [{ id: 'thread-a', title: 'Build room', kind: 'chat', workspaceId: owner.workspaceId }], profiles: [{ id: 'claude', display_name: 'Claude', backend: { kind: 'agent', tool: 'claude_code' }, media: null }], ...initial };
   const render = () => { cursor = 0; const tree = component(props); for (const effect of effects) if (effect?.changed) { effect.changed = false; effect.cleanup?.(); effect.cleanup = effect.fn(); } return tree; };
   return { render, storage: saved, setReviewVisible(visible = true) { observers.at(-1)?.trigger(visible); }, setProps(next) { props = { ...props, ...next }; }, unmount() { mounted = false; effects.forEach(effect => effect?.cleanup?.()); if (previousObserver) globalThis.IntersectionObserver = previousObserver; else delete globalThis.IntersectionObserver; } };
@@ -107,11 +113,12 @@ test('accept is available only in detail and requires current revision acknowled
   const h = harness(backend); let tree = h.render(); await tick(); tree = h.render();
   assert.equal(find(tree, node => node.type === 'button' && /Accept and mark done|Accept changes/.test(String(node.children[0]))), null);
   openDetail(tree); tree = h.render();
-  const ackBeforeView = find(tree, node => node.type === 'label' && node.props.className === 'assistant-review-ack').children.find(node => node.type === 'input');
-  assert.equal(ackBeforeView.props.disabled, true, 'acknowledgement stays disabled until the current review result intersects the detail scroll');
+  const acceptButton = () => find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done');
+  assert.equal(acceptButton().props.disabled, true, 'accept stays disabled until the current review result intersects the detail scroll');
   h.setReviewVisible(); tree = h.render();
+  assert.equal(acceptButton().props.disabled, true, 'review criteria still required');
   find(tree, node => node.type === 'input' && node.props.type === 'checkbox').props.onChange({ target: { checked: true } }); tree = h.render();
-  find(tree, node => node.type === 'input' && node.props.type === 'checkbox').props.onChange({ target: { checked: true } }); tree = h.render();
+  assert.equal(acceptButton().props.disabled, false);
   find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done').props.onClick(); await tick();
   const action = calls.find(([command]) => command === 'assistant_task_action');
   assert.equal(action[1].taskId, 'task-1'); assert.equal(action[1].revision, 4); assert.deepEqual(action[1].owner, owner); assert.equal(action[1].action, 'accept');
@@ -124,10 +131,8 @@ test('a new task revision invalidates the prior review acknowledgement', async (
   const backend = { demo: false, call: async (command) => { if (command === 'assistant_tasks_list') return snapshot([actionDone ? revised : task()]); if (command === 'assistant_task_action') { actionDone = true; return revised; } return null; } };
   const h = harness(backend, { onSelectTask: (_task, send) => { sendTask = send; } });
   let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render(); h.setReviewVisible(); tree = h.render();
-  let checks = findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox');
-  checks[0].props.onChange({ target: { checked: true } }); tree = h.render();
-  checks = findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox');
-  checks[1].props.onChange({ target: { checked: true } }); tree = h.render();
+  findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox')[0].props.onChange({ target: { checked: true } }); tree = h.render();
+  assert.equal(find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done').props.disabled, false);
   await sendTask('Update the output format.'); await tick(); tree = h.render();
   const accept = find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done');
   assert.match(textOf(tree), /Revision\s+5/); assert.equal(accept.props.disabled, true);
@@ -141,11 +146,9 @@ test('captured empty diff is reviewed as a no-change result and read-only result
   const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([current]); if (command === 'assistant_task_action') { calls.push(args); current = task({ status: 'done', revision: 5, result: noChange.result, resultData: { reviewDiff: '' } }); return current; } } };
   const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
   assert.match(textOf(tree), /No file changes in this result/);
-  assert.equal(find(tree, node => node.type === 'label' && node.props.className === 'assistant-review-ack').children.find(node => node.type === 'input').props.disabled, true);
+  assert.equal(find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done').props.disabled, true);
   h.setReviewVisible(); tree = h.render();
-  let checks = findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox');
-  checks[0].props.onChange({ target: { checked: true } }); tree = h.render();
-  checks = findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox'); checks[1].props.onChange({ target: { checked: true } }); tree = h.render();
+  findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox')[0].props.onChange({ target: { checked: true } }); tree = h.render();
   await find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done').props.onClick(); await tick();
   assert.equal(calls[0].action, 'accept'); h.unmount();
 
@@ -154,7 +157,8 @@ test('captured empty diff is reviewed as a no-change result and read-only result
   const readBackend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([reviewOnly]); if (command === 'assistant_task_action') { readCalls.push(args); return task({ mode: 'read_only', status: 'done', revision: 5, reviewCriteria: [] }); } } };
   const read = harness(readBackend); tree = read.render(); await tick(); tree = read.render(); openDetail(tree); tree = read.render();
   read.setReviewVisible(); tree = read.render();
-  const ack = find(tree, node => node.type === 'input' && node.props.type === 'checkbox'); ack.props.onChange({ target: { checked: true } }); tree = read.render();
+  assert.equal(find(tree, node => node.type === 'input' && node.props.type === 'checkbox'), null, 'no acknowledgement checkbox');
+  assert.equal(find(tree, node => node.type === 'button' && node.children[0] === 'Mark reviewed').props.disabled, false);
   await find(tree, node => node.type === 'button' && node.children[0] === 'Mark reviewed').props.onClick(); await tick();
   assert.equal(readCalls[0].action, 'review'); read.unmount();
 });
@@ -397,7 +401,7 @@ test('conversation task messages open approval and review controls without tabs'
   const accept = find(tree, node => node.type === 'button' && textOf(node) === 'Accept and mark done');
   assert.ok(accept); assert.equal(accept.props.disabled, true);
   h.setReviewVisible(); tree = h.render();
-  find(tree, node => node.type === 'input' && node.props.type === 'checkbox' && containsNode(find(tree, node => node.props.className === 'assistant-review-ack'), node)).props.onChange({ target: { checked: true } });
+  assert.equal(find(tree, node => node.props?.className === 'assistant-review-ack'), null);
   tree = h.render(); assert.match(textOf(tree), /Tests pass/); h.unmount();
 });
 
@@ -523,6 +527,70 @@ test('single-conversation recovery survives reopen and successful retry removes 
 
 const projectKey = id => `project:${owner.hostId}:${owner.workspaceId}:${id}`;
 
+test('sidebar rows open local task details and Back restores the compact list without dispatching or binding a composer', async () => {
+  const calls = [], selected = [], opened = [];
+  const tasks = [task(), task({ id: 'task-2', status: 'running', originalRequest: 'Review docs' })];
+  const backend = { demo: false, call: async command => { calls.push(command); return snapshot(tasks); } };
+  const h = harness(backend, { view: 'sidebar', projectName: 'apex-deck', clearedAt: 10, onSelectTask: (...args) => selected.push(args), taskView: { display: 'tasks', selectedKey: projectKey('task-2'), openTask: key => opened.push(key), report() {} } });
+  let tree = h.render(); await tick(); tree = h.render();
+  const rows = findAll(tree, node => node.type === 'button' && node.props.className === 'assistant-task-sidebar-row');
+  assert.equal(rows.length, 2);
+  assert.match(textOf(tree), /apex-deck/);
+  assert.match(textOf(rows[0]), /Fix parser.*Claude.*Ready for review/);
+  assert.match(textOf(rows[1]), /Review docs.*Running/);
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
+  assert.equal(button(tree, 'Approve task'), null);
+  const before = calls.length;
+  rows[0].props.onClick(); tree = h.render();
+  assert.ok(button(tree, 'Accept and mark done'));
+  assert.ok(button(tree, 'Request changes…'), 'the compact sidebar retains the existing explicit review actions');
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-sidebar-row'), null);
+  assert.equal(calls.length, before);
+  assert.deepEqual(selected, []); assert.deepEqual(opened, []);
+  button(tree, 'Back to tasks').props.onClick(); tree = h.render();
+  assert.equal(findAll(tree, node => node.props.className === 'assistant-task-sidebar-row').length, 2);
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
+  assert.equal(calls.length, before);
+  h.unmount();
+});
+
+test('sidebar statuses follow task events and a changed owner cannot keep or open the prior assignment', async () => {
+  let changed, revision = 1, status = 'running';
+  const ownerB = { workspaceId: 'project-b', cwd: '/work/b', hostId: 'host-b', conversationId: 'monitor-b' };
+  const backend = { demo: false, onAssistantTasksChanged: async listener => { changed = listener; return () => {}; }, call: async (_command, args) => args.owner.workspaceId === owner.workspaceId ? { ...snapshot([task({ status })]), revision } : { workspaceId: ownerB.workspaceId, revision: 1, tasks: [], executions: [] } };
+  const h = harness(backend, { view: 'sidebar' }); let tree = h.render(); await tick(); tree = h.render();
+  let row = find(tree, node => node.props.className === 'assistant-task-sidebar-row');
+  assert.ok(row); assert.match(textOf(row), /Running/);
+  status = 'needs_you'; revision++; changed({ workspaceId: owner.workspaceId }); await tick(); tree = h.render();
+  row = find(tree, node => node.props.className === 'assistant-task-sidebar-row');
+  assert.match(textOf(row), /Needs you/);
+  row.props.onClick(); tree = h.render(); assert.ok(button(tree, 'Cancel task'));
+  h.setProps({ owner: ownerB }); tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Fix parser/);
+  row.props.onClick(); await tick(); tree = h.render();
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
+  assert.doesNotMatch(textOf(tree), /Fix parser/);
+  assert.match(textOf(tree), /No tasks for this project/);
+  h.unmount();
+});
+
+test('sidebar distinguishes loading, empty and failed task lists and keeps request recovery accessible', async () => {
+  let finishList;
+  const loading = harness({ demo: false, call: () => new Promise(resolve => { finishList = resolve; }) }, { view: 'sidebar' });
+  let tree = loading.render(); assert.match(textOf(tree), /Loading tasks/); assert.doesNotMatch(textOf(tree), /No tasks for this project/);
+  finishList(snapshot([])); await tick(); tree = loading.render(); assert.match(textOf(tree), /No tasks for this project/); loading.unmount();
+  const failed = harness({ demo: false, call: async () => { throw new Error('Machine is offline'); } }, { view: 'sidebar' });
+  failed.render(); await tick(); tree = failed.render();
+  assert.match(textOf(find(tree, node => node.props.role === 'alert')), /Machine is offline/);
+  assert.doesNotMatch(textOf(tree), /No tasks for this project/); failed.unmount();
+  let discarded = false;
+  const pending = { requestId: 'saved', owner, text: 'Keep my saved request', destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [] };
+  const recovery = harness({ demo: false, call: async () => snapshot([]) }, { view: 'sidebar', requestRecovery: { pending, retry: async () => {}, discard: () => { discarded = true; } } });
+  recovery.render(); await tick(); tree = recovery.render();
+  assert.match(textOf(tree), /Keep my saved request/);
+  button(tree, 'Discard saved request and start over').props.onClick(); assert.equal(discarded, true); recovery.unmount();
+});
+
 test('links view: one short line per task, no cards or detail, and opening makes no backend call', async () => {
   const calls = []; const opened = []; const selected = [];
   const tasks = [
@@ -536,9 +604,9 @@ test('links view: one short line per task, no cards or detail, and opening makes
   let tree = h.render(); await tick(); tree = h.render();
   const links = findAll(tree, node => node.type === 'button' && node.props.className === 'assistant-task-link');
   assert.equal(links.length, 3);
-  assert.equal(textOf(links[0]), 'Task · Running · Fix parser ›');
-  assert.equal(textOf(links[1]), 'Review result · Review docs ›');
-  assert.equal(textOf(links[2]), 'Result ready · Ship notes ›');
+  assert.equal(textOf(links[0]).trim(), 'Task · Running · Fix parser ›');
+  assert.equal(textOf(links[1]).trim(), 'Review result · Review docs ›');
+  assert.equal(textOf(links[2]).trim(), 'Result ready · Ship notes ›');
   assert.equal(findAll(tree, node => node.type === 'article' && node.props.className?.startsWith?.('assistant-task-card')).length, 0);
   assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
   assert.equal(find(tree, node => node.type === 'button' && /^(Open task|Review result)$/.test(textOf(node))), null);
@@ -629,5 +697,101 @@ test('a running task note goes to the explicit note box as a note action', async
   find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Include the fixture.' } }); tree = h.render();
   await button(tree, 'Send note').props.onClick(); await tick();
   assert.equal(calls[0].action, 'note'); assert.equal(calls[0].text, 'Include the fixture.');
+  h.unmount();
+});
+
+test('an imported task is marked unverified and names its saved folder before a retry', async () => {
+  const marker = { sourceSha256: 'a'.repeat(64), importedAtMs: 1, originalId: 't-1', originalStatus: 'queued', verified: false };
+  const imported = task({ id: 'legacy-1', status: 'interrupted', executionThreadId: null, legacy: marker });
+  const backend = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([imported]) : null };
+
+  // The sidebar row states the status, so it states the marker with it.
+  const list = harness(backend, { view: 'sidebar' }); let rows = list.render(); await tick(); rows = list.render();
+  assert.ok(findAll(rows, node => node.type === LegacyBadge).length > 0, 'the list marks the imported task');
+
+  // The card detail states the status too, and carries the folder before a retry.
+  const card = harness(backend); let tree = card.render(); await tick(); tree = card.render();
+  openDetail(tree); tree = card.render();
+  const shown = textOf(tree);
+  assert.ok(findAll(tree, node => node.type === LegacyBadge).length > 0, 'the detail carries the marker');
+  assert.match(shown, /Came from an older copy/);
+  assert.match(shown, /\/work\/project/, 'the folder it was saved for is named before a retry');
+
+  // A task this machine wrote is marked nowhere and gets no folder warning.
+  const clean = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([task({ legacy: null })]) : null };
+  const fresh = harness(clean); let other = fresh.render(); await tick(); other = fresh.render();
+  openDetail(other); other = fresh.render();
+  assert.equal(findAll(other, node => node.type === LegacyBadge).length, 0, 'a task from this machine is not marked');
+  assert.ok(!/Came from an older copy/.test(textOf(other)));
+});
+
+test('imported tasks stay visibly unverified in conversation summaries and task links', async () => {
+ const marker={sourceSha256:'a'.repeat(64),importedAtMs:1,verified:false};
+ const backend={demo:false,call:async cmd=>cmd==='assistant_tasks_list'?snapshot([task({legacy:marker})]):null};
+ for(const props of [{},{taskView:{display:'links',selectedKey:null,openTask(){},report(){}}}]){
+  const h=harness(backend,props);h.render();await tick();const tree=h.render();
+  assert.ok(find(tree,node=>node.type===LegacyBadge),'status summary must preserve imported marker');
+ }
+});
+
+test('an imported conversation receipt is read-only and never offers request retry', async () => {
+ const pending={requestId:'old-request',owner,text:'Old request',destination:null,newWorkerProfiles:[],mode:'in_place',checks:[]};
+ const saved=new Map([[model.pendingRequestStorageKey(owner),JSON.stringify(pending)]]);let dispatched=0;
+ const backend={demo:false,call:async cmd=>{if(cmd==='assistant_tasks_list')return {...snapshot(),request:{requestId:'old-request',status:'legacy'}};dispatched++;return null;}};
+ const h=harness(backend,{},saved);h.render();await tick();const tree=h.render();
+ assert.equal(button(tree,'Retry request'),null);assert.match(textOf(tree),/read.only|Older records/i);
+ assert.ok(find(tree,node=>node.type===LegacyBadge));assert.equal(dispatched,0);h.unmount();
+});
+
+test('task Pause and Resume send exact-owner controls and require explicit retry after interruption', async () => {
+  let current = task({status:'running',desiredState:'running'});
+  const calls=[];
+  const backend={demo:false,call:async(command,args)=>{
+    if(command==='assistant_tasks_list') return snapshot([current]);
+    if(command==='assistant_task_action') {
+      calls.push(args);
+      current=task({status:'interrupted',desiredState:args.action==='pause'?'paused':'running',pauseReason:args.action==='pause'?'manual':null,revision:current.revision+1,result:'This adapter cannot checkpoint. Retry starts a new attempt.'});
+      return current;
+    }
+  }};
+  const h=harness(backend);
+  let tree=h.render(); await tick(); tree=h.render(); openDetail(tree); tree=h.render();
+  assert.ok(button(tree,'Pause task'));
+  await button(tree,'Pause task').props.onClick(); await tick(); tree=h.render();
+  assert.equal(calls[0].action,'pause'); assert.deepEqual(calls[0].owner,owner); assert.equal(calls[0].revision,4);
+  assert.ok(button(tree,'Resume task')); assert.equal(button(tree,'Retry task').props.disabled,true);
+  await button(tree,'Resume task').props.onClick(); await tick(); tree=h.render();
+  assert.equal(calls[1].action,'resume'); assert.equal(calls[1].revision,5);
+  assert.equal(calls.length,2,'Resume cannot implicitly retry an unsupported adapter');
+  assert.equal(button(tree,'Retry task').props.disabled,false);
+  h.unmount();
+});
+
+test('owned task responses show the named assistant while retaining the worker identity',async()=>{
+ const ref={hostId:'host-a',assistantId:'named-1'};
+ const named=task({lineage:{assistant:ref,project:{hostId:'host-a',workspaceId:owner.workspaceId,cwd:owner.cwd}}});
+ const backend={demo:false,call:async command=>command==='assistant_tasks_list'?snapshot([named]):null};
+ const h=harness(backend,{assistantIdentity:{ref,name:'Apex Assistant'},taskView:{display:'tasks',selectedKey:taskViewModule.projectTaskKey(owner.hostId,owner.workspaceId,'task-1'),report(){},openTask(){}}});h.render();await tick();let tree=h.render();openDetail(tree);tree=h.render();
+ assert.match(textOf(tree),/Apex Assistant\s+·\s+Task response/);
+ assert.match(textOf(tree),/Worker: Claude/);
+ h.setProps({assistantIdentity:{ref,name:'Renamed Assistant'}});tree=h.render();assert.match(textOf(tree),/Renamed Assistant\s+·\s+Task response/);assert.doesNotMatch(textOf(tree),/Apex Assistant\s+·\s+Task response/);
+ h.setProps({assistantIdentity:{ref:{...ref,assistantId:'other'},name:'Other Assistant'}});tree=h.render();assert.doesNotMatch(textOf(tree),/Other Assistant\s+·\s+Task response/);h.unmount();
+});
+
+test('review is one step: no acknowledgement checkbox, button waits for the visible current result', async () => {
+  const backend = { demo: false, call: async (command) => command === 'assistant_tasks_list' ? snapshot([task({ reviewCriteria: [] })]) : null };
+  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
+  assert.equal(find(tree, node => node.props?.className === 'assistant-review-ack'), null);
+  assert.doesNotMatch(textOf(tree), /I opened and reviewed/);
+  assert.equal(find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done').props.disabled, true);
+  h.setReviewVisible(); tree = h.render();
+  assert.equal(find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done').props.disabled, false);
+  h.unmount();
+});
+
+test('task results render as formatted text', async () => {
+  const backend = { demo: false, call: async (command) => command === 'assistant_tasks_list' ? snapshot([task({ result: '**Fix first:** prune rows' })]) : null };
+  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
+  assert.ok(find(tree, node => node.type === MarkdownStub && node.props.text === '**Fix first:** prune rows'));
   h.unmount();
 });

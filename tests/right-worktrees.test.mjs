@@ -73,3 +73,20 @@ test('old service errors get a plain update message and other errors never expos
   assert.equal(worktreeErrorMessage(new Error("unknown variant `worktree_list`, expected one of `session_load`")), "This machine's Deck service is out of date. Update Deck to manage worktrees.");
   assert.equal(worktreeErrorMessage(new Error('git path /private/repo: permission denied')), "Couldn't manage worktrees. Check the service and try again.");
 });
+
+test('Mount is first, mounted checkout is labeled and cannot be removed or pruned', () => {
+  const html = render(React.createElement(WorktreeRow, { item: row(), busy: false, confirm: false, mounted: true, onMount() {}, onOpen() {}, onCopy() {}, onRemove() {}, onPrune() {}, onCancel() {} }));
+  assert.match(html, />Mounted</);
+  assert.match(html, /disabled=""[^>]*>✓ Mounted</);
+  assert.match(html, /disabled=""[^>]*>Remove</);
+  assert.match(html, /disabled=""[^>]*>Prune</);
+});
+
+test('busy chat queues Mount while missing worktrees cannot mount', () => {
+  const props = { busy: false, confirm: false, busyTurn: true, onMount() {}, onOpen() {}, onCopy() {}, onRemove() {}, onCancel() {} };
+  const html = render(React.createElement(WorktreeRow, { ...props, item: row() }));
+  assert.match(html, /Mount after this turn/);
+  assert.ok(html.indexOf('Mount after this turn') < html.indexOf('Open folder'));
+  const missing = render(React.createElement(WorktreeRow, { ...props, item: row({ prunable: true }) }));
+  assert.doesNotMatch(missing, /Mount after this turn|>Mount</);
+});

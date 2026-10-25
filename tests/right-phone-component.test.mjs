@@ -599,3 +599,107 @@ test('the chat hook runs only for a message that stayed queued, and after the co
   assert.ok(block.indexOf('setText(') < hook && block.indexOf('setAttached(') < hook && block.indexOf('askToSteer') < hook, 'it comes last');
   assert.ok(block.indexOf('A message queued while the person holds the phone tells waiting bots to end their turn.') > 0);
 });
+
+test('a lost live picture removes the old screen instead of leaving clickable stale video', async () => {
+  let response = { status: on(), frame: frame(1) };
+  const phone = fakePhone({ view: (...args) => { phone.calls.push(['view',...args]); return Promise.resolve(response); } });
+  const ui = mount({ visible: true, phone });
+  ui.render(); await settle();
+  assert.ok(screen(ui.render()));
+  response = { status: { ...on(), width: 0, height: 0, problem: 'Waiting for a live phone picture…' }, frame: null };
+  await new Promise(resolve => setTimeout(resolve, phoneModel.POLL_MS+30)); await settle();
+  assert.equal(screen(ui.render()), null);
+  assert.match(alertText(ui.render()), /Waiting for a live phone picture/);
+});
+
+
+test('approved simulator toolbar exposes Duo controls and device selection', () => {
+  const html = render({ visible: true, phone: fakePhone(), initial: { ...on(), displays: 2, model: 'iPhone Duo', runtime: '27.1', geometry: { generation: 1, display: 1, orientation: 1, width: 699, height: 1017 } } });
+  for (const label of ['Unfold', 'Rotate', 'Screenshot', 'Controls', 'Choose simulator']) assert.match(html, new RegExp(label));
+  assert.match(html, /iPhone Duo/);
+});
+
+test('fold disables input until the native control settles and keeps the shown geometry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const geometry = { generation: 2, display: 1, orientation: 1, width: 603, height: 1311 };
+  const status = { ...on(), displays: 2, geometry };
+  let finish;
+  const phone = fakePhone({ view: () => Promise.resolve({ status, frame: frame(1) }), control: (control) => { phone.calls.push(['control', control]); return new Promise(resolve => { finish = resolve; }); } });
+  const ui = mount({ phone, visible: true, initial: status });
+  ui.render(); await settle();
+  let tree = ui.render();
+  screen(tree).props.onPointerDown(pointer(250, 300));
+  button(tree, 'Unfold').props.onClick();
+  await settle();
+  screen(tree).props.onPointerUp(pointer(250, 300));
+  tree = ui.render();
+  assert.equal(button(tree, 'Rotate').props.disabled, true);
+  assert.equal(inputs(phone).length, 0);
+  finish({ status: { ...status, geometry: { ...geometry, generation: 3, display: 3 } }, message: 'Phone unfolded.', path: null });
+  await settle();
+  assert.equal(button(ui.render(), 'Rotate').props.disabled, false);
+  assert.deepEqual(phone.calls.find(([name]) => name === 'control'), ['control', { kind: 'fold', folded: false }]);
+});
+
+test('external screen changes discard a pointer started on the old picture', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const geometry = { generation: 1, display: 1, orientation: 1, width: 603, height: 1311 };
+  let status = { ...on(), geometry };
+  let sequence = 1;
+  const phone = fakePhone({ view: () => Promise.resolve({ status, frame: frame(sequence) }) });
+  const ui = mount({ phone, visible: true, initial: status });
+  ui.render(); await settle();
+  screen(ui.render()).props.onPointerDown(pointer(250, 300));
+  status = { ...status, geometry: { ...geometry, display: 3 } }; sequence++;
+  t.mock.timers.tick(phoneModel.POLL_MS); await settle();
+  screen(ui.render()).props.onPointerUp(pointer(250, 300));
+  await settle();
+  assert.equal(inputs(phone).length, 0);
+});
+
+test('replacing the phone API accepts a fresh frame with a lower generation', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const oldStatus = { ...on(), geometry: { generation: 9, display: 1, orientation: 1, width: 603, height: 1311 } };
+  const oldPhone = fakePhone({ view: () => Promise.resolve({ status: oldStatus, frame: frame(12) }) });
+  const ui = mount({ phone: oldPhone, visible: true, initial: oldStatus });
+  ui.render(); await settle();
+  assert.match(screen(ui.render()).props.src, /IMG12/);
+
+  const newStatus = { ...on(), geometry: { generation: 1, display: 1, orientation: 1, width: 603, height: 1311 } };
+  const newPhone = fakePhone({ view: () => Promise.resolve({ status: newStatus, frame: frame(1) }) });
+  ui.set({ phone: newPhone, initial: newStatus });
+  ui.render(); await settle();
+  assert.equal(screen(ui.render()).props.src, 'data:image/jpeg;base64,IMG1');
+});
+
+test('replacing the phone API releases its input queue and drops unsent old inputs', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  let finishOld;
+  const oldPhone = fakePhone({ input: (...args) => {
+    oldPhone.calls.push(['input', ...args]);
+    return new Promise((resolve) => { finishOld = resolve; });
+  } });
+  const ui = mount({ phone: oldPhone, visible: true, initial: on() });
+  ui.render(); await settle();
+  button(ui.render(), 'Home').props.onClick(); await settle();
+  button(ui.render(), 'Lock').props.onClick();
+  const newPhone = fakePhone();
+  ui.set({ phone: newPhone }); ui.render(); await settle();
+  button(ui.render(), 'Home').props.onClick(); await settle();
+  assert.equal(inputs(newPhone).length, 1, 'old API must not block the new API queue');
+  finishOld(on()); await settle();
+  assert.equal(inputs(oldPhone).length, 1, 'queued old API inputs must be discarded');
+});
+
+test('Rotate advances the hardware orientation when the Home screen stays portrait', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const status = { ...on(), orientation: 3, geometry: { generation: 1, display: 1, orientation: 1, width: 603, height: 1311 } };
+  const phone = fakePhone({
+    view: () => Promise.resolve({ status, frame: frame(1) }),
+    control: (control) => { phone.calls.push(['control', control]); return Promise.resolve({ status, message: 'Orientation updated.', path: null }); },
+  });
+  const ui = mount({ phone, visible: true, initial: status });
+  ui.render(); await settle();
+  button(ui.render(), 'Rotate').props.onClick(); await settle();
+  assert.deepEqual(phone.calls.find(([name]) => name === 'control')[1], { kind: 'rotate', orientation: 2 });
+});

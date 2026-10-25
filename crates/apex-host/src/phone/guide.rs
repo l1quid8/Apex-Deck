@@ -24,6 +24,23 @@ Doing (X Y are pixels in the latest look picture, counted from its top-left corn
   launch BUNDLE_ID       Start an app. Restarts it if it's running.
   open URL               Open a link: a web page or a deep link.
 
+Simulator controls (same controls as the Phone tab)
+  devices                List installed model/runtime combinations.
+  device RUNTIME TYPE    Select or create a Deck-owned simulator. Keeps apps/data.
+  fold | unfold          Native Duo hinge. Never switches screen power.
+  rotate portrait|upside-down|landscape-left|landscape-right
+  appearance light|dark
+  text-size increment|decrement|large (or a standard simctl content size)
+  contrast on|off
+  status-bar clean|live
+  screenshot             Save the active display PNG with its pixel dimensions.
+  record start|stop      Save a movie; stops before fold, rotate or switching devices.
+  volume up|down
+  biometric match|fail   Requires enrollment and an active authentication prompt.
+  location LAT LON | location reset
+  stop                   Turn off the shared phone.
+  Fold/rotate wait for a fresh display before allowing more input.
+
 Taking turns
   One driver at a time, and the person always wins.
   If a command says the phone is busy, say so in one short line, then run: phone wait
@@ -148,6 +165,8 @@ mod tests {
     #[test]
     fn status_reads_plainly() {
         let mut status = Status {
+            orientation: None,
+            pixel_width: 0, pixel_height: 0, point_width: 0.0, point_height: 0.0, transitioning: false, input_ready: true, geometry: crate::phone::Geometry { generation: 0, display: 1, orientation: 1, width: 0, height: 0 }, displays: 1, model: None, runtime: None, appearance: None, text_size: None, contrast: None, recording: None, last_capture: None,
             on: false,
             starting: false,
             device: None,
@@ -167,6 +186,7 @@ mod tests {
             "The phone is off. Run phone start to turn it on. Last problem: Xcode isn't installed."
         );
         status = Status {
+            pixel_width: 0, pixel_height: 0, point_width: 0.0, point_height: 0.0, transitioning: false, input_ready: true, geometry: crate::phone::Geometry { generation: 0, display: 1, orientation: 1, width: 0, height: 0 }, displays: 1, model: None, runtime: None, appearance: None, text_size: None, contrast: None, recording: None, last_capture: None,
             on: false,
             starting: true,
             ..status
@@ -176,6 +196,8 @@ mod tests {
             "The phone is turning on. Run phone status again in a few seconds."
         );
         let on = Status {
+            orientation: None,
+            pixel_width: 0, pixel_height: 0, point_width: 0.0, point_height: 0.0, transitioning: false, input_ready: true, geometry: crate::phone::Geometry { generation: 0, display: 1, orientation: 1, width: 0, height: 0 }, displays: 1, model: None, runtime: None, appearance: None, text_size: None, contrast: None, recording: None, last_capture: None,
             on: true,
             starting: false,
             device: Some("Apex Deck Phone 1a2b".into()),

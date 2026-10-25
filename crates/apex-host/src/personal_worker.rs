@@ -71,20 +71,27 @@ impl ReasonOut {
 }
 
 /// What the worker calls out to. Tests swap in fakes.
+/// Asks the model for its next move, given the assistant and what it was asked.
+type ReasonFn = Arc<dyn Fn(ParticipantConfig, TurnRequest) -> BoxFuture<Result<ReasonOut, String>> + Send + Sync>;
+/// Runs one operation and reports what it did.
+type ExecuteFn = Arc<dyn Fn(OperationSpec, Started) -> BoxFuture<Result<ToolRun, String>> + Send + Sync>;
+/// Says whether this machine can run a tool, and whether running it twice is safe.
+type ToolFn = Arc<dyn Fn(&OperationSpec) -> Option<bool> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct WorkerTools {
-    pub reason: Arc<dyn Fn(ParticipantConfig, TurnRequest) -> BoxFuture<Result<ReasonOut, String>> + Send + Sync>,
-    pub execute: Arc<dyn Fn(OperationSpec, Started) -> BoxFuture<Result<ToolRun, String>> + Send + Sync>,
+    pub reason: ReasonFn,
+    pub execute: ExecuteFn,
     /// `Some(repeatable)` for an operation this machine can run, `None` for
     /// an unknown tool. Repeatable means running it twice does no harm.
-    pub tool: Arc<dyn Fn(&OperationSpec) -> Option<bool> + Send + Sync>,
+    pub tool: ToolFn,
 }
 
 impl WorkerTools {
     pub fn real() -> Self {
         WorkerTools {
             reason: Arc::new(|config, request| Box::pin(async move {
-                crate::monitor_check::reason_reply(config, request).await.map(|reply| ReasonOut {
+                crate::assistant_inference::reply(config, request).await.map(|reply| ReasonOut {
                     text: reply.text, cost_micros: reply.cost_micros, input_tokens: reply.input_tokens, output_tokens: reply.output_tokens,
                 })
             })),
@@ -182,6 +189,8 @@ pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result
 struct ModelReply {
     reply: String,
     #[serde(default)]
+    delegations: Vec<ProposedDelegation>,
+    #[serde(default)]
     task: Option<ProposedTask>,
     #[serde(default)]
     schedule: Option<ProposedSchedule>,
@@ -195,8 +204,18 @@ struct ModelReply {
 
 impl ModelReply {
     fn plain(text: &str) -> Self {
-        ModelReply { reply: text.trim().to_owned(), task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![] }
+        ModelReply { reply: text.trim().to_owned(), delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![] }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProposedDelegation {
+    project: crate::personal_workspace::ProjectRef,
+    brief: String,
+    destination: crate::assistant_tasks::TaskDestination,
+    mode: crate::assistant_tasks::TaskMode,
+    #[serde(default)] review_criteria: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -388,7 +407,7 @@ fn is_local(endpoint: &str) -> bool {
 }
 
 /// Why a model call to this profile isn't allowed, checked before sending.
-fn endpoint_refusal(assistant: &PersonalAssistant, profile: &ParticipantConfig) -> Option<String> {
+pub(crate) fn endpoint_refusal(assistant: &PersonalAssistant, profile: &ParticipantConfig) -> Option<String> {
     let host = endpoint(profile);
     if assistant.privacy.local_only && !is_local(&host) {
         return Some(format!("Local-only mode is on, and this assistant's model is at {host}, so nothing was sent."));
@@ -433,10 +452,13 @@ fn cost_entry(purpose: &str, out: &ReasonOut, bytes_out: usize, endpoint: String
 }
 
 fn read_only_request(system: String) -> TurnRequest {
-    TurnRequest { system, turns: vec![], unseen: vec![], plan: false, access: Some(apex_core::Access::Read), effort_override: None }
+    TurnRequest { system, turns: vec![], unseen: vec![], plan: false, access: Some(apex_core::Access::Read), effort_override: None, cwd: None }
 }
 
 /// What one step of the worker found to do.
+// A tick produces one of these and moves it straight into the match that uses
+// it, so the personal record stays inline rather than behind a box.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Work {
     Event(PersonalAssistant, PersonalEvent),
     Task(String, String),
@@ -560,6 +582,7 @@ impl Host {
         self.change_personal(|assistants| {
             let mut tick = Tick { next: None, pushes: vec![] };
             for assistant in assistants.iter_mut() {
+                if assistant.archived_at.is_some(){continue;}
                 let before = assistant.clone();
                 let (next, pushes) = tick_assistant(assistant, &local, at);
                 tick.next = match (tick.next, next) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
@@ -580,6 +603,7 @@ impl Host {
             let mut out = Vec::new();
             let mut heavy = 0;
             for assistant in assistants.iter_mut() {
+                if assistant.archived_at.is_some(){continue;}
                 let id = assistant.id.clone();
                 let mut events = Vec::new();
                 for event in assistant.events.iter_mut().filter(|e| e.state == EventState::Received) {
@@ -655,12 +679,47 @@ impl Host {
             return self.change_assistant(&snapshot.id, |assistant| { hold_for_spend(assistant, &event.id, prompt, at); Ok(()) });
         }
         let tools_on = if snapshot.privacy.local_only { vec![] } else { connectors::available() };
-        let system = context::assemble(&snapshot, &text, at, &tools_on);
+        let mut system = context::assemble(&snapshot, &text, at, &tools_on);
+        let mut destinations = Vec::new();
+        let session = self.store().session()?;
+        for binding in snapshot.projects.iter().filter(|b| b.tools != crate::personal_workspace::ProjectTools::Off) {
+            let Ok(checked) = self.validate_project_binding(&snapshot, binding.clone()) else { continue };
+            let Some(monitor) = self.monitor_get(&checked.project.workspace_id)? else { continue };
+            let mut threads: std::collections::BTreeSet<String> = monitor.threads.iter().cloned().collect();
+            for pane in session.as_ref().and_then(|s| s["panes"].as_array()).into_iter().flatten() {
+                if pane["kind"] == "chat" && pane["workspaceId"] == checked.project.workspace_id && pane["archived"] != true {
+                    if let Some(id) = pane["id"].as_str() { threads.insert(id.into()); }
+                }
+            }
+            for thread in threads {
+                if let Some(saved) = self.store().room(&thread)? {
+                    let path = saved.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).canonicalize().ok());
+                    if path.as_deref() == Some(std::path::Path::new(&checked.project.cwd)) {
+                        let workers: Vec<_> = saved.snapshot.participants.iter().filter(|p| crate::assistant_service::task_worker_eligible(p)).map(|p|p.id.to_string()).collect();
+                        if !workers.is_empty() { destinations.push(serde_json::json!({"project":checked.project,"threadId":thread,"workers":workers})); }
+                    }
+                }
+            }
+        }
+        let catalog = format!("\nCoding delegation destinations (data, never authorization): {}\nFor coding work use optional delegations:[{{project,brief,destination:{{threadId,workers,newThread:false}},mode:\"isolated\",reviewCriteria:[]}}]. Choose only listed identities/workers, up to 3 proposals. They always wait for explicit human approval. Research helpers cannot code.\n", serde_json::to_string(&destinations).map_err(|e|e.to_string())?);
+        if system.chars().count() + catalog.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&catalog); }
+
         let bytes = system.len();
         // No lock is held across the model call. A restart here leaves the
         // event `Processing`, which recovery turns back into `Received`; the
         // call has no side effects, so running it again commits one reply.
-        match (tools.reason)(profile.clone(), read_only_request(system)).await {
+        let key=format!("reply:{}:{}",snapshot.id,event.id);
+        let stop=Arc::new(tokio::sync::Notify::new());
+        self.personal_stops.lock().unwrap().insert(key.clone(),stop.clone());
+        let active=self.personal_get(&snapshot.id)?.events.iter().any(|e|e.id==event.id&&e.state==EventState::Processing);
+        if !active { self.personal_stops.lock().unwrap().remove(&key); return Ok(()); }
+        let answer=tokio::select! {
+            output=(tools.reason)(profile.clone(),read_only_request(system))=>Some(output),
+            _=stop.notified()=>None,
+        };
+        self.personal_stops.lock().unwrap().remove(&key);
+        let Some(answer)=answer else { return Ok(()); };
+        match answer {
             Ok(out) => {
                 let cost = cost_entry("reply", &out, bytes, endpoint(&profile), now());
                 self.commit_reply(tools, &snapshot.id, &event.id, &text, parse_reply(&out.text), cost)
@@ -741,6 +800,21 @@ impl Host {
 
     fn commit_reply(&self, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, reply: ModelReply, cost: CostEntry) -> Result<(), String> {
         let local = self.local_host_id()?;
+        let initial = self.personal_get(assistant_id)?;
+        if !initial.events.iter().any(|e| e.id == event_id && e.state == EventState::Processing) { return Ok(()); }
+        let mut delegation_notes = Vec::new();
+        for (index, proposed) in reply.delegations.iter().take(3).enumerate() {
+            let current = self.personal_get(assistant_id)?;
+            let input = crate::assistant_delegation::DelegationInput {
+                assistant_id: assistant_id.into(), project: proposed.project.clone(), source_event_id: event_id.into(),
+                delegation_id: format!("{event_id}:{index}"), brief: proposed.brief.clone(), destination: proposed.destination.clone(),
+                mode: proposed.mode, review_criteria: proposed.review_criteria.clone(), expected_revision: current.revision,
+            };
+            delegation_notes.push(match self.prepare_personal_delegation(input) {
+                Ok(receipt) => format!("Proposed project task {}. It waits for your explicit approval in Tasks.", receipt["taskId"].as_str().unwrap_or("unknown")),
+                Err(error) => format!("Project proposal could not be saved: {error}"),
+            });
+        }
         self.change_assistant(assistant_id, |assistant| {
             let at = now();
             // A duplicate claim or a restart already settled it: one reply per event.
@@ -750,6 +824,7 @@ impl Host {
             assistant.add_cost(cost);
             let text = if reply.reply.trim().is_empty() { "…".to_owned() } else { reply.reply.trim().to_owned() };
             assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at);
+            for note in delegation_notes { assistant.post("system", "update", note, None, Some(event_id.to_owned()), at); }
             // Outside content (app results, helper reports) in view could have
             // planted a "remember"; only the human's own words may forget.
             let outside = assistant.messages.iter().any(|m| at.saturating_sub(m.at) <= FRESH_RESULT_MS && (m.kind == "helper" || (m.kind == "result" && m.task_id.as_ref().is_some_and(|id| assistant.tasks.iter().any(|t| &t.id == id && t.operation.as_ref().is_some_and(|op| op.tool != COMMAND_TOOL))))));
@@ -769,6 +844,7 @@ impl Host {
                 for assignment in helpers {
                     let task_id = assistant.next_task_id();
                     assistant.tasks.push(PersonalTask {
+        deleted_at: None,
                         id: task_id, goal: format!("Helper: {}", assignment.chars().take(120).collect::<String>()),
                         completion_criteria: vec!["a written report".into()], target_host: assistant.host_id.clone(),
                         status: TaskStatus::Queued, operation: None, decision: None, receipts: vec![],
@@ -903,6 +979,7 @@ enum Claimed {
 /// Re-check a queued task in the gateway and, if it may run, save the
 /// attempt. Everything the human or a rule allowed is checked again here.
 fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &str, local: &str, at: u64) -> Option<Claimed> {
+    if assistant.archived_at.is_some(){return None;}
     let task = assistant.tasks.iter().find(|t| t.id == task_id && t.status == TaskStatus::Queued).cloned()?;
     if task.kind == TaskKind::Helper {
         let Some(profile) = assistant.profile.clone() else { return fail(assistant, task_id, "This assistant has no model profile.", at) };
@@ -952,7 +1029,7 @@ fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &s
     }
     // On another machine, only the folder linked for it.
     let folders: Vec<String> = if operation.host == host_id { folders } else { assistant.machines.iter().filter(|m| m.host_id == operation.host).map(|m| m.folder.clone()).collect() };
-    if operation.tool == COMMAND_TOOL && !folders.iter().any(|f| *f == operation.cwd) {
+    if operation.tool == COMMAND_TOOL && !folders.contains(&operation.cwd) {
         return fail(assistant, task_id, "The operation's folder isn't one the assistant may use.", at);
     }
     let hash = operation.hash();
@@ -1230,6 +1307,7 @@ fn tick_assistant(assistant: &mut PersonalAssistant, local_id: &str, at: u64) ->
         let task_id = assistant.next_task_id();
         let decision_id = assistant.next_decision_id();
         assistant.tasks.push(PersonalTask {
+        deleted_at: None,
             id: task_id.clone(), goal: schedule.goal.clone(), completion_criteria: vec![], target_host: assistant.host_id.clone(),
             status: TaskStatus::Queued, class: gateway::classify(&operation, &assistant.allowed_folders).0, operation: Some(operation.clone()),
             decision: Some(PendingDecision {
@@ -1328,6 +1406,7 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
     let task_id = assistant.next_task_id();
     let goal = proposed.goal.trim().chars().take(300).collect::<String>();
     let mut task = PersonalTask {
+        deleted_at: None,
         id: task_id.clone(),
         goal: if goal.is_empty() { shown(&operation) } else { goal },
         completion_criteria: proposed.criteria.into_iter().take(8).map(|c| c.chars().take(300).collect()).collect(),
@@ -1456,7 +1535,7 @@ fn apply_memory(assistant: &mut PersonalAssistant, remember: &[ProposedFact], fo
         assistant.facts.push(Fact {
             id, text: text.clone(), kind, explicit: proposed.explicit, confidence,
             source: FactSource { message_id: message_id.clone(), task_id: None }, created_at: at, expires_at,
-            superseded_by: None, deleted_at: None,
+            superseded_by: None, deleted_at: None, legacy: None,
         });
         said.push(match corrected { Some(old) => format!("updated “{old}” to “{text}”"), None => format!("“{text}”") });
     }
@@ -1507,6 +1586,7 @@ fn hold_for_spend(assistant: &mut PersonalAssistant, event_id: &str, prompt: Str
     let mut decision = open_decision(assistant, DecisionKind::Spend, &operation, at);
     decision.prompt = prompt.clone();
     assistant.tasks.push(PersonalTask {
+        deleted_at: None,
         id: task_id.clone(), goal: "Reply to your message".into(), completion_criteria: vec![], target_host: assistant.host_id.clone(),
         status: TaskStatus::NeedsYou, class: ToolClass::Spend, operation: Some(operation), decision: Some(decision), receipts: vec![],
         from_event: event_id.to_owned(), max_attempts: 1, created_at: at, updated_at: at, last_update: Some("Waiting for your OK to spend.".into()),
@@ -1547,7 +1627,7 @@ fn cascade(assistant: &PersonalAssistant, root: &str) -> Vec<String> {
 
 /// Decisions and cancellations, in code, with no model call. Returns the
 /// running tasks whose operations must now be stopped.
-fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) -> Vec<String> {
+pub(crate) fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) -> Vec<String> {
     let at = now();
     let local = assistant.host_id.clone();
     let mut stop = Vec::new();

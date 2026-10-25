@@ -65,7 +65,7 @@ export function voiceCallView(input: {
               ? `${setup.installing.stage} · ${voiceSize(setup.installing.downloaded)} of ${voiceSize(setup.installing.total)}`
               : null,
             note: !canSetUp
-              ? "Only a phone with Full access can set this up. Change it on the Mac in Settings → Paired devices."
+              ? "Only a phone with Full access can set this up. Change it on the Mac in Settings → Phones."
               : setup.failed
                 ? `Setup stopped: ${setup.failed}`
                 : null,

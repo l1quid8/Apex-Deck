@@ -1,4 +1,5 @@
-import type { ParticipantBackend, RoomEvent, ThreadStatus } from "./types";
+import type { Signal } from "./attention";
+import type { PaneStatus, ParticipantBackend, RoomEvent, ThreadStatus } from "./types";
 
 /** "Opus", "Opus and Codex", "Opus, Codex and Gemini". */
 export function joinNames(names: string[]): string {
@@ -40,6 +41,14 @@ export function threadStatusOf(bots: { id: string; display_name: string }[], wor
     waiting: bots.filter((bot) => asking.includes(bot.id)).map((bot) => bot.display_name),
     who: bots.map((bot) => bot.display_name),
   };
+}
+
+/** A thread's lifecycle is explicit: silence never means its work has ended. */
+export function threadPaneStatus(status: ThreadStatus | undefined, signal: Signal | undefined): PaneStatus {
+  if (status?.waiting.length || signal?.blocking) return "needs_input";
+  // A new turn supersedes attention left over from the previous round.
+  if (status?.busy || status?.replying.length) return "working";
+  return signal?.kind ?? "idle";
 }
 
 /** Time since a turn began: 8s, 1m 05s. */

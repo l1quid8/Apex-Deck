@@ -69,14 +69,25 @@ pub struct Daemon {
     /// Pairing invitations handed out since this daemon started.
     #[cfg(feature = "remote")]
     pub invites: Arc<crate::pairing::invites::Invites>,
-    /// The iroh endpoint, once `serve --remote` started it.
+    /// The iroh endpoint, on or off while this daemon keeps running.
     #[cfg(feature = "remote")]
-    pub endpoint: std::sync::OnceLock<iroh::Endpoint>,
+    pub remote: crate::remote_control::RemoteController,
 }
 
 impl Daemon {
     /// Open the host on `paths` with a new boot id. Call inside the runtime.
     pub fn start(paths: &apex_host::HostPaths, token: Option<String>) -> Result<Arc<Daemon>, String> {
+        #[cfg(test)]
+        let host = apex_host::test_support::isolated_host_assuming_verified_ui(paths.clone(),tokio::runtime::Handle::current());
+        // Construction is broker-only unless this process's own main (the
+        // test fixture binary) opted in; compiling the feature opts nothing in.
+        #[cfg(all(not(test), feature = "test-support"))]
+        let host = if crate::test_support::assumed() {
+            apex_host::test_support::isolated_host_assuming_verified_ui(paths.clone(),tokio::runtime::Handle::current())
+        } else {
+            Host::try_new(paths.clone(), tokio::runtime::Handle::current())?
+        };
+        #[cfg(all(not(test), not(feature = "test-support")))]
         let host = Host::try_new(paths.clone(), tokio::runtime::Handle::current())?;
         // The daemon's arguments (`--data-dir PATH`) are not workspaces.
         host.set_startup_folders(Vec::new());
@@ -85,10 +96,23 @@ impl Daemon {
         host.start_monitor_clock()?;
         // The worker stamps operations with this machine's id, so make it first.
         let host_id = crate::identity::host_id(&paths.data)?;
-        host.start_personal_worker()?;
+        #[cfg(feature="test-support")]
+        if crate::test_support::assumed() && crate::test_support::deterministic_images(){
+            apex_host::test_support::register_deterministic_avatar_adapter(&host)?;
+        }
+        // The worker needs the protected assistant list, which the broker only
+        // serves to a build it has pinned. Exiting here would happen before the
+        // socket is bound, leaving the window on its splash screen with nothing
+        // to act on. Start without the worker instead; it returns once the
+        // broker is installed or re-pinned for this build.
+        if let Err(why) = host.start_personal_worker() {
+            eprintln!(
+                "[apex-deck] personal assistant worker unavailable ({why}); starting without it. Install or re-pin the provenance broker for this build."
+            );
+        }
         Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
-            #[cfg(feature = "remote")] endpoint: Default::default(),
+            #[cfg(feature = "remote")] remote: crate::remote_control::RemoteController::serving(),
         }))
     }
 }
@@ -314,7 +338,7 @@ where
     let mut welcome = json!({ "id": hello.id, "ok": {
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
         // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
-        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "personal_assistant", "voice_turn_correlation_v1"],
+        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1"],
         // The exact build, so a UI can tell two builds of the same version apart.
         "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
     } });
@@ -528,7 +552,7 @@ where
                         match need {
                             Ok(need) => {
                                 in_flight += 1;
-                                run(Arc::clone(&daemon.host), id, command, need, replies_tx.clone(), hello.client_capability);
+                                run(Arc::clone(&daemon.host), id, *command, need, replies_tx.clone(), hello.client_capability);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -556,7 +580,7 @@ where
             Some((id,need,room,result))=voice_done.recv()=>{
                 in_flight -= 1;
                 let allowed = reading
-                    && guard.as_ref().map_or(true, |g| {
+                    && guard.as_ref().is_none_or(|g| {
                         g.device()
                             .is_some_and(|d| authority::check(&d, &need).is_ok())
                     });
@@ -580,8 +604,8 @@ where
             }
             Some(line)=voice.next_line(), if reading=>{
                 let denied = voice.room().is_some_and(|room| {
-                    guard.as_ref().map_or(false, |g| {
-                        g.device().map_or(true, |d| {
+                    guard.as_ref().is_some_and(|g| {
+                        g.device().is_none_or(|d| {
                             authority::check(
                                 &d,
                                 &authority::Need::Tier(Tier::Chat, authority::Scope::Thread(room.into())),
@@ -679,11 +703,18 @@ fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>
 #[derive(Debug, serde::Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
 enum DevicesRequest {
-    DevicesList {},
-    DevicesAdd { id: String, label: String, tier: Tier, threads: Option<Threads>, #[serde(default)] restore: bool },
-    DevicesSetTier { id: String, tier: Tier },
-    DevicesSetThreads { id: String, threads: Threads },
-    DevicesRevoke { id: String },
+    // The variants are named for the request and the wire command carries the
+    // `devices_` prefix the CLI and the phone send.
+    #[serde(rename = "devices_list")]
+    List {},
+    #[serde(rename = "devices_add")]
+    Add { id: String, label: String, tier: Tier, threads: Option<Threads>, #[serde(default)] restore: bool },
+    #[serde(rename = "devices_set_tier")]
+    SetTier { id: String, tier: Tier },
+    #[serde(rename = "devices_set_threads")]
+    SetThreads { id: String, threads: Threads },
+    #[serde(rename = "devices_revoke")]
+    Revoke { id: String },
 }
 
 /// Run a `devices_*` request given as `{ "cmd", "args" }`, as the CLI does
@@ -695,18 +726,20 @@ pub fn manage_json(devices: &Devices, request: Value) -> Result<Value, String> {
 fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
     let value = |v: Result<Device, String>| v.and_then(|d| serde_json::to_value(d).map_err(|e| e.to_string()));
     match request {
-        DevicesRequest::DevicesList {} => serde_json::to_value(devices.list()?).map_err(|e| e.to_string()),
-        DevicesRequest::DevicesAdd { id, label, tier, threads, restore } => value(devices.add(&id, &label, tier, threads.unwrap_or(Threads::ALL), restore)),
-        DevicesRequest::DevicesSetTier { id, tier } => value(devices.set_tier(&id, tier)),
-        DevicesRequest::DevicesSetThreads { id, threads } => value(devices.set_threads(&id, threads)),
-        DevicesRequest::DevicesRevoke { id } => devices.revoke(&id).map(|()| Value::Null),
+        DevicesRequest::List {} => serde_json::to_value(devices.list()?).map_err(|e| e.to_string()),
+        DevicesRequest::Add { id, label, tier, threads, restore } => value(devices.add(&id, &label, tier, threads.unwrap_or(Threads::ALL), restore)),
+        DevicesRequest::SetTier { id, tier } => value(devices.set_tier(&id, tier)),
+        DevicesRequest::SetThreads { id, threads } => value(devices.set_threads(&id, threads)),
+        DevicesRequest::Revoke { id } => devices.revoke(&id).map(|()| Value::Null),
     }
 }
 
 enum Request {
     Voice(crate::voice::session::VoiceRequest),
     VoiceFrame(Value),
-    Host(Command),
+    // Boxed: `Command` carries every field of every host request, and this
+    // enum is built for each frame the daemon reads.
+    Host(Box<Command>),
     Devices(DevicesRequest),
     Gateway(crate::gateway_cli::KeysRequest),
     GatewayAdmin(crate::gateway_admin::Request),
@@ -785,7 +818,7 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
         return Ok((id, Request::Pairing(request)));
     }
     let command = Command::from_json(value).map_err(|why| refusal(json!(id), why))?;
-    Ok((id, Request::Host(command)))
+    Ok((id, Request::Host(Box::new(command))))
 }
 
 struct Hello {
@@ -865,14 +898,14 @@ mod tests {
 
     fn daemon() -> (Arc<Daemon>, TempDir) {
         let data = temp_dir();
-        let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
+        let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
         let devices = Arc::new(Devices::open(&data.0));
         let daemon = Daemon {
             voice: crate::voice::VoiceServer::new(&data.0),
             host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices,
             gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
-            #[cfg(feature = "remote")] endpoint: Default::default(),
+            #[cfg(feature = "remote")] remote: Default::default(),
         };
         (Arc::new(daemon), data)
     }
@@ -957,7 +990,7 @@ mod tests {
 
     /// What a welcome lists; phone voice calls only where this daemon can run the helper.
     fn hello_capabilities() -> Value {
-        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "personal_assistant", "voice_turn_correlation_v1"]);
+        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1"]);
         if crate::voice::platform_support().is_ok() {
             caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
         }
@@ -1617,13 +1650,13 @@ mod tests {
         daemon.devices.revoke(&phone).unwrap();
         let restarted = Arc::new(Daemon {
             voice: crate::voice::VoiceServer::new(&data.0),
-            host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
+            host: apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
             host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
             gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
-            endpoint: Default::default(),
+            remote: Default::default(),
         });
         let (mut client, session) = connect_device(&restarted, &phone, 1 << 16);
         assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));
@@ -1670,6 +1703,7 @@ mod tests {
             json!({ "id": 1, "cmd": "pair_approve", "args": { "invitation": inv, "claim_id": inv } }),
             json!({ "id": 1, "cmd": "pair_cancel", "args": { "invitation": inv } }),
             json!({ "id": 1, "cmd": "remote_info", "args": {} }),
+            json!({ "id": 1, "cmd": "remote_set", "args": { "enabled": true } }),
             json!({ "id": 1, "cmd": "remote_advertise", "args": { "addrs": ["evil.example:1"] } }),
         ]
     }
@@ -1734,13 +1768,13 @@ mod tests {
 
         let restarted = Arc::new(Daemon {
             voice: crate::voice::VoiceServer::new(&data.0),
-            host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
+            host: apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
             host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
             gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
-            endpoint: Default::default(),
+            remote: Default::default(),
         });
         let mut local = connect_to(&restarted, Trust::Local);
         local.hello().await;

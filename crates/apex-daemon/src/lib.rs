@@ -5,6 +5,7 @@ pub mod authority;
 pub mod build_info;
 pub mod cli;
 pub mod devices;
+pub mod entry;
 pub mod devices_cli;
 pub mod files;
 pub mod gateway_admin;
@@ -23,10 +24,16 @@ pub mod phone_cli;
 pub mod protocol;
 #[cfg(feature = "remote")]
 pub mod remote;
+#[cfg(feature = "remote")]
+pub mod remote_control;
 pub mod remote_config;
+pub mod remote_settings;
 pub mod serve;
 pub mod signals;
 pub mod stdio;
 pub mod websocket;
 
 pub mod voice;
+
+#[cfg(feature = "test-support")]
+pub mod test_support;

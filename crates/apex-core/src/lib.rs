@@ -20,7 +20,7 @@ mod view;
 mod write_gate;
 pub mod work_steps;
 
-pub use concurrent::{ConcurrentRoom, TurnBatch, TurnStartHook};
+pub use concurrent::{copy_turn_line, read_only_line, ConcurrentRoom, CopyProvider, TurnBatch, TurnStartHook};
 pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
 pub use mention::{mention_clash, mention_for, mentioned_words, mentions_handle, names, parse_mentions, MentionTarget};
 pub use participant::{
@@ -30,7 +30,7 @@ pub use room::{ChangeRecord, Compaction, Room, RoomEvent, RoomOptions, RoomSnaps
 pub use write_gate::{CheckoutWriteGate, WriteLease, WriteWaitError};
 pub use types::{
     Access, AgentTool, Backend, ContextUse, MediaSettings, Message, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage, Speed,
-    PlanWindow, Speaker, TokenTotals,
+    PlanWindow, ResetCredit, ResetCredits, Speaker, TokenTotals,
 };
 pub use view::{render_prompt, render_view, render_view_after, system_prompt, Role, ViewTurn, PASS_TOKEN};
 pub use view::{ClientCapabilities, GeneratedUiClientCapability, GeneratedUiCapability};

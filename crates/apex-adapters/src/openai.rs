@@ -7,8 +7,8 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::api_tools::{self, ToolBox, ToolCall};
 use crate::Utf8Chunks;
@@ -19,6 +19,10 @@ const TOOL_ROUNDS_MAX: usize = 100;
 const REASONING_KEPT: usize = 32;
 /// Most tool calls taken from one answer.
 const TOOL_CALLS_MAX: usize = 64;
+/// How long a model that turned tools down goes without them. Long enough not
+/// to re-ask on every reply, short enough that a proxy having a bad minute or
+/// a corrected settings do-over gets another chance without reopening the chat.
+const TOOLS_RETRY_AFTER: Duration = Duration::from_secs(600);
 
 /// A participant backed by an HTTP API that speaks the OpenAI-style chat
 /// completions format with server-sent event streaming.
@@ -35,8 +39,11 @@ pub struct OpenAiCompatParticipant {
     /// How often a queued video is checked on.
     poll: std::time::Duration,
     tools: Option<Arc<ToolBox>>,
-    /// The server turned tools down once; later replies go without them.
-    tools_refused: AtomicBool,
+    /// Until when the server's refusal of tools is honoured. Set for
+    /// `TOOLS_RETRY_AFTER` after a refusal rather than forever, so one bad
+    /// reply cannot leave the chat without a checklist for good. Changing this
+    /// bot's settings builds a new participant, which clears it.
+    tools_off_until: Mutex<Option<Instant>>,
     /// The thinking behind this bot's recent replies, by reply text.
     /// DeepSeek's own API refuses a request with tools unless the thinking
     /// of earlier replies is sent back with them.
@@ -52,7 +59,7 @@ impl OpenAiCompatParticipant {
             attachment_roots: Vec::new(),
             poll: std::time::Duration::from_secs(5),
             tools: None,
-            tools_refused: AtomicBool::new(false),
+            tools_off_until: Mutex::new(None),
             reasoning: Mutex::new(VecDeque::new()),
         }
     }
@@ -310,9 +317,9 @@ impl Participant for OpenAiCompatParticipant {
         // only the question about what the person will ask next.
         let next_steps = request.turns.last().is_some_and(|t| t.role == Role::User && t.content == apex_core::next_steps::ASK);
         let mut turn = match &self.tools {
-            Some(tools) if !next_steps && !self.tools_refused.load(Ordering::SeqCst) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
+            Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
                 let access = request.access.unwrap_or(self.config.access);
-                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress))
+                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_cwd(request.cwd))
             }
             _ => None,
         };
@@ -392,10 +399,14 @@ impl Participant for OpenAiCompatParticipant {
                     continue;
                 }
                 // A model that doesn't take tools: answer without them,
-                // and say so, so it doesn't pretend.
+                // and say so, so it doesn't pretend. Only a reply that names
+                // tools as unsupported lands here; any other 400 fails the
+                // turn with its own message below.
                 if turn.is_some() && round == 0 && matches!(status.as_u16(), 400 | 404 | 422 | 501) && refuses_tools(&lower) {
-                    eprintln!("[apex-deck] {model} turned tools down; answering without them: {}", text.chars().take(200).collect::<String>());
-                    self.tools_refused.store(true, Ordering::SeqCst);
+                    let now = Instant::now();
+                    eprintln!("[apex-deck] {model} turned tools down; answering without them until {:?} from now: {}", TOOLS_RETRY_AFTER, text.chars().take(200).collect::<String>());
+                    let off = cooldown_after_error(*self.tools_off_until.lock().unwrap(), status.as_u16(), &lower, now);
+                    *self.tools_off_until.lock().unwrap() = off;
                     turn = None;
                     strip_reasoning(&mut messages);
                     messages[0]["content"] = json!(format!("{system}{}", api_tools::NO_TOOLS));
@@ -619,6 +630,28 @@ fn refuses_tools(lower: &str) -> bool {
     about_tools && refusal.iter().any(|r| lower.contains(r))
 }
 
+/// What a failed reply leaves the cooldown at. A model that says outright it
+/// has no tools waits out [`TOOLS_RETRY_AFTER`]. Anything else — a
+/// context-length 400 that merely mentions functions, a schema complaint, a
+/// server error — leaves the cooldown exactly as it was, whether that is
+/// nothing or a refusal from a reply or two ago.
+fn cooldown_after_error(was: Option<Instant>, status: u16, lower: &str, now: Instant) -> Option<Instant> {
+    if matches!(status, 400 | 404 | 422 | 501) && refuses_tools(lower) {
+        Some(now + TOOLS_RETRY_AFTER)
+    } else {
+        was
+    }
+}
+
+/// Whether a refusal of tools still stands. The refusal is a cooldown, not a
+/// verdict: once it runs out the next reply tries tools again.
+fn tools_allowed(off_until: Option<Instant>, now: Instant) -> bool {
+    match off_until {
+        Some(until) => now >= until,
+        None => true,
+    }
+}
+
 /// DeepSeek's own API, the one that wants earlier thinking sent back.
 fn is_deepseek(base_url: &str) -> bool {
     reqwest::Url::parse(base_url.trim()).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).as_deref() == Some("api.deepseek.com")
@@ -669,6 +702,34 @@ mod tests {
     }
 
     #[test]
+    fn tools_stay_off_until_the_cooldown_runs_out() {
+        let now = Instant::now();
+        let off = cooldown_after_error(None, 400, "this model does not support tools", now);
+        assert_eq!(off, Some(now + TOOLS_RETRY_AFTER), "a refusal starts the cooldown");
+        for waited in [Duration::ZERO, Duration::from_secs(1), TOOLS_RETRY_AFTER - Duration::from_millis(1)] {
+            assert!(!tools_allowed(off, now + waited), "tools stay off after {waited:?}");
+        }
+        assert!(tools_allowed(off, now + TOOLS_RETRY_AFTER), "the first reply after it asks again");
+        // A second refusal while the cooldown runs pushes it out from that point.
+        let again = cooldown_after_error(off, 422, "function calling is not supported for this model", now + Duration::from_secs(60));
+        assert_eq!(again, Some(now + Duration::from_secs(60) + TOOLS_RETRY_AFTER));
+    }
+
+    #[test]
+    fn an_unrelated_400_leaves_tools_on() {
+        let now = Instant::now();
+        let context = "this model's maximum context length is 8192 tokens. however, you requested 9000 tokens (8000 in the messages, 1000 in the functions)";
+        let off = cooldown_after_error(None, 400, context, now);
+        assert_eq!(off, None, "a context-length 400 is not a refusal");
+        assert!(tools_allowed(off, now), "so tools stay on");
+        assert_eq!(cooldown_after_error(None, 400, "invalid schema for function 'grep'", now), None);
+        assert_eq!(cooldown_after_error(None, 500, "tool server unreachable", now), None);
+        // And an unrelated error never shortens a cooldown that is already running.
+        let running = Some(now + TOOLS_RETRY_AFTER);
+        assert_eq!(cooldown_after_error(running, 400, context, now + Duration::from_secs(5)), running);
+    }
+
+    #[test]
     fn tool_calls_without_an_index_are_kept_apart_by_id() {
         let one = parse_sse_line(r#"data: {"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"read_file","arguments":"{}"},"extra_content":{"google":{"thought_signature":"sig"}}}]}}]}"#);
         assert_eq!(one, vec![SseLine::Tool { index: None, id: Some("a".into()), name: Some("read_file".into()), arguments: "{}".into(), extra: Some(r#"{"google":{"thought_signature":"sig"}}"#.into()) }]);
@@ -690,7 +751,7 @@ mod tests {
 
     #[test]
     fn effort_is_only_in_the_request_when_set() {
-        let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false };
+        let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false, cwd: None };
         assert!(request_body("m", None, &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert!(request_body("m", Some("  "), &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert_eq!(request_body("m", Some("high"), &request, &[]).unwrap()["reasoning_effort"], "high");
@@ -737,7 +798,7 @@ mod tests {
         std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
         let text = format!("Describe this\nAttached image: {}", path.display());
         let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
-            turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false };
+            turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false, cwd: None };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][0]["type"], "text");
@@ -752,7 +813,7 @@ mod tests {
         let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text.clone() },
                 apex_core::ViewTurn { role: Role::Assistant, content: text.clone() }],
-            unseen: vec![apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false };
+            unseen: vec![apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false, cwd: None };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");

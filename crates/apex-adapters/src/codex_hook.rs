@@ -441,7 +441,7 @@ mod tests {
     }
 
     fn blocked(printed: &str) -> bool {
-        serde_json::from_str::<Value>(printed).map_or(false, |out| out["hookSpecificOutput"]["permissionDecision"] == "deny")
+        serde_json::from_str::<Value>(printed).is_ok_and(|out| out["hookSpecificOutput"]["permissionDecision"] == "deny")
     }
 
     #[cfg(unix)]

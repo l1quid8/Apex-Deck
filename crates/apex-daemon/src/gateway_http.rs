@@ -468,6 +468,7 @@ pub fn resolve_model_target(
             access: Access::Read,
             effort,
             speed: None,
+            voice: None,
             appearance: None,
             media: None,
         };
@@ -496,6 +497,7 @@ pub fn resolve_model_target(
             access: Access::Read,
             effort,
             speed: None,
+            voice: None,
             appearance: None,
             media: None,
         };
@@ -1046,6 +1048,7 @@ async fn handle_chat_completions(
         turns: flattened.turns,
         unseen: Vec::new(),
         plan: false,
+        cwd: None,
     };
 
     let completion_id = format!("chatcmpl-{}", identity::random_hex(12));

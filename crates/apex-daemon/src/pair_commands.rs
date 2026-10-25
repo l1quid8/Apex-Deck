@@ -29,6 +29,11 @@ pub enum PairRequest {
     PairCancel { invitation: String },
     RemoteInfo {},
     RemoteAdvertise { addrs: Vec<String> },
+    RemoteSet {
+        enabled: bool,
+        #[serde(default)]
+        import: bool,
+    },
 }
 
 fn chat() -> Tier {
@@ -56,7 +61,8 @@ impl Refusal {
 /// Run `request` for a local session.
 pub async fn run(daemon: Arc<Daemon>, request: PairRequest) -> Result<Value, Refusal> {
     match request {
-        PairRequest::RemoteInfo {} => Ok(info(&daemon)),
+        PairRequest::RemoteInfo {} => Ok(info(&daemon).await),
+        PairRequest::RemoteSet { enabled, import } => set_remote(&daemon, enabled, import).await,
         PairRequest::RemoteAdvertise { addrs } => {
             let data = daemon.data.clone();
             remote_config::check_all(&addrs).map_err(|why| Refusal::new(why, "bad_address"))?;
@@ -70,16 +76,29 @@ pub async fn run(daemon: Arc<Daemon>, request: PairRequest) -> Result<Value, Ref
     }
 }
 
-/// `remote_info`: `{enabled, endpoint_id, port, advertise}`. Off, `port` is
-/// the one saved for the next start (or null).
-fn info(daemon: &Daemon) -> Value {
-    let advertise = remote_config::advertised(&daemon.data);
+/// `remote_info`: `{enabled, endpoint_id, port, advertise}`. It reads the
+/// controller's current state. Off, `port` is the one saved for the next
+/// start (or null).
+async fn info(daemon: &Daemon) -> Value {
     #[cfg(feature = "remote")]
-    if let Some(endpoint) = daemon.endpoint.get() {
-        let port = endpoint.bound_sockets().iter().map(|a| a.port()).find(|p| *p != 0);
-        return json!({ "enabled": true, "endpoint_id": endpoint.id().to_string(), "port": port, "advertise": advertise });
+    {
+        return daemon.remote.snapshot(&daemon.data).await;
     }
-    json!({ "enabled": false, "endpoint_id": null, "port": remote_config::port(&daemon.data), "advertise": advertise })
+    #[cfg(not(feature = "remote"))]
+    {
+        json!({ "enabled": false, "endpoint_id": null, "port": remote_config::port(&daemon.data), "advertise": remote_config::advertised(&daemon.data) })
+    }
+}
+
+/// `remote_set`. An import is applied only when the daemon has no saved setting.
+#[cfg(feature = "remote")]
+async fn set_remote(daemon: &Arc<Daemon>, enabled: bool, import: bool) -> Result<Value, Refusal> {
+    daemon.remote.set(daemon, enabled, import).await.map_err(|why| Refusal::new(why, "io"))
+}
+
+#[cfg(not(feature = "remote"))]
+async fn set_remote(_daemon: &Arc<Daemon>, _enabled: bool, _import: bool) -> Result<Value, Refusal> {
+    Err(Refusal::new("this apex-daemon was built without remote access (cargo feature `remote`)", "not_remote"))
 }
 
 #[cfg(feature = "remote")]
@@ -135,7 +154,7 @@ mod pairing {
                 let inv = id16("invitation", &invitation)?;
                 daemon.invites.cancel(&inv).map(|()| Value::Null).map_err(refused)
             }
-            PairRequest::RemoteInfo {} | PairRequest::RemoteAdvertise { .. } => unreachable!("answered by super::run"),
+            PairRequest::RemoteInfo {} | PairRequest::RemoteAdvertise { .. } | PairRequest::RemoteSet { .. } => unreachable!("answered by super::run"),
         }
     }
 
@@ -153,23 +172,28 @@ mod pairing {
     }
 
     /// The message when this daemon isn't serving remote access.
-    pub const NOT_REMOTE: &str = "Remote access is off, so no phone could reach this machine. Start the daemon with `apex-daemon serve --remote` (or turn on Remote access in Deck), then try again.";
+    pub const NOT_REMOTE: &str = "Phone connections are off, so no phone could reach this machine. Turn them on in Deck's Settings → Phones, or start the daemon with `apex-daemon serve --remote`, then try again.";
 
     async fn start(daemon: Arc<Daemon>, tier: Tier, threads: Threads) -> Result<Value, Refusal> {
-        let Some(endpoint) = daemon.endpoint.get() else {
-            return Err(Refusal::new(NOT_REMOTE, "not_remote"));
-        };
-        let mut addrs: Vec<String> = endpoint.addr().ip_addrs().filter(|a| dialable(a.ip())).take(MAX_LAN_ADDRS).map(|a| a.to_string()).collect();
-        for addr in remote_config::advertised(&daemon.data) {
-            if !addrs.contains(&addr) {
-                addrs.push(addr);
-            }
-        }
+        // The name lookup can run a process. Do it before taking the
+        // controller lock, which also covers turning connections off.
         let name = tokio::task::spawn_blocking(machine_name).await.unwrap_or_else(|_| "This computer".into());
-        let host = HostInfo { host: *endpoint.id().as_bytes(), name, relay: crate::remote::RELAY.to_string(), addrs };
+        let extra = remote_config::advertised(&daemon.data);
         let now = now_ms();
-        let invite = daemon.invites.start(host, tier, threads, now);
-        Ok(json!({ "invitation": B64.encode(invite.inv), "link": invite.to_link(), "expires_at": now.saturating_add(LIFETIME_MS) }))
+        // Held across `invites.start`, so an off cannot cancel this one out
+        // from under the start, and the endpoint clone does not outlive the lock.
+        let made = daemon.remote.with_running(|endpoint| {
+            let mut addrs: Vec<String> = endpoint.addr().ip_addrs().filter(|a| dialable(a.ip())).take(MAX_LAN_ADDRS).map(|a| a.to_string()).collect();
+            for addr in &extra {
+                if !addrs.contains(addr) {
+                    addrs.push(addr.clone());
+                }
+            }
+            let host = HostInfo { host: *endpoint.id().as_bytes(), name: name.clone(), relay: crate::remote::RELAY.to_string(), addrs };
+            let invite = daemon.invites.start(host, tier, threads.clone(), now);
+            json!({ "invitation": B64.encode(invite.inv), "link": invite.to_link(), "expires_at": now.saturating_add(LIFETIME_MS) })
+        }).await;
+        made.ok_or_else(|| Refusal::new(NOT_REMOTE, "not_remote"))
     }
 
     /// The name the phone shows for this machine: the Mac's Computer Name,

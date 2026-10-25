@@ -31,6 +31,11 @@ impl Isolation {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         if let Some(home) = home {
             match backend {
+                Backend::Agent { tool: AgentTool::Codex, .. } => {
+                    let original=std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(||home.join(".codex"));
+                    // Model account only; never copy config, MCP, hooks, skills or sessions.
+                    isolation.copy_auth(&original.join("auth.json"), "home/.codex/auth.json")?;
+                }
                 Backend::Agent {
                     tool: AgentTool::Grok,
                     ..
@@ -90,6 +95,14 @@ impl Isolation {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(_) => return Err(failed("cannot read model sign-in file")),
         };
+        if relative == "home/.codex/auth.json" {
+            let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|failed("cannot verify Codex credential lifetime"))?.as_secs();
+            bytes=codex_auth_document(&bytes,now)?;
+        }
+        if matches!(relative,"config/grok/auth.json"|"home/.gemini/oauth_creds.json") {
+            let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|failed("cannot verify credential lifetime"))?.as_secs();
+            bytes=access_only_oauth_document(&bytes,now,if relative.starts_with("config/grok") {"Grok"} else {"Gemini"})?;
+        }
         if relative == "config/muse/auth.json" {
             bytes = muse_auth_document(&bytes, || {
                 #[cfg(target_os = "macos")]
@@ -249,12 +262,71 @@ impl Isolation {
                 "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
                 root.join("gemini-system.json"),
             )
+            // Node launchers must use the system TLS config already inside the boundary.
+            .env("OPENSSL_CONF", "/private/etc/ssl/openssl.cnf")
+            .env("SSL_CERT_FILE", "/private/etc/ssl/cert.pem")
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
             .env("LANG", "en_US.UTF-8")
             .current_dir(root.join("work"));
         Ok(command)
     }
+}
+
+/// A private session may use a fresh access credential, never rotate a
+/// refresh token copied from an independently running canonical CLI.
+fn access_only_oauth_document(input:&[u8],now:u64,provider:&str)->Result<Vec<u8>,ParticipantError> {
+    fn strip(value:&mut serde_json::Value,now:u64,provider:&str,require_fresh:bool)->Result<(),ParticipantError> {
+        match value {
+            serde_json::Value::Object(object)=>{
+                let refresh_keys:Vec<_>=["refresh_token","refreshToken"].into_iter().filter(|key|object.get(*key).is_some_and(|value|!value.is_null()&&value.as_str()!=Some(""))).collect();
+                if !refresh_keys.is_empty() {
+                    let expiry=object.get("expires_at").or_else(||object.get("expiry_date")).and_then(crate::grok_usage::expiry_unix);
+                    let access=object.get("access_token").or_else(||object.get("key")).and_then(|value|value.as_str()).is_some_and(|token|!token.is_empty());
+                    if require_fresh&&(!access||!expiry.and_then(|expiry|expiry.checked_sub(now)).is_some_and(|remaining|remaining>20*60)) {
+                        return Err(failed(&format!("{provider}’s connection needs refreshing. Refresh its existing sign-in, then retry. Apex Deck has not changed the login.")));
+                    }
+                    for key in refresh_keys {object.insert(key.into(),serde_json::Value::String(String::new()));}
+                }
+                for child in object.values_mut(){strip(child,now,provider,require_fresh)?;}
+            }
+            serde_json::Value::Array(values)=>for child in values {strip(child,now,provider,require_fresh)?;},
+            _=>{}
+        }
+        Ok(())
+    }
+    let mut document:serde_json::Value=serde_json::from_slice(input).map_err(|_|failed("invalid provider sign-in document"))?;
+    // Grok selects its own issuer/client entry. Preserve every entry and its
+    // expiry; never guess another account or reject a fresh selected login
+    // because an inactive entry expired. Its CLI enforces selected expiry,
+    // without receiving any refresh secret from any entry.
+    let require_fresh=provider!="Grok"||document.as_object().is_some_and(|map|map.contains_key("key")||map.contains_key("access_token")||map.len()==1);
+    strip(&mut document,now,provider,require_fresh)?;
+    serde_json::to_vec(&document).map_err(|_|failed("cannot stage provider access"))
+}
+
+/// A disposable Codex process never receives the canonical refresh credential.
+/// The original Codex installation remains the sole refresh owner. Its JWT
+/// must outlive our 300s turn, Codex's 5min proactive-refresh window and startup.
+fn codex_auth_document(input:&[u8],now:u64)->Result<Vec<u8>,ParticipantError> {
+    use base64::Engine;
+    let refresh=||failed("Codex’s connection needs refreshing. Refresh its sign-in in Codex, then retry. Apex Deck has not changed the existing login.");
+    let source:serde_json::Value=serde_json::from_slice(input).map_err(|_|refresh())?;
+    let document=if let Some(key)=source["OPENAI_API_KEY"].as_str().filter(|key|!key.is_empty()&&matches!(source["auth_mode"].as_str(),None|Some("apikey"|"api_key"|"apiKey"))) {
+        serde_json::json!({"OPENAI_API_KEY":key})
+    } else {
+        if source["auth_mode"]!="chatgpt" {return Err(refresh());}
+        let tokens=&source["tokens"];
+        let access=tokens["access_token"].as_str().filter(|token|!token.is_empty()).ok_or_else(refresh)?;
+        let payload=access.split('.').nth(1).ok_or_else(refresh)?;
+        let bytes=base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).or_else(|_|base64::engine::general_purpose::URL_SAFE.decode(payload)).map_err(|_|refresh())?;
+        let claims:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|refresh())?;
+        if !claims["exp"].as_u64().and_then(|exp|exp.checked_sub(now)).is_some_and(|remaining|remaining>20*60) {return Err(refresh());}
+        let id=tokens["id_token"].as_str().filter(|id|!id.is_empty()).ok_or_else(refresh)?;
+        let account=tokens["account_id"].as_str().filter(|account|!account.is_empty()).ok_or_else(refresh)?;
+        serde_json::json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"access_token":access,"id_token":id,"account_id":account,"refresh_token":""},"last_refresh":source["last_refresh"]})
+    };
+    serde_json::to_vec(&document).map_err(|_|failed("cannot stage Codex account access"))
 }
 
 // macOS's signed credential helper reads only this one pre-existing service /
@@ -364,6 +436,101 @@ fn muse_auth_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inactive_stale_grok_sessions_do_not_block_the_current_fresh_session() {
+        let input=serde_json::json!({"old-client":{"key":"old","expires_at":50,"refresh_token":"OLD_REFRESH"},"current-client":{"key":"current","expires_at":5000,"refresh_token":"CURRENT_REFRESH"}});
+        let bytes=serde_json::to_vec(&input).unwrap();
+        let staged=super::access_only_oauth_document(&bytes,100,"Grok").unwrap();
+        let staged:serde_json::Value=serde_json::from_slice(&staged).unwrap();
+        assert_eq!(staged["old-client"]["refresh_token"],"");assert_eq!(staged["current-client"]["refresh_token"],"");
+        assert_eq!(staged["current-client"]["key"],"current");assert_eq!(staged["old-client"]["expires_at"],50);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),input);
+    }
+
+    #[cfg(target_os="macos")]
+    #[test]
+    fn staged_grok_and_gemini_credentials_cannot_rotate_the_original_login() {
+        let isolation=Isolation::new(&Backend::Scripted{lines:vec![]}).unwrap();
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        for (relative,document) in [
+            ("config/grok/auth.json",serde_json::json!({"account":{"key":"access-only","refresh_token":"CANONICAL_GROK_REFRESH","expires_at":now+3600}})),
+            ("home/.gemini/oauth_creds.json",serde_json::json!({"access_token":"access-only","refresh_token":"CANONICAL_GEMINI_REFRESH","expiry_date":(now+3600)*1000}))
+        ] {
+            let source=isolation.root.dir.join("canonical-source.json");let original=serde_json::to_vec(&document).unwrap();std::fs::write(&source,&original).unwrap();
+            isolation.copy_auth(&source,relative).unwrap();
+            let staged=std::fs::read_to_string(isolation.root.dir.join(relative)).unwrap();
+            assert!(!staged.contains("CANONICAL_"),"private processes must never own OAuth refresh");
+            assert_eq!(std::fs::read(&source).unwrap(),original);
+        }
+    }
+
+    #[cfg(target_os="macos")]
+    #[test]
+    fn codex_private_login_never_owns_refresh_and_follows_canonical_next_turn() {
+        use base64::Engine;
+        let isolation=Isolation::new(&Backend::Scripted{lines:vec![]}).unwrap();
+        let source=isolation.root.dir.join("canonical-auth.json");
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let document=|exp,refresh:&str|serde_json::json!({"auth_mode":"chatgpt","OPENAI_API_KEY":"UNRELATED_API_KEY","tokens":{"id_token":"id-token","access_token":format!("header.{}.signature",base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&serde_json::json!({"exp":exp})).unwrap())),"refresh_token":refresh,"account_id":"qa-account"},"last_refresh":"2026-10-23T00:00:00Z","unrelated_secret":"NEVER_STAGE"});
+        let first=serde_json::to_vec(&document(now+3600,"CANONICAL_R0")).unwrap();
+        std::fs::write(&source,&first).unwrap();
+        isolation.copy_auth(&source,"home/.codex/auth.json").unwrap();
+        let target=isolation.root.dir.join("home/.codex/auth.json");
+        let staged:serde_json::Value=serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
+        assert_eq!(staged["tokens"]["refresh_token"],"","private Codex must never consume the canonical refresh credential");
+        assert!(staged.get("unrelated_secret").is_none());
+        assert_eq!(std::fs::read(&source).unwrap(),first);
+        // Simulate the disposable CLI writing an auth failure. It cannot change the canonical file.
+        std::fs::write(&target,b"unauthorized private session").unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(),first);
+        let expired=serde_json::to_vec(&document(now+60,"CANONICAL_R0")).unwrap();
+        std::fs::write(&source,&expired).unwrap();
+        assert!(isolation.copy_auth(&source,"home/.codex/auth.json").is_err(),"near-expiry credentials must be refreshed by their existing owner");
+        assert_eq!(std::fs::read(&source).unwrap(),expired);
+        // The existing Codex owner refreshes its own store; next turn reads that new snapshot.
+        let next=serde_json::to_vec(&document(now+7200,"CANONICAL_R1")).unwrap();
+        std::fs::write(&source,&next).unwrap();
+        isolation.copy_auth(&source,"home/.codex/auth.json").unwrap();
+        let staged:serde_json::Value=serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
+        assert_eq!(staged["tokens"]["refresh_token"],"");assert_eq!(staged["tokens"]["access_token"],document(now+7200,"x")["tokens"]["access_token"]);
+        assert_eq!(std::fs::read(&source).unwrap(),next);
+    }
+
+    #[cfg(target_os="macos")]
+    #[tokio::test]
+    #[ignore = "requires installed Codex"]
+    async fn live_codex_private_inventory() {
+        let isolation=Isolation::new(&Backend::Agent{tool:AgentTool::Codex,model:None}).unwrap();
+        let mut command=isolation.command("codex",&["mcp".into(),"list".into(),"--json".into()],None).unwrap();
+        let output=command.output().await.unwrap();
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),serde_json::json!([]));
+    }
+
+
+    #[cfg(target_os="macos")]
+    #[tokio::test]
+    async fn assistant_processes_cannot_read_or_write_the_operator_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let operator=Staged::new().unwrap();
+        let input=operator.dir.join("private-note");let output=operator.dir.join("must-not-exist");
+        std::fs::write(&input,"PRIVATE_QA_NOTE").unwrap();
+        for program in ["codex","grok","gemini","muse"] {
+            let script=operator.dir.join(program);
+            std::fs::write(&script,format!(r#"#!/bin/sh
+if /bin/cat '{}' >/dev/null 2>&1; then exit 20; fi
+if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi
+[ ! -e "$HOME/.codex/config.toml" ] || exit 22
+[ "$OPENSSL_CONF" = /private/etc/ssl/openssl.cnf ] || exit 23
+printf BOUNDARY_OK
+"#,input.display(),output.display())).unwrap();
+            std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
+            let isolation=Isolation::new(&Backend::Scripted{lines:vec![]}).unwrap();
+            let result=isolation.command(program,&[],operator.dir.to_str()).unwrap().output().await.unwrap();
+            assert!(result.status.success(),"{program}: {}",String::from_utf8_lossy(&result.stderr));
+            assert_eq!(result.stdout,b"BOUNDARY_OK");assert!(!output.exists());
+        }
+    }
 
     #[cfg(target_os = "macos")]
     #[tokio::test]

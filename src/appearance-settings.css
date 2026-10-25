@@ -75,7 +75,21 @@
   gap: 9px;
   min-width: 0;
 }
+.appearance-settings .appearance-skin-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.appearance-settings .appearance-skin-delete {
+  align-self: flex-end;
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
 .appearance-settings .appearance-skin {
+  width: 100%;
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: stretch;

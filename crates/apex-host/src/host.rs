@@ -17,6 +17,37 @@ use crate::quit::QuitGate;
 use crate::storage::{SavedRoom, Store};
 use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images, worktrees};
 
+// Contention is a construction error before any ledger or worker recovery.
+// Unavailable service may degrade, but owns no descriptor or registry entry.
+fn admit_host_ownership(
+    result: Option<Result<apex_provenance::HostOwnership, apex_provenance::HostOwnershipError>>,
+) -> Result<(Option<apex_provenance::HostOwnership>, Option<String>), String> {
+    match result {
+        None => Ok((None, None)), // Only the explicit existing fixture path.
+        Some(Ok(guard)) => Ok((Some(guard), None)),
+        Some(Err(error @ apex_provenance::HostOwnershipError::Held(_))) => Err(error.to_string()),
+        Some(Err(error @ apex_provenance::HostOwnershipError::Unavailable(_))) => Ok((None, Some(error.to_string()))),
+    }
+}
+
+fn open_initial_ledger<T, E: std::fmt::Display>(
+    owns_authority: bool,
+    unavailable: &mut Option<String>,
+    open: impl FnOnce() -> Result<T, E>,
+    fallback: impl FnOnce() -> T,
+) -> Result<T, String> {
+    match open() {
+        Ok(ledger) => Ok(ledger),
+        Err(error) => {
+            if owns_authority {
+                return Err(format!("Could not initialize protected host authority: {error}"));
+            }
+            unavailable.get_or_insert_with(|| error.to_string());
+            Ok(fallback())
+        }
+    }
+}
+
 fn reject_registry_link(directory: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(directory) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err("Process recovery namespaces cannot be symlinks.".into()),
@@ -34,7 +65,11 @@ pub(crate) struct RoomHandle {
     pub(crate) observation_revision: Arc<AtomicU64>,
     pub(crate) room: Arc<futures::lock::Mutex<Room>>,
     pub(crate) runtime: ConcurrentRoom,
+    /// Mount cannot overtake a checkout/history action, even while it is queued.
+    checkout_action: Arc<tokio::sync::RwLock<()>>,
     pub(crate) checkpoint: Arc<Mutex<SavedRoom>>,
+    /// Immutable import attribution read from protected authority when opened.
+    legacy: Option<crate::legacy_import::LegacyMarker>,
     pub(crate) deleted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
@@ -51,12 +86,17 @@ pub(crate) struct RoomHandle {
 }
 
 impl RoomHandle {
+    async fn lock_checkout(&self) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, String> {
+        let guard = self.checkout_action.read().await;
+        if self.deleted.load(Ordering::SeqCst) { return Err("The chat folder changed. Reopen the chat.".into()); }
+        Ok(guard)
+    }
     pub(crate) fn has_open_questions(&self) -> bool { !self.live.lock().unwrap().questions.is_empty() }
     pub(crate) fn has_pending_human_waits(&self) -> bool {
         let live = self.live.lock().unwrap();
         !live.approvals.is_empty() || !live.questions.is_empty()
     }
-    pub(crate) fn busy(&self) -> bool { self.runtime.busy() }
+    pub(crate) fn busy(&self) -> bool { self.runtime.busy() || self.checkout_action.try_write().is_err() }
 }
 
 #[derive(Default)]
@@ -80,6 +120,8 @@ pub struct HostPaths {
 
 pub struct Host {
     paths: HostPaths,
+    /// Protected primary and saved-chat ownership lasts as long as this host.
+    _ownership: Option<apex_provenance::HostOwnership>,
     /// Runs background work (plan usage, chains started by `room_post_to`).
     runtime: tokio::runtime::Handle,
     events: Bus,
@@ -100,6 +142,7 @@ pub struct Host {
     write_gates: Mutex<HashMap<PathBuf, apex_core::CheckoutWriteGate>>,
     room_lifecycle: Mutex<()>,
     pub(crate) assistant_tasks: crate::assistant_tasks::AssistantTasks,
+    pub(crate) project_memory: crate::project_memory::ProjectMemory,
     pub(crate) monitor_wake: Arc<tokio::sync::Notify>,
     pub(crate) monitor_clock: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) personal_wake: Arc<tokio::sync::Notify>,
@@ -110,6 +153,7 @@ pub struct Host {
     steps: crate::step_buffers::StepBuffers,
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
+    pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -137,13 +181,15 @@ struct StartCheckpoint {
     thread: String,
     cwd: PathBuf,
     saved: Arc<Mutex<SavedRoom>>,
+    retired: Arc<AtomicBool>,
 }
 
 impl apex_core::TurnStartHook for StartCheckpoint {
     fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
         let seq = self.saved.lock().unwrap().snapshot.transcript.len();
         let (snapshots, thread, cwd, bot) = (Arc::clone(&self.snapshots), self.thread.clone(), self.cwd.clone(), id.clone());
-        let taking = self.runtime.spawn_blocking(move || snapshots.take(&thread, &cwd, seq, checkpoints::Kind::Start, Some(bot)));
+        let retired = Arc::clone(&self.retired);
+        let taking = self.runtime.spawn_blocking(move || snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Start, Some(bot), &retired));
         // A failed snapshot doesn't stop the turn; Retry then offers only the chat.
         Box::pin(async move { let _ = taking.await; })
     }
@@ -161,8 +207,39 @@ impl Host {
 
     pub fn try_new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Result<Arc<Host>, String> {
         crate::storage::prepare_private_root(&paths.data)?;
-        let assistant_tasks = crate::assistant_tasks::AssistantTasks::open(paths.data.join("assistant-tasks-v1.json")).map_err(|e| e.to_string())?;
-        let assistant_conversations = crate::assistant_conversation::ConversationStore::open(paths.data.join("assistant-conversations-v1.json")).map_err(|e| e.to_string())?;
+        // Fixture construction is already explicit and isolated. Production,
+        // even with test-support compiled, always uses the protected broker.
+        #[cfg(test)]
+        let ownership = None;
+        #[cfg(not(test))]
+        let ownership = {
+            #[cfg(feature = "test-support")]
+            let fixture = crate::test_support::isolated(&paths.data);
+            #[cfg(not(feature = "test-support"))]
+            let fixture = false;
+            if fixture { None } else { Some(apex_provenance::HostOwnership::acquire(&paths.data)) }
+        };
+        let (ownership, mut unavailable) = admit_host_ownership(ownership)?;
+        // Without ownership startup may degrade. Once ownership succeeds,
+        // partial authority must never coexist with empty fallback stores.
+        let tasks_path = paths.data.join("assistant-tasks-v1.json");
+        let assistant_tasks = open_initial_ledger(ownership.is_some(), &mut unavailable,
+            || crate::assistant_tasks::AssistantTasks::open(&tasks_path),
+            || crate::assistant_tasks::AssistantTasks::unavailable(&tasks_path))?;
+        let memory_path = paths.data.join("project-memory-v1.json");
+        let project_memory = open_initial_ledger(ownership.is_some(), &mut unavailable,
+            || crate::project_memory::ProjectMemory::open(&memory_path),
+            || crate::project_memory::ProjectMemory::unavailable(&memory_path))?;
+        let conversations_path = paths.data.join("assistant-conversations-v1.json");
+        let assistant_conversations = open_initial_ledger(ownership.is_some(), &mut unavailable,
+            || crate::assistant_conversation::ConversationStore::open(&conversations_path),
+            || crate::assistant_conversation::ConversationStore::unavailable(&conversations_path))?;
+        let protected_ledgers_available = unavailable.is_none();
+        if let Some(reason) = unavailable {
+            eprintln!(
+                "[apex-deck] protected ledgers unavailable ({reason}); starting with empty ledgers. Install or re-pin the provenance broker for this build."
+            );
+        }
         let store = Store::new(paths.data.join("saved-chats-v1"));
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
         let compacting = Arc::clone(&snapshots);
@@ -170,8 +247,10 @@ impl Host {
         apex_adapters::allow_reading(&paths.data.join("attachments"));
         apex_adapters::keys::use_folder(&paths.data);
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
+        let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
         let host = Arc::new(Host {
             paths,
+            _ownership: ownership,
             runtime,
             events: Bus::default(),
             store,
@@ -183,6 +262,7 @@ impl Host {
             chains: AtomicUsize::new(0),
             startup: Mutex::new(None),
             assistant_tasks,
+            project_memory,
             assistant_conversations,
             assistant_runs: Mutex::default(),
             assistant_apply: tokio::sync::Mutex::new(()),
@@ -196,7 +276,65 @@ impl Host {
             personal_stops: Mutex::default(),
             steps: Default::default(),
             phone,
+            fold_queue,
         });
+
+        let host_for_reconcile = Arc::downgrade(&host);
+        host.fold_queue.set_reconcile(Arc::new(move |thread_id, bot_id, message_text| {
+            let host_weak = host_for_reconcile.clone();
+            Box::pin(async move {
+                let Some(host) = host_weak.upgrade() else { return Err("host shut down".into()); };
+                let handle = host.handle(&thread_id)?;
+                let error = Mutex::new(None);
+                let batch = handle.runtime.begin_post_with_speaker(
+                    apex_core::Speaker::Bot(apex_core::ParticipantId::new("deck")),
+                    &message_text,
+                    Some(vec![bot_id]),
+                    &host.turn_sink(&thread_id, &handle, &error),
+                ).await?;
+                if let Some(why) = error.into_inner().unwrap() { return Err(why); }
+                checkpoint_room(&handle, &host.store, &thread_id).await?;
+                host.run_batch_in_background(thread_id, handle, batch);
+                Ok(())
+            })
+        }));
+
+        for copy in crate::bot_copies::recover_unfolded_copies(&host.paths.data) {
+            let thread_id = copy.thread.clone();
+            let thread_exists = host.store.room(&thread_id).ok().flatten().is_some()
+                || host.handle(&thread_id).is_ok();
+            if !thread_exists {
+                let mut updated = copy.clone();
+                updated.state = crate::bot_copies::CopyState::NeedsYou {
+                    reason: "its chat was deleted".to_string(),
+                };
+                if let Err(e) = crate::bot_copies::save_state(&host.paths.data, &updated) {
+                    eprintln!("[apex-deck] could not save copy state during recovery for {thread_id}: {e}");
+                }
+                continue;
+            }
+            let host_weak = Arc::downgrade(&host);
+            let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
+                let thread_id = thread_id.clone();
+                move |event| {
+                    if let Some(host) = host_weak.upgrade() {
+                        host.room_event(&thread_id, event);
+                    }
+                }
+            });
+            let editor_handle = if let Ok(handle) = host.handle(&thread_id) {
+                handle.runtime.editor_handle()
+            } else {
+                Arc::new(Mutex::new(None))
+            };
+            host.fold_queue.enqueue(crate::bot_copies::FoldTask {
+                thread: thread_id,
+                copy,
+                editor_handle,
+                event_sink,
+                reconcile: None,
+            });
+        }
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
             if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
                 host.checkout_gate(std::path::Path::new(&task.owner.cwd)).restore_hold(task.id)
@@ -219,8 +357,21 @@ impl Host {
                 if !kind.is_dir() { return Err("Worker recovery registry contains a linked or non-directory entry.".into()); }
                 let id = entry.file_name().to_string_lossy().into_owned();
                 if let Err(error) = host.recover_worker_cleanup(&id) {
-                    let cwd = host.store.room(&id)?.and_then(|saved| saved.cwd)
-                        .ok_or_else(|| format!("Worker cleanup needs attention for {id}, and its saved checkout is unavailable: {error}"))?;
+                    // Process groups were already stopped above; only the checkout
+                    // reservation needs the saved room. If the protected room
+                    // authority cannot be read or verified, nothing is granted or
+                    // released and the registry entry stays for a later start.
+                    let cwd = match host.store.room(&id) {
+                        Ok(Some(saved)) => saved.cwd,
+                        Ok(None) => None,
+                        Err(unverified) => {
+                            eprintln!("[apex-deck] worker cleanup needs attention for {id}: {error}; its saved checkout could not be verified, so no checkout was reserved or released: {unverified}");
+                            continue;
+                        }
+                    };
+                    let Some(cwd) = cwd else {
+                        return Err(format!("Worker cleanup needs attention for {id}, and its saved checkout is unavailable: {error}"));
+                    };
                     let owner = host.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.map(|entry|entry.task_id).unwrap_or_else(||format!("recovery:{id}"));
                     host.checkout_gate(Path::new(&cwd)).restore_hold(owner)
                         .map_err(|why| format!("Could not reserve the checkout for worker recovery: {why:?}"))?;
@@ -240,7 +391,11 @@ impl Host {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
             Err(error) => return Err(format!("Could not read task operation recovery registry: {error}")),
         }
-        host.redispatch_recovered_queued()?;
+        // Degraded startup retains empty, write-closed ledgers. Reconciliation
+        // reads protected state and must wait for an admitted host restart.
+        if protected_ledgers_available {
+            host.redispatch_recovered_queued()?;
+        }
         Ok(host)
     }
 
@@ -379,6 +534,7 @@ impl Host {
     }
 
     pub(crate) fn assistant_changed(&self, workspace_id: &str) {
+        let _ = self.reconcile_delegation_results();
         self.emit(HostEvent::AssistantTasksChanged { workspace_id: workspace_id.into(), revision: self.assistant_tasks.snapshot_revision() });
     }
 
@@ -554,21 +710,25 @@ impl Host {
 
     /// Read the plan usage of each provider in `configs` that can report it
     /// outside a turn, and send it to the chat as a `plan_usage` event.
-    /// Runs in the background; it asks no model anything.
+    /// Runs in the background; it asks no model anything. A provider can put a
+    /// model in a quota group of its own, so each model is read separately.
     fn read_plans(self: &Arc<Self>, room: &str, configs: &[ParticipantConfig], context: &BuildContext) {
-        let mut tools: Vec<AgentTool> = Vec::new();
+        let mut reads: Vec<(AgentTool, Option<String>)> = Vec::new();
         for config in configs {
-            if let apex_core::Backend::Agent { tool, .. } = config.backend {
-                if !tools.contains(&tool) {
-                    tools.push(tool);
+            if let apex_core::Backend::Agent { tool, model } = &config.backend {
+                let read = (*tool, model.clone());
+                if !reads.contains(&read) {
+                    reads.push(read);
                 }
             }
         }
-        for tool in tools {
+        for (tool, model) in reads {
             let (host, room, context) = (Arc::clone(self), room.to_string(), context.clone());
             self.runtime.spawn(async move {
-                if let Some(plan) = apex_adapters::plan_usage(tool, &context).await {
-                    host.room_event(&room, RoomEvent::plan(&plan));
+                if let Some(plan) = apex_adapters::plan_usage(tool, model.as_deref(), &context).await {
+                    // The model rides along so a chat with two models of one
+                    // provider shows each its own group.
+                    host.room_event(&room, RoomEvent::plan_for(&plan, model));
                 }
             });
         }
@@ -584,7 +744,17 @@ impl Host {
             // again: keep the room, and any turn it's running, as it is.
             return Ok(handle.checkpoint.lock().unwrap().snapshot.clone());
         }
-        let saved = self.store.room(&id)?;
+        let mut saved = self.store.room(&id)?;
+        let legacy = self.store.room_legacy(&id)?;
+        if let Some(saved) = saved.as_mut() {
+            if !saved.mounts.is_empty() && saved.cwd.as_ref().is_some_and(|cwd| !Path::new(cwd).is_dir()) {
+                let fallback = saved.mounts.iter().map(|mount| &mount.from).find(|path| Path::new(path).is_dir())
+                    .cloned().ok_or("The mounted worktree and original project folder are missing.")?;
+                saved.mounts.push(crate::storage::MountBoundary {change_count:Some(saved.snapshot.changes.len()), seq:saved.snapshot.transcript.len(), from:saved.cwd.clone().unwrap(), to:fallback.clone(), note:Some("The mounted worktree is missing. Now working in the original project folder.".into())});
+                saved.cwd = Some(fallback);
+                self.snapshots.delete(&id);
+            }
+        }
         let cwd = saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd);
         self.recover_worker_cleanup(&id)?;
         let cargo_target_dir = self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from));
@@ -610,28 +780,55 @@ impl Host {
         let participants = saved.as_ref().map(|s| s.snapshot.participants.clone()).unwrap_or(participants);
         self.read_plans(&id, &participants, &context);
         let roster = participants.into_iter().map(|p| apex_adapters::build(p, &context)).collect();
+        let mounts = saved.as_ref().map(|s| s.mounts.clone()).unwrap_or_default();
         let room = match saved {
             Some(saved) => Room::restore(roster, saved.snapshot),
             None => Room::new(roster, options),
         };
         let snapshot = room.snapshot();
+        let deleted = Arc::<AtomicBool>::default();
         if let Some(cwd) = context.cwd.clone() {
             // Taken now so the first message doesn't wait on it. Anything that
             // changed while the thread was closed isn't this thread's work.
             let (snapshots, thread, seq) = (Arc::clone(&self.snapshots), id.clone(), snapshot.transcript.len());
-            std::thread::spawn(move || { let _ = snapshots.take(&thread, &cwd, seq, checkpoints::Kind::Open, None); });
+            let retired = Arc::clone(&deleted);
+            std::thread::spawn(move || { let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
         }
-        self.store.save_room(&id, &SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
+        self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
         let stop = room.stop_handle();
         let plan = room.plan_handle();
         let answers = room.answers_handle();
         // Card guidance is always on.
         answers.store(true, Ordering::SeqCst);
         let approvals = room.approvals_handle();
-        let checkpoint = Arc::new(Mutex::new(SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
+        let checkpoint = Arc::new(Mutex::new(SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
         let mut runtime = ConcurrentRoom::new(room);
         if let Some(cwd) = &context.cwd {
-            runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint) }));
+            runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
+            let this = Arc::downgrade(self);
+            let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
+                let id = id.clone();
+                move |event| {
+                    if let Some(this) = this.upgrade() {
+                        this.room_event(&id, event);
+                    }
+                }
+            });
+            let bot_copies = Arc::new(crate::bot_copies::BotCopies::new(
+                self.assistant_data_dir().to_path_buf(),
+                id.clone(),
+                cwd.clone(),
+                runtime.editor_handle(),
+                event_sink,
+                Arc::clone(&self.fold_queue),
+            ).with_names(Arc::new({
+                let (this, id) = (Arc::downgrade(self), id.clone());
+                move |bot| {
+                    let room = this.upgrade()?.store.room(&id).ok()??;
+                    room.snapshot.participants.into_iter().find(|p| &p.id == bot).map(|p| p.display_name)
+                }
+            })));
+            runtime = runtime.with_copies(bot_copies);
             // Only ApexAgent task threads share the checkout gate; ordinary chat
             // threads in the same folder run their turns concurrently.
             if let Some(owner) = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.map(|entry| entry.task_id) {
@@ -641,7 +838,7 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
         Ok(snapshot)
     }
 
@@ -649,10 +846,11 @@ impl Host {
     pub fn room_state(&self, id: String) -> Result<serde_json::Value, String> {
         let handle = self.handle(&id)?;
         let seq = handle.recovery.lock().unwrap();
-        let snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
+        let saved = handle.checkpoint.lock().unwrap().clone();
+        let snapshot = saved.snapshot;
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
-        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone()}))
+        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone()}))
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -699,7 +897,8 @@ impl Host {
             if let Some(cwd) = handle.context.cwd.clone() {
                 // A failed snapshot doesn't stop the turn; Revert then offers only the chat.
                 let (snapshots, thread, seq) = (Arc::clone(&self.snapshots), id.to_string(), room.transcript().len());
-                let _ = tokio::task::spawn_blocking(move || snapshots.take(&thread, &cwd, seq, checkpoints::Kind::Send, None)).await;
+                let retired = Arc::clone(&handle.deleted);
+                let _ = tokio::task::spawn_blocking(move || snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Send, None, &retired)).await;
             }
         }
         let requested = apex_core::server_request::parse_server_requests(text);
@@ -726,10 +925,11 @@ impl Host {
         handle.runtime.run(batch, &self.turn_sink(id, handle, &error)).await;
         checkpoint_room(handle, &self.store, id).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        if !handle.runtime.busy() {
+        if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
             if let Some(cwd) = handle.context.cwd.clone() {
                 let (snapshots, thread, seq) = (Arc::clone(&self.snapshots), id.to_string(), handle.checkpoint.lock().unwrap().snapshot.transcript.len());
-                let _ = tokio::task::spawn_blocking(move || snapshots.take(&thread, &cwd, seq, checkpoints::Kind::Idle, None)).await;
+                let retired = Arc::clone(&handle.deleted);
+                let _ = tokio::task::spawn_blocking(move || snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Idle, None, &retired)).await;
             }
         }
         let _room = handle.room.lock().await;
@@ -882,11 +1082,13 @@ impl Host {
         let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
         if !handle.approvals.forget(&rule) { return Err("that was no longer always allowed".to_string()); }
         let event = RoomEvent::AllowedChanged { allowed: handle.approvals.allowed() };
-        self.persist_and_emit(&id, &handle, event)?;
+        self.persist_and_emit(&id, handle, event)?;
         Ok(())
     }
 
     pub async fn room_set_options(&self, id: String, options: RoomOptions) -> Result<(), String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         self.require_idle(&id)?;
         {
             let room = self.room(&id)?;
@@ -900,6 +1102,7 @@ impl Host {
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
         self.ensure_task_read_access(&id, &participant)?;
         let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         let name = participant.id.clone();
@@ -929,6 +1132,7 @@ impl Host {
     /// can omit it and retain the full-replacement behavior.
     pub async fn room_update_participant_from(self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>) -> Result<ParticipantConfig, String> {
         let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         let name = participant.id.clone();
         let context = self.room_context(&id)?;
@@ -949,7 +1153,7 @@ impl Host {
         let replacement = apex_adapters::build(next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
-                return Err("Only the name, model, reasoning and speed can change while models are replying".into());
+                return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
             }
         } else { room.replace_participant(replacement); }
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
@@ -962,6 +1166,7 @@ impl Host {
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
         let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         let room = self.room(&id)?;
@@ -974,6 +1179,8 @@ impl Host {
 
     /// Empty a chat's transcript, keeping its participants and settings.
     pub async fn room_clear(&self, id: String) -> Result<(), String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         {
@@ -990,6 +1197,8 @@ impl Host {
 
     /// Retry: delete every message from `upto` on. The caller then runs a turn.
     pub async fn room_rewind(&self, id: String, upto: usize) -> Result<(), String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         {
@@ -1015,6 +1224,8 @@ impl Host {
     /// ones that didn't exist), and with `chat`, delete message `at` and
     /// everything after it. Returns the files it couldn't put back.
     pub async fn room_revert(&self, id: String, at: usize, bot: Option<ParticipantId>, chat: bool, files: Vec<String>) -> Result<Vec<String>, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         let cwd = self.room_context(&id)?.cwd;
@@ -1042,6 +1253,8 @@ impl Host {
     /// Pin a fact for every model in this chat. Returns the pins now in place.
     /// A new pin applies from each participant's next request.
     pub async fn room_pin(&self, id: String, fact: String) -> Result<Vec<String>, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         let pins = {
             let room = self.room(&id)?;
             let mut room = room.lock().await;
@@ -1053,6 +1266,8 @@ impl Host {
     }
 
     pub async fn room_unpin(&self, id: String, index: usize) -> Result<Vec<String>, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         let pins = {
             let room = self.room(&id)?;
             let mut room = room.lock().await;
@@ -1067,6 +1282,8 @@ impl Host {
     /// in place of the messages so far. The transcript itself is kept. Returns
     /// when the summary is saved; its progress arrives as `room-event` events.
     pub async fn room_compact(&self, id: String) -> Result<(), String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
         self.require_idle(&id)?;
         let context = self.room_context(&id)?;
         {
@@ -1130,6 +1347,30 @@ impl Host {
     pub async fn room_bot_balance(&self, room: &str, participant: &ParticipantId) -> Result<Option<f64>, String> {
         let (base_url, api_key_env) = self.bot_api_account(room, participant)?;
         apex_adapters::api_balance(&base_url, api_key_env.as_deref()).await
+    }
+
+    /// Use one of `tool`'s usage resets (`credit`, or the next one) for the
+    /// account a bot in `room` is signed in to, then send every open chat the
+    /// plan as it stands after. `key` names the person's attempt, so a retry
+    /// can't spend a second credit. Gives what the provider said happened.
+    pub async fn room_plan_reset(&self, room: &str, tool: AgentTool, credit: Option<String>, key: Option<String>) -> Result<apex_adapters::ResetOutcome, String> {
+        let context = {
+            let handle = self.handle(room)?;
+            let saved = handle.checkpoint.lock().unwrap();
+            if !saved.snapshot.participants.iter().any(|p| matches!(p.backend, apex_core::Backend::Agent { tool: t, .. } if t == tool)) {
+                return Err("no bot in this chat uses that provider".to_string());
+            }
+            handle.context.clone()
+        };
+        let (outcome, plan) = apex_adapters::use_plan_reset(tool, credit.as_deref(), key.as_deref(), &context).await?;
+        if let Some(plan) = plan {
+            // The plan is the account's, so every open chat shows the change.
+            let open: Vec<String> = self.rooms.lock().unwrap().keys().cloned().collect();
+            for id in open {
+                self.room_event(&id, RoomEvent::plan(&plan));
+            }
+        }
+        Ok(outcome)
     }
 
     /// The models a coding agent lists for the account it is signed in to, for
@@ -1197,19 +1438,37 @@ impl Host {
     }
 
     pub async fn worktree_list(&self, path: String) -> Result<worktrees::WorktreeList, String> {
-        let task_dir = self.paths.data.join("apex-agent").join("tasks");
-        tokio::task::spawn_blocking(move || worktrees::list(Path::new(&path), &task_dir)).await.map_err(|e| e.to_string())?
+        let data = self.paths.data.clone();
+        let store_dir = self.store.folder().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let mut listing = crate::bot_copies_ui::list(Path::new(&path), &data)?;
+            crate::bot_copies_ui::label_copies(&mut listing, &Store::new(store_dir));
+            Ok(listing)
+        }).await.map_err(|e| e.to_string())?
+    }
+    pub async fn bot_copies_set_check(&self, root: String, cmd: Option<String>) -> Result<(), String> {
+        let data = self.paths.data.clone();
+        tokio::task::spawn_blocking(move || crate::bot_copies_ui::set_check(Path::new(&root), &data, cmd)).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_add(&self, path: String, request: worktrees::AddRequest) -> Result<worktrees::Worktree, String> {
         tokio::task::spawn_blocking(move || worktrees::add(Path::new(&path), request)).await.map_err(|e| e.to_string())?
     }
-    pub async fn worktree_remove(&self, path: String, target: String, force: bool) -> Result<(), String> {
-        let task_dir = self.paths.data.join("apex-agent").join("tasks");
-        tokio::task::spawn_blocking(move || worktrees::remove(Path::new(&path), Path::new(&target), force, &task_dir)).await.map_err(|e| e.to_string())?
+    pub async fn worktree_remove(self: &Arc<Self>, path: String, target: String, force: bool) -> Result<(), String> {
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let _lifecycle = host.room_lifecycle.lock().unwrap();
+            if host.store.checkout_in_use(Path::new(&target))? { return Err("This worktree is mounted in a chat. Mount another worktree before removing this one.".into()); }
+            crate::bot_copies_ui::remove(Path::new(&path), Path::new(&target), force, &host.paths.data)
+        }).await.map_err(|e| e.to_string())?
     }
-    pub async fn worktree_forget(&self, path: String, target: String, force: bool) -> Result<(), String> {
+    pub async fn worktree_forget(self: &Arc<Self>, path: String, target: String, force: bool) -> Result<(), String> {
         let task_dir = self.paths.data.join("apex-agent").join("tasks");
-        tokio::task::spawn_blocking(move || worktrees::forget(Path::new(&path), Path::new(&target), force, &task_dir)).await.map_err(|e| e.to_string())?
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let _lifecycle = host.room_lifecycle.lock().unwrap();
+            if host.store.checkout_in_use(Path::new(&target))? { return Err("This worktree is mounted in a chat. Mount another worktree before pruning this one.".into()); }
+            worktrees::forget(Path::new(&path), Path::new(&target), force, &task_dir)
+        }).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_prune(&self, path: String) -> Result<(), String> {
         tokio::task::spawn_blocking(move || worktrees::prune(Path::new(&path))).await.map_err(|e| e.to_string())?
@@ -1357,6 +1616,17 @@ impl Host {
         if let Ok(name) = export::safe_file_name(&id) {
             let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
         }
+        for copy in crate::bot_copies::load_copies(&self.paths.data) {
+            if copy.thread == id
+                && !matches!(
+                    copy.state,
+                    crate::bot_copies::CopyState::NeedsYou { .. }
+                        | crate::bot_copies::CopyState::Folding
+                )
+            {
+                let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
+            }
+        }
         match handle {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),
             None => self.store.delete_room(&id),
@@ -1499,7 +1769,7 @@ impl Host {
             let _ = std::fs::remove_dir_all(&staging);
             std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
             let copied = PathBuf::from(copy_folder_attachment(&staging, Path::new(source.trim_end_matches('/')))?.trim_end_matches('/'));
-            let checked = mods::mod_read(copied.to_string_lossy().into_owned()).map_err(|e| { let _ = std::fs::remove_dir_all(&staging); e })?;
+            let checked = mods::mod_read(copied.to_string_lossy().into_owned()).inspect_err(|_e| { let _ = std::fs::remove_dir_all(&staging); })?;
             let name = checked.manifest.get("name").and_then(|n| n.as_str()).map(str::to_owned)
                 .unwrap_or_else(|| copied.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "mod".into()));
             let target = root.join(export::safe_file_name(&name)?);
@@ -1530,11 +1800,30 @@ impl Host {
         mods::mod_env_get(name)
     }
 
+    pub async fn room_git_status(&self, id: String) -> Result<crate::git_changes::State, String> {
+        let cwd = self.room_context(&id)?.cwd.ok_or("This thread has no workspace folder.")?;
+        tokio::task::spawn_blocking(move || crate::git_changes::status(&cwd)).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn room_git_action(&self, id: String, action: crate::git_changes::Action) -> Result<crate::git_changes::Outcome, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        let cwd = handle.context.cwd.clone().ok_or("This thread has no workspace folder.")?;
+        let gate = self.checkout_gate(&cwd);
+        let _lease = gate.acquire(format!("git-menu:{id}"), Arc::new(AtomicBool::new(false))).await.map_err(|e| format!("Could not reserve the checkout: {e:?}"))?;
+        crate::git_changes::perform(cwd, action).await
+    }
+
     /// What changed in the folder since this thread started, and who changed it.
     /// Reads the saved copy, so it answers while models are still working.
     pub async fn room_diff(&self, id: String) -> Result<changes::ThreadDiff, String> {
         let cwd = self.room_context(&id)?.cwd.ok_or("this thread has no workspace folder")?;
-        let snapshot = self.store.room(&id)?.ok_or("this thread has not been saved yet")?.snapshot;
+        let saved = self.store.room(&id)?.ok_or("this thread has not been saved yet")?;
+        let mut snapshot = saved.snapshot;
+        if let Some(mount) = saved.mounts.last() {
+            snapshot.baseline = None;
+            snapshot.changes = snapshot.changes.iter().enumerate().filter(|(index, change)| mount.change_count.map_or(change.seq >= mount.seq, |count| *index >= count)).map(|(_,change)| change.clone()).collect();
+        }
         let snapshots = Arc::clone(&self.snapshots);
         tokio::task::spawn_blocking(move || {
             // Threads from before the snapshot store keep their old starting point while git still has it.
@@ -1551,6 +1840,7 @@ impl Host {
 
     /// Fork durable state without waiting for a model turn's live room lock.
     pub fn room_fork(&self, source: String, target: String, upto: Option<usize>) -> Result<(), String> {
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
         let cwd = self.room_context(&source)?.cwd.map(|p| p.to_string_lossy().into_owned());
         let source_root = self.attachment_dir(&source)?.canonicalize().map_err(|e| format!("Could not resolve source attachments: {e}"))?;
         self.store.fork_room_with_snapshot_transform(&source, &target, upto, cwd, |snapshot| {
@@ -1594,6 +1884,50 @@ impl Host {
         Ok(())
     }
 
+    /// Switch a chat to a registered checkout of its own repository, retaining history.
+    pub fn room_mount(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
+            return Err("An assistant worker chat cannot mount another worktree.".into());
+        }
+        let handle = self.handle(&id)?;
+        let _action = handle.checkout_action.try_write().map_err(|_| "room-busy: Wait for the current checkout action to finish.")?;
+        let from = handle.context.cwd.as_ref().ok_or("This chat has no project folder.")?;
+        let target = PathBuf::from(&cwd).canonicalize().map_err(|_| "That worktree folder is missing.")?;
+        if !target.is_dir() { return Err("That worktree folder is missing.".into()); }
+        let common = |path: &Path| -> Result<PathBuf, String> {
+            let out = std::process::Command::new("git").arg("-C").arg(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(|e| e.to_string())?;
+            if !out.status.success() { return Err("Choose a worktree of this chat's repository.".into()); }
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize().map_err(|e| e.to_string())
+        };
+        if common(from)? != common(&target)? { return Err("Choose a worktree of this chat's repository.".into()); }
+        let listing = crate::bot_copies_ui::list(from, &self.paths.data)?;
+        if !listing.items.iter().any(|item| !item.prunable && !item.task && item.copy.is_none() && Path::new(&item.path).canonicalize().ok().as_ref() == Some(&target)) {
+            return Err("Choose a registered worktree, outside ApexAgent task folders.".into());
+        }
+        let canonical_from = from.canonicalize().map_err(|e| e.to_string())?;
+        if canonical_from == target { return Ok(serde_json::json!({"cwd":target,"mounts":handle.checkpoint.lock().unwrap().mounts})); }
+        let mounts = handle.runtime.retire_if_idle(|room| {
+            let mut checkpoint = handle.checkpoint.lock().unwrap();
+            let mut saved = checkpoint.clone();
+            saved.snapshot = room.snapshot();
+            saved.mounts.push(crate::storage::MountBoundary { change_count: Some(saved.snapshot.changes.len()), seq: saved.snapshot.transcript.len(), from: canonical_from.to_string_lossy().into_owned(), to: target.to_string_lossy().into_owned(), note: None });
+            saved.cwd = Some(target.to_string_lossy().into_owned());
+            self.store.save_room(&id, &saved)?;
+            let mounts = saved.mounts.clone();
+            *checkpoint = saved;
+            handle.deleted.store(true, Ordering::SeqCst);
+            Ok(mounts)
+        })?;
+        self.rooms.lock().unwrap().remove(&id);
+        handle.runtime.stop(None);
+        handle.approvals.reject_all();
+        self.tool_servers.lock().unwrap().retain(|key, _| !key.starts_with(&format!("{id}:")));
+        // Complete removal before the new room takes any checkpoints.
+        self.snapshots.delete(&id);
+        Ok(serde_json::json!({"cwd":target,"mounts":mounts}))
+    }
+
     /// Make room `id` from a thread's snapshot: a fork to this machine, or a
     /// thread moved here before it started. Its usage, Always allow rules and
     /// record of edits stay behind; they belong to the other folder. With
@@ -1608,7 +1942,7 @@ impl Host {
         let mut clean = snapshot.fork(snapshot.transcript.len());
         clean.changes.clear();
         clean.baseline = None;
-        let saved = SavedRoom { cwd: cwd.filter(|c| !c.is_empty()), snapshot: clean };
+        let saved = SavedRoom { mounts: vec![], cwd: cwd.filter(|c| !c.is_empty()), snapshot: clean };
         if !replace {
             if self.rooms.lock().unwrap().contains_key(&id) {
                 return Err("a thread with that id already exists".into());
@@ -1735,7 +2069,18 @@ async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result
     let _boundary = handle.recovery.lock().unwrap();
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
-    checkpoint.snapshot = room.snapshot();
+    let snapshot = room.snapshot();
+    let len = snapshot.transcript.len();
+    if len < checkpoint.snapshot.transcript.len() && !checkpoint.mounts.is_empty() {
+        let origin = checkpoint.mounts[0].from.clone();
+        checkpoint.mounts.retain(|mount| mount.seq < len);
+        let previous = checkpoint.mounts.last().map(|mount| mount.to.clone()).unwrap_or(origin);
+        if let Some(cwd) = checkpoint.cwd.clone() {
+            if len == 0 { checkpoint.mounts.clear(); }
+            else if previous != cwd { checkpoint.mounts.push(crate::storage::MountBoundary {seq:len, change_count:Some(snapshot.changes.len()), from:previous, to:cwd, note:None}); }
+        }
+    }
+    checkpoint.snapshot = snapshot;
     store.save_room(id, &checkpoint)
 }
 
@@ -2023,6 +2368,125 @@ mod tests {
     }
 
     #[test]
+    fn host_is_freed_after_opening_room_with_folder() {
+        use apex_core::{Access, Backend, Participant, TurnPolicy};
+        let path = std::env::temp_dir().join(format!("apex-host-leak-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, runtime.handle().clone());
+        let weak_host = Arc::downgrade(&host);
+        let configs = vec![("writer", Access::Edits)]
+            .into_iter().map(|(id, access)| {
+                let mut config = apex_core::testing::ScriptedParticipant::new(id, &["finished"]).config().clone();
+                config.access = access;
+                config.backend = Backend::Scripted { lines: vec!["finished".into()] };
+                config
+            }).collect();
+        host.room_create("chat".into(), configs, RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: Some(0) }, Some(cwd.to_string_lossy().into_owned())).unwrap();
+        host.shutdown();
+        drop(host);
+        assert!(weak_host.upgrade().is_none(), "Host leaked after opening room with folder");
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn deleted_thread_copies_are_not_folded_on_restart() {
+        use std::process::Command;
+        let path = std::env::temp_dir().join(format!("apex-del-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+
+        let data = path.join("data");
+        // Create an unfolded copy for a thread that is NOT in store ("deleted-thread")
+        let copy = crate::bot_copies::create_copy(&cwd, &data, "deleted-thread", "bot1").unwrap();
+        assert!(matches!(copy.state, crate::bot_copies::CopyState::Working));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let _enter = runtime.enter();
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+
+        let copies = crate::bot_copies::load_copies(&data);
+        let ghost_copy = copies.iter().find(|c| c.thread == "deleted-thread" && c.bot == "bot1").unwrap();
+        assert_eq!(
+            ghost_copy.state,
+            crate::bot_copies::CopyState::NeedsYou {
+                reason: "its chat was deleted".to_string()
+            }
+        );
+        assert!(host.fold_queue.is_idle());
+
+        // Verify room_delete cleans up non-NeedsYou copies, but preserves NeedsYou copies
+        let _active_copy = crate::bot_copies::create_copy(&cwd, &data, "thread-del-test", "bot2").unwrap();
+        let needs_you_copy = crate::bot_copies::create_copy(&cwd, &data, "thread-del-test", "bot3").unwrap();
+        let mut ny = needs_you_copy;
+        ny.state = crate::bot_copies::CopyState::NeedsYou { reason: "test keep".into() };
+        crate::bot_copies::save_state(&data, &ny).unwrap();
+
+        host.room_delete("thread-del-test".into()).unwrap();
+
+        let remaining = crate::bot_copies::load_copies(&data);
+        assert!(!remaining.iter().any(|c| c.thread == "thread-del-test" && c.bot == "bot2"), "working copy should be removed on thread delete");
+        assert!(remaining.iter().any(|c| c.thread == "thread-del-test" && c.bot == "bot3"), "NeedsYou copy should be kept on thread delete");
+
+        host.shutdown();
+        drop(host);
+        drop(_enter);
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn delete_skips_copy_mid_fold() {
+        use std::process::Command;
+        let path = std::env::temp_dir().join(format!("apex-del-mid-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+
+        let data = path.join("data");
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let _enter = runtime.enter();
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+
+        // Create a copy and mark its state as Folding
+        let copy = crate::bot_copies::create_copy(&cwd, &data, "t-mid-fold", "bot1").unwrap();
+        let mut folding_copy = copy;
+        folding_copy.state = crate::bot_copies::CopyState::Folding;
+        crate::bot_copies::save_state(&data, &folding_copy).unwrap();
+
+        // Delete room
+        host.room_delete("t-mid-fold".into()).unwrap();
+
+        // The copy in Folding state must NOT have been deleted
+        let copies = crate::bot_copies::load_copies(&data);
+        assert!(
+            copies.iter().any(|c| c.thread == "t-mid-fold" && c.bot == "bot1" && matches!(c.state, crate::bot_copies::CopyState::Folding)),
+            "copy in Folding state should be skipped on room_delete"
+        );
+
+        host.shutdown();
+        drop(host);
+        drop(_enter);
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
     fn export_names_keep_only_safe_characters() {
         assert_eq!(safe_name("welcome-email-v3.html").unwrap(), "welcome-email-v3.html");
         assert_eq!(safe_name("../../etc/passwd").unwrap(), "etcpasswd");
@@ -2112,8 +2576,8 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
-            checkpoint: Arc::new(Mutex::new(SavedRoom { cwd: None, snapshot })), deleted: Arc::default() };
+        let handle = RoomHandle { legacy: None, checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
+            checkpoint: Arc::new(Mutex::new(SavedRoom { mounts: vec![], cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }
 
@@ -2219,6 +2683,222 @@ mod host_tests {
     }
 
     #[test]
+    fn startup_survives_a_worker_registry_entry_whose_room_has_no_authority_manifest() {
+        let (first, runtime, data) = host("recover-no-manifest");
+        let cwd = data.join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        first.room_create("legacy".into(), vec![], RoomOptions::default(), Some(cwd.to_string_lossy().into_owned())).unwrap();
+        first.shutdown();
+        drop(first);
+        // The room file survives, but its authority manifest does not (a fresh pin).
+        std::fs::remove_file(crate::authority_file::fixture_path(&data.join("saved-chats-v1/room-authority-v1.json"))).unwrap();
+        let entry = data.join("worker-processes/legacy");
+        std::fs::create_dir_all(&entry).unwrap();
+        let second = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone())
+            .expect("an unverifiable room must not stop the daemon from starting");
+        assert!(entry.is_dir(), "the registry entry stays so a later start can recover it");
+        second.shutdown();
+        drop(second);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn startup_survives_a_worker_registry_entry_with_no_saved_room() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-host-recover-no-room-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let entry = data.join("worker-processes/ghost");
+        std::fs::create_dir_all(&entry).unwrap();
+        let host = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone())
+            .expect("an orphaned registry entry must not stop the daemon from starting");
+        assert!(entry.is_dir());
+        host.shutdown();
+        drop(host);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    fn mount_repo(data: &Path) -> (PathBuf, PathBuf) {
+        let repo = data.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| { assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success()); };
+        git(&["init", "-b", "main"]);
+        git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"]);
+        let tree = data.join("tree");
+        git(&["worktree", "add", "-b", "feature", tree.to_str().unwrap()]);
+        (repo.canonicalize().unwrap(), tree.canonicalize().unwrap())
+    }
+
+    #[test]
+    fn room_mount_waits_for_pending_bot_settings() {
+        use apex_core::Participant;
+        let (host, runtime, data) = host("mount-settings");
+        let (repo, tree) = mount_repo(&data);
+        let config = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        host.room_create("r".into(), vec![config.clone()], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        let handle = host.handle("r").unwrap();
+        runtime.block_on(async {
+            let room = handle.room.lock().await;
+            let update = host.room_update_participant("r".into(), config);
+            tokio::pin!(update);
+            assert!(futures::poll!(&mut update).is_pending());
+            drop(room);
+            let mounted = host.room_mount("r".into(), tree.to_string_lossy().into());
+            if mounted.is_ok() { host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap(); }
+            let _ = update.await;
+            assert!(mounted.unwrap_err().starts_with("room-busy:"));
+        });
+    }
+
+    #[test]
+    fn room_mount_waits_for_pending_file_revert() {
+        let (host, runtime, data) = host("mount-revert");
+        let (repo, tree) = mount_repo(&data);
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        let handle = host.handle("r").unwrap();
+        runtime.block_on(async {
+            // Pause Revert after it has read the old folder, before it can edit.
+            let room = handle.room.lock().await;
+            let revert = host.room_revert("r".into(), 0, None, true, vec![]);
+            tokio::pin!(revert);
+            assert!(futures::poll!(&mut revert).is_pending());
+            drop(room);
+            let mounted = host.room_mount("r".into(), tree.to_string_lossy().into());
+            if mounted.is_ok() { host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap(); }
+            let _ = revert.await;
+            assert!(mounted.unwrap_err().starts_with("room-busy:"));
+        });
+        assert_eq!(host.handle("r").unwrap().context.cwd, Some(repo));
+    }
+
+    #[test]
+    fn room_mount_waits_for_inflight_git_action() {
+        let (host, runtime, data) = host("mount-git-action");
+        let (repo, tree) = mount_repo(&data);
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        let gate = host.checkout_gate(&repo);
+        gate.restore_hold("test-owner").unwrap();
+        let expected = crate::git_changes::status(&repo).unwrap();
+        runtime.block_on(async {
+            let action = host.room_git_action("r".into(), crate::git_changes::Action::Commit {
+                expected, paths: vec!["missing".into()], message: "test".into(),
+            });
+            tokio::pin!(action);
+            assert!(futures::poll!(&mut action).is_pending());
+            assert_eq!(gate.queued(), 1);
+            let mounted = host.room_mount("r".into(), tree.to_string_lossy().into());
+            gate.release("test-owner");
+            let _ = action.await;
+            assert!(mounted.unwrap_err().starts_with("room-busy:"));
+        });
+        assert_eq!(host.handle("r").unwrap().context.cwd, Some(repo));
+        host.room_mount("r".into(), tree.to_string_lossy().into()).unwrap();
+    }
+
+    #[test]
+    fn room_mount_cannot_remove_another_chats_checkout() {
+        let (host, runtime, data) = host("mount-remove");
+        let (repo, tree) = mount_repo(&data);
+        host.room_create("a".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        host.room_mount("a".into(), tree.to_string_lossy().into()).unwrap();
+        // The room is closed after mount; saved rooms must be protected too.
+        for prune in [false, true] {
+            let result = runtime.block_on(async { if prune { host.worktree_forget(repo.to_string_lossy().into(), tree.to_string_lossy().into(), true).await } else { host.worktree_remove(repo.to_string_lossy().into(), tree.to_string_lossy().into(), true).await } });
+            assert!(result.unwrap_err().contains("mounted"));
+            assert!(tree.exists());
+        }
+    }
+
+    #[test]
+    fn room_mount_fork_before_switch_keeps_old_chip_origin() {
+        let (host, runtime, data) = host("mount-fork");
+        let (repo, tree) = mount_repo(&data);
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        for _ in 0..4 { runtime.block_on(host.room_post("r".into(), "history".into())).unwrap(); }
+        host.room_mount("r".into(), tree.to_string_lossy().into()).unwrap();
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        host.room_fork("r".into(), "fork".into(), Some(2)).unwrap();
+        let saved = host.store.room("fork").unwrap().unwrap();
+        assert_eq!(saved.cwd.as_deref(), tree.to_str());
+        assert_eq!(saved.mounts.len(), 1);
+        assert_eq!(saved.mounts[0].seq, 2);
+        assert_eq!(saved.mounts[0].from, repo.to_string_lossy());
+    }
+
+    #[test]
+    fn room_mount_rewind_rebases_boundaries_for_reused_message_numbers() {
+        let (host, runtime, data) = host("mount-rewind");
+        let (repo, tree) = mount_repo(&data);
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        for _ in 0..10 { runtime.block_on(host.room_post("r".into(), "history".into())).unwrap(); }
+        host.room_mount("r".into(), tree.to_string_lossy().into()).unwrap();
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        runtime.block_on(host.room_rewind("r".into(), 5)).unwrap();
+        let mounts = host.store.room("r").unwrap().unwrap().mounts;
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].seq, 5);
+        assert_eq!(mounts[0].to, tree.to_string_lossy());
+    }
+
+    #[test]
+    fn room_mount_failed_persistence_keeps_old_runtime_open() {
+        let (host, runtime, data) = host("mount-write-error");
+        let (repo, _) = mount_repo(&data);
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        let handle = host.handle("r").unwrap();
+        assert!(handle.runtime.retire_if_idle::<()>(|_| Err("disk full".into())).is_err());
+        assert!(runtime.block_on(handle.runtime.begin_post("still open", None, &|_| {})).is_ok());
+    }
+
+    #[test]
+    fn room_create_recovers_missing_mounted_folder_to_original_checkout() {
+        let (host, _, data) = host("mount-missing");
+        let (repo, tree) = mount_repo(&data);
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        host.room_mount("r".into(), tree.to_string_lossy().into()).unwrap();
+        std::fs::rename(&tree, data.join("moved-tree")).unwrap();
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(tree.to_string_lossy().into())).unwrap();
+        assert_eq!(host.handle("r").unwrap().context.cwd, Some(repo));
+        assert!(host.store.room("r").unwrap().unwrap().mounts.last().unwrap().note.is_some());
+    }
+
+    #[test]
+    fn room_mount_preserves_history_and_changes_and_reopens_at_target() {
+        let (host, runtime, data) = host("mount-history");
+        let (repo, tree) = mount_repo(&data);
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        runtime.block_on(host.room_post("r".into(), "keep this history".into())).unwrap();
+        let old = host.handle("r").unwrap();
+        { let mut room = runtime.block_on(old.room.lock()); let mut saved = old.checkpoint.lock().unwrap(); saved.snapshot.changes.push(apex_core::ChangeRecord { by: ParticipantId::new("null"), path: "a.ts".into(), added: 1, removed: 0, seq: 1 }); *room = Room::restore(vec![], saved.snapshot.clone()); host.store.save_room("r", &saved).unwrap(); }
+        let before = host.store.room("r").unwrap().unwrap();
+        host.room_mount("r".into(), tree.to_string_lossy().into()).unwrap();
+        let after = host.store.room("r").unwrap().unwrap();
+        assert_eq!(serde_json::to_value(before.snapshot).unwrap(), serde_json::to_value(&after.snapshot).unwrap());
+        assert_eq!(after.cwd.as_deref(), tree.to_str());
+        assert_eq!(after.mounts.len(), 1);
+        assert!(runtime.block_on(old.runtime.begin_post("stale post", None, &|_| {})).is_err());
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        assert_eq!(host.handle("r").unwrap().context.cwd, Some(tree.clone()));
+        assert_eq!(host.room_state("r".into()).unwrap()["cwd"], tree.to_string_lossy().as_ref());
+        assert_eq!(host.store.room("r").unwrap().unwrap().mounts.len(), 1);
+    }
+
+    #[test]
+    fn room_mount_refuses_busy_foreign_missing_and_subfolders() {
+        let (host, runtime, data) = host("mount-guards");
+        let (repo, tree) = mount_repo(&data);
+        host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        let handle = host.handle("r").unwrap();
+        let batch = runtime.block_on(handle.runtime.begin_post("hold", None, &|_| {})).unwrap();
+        assert!(host.room_mount("r".into(), tree.to_string_lossy().into()).unwrap_err().starts_with("room-busy:"));
+        drop(batch);
+        for target in [data.join("missing"), data.clone(), repo.join("subdir")] {
+            if target.ends_with("subdir") { std::fs::create_dir_all(&target).unwrap(); }
+            assert!(host.room_mount("r".into(), target.to_string_lossy().into()).is_err());
+        }
+        assert_eq!(host.handle("r").unwrap().context.cwd, Some(repo));
+    }
+
+    #[test]
     fn deleting_a_thread_mid_snapshot_does_not_stall_opening_others() {
         let (host, _runtime, data) = host("delete-mid-snapshot");
         let folder = data.join("work");
@@ -2263,7 +2943,7 @@ mod host_tests {
         // The daemon runs each request on its own task.
         let (done, answered) = std::sync::mpsc::channel();
         let open = crate::Command::RoomCreate { id: "b".into(), participants: vec![], options: RoomOptions::default(), cwd: None };
-        { let host = Arc::clone(&host); runtime.spawn(async move { let _ = done.send(host.call(open).await.map(|_| ())); }); }
+        { let host = Arc::clone(&host); runtime.spawn(async move { let _ = done.send(host.call_assuming_verified_ui_for_test(open).await.map(|_| ())); }); }
         let answered = answered.recv_timeout(std::time::Duration::from_secs(10));
         let started_early = !bot.requests().is_empty();
         drop(taking);
@@ -2322,19 +3002,19 @@ mod host_tests {
             *host.handle("r").unwrap().room.lock().await = Room::new(vec![bot.clone()], RoomOptions::default());
             let verified = apex_core::GeneratedUiCapability::Verified;
             let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None };
-            host.call_with_client_capability(post, verified).await.unwrap();
+            host.call_with_client_capability_assuming_verified_ui_for_test(post, verified).await.unwrap();
             let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None };
-            host.call_with_client_capability(post_to, verified).await.unwrap();
+            host.call_with_client_capability_assuming_verified_ui_for_test(post_to, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
             }).await.unwrap();
             let retry = crate::Command::RoomTurn { id: "r".into(), participants: vec![ParticipantId::new("bot")], hops: Some(0), interactive_answers: None };
-            host.call_with_client_capability(retry, verified).await.unwrap();
+            host.call_with_client_capability_assuming_verified_ui_for_test(retry, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
             }).await.unwrap();
             let legacy = crate::Command::RoomPost { id: "r".into(), text: "phone follow-up".into(), interactive_answers: None };
-            host.call(legacy).await.unwrap();
+            host.call_assuming_verified_ui_for_test(legacy).await.unwrap();
             let requests = bot.requests();
             assert_eq!(requests.len(), 4);
             for request in &requests[..3] { assert!(request.system.contains("kind\":\"generated")); }
@@ -2458,7 +3138,7 @@ mod host_tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         host.events().listen(move |envelope| sink.lock().unwrap().push(serde_json::to_value(&envelope.event).unwrap()));
-        let update = |next: serde_json::Value| runtime.block_on(host.call(serde_json::from_value(serde_json::json!({"cmd":"room_update_participant","args":{"id":"r","participant":next,"base":base}})).unwrap())).unwrap();
+        let update = |next: serde_json::Value| runtime.block_on(host.call_assuming_verified_ui_for_test(serde_json::from_value(serde_json::json!({"cmd":"room_update_participant","args":{"id":"r","participant":next,"base":base}})).unwrap())).unwrap();
         let mut phone = base.clone(); phone["backend"]["model"] = "opus".into();
         update(phone);
         let mut desktop = base.clone(); desktop["effort"] = "low".into();
@@ -2513,7 +3193,7 @@ mod host_tests {
         apex_core::ParticipantConfig {
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
-            persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, appearance: None, media: None
+            persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None
         }
     }
 
@@ -2705,5 +3385,50 @@ mod host_tests {
         host.settings_save(json!({ "disabledProviders": ["venice"], "confirmSteer": false })).unwrap();
         assert_eq!(host.settings_load().unwrap(), Some(json!({ "disabledProviders": ["venice"], "confirmSteer": false })));
         let _ = std::fs::remove_dir_all(data);
+    }
+}
+
+#[cfg(test)]
+mod protected_host_ownership_tests {
+    use super::*;
+    #[test]
+    fn held_kernel_ownership_is_fatal_instead_of_empty_ledger_fallback() {
+        let result = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Held("canonical scope".into()))));
+        assert!(result.is_err(), "A competing host must never enter degraded construction");
+    }
+    #[test]
+    fn owned_initial_ledger_failure_refuses_fallback_before_recovery() {
+        use std::cell::Cell;
+        let root = std::env::temp_dir().join(format!("apex-owned-ledger-failure-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["assistant-tasks-v1.json", "project-memory-v1.json", "assistant-conversations-v1.json"] {
+            let path = root.join(name);
+            // Real authority fixture loaders must fail, rather than a mocked
+            // broker or a manufactured error standing in for their effects.
+            std::fs::write(crate::authority_file::fixture_path(&path), b"{broken").unwrap();
+            let fallback = Cell::new(false);
+            let continued = Cell::new(false);
+            let mut unavailable = None;
+            let result = (|| -> Result<(), String> {
+                open_initial_ledger(true, &mut unavailable, || match name {
+                    "assistant-tasks-v1.json" => crate::assistant_tasks::AssistantTasks::open(&path).map(|_| ()).map_err(|e| e.to_string()),
+                    "project-memory-v1.json" => crate::project_memory::ProjectMemory::open(&path).map(|_| ()).map_err(|e| e.to_string()),
+                    _ => crate::assistant_conversation::ConversationStore::open(&path).map(|_| ()).map_err(|e| e.to_string()),
+                }, || { fallback.set(true); })?;
+                continued.set(true);
+                Ok(())
+            })();
+            assert!(result.is_err(), "{name}: owned host continued after a failed initial read");
+            assert!(!fallback.get(), "{name}: a partially authoritative host opened an empty fallback");
+            assert!(!continued.get(), "{name}: construction reached recovery");
+            assert!(unavailable.is_none(), "{name}: owned failure entered degraded state");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unavailable_service_has_no_authority_guard() {
+        let (guard, unavailable) = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Unavailable("broker absent".into())))).unwrap();
+        assert!(guard.is_none());
+        assert!(unavailable.unwrap().contains("broker absent"));
     }
 }

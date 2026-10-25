@@ -1,74 +1,156 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
-import { localDaemon, remoteAccessSaved, saveRemoteAccess } from '../desktop/sidecar.mjs';
-import { changeRemoteAccess } from '../desktop/remoteSwitch.mjs';
+import {
+  callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, readDesktopSettings, setPhoneConnections, writeDesktopSettings,
+} from '../desktop/remoteSwitch.mjs';
 
-/**
- * A stand-in apex-daemon: `data-dir` prints the folder; `serve` listens on
- * daemon.sock until stdin closes, except `serve --remote`, which fails the
- * way a daemon built without the feature does.
- */
-function fakeDaemonBin(dir) {
-  const bin = path.join(dir, 'apex-daemon');
-  fs.writeFileSync(bin, `#!${process.execPath}
-const net = require('node:net');
-const args = process.argv.slice(2);
-const folder = args[args.indexOf('--data-dir') + 1];
-if (args[0] === 'data-dir') { console.log(folder); process.exit(0); }
-if (args.includes('--remote')) { console.error('apex-daemon: this apex-daemon was built without remote access (cargo feature \`remote\`)'); process.exit(2); }
-const server = net.createServer((c) => c.end()).listen(require('node:path').join(folder, 'daemon.sock'));
-process.stdin.on('end', () => { server.close(); process.exit(0); });
-process.stdin.resume();
-`);
-  fs.chmodSync(bin, 0o755);
-  return bin;
+/** A stand-in daemon: the saved setting, and whether the file exists yet. */
+function daemonDouble() {
+  let enabled = false;
+  let present = false;
+  const calls = [];
+  const call = async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (args.import && present) return { enabled, endpoint_id: null, port: null, advertise: [] };
+    enabled = args.enabled === true;
+    present = true;
+    return { enabled, endpoint_id: enabled ? 'ep' : null, port: enabled ? 9 : null, advertise: [] };
+  };
+  return { calls, call, state: () => ({ enabled, present }) };
 }
 
-test('a restart that fails puts the previous setting back, saved, with a working daemon', async () => {
+test('setPhoneConnections asks the daemon without restarting anything', async () => {
+  const calls = [];
+  const info = await setPhoneConnections({
+    enabled: true,
+    call: async (cmd, args) => {
+      calls.push({ cmd, args });
+      return { enabled: true, endpoint_id: 'abc', port: 1, advertise: [] };
+    },
+  });
+  assert.deepEqual(calls, [{ cmd: 'remote_set', args: { enabled: true, import: false } }]);
+  assert.equal(info.enabled, true);
+});
+
+test('an import writes the daemon setting and deletes only the old key', async () => {
   const dir = fs.mkdtempSync('/tmp/deck-rs-');
-  const dataDir = path.join(dir, 'd');
-  fs.mkdirSync(dataDir);
   const file = path.join(dir, 'desktop-settings.json');
-  const bin = fakeDaemonBin(dir);
-  let current = false;
-  let daemon = await localDaemon({ bin, dataDir, remote: current });
-  const restart = async () => {
-    await daemon?.stop();
-    daemon = null;
-    daemon = await localDaemon({ bin, dataDir, remote: current });
-    return daemon;
-  };
+  writeDesktopSettings(file, { remoteAccess: true, theme: 'dark' });
+  const daemon = daemonDouble();
   try {
-    await assert.rejects(
-      changeRemoteAccess({ from: false, to: true, save: (on) => saveRemoteAccess(file, on), set: (on) => { current = on; }, restart }),
-      (e) => /Remote access/.test(e.message) && /built without remote access/.test(e.message) && /left off/.test(e.message),
-    );
-    assert.equal(current, false, 'the running setting is the old one');
-    assert.equal(remoteAccessSaved(file), false, 'the saved setting is the old one, so the next launch works');
-    assert.ok(daemon?.alive(), 'a daemon is running again with the old setting');
+    const info = await importSavedRemoteAccess(file, daemon.call);
+    assert.equal(info.enabled, true);
+    assert.equal(hasRemoteAccessKey(file), false);
+    assert.equal(readDesktopSettings(file).theme, 'dark');
+    assert.deepEqual(daemon.calls, [{ cmd: 'remote_set', args: { enabled: true, import: true } }]);
   } finally {
-    await daemon?.stop();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a restart that works keeps the new setting', async () => {
-  const saved = [];
-  const set = [];
-  const result = await changeRemoteAccess({ from: false, to: true, save: (on) => saved.push(on), set: (on) => set.push(on), restart: async () => ({ owned: true }) });
-  assert.deepEqual(result, { owned: true });
-  assert.deepEqual(saved, [true]);
-  assert.deepEqual(set, [true]);
+test('a failed key delete, a later off, and a re-sent import ends off', async () => {
+  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+  const file = path.join(dir, 'desktop-settings.json');
+  writeDesktopSettings(file, { remoteAccess: true, theme: 'dark' });
+  const daemon = daemonDouble();
+  try {
+    fs.chmodSync(dir, 0o555);
+    const info = await importSavedRemoteAccess(file, daemon.call);
+    assert.equal(info.enabled, true, 'the daemon took the import');
+    assert.equal(hasRemoteAccessKey(file), true, 'the key stays when it cannot be deleted');
+    fs.chmodSync(dir, 0o755);
+
+    const off = await setPhoneConnections({ enabled: false, call: daemon.call });
+    assert.equal(off.enabled, false);
+
+    const again = await importSavedRemoteAccess(file, daemon.call);
+    assert.equal(again.enabled, false, 'the re-sent import does not turn it back on');
+    assert.equal(daemon.state().enabled, false);
+    assert.equal(hasRemoteAccessKey(file), false, 'the key is deleted once the write works');
+    assert.equal(readDesktopSettings(file).theme, 'dark');
+    assert.deepEqual(daemon.calls.map((entry) => entry.args), [
+      { enabled: true, import: true },
+      { enabled: false, import: false },
+      { enabled: true, import: true },
+    ]);
+  } finally {
+    fs.chmodSync(dir, 0o755);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test('when even the old setting will not start, it is still put back and both failures are told', async () => {
-  const saved = [];
-  let n = 0;
-  await assert.rejects(
-    changeRemoteAccess({ from: true, to: false, save: (on) => saved.push(on), set: () => {}, restart: async () => { throw new Error(n++ ? 'second.' : 'first.'); } }),
-    (e) => /first\./.test(e.message) && /left on/.test(e.message) && /second\./.test(e.message),
-  );
-  assert.deepEqual(saved, [false, true]);
+test('a daemon error during import leaves the old key', async () => {
+  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+  const file = path.join(dir, 'desktop-settings.json');
+  writeDesktopSettings(file, { remoteAccess: false });
+  try {
+    await assert.rejects(
+      importSavedRemoteAccess(file, async () => { throw new Error('UDP port 9 is in use'); }),
+      /UDP port 9 is in use/,
+    );
+    assert.equal(hasRemoteAccessKey(file), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** A socket that speaks one answer, after an event and the hello. */
+function answeringSocket(dir, frames) {
+  const socketPath = path.join(dir, 'daemon.sock');
+  const seen = [];
+  const server = net.createServer((socket) => {
+    let buf = '';
+    socket.on('data', (chunk) => {
+      buf += chunk.toString('utf8');
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) seen.push(JSON.parse(line));
+      }
+      if (seen.some((frame) => frame.id === 1)) {
+        for (const frame of frames) socket.write(`${JSON.stringify(frame)}\n`);
+      }
+    });
+  });
+  return { socketPath, seen, listen: () => new Promise((resolve) => server.listen(socketPath, resolve)), close: () => new Promise((resolve) => server.close(resolve)) };
+}
+
+test('callDaemon says hello, skips other frames, and returns the answer', async () => {
+  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+  const server = answeringSocket(dir, [
+    { seq: 4, event: 'room-event', payload: {} },
+    { id: 0, ok: { protocol: 1 } },
+    { id: 1, ok: { enabled: false, endpoint_id: null, port: null, advertise: [] } },
+  ]);
+  await server.listen();
+  try {
+    const info = await callDaemon(server.socketPath, 'remote_info', {});
+    assert.equal(info.enabled, false);
+    assert.deepEqual(server.seen.map((frame) => frame.cmd), ['hello', 'remote_info']);
+    assert.equal(server.seen[0].args.protocol, 1);
+    assert.equal(server.seen[0].id, 0);
+    assert.equal(server.seen[1].id, 1);
+  } finally {
+    await server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('callDaemon rejects with the daemon words', async () => {
+  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+  const server = answeringSocket(dir, [
+    { id: 0, ok: { protocol: 1 } },
+    { id: 1, err: 'UDP port 41641 is in use', reason: 'io' },
+  ]);
+  await server.listen();
+  try {
+    await assert.rejects(callDaemon(server.socketPath, 'remote_set', { enabled: true, import: false }), /41641/);
+  } finally {
+    await server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

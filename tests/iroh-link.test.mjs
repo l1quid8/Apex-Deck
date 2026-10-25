@@ -38,7 +38,7 @@ function fakeTimers() {
 
 test("irohConnect resolves a Link that round-trips lines", async () => {
   const plugin = new FakePlugin();
-  const opening = irohConnect(target, plugin, () => "automatic")();
+  const opening = irohConnect(target, plugin)();
   await tick();
   plugin.emit({ type: "opened", handle: 1 });
   const link = await opening;
@@ -53,7 +53,7 @@ test("irohConnect resolves a Link that round-trips lines", async () => {
 
 test("a line that arrives before onLine is held, not lost", async () => {
   const plugin = new FakePlugin();
-  const opening = irohConnect(target, plugin, () => "automatic")();
+  const opening = irohConnect(target, plugin)();
   await tick();
   plugin.emit({ type: "opened", handle: 1 });
   plugin.emit({ type: "line", handle: 1, line: "early" });
@@ -70,12 +70,12 @@ test("events that come before the subscriber are replayed to it, closed included
     plugin.emit({ type: "closed", handle: 7, code: 1002, reason: "dial failed" });
     return 7;
   };
-  await assert.rejects(irohConnect(target, plugin, () => "automatic")(), /Can't reach this machine/);
+  await assert.rejects(irohConnect(target, plugin)(), /Can't reach this machine/);
 });
 
 test("closed after open calls onClose with the reason", async () => {
   const plugin = new FakePlugin();
-  const opening = irohConnect(target, plugin, () => "automatic")();
+  const opening = irohConnect(target, plugin)();
   await tick();
   plugin.emit({ type: "opened", handle: 1 });
   const link = await opening;
@@ -87,7 +87,7 @@ test("closed after open calls onClose with the reason", async () => {
 
 test("an old handle's events never reach the newer link", async () => {
   const plugin = new FakePlugin();
-  const connect = irohConnect(target, plugin, () => "automatic");
+  const connect = irohConnect(target, plugin);
   const first = connect();
   await tick();
   plugin.emit({ type: "opened", handle: 1 });
@@ -106,7 +106,7 @@ test("an old handle's events never reach the newer link", async () => {
 test("route events report Direct or Relayed, and nothing once closed", async () => {
   const plugin = new FakePlugin();
   const routes = [];
-  const opening = irohConnect(target, plugin, () => "automatic", (route) => routes.push(route))();
+  const opening = irohConnect(target, plugin, (route) => routes.push(route))();
   await tick();
   plugin.emit({ type: "opened", handle: 1 });
   plugin.emit({ type: "route", handle: 1, route: "relayed" });
@@ -120,7 +120,7 @@ for (const [code, name] of [[2, "REVOKED"], [1, "NOT_PAIRED"]]) {
   test(`revoked_close_stops_retrying: close code ${code} (${name})`, async () => {
     const plugin = new FakePlugin();
     const timers = fakeTimers();
-    const client = new DaemonClient(irohConnect(target, plugin, () => "automatic"), { timers });
+    const client = new DaemonClient(irohConnect(target, plugin), { timers });
     const statuses = [];
     client.onStatus((status) => statuses.push(status));
     void client.start();
@@ -140,7 +140,7 @@ for (const [code, name] of [[2, "REVOKED"], [1, "NOT_PAIRED"]]) {
 test("a revoke during connect also stops without a retry", async () => {
   const plugin = new FakePlugin();
   const timers = fakeTimers();
-  const client = new DaemonClient(irohConnect(target, plugin, () => "automatic"), { timers });
+  const client = new DaemonClient(irohConnect(target, plugin), { timers });
   const statuses = [];
   client.onStatus((status) => statuses.push(status));
   void client.start();
@@ -151,10 +151,10 @@ test("a revoke during connect also stops without a retry", async () => {
   assert.equal(timers.pending.size, 0);
 });
 
-test("Direct only that can't connect says so and backs off at the normal pace", async () => {
+test("a timeout says the machine can't be reached and backs off at the normal pace", async () => {
   const plugin = new FakePlugin();
   const timers = fakeTimers();
-  const client = new DaemonClient(irohConnect(target, plugin, () => "direct"), { timers });
+  const client = new DaemonClient(irohConnect(target, plugin), { timers });
   const statuses = [];
   client.onStatus((status) => statuses.push(status));
   void client.start();
@@ -163,7 +163,8 @@ test("Direct only that can't connect says so and backs off at the normal pace", 
   await tick();
   const last = statuses.at(-1);
   assert.equal(last.kind, "reconnecting");
-  assert.match(last.reason, /^Direct connection blocked/);
+  assert.match(last.reason, /^Can't reach this machine right now/);
+  assert.doesNotMatch(last.reason, /Switch to Automatic/);
   assert.deepEqual([...timers.pending.values()].map((t) => t.ms), [1000]);
   // The second failure waits longer, not shorter.
   [...timers.pending.values()][0].fn();
@@ -177,7 +178,7 @@ test("Direct only that can't connect says so and backs off at the normal pace", 
 test("a send the plugin refuses closes the link so the client reconnects", async () => {
   const plugin = new FakePlugin();
   plugin.send = async () => { throw new Error("busy"); };
-  const opening = irohConnect(target, plugin, () => "automatic")();
+  const opening = irohConnect(target, plugin)();
   await tick();
   plugin.emit({ type: "opened", handle: 1 });
   const link = await opening;
@@ -191,7 +192,7 @@ test("each dial reads the newest saved addresses", async () => {
   const asked = [];
   plugin.connect = async (host, addrs) => { asked.push(addrs); return plugin.next++; };
   let addrs = ["old:1"];
-  const connect = irohConnect(() => ({ hostEndpointId: HOST, addrs }), plugin, () => "automatic");
+  const connect = irohConnect(() => ({ hostEndpointId: HOST, addrs }), plugin);
   void connect().catch(() => {});
   await tick();
   addrs = ["new:2"];
@@ -202,7 +203,7 @@ test("each dial reads the newest saved addresses", async () => {
 
 test("a close between opened and onClose is replayed, final flag included", async () => {
   const plugin = new FakePlugin();
-  const opening = irohConnect(target, plugin, () => "automatic")();
+  const opening = irohConnect(target, plugin)();
   await tick();
   plugin.emit({ type: "opened", handle: 1 });
   plugin.emit({ type: "closed", handle: 1, code: 2, reason: "revoked" });
@@ -225,7 +226,7 @@ test("opened then revoked before the client subscribes stops without a retry", a
     plugin.emit({ type: "closed", handle: 1, code: 2, reason: "revoked" });
     return 1;
   };
-  const client = new DaemonClient(irohConnect(target, plugin, () => "automatic"), { timers });
+  const client = new DaemonClient(irohConnect(target, plugin), { timers });
   const statuses = [];
   client.onStatus((status) => statuses.push(status));
   void client.start();
@@ -252,7 +253,7 @@ test("revoked, then paired again by QR code, the machine connects on a fresh con
   // As PhoneApp does: one client per connectionKey, made again only when the key changes.
   const machine = { id: "h-1", name: "Apex-Terminal", kind: "server", transport: "iroh", hostEndpointId: HOST, addrs: ["203.0.113.7:41641"], pairedAt: 5 };
   const open = (list) => {
-    const client = new DaemonClient(irohConnect(() => list[0], plugin, () => "automatic"), { timers });
+    const client = new DaemonClient(irohConnect(() => list[0], plugin), { timers });
     const statuses = [];
     client.onStatus((status) => statuses.push(status));
     void client.start();

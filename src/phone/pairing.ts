@@ -74,7 +74,7 @@ export function pairFailure(code: number, reason: string): string {
     case CLOSE.PAIR_BAD_PROOF: return "The machine didn't accept this phone's answer. Scan the code again.";
     case CLOSE.WRONG_HOST: return "A different machine answered. Nothing was sent to it.";
     case CLOSE.TIMEOUT: return "Pairing took too long. Check that both are online and try again.";
-    case CLOSE.UNREACHABLE: return `Couldn't reach the machine (${reason}). On cellular, this phone has to be on the relay's list first; on the same Wi-Fi it doesn't.`;
+    case CLOSE.UNREACHABLE: return `Couldn't reach the machine (${reason}).`;
     default: return reason ? `Pairing didn't finish: ${reason}.` : "Pairing didn't finish.";
   }
 }

@@ -30,7 +30,7 @@ export type TaskSummary = {
 };
 
 export const projectTaskKey = (hostId: string, workspaceId: string, id: string) => `project:${hostId}:${workspaceId}:${id}`;
-export const personalTaskKey = (hostId: string, id: string) => `personal:${hostId}:${id}`;
+export const personalTaskKey = (hostId: string, id: string, assistantId?: string) => assistantId ? JSON.stringify(["personal", hostId, assistantId, id]) : `personal:${hostId}:${id}`;
 
 export function projectTaskGroup(task: Pick<AssistantTask, 'status'>): TaskGroup {
   if (['proposed', 'needs_clarification', 'needs_you', 'ready_for_review', 'interrupted'].includes(task.status)) return 'needsYou';

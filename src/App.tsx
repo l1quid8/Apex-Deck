@@ -1,8 +1,12 @@
+import { assistantSidebarPanes, assistantThreadKey } from './assistantSidebar';
+import { AssistantBrowser, type AssistantBrowserPresentation } from './AssistantBrowser';
+import { chatFolder } from "./worktreeMount";
+import { useWorktreeMount } from "./useWorktreeMount";
 import { canvasPanes } from "./canvasPanes.ts";
 import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceFamily, workspaceHost } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
 import { HostPane, HostAgents, HostMonitors } from "./HostPane";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { getBackend, type Backend, type HostEntry } from "./backend";
 import { connection, statusWords } from "./connection";
@@ -19,18 +23,25 @@ import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
 import { ModOverlays, ModStatuses, OPEN_SETTINGS_EVENT } from "./ModView";
 import { modHost } from "./mods/host";
 import { startHub } from "./hub";
+import { voiceController } from "./voice/coordinator";
 import { loadStartupState } from "./startupState.ts";
 import { SectionNavigation, type AttentionItem, type SectionFlag } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { addRenames, renamedAgents, renameNotes, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { ApexAgentSources } from "./ApexAgentSources";
 import { ApexAgentTasks } from "./lazyViews";
-import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
+import { overviewOwner, overviewOwnerKey, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
-import { usePersonalAssistant } from "./personalAssistant";
-import { ApexAgentWidget } from "./ApexAgentWidget";
+import { usePersonalAssistants } from "./usePersonalAssistants";
+import { AssistantProjects } from './AssistantProjects';
+import { AssistantCreationDialog } from './AssistantCreationDialog';
+import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
+import { AssistantDetails } from "./AssistantDetails";
+import { useAssistantOutputs } from "./useAssistantOutputs";
+import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
+import { splitFirstBrief, rosterMessage, loadMainView, saveMainView, assistantNavigation, assistantSettingsSaved, resolveAssistantProject, resolveAssistantProjectFolder, discoverAssistantProjectFolder, assistantProjectCanvasDestination, assistantWorkerThreadDestination, type AssistantSection, type MainView } from "./assistantWorkspaceModel";
+import { subscribeToImports } from "./legacyImportRefresh.ts";
 import "./apex-agent-dock.css";
-import { widgetCoordinates, widgetSidePanelPosition, type AssistantSourceDrop, type WidgetPosition } from "./apexAgentWidgetModel.ts";
 import { LibraryView } from "./lazyViews";
 import { DeckIcon } from "./DeckIcon";
 import { LayoutPicker } from "./LayoutPicker";
@@ -55,6 +66,7 @@ import { flushAnswerStores } from "./interactiveAnswers/answerStore.ts";
 import { loadRoomState } from "./roomRecovery.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { followedTabPane, orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles, type ChatBundle, type PaneSpot, type PopoutAction, type PopoutSnapshot, type PopoutUpdate, type TabSpot } from "./popoutModel.ts";
+import { useRestorePopouts, type PopoutIdentity } from "./useRestorePopouts.ts";
 import { TAB_LABEL } from "./RightPanel";
 import type { PanelTab } from "./rightPanelModel";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
@@ -63,29 +75,38 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
-import { assistantTasksForOwner, assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
+import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
+import { assistantStatus, assistantWorkItems, delegatedTasksForAssistant, type WorkItem } from "./assistantStatus";
+import { personalTaskKey, projectTaskKey } from "./apexAgentTaskView";
+import { prefillAssistantComposer } from "./assistantComposerDrafts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { unsavedEditName } from "./unsavedEdits";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
-import { workingFor } from "./composerStatus";
+import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
 import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
+import { WorkspaceTasks } from "./WorkspaceTasksScreen";
+import { WorkspaceTaskDetails } from "./WorkspaceTaskDetails";
+import { collectWorkspaceTasks, workspaceTaskHostMatches, type WorkspaceTaskRow } from "./workspaceTasks";
+import type { DashboardDestination } from "./dashboardModel";
+import { placeDashboardPane } from "./dashboardNavigation";
 import { RightBrowser } from "./RightBrowser";
 import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
-import { closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
+import { RightTerminalTab } from "./RightTerminal";
+import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
-/** A pane counts as working if it produced output this recently. */
+/** A terminal counts as working if it produced output this recently. */
 const WORKING_WINDOW_MS = 1500;
 
 let counter = 0;
@@ -121,7 +142,7 @@ export function folderName(path: string): string {
 /** The layout of one section of one workspace is saved under this name. */
 const layoutKey = (workspace: string | null, section: AppSection) => `${workspace ?? ""}:${section}`;
 
-/** The layouts as saved: popped-out panes stay in place, so a relaunch puts them back in the deck. */
+/** Keep return positions in the session; desktop placement restores external windows separately. */
 function withPoppedOut(all: Record<string, LayoutNode>, out: { id: string; layoutKey: string; spot: PaneSpot }[]): Record<string, LayoutNode> {
   if (out.length === 0) return all;
   const next = { ...all };
@@ -129,7 +150,7 @@ function withPoppedOut(all: Record<string, LayoutNode>, out: { id: string; layou
   return next;
 }
 
-/** The side panel as saved: popped-out tabs stay in the strip, so a relaunch puts them back. */
+/** Keep external tabs in the saved strip so startup can rebuild their live snapshots. */
 function withPoppedTabs(state: RightPanelState, out: { tab: PanelTab; spot: TabSpot }[]): RightPanelState {
   if (out.length === 0) return state;
   let next = state;
@@ -155,6 +176,14 @@ const TOAST_MS = 4000;
 
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
+  const [mainView, setMainView] = useState<MainView>(()=>loadMainView());
+  useEffect(()=>{saveMainView(mainView);},[mainView]);
+  const [assistantProjectAliases,setAssistantProjectAliases]=useState<Record<string,{route:Backend;project:ProjectRef}>>({});
+  const [assistantProjectDiscoveryProblems,setAssistantProjectDiscoveryProblems]=useState<Record<string,string>>({});
+  const [creatingAssistant, setCreatingAssistant] = useState(false);
+  const [restoringAssistant,setRestoringAssistant]=useState<string|null>(null);
+  const [assistantNotebookProject,setAssistantNotebookProject]=useState<ProjectRef>();
+  const [creationHost, setCreationHost] = useState("local");
   /** Bumped by the title bar's + New agent button. */
   const [newAgentRequest, setNewAgentRequest] = useState(0);
   /** What each thread reports: its head's words, and who is replying or stopped on a card. */
@@ -189,10 +218,11 @@ export function App() {
   const { workspaces, panes: savedPanesForSession, importedHostSessions } = records;
   const panes = savedPanesForSession;
   const [assistantRegistry, setAssistantRegistry] = useState<AssistantRegistryState>(() => emptyAssistantRegistry());
+  const globalTaskFeed = useRef<{ rows: WorkspaceTaskRow[]; problems: string[] }>({ rows: [], problems: [] });
   const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
   const [assistantTaskSignals, setAssistantTaskSignals] = useState<Record<string, Signal>>({});
-  const [assistantTaskNeedsDetails, setAssistantTaskNeedsDetails] = useState<Record<string, string[]>>({});
-  const [assistantTaskCounts, setAssistantTaskCounts] = useState<Record<string, number>>({});
+  const [, setAssistantTaskNeedsDetails] = useState<Record<string, string[]>>({});
+  const [, setAssistantTaskCounts] = useState<Record<string, number>>({});
   // Each project task's status, keyed by project and task, so a worker chat's menu knows whether its task is still going.
   const [assistantTaskStatuses, setAssistantTaskStatuses] = useState<Record<string, string>>({});
   const [assistantTaskErrors, setAssistantTaskErrors] = useState<Record<string, string>>({});
@@ -220,6 +250,8 @@ export function App() {
     try { localStorage.setItem("apex-agent-task-pane-titles", JSON.stringify(next)); } catch { /* Lasts for this window. */ }
     return next;
   });
+  const [keptAssistantThreads,setKeptAssistantThreads]=useState<Set<string>>(()=>{try{return new Set(JSON.parse(localStorage.getItem('apex-assistant-kept-threads')??'[]'));}catch{return new Set();}});
+  const keepAssistantThread=(pane:Pane&{hostId?:string})=>setKeptAssistantThreads(old=>{const next=new Set(old);next.add(assistantThreadKey(pane));localStorage.setItem('apex-assistant-kept-threads',JSON.stringify([...next]));return next;});
   const viewPanes = useMemo(() => {
     const closed = new Set(closedTaskPanes);
     return mergeAssistantPanes(panes, currentAssistantRegistry).map((pane) => {
@@ -235,66 +267,43 @@ export function App() {
   latest.current = { workspaces, panes };
   const setWorkspaces = useCallback((next: Workspace[] | ((old: Workspace[]) => Workspace[])) => setRecords(r => ({ ...r, workspaces: typeof next === "function" ? next(r.workspaces) : next })), []);
   const setPanes = useCallback((next: Pane[] | ((old: Pane[]) => Pane[])) => setRecords(r => ({ ...r, panes: typeof next === "function" ? next(r.panes) : next })), []);
+  const setChatFolder = useCallback((id: string, cwd: string) => setPanes(all => all.map(p => p.id === id && p.mount !== cwd ? {...p, mount:cwd} : p)), [setPanes]);
+  const mounts = useWorktreeMount({panes, workspaces, status:threadStatus, options:settings.newThread, setFolder:setChatFolder, error:message => toast(message)});
+
   const sessionRef = useRef<AppSession | null>(null);
   const [migrationNotice, setMigrationNotice] = useState("");
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
-  const [apexAgentWorkspace, setApexAgentWorkspace] = useState<string | null>(null);
-  const [apexAgentDockFocused, setApexAgentDockFocused] = useState(false);
-  const [apexAgentAppearanceRequest, setApexAgentAppearanceRequest] = useState(0);
-  const [apexAgentHideRequest, setApexAgentHideRequest] = useState(0);
-  const [apexAgentSelection, setApexAgentSelection] = useState<string | null>(() => {
-    try { return localStorage.getItem("apex-agent-selected-project"); } catch { return null; }
-  });
+  const [apexAgentWorkspace, setApexAgentWorkspace] = useState<string | ProjectRef | null>(null);
   /** ApexAgent opens on one conversation across every project; a single project opens only for its setup and sources. */
   const [apexAgentAllOpen, setApexAgentAllOpen] = useState(false);
   /** The project picked from the avatar's project list; null shows every project's conversation. */
-  const [apexAgentFilter, setApexAgentFilter] = useState<string | null>(null);
-  const [apexAvatarPosition, setApexAvatarPosition] = useState<WidgetPosition | null>(null);
-  const [apexAgentFull, setApexAgentFull] = useState(() => { try { return localStorage.getItem("apex-agent-full-screen") === "1"; } catch { return false; } });
-  // The conversation pop-up opens beside the avatar, on whichever edge it sits.
-  const apexFloatStyle = (() => {
-    if (apexAgentFull || !apexAvatarPosition || typeof window === "undefined") return undefined;
-    const viewport = { width: window.innerWidth, height: window.innerHeight };
-    const avatar = widgetCoordinates(apexAvatarPosition, viewport);
-    const width = Math.min(400, viewport.width - 48);
-    const height = Math.min(600, viewport.height - 140);
-    const top = Math.max(48, Math.min(avatar.top + 28 - height / 2, viewport.height - height - 16));
-    return { ...widgetSidePanelPosition(apexAvatarPosition.edge, avatar.left, viewport.width, width, 56, 16, 12), top, bottom: "auto", width, height } as CSSProperties;
-  })();
-  const toggleApexAgentFull = () => setApexAgentFull((full) => { try { localStorage.setItem("apex-agent-full-screen", full ? "0" : "1"); } catch { /* Lasts for this window. */ } return !full; });
   const [, refreshAssistantRequests] = useState(0);
   // Requests this window is sending right now; they show as your chat message, not as an unconfirmed card.
   const assistantSending = useRef(new Set<string>());
   /** Clearing hides earlier messages on this Mac only; each project's assistant keeps its memory and open findings. */
-  const [apexAgentClearedAt, setApexAgentClearedAt] = useState(() => { try { return Number(localStorage.getItem("apex-agent-cleared-at")) || 0; } catch { return 0; } });
-  const [overviewEntries, setOverviewEntries] = useState<OverviewEntry[]>(() => loadOverviewEntries(localStorage));
-  const overviewHistory = useRef(overviewEntries); overviewHistory.current = overviewEntries;
+  const [apexAgentClearedAt] = useState(() => { try { return Number(localStorage.getItem("apex-agent-cleared-at")) || 0; } catch { return 0; } });
   const [handoffBatches, setHandoffBatches] = useState<HandoffBatch[]>(() => loadHandoffBatches(localStorage));
   const handoffHistory = useRef(handoffBatches);
   const handoffBusy = useRef(new Set<string>());
   const [handoffWorking, setHandoffWorking] = useState<string[]>([]);
   const [assistantTaskContext, setAssistantTaskContext] = useState<{ id: string; project: string; label: string; owner: AssistantTaskOwner; send: (text: string) => Promise<void> } | null>(null);
 
-  const clearApexAgentConversation = () => { const at = Date.now(); setApexAgentClearedAt(at); try { localStorage.setItem("apex-agent-cleared-at", String(at)); } catch { /* Lasts for this window. */ } };
   // Only an explicit project pick (project list, notification jump) filters the conversation; ⌘K opens it unfiltered.
-  const openApexAgent = (workspaceId: string, filterToProject = false) => {
+  const openApexAgent = (workspaceId: string, _filterToProject = false) => {
     if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
-    setApexAgentSelection(workspaceId);
     setApexAgentWorkspace(null);
-    setApexAgentFilter(filterToProject ? workspaceId : null);
     setApexAgentAllOpen(true);
     try { localStorage.setItem("apex-agent-selected-project", workspaceId); } catch { /* Selection still lasts for this window. */ }
   };
   const openApexAgentProject = (workspaceId: string) => {
     if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
-    setApexAgentSelection(workspaceId);
     setApexAgentWorkspace(workspaceId);
     setApexAgentAllOpen(true);
   };
-  const closeApexAgent = () => { setApexAgentWorkspace(null); setApexAgentAllOpen(false); setApexAgentDockFocused(false); };
+  const closeApexAgent = () => { setApexAgentWorkspace(null); setApexAgentAllOpen(false); };
   const closeApexAgentAndReturnFocus = () => {
     closeApexAgent();
-    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".apex-widget-hit")?.focus());
+    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".assistant-team-row[aria-current=page]")?.focus());
   };
 
   /** Where you stopped reading each thread, saved with it for "New since you looked". */
@@ -309,10 +318,11 @@ export function App() {
   const [layoutPreset, setLayoutPreset] = useState<"grid" | Layout>("top");
   /** How the panes of each workspace section are arranged. */
   const [layouts, setLayouts] = useState<Record<string, LayoutNode>>({});
-  /** Panes showing in pop-out windows. Never saved: the session keeps them in place, so a relaunch puts them back. */
+  /** Runtime tokens and return positions; desktop placement persists the external identities. */
   const [poppedOut, setPoppedOut] = useState<{ token: string; id: string; layoutKey: string; spot: PaneSpot }[]>([]);
-  /** Side-panel tabs showing in pop-out windows. Never saved either: they return to the strip on relaunch. */
+  /** Runtime tab tokens and their return positions. */
   const [poppedTabs, setPoppedTabs] = useState<{ token: string; id: string; tab: PanelTab; spot: TabSpot }[]>([]);
+  const [externalPopouts, setExternalPopouts] = useState<PopoutIdentity[] | null>(null);
   /** True while a divider is being dragged. */
   const [resizing, setResizing] = useState(false);
   const gridArea = useRef<HTMLDivElement>(null);
@@ -380,8 +390,11 @@ export function App() {
   const [railRename, setRailRename] = useState<Record<string, number>>({});
   /** Bumped to start a terminal again from its ⋯ menu. */
   const [startRequests, setStartRequests] = useState<Record<string, number>>({});
-  /** Text to type, not run, into a terminal the first time it starts: a code block's Open in terminal. */
-  const [typeIns, setTypeIns] = useState<Record<string, string>>({});
+  /** Text to type, not run, into a main terminal pane (kept for restored sessions). */
+  const [typeIns] = useState<Record<string, string>>({});
+  /** Code block -> right sidebar terminal tool. */
+  const [rightTypeIn, setRightTypeIn] = useState<string | undefined>(undefined);
+  const [rightTypeInSeq, setRightTypeInSeq] = useState(0);
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared once the thread takes it. */
   const [threadRequests, setThreadRequests] = useState<Record<string, { id: string; action: ThreadMenuRequest } | undefined>>({});
   const menuSeq = useRef(0);
@@ -393,10 +406,9 @@ export function App() {
   /** Full screen for the side panel. It opens the panel if needed and collapses ApexAgent's full screen. */
   const setSidePanelFull = (full: boolean) => {
     setPanel((p) => setFull(p, full));
-    if (full && apexAgentFull) { setApexAgentFull(false); try { localStorage.setItem("apex-agent-full-screen", "0"); } catch { /* Lasts for this window. */ } }
+
   };
   // Only one of the two fills the window: ApexAgent going full collapses the side panel.
-  useEffect(() => { if (apexAgentFull) setPanel((p) => p.full ? setFull(p, false) : p); }, [apexAgentFull]);
   const sidePanelFull = detailsOpen && panel.full;
   const asideRef = useRef<HTMLElement | null>(null);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
@@ -408,8 +420,7 @@ export function App() {
   const canvasRef = useRef<HTMLElement>(null);
   const [availableWidth, setAvailableWidth] = useState(0);
   const [, setBodyWidth] = useState(0);
-  const compactApexAgentDock = false; // The v4 pop-up floats over the app, so the sidebar never has to give way.
-  const railVisible = railOpen && !compactApexAgentDock;
+  const railVisible = railOpen;
   /** Sidebar widths the user dragged to; null keeps the default. */
   const [sidebarWidths, setSidebarWidths] = useState<SidebarWidths>(loadWidths);
   const setSidebarWidth = (which: Sidebar) => (width: number | null) => setSidebarWidths((old) => ({ ...old, [which]: width }));
@@ -421,7 +432,8 @@ export function App() {
   const pendingSection = useRef<DetailsSection | undefined>(undefined);
   const detailsWidth = sidebarWidths.details ?? SIDEBAR_DEFAULT.details;
   // Full screen fills the work area, so it never floats over the canvas as an overlay.
-  const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth);
+  // Assistant views reflow below the Threads pane minimum. Keep their controls visible beside a docked panel.
+  const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth, mainView.kind === "assistant" ? 400 : 560);
   /** Runs `action` now, or after the user agrees to drop unsaved edits in the Files tab. */
   const guardUnsavedEdits = (action: () => void) => {
     const file = unsavedEditName();
@@ -431,7 +443,11 @@ export function App() {
   const closeDetails = () => guardUnsavedEdits(() => { setDetailsOpen(false); detailsToggle.current?.focus(); });
   const changePanel = (next: RightPanelState) => {
     const closesFiles = panel.tabs.some((tab) => tab.kind === "files") && !next.tabs.some((tab) => tab.kind === "files");
-    if (closesFiles) guardUnsavedEdits(() => setPanel(next)); else setPanel(next);
+    // Closing the assistant's browser tab goes back to Details. It never touches
+    // who controls the page, so closing the view cannot hand it back silently.
+    const closesAssistantBrowser = panel.tabs.some((tab) => tab.kind === "assistantbrowser") && !next.tabs.some((tab) => tab.kind === "assistantbrowser");
+    const settled = closesAssistantBrowser && mainView.kind === "assistant" ? activate(next, "details", Date.now()) : next;
+    if (closesFiles) guardUnsavedEdits(() => setPanel(settled)); else setPanel(settled);
   };
   // Esc leaves full screen. It never hides the panel, and it leaves typing and open menus or dialogs alone.
   useEffect(() => {
@@ -452,7 +468,12 @@ export function App() {
     if (target) setDetailsCollapsed(old => ({ ...old, [target]: false }));
     setPanel((p) => openTab({ ...p, open: true }, "details", Date.now()));
   };
-  const detailsHostBase = { slot: detailsSlot, open: panel.open && detailsTabActive && section === "threads", overlay: overlayDetails, collapsed: detailsCollapsed,
+  /** The session strip's avatar: open the one side panel on Details, switch it to Details, or close it. */
+  const toggleAssistantDetails = () => {
+    if (panel.open && detailsTabActive) { closeDetails(); return; }
+    showDetails();
+  };
+  const detailsHostBase = { slot: detailsSlot, open: panel.open && detailsTabActive && (section === "threads" || mainView.kind === "assistant"), overlay: overlayDetails, collapsed: detailsCollapsed,
     toggle: (target: DetailsSection) => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
   useEffect(() => {
     const body = bodyRef.current;
@@ -529,15 +550,27 @@ export function App() {
         setStorageError(`Could not read settings: ${String(savedSettings.error)}. Defaults are in use and the file has been kept.`);
       }
       const known = normalizeWorkspaces(saved?.workspaces ?? loadWorkspaces());
-      setWorkspaces(known);
       const loaded = loadedPanes(saved?.panes ?? [], known.map((w) => w.id));
+      const savedPanel = saved?.rightPanel ?? (saved?.threadDetailsOpen ? { ...defaultPanel(), open: true, active: "details" } : loadPanel());
+      // Claim desktop identities before parsing: external browsers must survive
+      // the docked browser cap so they can be taken back out after startup.
+      const external = await window.apexDeck?.popout?.restore?.({
+        panes: listedPanes(loaded, known).filter(pane => !pane.closed && !pane.archived && !popoutRefusal(pane)).map(pane => pane.id),
+        tabs: Array.isArray(savedPanel.tabs) ? savedPanel.tabs.filter(tab => tab && typeof tab.id === "string").map(tab => tab.id) : [],
+      }).catch(error => {
+        toast(`Could not restore external windows: ${String(error)}`);
+        return [];
+      }) ?? [];
+      if (!alive) return;
+      setExternalPopouts(external);
+      setWorkspaces(known);
       restored.current = new Set(loaded.filter((p) => p.kind === "terminal").map((p) => p.id));
       setPanes(loaded);
       setProfiles(saved?.profiles ?? []);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
       setLayoutPreset(saved?.layout ?? "top");
-      setPanel(saved?.rightPanel ? parsePanel(JSON.stringify(saved.rightPanel)) : saved?.threadDetailsOpen ? { ...defaultPanel(), open: true, active: "details" } : loadPanel());
+      setPanel(parsePanel(JSON.stringify(savedPanel), external.filter(rec => rec.kind === "tab").map(rec => rec.id)));
       setDetailsCollapsed(saved?.threadDetailsCollapsed ?? {});
       // A layout that cannot be read is dropped and rebuilt from the panes,
       // and panes that didn't load are taken out of the rest.
@@ -562,7 +595,7 @@ export function App() {
     };
   }, []);
 
-  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(withPoppedOut(layouts, poppedOut), workspaces.map(w => w.id)), rightPanel: panel, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
+  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(withPoppedOut(layouts, poppedOut), workspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
   sessionRef.current = currentSession;
   useEffect(() => {
     if (!backend?.machines || !backend.hosts) return;
@@ -591,7 +624,7 @@ export function App() {
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, panel, detailsOpen, detailsCollapsed, importedHostSessions]);
+  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions]);
 
   // The phone saves threads straight to the Mac's session. Take its edits in
   // before the next save here writes over them.
@@ -629,7 +662,7 @@ export function App() {
     if (next !== activeWorkspace) setActiveWorkspace(next);
   }, [workspaces, activeWorkspace]);
 
-  // Re-render once a second so status dots fall back to idle.
+  // Re-render once a second so terminal status dots fall back to idle.
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(timer);
@@ -688,11 +721,12 @@ export function App() {
 
   const statusOf = (pane: Pane): PaneStatus => {
     if (pane.kind === "preview") return "idle";
-    const working = Date.now() - (lastOutput.current.get(pane.id) ?? 0) < WORKING_WINDOW_MS;
     // A stopped or exited terminal reads "exited": it never asks before closing.
-    if (pane.kind === "terminal") return terminalStatus(runs[pane.id], attention[pane.id]?.kind ?? null, working);
-    if (attention[pane.id]) return attention[pane.id].kind;
-    return working ? "working" : "idle";
+    if (pane.kind === "terminal") {
+      const working = Date.now() - (lastOutput.current.get(pane.id) ?? 0) < WORKING_WINDOW_MS;
+      return terminalStatus(runs[pane.id], attention[pane.id]?.kind ?? null, working);
+    }
+    return threadPaneStatus(threadStatus[pane.id], attention[pane.id]);
   };
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
@@ -741,9 +775,21 @@ export function App() {
     onDropOutside: (id, x, y) => popOutPane(id, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 }),
   });
   /** The side panel's Dashboard rows, shared with popped-out dashboards. */
+  const dashboardPanes = (targetSection: "code" | "threads") => canvasPanes(viewPanes, workspaces, deleting, targetSection).filter((pane) => !poppedIds.has(pane.id));
+  const dashboardTrees = {
+    code: sync(layouts[layoutKey(null, "code")] ?? null, dashboardPanes("code").map((pane) => pane.id)),
+    threads: sync(layouts[layoutKey(null, "threads")] ?? null, dashboardPanes("threads").map((pane) => pane.id)),
+  };
+  const dashboardTree = (targetSection: "code" | "threads") => dashboardTrees[targetSection];
   const dashboardRows = listed.filter((pane) => pane.kind === "chat" || pane.kind === "terminal").map((pane) => {
     const projectNeeds = listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "needs_input");
-    return { id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "", ready: attention[pane.id]?.kind === "done", readyCount: listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "done").length, needsCount: attention[pane.id]?.kind === "needs_input" ? projectNeeds.length : undefined, needsDetails: projectNeeds.map((candidate) => `${candidate.title}: ${attention[candidate.id]?.note ?? "Needs your response"}`).join("; ") };
+    const inDeckReason = poppedIds.has(pane.id) ? "Close its external pane to return it to Deck." : deleting.has(pane.id) ? "This item is being deleted." : undefined;
+    const targets = leafIds(dashboardTree(paneSection(pane))).flatMap((id, index) => {
+      const target = listed.find((candidate) => candidate.id === id);
+      return target && id !== pane.id ? [{ id, title: `Pane ${index + 1} · ${target.title}` }] : [];
+    });
+    const externalReason = inDeckReason || popoutRefusal(pane) || (!window.apexDeck?.popout ? "Pop-outs need the Deck app." : undefined);
+    return { id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "", ready: attention[pane.id]?.kind === "done", readyCount: listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "done").length, needsCount: attention[pane.id]?.kind === "needs_input" ? projectNeeds.length : undefined, needsDetails: projectNeeds.map((candidate) => `${candidate.title}: ${attention[candidate.id]?.note ?? "Needs your response"}`).join("; "), navigation: { targets, inDeckReason, externalReason } };
   });
 
   /** Rearrange the panes in view into one of the ready-made layouts. */
@@ -859,10 +905,11 @@ export function App() {
     return pane.id;
   };
 
-  /** A code block's Open in terminal: a new shell in the thread's project, the command typed in and not run. */
-  const openTerminalWith = (workspaceId: string, command: string) => {
-    const id = addPane("terminal", "Terminal", undefined, workspaceId);
-    if (id) setTypeIns((all) => ({ ...all, [id]: command }));
+  /** A code block's Open in terminal: typed into the right sidebar terminal tool, not run. */
+  const openTerminalWith = (_workspaceId: string, command: string) => {
+    setRightTypeIn(command);
+    setRightTypeInSeq((n) => n + 1);
+    setPanel((p) => openTab({ ...p, open: true }, "terminal", Date.now()));
   };
 
   /** The sidebar's New thread (or terminal) in a project. */
@@ -1094,14 +1141,7 @@ export function App() {
     };
   };
   const sectionFlags: Record<"agents" | "code" | "threads", SectionFlag> = {
-    agents: {
-      ...summarize(Object.values(assistantTaskSignals).filter((signal) => signal.kind === "needs_input")),
-      rows: Object.entries(assistantTaskSignals).flatMap(([workspaceId, signal]) => {
-        const workspace = workspaces.find((item) => item.id === workspaceId && !item.hidden);
-        if (!workspace || signal.kind !== "needs_input") return [];
-        return (assistantTaskNeedsDetails[workspaceId] ?? [signal.note]).map((detail, index) => ({ key: `${workspaceId}:${index}`, title: detail, note: "Needs you", meta: `${workspace.name} · Agents`, kind: "needs_input" as const, at: signal.at, paneId: `apex-task:${workspaceId}` }));
-      }),
-    },
+    agents: {count:0,worst:null,rows:[]},
     code: flagFor("Code"),
     threads: flagFor("Threads"),
   };
@@ -1248,7 +1288,7 @@ export function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const copyFromThread = (pane: Pane, kind: CopyKind) => {
     const { workspace, hostId } = hostOfPane(pane);
-    if (kind === "path") copyOut(folderCopyText(workspace?.path ?? "", hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh), "path");
+    if (kind === "path") copyOut(folderCopyText(chatFolder(pane, workspace), hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh), "path");
     else if (kind === "id") copyOut(pane.id, "id");
     else {
       // The thread builds its own text, open or closed; it stays where it is.
@@ -1315,7 +1355,7 @@ export function App() {
       ...(pane.kind === "terminal" && run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
       workspaceId: pane.workspaceId, hostId,
       ...(pane.agent ? { agent: pane.agent } : {}),
-      cwd: workspace?.path ?? "",
+      cwd: chatFolder(pane, workspace),
       ...(pane.kind === "chat" ? { chatConfig: chatConfigOf(workspace, hostId) } : {}),
       ...(pane.kind === "preview" ? {
         url: pane.url,
@@ -1327,15 +1367,16 @@ export function App() {
         },
       } : {}),
     };
-    const takeout = takePaneOut(layouts[key] ?? null, pane.workspaceId, paneId);
-    void bridge.open(snapshot, bounds).then(({ token }) => {
+    const sourceKey = layoutKey(null, paneSection(pane));
+    const takeout = takePaneOut(dashboardTree(paneSection(pane)), pane.workspaceId, paneId);
+    return bridge.open(snapshot, bounds).then(({ token }) => {
       setLayouts((all) => {
         const next = { ...all };
-        if (takeout.layout) next[key] = takeout.layout;
-        else delete next[key];
+        if (takeout.layout) next[sourceKey] = takeout.layout;
+        else delete next[sourceKey];
         return next;
       });
-      setPoppedOut((list) => (list.some((p) => p.id === paneId) ? list : [...list, { token, id: paneId, layoutKey: key, spot: takeout.spot }]));
+      setPoppedOut((list) => (list.some((p) => p.id === paneId) ? list : [...list, { token, id: paneId, layoutKey: sourceKey, spot: takeout.spot }]));
     }, (error: unknown) => {
       toast(error instanceof Error ? error.message : String(error));
     });
@@ -1359,14 +1400,14 @@ export function App() {
       kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance,
       ...(tab.url !== undefined ? { url: tab.url } : {}),
       workspaceId: workspace?.id, hostId,
-      cwd: workspace?.path ?? "",
+      cwd: chatFolder(selected, workspace),
       workspaceName: workspace?.name ?? "",
       chatConfig: chatConfigOf(workspace, hostId),
       ...(selected?.kind === "chat" ? { activeChatId: selected.id } : { activeChatId: null }),
       ...(tab.kind === "dashboard" ? { dashboardRows } : {}),
-      ...(tab.kind === "tasks" ? { conversationId: assistantMonitors.find((m) => m.workspaceId === workspace?.id)?.conversationId ?? "" } : {}),
+      ...(tab.kind === "tasks" ? { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems } : {}),
     };
-    void bridge.open(snapshot, bounds).then(({ token }) => {
+    return bridge.open(snapshot, bounds).then(({ token }) => {
       setPanel(takeout.panel);
       setPoppedTabs((list) => (list.some((p) => p.id === tabId) ? list : [...list, { token, id: tabId, tab, spot: takeout.spot }]));
     }, (error: unknown) => {
@@ -1374,9 +1415,14 @@ export function App() {
     });
   };
 
+  useRestorePopouts(Boolean(backend), externalPopouts, {
+    panes: listed.filter(pane => !pane.closed && !pane.archived && !deleting.has(pane.id) && !popoutRefusal(pane)).map(pane => pane.id),
+    tabs: panel.tabs.map(tab => tab.id),
+  }, popOutPane, popOutTab, error => toast(`Could not restore external windows: ${String(error)}`));
+
   /** The newest pop-outs and pane edits, for window events that arrive between renders. */
-  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, focusPane: (_pane: Pane) => {} });
-  popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents };
+  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id), focusPane: (_pane: Pane) => {}, openDashboard: (_id: string, _destination?: DashboardDestination) => {} });
+  popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id) };
   /** The last patch pushed to each pop-out, so unchanged renders send nothing. */
   const lastSent = useRef(new Map<string, string>());
 
@@ -1408,8 +1454,16 @@ export function App() {
       const tabRec = paneRec ? undefined : live.poppedTabs.find((p) => p.token === token);
       const rec = paneRec ?? tabRec;
       if (!rec) return;
-      if (action.type === "restart-terminal" || action.type === "start-pane") {
+      if (action.type === "mount-worktree" || action.type === "cancel-mount") {
+        const pane = latest.current.panes.find(p => p.id === action.id && p.kind === "chat");
+        const workspace = latest.current.workspaces.find(w => w.id === pane?.workspaceId);
+        if (!pane || !workspace || (paneRec && paneRec.id !== pane.id)) return;
+        if (action.type === "cancel-mount") live.mounts.cancel(pane.id);
+        else { try { live.mounts.request(pane, action.path, live.hostBackend(workspaceHost(workspace))); } catch { /* connection view supplies the error */ } }
+      } else if (action.type === "restart-terminal" || action.type === "start-pane") {
         setStartRequests((all) => ({ ...all, [(action.type === "restart-terminal" ? rec.id : action.id)]: (all[action.type === "restart-terminal" ? rec.id : action.id] ?? 0) + 1 }));
+      } else if (action.type === "dashboard-open") {
+        if (tabRec?.tab.kind === "dashboard") live.openDashboard(action.id, action.destination);
       } else if (action.type === "show-pane") {
         const pane = latest.current.panes.find((p) => p.id === action.id);
         if (pane) live.focusPane(pane);
@@ -1477,6 +1531,7 @@ export function App() {
       const { workspace, hostId } = hostOfPane(pane);
       push(rec.token, {
         title: pane.title,
+        cwd: chatFolder(pane, workspace),
         appearance,
         workspaceId: pane.workspaceId,
         ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
@@ -1494,7 +1549,7 @@ export function App() {
       if (tab.kind === "dashboard") patch.dashboardRows = dashboardRows;
       if (followWorkspace) {
         patch.workspaceId = followWorkspace.id;
-        patch.cwd = followWorkspace.path ?? "";
+        patch.cwd = chatFolder(selected, followWorkspace);
         patch.hostId = workspaceHost(followWorkspace);
         patch.workspaceName = followWorkspace.name;
         // The tasks owner travels as one bundle: workspace and conversation from the same push, never mixed.
@@ -1503,9 +1558,11 @@ export function App() {
         if (tab.kind === "details" || tab.kind === "tasks" || tab.kind === "artifacts") patch.chatConfig = chatConfigOf(followWorkspace, workspaceHost(followWorkspace));
       }
       patch.activeChatId = selected?.kind === "chat" ? selected.id : null;
+      patch.pendingMount = selected ? mounts.pending[selected.id]?.path ?? null : null;
+      patch.busyTurn = Boolean(selected && threadStatus[selected.id]?.busy);
       push(rec.token, patch);
     }
-  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, detailsTarget, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents, appearance]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, detailsTarget, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents, appearance, mounts.pending, threadStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A thread closed, archived or deleted here, or its project removed, takes its
   // pop-out with it. The record drops first, so the window's close restores nothing.
@@ -1543,7 +1600,7 @@ export function App() {
     else if (action === "start") setStartRequests(bump);
     else if (action === "popout") popOutPane(pane.id);
     else if (action === "copy_path") {
-      const path = workspaces.find((w) => w.id === pane.workspaceId)?.path;
+      const path = chatFolder(pane, workspaces.find((w) => w.id === pane.workspaceId));
       if (path) copyOut(path, "path");
     } else if (action === "copy_address") {
       if (pane.url) void writeClipboard(pane.url, navigator.clipboard).then((ok) => toast(ok ? "Copied the address." : "Couldn't reach the clipboard, so nothing was copied."));
@@ -1579,7 +1636,7 @@ export function App() {
     return items.map((item) => ({
       key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, keys: item.keys,
       submenu: item.action === "project" ? projectEntries(pane)
-        : item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(workspace?.path ?? "", ssh), id: pane.id })
+        : item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(chatFolder(pane, workspace), ssh), id: pane.id })
           .map((c) => ({ key: c.kind, label: c.label, side: c.side, disabled: c.disabled, reason: c.reason, onSelect: () => copyFromThread(pane, c.kind) })) : undefined,
       onSelect: item.submenu ? undefined : () => runPaneMenu(pane, item.action, from),
     }));
@@ -1657,13 +1714,16 @@ export function App() {
       const hostId = workspaceHost(workspace);
       let route: Backend;
       try { route = hostBackend(hostId); } catch { return; }
+      const sourceStatus = route.host?.connection.get().status;
+      const authenticatedHostId = sourceStatus?.kind === 'connected' ? sourceStatus.hostId : undefined;
       const version = (versions.get(workspaceId) ?? 0) + 1;
       versions.set(workspaceId, version);
       const current = () => {
         const latestWorkspace = latest.current.workspaces.find((item) => item.id === workspaceId);
         return live && versions.get(workspaceId) === version && !!latestWorkspace && !latestWorkspace.hidden
           && latestWorkspace.path === workspace.path && workspaceHost(latestWorkspace) === hostId
-          && monitorOwnerVersion(workspaceId) === ownerVersion && hostBackend(hostId) === route;
+          && monitorOwnerVersion(workspaceId) === ownerVersion && hostBackend(hostId) === route
+          && (!route.host || workspaceTaskHostMatches({ verifiedHostId: authenticatedHostId ?? null }, route.host.connection.get().status));
       };
       try {
         const monitor = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
@@ -1682,7 +1742,7 @@ export function App() {
         setAssistantOwners((all) => JSON.stringify(all[workspaceId]) === JSON.stringify(owner) ? all : { ...all, [workspaceId]: owner });
         const snapshot = await route.call<AssistantTaskSnapshot>("assistant_tasks_list", { owner });
         if (!current()) return;
-        setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot));
+        setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot, Date.now(), authenticatedHostId));
         setAssistantTaskStatuses((all) => {
           const next = Object.fromEntries(Object.entries(all).filter(([key]) => !key.startsWith(`${workspaceId}\u0000`)));
           for (const task of snapshot.tasks) next[`${workspaceId}\u0000${task.id}`] = task.status;
@@ -1712,7 +1772,9 @@ export function App() {
       }
     };
     projects.forEach((workspace) => { void refresh(workspace); });
-    const stops: (() => void)[] = [];
+    const stops: (() => void)[] = [subscribeToImports(() => {
+      projects.forEach((workspace) => { void refresh(workspace); });
+    })];
     const hostIds = [...new Set(projects.map(workspaceHost))];
     for (const hostId of hostIds) {
       let route: Backend;
@@ -1832,82 +1894,139 @@ export function App() {
       }
     } finally { handoffBusy.current.delete(batchId); setHandoffWorking([...handoffBusy.current]); }
   };
-  const replyAcrossProjects = async (text: string) => {
-    const startedAt = Date.now();
-    const captured = assistantMonitors.map((monitor) => {
-      const workspace = latest.current.workspaces.find((item) => item.id === monitor.workspaceId && !item.hidden)!;
-      const offline = !reachable(monitor.hostId);
-      return { monitor, workspace, offline, route: offline ? null : hostBackend(monitor.hostId), version: monitorOwnerVersion(workspace.id) };
-    });
-    const stillBound = () => captured.every(({ monitor, workspace, route, version }) => {
-      const current = latest.current.workspaces.find((item) => item.id === workspace.id && !item.hidden);
-      return !!current && current.path === monitor.cwd && workspaceHost(current) === monitor.hostId
-        && monitorOwnerVersion(workspace.id) === version && (!route || hostBackend(monitor.hostId) === route);
-    });
-    const snapshots = await Promise.all(captured.map(async (item) => {
-      if (!item.route) return item.monitor;
-      const current = await item.route.call<ProjectMonitor | null>('monitor_get', { workspaceId: item.workspace.id });
-      if (!current || overviewOwnerKey(overviewOwner(current)) !== overviewOwnerKey(overviewOwner(item.monitor))) throw new Error("A project assignment changed. Reopen ApexAgent.");
-      return current;
-    }));
-    if (!stillBound()) throw new Error("A project or connection changed. Reopen ApexAgent.");
-    const coordinatorIndex = captured.findIndex((item) => !!item.route);
-    if (coordinatorIndex < 0) throw new Error("All project machines are offline. Reconnect one to ask ApexAgent.");
-    const coordinator = captured[coordinatorIndex];
-    const taskSnapshots = await Promise.all(captured.map(async (item, index) => {
-      if (!item.route) return undefined;
-      try {
-        const owner = overviewOwner(snapshots[index]);
-        const snapshot = await item.route.call<AssistantTaskSnapshot>('assistant_tasks_list', { owner });
-        assistantTasksForOwner(snapshot, owner);
-        return snapshot;
-      } catch { return undefined; }
-    }));
-    if (!stillBound()) throw new Error("A project or connection changed. Reopen ApexAgent.");
-    const projects = snapshots.map((monitor, index) => ({ ...overviewProject(monitor, captured[index].workspace.name, captured[index].offline, taskSnapshots[index]?.tasks), routingThreads: overviewRouting(taskSnapshots[index]) }));
-    const history = visibleOverviewEntries(overviewHistory.current, snapshots).slice(-20).map((entry) => ({ role: entry.message.role, text: entry.message.text }));
-    const result = await coordinator.route!.call<{ message: string; citations: OverviewEntry['citations']; assignments?: HandoffAssignment[]; clarification?: string }>('assistant_overview', { owner: overviewOwner(snapshots[coordinatorIndex]), text, projects, history });
-    // Revalidate every live assignment after the tool-free synthesis, not just the coordinator.
-    await Promise.all(captured.map(async (item) => {
-      if (!item.route) return;
-      const current = await item.route.call<ProjectMonitor | null>('monitor_get', { workspaceId: item.workspace.id });
-      if (!current || current.revision !== snapshots[captured.indexOf(item)].revision || overviewOwnerKey(overviewOwner(current)) !== overviewOwnerKey(overviewOwner(item.monitor))) throw new Error("A project assignment changed while answering. Ask again.");
-    }));
-    if (!stillBound() || typeof result?.message !== 'string') throw new Error("The project context changed while answering. Ask again.");
-    const batch = handoffBatch(crypto.randomUUID(), text, result.assignments ?? [], projects);
-    if (batch.children.length) {
-      // Persist the exact IDs and payloads before any host mutation, including uncertain replies.
-      updateHandoffBatches([...handoffHistory.current, batch]);
-    }
-    const owners = snapshots.map(overviewOwner);
-    const added: OverviewEntry[] = [
-      { workspaceId: '*', project: 'All projects', owners, message: { id: crypto.randomUUID(), role: 'human', text, at: startedAt, evidence: [] } },
-      { workspaceId: '*', project: 'All projects', owners, citations: result.citations, message: { id: crypto.randomUUID(), role: 'assistant', text: result.clarification ? `${result.message}\n${result.clarification}` : result.message, at: Date.now(), evidence: [] } },
-    ];
-    setOverviewEntries((previous) => { const next = [...previous, ...added].slice(-100); try { localStorage.setItem('apex-agent-overview-history', JSON.stringify(next)); } catch { /* Keep this window's conversation when storage is unavailable. */ } return next; });
-    if (batch.children.length) await prepareHandoffBatch(batch.id);
+  /** Connectivity is checked against the captured owner route, never selection. */
+  const reachable = (hostId:string) => { if(hostId==='local'||!backend?.machines)return true;try{return backend.machines.connection(hostId).get().status.kind==='connected';}catch{return false;} };
+  const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
+  // Discover every durable personal assistant; discovery and bridges stay active while closed.
+  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
+  const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
+  const taskRouteStatus = (id: string) => { try { return hostBackend(id).host?.connection.get().status; } catch { return undefined; } };
+  const workspaceTaskProblems = Object.entries(assistantTaskErrors).filter(([id]) => workspaces.some(workspace => workspace.id === id && !workspace.hidden)).map(([id, error]) => `${workspaces.find(workspace => workspace.id === id)?.name ?? id}: ${error}`);
+  let workspaceTaskRows: WorkspaceTaskRow[] = [];
+  try {
+    workspaceTaskRows = collectWorkspaceTasks(assistants.assistants.flatMap(summary => {
+      const lane = assistants.lane(summary.ref);
+      const host = assistants.hosts.find(host => host.hostId === summary.ref.hostId);
+      return lane?.assistant ? [{ assistant: summary.ref, name: summary.name, tasks: lane.assistant.tasks, offline: summary.offline, observedAt: summary.lastSeen, routeHostId: host?.routeHostId }] : [];
+    }), Object.values(currentAssistantRegistry.owners).flatMap(entry => entry.snapshot ? [{
+      project: entry.snapshot.project ?? { hostId: entry.authenticatedHostId ?? entry.owner.hostId, workspaceId: entry.owner.workspaceId, cwd: entry.owner.cwd }, owner: entry.owner, authenticatedHostId: entry.authenticatedHostId,
+      name: workspaces.find(workspace => workspace.id === entry.owner.workspaceId)?.name ?? entry.owner.workspaceId,
+      snapshot: entry.snapshot, offline: offlineHost(entry.owner.hostId) || !!assistantTaskErrors[entry.owner.workspaceId] || !workspaceTaskHostMatches({ verifiedHostId: entry.snapshot.project?.hostId ?? entry.authenticatedHostId ?? null }, taskRouteStatus(entry.owner.hostId)), observedAt: entry.observedAt ?? 0,
+    }] : []));
+  } catch (cause) { workspaceTaskProblems.push(`Could not verify task owners: ${cause instanceof Error ? cause.message : String(cause)}`); }
+  globalTaskFeed.current = { rows: workspaceTaskRows, problems: workspaceTaskProblems };
+  const globalTaskFeedVersion = JSON.stringify(globalTaskFeed.current);
+  useEffect(() => {
+    const bridge = window.apexDeck?.popout;
+    if (!bridge) return;
+    for (const rec of poppedTabs) if (rec.tab.kind === 'tasks') void bridge.update(rec.token, { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems }).catch(() => {});
+  }, [globalTaskFeedVersion, poppedTabs]);
+  const [assistantBrowser,setAssistantBrowser]=useState<AssistantBrowserPresentation>('closed');
+  const [assistantVoiceHost,setAssistantVoiceHost]=useState<HTMLElement|null>(null);
+  const [workDetailOrigin,setWorkDetailOrigin]=useState<'chat'|'work'>('work');
+  const selectedAssistant = mainView.kind === 'assistant' ? assistants.lane(mainView.assistant) : null;
+  const openAssistant = (ref:AssistantRef) => { assistants.select(ref); setMainView({kind:'assistant',assistant:ref,section:'chat'}); setCreatingAssistant(false); setSettingsOpen(null); closeApexAgent(); };
+  const assistantHost = mainView.kind === 'assistant' ? assistants.hosts.find(host=>host.hostId===mainView.assistant.hostId) : undefined;
+  const assistantBackend = assistantHost ? hostBackend(assistantHost.routeHostId) : null;
+  const authenticatedProjectHost = (routeHostId:string):string|undefined => {
+    try { const status=hostBackend(routeHostId).host?.connection.get().status;return status?.kind==='connected'?status.hostId:undefined; } catch { return undefined; }
   };
-  const addAssistantSource = async (payload: AssistantSourceDrop) => {
-    const workspace = latest.current.workspaces.find((item) => item.id === payload.workspaceId && !item.hidden);
-    if (!workspace || workspaceHost(workspace) !== payload.hostId || workspace.path !== payload.cwd) throw new Error("That source belongs to a different project folder or machine.");
-    if (payload.kind !== "file" && payload.kind !== "thread") throw new Error("Drop a project file or chat onto ApexAgent.");
-    if (payload.kind === "thread" && !latest.current.panes.some((pane) => pane.id === payload.sourceId && pane.kind === "chat" && pane.workspaceId === workspace.id)) throw new Error("That chat belongs to a different project.");
-    await mutateAssistant(workspace.id, "monitor_sources_update", {
-      mode: "add", files: payload.kind === "file" ? [payload.sourceId] : [], threads: payload.kind === "thread" ? [payload.sourceId] : [],
-    });
+  const snapshotProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
+    const hostId=authenticatedProjectHost(workspaceHost(workspace));
+    const entry=Object.values(currentAssistantRegistry.owners).find(entry=>entry.owner.workspaceId===workspace.id&&entry.owner.cwd===workspace.path&&entry.owner.hostId===workspaceHost(workspace));
+    const project=(entry as {snapshot?:{project?:ProjectRef}}|undefined)?.snapshot?.project;
+    return project&&project.hostId===hostId&&project.workspaceId===workspace.id?project:undefined;
   };
-  /** Whether a machine can take work now. */
-  const reachable = (hostId: string) => {
-    if (hostId === "local" || !backend?.machines) return true;
-    try { return backend.machines.connection(hostId).get().status.kind === "connected"; } catch { return false; }
+  const projectAliasKey=(workspace:Workspace,hostId:string)=>JSON.stringify([hostId,workspaceHost(workspace),workspace.id,workspace.path]);
+  const canonicalProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
+    const snapshot=snapshotProjectForWorkspace(workspace);if(snapshot)return snapshot;
+    const hostId=authenticatedProjectHost(workspaceHost(workspace));if(!hostId)return;
+    const alias=assistantProjectAliases[projectAliasKey(workspace,hostId)];
+    try {return alias?.route===hostBackend(workspaceHost(workspace))?alias.project:undefined;}catch{return undefined;}
   };
-  /** Gray in the lists: it dropped or failed. A server not used yet this session isn't offline. */
-  const offlineHost = (hostId: string) => {
-    if (hostId === "local" || !backend?.machines) return false;
-    try { return dotState(backend.machines.connection(hostId).get().status) === "off"; } catch { return true; }
+  const projectUnavailable = (project:ProjectRef):string|undefined => resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) ? undefined : 'This exact project is unavailable. Reconnect its machine or restore its assigned folder.';
+  const [workFocus,setWorkFocus]=useState<{project:ProjectRef;taskId:string;nonce:number}|null>(null);
+  const workFocusOwner=mainView.kind==='assistant'?assistantIdentityKey(mainView.assistant):'';
+  const [chatFocus,setChatFocus]=useState<{key:string;nonce:number;origin?:'chat'|'work'}|null>(null);
+  useEffect(()=>{setWorkFocus(null);setChatFocus(null);setWorkDetailOrigin('work');setAssistantBrowser('closed');},[workFocusOwner]);
+  const assistantProjectName=(project:ProjectRef)=>workspaces.find(workspace=>workspace.id===project.workspaceId)?.name??project.cwd.split('/').filter(Boolean).at(-1)??project.cwd;
+  /** Work opens delegated tasks in their project card and personal tasks in Chat's task details. */
+  const openWorkItem=(item:WorkItem,origin:'chat'|'work'='work')=>{setWorkDetailOrigin(origin);if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId,nonce:Date.now()});navigateAssistant('projects');return;}const owner=selectedAssistant?.assistant;if(owner)setChatFocus({key:personalTaskKey(owner.hostId,item.taskId,selectedAssistant?.ref?.assistantId),nonce:Date.now(),origin});navigateAssistant('chat');};
+  const navigateAssistant = (section:AssistantSection) => {setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);};
+  const openAssistantBrowser=()=>{navigateAssistant('chat');setAssistantBrowser('popup');};
+  /** The Browser card opens the assistant's browser as a tab beside Details, not a pop-up (§5.3). */
+  const openAssistantBrowserTab=()=>{setPanel(current=>openTab(current,'assistantbrowser',Date.now()));};
+  /** Closing that tab returns to Details; it leaves whoever controls the page in control. */
+  const closeAssistantBrowserTab=()=>{const tab=panel.tabs.find(item=>item.kind==='assistantbrowser');if(tab)changePanel(closeTab(panel,tab.id));};
+  /** Starts the assistant's voice call. The strip and Details share this one path. */
+  const startAssistantCall = () => {
+    if (!selectedAssistant) return;
+    const hostId = selectedAssistant.ref?.hostId ?? selectedAssistant.assistant?.hostId ?? selectedAssistant.hostName;
+    const id = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
+    const candidate = {
+      hostId,
+      roomId: `assistant:${id}`,
+      participantId: id,
+      profileId: `assistant:${id}`,
+      name: selectedAssistant.name,
+      roomTitle: selectedAssistant.name,
+      agentVoice: selectedAssistant.assistant?.profile?.voice,
+      aliases: [],
+    };
+    void voiceController.start(candidate);
   };
-  // The personal assistant on its durable host; polled only while the conversation is open.
-  const personal = usePersonalAssistant({ hosts: hostList, hostBackend, offlineHost, open: apexAgentAllOpen, bridge: true });
+  const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
+  const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
+  /** What this session's tasks and its own chat made: documents, exports and pages. */
+  const assistantOutputsState = useAssistantOutputs(assistantBackend, selectedDelegatedTasks, selectedAssistant?.ref?.assistantId, selectedAssistant?.assistant?.messages ?? []);
+  // Only ambiguous assignments need an owning-host folder read; no global scan or polling.
+  const aliasCandidates=assignedProjects.flatMap(binding=>workspaces.filter(workspace=>!workspace.hidden&&workspace.id===binding.project.workspaceId&&workspace.path!==binding.project.cwd&&authenticatedProjectHost(workspaceHost(workspace))===binding.project.hostId&&!snapshotProjectForWorkspace(workspace)).map(workspace=>({workspace,project:binding.project})));
+  const aliasCandidatesKey=JSON.stringify(aliasCandidates.map(({workspace,project})=>[projectAliasKey(workspace,project.hostId),project.cwd]));
+  useEffect(()=>{
+    let active=true;let cursor=0;
+    const resolveNext=async()=>{
+      while(active&&cursor<aliasCandidates.length){
+        const {workspace,project}=aliasCandidates[cursor++];let route:Backend;try{route=hostBackend(workspaceHost(workspace));}catch{continue;}
+        const current=()=>active&&hostBackend(workspaceHost(workspace))===route&&latest.current.workspaces.some(w=>w.id===workspace.id&&w.path===workspace.path&&workspaceHost(w)===workspaceHost(workspace)&&!w.hidden);
+        const canonical=await resolveAssistantProjectFolder(project,workspace,route,current);
+        if(canonical&&active)setAssistantProjectAliases(before=>({...before,[projectAliasKey(workspace,project.hostId)]:{route,project:canonical}}));
+      }
+    };
+    void Promise.all(Array.from({length:Math.min(4,aliasCandidates.length)},resolveNext));
+    return()=>{active=false;};
+  },[backend,hostList,aliasCandidatesKey]);
+  // Assignment discovery is a read-only folder check, independent of task
+  // coordinators. Fresh projects must be assignable before their first task.
+  const assignmentHostId=mainView.kind==='assistant'?mainView.assistant.hostId:undefined;
+  const discoverAssignmentProjects=mainView.kind==='assistant'&&(mainView.section==='projects'||mainView.section==='settings');
+  const assignmentWorkspaces=workspaces.filter(workspace=>!workspace.hidden&&workspaceHost(workspace)===assistantHost?.routeHostId);
+  const assignmentDiscoveryKey=JSON.stringify([assignmentHostId,assistantHost?.routeHostId,assignmentWorkspaces.map(workspace=>[workspace.id,workspace.path,authenticatedProjectHost(workspaceHost(workspace))])]);
+  useEffect(()=>{
+    if(!discoverAssignmentProjects||!assistantHost||!assignmentHostId)return;
+    let active=true;let cursor=0;
+    const candidates=assignmentWorkspaces.filter(workspace=>!canonicalProjectForWorkspace(workspace));
+    const resolveNext=async()=>{
+      while(active&&cursor<candidates.length){
+        const workspace=candidates[cursor++];const hostId=assignmentHostId;let route:Backend;
+        try{route=hostBackend(workspaceHost(workspace));}catch{continue;}
+        const key=projectAliasKey(workspace,hostId);
+        const current=()=>active&&hostBackend(workspaceHost(workspace))===route&&latest.current.workspaces.some(item=>item.id===workspace.id&&item.path===workspace.path&&workspaceHost(item)===workspaceHost(workspace)&&!item.hidden);
+        try{
+          const project=await discoverAssistantProjectFolder(workspace,hostId,route,current);
+          if(project&&current()){
+            setAssistantProjectAliases(before=>({...before,[key]:{route,project}}));
+            setAssistantProjectDiscoveryProblems(before=>{const next={...before};delete next[key];return next;});
+          }
+        }catch(error){if(current())setAssistantProjectDiscoveryProblems(before=>({...before,[key]:error instanceof Error?error.message:String(error)}));}
+      }
+    };
+    void Promise.all(Array.from({length:Math.min(4,candidates.length)},resolveNext));
+    return()=>{active=false;};
+  },[backend,hostList,assignmentDiscoveryKey,discoverAssignmentProjects]);
+  const scopedAssistantWorkspaces = workspaces.filter(workspace=>assignedProjects.some(binding=>resolveAssistantProject(binding.project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace)===workspace));
+  const scopedAssistantMonitors = assistantMonitors.filter(monitor=>scopedAssistantWorkspaces.some(workspace=>workspace.id===monitor.workspaceId && workspace.path===monitor.cwd && workspaceHost(workspace)===monitor.hostId));
+  // Migrate callers of the former widget destination into the main canvas.
+  useEffect(()=>{ if(apexAgentAllOpen && assistants.selected) { setMainView({kind:'assistant',assistant:assistants.selected,section:'chat'});setApexAgentAllOpen(false); } },[apexAgentAllOpen,assistants.selected?.hostId,assistants.selected?.assistantId]);
   const reactToAssistant = async (workspaceId: string, messageId: string, emoji: string, enabled: boolean) => {
     if (workspaceId === 'personal') {
       if (!personal) throw new Error('The personal assistant is unavailable.');
@@ -1960,7 +2079,7 @@ export function App() {
   };
   /** A thread's history and bots, read from where it runs now. */
   const snapshotOf = async (pane: Pane, workspace: Workspace) =>
-    (await loadRoomState(hostBackend(workspaceHost(workspace)), pane.id, [], settings.newThread, workspace.path)).snapshot;
+    (await loadRoomState(hostBackend(workspaceHost(workspace)), pane.id, [], settings.newThread, chatFolder(pane, workspace))).snapshot;
   /** Point a thread at another project: an unstarted one moves there, a started one asks first. */
   const choose = (pane: Pane, target: Workspace) => {
     const outcome = chooseOutcome(pane.workspaceId, target.id, startedOf(pane));
@@ -1979,7 +2098,7 @@ export function App() {
       await flushAnswerStores(hostBackend(fromHost), pane.id);
       const snapshot = await snapshotOf(pane, source);
       await placeThread({ from: hostBackend(fromHost), to: hostBackend(toHost), id: pane.id, snapshot, cwd: target.path, sameHost: fromHost === toHost, hostName: hostNameFor(toHost) });
-      setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, workspaceId: target.id } : p)));
+      setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, workspaceId: target.id, mount: undefined } : p)));
       setMoveAsk((ask) => (ask?.paneId === pane.id ? null : ask));
       setActiveWorkspace(target.id);
     } catch (error) {
@@ -2044,7 +2163,7 @@ export function App() {
     };
     const servers = hostList.filter((h) => h.remote);
     return {
-      project: { id: here.id, name: here.name, path: here.path, hostId, hostName: hostNameFor(hostId), tint: tint(hostId) },
+      project: { id: here.id, name: here.name, path: chatFolder(pane, here), hostId, hostName: hostNameFor(hostId), tint: tint(hostId) },
       started: startedOf(pane),
       picker: pickerRows(workspaces, panes, here.id, offlineHost).map((row) => ({ row, hostName: hostNameFor(row.hostId), tint: tint(row.hostId), twin: twinPath(row.workspace, workspaces) })),
       workRows: workInRows(workspaces, ["local", ...servers.map((h) => h.id)], here, offlineHost).map((r) => ({ ...r, hostName: hostNameFor(r.hostId), tint: tint(r.hostId), seen: seen(r.hostId) })),
@@ -2121,6 +2240,8 @@ export function App() {
   }).map((item) => ({ key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, onSelect: () => runProjectMenu(workspace, item.action) }));
 
   const focusPane = (pane: Pane) => {
+    setMainView({kind:"workspace"});
+    setCreatingAssistant(false);
     // Opening a thread reads it, and brings it out of the archive.
     if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId && (pane.closed || pane.unread || pane.archived)) setPanes((list) => list.map((p) => {
       if (p.id !== pane.id) return p;
@@ -2134,8 +2255,33 @@ export function App() {
     setFocusedPane(pane.id);
     if (maximized && maximized !== pane.id) setMaximized(null);
   };
+  const openAssistantProjectCanvas = (project:ProjectRef) => {
+    const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
+    if(!workspace){toast('Reconnect this project to open it.');return;}
+    const destination=assistantProjectCanvasDestination(workspace,viewPanes,focusedPane,recentThreads,new Set([...deleting,...poppedIds]));
+    if(destination.pane)focusPane(destination.pane);
+    else {setMainView({kind:'workspace'});setCreatingAssistant(false);setActiveWorkspace(destination.workspaceId);setSection(destination.section);setFocusedPane(null);setPicking(true);}
+    setMaximized(destination.maximized);
+  };
   // Window events for pop-outs arrive between renders; they need the newest focus.
   popoutLive.current.focusPane = focusPane;
+  const openDashboard = (id: string, destination?: DashboardDestination) => {
+    const pane = listed.find((item) => item.id === id && (item.kind === "chat" || item.kind === "terminal"));
+    if (!pane || deleting.has(id)) return;
+    if (!destination) { focusPane(pane); return; }
+    if (poppedIds.has(id)) { toast("Close its external pane to return it to Deck."); return; }
+    if (destination.kind === "external") { popOutPane(id); return; }
+    if (destination.kind !== "new" && destination.kind !== "pane") return;
+    const targetSection = paneSection(pane);
+    const next = dashboardTree(targetSection);
+    const targetId = destination.kind === "pane" ? destination.paneId : undefined;
+    if (destination.kind === "pane" && (!targetId || !leafIds(next).includes(targetId))) { toast("That pane is no longer available."); return; }
+    const placed = placeDashboardPane(next, pane.id, targetId);
+    setLayouts((all) => ({ ...all, [layoutKey(null, targetSection)]: placed }));
+    focusPane(pane);
+    setMaximized(null);
+  };
+  popoutLive.current.openDashboard = openDashboard;
 
   // Where the deck starts, for things that expand to the full window (the
   // Preview pane, the artifacts panel). Kept current as the title bar wraps.
@@ -2159,13 +2305,13 @@ export function App() {
     event.stopPropagation();
     if (action.kind === "settings") { setSettingsOpen((open) => (open ? null : "general")); return; }
     if (action.kind === "assistant") {
-      const selected = workspaces.find((workspace) => workspace.id === apexAgentSelection && !workspace.hidden) ?? current ?? workspaces.find((workspace) => !workspace.hidden);
-      if (selected) openApexAgent(selected.id);
+      if (assistants.selected) openAssistant(assistants.selected);
+      else setCreatingAssistant(true);
       return;
     }
     // Any other deck shortcut is about the deck, so it closes settings first.
     setSettingsOpen(null);
-    if (action.kind === "section") { setSection(action.section); setPicking(false); setMaximized(null); }
+    if (action.kind === "section") { setMainView({kind:"workspace"});setCreatingAssistant(false);setSection(action.section); setPicking(false); setMaximized(null); }
     else if (action.kind === "new_terminal") { if (current) { setSection("code"); setNewMenuRequest((n) => n + 1); } }
     else if (action.kind === "new_thread") { if (current) addPane("chat", "Group chat"); }
     else if (action.kind === "next_attention") {
@@ -2188,6 +2334,13 @@ export function App() {
       if (focusedPane && visiblePanes.some((p) => p.id === focusedPane)) setMaximized((m) => (m === focusedPane ? null : focusedPane));
     } else if (action.kind === "side_panel_full") {
       setSidePanelFull(!(panel.open && panel.full));
+    } else if (action.kind === "toggle_terminal_tool") {
+      setPanel((current) => {
+        const term = current.tabs.find((t) => t.kind === "terminal");
+        const showing = term && current.open && current.active === term.id;
+        if (showing) return closePanel(current);
+        return openTab(current, "terminal", Date.now());
+      });
     }
   };
   useEffect(() => {
@@ -2289,8 +2442,7 @@ export function App() {
 
   let creationBackend: Backend | null = backend;
   try { if (current) creationBackend = backendFor({ workspaceId: current.id } as Pane); } catch { creationBackend = null; }
-  const apexWorkspace = apexAgentWorkspace ? workspaces.find((w) => w.id === apexAgentWorkspace) ?? null : null;
-  const selectedApexWorkspace = workspaces.find((workspace) => workspace.id === apexAgentSelection && !workspace.hidden) ?? current ?? workspaces.find((workspace) => !workspace.hidden) ?? null;
+  const apexWorkspace = typeof apexAgentWorkspace==='string' ? workspaces.find(w=>w.id===apexAgentWorkspace)??null : apexAgentWorkspace ? resolveAssistantProject(apexAgentWorkspace,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) : null;
   let apexAgentBackend: Backend | null = null;
   try { if (apexWorkspace) apexAgentBackend = hostBackend(workspaceHost(apexWorkspace)); } catch { apexAgentBackend = null; }
   const apexMonitorChange = apexWorkspace ? guardedMonitorChange({
@@ -2333,7 +2485,7 @@ export function App() {
   );
 
   return (
-    <div className="app">
+    <div className={`app${mainView.kind==='assistant'||creatingAssistant?' assistant-active':''}`}>
       <header className="titlebar">
         {/* Three groups: the two sides take equal room, so the section tabs sit at the centre. */}
         <div className="titlebar-start">
@@ -2341,12 +2493,12 @@ export function App() {
           <img className="brand-mark" src="/branding/mark.svg" alt="" width="28" height="28" />
           Apex Deck
         </span>
-        <button className="icon" aria-expanded={railOpen && !compactApexAgentDock} onClick={() => setRailOpen((open) => !open)} disabled={compactApexAgentDock} aria-label={compactApexAgentDock ? "Workspaces hidden while ApexAgent is open" : railOpen ? "Hide workspaces" : "Show workspaces"} title={compactApexAgentDock ? "Workspaces return when ApexAgent closes" : railOpen ? "Hide workspaces" : "Show workspaces"}>
+        <button className="icon" aria-expanded={railOpen} onClick={() => setRailOpen((open) => !open)} aria-label={railOpen ? "Hide workspaces" : "Show workspaces"} title={railOpen ? "Hide workspaces" : "Show workspaces"}>
           <DeckIcon name="sidebar" />
         </button>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         </div>
-        <SectionNavigation section={section} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
+        <SectionNavigation section={mainView.kind==='workspace'&&!creatingAssistant?section:null} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
         <LayoutPicker value={layoutPreset} disabled={section === "agents" || visiblePanes.length < 2} onSelect={arrange} />
         {section === "agents" && <button className="primary titlebar-new" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
@@ -2367,23 +2519,22 @@ export function App() {
         </div>
       </header>
 
-      <ApexAgentWidget workspaces={workspaces.filter((workspace) => !workspace.hidden)} workspaceId={selectedApexWorkspace?.id ?? null} open={!!apexWorkspace || apexAgentAllOpen} monitors={assistantMonitors}
-        panelMode="dock" onPositionChange={setApexAvatarPosition}
-        taskCounts={Object.fromEntries(Object.entries(assistantTaskCounts).filter(([id]) => { const owner = assistantOwners[id]; return !!owner && workspaces.some((workspace) => workspace.id === id && !workspace.hidden && workspace.path === owner.cwd && workspaceHost(workspace) === owner.hostId); }))}
-        appearanceRequest={apexAgentAppearanceRequest} hideRequest={apexAgentHideRequest}
-        offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)}
-        onOpen={(id) => openApexAgent(id, true)} onSelect={(id) => openApexAgent(id, true)} onClose={apexAgentFull ? toggleApexAgentFull : closeApexAgentAndReturnFocus} onAddSource={addAssistantSource}
-        onReply={replyToAssistant}
-        onRetry={(workspaceId) => mutateAssistant(workspaceId, "monitor_check_now", {})} />
       {monitorPollers.map(({ hostId, backend: hostRoute, version }) => <HostMonitors key={hostId} hostId={hostId} backend={hostRoute} getVersion={monitorHostVersion} onMonitors={acceptHostMonitors(version)} />)}
       {migrationNotice && <div className="connection-banner" role="status">{migrationNotice}<button onClick={() => setMigrationNotice("")}>Dismiss</button></div>}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
-      <div className={`body${apexWorkspace && apexAgentDockFocused ? " apex-agent-dock-focused" : ""}${compactApexAgentDock ? " apex-agent-dock-narrow" : ""}${apexAgentFull && (apexAgentAllOpen || !!apexWorkspace) ? " apex-agent-dock-expanded" : ""}${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
+      <div className={`body${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
             backend={backend}
+            assistants={assistants.assistants}
+            assistantStatusFor={ref=>{const summary=assistants.assistants.find(item=>assistantIdentityKey(item.ref)===assistantIdentityKey(ref));return assistantStatus({offline:summary?.offline??false,paused:summary?.paused??false,personalTasks:summary?.personalTasks??[],delegatedTasks:summary?delegatedTasksForAssistant(currentAssistantRegistry.owners,ref,summary.projects):[]});}}
+            assistantBackend={ref=>{const host=assistants.hosts.find(host=>host.hostId===ref.hostId);if(!host)return undefined;try{return hostBackend(host.routeHostId);}catch{return undefined;}}}
+            selectedAssistant={mainView.kind==='assistant'?mainView.assistant:null}
+            rosterProblem={rosterMessage(assistants.assistants,assistants.hosts)}
+            onOpenAssistant={openAssistant}
+            onCreateAssistant={()=>{setCreatingAssistant(true);setMainView({kind:'workspace'});}}
             section={section}
-            panes={viewPanes}
+            panes={assistantSidebarPanes(viewPanes,currentAssistantRegistry,keptAssistantThreads)}
             workspaces={workspaces}
             deleting={deleting}
             activeWorkspace={activeWorkspace}
@@ -2398,11 +2549,12 @@ export function App() {
             workspaceRename={renameRequests}
             paneMenu={(pane) => paneMenuEntries(pane, "rail")}
             projectMenu={projectMenuEntries}
-            onOpenPane={focusPane}
+            onOpenPane={pane=>{setMainView({kind:"workspace"});focusPane(pane);}}
             onTogglePin={(pane) => { if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId) runPaneMenu(pane, "pin", "rail"); }}
             onRenamePane={(id, title) => { if (viewPanes.find((pane) => pane.id === id && (pane as Pane & { assistantTaskId?: string }).assistantTaskId)) setTaskPaneTitle(id, title); else renamePane(id, title); }}
             onRenameWorkspace={(id, name) => setWorkspaces((list) => renameWorkspace(list, id, name))}
             onProjectClick={(workspace) => {
+              setMainView({kind:"workspace"});
               setActiveWorkspace(workspace.id);
               setWorkspaces((list) => setCollapsed(list, workspace.id, !workspace.collapsed));
             }}
@@ -2429,8 +2581,9 @@ export function App() {
           />
         )}
 
-        <main ref={canvasRef} className={`canvas section-${section}`} inert={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined} aria-hidden={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined}>
-          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} />}
+        <main ref={canvasRef} className={`canvas section-${section}`} inert={sidePanelFull ? true : undefined} aria-hidden={sidePanelFull ? true : undefined}>
+          <div className="workspace-canvas-content" style={{display:mainView.kind==='workspace'&&!creatingAssistant?'contents':'none'}} inert={mainView.kind!=='workspace'||creatingAssistant?true:undefined}>
+          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} voiceSettings={settings.voice} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
           {(section === "code" || section === "threads") && !current && (
@@ -2472,9 +2625,9 @@ export function App() {
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={attention[pane.id] ? attention[pane.id].note || label(attention[pane.id].kind) : status} />
                     {/* The project and its machine always stay; the title and status words give way first. */}
-                    {workspace && <span className="pane-ws" title={`${workspace.name}${((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? "" : ` on ${hostNameFor((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))}`}${((pane as Pane & { executionPath?: string }).executionPath ?? workspace.path) ? ` · ${(pane as Pane & { executionPath?: string }).executionPath ?? workspace.path}` : ""}`}>
+                    {workspace && <span className="pane-ws" title={`${workspace.name}${((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? "" : ` on ${hostNameFor((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))}`}${(chatFolder(pane, workspace)) ? ` · ${chatFolder(pane, workspace)}` : ""}`}>
                       <ProjectFolder tint={((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? undefined : tints.get((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))} size={12} />
-                      <span className="nm">{workspace.name}</span><span className="nm-short">{shortName(workspace.name)}</span>
+                      <span className="nm">{workspace.name}{pane.mount && pane.mount !== workspace.path ? ` · ${pane.mount.replace(/\\/g, "/").split("/").filter(Boolean).at(-1)}` : ""}</span><span className="nm-short">{shortName(workspace.name)}</span>
                     </span>}
                     <ThreadName className="pane-title" title={pane.title} onRename={title => { if ((pane as Pane & { assistantTaskId?: string }).assistantTaskId) setTaskPaneTitle(pane.id, title); else renamePane(pane.id, title); }} renameRequest={renameRequests[pane.id]} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
                     {paneBackend?.host && paneBackend.host.id !== "local" && <span className="pane-host" title={paneBackend.host.name}>
@@ -2526,7 +2679,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
@@ -2535,16 +2688,50 @@ export function App() {
             {!maximized && <Dividers tree={tree} area={gridArea} onChange={setTree} onActive={setResizing} />}
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
-        </main>
-        {!apexWorkspace && apexAgentAllOpen && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label="ApexAgent">
-          <ApexAgentAll workspaces={workspaces.filter((workspace) => !workspace.hidden)} monitors={assistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={reactToAssistant} saveAttachment={saveAssistantAttachment} pickAttachmentFolder={pickAssistantAttachmentFolder} onSetUp={openApexAgentProject} filterWorkspaceId={apexAgentFilter} onClearFilter={() => setApexAgentFilter(null)} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)}
-            offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence} onOverview={replyAcrossProjects} overviewEntries={visibleOverviewEntries(overviewEntries, assistantMonitors)} personal={personal}
-            taskContext={assistantTaskContext && assistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
-            tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, assistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
+          </div>
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
+            memoryProject={assistantNotebookProject}
+            projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact managementOpen onDetailChange={()=>{}} detailBackLabel={workDetailOrigin==='chat'?'Chat':'Projects & access'} onDetailBack={()=>{if(workDetailOrigin==='chat')navigateAssistant('chat');}} focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
+              onEnsureCoordinator={async(project)=>{
+                const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
+                if(!workspace||!selectedAssistant.assistant?.profile)throw new Error('Reconnect the assigned project before delegating.');
+                const routeHostId=workspaceHost(workspace);const route=hostBackend(routeHostId);
+                let monitor=await route.call<ProjectMonitor|null>('monitor_get',{workspaceId:workspace.id});
+                if(!monitor)monitor=await route.call<ProjectMonitor>('monitor_assign',{workspaceId:workspace.id,cwd:project.cwd,hostId:routeHostId,text:`Coordinate work for ${workspace.name}.`,files:[],threads:[],profile:selectedAssistant.assistant.profile,onlyIfAbsent:true});
+                if(!monitor||monitor.workspaceId!==project.workspaceId||monitor.hostId!==routeHostId)throw new Error('The project coordinator returned a different owner.');
+                const owner={workspaceId:monitor.workspaceId,cwd:monitor.cwd,hostId:monitor.hostId,conversationId:monitor.conversationId};
+                const snapshot=await route.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner});
+                if(!snapshot.project||snapshot.project.hostId!==project.hostId||snapshot.project.workspaceId!==project.workspaceId||snapshot.project.cwd!==project.cwd)throw new Error('The project coordinator returned a different folder.');
+                setAssistantOwners(state=>({...state,[owner.workspaceId]:owner}));
+                setAssistantRegistry(state=>reduceAssistantSnapshot(state,owner,snapshot,Date.now(),project.hostId));
+                return {project,owner,snapshot};
+              }}
+              onCreateWorkerThread={async(project,profile)=>{
+                const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
+                if(!workspace)throw new Error('Reconnect this project before choosing a worker.');
+                const route=hostBackend(workspaceHost(workspace));const threadId=newId('pane');
+                await route.roomCreate(threadId,[profile],settings.newThread,project.cwd);
+                setPanes(list=>[...list,{id:threadId,workspaceId:workspace.id,kind:'chat',assistantDraftFor:selectedAssistant.ref,title:`${profile.display_name} · ${selectedAssistant.name}`,started:true,participants:[profile],options:settings.newThread}]);
+                return threadId;
+              }}
+              projects={assignedProjects.map(binding=>({project:binding.project,name:workspaces.find(workspace=>workspace.id===binding.project.workspaceId)?.name??binding.project.cwd.split('/').at(-1)??'Project',unavailable:projectUnavailable(binding.project)}))}
+              availableProjects={assignmentWorkspaces.flatMap(workspace=>{const project=canonicalProjectForWorkspace(workspace);return project?[{project,name:workspace.name}]:[];})}
+              unavailableProjects={assignmentWorkspaces.filter(workspace=>!canonicalProjectForWorkspace(workspace)).map(workspace=>({id:workspace.id,name:workspace.name,path:workspace.path,problem:authenticatedProjectHost(workspaceHost(workspace))!==assignmentHostId?'Reconnect this project’s owning machine.':assistantProjectDiscoveryProblems[projectAliasKey(workspace,assignmentHostId!)]??'Verifying this folder with its owning machine…'}))}
+              taskScopes={Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.project&&assignedProjects.some(binding=>binding.project.hostId===entry.snapshot?.project?.hostId&&binding.project.workspaceId===entry.snapshot?.project?.workspaceId&&binding.project.cwd===entry.snapshot?.project?.cwd)?[{project:entry.snapshot.project,owner:entry.owner,snapshot:entry.snapshot}]:[])}
+              onOpenProject={openAssistantProjectCanvas}
+              onOpenNotebook={project=>{setAssistantNotebookProject(project);navigateAssistant('memory');}}
+              onKeepThread={(project,id)=>{const pane=viewPanes.find(p=>p.id===id&&p.workspaceId===project.workspaceId);if(pane)keepAssistantThread(pane);else toast('Reconnect this task conversation before keeping it.');}}
+              onOpenThread={(project,id)=>{const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);const destination=workspace?assistantWorkerThreadDestination(workspace,id,viewPanes,new Set([...deleting,...poppedIds])):null;if(!destination?.pane){toast('Reconnect this project or return its worker thread to Deck to open it.');return;}focusPane(destination.pane);setMaximized(destination.maximized);}}
+            />:undefined}
+            editor={assistantBackend ? <AssistantEditor onArchived={()=>setMainView({kind:'workspace'})} onOpenBrowser={openAssistantBrowser} machineName={selectedAssistant.hostName} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;})} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
+            chat={<ApexAgentAll delegatedTasks={selectedDelegatedTasks} voiceBackend={assistantBackend??undefined} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} voiceHeader={assistantVoiceHost} onVoiceFocus={()=>navigateAssistant('chat')} onOpenBrowser={openAssistantBrowser} onOpenProjectTask={key=>{const task=selectedDelegatedTasks.find(t=>projectTaskKey(t.owner.hostId,t.owner.workspaceId,t.id)===key);if(!task)return false;const lists=assistantWorkItems([], [task],assistantProjectName);const item=Object.values(lists).flat().find(i=>i.taskId===task.id);if(!item)return false;openWorkItem(item,'chat');return true;}} key={selectedAssistant.draftKey} focusTask={chatFocus} onFocusHandled={()=>setChatFocus(null)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} draftKey={selectedAssistant.draftKey} assistantAvatar={<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={panel=>navigateAssistant(panel==='activity'?'chat':panel)} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
+            offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence}  overviewEntries={[]} personal={selectedAssistant}
+            taskContext={assistantTaskContext && scopedAssistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
+            tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, scopedAssistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
               <small>Task plan · {batch.children.length} assignment{batch.children.length === 1 ? '' : 's'}</small><p>{batch.visibleChildren.length === batch.children.length ? batch.originalRequest : 'Saved proposals for available projects. Changed project assignments need a new plan.'}</p>
               {batch.visibleChildren.map((child) => <div key={child.payload.requestId}><strong>{child.project} · {child.payload.destination.workers.join(', ')}</strong><p>{child.payload.brief}</p><small>{child.status === 'proposed' ? 'Prepared · task progress and review below' : child.status} · {child.payload.mode === 'isolated' ? 'Separate worktree' : 'Read only'}</small>{child.error && <p role="status">{child.error}</p>}</div>)}
               {batch.visibleChildren.some((child) => child.status !== 'proposed' && child.status !== 'failed') && <button type="button" disabled={handoffWorking.includes(batch.id)} onClick={() => void prepareHandoffBatch(batch.id)}>Retry saved proposals</button>}
-            </article>), ...assistantMonitors.map((monitor) => {
+            </article>), ...scopedAssistantMonitors.map((monitor) => {
               if (offlineHost(monitor.hostId)) return <article className="assistant-chat-message assistant" key={monitor.workspaceId}><small>{workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} · Offline</small><p>Reconnect this machine to load and respond to delegated work.</p></article>;
               let route: Backend; try { route = hostBackend(monitor.hostId); } catch { return null; }
               const requestOwner = overviewOwner(monitor);
@@ -2567,16 +2754,24 @@ export function App() {
                   }
                 },
               };
-              return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} requestRecovery={requestRecovery} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
+              return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} assistantIdentity={{ref:mainView.assistant,name:selectedAssistant.name,avatar:<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>}} requestRecovery={requestRecovery} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
             })]}
-            clearedAt={apexAgentClearedAt} onClear={clearApexAgentConversation} fullScreen={apexAgentFull} onFullScreen={toggleApexAgentFull} />
-        </aside>}
-        {apexWorkspace && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label={`ApexAgent for ${apexWorkspace.name}`}>
-          <button className="apex-agent-project-expand icon" type="button" onClick={toggleApexAgentFull} aria-pressed={apexAgentFull} aria-label={apexAgentFull ? "Collapse ApexAgent" : "Expand ApexAgent"} title={apexAgentFull ? "Collapse" : "Expand"}>{apexAgentFull ? "⤡" : "⤢"}</button>
+            />} />}
+          {mainView.kind==='assistant' && !selectedAssistant && <div className="picker"><p role="status">This assistant is unavailable. Refresh or reconnect its machine.</p><button onClick={()=>setMainView({kind:'workspace'})}>Back to Workspaces</button></div>}
+          {creatingAssistant && <AssistantCreationDialog onClose={()=>setCreatingAssistant(false)}>{(()=>{
+            const machinePicker=<label className="assistant-setting-row"><span>Machine</span><select aria-label="Assistant machine" value={creationHost} onChange={e=>setCreationHost(e.target.value)}>{assistants.hosts.map(host=><option key={host.routeHostId} value={host.routeHostId} disabled={!host.hostId||host.state==='offline'}>{host.name}</option>)}</select></label>;
+            const host=assistants.hosts.find(host=>host.routeHostId===creationHost);
+            return host?.hostId ? <AssistantEditor key={host.hostId} backend={hostBackend(host.routeHostId)} profiles={profiles} disabledProviders={disabledProviders} hostId={host.hostId} projects={[]} machineName={host.name} machinePicker={machinePicker} onCreate={async input=>{const {request,brief}=splitFirstBrief(input);const ref=await assistants.create(host.routeHostId,request);if(brief)prefillAssistantComposer(assistantIdentityKey(ref),brief);return ref;}} onSaved={ref=>{if(ref)openAssistant(ref);}}/> : <>{machinePicker}<p role="status">Connect a machine with assistant workspace support to create a teammate.</p></>;
+          })()}<details className="assistant-archived-list"><summary>Archived assistants ({assistants.archivedAssistants.length})</summary><p className="muted">Restore keeps the same history and projects. Restored assistants stay paused.</p>{assistants.archivedAssistants.map(item=><div className="assistant-archived-row" key={assistantIdentityKey(item.ref)}><span><strong>{item.name}</strong><small>{item.hostName}{item.offline?' · Offline':''}</small></span><button type="button" disabled={item.offline||restoringAssistant!==null} onClick={()=>{setRestoringAssistant(assistantIdentityKey(item.ref));void assistants.restoreAssistant(item.ref,item.revision).then(()=>toast('Assistant restored and paused. Open it from Your team.')).catch(error=>toast(String(error))).finally(()=>setRestoringAssistant(null));}}>Restore</button></div>)}{!assistants.archivedAssistants.length&&<p className="muted">No archived assistants.</p>}</details></AssistantCreationDialog>}
+        {apexAgentWorkspace && typeof apexAgentWorkspace!=='string' && !apexWorkspace && <aside className="assistant-source-view"><p role="alert">This exact project is unavailable. Reconnect its machine or restore its assigned folder.</p><button onClick={closeApexAgentAndReturnFocus}>Back</button></aside>}
+        {apexWorkspace && <aside className="assistant-source-view" aria-label={`ApexAgent for ${apexWorkspace.name}`}>
           {apexAgentBackend
             ? <ApexAgentSources key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={viewPanes} onMonitorChange={apexMonitorChange} onClose={closeApexAgentAndReturnFocus} onBack={() => setApexAgentWorkspace(null)} />
             : <div className="apex-agent-dock-unavailable"><header><strong>ApexAgent</strong><button className="icon" onClick={closeApexAgentAndReturnFocus} aria-label="Close ApexAgent">×</button></header><p role="alert">The project machine is unavailable.</p><p>Reconnect the machine to use ApexAgent for {apexWorkspace.name}.</p></div>}
         </aside>}
+        </main>
+
+
         {detailsOpen && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close side panel overlay" onClick={closeDetails} />}
           {!sidePanelFull && <SidebarHandle
@@ -2589,37 +2784,44 @@ export function App() {
             style={overlayDetails ? { right: `calc(min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px)) + var(--deck-gap, 0px))` } : undefined}
           />}
           <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}${sidePanelFull ? " full" : ""}`} style={sidePanelFull ? undefined : { width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
-            <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} onPopout={(tabId) => popOutTab(tabId)} onPopoutDragOut={(tabId, x, y) => popOutTab(tabId, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 })} taskAttention={{ count: sectionFlags.agents.count, details: sectionFlags.agents.rows.map((row) => row.title).join("\n") || "ApexAgent tasks are waiting for your response" }} bodies={{
-              dashboard: () => <RightDashboard rows={dashboardRows} onOpen={(id) => { const pane = listed.find((item) => item.id === id); if (pane) focusPane(pane); }} />,
-              tasks: () => {
-                const selected = listed.find((pane) => pane.id === focusedPane);
-                const workspaceId = selected?.workspaceId ?? activeWorkspace;
-                const monitor = assistantMonitors.find((item) => item.workspaceId === workspaceId);
-                if (!monitor) return <p className="muted right-panel-empty">Pick a project with ApexAgent tasks.</p>;
-                let route: Backend;
-                try { route = hostBackend(monitor.hostId); } catch { return <p className="muted right-panel-empty">This project machine is unavailable.</p>; }
-                return <ApexAgentTasks key={`side:${monitor.workspaceId}:${monitor.hostId}:${monitor.cwd}:${monitor.conversationId}`} backend={route} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? "Project", label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
-              },
+            <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} onPopout={(tabId) => popOutTab(tabId)} onPopoutDragOut={(tabId, x, y) => popOutTab(tabId, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 })} taskAttention={{ count: workspaceTaskRows.filter(row => row.group === 'waiting').length, details: workspaceTaskRows.filter(row => row.group === 'waiting').map(row => `${row.assistantName} · ${row.projectName}: ${row.title}`).join("\n") }} bodies={{
+              dashboard: (_tab, visible) => <RightDashboard rows={dashboardRows} onOpen={openDashboard} visible={visible && detailsOpen} />,
+              tasks: () => <WorkspaceTasks rows={workspaceTaskRows} problems={workspaceTaskProblems} renderDetail={row => {
+                let route: Backend | null = null; try { route = hostBackend(row.routeHostId); } catch { /* Keep the last known owner visible. */ }
+                return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes} onOpenThread={id => { const workspace = row.project ? resolveAssistantProject(row.project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace) : null; const pane = workspace ? viewPanes.find(item => item.id === id && item.workspaceId === workspace.id) : undefined; if (pane) focusPane(pane); }} />;
+              }} />,
               browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
+              assistantbrowser: (_tab, visible) => mainView.kind === "assistant" && selectedAssistant
+                ? <AssistantBrowser lane={selectedAssistant} presentation={visible ? "expanded" : "closed"} onClose={closeAssistantBrowserTab} />
+                : <p className="muted right-panel-empty">Open an assistant to see its browser.</p>,
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
+              terminal: (_tab, visible) => {
+                const pane = listed.find((item) => item.id === focusedPane);
+                const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
+                let route: Backend | null = null;
+                try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
+                return <RightTerminalTab root={workspace?.path || chatFolder(pane, workspace) || null} backend={route} visible={visible} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} typeIn={rightTypeIn} typeInRequest={rightTypeInSeq} />;
+              },
               files: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
                 let route: Backend | null = null;
                 try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
-                return <RightFilesTab root={workspace?.path || null} backend={route} threadId={pane?.kind === "chat" ? pane.id : null} paneId={pane?.kind === "chat" ? pane.id : null} local={workspace ? workspaceHost(workspace) === "local" : false} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
+                return <RightFilesTab root={chatFolder(pane, workspace) || null} backend={route} threadId={pane?.kind === "chat" ? pane.id : null} paneId={pane?.kind === "chat" ? pane.id : null} local={workspace ? workspaceHost(workspace) === "local" : false} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, chatFolder(pane, workspace) || null, false).catch(() => {}); }} />;
               },
               worktrees: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
                 let route: Backend | null = null;
                 try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
-                return <RightWorktreesTab root={workspace?.path || null} backend={route} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
+                return <RightWorktreesTab root={workspace?.path || null} backend={route} visible={visible} mounted={chatFolder(pane, workspace)} pendingMount={pane ? mounts.pending[pane.id]?.path : undefined} busyTurn={Boolean(pane && (threadStatus[pane.id]?.busy || threadStatus[pane.id]?.replying.length || threadStatus[pane.id]?.waiting.length))} onMount={pane?.kind === "chat" && route && !(pane as Pane & {assistantTaskId?:string}).assistantTaskId ? path => mounts.request(pane, path, route!) : undefined} onCancelMount={() => { if(pane) mounts.cancel(pane.id); }} onOpen={(path) => { if (route && workspace) void route.openTarget(path, chatFolder(pane, workspace) || null, false).catch(() => {}); }} />;
               },
               artifacts: (_tab, visible) => detailsTarget
                 ? <div ref={setArtifactsSlot} tabIndex={-1} className="right-artifacts-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its artifacts.</p>,
-              details: (_tab, visible) => detailsTarget
+              details: (_tab, visible) => mainView.kind === "assistant" && selectedAssistant
+                ? <AssistantDetails lane={selectedAssistant} backend={assistantBackend??undefined} profiles={profiles} tasks={selectedDelegatedTasks} outputs={assistantOutputsState.outputs} outputsLoading={assistantOutputsState.loading} outputsProblem={assistantOutputsState.problem} onOpenFile={(path, cwd) => { void assistantBackend?.openTarget(path, cwd, false); }} onClose={closeDetails} onNavigate={navigateAssistant} onOpenBrowser={openAssistantBrowser} onOpenBrowserTab={openAssistantBrowserTab} onRefresh={() => void assistants.refresh()} onStartCall={startAssistantCall} onGoToChat={() => { if (overlayDetails) closeDetails(); }} />
+                : detailsTarget
                 ? <div ref={setDetailsSlot} tabIndex={-1} className="right-details-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its details.</p>,
             }} />

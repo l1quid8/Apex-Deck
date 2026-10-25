@@ -1,5 +1,6 @@
-// The Mac's apex-daemon as a per-user LaunchAgent while Settings → Remote
-// access is on, so paired phones keep reaching this Mac after Deck quits.
+// The Mac's apex-daemon as a per-user LaunchAgent on a packaged build, so it
+// keeps running after Deck quits. Phone connections are the daemon's own
+// saved setting, not a reason to start or stop this agent.
 // launchd starts it at login and starts it again when it exits with an error.
 // Everything that runs launchctl or touches the disk is passed in, so tests
 // never touch the real ~/Library.
@@ -8,6 +9,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { TRUSTED_DAEMON, plistDaemonBin } from './trustedInstall.mjs';
 
 export const LABEL = 'dev.apexdeck.daemon';
 
@@ -41,9 +43,9 @@ export function daemonBuild(bin, files = fs) {
   }
 }
 
-/** The plist for `serve --remote`, which stays up without the app. */
+/** The plist for `serve`, which stays up without the app. No `--remote`: the daemon reads its saved setting. */
 export function agentPlist({ bin, dataDir, logFile, build = '' }) {
-  const args = [bin, 'serve', '--remote', ...(dataDir ? ['--data-dir', dataDir] : [])];
+  const args = [bin, 'serve', ...(dataDir ? ['--data-dir', dataDir] : [])];
   const items = args.map((arg) => `    <string>${xml(arg)}</string>`).join('\n');
   const stamp = build ? `
   <key>EnvironmentVariables</key>
@@ -127,11 +129,16 @@ async function bootout(uid, run) {
 /**
  * Write the plist and load it. Nothing is rewritten or reloaded when the file
  * already matches and launchd has the agent loaded.
+ *
+ * Resolves `unchanged`, `protected` or `installed`. An agent that runs the
+ * protected daemon is never replaced by one that runs another daemon: that
+ * would take protected assistants, tasks and conversations out of reach.
  */
 export async function installAgent({ plistPath, plist, uid, run = launchctl, fs: files = fs, wait = sleep }) {
   let current = null;
   try { current = files.readFileSync(plistPath, 'utf8'); } catch { /* not installed yet */ }
-  if (current === plist && await loaded(uid, run)) return;
+  if (current === plist && await loaded(uid, run)) return 'unchanged';
+  if (plistDaemonBin(current) === TRUSTED_DAEMON && plistDaemonBin(plist) !== TRUSTED_DAEMON) return 'protected';
   files.mkdirSync(path.dirname(plistPath), { recursive: true });
   const temp = `${plistPath}.${process.pid}.tmp`;
   files.writeFileSync(temp, plist);
@@ -140,7 +147,7 @@ export async function installAgent({ plistPath, plist, uid, run = launchctl, fs:
   for (let attempt = 0; ; attempt++) {
     try {
       await run(['bootstrap', `gui/${uid}`, plistPath]);
-      return;
+      return 'installed';
     } catch (error) {
       // bootout acknowledges removal before launchd has fully unregistered
       // the old job. Immediate bootstrap can fail with EIO (5) in that gap.
@@ -164,9 +171,9 @@ export async function removeAgent({ plistPath, uid, run = launchctl, fs: files =
 }
 
 /**
- * Start the agent and wait until its daemon is the one serving `socket` with
- * Remote access up: `infoFile` (daemon.json, written once the daemon is
- * ready) names the agent's pid and an endpoint. Resolves 'agent' then.
+ * Start the agent and wait until its daemon is the one serving `socket`.
+ * `infoFile` (daemon.json, written once the daemon is ready) must name the
+ * agent's pid. Phone connections may be on or off. Resolves 'agent' then.
  *
  * A daemon something else started already on the socket is left alone and
  * the agent is not started: resolves 'foreign', for the caller to attach to
@@ -188,15 +195,14 @@ export async function startAgentDaemon({ socket, infoFile, uid, install, remove,
     ({ pid } = await agentState(uid, run));
     info = readInfo(infoFile);
     serving = await answers(socket);
-    if (pid !== null && serving && info?.pid === pid && info.remote?.endpoint_id) return 'agent';
+    if (pid !== null && serving && info?.pid === pid) return 'agent';
     if (Date.now() - started > timeout) break;
     await wait(50);
   }
   await remove().catch(() => {});
   const seconds = Math.round(timeout / 1000);
   if (serving && info?.pid && info.pid !== pid) {
-    throw new Error(`Another apex-daemon (pid ${info.pid}) is using Deck's data folder, so the background service can't start. Quit it, then turn Remote access on again`);
+    throw new Error(`Another apex-daemon (pid ${info.pid}) is using Deck's data folder, so the background service can't start. Quit it, then open Deck again`);
   }
-  if (serving && info?.pid === pid) throw new Error('The background apex-daemon started without Remote access');
   throw new Error(`The background apex-daemon didn't start within ${seconds} seconds`);
 }

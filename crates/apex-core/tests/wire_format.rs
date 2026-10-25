@@ -21,6 +21,7 @@ fn participant_config_shapes() {
         access: Access::Edits,
         effort: Some("high".into()),
         speed: None,
+        voice: None,
         appearance: None, media: None
     };
     assert_eq!(
@@ -54,6 +55,23 @@ fn participant_config_shapes() {
 
     let scripted = Backend::Scripted { lines: vec!["hi".into()] };
     assert_eq!(to_value(&scripted).unwrap(), json!({ "kind": "scripted", "lines": ["hi"] }));
+}
+
+#[test]
+fn participant_config_keeps_its_voice() {
+    let saved = json!({
+        "id": "null", "display_name": "Null",
+        "backend": { "kind": "agent", "tool": "codex" },
+        "voice": "bf_emma"
+    });
+    let config: ParticipantConfig = serde_json::from_value(saved).unwrap();
+    assert_eq!(config.voice.as_deref(), Some("bf_emma"));
+    assert_eq!(to_value(&config).unwrap()["voice"], json!("bf_emma"));
+    let none: ParticipantConfig = serde_json::from_value(json!({
+        "id": "null", "display_name": "Null", "backend": { "kind": "agent", "tool": "codex" }
+    })).unwrap();
+    assert_eq!(none.voice, None);
+    assert!(to_value(&none).unwrap().get("voice").is_none());
 }
 
 #[test]
@@ -172,6 +190,7 @@ fn room_event_shapes() {
             apex_core::PlanWindow { name: "secondary".into(), used_percent: 19, window_minutes: None, resets_at: None },
         ],
         partial: false,
+        reset_credits: None,
     };
     assert_eq!(
         to_value(RoomEvent::plan(&plan)).unwrap(),
@@ -180,8 +199,38 @@ fn room_event_shapes() {
             { "name": "secondary", "used_percent": 19, "window_minutes": null, "resets_at": null }
         ] })
     );
+    // A provider's own quota group says which model it belongs to.
+    assert_eq!(
+        to_value(RoomEvent::plan_for(&plan, Some(" Gemini-4-Argon ".into()))).unwrap()["model"],
+        json!("gemini-4-argon")
+    );
+    assert_eq!(to_value(RoomEvent::plan_for(&plan, Some("  ".into()))).unwrap().get("model"), None);
+    // Reset credits ride along only when the report listed them.
+    let credits = apex_core::ResetCredits {
+        available: 1,
+        credits: vec![apex_core::ResetCredit { id: "c1".into(), title: Some("Full reset".into()), description: None, granted_at: 1790710015, expires_at: Some(1793302015) }],
+    };
+    assert_eq!(
+        to_value(RoomEvent::plan(&apex_core::PlanUsage { reset_credits: Some(credits), ..plan })).unwrap()["reset_credits"],
+        json!({ "available": 1, "credits": [{ "id": "c1", "title": "Full reset", "granted_at": 1790710015, "expires_at": 1793302015 }] })
+    );
     assert_eq!(to_value(RoomEvent::Stopped).unwrap(), json!({ "type": "stopped" }));
     assert_eq!(to_value(RoomEvent::Idle).unwrap(), json!({ "type": "idle" }));
+    assert_eq!(
+        to_value(RoomEvent::ReadOnlyTurn {
+            id: ParticipantId::new("opus"),
+            editor: ParticipantId::new("opus"),
+            reason: "no copy available".into(),
+            line: "opus is read-only this turn: opus is editing and Deck couldn't make a separate copy (no copy available).".into(),
+        }).unwrap(),
+        json!({
+            "type": "read_only_turn",
+            "id": "opus",
+            "editor": "opus",
+            "reason": "no copy available",
+            "line": "opus is read-only this turn: opus is editing and Deck couldn't make a separate copy (no copy available)."
+        })
+    );
 }
 
 #[test]

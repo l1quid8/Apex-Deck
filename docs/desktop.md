@@ -36,13 +36,20 @@ Electron app then keeps its own files (the browser profile, `hosts.json`) in
 ## Build the app
 
 ```sh
-npm run desktop:package    # the app alone
-npm run desktop:dmg        # the app in a disk image, for a release
+npm run desktop:package    # the app and the installable package
+npm run desktop:dmg        # the same, plus a disk image
 ```
 
 This builds `apex-daemon` in release mode and the UI, then writes
-`release/mac-arm64/Apex Deck.app` (or `mac-x64` on Intel), and with
-`desktop:dmg` also `release/Apex-Deck_<version>_<arch>.dmg`. The daemon is
+`release/mac-arm64/Apex Deck.app` (or `mac-x64` on Intel). It also writes the
+installable `release/Apex-Deck-upgrade.pkg`, replacing the last one and keeping
+that one beside it as `Apex-Deck-upgrade.previous.pkg`; `desktop:dmg` adds
+`release/Apex-Deck.dmg`. Those names are fixed on purpose, so a rebuild
+overwrites rather than piling up, and the version and stamped commit live in the
+bundle and in `Apex-Deck-upgrade.pkg.json`. Leftovers from the build — the
+unpacked `mac-*` folder, staging files, half-written images and disk images the
+build left mounted — are removed by the same command, on failure as well as
+success. Set `APEX_DECK_SKIP_PKG=1` to build only the app. The daemon is
 inside it at `Contents/Resources/bin/apex-daemon`, and Codex's approval hook
 runs that same copy. Builds use a Developer ID certificate when the build
 Mac’s keychain has one, so macOS keeps permissions such as Full Disk Access

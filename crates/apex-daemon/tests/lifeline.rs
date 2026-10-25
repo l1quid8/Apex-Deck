@@ -164,7 +164,7 @@ fn serve_cleans_up_when_the_app_reading_its_stderr_is_killed() {
         .spawn()
         .unwrap();
     let mut holder = Killed(holder);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_apex-daemon"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_apex-daemon-fixture"))
         .args(["serve", "--exit-on-stdin-close", "--data-dir"])
         .arg(&data.0)
         .stdin(std::fs::File::open(&input).unwrap())

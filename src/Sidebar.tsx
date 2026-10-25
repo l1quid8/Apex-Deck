@@ -1,3 +1,7 @@
+import { AssistantTeamRow } from "./AssistantTeamRow";
+import { assistantStatus, type AssistantStatus } from "./assistantStatus";
+import { assistantIdentityKey, type AssistantRef } from "./assistantIdentity";
+import type { PersonalAssistantSummary } from "./usePersonalAssistants";
 import { useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { Backend, HostEntry } from "./backend";
 import type { AppSection, Pane, PaneStatus, ThreadStatus, Workspace } from "./types";
@@ -18,6 +22,13 @@ import { WorkspaceHostMenu } from "./WorkspaceHostMenu";
 // draws them and keeps the rail's own menus and hover cards.
 
 export interface ProjectSidebarProps {
+  assistants?: PersonalAssistantSummary[];
+  assistantStatusFor?: (ref:AssistantRef) => AssistantStatus;
+  selectedAssistant?: AssistantRef | null;
+  rosterProblem?: string | null;
+  assistantBackend?: (ref:AssistantRef) => Backend | undefined;
+  onOpenAssistant?: (ref:AssistantRef) => void;
+  onCreateAssistant?: () => void;
   backend: Backend;
   section: AppSection;
   panes: Pane[];
@@ -302,7 +313,12 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   };
 
   return (
-    <aside ref={rail} className="rail" style={props.style} onScroll={hover.hide}>
+    <aside ref={rail} className="rail" style={props.style}>
+      {/* Only the lists scroll; the preferences row below stays at the bottom. */}
+      <div className="rail-scroll" onScroll={hover.hide}>
+      <div className="rail-sec"><span>Your team</span><button type="button" className="icon" aria-label="Add teammate" onClick={props.onCreateAssistant}>+</button></div>
+      {props.assistants?.map(assistant => <AssistantTeamRow key={assistantIdentityKey(assistant.ref)} assistant={assistant} status={props.assistantStatusFor?.(assistant.ref) ?? assistantStatus({offline:assistant.offline,paused:assistant.paused,personalTasks:assistant.personalTasks,delegatedTasks:[]})} selected={!!props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)} backend={props.assistantBackend?.(assistant.ref)} onOpen={ref=>props.onOpenAssistant?.(ref)}/>)}
+      {!props.assistants?.length && <p className="assistant-team-empty">{props.rosterProblem ?? 'No assistants yet.'}</p>}
       {lists.pinned.length > 0 && <>
         <div className="rail-sec" data-sec="pinned">Pinned</div>
         {lists.pinned.map((pane) => row(pane, "pinned"))}
@@ -340,6 +356,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </span>
         </div>
       )}
+      </div>
       <div className="rail-controls" aria-label="Preferences">
         <span className="rail-version" title={`Apex Deck ${__APP_VERSION__}`}>Apex Deck <span>{__APP_VERSION__}</span></span>
         <button className={props.appearanceOpen ? "icon active" : "icon"} onClick={props.onOpenAppearance} aria-label="Appearance" title="Appearance" aria-pressed={props.appearanceOpen}>

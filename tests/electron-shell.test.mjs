@@ -2,6 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bridgeConnect, toBase64, fromBase64, daemonTransport } from '../src/electronShell.ts';
 
+test('versioned assistant configuration requires the current advertised capability before transport send', async () => {
+  const advertised = new Set();
+  const calls = [];
+  const transport = daemonTransport({
+    call: async (...args) => { calls.push(args); return { saved: true }; },
+    on() {},
+    hasCapability: capability => advertised.has(capability),
+  });
+  const args = { assistantId: 'asst-1', expectedRevision: 7, settings: { name: 'Null' } };
+  assert.equal(transport.supports('assistant_workspace_v4'), false);
+  assert.throws(() => transport.call('personal_workspace_configure', args), /Update.*reconnect/i);
+  assert.deepEqual(calls, []);
+  advertised.add('assistant_workspace_v4');
+  assert.equal(transport.supports('assistant_workspace_v4'), true);
+  assert.deepEqual(await transport.call('personal_workspace_configure', args), { saved: true });
+  assert.deepEqual(calls, [['personal_workspace_configure', args]]);
+  advertised.clear();
+  assert.throws(() => transport.call('personal_workspace_configure', args), /Update.*reconnect/i);
+  assert.equal(calls.length, 1);
+  const legacy = daemonTransport({ call: async () => assert.fail('unsupported configuration must not be sent'), on() {} });
+  assert.equal(legacy.supports('assistant_workspace_v4'), false);
+  assert.throws(() => legacy.call('personal_workspace_configure', args), /Update.*reconnect/i);
+});
+
 test('base64 both ways, for files of any size', () => {
   const bytes = new Uint8Array(300_000).map((_, i) => (i * 7) % 256);
   const text = toBase64(bytes);
@@ -178,4 +202,12 @@ test("a refused connect reaches the banner in the daemon's own words", async () 
   bridge.daemon.connect = async () => { throw new Error("Error invoking remote method 'daemon:connect': Error: /Users/me/Library/Application Support/dev.apexdeck.app: Apex Deck (pid 412) is using this folder"); };
   const connect = bridgeConnect(bridge);
   await assert.rejects(connect(), { message: '/Users/me/Library/Application Support/dev.apexdeck.app: Apex Deck (pid 412) is using this folder' });
+});
+
+
+test('project folder grant requires its own advertised capability before any transport send',async()=>{
+ const caps=new Set(['assistant_workspace_v4']);const calls=[];const transport=daemonTransport({call:async(...args)=>{calls.push(args);return {};},on(){},hasCapability:cap=>caps.has(cap)});
+ const args={assistantId:'a',expectedRevision:7,folderGrant:{hostId:'host',workspaceId:'w',cwd:'/exact'}};
+ assert.throws(()=>transport.call('personal_workspace_configure',args),/Update.*reconnect/i);assert.equal(calls.length,0);
+ caps.add('assistant_project_folder_grant_v1');await transport.call('personal_workspace_configure',args);assert.deepEqual(calls,[['personal_workspace_configure',args]]);
 });

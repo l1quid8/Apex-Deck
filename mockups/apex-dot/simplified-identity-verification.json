@@ -1,0 +1,29 @@
+{
+  "verifiedAt": "2026-10-22T19:58:07.202300+00:00",
+  "scope": "Browser-local mockup only; no production implementation or remote execution verified.",
+  "browserChecks": {
+    "creationHasNameAvatarPaletteColorPickerHexAndNewPattern": true,
+    "creationHasNoTeamMemberTypeOrCustomType": true,
+    "settingsHasNameModelAvatarAndHexWithoutTypeSelector": true,
+    "settingsSaveShowsProfileSaved": true,
+    "reloadKeepsExistingNullAndAtlasProfilesAndGlobalTasksSidebar": true,
+    "teamRowsShowWorkStatusInsteadOfCosmeticType": true
+  },
+  "stateChecks": {
+    "coordinationSmokeChecksPassed": 11,
+    "legacyAndUntypedProfilesRetained": true,
+    "legacyLabelsPreservedAsHiddenMetadata": true,
+    "existingMessagesAndAvatarSeedRetained": true,
+    "newProfilesDoNotRequireTypeLabel": true
+  },
+  "javascriptParseChecks": [
+    "profiles.js",
+    "coordination-ui.js"
+  ],
+  "browserConsole": "Only observed errors came from the installed MetaMask browser extension; no mockup error was observed in the inspected log output.",
+  "screenshot": "assistant-creation.jpg",
+  "limits": [
+    "The creation dialog was inspected without adding a new browser profile.",
+    "Type-label, screenshot and verification artifacts from earlier revisions are historical."
+  ]
+}

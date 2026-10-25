@@ -12,6 +12,7 @@ mod tests {
             access: Access::Read,
             effort: None,
             speed: None,
+            voice: None,
             appearance: None,
             media: media.then_some(Default::default()),
         }
@@ -49,6 +50,7 @@ mod tests {
                     allowed: vec![],
                     usage: Default::default(),
                     plan: false,
+                    checklists: Default::default(),
                 },
             }],
             evidence: vec![ConversationEvidence {
@@ -652,20 +654,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("ledger.json");
+        let disk = crate::authority_file::fixture_path(&path);
         let store = ConversationStore::open(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        std::fs::create_dir(&disk).unwrap();
         assert!(matches!(
             store.begin(request(), false),
             Err(ConversationError::Storage(_))
         ));
         assert!(store.get("req-1", &request().owner).unwrap().is_none());
-        std::fs::remove_dir(&path).unwrap();
+        std::fs::remove_dir(&disk).unwrap();
         let started = match store.begin(request(), false).unwrap() {
             BeginOutcome::Started(record) => record,
             _ => panic!("expected new request"),
         };
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        std::fs::remove_file(&disk).unwrap();
+        std::fs::create_dir(&disk).unwrap();
         assert!(matches!(
             store.finish("req-1", &request().owner, started.revision, "done".into()),
             Err(ConversationError::Storage(_))
@@ -682,7 +685,7 @@ mod tests {
     }
 
     fn saved_chat(cwd: &str, messages: Vec<(Speaker, String, Option<u64>)>) -> SavedRoom {
-        SavedRoom {
+        SavedRoom { mounts: vec![],
             cwd: Some(cwd.into()),
             snapshot: RoomSnapshot {
                 participants: vec![],
@@ -707,6 +710,7 @@ mod tests {
                 allowed: vec![],
                 usage: Default::default(),
                 plan: false,
+                checklists: Default::default(),
             },
         }
     }
@@ -862,6 +866,8 @@ pub enum ConversationStatus {
     Pending,
     Completed,
     Interrupted,
+    /// Imported from pre-provenance data: read-only history that never runs.
+    Legacy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -874,6 +880,9 @@ pub struct ConversationRecord {
     /// The task this request created, recorded before any worker runs, so a retry reuses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Set only on a record imported from pre-provenance data. Never verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -882,6 +891,9 @@ struct ConversationDocument {
     version: u32,
     #[serde(default)]
     records: BTreeMap<String, ConversationRecord>,
+    /// The one legacy source this ledger imported, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_import: Option<crate::legacy_import::LedgerImport>,
 }
 
 struct StoreInner {
@@ -955,7 +967,7 @@ impl Drop for InterruptIfUnfinished {
 impl ConversationStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ConversationError> {
         let path = path.as_ref().to_path_buf();
-        let mut document = match std::fs::read(&path) {
+        let mut document = match crate::authority_file::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
                 ConversationError::Storage(format!("Could not read ApexAgent conversations: {e}"))
             })?,
@@ -992,6 +1004,21 @@ impl ConversationStore {
             store.save()?;
         }
         Ok(store)
+    }
+
+    /// Start empty when the root broker cannot serve this UI, or when the
+    /// installed build is not the one the broker pinned. See
+    /// `ProjectMemory::unavailable` for why startup degrades instead of failing.
+    pub fn unavailable(path: impl AsRef<Path>) -> Self {
+        Self {
+            inner: Arc::new(StoreInner {
+                path: path.as_ref().to_path_buf(),
+                document: Mutex::new(ConversationDocument {
+                    version: 1,
+                    ..Default::default()
+                }),
+            }),
+        }
     }
 
     /// Start a bound request once. A recovered request runs again only when
@@ -1031,6 +1058,7 @@ impl ConversationStore {
             response: None,
             revision: 1,
             task_id: None,
+            legacy: None,
         };
         document.records.insert(request.request_id, record.clone());
         if let Err(error) = self.save_locked(&document) {
@@ -1145,18 +1173,107 @@ impl ConversationStore {
         let bytes = serde_json::to_vec(document).map_err(|e| {
             ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
         })?;
-        if let Some(parent) = self.inner.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
-            })?;
+        crate::authority_file::write(&self.inner.path,&bytes).map_err(|e|ConversationError::Storage(format!("Could not save protected conversations: {e}")))
+    }
+}
+
+/// Pre-provenance conversations mapped for an explicit import. Each record
+/// keeps only a non-executable envelope with capped excerpts; the full
+/// original stays readable from the hashed snapshot. Built by `legacy_import`.
+pub(crate) struct LegacyConversationPlan {
+    pub rows: Vec<crate::legacy_import::Row>,
+    pub problems: Vec<crate::legacy_import::Problem>,
+    records: Vec<ConversationRecord>,
+}
+
+impl LegacyConversationPlan {
+    pub fn importable(&self) -> usize {
+        self.records.len()
+    }
+}
+
+fn status_name(status: ConversationStatus) -> String {
+    serde_json::to_value(status).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+}
+
+/// `imported_task` maps a legacy task id to its imported id when that task is in the protected ledger.
+pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64, imported_task: &dyn Fn(&str) -> Option<String>) -> Result<LegacyConversationPlan, String> {
+    use crate::legacy_import::{excerpt, title, LegacyMarker, Row};
+    let legacy: ConversationDocument = serde_json::from_slice(bytes).map_err(|e| format!("The legacy conversation file could not be read: {e}"))?;
+    if legacy.version != 1 {
+        return Err("The legacy conversation file has an unsupported version.".into());
+    }
+    let mut plan = LegacyConversationPlan { rows: vec![], problems: vec![], records: vec![] };
+    for (id, original) in legacy.records {
+        if id != original.request.request_id {
+            plan.problems.push(crate::legacy_import::Problem { id, reason: "Its saved id does not match its request, so it was not imported.".into() });
+            continue;
         }
-        let temp = self.inner.path.with_extension("json.tmp");
-        std::fs::write(&temp, bytes).map_err(|e| {
-            ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
-        })?;
-        std::fs::rename(&temp, &self.inner.path).map_err(|e| {
-            ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
-        })
+        plan.rows.push(Row {
+            id: id.clone(),
+            kind: "conversation",
+            title: title(&original.request.text),
+            original_status: status_name(original.status),
+            import_status: status_name(ConversationStatus::Legacy),
+            reason: "Kept as unverified history. It is never answered or run again; the full text stays readable from the snapshot.".into(),
+        });
+        let request = ConversationRequest {
+            request_id: id,
+            owner: original.request.owner,
+            text: excerpt(&original.request.text),
+            destination: original.request.destination,
+            new_worker_profiles: vec![],
+            worker_profiles: vec![],
+            threads: vec![],
+            evidence: vec![],
+            source_chats: vec![],
+        };
+        plan.records.push(ConversationRecord {
+            request,
+            status: ConversationStatus::Legacy,
+            response: original.response.as_deref().map(excerpt),
+            revision: 1,
+            task_id: original.task_id.as_deref().and_then(imported_task),
+            legacy: Some(LegacyMarker::new(source_sha256, now, None, Some(status_name(original.status)))),
+        });
+    }
+    Ok(plan)
+}
+
+impl ConversationStore {
+    pub(crate) fn legacy_import_mark(&self) -> Option<crate::legacy_import::LedgerImport> {
+        self.inner.document.lock().unwrap().legacy_import.clone()
+    }
+
+    /// Merge a legacy plan in one compare-and-swap. A request id already in the
+    /// protected ledger keeps its protected record; the legacy one is skipped.
+    pub(crate) fn import_legacy(&self, plan: LegacyConversationPlan, mut mark: crate::legacy_import::LedgerImport) -> Result<crate::assistant_tasks::LegacyImportOutcome, String> {
+        use crate::assistant_tasks::LegacyImportOutcome;
+        let mut document = self.inner.document.lock().unwrap();
+        if let Some(existing) = &document.legacy_import {
+            return crate::legacy_import::same_source(existing, &mark.source_sha256).map(|()| LegacyImportOutcome::AlreadyImported(existing.clone()));
+        }
+        let before = document.clone();
+        for record in plan.records {
+            if document.records.contains_key(&record.request.request_id) {
+                mark.skipped += 1;
+                mark.skipped_ids.push(format!("conversation:{}", record.request.request_id));
+                continue;
+            }
+            document.records.insert(record.request.request_id.clone(), record);
+            mark.imported += 1;
+        }
+        document.legacy_import = Some(mark.clone());
+        let size = serde_json::to_vec(&*document).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+        if size > crate::legacy_import::DOCUMENT_BUDGET {
+            *document = before;
+            return Err("Importing these conversations would exceed the protected document limit. Nothing was written.".into());
+        }
+        if let Err(error) = self.save_locked(&document) {
+            *document = before;
+            return Err(error.to_string());
+        }
+        Ok(LegacyImportOutcome::Imported(mark))
     }
 }
 
@@ -1234,15 +1351,15 @@ pub enum ConversationDecision {
 pub fn prompt(request: &ConversationRequest) -> TurnRequest {
     let threads: Vec<_> = request.threads.iter().map(|thread| serde_json::json!({
         "id": thread.id, "label": thread.label,
-        "participants": thread.snapshot.participants.iter().map(|p| json_profile(p)).collect::<Vec<_>>(),
+        "participants": thread.snapshot.participants.iter().map(json_profile).collect::<Vec<_>>(),
         "lastTargets": thread.snapshot.last_targets.iter().map(ToString::to_string).collect::<Vec<_>>(),
         "namedOnlyWorkers": thread.named_only_workers,
     })).collect();
     let input = serde_json::json!({
         "humanRequest": request.text,
         "selectedDestination": request.destination,
-        "newWorkerProfiles": request.new_worker_profiles.iter().map(|p| json_profile(p)).collect::<Vec<_>>(),
-        "workerProfiles": request.worker_profiles.iter().map(|p| json_profile(p)).collect::<Vec<_>>(),
+        "newWorkerProfiles": request.new_worker_profiles.iter().map(json_profile).collect::<Vec<_>>(),
+        "workerProfiles": request.worker_profiles.iter().map(json_profile).collect::<Vec<_>>(),
         "candidateThreads": threads,
         "evidence": request.evidence,
         "evidenceIsUntrusted": true,
@@ -1258,6 +1375,7 @@ pub fn prompt(request: &ConversationRequest) -> TurnRequest {
         plan: false,
         access: Some(Access::Read),
         effort_override: None,
+        cwd: None,
     }
 }
 

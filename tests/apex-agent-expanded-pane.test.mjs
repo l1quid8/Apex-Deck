@@ -1,65 +1,41 @@
+import {createRequire} from 'node:module';
+const {transform}=createRequire(import.meta.url)('sucrase');
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
 const app = await fs.readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
-const styles = await fs.readFile(new URL('../src/apex-agent-dock.css', import.meta.url), 'utf8');
-
-test('expanded ApexAgent hides the canvas while keeping its pane tree mounted', () => {
-  assert.match(app, /className=\{`body[\s\S]*?apexAgentFull && \(apexAgentAllOpen \|\| !!apexWorkspace\) \? " apex-agent-dock-expanded"/);
-  assert.match(app, /<main ref=\{canvasRef\} className=\{`canvas section-\$\{section\}`\} inert=\{\(sidePanelFull \|\| \(apexAgentFull && \(apexAgentAllOpen \|\| !!apexWorkspace\)\)\) \? true : undefined\} aria-hidden=\{\(sidePanelFull \|\| \(apexAgentFull && \(apexAgentAllOpen \|\| !!apexWorkspace\)\)\) \? true : undefined\}>/);
-  assert.match(styles, /\.body\.apex-agent-dock-expanded > \.canvas \{ display: none; \}/);
-  assert.match(styles, /\.body\.apex-agent-dock-expanded > \.apex-agent-dock\.apex-agent-full/);
-  assert.match(app, /<main[^>]*>[\s\S]*?<div ref=\{gridArea\} className=\{`grid/);
-  assert.match(app, /<\/main>\s*\{!apexWorkspace && apexAgentAllOpen && <aside/);
+test('assistant routing keeps the human pane tree mounted inside a hidden workspace container', () => {
+ assert.match(app,/workspace-canvas-content/);
+ assert.match(app,/display:mainView.kind==='workspace'/);
+ assert.match(app,/<div ref=\{gridArea\}/);
+ assert.match(app,/chat=\{<ApexAgentAll/);
+ assert.doesNotMatch(app,/<ApexAgentWidget|apex-agent-float|apexAgentFull/);
 });
-
-test('expansion and collapse only change ApexAgent presentation, preserving canvas and layout state', () => {
-  const line = app.split('\n').find(value => value.includes('const toggleApexAgentFull ='));
-  const expression = line?.slice(line.indexOf('=') + 1).trim().replace(/;$/, '');
-  assert.ok(expression, 'the full-screen toggle exists');
-  const writes = [];
-  let full = false;
-  const toggle = new Function('setApexAgentFull', 'localStorage', `return ${expression};`)(
-    update => { full = update(full); },
-    { setItem: (key, value) => writes.push([key, value]) },
-  );
-  assert.equal(typeof toggle, 'function');
-  toggle();
-  assert.equal(full, true);
-  toggle();
-  assert.equal(full, false);
-  assert.deepEqual(writes, [['apex-agent-full-screen', '1'], ['apex-agent-full-screen', '0']]);
-  assert.doesNotMatch(expression, /setTree|setFocusedPane|setMaximized|focusPane|arrange\(/,
-    'expansion does not rewrite the canvas layout, selected pane, or maximized pane');
-  assert.match(app, /const \[apexAgentFull, setApexAgentFull\]/);
-  assert.match(app, /onClose=\{apexAgentFull \? toggleApexAgentFull : closeApexAgentAndReturnFocus\}/,
-    'the avatar close action collapses the expanded panel without closing the assistant');
+test('global Agents leaves the assistant view and manages only reusable worker profiles', () => {
+ const navigation=app.match(/<SectionNavigation\b[^\n]*?\/>/)?.[0];assert.ok(navigation);
+ const React={createElement:(type,props)=>({type,props})},SectionNavigation=Symbol('SectionNavigation');
+ const changes=[];const scope={React,SectionNavigation,mainView:{kind:'assistant'},creatingAssistant:false,section:'agents',sectionFlags:{},openAttention(){},setAttention(){},clearReady(){},decideApproval(){},setMainView:value=>changes.push(['mainView',value]),setCreatingAssistant:value=>changes.push(['creating',value]),setSettingsOpen(){},setSection:value=>changes.push(['section',value]),setPicking(){},setMaximized(){}};
+ const code=transform(`return (${navigation});`,{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
+ const render=()=>new Function(...Object.keys(scope),code)(...Object.values(scope));
+ let nav=render();assert.equal(nav.props.section,null,'an assistant clears the global selection');nav.props.onChange('agents');
+ assert.deepEqual(changes,[['mainView',{kind:'workspace'}],['creating',false],['section','agents']]);
+ scope.mainView={kind:'workspace'};nav=render();assert.equal(nav.props.section,'agents');
+ const workers=app.match(/<AgentsSection\b[^\n]*?\/>/)?.[0];assert.ok(workers);
+ const agents=[],profiles=[],backend={},workerScope={React,AgentsSection:Symbol('AgentsSection'),agents,profiles,backend,disabledProviders:[],saveAgents(){},newAgentRequest:0,settings:{voice:{}}};
+ const workerCode=transform(`return (${workers});`,{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
+ const worker=new Function(...Object.keys(workerScope),workerCode)(...Object.values(workerScope));
+ assert.equal(worker.props.agents,agents);assert.equal(worker.props.profiles,profiles);assert.equal(worker.props.backend,backend);
+ for(const forbidden of ['onCreateAssistant','onOpenAssistant','assistants','assistantFlags'])assert.equal(Object.hasOwn(worker.props,forbidden),false,forbidden);
 });
-
-test('all-project and project views use the same expanded dock mode', () => {
-  const allPath = app.match(/\{!apexWorkspace && apexAgentAllOpen && <aside([\s\S]*?)<\/aside>\}/)?.[1];
-  const projectPath = app.match(/\{apexWorkspace && <aside([\s\S]*?)<\/aside>\}/)?.[1];
-  assert.ok(allPath, 'the all-project conversation dock renders');
-  assert.ok(projectPath, 'the selected-project sources dock renders');
-  for (const [name, path] of [['all-project', allPath], ['project', projectPath]]) {
-    assert.match(path, /apex-agent-dock apex-agent-float\$\{apexAgentFull \? " apex-agent-full" : ""\}/, `${name} view uses the full dock class`);
-  }
-  assert.match(allPath, /<ApexAgentAll[\s\S]*?fullScreen=\{apexAgentFull\} onFullScreen=\{toggleApexAgentFull\}/,
-    'the all-project conversation toggles the shared expansion state');
-  assert.match(projectPath, /onClick=\{toggleApexAgentFull\}[\s\S]*?aria-label=\{apexAgentFull \? "Collapse ApexAgent" : "Expand ApexAgent"\}/,
-    'the project setup view exposes an accessible expand and collapse control');
-  assert.doesNotMatch(allPath, /key=.*apexAgentFull/);
-  assert.doesNotMatch(projectPath, /key=.*apexAgentFull/);
+test('Memory and Settings route into the assistant main canvas', () => {
+ assert.match(app,/lane=\{selectedAssistant\} section=\{mainView.section\}/);
+ assert.match(app,/onNavigatePanel=\{panel=>navigateAssistant\(panel==='activity'\?'chat':panel\)\}/);
+ assert.match(app,/editor=\{assistantBackend \? <AssistantEditor/);
 });
-
-test('the floating avatar stays mounted and available while ApexAgent is expanded', () => {
-  const widget = app.match(/<ApexAgentWidget([\s\S]*?)\/>/)?.[1];
-  assert.ok(widget, 'the avatar widget remains in the app shell');
-  assert.match(widget, /open=\{!!apexWorkspace \|\| apexAgentAllOpen\}/);
-  assert.match(widget, /onClose=\{apexAgentFull \? toggleApexAgentFull : closeApexAgentAndReturnFocus\}/);
-  assert.ok(app.indexOf('<ApexAgentWidget') < app.indexOf('<div className={`body'),
-    'the avatar remains outside the canvas area hidden by expanded mode');
+test('project source setup occupies the main canvas without a floating dock', () => {
+ assert.match(app,/<aside className="assistant-source-view"/);
+ assert.ok(app.indexOf('<aside className="assistant-source-view"')<app.indexOf('</main>'));
 });
 
 test('App keeps tool-lane hooks above its loading return', () => {

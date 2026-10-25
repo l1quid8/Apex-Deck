@@ -1248,6 +1248,8 @@ textarea {
 .work-steps-todo-in_progress { color: var(--text); font-weight: 600; }
 .work-steps-todo-completed { opacity: 0.7; }
 .work-steps-todo-pending .work-steps-todo-mark { color: var(--muted); }
+.work-steps-todo-cancelled { text-decoration: line-through; opacity: 0.6; }
+.work-steps-todo-cancelled .work-steps-todo-mark { color: var(--muted); text-decoration: none; }
 
 .working-line {
   display: flex;
@@ -2918,6 +2920,9 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* Now tier, stage 1: the Removed line sits at the foot of the rail. */
 .rail { display: flex; flex-direction: column; }
 .rail > * { flex-shrink: 0; }
+.rail { overflow: hidden; }
+.rail > .rail-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.rail-scroll > * { flex-shrink: 0; }
 .rail-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 8px 0; color: var(--muted); font-size: 11px; }
 .rail-foot button { padding: 2px 6px; font-size: 11px; }
 .rail-foot .pane-menu { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
@@ -3236,23 +3241,33 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .settings-subhead { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 .settings-subhead h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.02em; }
 .settings-subhead p, .settings-note { margin: 0; font-size: 12px; color: var(--muted); }
-.remote-access input[role="switch"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.phones-status-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; font-size: 13px; }
+.phones-status-text small { font-size: 12px; color: var(--muted); }
+.settings-actions .phones-status-text span { margin-left: 0; font-size: 13px; color: var(--text); }
+.phones-advanced { margin-top: 12px; }
+.phones-advanced > summary { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--muted); }
+.phones-advanced[open] > summary { border-bottom: 1px solid var(--line); }
+.phones-advanced > .settings-row:first-of-type { border-top: 0; }
 .remote-addresses { align-items: flex-end; }
 .remote-addresses input { margin-top: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-.confirm.pair-sheet { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; gap: 10px; }
-.pair-code-area { display: flex; gap: 16px; align-items: stretch; }
-.pair-qr { flex: none; width: 220px; height: 220px; display: grid; place-items: center; border-radius: 8px; background: #fff; overflow: hidden; }
+.confirm.pair-sheet { width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; gap: 12px; }
+.pair-qr { align-self: center; flex: none; width: 260px; height: 260px; display: grid; place-items: center; border-radius: 10px; background: #fff; overflow: hidden; }
 .pair-qr svg { width: 100%; height: 100%; display: block; }
 .pair-qr .muted { color: #59636e; font-size: 12px; padding: 12px; text-align: center; }
-.pair-code-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.pair-countdown { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
-.pair-code-side small { font-size: 12px; }
-.pair-link { margin-top: auto; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; max-height: 72px; overflow: hidden; user-select: all; }
-.pair-code-side button { align-self: flex-start; }
-.pair-claim { display: flex; flex-direction: column; gap: 6px; }
-.pair-claim p { margin: 0; font-size: 13px; }
-.pair-claim-code { font-size: 30px; font-weight: 650; letter-spacing: 0.18em; }
-.pair-warning { color: var(--warn); }
+.pair-under-qr { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.pair-under-qr p { margin: 0; font-size: 12px; }
+.pair-timer { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pair-note { margin: 0; font-size: 12px; color: var(--muted); border-left: 2px solid var(--accent); padding-left: 10px; }
+.pair-note.warn { border-left-color: var(--warn); color: var(--text); }
+.pair-note.bad { border-left-color: var(--danger); color: var(--text); }
+.pair-claim { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0 4px; text-align: center; }
+.pair-claim p { margin: 0; font-size: 12px; }
+.pair-claim-phone { font-size: 14px; }
+.pair-claim-code { font-size: 34px; font-weight: 650; letter-spacing: 0.18em; font-variant-numeric: tabular-nums; }
+.pair-done { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--accent); display: grid; place-items: center; color: var(--accent); font-size: 22px; font-weight: 700; }
+.pair-scope-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 12px; }
+.confirm-actions.pair-actions { justify-content: space-between; align-items: center; }
+.pair-actions-right { display: flex; gap: 8px; }
 .pair-scope { margin: 4px 0 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .pair-scope:disabled { opacity: 0.55; }
 .pair-scope > label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
@@ -3741,7 +3756,7 @@ button.mod-status:hover { color: var(--text); }
    and its coloured globe; rows show ⋯ and pin on hover; cards open beside. */
 .rail { padding: 14px 10px; }
 .rail-sec { display: flex; align-items: center; gap: 4px; padding: 12px 8px 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-.rail > .rail-sec:first-child { padding-top: 0; }
+.rail-scroll > .rail-sec:first-child { padding-top: 0; }
 .rail-sec-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; }
 .rail-sec-toggle svg { opacity: 0; transition: opacity .12s; }
 .rail-sec:hover .rail-sec-toggle svg, .rail-sec-toggle:focus-visible svg, .rail-sec-toggle[aria-expanded="false"] svg { opacity: 1; }
@@ -3993,6 +4008,8 @@ button.mod-status:hover { color: var(--text); }
 .plan-chip-x { width: 0; overflow: hidden; opacity: 0; font-size: .9em; transition: opacity .12s, width .12s; }
 .plan-chip:hover .plan-chip-x, .plan-chip:focus-visible .plan-chip-x { width: 1em; opacity: .8; }
 .approval-plan { max-height: 240px; overflow: auto; margin: 6px 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.approval-plan[data-expanded="true"] { max-height: none; overflow: visible; }
+.approval-plan-toggle { align-self: flex-start; margin-top: 6px; }
 
 /* Library: every picture the bots made. */
 .section-library { overflow: hidden; padding: 16px; }
@@ -4208,3 +4225,31 @@ button.mod-status:hover { color: var(--text); }
     transition: none;
   }
 }
+
+/* Usage resets a provider granted, in a bot's quick menu: a collapsed row that opens like Model. */
+.quick-resets { display: grid; gap: 6px; }
+.quick-resets-trigger:disabled { cursor: default; opacity: 0.6; }
+.quick-resets-next { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; cursor: help; }
+.reset-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); font-size: 11px; font-weight: 700; }
+.reset-credits { display: grid; gap: 6px; }
+.reset-credit { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.reset-credit.soon { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.reset-credit-title { font-size: 12px; font-weight: 600; }
+.reset-credit-expiry { grid-column: 1; width: max-content; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; cursor: help; border-bottom: 1px dotted color-mix(in srgb, var(--muted) 50%, transparent); }
+.reset-credit.soon .reset-credit-expiry { color: var(--warn); }
+.reset-credit-use { grid-row: 1 / span 2; grid-column: 2; padding: 3px 10px; font-size: 12px; }
+.reset-more { margin: 0; font-size: 11px; }
+.reset-confirm { display: grid; gap: 8px; padding: 10px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 8px; background: var(--panel); font-size: 12px; }
+.reset-confirm p { margin: 0; color: var(--muted); }
+.reset-confirm p b { color: var(--text); font-weight: 600; }
+.reset-confirm .reset-warn { color: var(--warn); }
+.reset-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.reset-confirm-actions button { padding: 3px 10px; font-size: 12px; }
+.reset-go { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.reset-status { margin: 0; font-size: 12px; }
+.reset-status.good { color: var(--accent); }
+.reset-status.meh { color: var(--warn); }
+.reset-tip { position: fixed; z-index: 1100; pointer-events: none; min-width: 220px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); box-shadow: 0 8px 24px rgb(0 0 0 / 45%); font-size: 12px; }
+.reset-tip-key { color: var(--muted); font-size: 11px; }
+.reset-tip-value { font-variant-numeric: tabular-nums; }
+.reset-tip-value + .reset-tip-key { margin-top: 4px; }

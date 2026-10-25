@@ -10,24 +10,26 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
+import { CALL_VOICES, defaultVoiceOf, readVoiceSettings } from "./voice/settings";
+import { VoiceSampleButton } from "./voice/VoiceSampleButton";
+import { voiceLabel } from "./voice/callView";
 import { DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
+import { LegacyImportPanel } from "./LegacyImportScreen";
 import { ModelGatewaySettings } from "./ModelGatewaySettings";
 import { gatewayOwner } from "./modelGateway";
 import { ModsSettings } from "./ModsSettings";
-import { PairedDevicesSettings } from "./PairedDevicesSettings";
-import { RemoteAccessSettings } from "./RemoteAccessSettings";
+import { PhonesSettings } from "./PhonesSettings";
 import { shortcutList } from "./shortcuts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "appearance" | "hosts" | "remote" | "devices" | "providers" | "gateway" | "threads" | "terminal" | "mods" | "shortcuts";
+export type SettingsSection = "general" | "appearance" | "hosts" | "phones" | "providers" | "gateway" | "threads" | "terminal" | "mods" | "shortcuts";
 
 const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
   { id: "hosts", label: "Hosts" },
-  { id: "remote", label: "Remote access" },
-  { id: "devices", label: "Paired devices" },
+  { id: "phones", label: "Phones" },
   { id: "providers", label: "Providers" },
   { id: "gateway", label: "Model gateway" },
   { id: "threads", label: "New threads" },
@@ -68,8 +70,8 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
     return () => window.removeEventListener("keydown", key);
   }, [onClose]);
 
-  // Hosts, remote access and paired devices only exist in the Electron app.
-  const SECTIONS = ALL_SECTIONS.filter(s => s.id !== "gateway" || gatewayOwner(backend)).filter((s) => (s.id !== "hosts" && s.id !== "devices" && s.id !== "remote") || (s.id === "remote" ? backend.remoteAccess : backend.hosts));
+  // Hosts and phones only exist in the Electron app.
+  const SECTIONS = ALL_SECTIONS.filter(s => s.id !== "gateway" || gatewayOwner(backend)).filter((s) => (s.id !== "hosts" && s.id !== "phones") || backend.hosts);
   const index = Math.max(0, SECTIONS.findIndex((s) => s.id === section));
   return <div className="settings">
     <aside className="settings-nav">
@@ -92,8 +94,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
         {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} settings={settings} onChange={onChange} />}
         {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onLandingTexture={(landingTexture) => onChange({ ...settings, landingTexture })} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
-        {section === "remote" && backend.remoteAccess && <RemoteAccessSettings backend={backend} remote={backend.remoteAccess} />}
-        {section === "devices" && backend.hosts && <PairedDevicesSettings backend={backend} />}
+        {section === "phones" && backend.hosts && <PhonesSettings backend={backend} />}
         {section === "gateway" && <ModelGatewaySettings backend={backend} />}
         {section === "providers" && <Providers settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} />}
         {section === "threads" && <Threads settings={settings} onChange={onChange} />}
@@ -108,8 +109,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
 const LEADS: Partial<Record<SettingsSection, string>> = {
   appearance: "Choose a skin, tune its surfaces, or bring one you made with AI. Changes apply to the whole deck.",
   hosts: "The machine this window runs its threads and terminals on: this Mac, or another one over SSH.",
-  remote: "Let phones you pair reach this Mac when they aren't on its network.",
-  devices: "Phones allowed to reach this machine from outside your network, and what each may do.",
+  phones: "Phones you pair with this Mac, whether they can connect, and what each may do.",
   gateway: "Share your model stack through an endpoint you control.",
   providers: "Choose which tools appear when adding terminals and bots.",
   mods: "Claude Code mods that Deck runs itself and draws in its own window, for every bot.",
@@ -137,7 +137,9 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
   const [folder, setFolder] = useState("");
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
+  const [importing, setImporting] = useState(false);
   useEffect(() => { backend.dataFolder().then(setFolder, () => setFolder("")); }, [backend]);
+  const voice = readVoiceSettings(settings.voice);
   return <div className="settings-card">
     <Row label="Theme" note={themeName}><button onClick={onAppearance}>Appearance…</button></Row>
     <Row label="Saved in" note={<span className="mono">{folder || "…"}</span>}>
@@ -154,9 +156,21 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
         <option value="notify">Just notify</option>
       </select>
     </Row>
+    <Row label="Voice for calls" note="For agents with no voice of their own. Set one agent's voice in its form.">
+      <span className="voice-pick">
+        <select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={(e) => onChange({ ...settings, voice: { ...voice, defaultVoice: e.target.value } })}>
+          {[...new Set([defaultVoiceOf(voice), ...CALL_VOICES])].map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
+        </select>
+        <VoiceSampleButton voice={defaultVoiceOf(voice)} />
+      </span>
+    </Row>
     <Row label="Remembered models" note={remembered === 0 ? "None yet. Model names you type in the bot form are offered again next time." : `Model names from ${remembered} ${remembered === 1 ? "provider" : "providers"}, offered again in the bot form.`}>
       <button disabled={remembered === 0} onClick={() => { forgetModels(); setRemembered(0); }}>Clear</button>
     </Row>
+    <Row label="Older records" note="Tasks, conversations, group chats and assistants saved before this machine kept them safely. Nothing changes until you import, and the originals stay put.">
+      <button onClick={() => setImporting(true)}>Review…</button>
+    </Row>
+    {importing && <LegacyImportPanel backend={backend} startOpen onClose={() => setImporting(false)} />}
     <Row label="Version" note={`Apex Deck ${__APP_VERSION__}`} />
   </div>;
 }

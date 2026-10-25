@@ -106,7 +106,10 @@ impl Server {
             devices: Arc::new(Devices::open(&data.0)),
             data: data.0.clone(),
             invites: Default::default(),
-            endpoint: Default::default(),
+            voice: apex_daemon::voice::VoiceServer::new(&data.0),
+            gateway_keys: Arc::new(apex_daemon::gateway_keys::GatewayKeys::load(&data.0).unwrap()),
+            gateway: Default::default(),
+            remote: Default::default(),
         });
         let endpoint = remote::bind(remote::key(&data.0).unwrap(), None, 0).await.unwrap();
         tokio::spawn(remote::accept(Arc::clone(&daemon), endpoint.clone()));

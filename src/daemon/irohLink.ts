@@ -2,7 +2,7 @@
 // DaemonClient on top of it is the same one the WebSocket link uses.
 
 import { FinalError, type Connect, type Link } from "./client.ts";
-import { CLOSE, type RemoteMode, type RemotePlugin, type Route } from "../phone/remotePlugin.ts";
+import { CLOSE, type RemotePlugin, type Route } from "../phone/remotePlugin.ts";
 
 export interface IrohTarget {
   hostEndpointId: string;
@@ -10,7 +10,7 @@ export interface IrohTarget {
 }
 
 /** Why a connection ended, in words for the machine's card, and whether retrying can help. */
-export function closeWords(code: number, reason: string, mode: RemoteMode): { line: string; final: boolean } {
+export function closeWords(code: number, reason: string): { line: string; final: boolean } {
   switch (code) {
     case CLOSE.NOT_PAIRED:
     case CLOSE.REVOKED:
@@ -19,9 +19,7 @@ export function closeWords(code: number, reason: string, mode: RemoteMode): { li
       return { line: "A different machine answered at this address. Pair again on the right machine.", final: true };
     case CLOSE.UNREACHABLE:
     case CLOSE.TIMEOUT:
-      return mode === "direct"
-        ? { line: "Direct connection blocked. Direct only needs this machine's port reachable, which on a home Mac means a forwarded port. Switch to Automatic to use the relay.", final: false }
-        : { line: `Can't reach this machine right now (${reason}).`, final: false };
+      return { line: `Can't reach this machine right now (${reason}).`, final: false };
     default:
       return { line: reason || "The connection closed.", final: false };
   }
@@ -35,7 +33,6 @@ export function closeWords(code: number, reason: string, mode: RemoteMode): { li
 export function irohConnect(
   target: () => IrohTarget,
   plugin: RemotePlugin,
-  mode: () => RemoteMode,
   onRoute: (route: Route | null) => void = () => {},
 ): Connect {
   return async () => {
@@ -81,7 +78,7 @@ export function irohConnect(
             ended = true;
             stop();
             onRoute(null);
-            const words = closeWords(event.code, event.reason, mode());
+            const words = closeWords(event.code, event.reason);
             if (open) {
               closedWith = words;
               closeCb?.(words.line, words.final);

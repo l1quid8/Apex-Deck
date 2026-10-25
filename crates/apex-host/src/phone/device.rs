@@ -101,7 +101,7 @@ pub fn save(dir: &Path, device: &SavedDevice) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const LIST: &str = r#"{"devicetypes":[],"runtimes":[
+    pub(super) const LIST: &str = r#"{"devicetypes":[],"runtimes":[
       {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-18-5","platform":"iOS","version":"18.5","isAvailable":true,
        "supportedDeviceTypes":[{"identifier":"T-16","name":"iPhone 16","productFamily":"iPhone"}]},
       {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-5","platform":"iOS","version":"26.5","isAvailable":true,
@@ -186,4 +186,53 @@ mod tests {
         assert_eq!(load(&dir), Some(device));
         std::fs::remove_dir_all(&dir).unwrap();
     }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    #[test]
+    fn catalog_excludes_missing_runtimes_and_non_phone_families() {
+        let catalog = catalog(super::tests::LIST).unwrap();
+        assert_eq!(catalog.len(), 4);
+        assert!(catalog.iter().all(|d| !d.runtime.ends_with("27-0")));
+        assert_ne!(selection_name(Path::new("/d"), "rt", "t1"), selection_name(Path::new("/d"), "rt", "t2"));
+    }
+}
+
+/// Available model/runtime combinations; no personal device identifiers are exposed.
+pub fn catalog(list_json: &str) -> Result<Vec<super::DeviceChoice>, String> {
+    let list: Value = serde_json::from_str(list_json).map_err(|e| e.to_string())?;
+    let mut runtimes: Vec<_> = list["runtimes"].as_array().into_iter().flatten()
+        .filter(|r| r["platform"] == "iOS" && r["isAvailable"] == true).collect();
+    runtimes.sort_by_key(|r| std::cmp::Reverse(version_of(r)));
+    let mut choices = Vec::new();
+    for r in runtimes {
+        for t in r["supportedDeviceTypes"].as_array().into_iter().flatten()
+            .filter(|t| t["productFamily"] == "iPhone" || t["productFamily"] == "iPad") {
+            if let (Some(runtime), Some(device_type), Some(model), Some(version)) = (r["identifier"].as_str(), t["identifier"].as_str(), t["name"].as_str(), r["version"].as_str()) {
+                choices.push(super::DeviceChoice { runtime: runtime.into(), device_type: device_type.into(), model: model.into(), version: version.into() });
+            }
+        }
+    }
+    Ok(choices)
+}
+
+pub fn selection_name(data: &Path, runtime: &str, device_type: &str) -> String {
+    let digest = Sha256::digest(format!("{runtime}/{device_type}"));
+    format!("{} {:02x}{:02x}{:02x}{:02x}", device_name(data), digest[0], digest[1], digest[2], digest[3])
+}
+
+/// The existing/default Deck phone is adopted into its model/runtime slot before
+/// switching. Slots hold references, never move or erase simulator data.
+pub fn selection_dir(data: &Path, runtime: &str, device_type: &str) -> std::path::PathBuf {
+    data.join("phone").join("devices").join(selection_name(data, runtime, device_type))
+}
+
+pub fn choice_of(devices_json: &str, udid: &str) -> Option<(String, String)> {
+    let list: Value = serde_json::from_str(devices_json).ok()?;
+    list["devices"].as_object()?.iter().find_map(|(runtime, devices)| {
+        let d = devices.as_array()?.iter().find(|d| d["udid"] == udid && d["isAvailable"] != false)?;
+        Some((runtime.clone(), d["deviceTypeIdentifier"].as_str()?.to_string()))
+    })
 }

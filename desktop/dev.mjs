@@ -12,10 +12,15 @@ const server = await createServer();
 await server.listen();
 const url = server.resolvedUrls.local[0];
 const env = { ...process.env, APEX_DECK_DEV_URL: url };
-// Never share the dev host socket with the installed app's LaunchAgent. The
-// dev process must start the checkout-built daemon, even when the caller sets
-// the familiar dev data directory used by the installed app.
-env.APEX_DECK_DATA_DIR = developmentHostDataDir(developmentDataDir(repo, env));
+// When APEX_DECK_DATA_DIR is explicitly set or APEX_DECK_USE_LIVE_DAEMON=1 is
+// requested, connect directly to that data directory / live daemon socket so
+// development can test against real assistants and settings. Otherwise,
+// keep the dev host socket separate from an installed service.
+const explicitDataDir = process.env.APEX_DECK_DATA_DIR?.trim();
+const attachLive = process.env.APEX_DECK_USE_LIVE_DAEMON === '1' || Boolean(explicitDataDir);
+env.APEX_DECK_DATA_DIR = attachLive
+  ? (explicitDataDir || developmentDataDir(repo, env))
+  : developmentHostDataDir(developmentDataDir(repo, env));
 const app = spawn(electron, ['.'], { stdio: 'inherit', env });
 app.on('exit', async (code) => {
   await server.close();

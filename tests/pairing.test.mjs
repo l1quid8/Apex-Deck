@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  PAIR_DEFAULT_TIER, NOT_OWNED_WORDS, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
-  parseAddresses, qrSvgPath, reasonOf, revokedWarning,
+  PAIR_DEFAULT_TIER, RENEW_FOR_MS, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
+  parseAddresses, phonesStatus, qrSvgPath, reasonOf, revokedWarning, spacedCode, timerText,
 } from "../src/pairing.ts";
 
 const INVITE = { invitation: "inv-1", link: "apexdeck://pair?p=secret", expires_at: 1_000_000 };
@@ -91,7 +91,7 @@ test("refusals are told apart by their reason word, never their text", () => {
   assert.equal(reasonOf("text"), null);
   assert.match(endedWords("expired", "x"), /expired/i);
   assert.match(endedWords("phone_left", "x"), /disconnected/i);
-  assert.match(endedWords("not_remote", "x"), /Remote access/);
+  assert.equal(endedWords("not_remote", "x"), "Phone connections are off. Turn them on in Settings → Phones.");
   assert.equal(endedWords("registry", "The daemon's own words."), "The daemon's own words.");
 });
 
@@ -265,7 +265,7 @@ test("the threads a phone may be given are this Mac's chat threads", () => {
   assert.deepEqual(pairableThreads(null), []);
 });
 
-test("Pair phone turns Remote access on when it's off, and says why when it can't", async () => {
+test("Pair phone turns phone connections on when they're off, and says why when it can't", async () => {
   const calls = [];
   /** A fake switch: `state` is what get reads; `set` gives `result`, or throws it when it's an Error. */
   const remote = (state, result) => ({
@@ -286,15 +286,158 @@ test("Pair phone turns Remote access on when it's off, and says why when it can'
 
   calls.length = 0;
   const failed = await ensureRemoteAccess(remote({ on: false, owned: true }, new Error("The background service didn't start.")), turningOn);
-  assert.equal(failed, "The background service didn't start.", "the daemon's words are shown as they are");
+  assert.equal(failed, "Couldn't turn on phone connections: The background service didn't start. Nothing else changed.", "the daemon's words are shown inside the sentence");
   assert.equal(turned, 2);
 
   calls.length = 0;
-  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: false }, { on: true, owned: false }), turningOn), NOT_OWNED_WORDS);
-  assert.deepEqual(calls, ["get"], "not owned: nothing is tried");
-  assert.equal(turned, 2);
+  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: false }, { on: true, owned: false }), turningOn), null);
+  assert.deepEqual(calls, ["get", ["set", true]], "a daemon Deck did not start is still switched on");
+  assert.equal(turned, 3);
 
-  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: true }, { on: false, owned: true }), turningOn), "Remote access didn't turn on.");
-  assert.equal(await ensureRemoteAccess({ get: async () => { throw new Error("Deck can't reach its background service."); }, set: async () => null }, turningOn), "Deck can't reach its background service.");
+  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: true }, { on: false, owned: true }), turningOn), "Couldn't turn on phone connections. Nothing else changed.");
+  assert.equal(await ensureRemoteAccess({ get: async () => { throw new Error("Deck can't reach its background service."); }, set: async () => null }, turningOn), "Couldn't turn on phone connections: Deck can't reach its background service. Nothing else changed.");
   assert.equal(await ensureRemoteAccess(undefined, turningOn), null, "no switch in this app: nothing to turn on");
+});
+
+test("Settings → Phones says whether phones can connect, with the button that changes it", () => {
+  assert.deepEqual(phonesStatus(true, 1), { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null });
+  assert.deepEqual(phonesStatus(true, 0), { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null });
+  assert.deepEqual(phonesStatus(false, 2), {
+    line: "Phone connections are off.", action: "Turn on",
+    note: "Paired phones stay saved but can't connect, even on the same Wi‑Fi.",
+  }, "off with saved phones: they can't connect even on Wi-Fi, and Turn on is offered");
+  assert.deepEqual(phonesStatus(false, 0), { line: "Phone connections are off. Pairing turns them on.", action: null, note: null }, "off with none: no button, Pair phone does it");
+});
+
+// Auto-renew. The daemon's pair_wait answers "expired" only for a code no
+// phone claimed in time; a claim that landed first comes back as the claim.
+
+const INVITE_2 = { invitation: "inv-2", link: "apexdeck://pair?p=second", expires_at: 1_300_000 };
+const INVITE_3 = { invitation: "inv-3", link: "apexdeck://pair?p=third", expires_at: 1_600_000 };
+const clockTimers = (at) => ({ ...manualTimers(), now: () => at.now });
+
+test("a code that expires with no phone is renewed with the same access and threads", async () => {
+  const at = { now: 0 };
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [refused("expired"), never()] });
+  const states = [];
+  const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers(at), RENEW_FOR_MS);
+  session.start("read_only", ["t1", "t2"]);
+  await settle();
+  await settle();
+  const starts = daemon.sent.filter(([cmd]) => cmd === "pair_start");
+  assert.deepEqual(starts, [["pair_start", { tier: "read_only", threads: ["t1", "t2"] }], ["pair_start", { tier: "read_only", threads: ["t1", "t2"] }]]);
+  assert.equal(session.state.kind, "waiting");
+  assert.equal(session.state.invite.invitation, "inv-2");
+  assert.equal(states.some((s) => s.kind === "ended"), false, "renewing never shows an ended state");
+  session.close();
+  assert.deepEqual(daemon.sent.at(-1), ["pair_cancel", { invitation: "inv-2" }], "closing cancels the current code");
+});
+
+test("a claim that lands at the expiry instant shows the approval and is never renewed over", async () => {
+  // The daemon decided the claim came first: pair_wait answers the claim, not "expired".
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [CLAIM] });
+  const session = pairingSession(pairingApi(daemon.backend), () => {}, clockTimers({ now: INVITE.expires_at }), RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  assert.equal(session.state.kind, "claimed");
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 1, "no new code");
+});
+
+test("a claimed code that then expires ends; it is not renewed", async () => {
+  const timers = clockTimers({ now: 0 });
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [CLAIM, refused("expired")] });
+  const session = pairingSession(pairingApi(daemon.backend), () => {}, timers, RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  timers.runAll();
+  await settle();
+  assert.deepEqual([session.state.kind, session.state.reason], ["ended", "expired"]);
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 1);
+});
+
+test("closing during a renewal cancels the new code when it lands, and shows nothing more", async () => {
+  let second;
+  const daemon = fakeDaemon({ pair_start: [INVITE, new Promise((r) => { second = r; })], pair_wait: [refused("expired")] });
+  const states = [];
+  const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers({ now: 0 }), RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  assert.equal(session.state.kind, "starting", "renewal in flight");
+  session.close();
+  assert.equal(daemon.cmds().includes("pair_cancel"), false, "the expired code needs no cancel");
+  second(INVITE_2);
+  await settle();
+  assert.deepEqual(daemon.sent.at(-1), ["pair_cancel", { invitation: "inv-2" }], "the stale reply's code is cancelled");
+  assert.equal(states.at(-1).kind, "starting", "the stale reply is never shown");
+});
+
+test("a code that expires after the sheet closes is not renewed", async () => {
+  let expire;
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [new Promise((_, no) => { expire = no; })] });
+  const states = [];
+  const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers({ now: 0 }), RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  session.close();
+  const shown = states.length;
+  expire(refused("expired"));
+  await settle();
+  assert.deepEqual(daemon.cmds(), ["pair_start", "pair_wait", "pair_cancel"], "no new code once closed");
+  assert.equal(states.length, shown, "nothing more is shown");
+});
+
+test("a claim that lands after the sheet closes is not shown and sets no timer", async () => {
+  let claimed;
+  const timers = clockTimers({ now: 0 });
+  const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: [new Promise((r) => { claimed = r; })] });
+  const states = [];
+  const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), timers, RENEW_FOR_MS);
+  session.start("chat", "all");
+  await settle();
+  session.close();
+  const shown = states.length;
+  claimed(CLAIM);
+  await settle();
+  assert.equal(timers.pending(), 0, "no still-there check is scheduled");
+  assert.equal(states.length, shown, "nothing more is shown");
+});
+
+test("renewals stop once the sheet has been open 30 minutes", async () => {
+  const at = { now: 0 };
+  let secondExpires;
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2, INVITE_3], pair_wait: [refused("expired"), new Promise((_, no) => { secondExpires = no; })] });
+  const session = pairingSession(pairingApi(daemon.backend), () => {}, clockTimers(at), RENEW_FOR_MS);
+  at.now = RENEW_FOR_MS - 1;
+  session.start("chat", "all");
+  await settle();
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 2, "renewed just before the limit");
+  assert.equal(session.state.invite.invitation, "inv-2");
+  at.now = RENEW_FOR_MS;
+  secondExpires(refused("expired"));
+  await settle();
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 2, "not after it");
+  assert.deepEqual([session.state.kind, session.state.reason], ["ended", "expired"]);
+  assert.equal(session.state.words, "This pairing code expired. Start again for a new one.");
+});
+
+test("without a renewal limit an expired code ends, as before", async () => {
+  const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [refused("expired")] });
+  const session = pairingSession(pairingApi(daemon.backend), () => {}, manualTimers());
+  session.start("chat", "all");
+  await settle();
+  assert.deepEqual([session.state.kind, session.state.reason], ["ended", "expired"]);
+  assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 1);
+});
+
+test("the line under the QR says when the next code comes, or when the last one ends", () => {
+  assert.equal(timerText(300_000, RENEW_FOR_MS, 48_000), "New code in 4:12");
+  assert.equal(timerText(RENEW_FOR_MS + 1, RENEW_FOR_MS, RENEW_FOR_MS - 60_000), "Code expires in 1:01");
+  assert.equal(timerText(300_000, null, 0), "Code expires in 5:00");
+  assert.equal(timerText(300_000, RENEW_FOR_MS, 300_000), "Making a new code…");
+  assert.equal(timerText(RENEW_FOR_MS + 1, RENEW_FOR_MS, RENEW_FOR_MS + 1), "Code expired");
+});
+
+test("a 6-digit claim code is shown in two groups of three", () => {
+  assert.equal(spacedCode("673149"), "673 149");
+  assert.equal(spacedCode("4821"), "4821");
 });

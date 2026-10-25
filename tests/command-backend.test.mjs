@@ -23,6 +23,20 @@ function stubShell() {
   return shell;
 }
 
+test('backend capability checks follow the current host without sending probe commands', () => {
+  const transport = recording();
+  const advertised = new Set();
+  transport.supports = capability => advertised.has(capability);
+  const backend = commandBackend(transport, stubShell());
+  assert.equal(backend.supports('assistant_workspace_v4'), false);
+  advertised.add('assistant_workspace_v4');
+  assert.equal(backend.supports('assistant_workspace_v4'), true);
+  advertised.clear();
+  assert.equal(backend.supports('assistant_workspace_v4'), false);
+  assert.deepEqual(transport.calls, []);
+  assert.equal(commandBackend(recording(), stubShell()).supports('assistant_workspace_v4'), false);
+});
+
 const options = { policy: 'mention', max_bot_hops: 3 };
 const participant = { id: 'p', display_name: 'P', backend: { kind: 'scripted', lines: [] } };
 const rule = { kind: 'command', command: 'ls' };
@@ -76,6 +90,8 @@ const COMMANDS = [
   ['fileDuplicate', ['/srv/app', '/srv/app/a.txt'], 'file_duplicate', { root: '/srv/app', path: '/srv/app/a.txt' }],
   ['fileTrash', ['/srv/app', '/srv/app/a.txt'], 'file_trash', { root: '/srv/app', path: '/srv/app/a.txt' }],
   ['fileWrite', ['/srv/app', '/srv/app/a.txt', 'hi', 'v1'], 'file_write', { root: '/srv/app', path: '/srv/app/a.txt', text: 'hi', expected: 'v1' }],
+  ['botCopiesSetCheck', ['/repo', 'cargo check'], 'bot_copies_set_check', { root: '/repo', cmd: 'cargo check' }],
+  ['botCopiesSetCheck', ['/repo', null], 'bot_copies_set_check', { root: '/repo', cmd: null }],
   ['worktreeList', ['/repo'], 'worktree_list', { path: '/repo' }],
   ['worktreeAdd', ['/repo', { branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }], 'worktree_add', { path: '/repo', branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }],
   ['worktreeRemove', ['/repo', '/repo-wt', true], 'worktree_remove', { path: '/repo', worktree: '/repo-wt', force: true }],
@@ -202,6 +218,18 @@ test('a bot\'s models and balance are asked for by thread and bot, never by addr
   assert.equal(await commandBackend({ ...transport, call: async () => 'x' }, stubShell()).roomBotBalance('r', 'deep'), null);
 });
 
+test('a usage reset is asked for by thread and provider', async () => {
+  const transport = recording();
+  transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return 'reset'; };
+  const backend = commandBackend(transport, stubShell());
+  assert.equal(await backend.roomPlanReset('r', 'codex', 'c1', 'k1'), 'reset');
+  await backend.roomPlanReset('r', 'codex', null, 'k2');
+  assert.deepEqual(transport.calls, [
+    { cmd: 'room_plan_reset', args: { room: 'r', tool: 'codex', credit: 'c1', key: 'k1' } },
+    { cmd: 'room_plan_reset', args: { room: 'r', tool: 'codex', credit: null, key: 'k2' } },
+  ]);
+});
+
 test('phone methods send the phone commands', async () => {
   const transport = recording();
   const { phone } = commandBackend(transport, stubShell());
@@ -217,6 +245,20 @@ test('phone methods send the phone commands', async () => {
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
+});
+
+test('simulator catalog, controls and gesture geometry use the shared phone API', async () => {
+  const transport = recording();
+  const { phone } = commandBackend(transport, stubShell());
+  const geometry = { generation: 2, display: 3, orientation: 1, width: 1000, height: 600 };
+  await phone.devices();
+  await phone.control({ kind: 'fold', folded: true });
+  await phone.input({ kind: 'tap', x: 1, y: 2 }, geometry);
+  assert.deepEqual(transport.calls, [
+    { cmd: 'phone_devices', args: undefined },
+    { cmd: 'phone_control', args: { control: { kind: 'fold', folded: true } } },
+    { cmd: 'phone_human', args: { input: { kind: 'tap', x: 1, y: 2 }, geometry } },
+  ]);
 });

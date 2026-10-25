@@ -5,6 +5,8 @@ use apex_core::{
 };
 use async_trait::async_trait;
 use futures::{channel::oneshot, executor::block_on};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 struct Held {
@@ -51,6 +53,383 @@ fn setup() -> (ConcurrentRoom, oneshot::Sender<()>) {
         ConcurrentRoom::new(Room::new(vec![slow, fast], RoomOptions::default())),
         tx,
     )
+}
+
+#[test]
+fn second_writer_is_told_why_it_is_read_only() {
+    struct HoldFirstUntilSecondStarts {
+        tx: Mutex<Option<oneshot::Sender<()>>>,
+        rx: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl apex_core::TurnStartHook for HoldFirstUntilSecondStarts {
+        fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                if id.as_str() == "A" {
+                    let rx = self.rx.lock().unwrap().take();
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                } else if id.as_str() == "B" {
+                    let tx = self.tx.lock().unwrap().take();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+        }
+    }
+
+    block_on(async {
+        let (tx, rx) = oneshot::channel();
+        let make_writer = |id: &str| {
+            let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+            config.access = apex_core::Access::Full;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let bot_a = make_writer("A");
+        let bot_b = make_writer("B");
+
+        let room = Room::new(
+            vec![bot_a.clone(), bot_b.clone()],
+            RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let concurrent = ConcurrentRoom::new(room).with_turn_start(Arc::new(HoldFirstUntilSecondStarts {
+            tx: Mutex::new(Some(tx)),
+            rx: Mutex::new(Some(rx)),
+        }));
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+
+        let batch = concurrent.begin_post("hello", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+
+        let requests_b = bot_b.requests();
+        assert_eq!(requests_b.len(), 1);
+        let req = &requests_b[0];
+        assert_eq!(req.access, Some(apex_core::Access::Read));
+        let expected_line = apex_core::read_only_line("B", "A", "no copy available");
+        assert!(
+            req.system.contains(&expected_line),
+            "expected system prompt to contain '{}', got:\n{}",
+            expected_line,
+            req.system
+        );
+        assert!(!req.system.contains("unknown is editing"));
+
+        let read_only_events: Vec<_> = events.lock().unwrap().iter().filter_map(|e| match e {
+            RoomEvent::ReadOnlyTurn { id, editor, reason, .. } => Some((id.clone(), editor.clone(), reason.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(read_only_events, vec![(
+            ParticipantId::new("B"),
+            ParticipantId::new("A"),
+            "no copy available".to_string(),
+        )]);
+        assert_ne!(read_only_events[0].1.as_str(), "unknown");
+    });
+}
+
+#[test]
+fn second_writer_gets_copy_and_keeps_write_access() {
+    struct FakeProvider {
+        copy_path: PathBuf,
+        finished: Arc<Mutex<Vec<(ParticipantId, bool)>>>,
+    }
+    impl apex_core::CopyProvider for FakeProvider {
+        fn copy_for<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, Result<PathBuf, String>> {
+            Box::pin(async move { Ok(self.copy_path.clone()) })
+        }
+        fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> futures::future::BoxFuture<'a, ()> {
+            self.finished.lock().unwrap().push((id.clone(), cancelled));
+            Box::pin(async move {})
+        }
+    }
+    struct HoldFirstUntilSecondStarts {
+        tx: Mutex<Option<oneshot::Sender<()>>>,
+        rx: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl apex_core::TurnStartHook for HoldFirstUntilSecondStarts {
+        fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                if id.as_str() == "A" {
+                    let rx = self.rx.lock().unwrap().take();
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                } else if id.as_str() == "B" {
+                    let tx = self.tx.lock().unwrap().take();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+        }
+    }
+
+    block_on(async {
+        let (tx, rx) = oneshot::channel();
+        let make_writer = |id: &str| {
+            let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+            config.access = apex_core::Access::Full;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let bot_a = make_writer("A");
+        let bot_b = make_writer("B");
+
+        let room = Room::new(
+            vec![bot_a.clone(), bot_b.clone()],
+            RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let finished = Arc::new(Mutex::new(Vec::new()));
+        let copy_path = PathBuf::from("/tmp/fake-copy-b");
+        let provider = Arc::new(FakeProvider {
+            copy_path: copy_path.clone(),
+            finished: finished.clone(),
+        });
+        let concurrent = ConcurrentRoom::new(room)
+            .with_turn_start(Arc::new(HoldFirstUntilSecondStarts {
+                tx: Mutex::new(Some(tx)),
+                rx: Mutex::new(Some(rx)),
+            }))
+            .with_copies(provider);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+
+        let batch = concurrent.begin_post("hello", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+
+        let requests_b = bot_b.requests();
+        assert_eq!(requests_b.len(), 1);
+        let req = &requests_b[0];
+        assert_eq!(req.access, Some(apex_core::Access::Full));
+        assert_eq!(req.cwd, Some(copy_path.clone()));
+        let expected_line = apex_core::copy_turn_line(&copy_path);
+        assert!(req.system.contains(&expected_line));
+
+        let finished_calls = finished.lock().unwrap().clone();
+        assert_eq!(finished_calls, vec![(ParticipantId::new("B"), false)]);
+    });
+}
+
+#[test]
+fn provider_error_falls_back_to_read_only_with_reason() {
+    struct FailProvider;
+    impl apex_core::CopyProvider for FailProvider {
+        fn copy_for<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, Result<PathBuf, String>> {
+            Box::pin(async move { Err("disk full".into()) })
+        }
+        fn turn_finished<'a>(&'a self, _: &'a ParticipantId, _: bool) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {})
+        }
+    }
+    struct HoldFirstUntilSecondStarts {
+        tx: Mutex<Option<oneshot::Sender<()>>>,
+        rx: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl apex_core::TurnStartHook for HoldFirstUntilSecondStarts {
+        fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                if id.as_str() == "A" {
+                    let rx = self.rx.lock().unwrap().take();
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                } else if id.as_str() == "B" {
+                    let tx = self.tx.lock().unwrap().take();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+        }
+    }
+
+    block_on(async {
+        let (tx, rx) = oneshot::channel();
+        let make_writer = |id: &str| {
+            let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+            config.access = apex_core::Access::Full;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let bot_a = make_writer("A");
+        let bot_b = make_writer("B");
+
+        let room = Room::new(
+            vec![bot_a.clone(), bot_b.clone()],
+            RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let concurrent = ConcurrentRoom::new(room)
+            .with_turn_start(Arc::new(HoldFirstUntilSecondStarts {
+                tx: Mutex::new(Some(tx)),
+                rx: Mutex::new(Some(rx)),
+            }))
+            .with_copies(Arc::new(FailProvider));
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+
+        let batch = concurrent.begin_post("hello", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+
+        let requests_b = bot_b.requests();
+        assert_eq!(requests_b.len(), 1);
+        let req = &requests_b[0];
+        assert_eq!(req.access, Some(apex_core::Access::Read));
+        let expected_line = apex_core::read_only_line("B", "A", "disk full");
+        assert!(req.system.contains(&expected_line));
+
+        let read_only_events: Vec<_> = events.lock().unwrap().iter().filter_map(|e| match e {
+            RoomEvent::ReadOnlyTurn { id, editor, reason, line } => Some((id.clone(), editor.clone(), reason.clone(), line.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(read_only_events, vec![(
+            ParticipantId::new("B"),
+            ParticipantId::new("A"),
+            "disk full".to_string(),
+            expected_line,
+        )]);
+    });
+}
+
+#[test]
+fn plan_turn_never_asks_for_copy() {
+    struct RecordingProvider(Arc<AtomicUsize>);
+    impl apex_core::CopyProvider for RecordingProvider {
+        fn copy_for<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, Result<PathBuf, String>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { Ok(PathBuf::from("/tmp/should-not-be-called")) })
+        }
+        fn turn_finished<'a>(&'a self, _: &'a ParticipantId, _: bool) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {})
+        }
+    }
+    struct HoldFirstUntilSecondStarts {
+        tx: Mutex<Option<oneshot::Sender<()>>>,
+        rx: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl apex_core::TurnStartHook for HoldFirstUntilSecondStarts {
+        fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                if id.as_str() == "A" {
+                    let rx = self.rx.lock().unwrap().take();
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                } else if id.as_str() == "B" {
+                    let tx = self.tx.lock().unwrap().take();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+        }
+    }
+
+    block_on(async {
+        let (tx, rx) = oneshot::channel();
+        let make_writer = |id: &str| {
+            let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+            config.access = apex_core::Access::Full;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let bot_a = make_writer("A");
+        let bot_b = make_writer("B");
+
+        let room = Room::new(
+            vec![bot_a.clone(), bot_b.clone()],
+            RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let plan_flag = room.plan_handle();
+        plan_flag.store(true, Ordering::SeqCst);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let concurrent = ConcurrentRoom::new(room)
+            .with_turn_start(Arc::new(HoldFirstUntilSecondStarts {
+                tx: Mutex::new(Some(tx)),
+                rx: Mutex::new(Some(rx)),
+            }))
+            .with_copies(Arc::new(RecordingProvider(calls.clone())));
+
+        let sink = |_| {};
+        let batch = concurrent.begin_post("hello", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "copy_for was called on a plan turn");
+        let requests_b = bot_b.requests();
+        assert_eq!(requests_b.len(), 1);
+        assert_eq!(requests_b[0].access, Some(apex_core::Access::Read));
+    });
+}
+
+#[test]
+fn reconcile_turn_uses_copy_when_main_is_free() {
+    struct ReconcilingProvider {
+        copy_path: PathBuf,
+        finished: Arc<Mutex<Vec<(ParticipantId, bool)>>>,
+    }
+    impl apex_core::CopyProvider for ReconcilingProvider {
+        fn active_copy<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, Option<PathBuf>> {
+            let path = if id.as_str() == "B" {
+                Some(self.copy_path.clone())
+            } else {
+                None
+            };
+            Box::pin(async move { path })
+        }
+        fn copy_for<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, Result<PathBuf, String>> {
+            Box::pin(async move { Ok(self.copy_path.clone()) })
+        }
+        fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> futures::future::BoxFuture<'a, ()> {
+            self.finished.lock().unwrap().push((id.clone(), cancelled));
+            Box::pin(async move {})
+        }
+    }
+
+    block_on(async {
+        let make_writer = |id: &str| {
+            let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+            config.access = apex_core::Access::Full;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let bot_b = make_writer("B");
+
+        // Only Bot B runs, so main folder is completely free (no one holds editor)
+        let room = Room::new(
+            vec![bot_b.clone()],
+            RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let finished = Arc::new(Mutex::new(Vec::new()));
+        let copy_path = PathBuf::from("/tmp/fake-reconcile-copy-b");
+        let provider = Arc::new(ReconcilingProvider {
+            copy_path: copy_path.clone(),
+            finished: finished.clone(),
+        });
+
+        let concurrent = ConcurrentRoom::new(room).with_copies(provider);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+
+        let batch = concurrent.begin_post("reconcile turn", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+
+        let requests_b = bot_b.requests();
+        assert_eq!(requests_b.len(), 1);
+        let req = &requests_b[0];
+        assert_eq!(req.access, Some(apex_core::Access::Full));
+        assert_eq!(req.cwd, Some(copy_path.clone()), "bot with active copy must use its copy even when main is free");
+        let expected_line = apex_core::copy_turn_line(&copy_path);
+        assert!(req.system.contains(&expected_line));
+
+        let finished_calls = finished.lock().unwrap().clone();
+        assert_eq!(finished_calls, vec![(ParticipantId::new("B"), false)]);
+    });
 }
 
 #[test]
@@ -625,6 +1004,7 @@ fn turn_settings_change_during_reply_preserves_current_turn_and_next_context() {
             let mut config = original.clone();
             config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("new-model".into()) };
             config.effort = Some("high".into());
+            config.access = apex_core::Access::Full;
             let replacement = Arc::new(SettingsReply { config });
             let room = runtime.room();
             {
@@ -632,6 +1012,7 @@ fn turn_settings_change_during_reply_preserves_current_turn_and_next_context() {
                 assert!(room.replace_turn_settings(replacement));
                 assert_eq!(room.transcript()[0].text, "@null remember this");
                 assert_eq!(room.configs()[0].effort.as_deref(), Some("high"));
+                assert_eq!(room.configs()[0].access, apex_core::Access::Full);
             }
             release.send(()).unwrap();
             runtime.run(next, &sink).await;
@@ -657,16 +1038,13 @@ impl Participant for SettingsReply {
 }
 
 #[test]
-fn active_settings_cannot_change_access_or_provider() {
+fn active_settings_cannot_change_persona_or_provider() {
     block_on(async {
         let mut config = ScriptedParticipant::new("null", &[]).config().clone();
         config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("old-model".into()) };
         let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(SettingsReply { config: config.clone() })], RoomOptions::default()));
         let room = runtime.room();
         let mut room = room.lock().await;
-        let mut changed = config.clone();
-        changed.access = apex_core::Access::Full;
-        assert!(!room.replace_turn_settings(Arc::new(SettingsReply { config: changed })));
         let mut changed = config.clone();
         changed.display_name = "Renamed".into();
         changed.persona = "Be someone else.".into();
@@ -870,4 +1248,43 @@ fn voice_cancel_only_its_ticket_and_keeps_terminal_canceled() {
   runtime.run(batch,&sink).await;
   assert!(runtime.begin_voice_post("go",ParticipantId::new("null"),"v2".into(),&sink).await.unwrap().is_none());
  });
+}
+
+#[test]
+fn queued_reader_upgraded_to_full_waits_for_other_rooms_checkout_lease() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    block_on(async {
+        let gate = apex_core::CheckoutWriteGate::new();
+        gate.restore_hold("other-room").unwrap();
+        let started = Arc::new(AtomicUsize::new(0));
+        let (release, rx) = oneshot::channel();
+        let config = ScriptedParticipant::new("reader", &[]).config().clone();
+        let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(Held { config: config.clone(), release: Mutex::new(Some(rx)), started: None, cleanup_error: false })], RoomOptions::default())).with_write_gate(gate.clone(), None);
+        let active = runtime.begin_post("@reader inspect", None, &|_| {}).await.unwrap();
+        let queued = runtime.begin_post("@reader next", None, &|_| {}).await.unwrap();
+        let active_run = runtime.run(active, &|_| {});
+        let queued_run = runtime.run(queued, &|_| {});
+        futures::pin_mut!(active_run, queued_run);
+        assert!(futures::poll!(&mut active_run).is_pending());
+        assert!(futures::poll!(&mut queued_run).is_pending());
+        let mut next = config;
+        next.access = apex_core::Access::Full;
+        assert!(runtime.room().lock().await.replace_turn_settings(Arc::new(Held { config: next, release: Mutex::new(None), started: Some(started.clone()), cleanup_error: false })));
+        release.send(()).unwrap();
+        active_run.await;
+        assert!(futures::poll!(&mut queued_run).is_pending(), "the upgraded writer must wait for checkout admission");
+        assert_eq!(started.load(Ordering::SeqCst), 0, "Full cannot execute under another room's lease");
+        assert_eq!(gate.queued(), 1);
+        gate.release("other-room");
+        queued_run.await;
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+fn read_only_line_never_doubles_the_full_stop() {
+    assert_eq!(
+        apex_core::read_only_line("Beta", "Alpha", "The folder is not a Git repository."),
+        "Beta is read-only this turn: Alpha is editing and Deck couldn't make a separate copy (The folder is not a Git repository)."
+    );
 }

@@ -111,6 +111,10 @@ pub struct ParticipantConfig {
     /// choices use the defaults in `apex_adapters::media`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaSettings>,
+    /// The voice this bot speaks with on calls (a Kokoro voice id such as
+    /// "bf_emma"). `None` uses the app's default voice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
 }
 
 /// How fast a bot's tool answers. Fast costs more on both Codex and Claude.
@@ -212,6 +216,36 @@ pub struct PlanUsage {
     /// last value. False when this is the whole picture.
     #[serde(default)]
     pub partial: bool,
+    /// Resets the provider has granted, which put the plan's windows back to
+    /// empty when used. `None` when this report didn't say, so the last
+    /// known credits still stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<ResetCredits>,
+}
+
+/// The usage resets an account can use, as its provider lists them.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ResetCredits {
+    /// How many are available. The provider may list fewer than this.
+    pub available: u64,
+    /// The ones it listed, soonest to expire first.
+    pub credits: Vec<ResetCredit>,
+}
+
+/// One usage reset a provider granted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetCredit {
+    /// The provider's own id, given back to use it.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Unix seconds.
+    pub granted_at: u64,
+    /// Unix seconds, or `None` when it never expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
 }
 
 /// Tokens a participant has used in one thread, over the turns that

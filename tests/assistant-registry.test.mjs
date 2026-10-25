@@ -13,6 +13,20 @@ test('assistant panes merge into the view while unknown tombstones cannot hide h
   assert.deepEqual(mergeAssistantPanes([human], state), [human, pane('worker-a')]);
 });
 
+test('registry retains full owner-bound task snapshot and observation time for the global task feed', () => {
+  const saved = snapshot(1, []);
+  const state = reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), saved, 1234, 'authenticated-server');
+  const entry = Object.values(state.owners)[0];
+  assert.deepEqual(entry.snapshot, saved);
+  assert.equal(entry.observedAt, 1234);
+  assert.equal(entry.authenticatedHostId, 'authenticated-server');
+  const refreshed = reduceAssistantSnapshot(state, owner(), saved, 1800);
+  assert.equal(Object.values(refreshed.owners)[0].observedAt, 1800);
+  assert.equal(Object.values(refreshed.owners)[0].authenticatedHostId, 'authenticated-server');
+  const stale = reduceAssistantSnapshot(state, owner(), snapshot(0, []), 2000);
+  assert.equal(stale, state);
+});
+
 test('a registered child tombstone removes it and an older snapshot cannot restore it', () => {
   const first = reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), snapshot(2, [execution('worker-a')]));
   const deleted = reduceAssistantSnapshot(first, owner(), snapshot(4, [execution('worker-a', 123, null), execution('unknown', 124, null)]));

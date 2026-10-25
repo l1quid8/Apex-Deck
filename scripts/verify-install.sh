@@ -14,6 +14,7 @@
 set -euo pipefail
 
 APP="/Applications/Apex Deck.app"
+TRUSTED_APP="/Library/Application Support/Apex Deck Provenance/TrustedUI/Apex Deck.app"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRESH_ARG="${1:-}"
 if [[ -z "$FRESH_ARG" ]]; then
@@ -114,7 +115,7 @@ echo "Running apex-daemon processes"
 CANDIDATES=$(ps -axo pid=,args= | grep -E '/apex-daemon serve( |$)' | grep -v -e grep -e '--data-dir' | awk '{print $1}' || true)
 PIDS=""
 for pid in $CANDIDATES; do
-  exe=$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | awk 'NR==1 && /^n/ {print substr($0, 2)}' || true)
+  exe=$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | awk '/^n/ {print substr($0, 2); exit}' || true)
   [[ -n "$exe" ]] || exe=$(ps -o comm= -p "$pid" | sed 's/^ *//' || true)
   case "$exe" in
     */apex-daemon|*/apex-daemon" (deleted)") PIDS="$PIDS $pid" ;;
@@ -125,14 +126,16 @@ if [[ -z "${PIDS// /}" ]]; then
 fi
 for pid in $PIDS; do
   start=$(ps -o lstart= -p "$pid" | sed 's/^ *//' || true)
-  exe=$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | awk 'NR==1 && /^n/ {print substr($0, 2)}' || true)
+  exe=$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | awk '/^n/ {print substr($0, 2); exit}' || true)
   [[ -n "$exe" ]] || exe=$(ps -o comm= -p "$pid" | sed 's/^ *//' || true)
   row "PID $pid started" "${start:-unknown}" "info"
   row "PID $pid executable" "${exe:-unknown}" "info"
   if [[ "$exe" == *" (deleted)" ]]; then
     row "PID $pid binary" "file was replaced or deleted after start" "FAIL"; bad
+  elif [[ "$exe" == "$TRUSTED_APP/Contents/Resources/bin/apex-daemon" ]]; then
+    row "PID $pid location" "inside broker's protected app" "OK"
   elif [[ "$exe" != "$APP/"* ]]; then
-    row "PID $pid location" "NOT inside $APP" "FAIL"; bad
+    row "PID $pid location" "outside installed/protected app" "FAIL"; bad
   else
     row "PID $pid location" "inside installed app" "OK"
   fi

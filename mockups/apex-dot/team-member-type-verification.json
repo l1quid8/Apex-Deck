@@ -1,0 +1,53 @@
+{
+  "checkedAt": "2026-10-22T19:54:50.855834+00:00",
+  "scope": "Browser-local design preview only; no production implementation or model runtime tested",
+  "browser": "Existing Brave preview tab, controlled through cua_repl",
+  "checks": [
+    {
+      "name": "Creation and Settings use Team Member Type with Assistant, Orchestrator, Custom",
+      "result": "pass",
+      "method": "Browser accessibility tree"
+    },
+    {
+      "name": "Custom reveals custom text input; switching to Orchestrator hides it",
+      "result": "pass",
+      "method": "Browser interaction"
+    },
+    {
+      "name": "Hex #3388CC updates picker and pixel avatar to #3388cc",
+      "result": "pass",
+      "method": "Rendered DOM and accessibility readback"
+    },
+    {
+      "name": "Invalid #BAD is invalid and retains last valid avatar color",
+      "result": "pass",
+      "method": "DOM validity and rendered preview readback"
+    },
+    {
+      "name": "Orchestrator and #3388CC survive Save changes and reload",
+      "result": "pass",
+      "method": "Browser accessibility readback"
+    },
+    {
+      "name": "Null original Assistant label and #A78BFA restored after verification",
+      "result": "pass",
+      "method": "Browser save and visible readback"
+    },
+    {
+      "name": "11 existing coordination state smoke tests",
+      "result": "pass",
+      "method": "node coordination-state.smoke.cjs"
+    },
+    {
+      "name": "avatars.js and profiles.js parse",
+      "result": "pass",
+      "method": "node --check"
+    }
+  ],
+  "screenshot": "team-member-type.png",
+  "limits": [
+    "Native color chooser popup not exercised; the hex input, synchronized picker value and persistence were checked.",
+    "Existing custom label Copilot remains in the sidebar; its saved record was not modified.",
+    "Backend memory, delegation, multiple-machine recovery and production UI are plan requirements, not verified by this preview."
+  ]
+}

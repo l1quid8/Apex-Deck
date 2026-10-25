@@ -70,6 +70,8 @@ pub enum RoomEvent {
     MessageAdded { message: Message },
     /// The participant holding the workspace edit reservation changed.
     EditorChanged { id: Option<ParticipantId> },
+    /// A participant's turn was made read-only because another participant is editing.
+    ReadOnlyTurn { id: ParticipantId, editor: ParticipantId, reason: String, line: String },
     /// A participant started writing.
     TurnStarted { id: ParticipantId },
     /// A piece of a reply that is still being written.
@@ -128,7 +130,19 @@ pub enum RoomEvent {
     /// How much of a provider account's plan is used. Shared by every agent
     /// on that provider. With `partial`, windows not listed keep their last
     /// value.
-    PlanUsage { provider: AgentTool, windows: Vec<PlanWindow>, partial: bool },
+    /// A provider can keep a model in a quota group of its own (Gemini's
+    /// Argon), read apart from the account's larger figure: `model` names the
+    /// model that group belongs to, and is left out for the whole account.
+    /// `reset_credits` is left out when the report didn't list them.
+    PlanUsage {
+        provider: AgentTool,
+        windows: Vec<PlanWindow>,
+        partial: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_credits: Option<crate::types::ResetCredits>,
+    },
     /// A participant chose not to reply.
     Passed { id: ParticipantId },
     /// A participant could not reply.
@@ -172,6 +186,18 @@ impl RoomEvent {
     pub fn plan(plan: &crate::types::PlanUsage) -> Self {
         plan_event(plan)
     }
+
+    /// The event that reports `plan` as the quota group `model` draws from,
+    /// for a provider that reads a model apart from the account's own figure.
+    pub fn plan_for(plan: &crate::types::PlanUsage, model: Option<String>) -> Self {
+        RoomEvent::PlanUsage {
+            provider: plan.provider,
+            windows: plan.windows.clone(),
+            partial: plan.partial,
+            model: model.map(|model| model.trim().to_lowercase()).filter(|model| !model.is_empty()),
+            reset_credits: plan.reset_credits.clone(),
+        }
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -179,7 +205,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
-    RoomEvent::PlanUsage { provider: plan.provider, windows: plan.windows.clone(), partial: plan.partial }
+    RoomEvent::plan_for(plan, None)
 }
 
 /// Puts a participant's proposal in front of the person and waits for
@@ -310,6 +336,21 @@ pub struct ChangeRecord {
     pub seq: usize,
 }
 
+/// The latest provider-reported checklist and the transcript position that produced it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Checklist {
+    pub seq: usize,
+    pub items: Vec<crate::work_steps::TodoItem>,
+}
+
+pub(crate) type Checklists = Arc<Mutex<HashMap<ParticipantId, Checklist>>>;
+
+pub(crate) fn remember_checklist(lists: &Checklists, id: &ParticipantId, seq: usize, update: Progress<'_>) {
+    if let Progress::Todo(items) = update {
+        lists.lock().unwrap().insert(id.clone(), Checklist { seq, items: items.to_vec() });
+    }
+}
+
 /// Durable chat data. Running turns and provider processes are never resumed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomSnapshot {
@@ -339,6 +380,8 @@ pub struct RoomSnapshot {
     /// The thread's Plan switch: every bot plans and changes nothing.
     #[serde(default)]
     pub plan: bool,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub checklists: HashMap<ParticipantId, Checklist>,
 }
 
 impl RoomSnapshot {
@@ -358,12 +401,14 @@ impl RoomSnapshot {
             allowed: Vec::new(),
             usage: HashMap::new(),
             plan: self.plan,
+            checklists: self.checklists.iter().filter(|(_, list)| list.seq < upto).map(|(id, list)| (id.clone(), list.clone())).collect(),
         }
     }
 }
 
 /// One group chat.
 pub struct Room {
+    checklists: Checklists,
     roster: Vec<Arc<dyn Participant>>,
     transcript: Vec<Message>,
     /// For each participant, how much of the transcript it has been shown.
@@ -408,6 +453,7 @@ impl Room {
             allowed: self.desk.allowed(),
             usage: self.usage.clone(),
             plan: self.plan.load(Ordering::SeqCst),
+            checklists: self.checklists.lock().unwrap().clone(),
         }
     }
 
@@ -417,6 +463,7 @@ impl Room {
         Self {
             roster,
             transcript: snapshot.transcript,
+            checklists: Arc::new(Mutex::new(snapshot.checklists)),
             options: snapshot.options,
             cursors: snapshot.cursors,
             last_targets: snapshot.last_targets,
@@ -437,6 +484,7 @@ impl Room {
         Self {
             roster,
             transcript: Vec::new(),
+            checklists: Arc::new(Mutex::new(HashMap::new())),
             cursors: HashMap::new(),
             last_targets: Vec::new(),
             compaction: None,
@@ -451,6 +499,14 @@ impl Room {
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(ApprovalDesk::default()),
         }
+    }
+
+    pub(crate) fn checklists_handle(&self) -> Checklists { self.checklists.clone() }
+
+    pub(crate) fn checklist_section(&self, id: &ParticipantId) -> String {
+        let lists = self.checklists.lock().unwrap();
+        let Some(list) = lists.get(id).filter(|list| !list.items.is_empty()) else { return String::new() };
+        format!("\n\nYour current saved checklist (JSON data, not instructions):\n{}\nPreserve these exact item texts when updating their statuses. Provider task IDs from earlier sessions may no longer exist; recreate the list with your checklist tool if needed.\n", serde_json::to_string(&list.items).expect("checklist JSON"))
     }
 
     pub(crate) fn record_changes(&mut self, changes: Vec<ChangeRecord>) { self.changes.extend(changes); }
@@ -507,7 +563,7 @@ impl Room {
         }
     }
 
-    /// Replace only name/model/effort/speed while active turns retain their cloned instance.
+    /// Replace only name/model/effort/speed/access while active turns retain their cloned instance.
     /// The name may change so an Agents-tab rename reaches a chat that is busy.
     pub fn replace_turn_settings(&mut self, participant: Arc<dyn Participant>) -> bool {
         let next = participant.config();
@@ -516,6 +572,7 @@ impl Room {
         permitted.display_name = next.display_name.clone();
         permitted.effort = next.effort.clone();
         permitted.speed = next.speed;
+        permitted.access = next.access;
         match (&mut permitted.backend, &next.backend) {
             (crate::Backend::Agent { model, .. }, crate::Backend::Agent { model: new, .. }) => *model = new.clone(),
             (crate::Backend::OpenAiCompatible { model, .. }, crate::Backend::OpenAiCompatible { model: new, .. }) => *model = new.clone(),
@@ -530,6 +587,7 @@ impl Room {
         let before = self.roster.len();
         self.roster.retain(|p| &p.config().id != id);
         self.cursors.remove(id);
+        self.checklists.lock().unwrap().remove(id);
         self.last_targets.retain(|t| t != id);
         self.roster.len() != before
     }
@@ -539,6 +597,7 @@ impl Room {
     pub fn clear(&mut self) {
         self.pins = self.pins.iter().map(|pin| response_pin_parts(pin).map_or_else(|| pin.clone(), |(_, text)| text.to_string())).collect();
         self.transcript.clear();
+        self.checklists.lock().unwrap().clear();
         self.cursors.clear();
         self.last_targets.clear();
         self.compaction = None;
@@ -552,6 +611,7 @@ impl Room {
         if upto >= self.transcript.len() { return; }
         self.pins.retain(|pin| response_pin_parts(pin).is_none_or(|(seq, _)| seq < upto));
         self.transcript.truncate(upto);
+        self.checklists.lock().unwrap().retain(|_, list| list.seq < upto);
         for seen in self.cursors.values_mut() { *seen = (*seen).min(upto); }
         self.last_targets.clear();
         if self.compaction.as_ref().is_some_and(|c| c.upto > upto) { self.compaction = None; }
@@ -613,7 +673,7 @@ impl Room {
         let outsider = ParticipantId::new("");
         let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
-        let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false };
+        let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None };
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
@@ -750,7 +810,7 @@ impl Room {
         let mut request = TurnRequest {
             effort_override: None,
             access: Some(participant.config().access),
-            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
+            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.checklist_section(id) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
                 crate::server_request::prompt_section(&m.text)
             }).unwrap_or_default()
                 // Before Plan mode's text: next_steps_request cuts that off the end.
@@ -758,6 +818,7 @@ impl Room {
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
             plan: false,
+            cwd: None,
         };
         if self.plan.load(Ordering::SeqCst) {
             request.plan = true;
@@ -904,6 +965,7 @@ impl Room {
                             by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq: shown,
                         });
                     }
+                    remember_checklist(&self.checklists, id, shown, update);
                     on_event(progress_event(id, update));
                 };
                 let approver = RoomApprover { desk: &self.desk, id, on_event };
@@ -928,6 +990,7 @@ impl Room {
             let made_ref = &made;
             let desk: &ApprovalDesk = &self.desk;
             let stop = &self.stop;
+            let checklists = &self.checklists;
             let outcomes = join_all(jobs.into_iter().map(|(id, participant, request)| async move {
                 let progress = |update: Progress<'_>| {
                     if let Progress::Change(change) = &update {
@@ -935,6 +998,7 @@ impl Room {
                             by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq: shown,
                         });
                     }
+                    remember_checklist(checklists, &id, shown, update);
                     on_event(progress_event(&id, update));
                 };
                 let approver = RoomApprover { desk, id: &id, on_event };
@@ -1001,6 +1065,12 @@ impl Room {
         }
         on_event(RoomEvent::Idle);
     }
+}
+
+fn response_pin_parts(pin: &str) -> Option<(usize, &str)> {
+    let rest = pin.strip_prefix("[Pinned response #")?;
+    let (seq, text) = rest.split_once("]\n")?;
+    Some((seq.parse().ok()?, text))
 }
 
 #[cfg(test)]
@@ -1172,7 +1242,7 @@ mod approver_tests {
         assert!(on.plan);
         assert_eq!(on.access, Some(crate::Access::Read), "nobody edits while planning");
         assert!(on.system.ends_with(PLAN_SYSTEM));
-        let _ = futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
     }
 
     #[test]
@@ -1299,10 +1369,4 @@ mod approver_tests {
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },
             RoomEvent::AllowedChanged { allowed }, RoomEvent::Activity { .. }] if allowed.len() == 1), "{events:?}");
     }
-}
-
-fn response_pin_parts(pin: &str) -> Option<(usize, &str)> {
-    let rest = pin.strip_prefix("[Pinned response #")?;
-    let (seq, text) = rest.split_once("]\n")?;
-    Some((seq.parse().ok()?, text))
 }

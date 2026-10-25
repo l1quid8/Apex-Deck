@@ -49,6 +49,12 @@ pub struct HandoffPreparation {
     pub destination: TaskDestination,
     pub mode: TaskMode,
     pub review_criteria: Vec<String>,
+    /// Present only for a personal delegation. Legacy handoffs omit it and
+    /// keep their existing payload byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AssistantLineage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +109,7 @@ pub fn budget_hit(result_data: Option<&serde_json::Value>, usage: Option<&TaskUs
     let Some(limit) = result_data.and_then(|data| data["spendLimitMicros"].as_u64()) else { return false };
     let Some(usage) = usage else { return false };
     usage.cost_micros.is_some_and(|cost| cost >= limit)
-        || (usage.unknown_cost_turns > 0 && result_data.map_or(true, |data| data["unknownCostAccepted"] != true))
+        || (usage.unknown_cost_turns > 0 && result_data.is_none_or(|data| data["unknownCostAccepted"] != true))
 }
 
 /// What the task says when it stops at its limit.
@@ -120,6 +126,8 @@ pub fn budget_pause_text(result_data: Option<&serde_json::Value>, usage: Option<
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskAttempt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
     pub number: u64,
     pub run_id: String,
     pub status: TaskStatus,
@@ -129,10 +137,38 @@ pub struct TaskAttempt {
     pub usage: Option<TaskUsage>,
 }
 
+/// Optional only for legacy records. New personal delegations bind immutable owners.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantLineage {
+    pub assistant: crate::personal_workspace::AssistantRef,
+    pub project: crate::personal_workspace::ProjectRef,
+    pub source_event_id: String,
+    pub delegation_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum DesiredState { #[default] Running, Paused, Cancelled }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PauseReason { Assistant, Manual }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskControl {
+    #[serde(default)] pub desired_state: DesiredState,
+    #[serde(default)] pub pause_reason: Option<PauseReason>,
+    #[serde(default)] pub control_revision: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantTask {
+    #[serde(flatten)]
+    pub control: TaskControl,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AssistantLineage>,
     pub workspace_id: String,
     pub owner: TaskOwner,
     pub destination: Option<TaskDestination>,
@@ -158,6 +194,9 @@ pub struct AssistantTask {
     pub usage: Option<TaskUsage>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    /// Set only on a task imported from pre-provenance data. Never verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +290,11 @@ struct Document {
     executions: BTreeMap<String, ExecutionEntry>,
     #[serde(default)]
     handoffs: BTreeMap<String, HandoffReceipt>,
+    #[serde(default)]
+    purged_tasks: BTreeMap<String, AssistantLineage>,
+    /// The one legacy source this ledger imported, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_import: Option<crate::legacy_import::LedgerImport>,
 }
 
 struct Inner {
@@ -267,7 +311,7 @@ pub struct AssistantTasks {
 impl AssistantTasks {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskError> {
         let path = path.as_ref().to_path_buf();
-        let document = match std::fs::read(&path) {
+        let document = match crate::authority_file::read(&path) {
             Ok(bytes) => serde_json::from_slice::<Document>(&bytes).map_err(|e| {
                 TaskError::new(
                     TaskErrorKind::Storage,
@@ -301,6 +345,21 @@ impl AssistantTasks {
         Ok(store)
     }
 
+    /// Start empty when the root broker cannot serve this UI, or when the
+    /// installed build is not the one the broker pinned. See
+    /// `ProjectMemory::unavailable` for why startup degrades instead of failing.
+    pub fn unavailable(path: impl AsRef<Path>) -> Self {
+        Self {
+            inner: std::sync::Arc::new(Inner {
+                path: path.as_ref().to_path_buf(),
+                document: Mutex::new(Document {
+                    version: 1,
+                    ..Document::default()
+                }),
+            }),
+        }
+    }
+
     pub fn list(&self, workspace_id: Option<&str>) -> Result<Vec<AssistantTask>, TaskError> {
         let document = self.inner.document.lock().unwrap();
         Ok(document
@@ -320,6 +379,68 @@ impl AssistantTasks {
             .tasks
             .get(task_id)
             .cloned())
+    }
+
+    /// A preflighted startup correction is still only a proposal. The same id,
+    /// source, project, mode and criteria survive; approval must target its new revision.
+    pub(crate) fn revise_startup(&self, id: &str, revision: u64, owner: &TaskOwner, destination: TaskDestination, preflight: serde_json::Value, monitor_revision: u64) -> Result<AssistantTask, TaskError> {
+        let mut document=self.inner.document.lock().unwrap();let before=document.clone();
+        let task=document.tasks.get_mut(id).ok_or_else(||TaskError::new(TaskErrorKind::NotFound,"Task not found."))?;
+        check_owner_revision(task,revision,owner)?;
+        if !matches!(task.status,TaskStatus::NeedsYou|TaskStatus::Proposed) || !task.attempts.is_empty() || task.result_data.as_ref().is_none_or(|data|(data["startup"].is_null() && !data["startupPreflight"].is_object()) || data["leaseHeld"]==true) {return Err(TaskError::new(TaskErrorKind::InvalidTransition,"Only blocked startup before execution can receive a revised worker plan."));}
+        let data=task.result_data.get_or_insert_with(||serde_json::json!({}));
+        let previous=serde_json::json!({"startup":data["startup"],"result":task.result,"workers":task.workers,"destination":task.destination});
+        let history=data.as_object_mut().unwrap().entry("previousStartup").or_insert_with(||serde_json::json!([]));
+        if let Some(history)=history.as_array_mut(){history.push(previous);}
+        data["startup"]=serde_json::Value::Null;data["startupPreflight"]=preflight;data["humanApproved"]=serde_json::json!(false);data["monitorRevision"]=serde_json::json!(monitor_revision);
+        data["workerProfiles"]=serde_json::json!([]);data["mode"]=serde_json::json!(task.mode);
+        task.workers=destination.workers.clone();task.parent_thread_id=destination.thread_id.clone();task.destination=Some(destination);task.result=None;task.status=TaskStatus::Proposed;task.revision+=1;task.updated_at_ms=now_ms();
+        let result=task.clone();save_mutation(&self.inner,&mut document,before)?;Ok(result)
+    }
+
+    /// Delete is a presentation lifecycle after cancellation has settled. Restore never
+    /// changes status, grants, approved scope or the execution registry.
+    pub(crate) fn lifecycle(&self, id: &str, revision: u64, owner: &TaskOwner, restore: bool) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        if &task.owner != owner || task.revision != revision { return Err(TaskError::new(TaskErrorKind::StaleRevision, "Task ownership or revision is stale.")); }
+        if !matches!(task.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Cancel this task before deleting it.")); }
+        let data = task.result_data.get_or_insert_with(|| serde_json::json!({}));
+        if restore {
+            if data["deletedAtMs"].is_null() { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "This task is not deleted.")); }
+            data.as_object_mut().ok_or_else(|| TaskError::new(TaskErrorKind::Storage, "Malformed task metadata."))?.remove("deletedAtMs");
+        } else { data["deletedAtMs"] = serde_json::json!(now_ms()); }
+        task.revision += 1; task.updated_at_ms = now_ms();
+        let result = task.clone(); save_mutation(&self.inner, &mut document, before)?; Ok(result)
+    }
+
+    /// Remove user-visible content while retaining request/handoff receipts and
+    /// execution ownership tombstones. Replaying an old receipt cannot recreate work.
+    pub(crate) fn purge_deleted(&self, assistant: &crate::personal_workspace::AssistantRef, expected: &[String]) -> Result<(), TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let ids: std::collections::BTreeSet<_> = document.tasks.values().filter(|task| task.lineage.as_ref().is_some_and(|lineage| &lineage.assistant == assistant) && task.result_data.as_ref().is_some_and(|data| data["deletedAtMs"].is_number())).map(|task|task.id.clone()).collect();
+        if ids != expected.iter().cloned().collect() || ids.len() != expected.len() { return Err(TaskError::new(TaskErrorKind::StaleRevision, "Deleted tasks changed. Review the new exact count before emptying.")); }
+        for id in &ids {
+            let task = &document.tasks[id];
+            if !matches!(task.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Wait for cancellation to finish before emptying deleted tasks.")); }
+        }
+        for id in &ids { if let Some(lineage)=document.tasks.get(id).and_then(|task|task.lineage.clone()) {document.purged_tasks.insert(id.clone(),lineage);} document.tasks.remove(id); }
+        for entry in document.executions.values_mut().filter(|entry| ids.contains(&entry.task_id)) { entry.tombstoned_at_ms.get_or_insert(now_ms()); }
+        save_mutation(&self.inner, &mut document, before)
+    }
+
+    pub(crate) fn purged_for_assistant(&self, assistant: &crate::personal_workspace::AssistantRef) -> Vec<String> {
+        self.inner.document.lock().unwrap().purged_tasks.iter().filter(|(_,lineage)|&lineage.assistant==assistant).map(|(id,_)|id.clone()).collect()
+    }
+
+    /// Keep the source revision stable until a notebook snapshot/receipt is durable.
+    /// Lock order for callers: personal document, task ledger, then project memory.
+    pub(crate) fn with_task<T>(&self, id: &str, inspect: impl FnOnce(&AssistantTask) -> Result<T, String>) -> Result<T, String> {
+        let document = self.inner.document.lock().unwrap();
+        let task = document.tasks.get(id).ok_or("Task not found.")?;
+        inspect(task)
     }
 
     pub fn snapshot_revision(&self) -> u64 {
@@ -387,6 +508,13 @@ impl AssistantTasks {
         Ok(task)
     }
 
+    pub(crate) fn handoff_for_request(&self, id: &str) -> Result<Option<(HandoffPreparation, AssistantTask)>, TaskError> {
+        let document = self.inner.document.lock().unwrap();
+        let Some(receipt) = document.handoffs.get(id) else { return Ok(None) };
+        let task = document.tasks.get(&receipt.task_id).cloned().ok_or_else(|| TaskError::new(TaskErrorKind::Storage, "Delegation receipt has no task."))?;
+        Ok(Some((receipt.payload.clone(), task)))
+    }
+
     pub fn prepared_handoff(&self, input: &HandoffPreparation) -> Result<Option<AssistantTask>, TaskError> {
         let document = self.inner.document.lock().unwrap();
         handoff_receipt(&document, input)
@@ -404,6 +532,8 @@ impl AssistantTasks {
         task.mode = input.mode;
         task.review_criteria = input.review_criteria.clone();
         task.result_data = Some(serde_json::json!({"batchId":input.batch_id,"requestId":input.request_id,"monitorRevision":input.revision,"mode":input.mode,"checks":[],"taskHistory":[{"kind":"request","text":input.original_request}]}));
+        task.lineage = input.lineage.clone();
+        if let Some(context) = &input.context { task.result_data.as_mut().unwrap()["delegationContext"] = context.clone(); }
         document.tasks.insert(task.id.clone(), task.clone());
         document.handoffs.insert(input.request_id.clone(), HandoffReceipt { payload: input, task_id: task.id.clone() });
         save_mutation(&self.inner, &mut document, before)?;
@@ -493,6 +623,55 @@ impl AssistantTasks {
         Ok(result)
     }
 
+    /// Persist intent before signalling a live adapter. No checkpoint is implied.
+    pub fn control(&self, id: &str, revision: u64, owner: &TaskOwner, desired: DesiredState, reason: Option<PauseReason>) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        check_owner_revision(task, revision, owner)?;
+        if matches!(task.status, TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Applying) {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "This task cannot be paused or resumed."));
+        }
+        task.control.desired_state = desired;
+        task.control.pause_reason = if desired == DesiredState::Paused { reason } else { None };
+        task.control.control_revision += 1;
+        task.revision += 1;
+        task.updated_at_ms = now_ms();
+        let result = task.clone();
+        save_mutation(&self.inner, &mut document, before)?;
+        Ok(result)
+    }
+
+    /// Only an explicit revision-bound Retry may clear terminal cancellation.
+    /// Persist Interrupted first, so a crash before the next attempt cannot
+    /// turn this authorization into automatic queued dispatch.
+    pub fn prepare_cancelled_retry(&self, id: &str, revision: u64, owner: &TaskOwner) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        check_owner_revision(task, revision, owner)?;
+        if task.status != TaskStatus::Cancelled || task.control.desired_state != DesiredState::Cancelled {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Only a cancelled task can retry its cancellation."));
+        }
+        if task.origin == TaskOrigin::Proposal && task.attempts.is_empty()
+            && !task.result_data.as_ref().is_some_and(|data|data["humanApproved"] == true) {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "This cancelled proposal was never approved. Create and approve a new proposal."));
+        }
+        task.status = TaskStatus::Interrupted;
+        task.control.desired_state = DesiredState::Running;
+        task.control.pause_reason = None;
+        task.control.control_revision += 1;
+        task.revision += 1;
+        task.updated_at_ms = now_ms();
+        if let Some(data) = task.result_data.as_mut() {
+            data["pendingApprovals"] = serde_json::json!([]);
+            data["pendingQuestions"] = serde_json::json!([]);
+        }
+        let result = task.clone();
+        save_mutation(&self.inner, &mut document, before)?;
+        Ok(result)
+    }
+
     /// Begin one durable attempt. The generated run ID is unique and monotonic within this ledger.
     pub fn begin_attempt(
         &self,
@@ -508,6 +687,9 @@ impl AssistantTasks {
             .cloned()
             .ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
         check_owner_revision(&current, expected_revision, owner)?;
+        if current.control.desired_state != DesiredState::Running {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "The task is paused or cancelled."));
+        }
         let budget_resume = current.status == TaskStatus::NeedsYou
             && current.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true || data["restartedWhileWaiting"] == true)
             && current.attempts.last().is_some_and(|attempt| attempt.finished_at_ms.is_some());
@@ -538,6 +720,7 @@ impl AssistantTasks {
         }
         let number = task.attempts.len() as u64 + 1;
         task.attempts.push(TaskAttempt {
+            result: None,
             number,
             run_id: run_id.clone(),
             status: TaskStatus::Running,
@@ -551,6 +734,9 @@ impl AssistantTasks {
         Ok((result, run_id))
     }
 
+    // Seven fields of one task detail write; they are all-or-nothing parts of
+    // the same request.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_task_details(
         &self,
         task_id: &str,
@@ -615,6 +801,7 @@ impl AssistantTasks {
         task.workers = destination.workers.clone();
         task.brief = brief;
         task.status = TaskStatus::Queued;
+        task.result_data.get_or_insert_with(||serde_json::json!({}))["humanApproved"] = serde_json::json!(true);
         task.updated_at_ms = now_ms();
         task.revision += 1;
         let result = task.clone();
@@ -791,7 +978,7 @@ impl AssistantTasks {
     ) -> Result<AssistantTask, TaskError> {
         if !matches!(
             outcome.status,
-            TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou
+            TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou | TaskStatus::Interrupted
         ) {
             return Err(TaskError::new(
                 TaskErrorKind::InvalidTransition,
@@ -850,7 +1037,7 @@ impl AssistantTasks {
             if !history.is_empty() { data["taskHistory"] = serde_json::json!(history); }
         }
         let over_limit = budget_hit(Some(&data), current.usage.as_ref());
-        if outcome.status != TaskStatus::Cancelled && over_limit {
+        if !matches!(outcome.status, TaskStatus::Cancelled | TaskStatus::Interrupted) && over_limit {
             outcome.status = TaskStatus::NeedsYou;
             data["budgetPaused"] = serde_json::json!(true);
             outcome.result = Some(budget_pause_text(Some(&data), current.usage.as_ref()).into());
@@ -868,9 +1055,10 @@ impl AssistantTasks {
         let revision = task.revision;
         if let Some(attempt) = task.attempts.last_mut() {
             attempt.status = outcome.status;
+            attempt.result = task.result.clone();
             if matches!(
                 outcome.status,
-                TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou
+                TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou | TaskStatus::Interrupted
             ) {
                 attempt.finished_at_ms = Some(now_ms());
             }
@@ -1069,6 +1257,8 @@ fn make_task(
     let parent_thread_id = destination.as_ref().and_then(|d| d.thread_id.clone());
     let task = AssistantTask {
         id: id.clone(),
+        control: TaskControl::default(),
+        lineage: None,
         workspace_id: owner.workspace_id.clone(),
         parent_thread_id,
         owner,
@@ -1089,6 +1279,7 @@ fn make_task(
         usage: None,
         created_at_ms: now,
         updated_at_ms: now,
+        legacy: None,
     };
     document.tasks.insert(id, task.clone());
     task
@@ -1105,6 +1296,9 @@ fn check_owner_revision(
     expected_revision: u64,
     owner: &TaskOwner,
 ) -> Result<(), TaskError> {
+    if task.result_data.as_ref().is_some_and(|data| data["deletedAtMs"].is_number()) {
+        return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Restore this deleted task before acting."));
+    }
     if &task.owner != owner {
         return Err(TaskError::new(
             TaskErrorKind::NotOwner,
@@ -1139,6 +1333,171 @@ fn allowed(from: TaskStatus, to: TaskStatus) -> bool {
     }
 }
 
+/// Pre-provenance tasks mapped for an explicit, UI-confirmed import. Nothing
+/// here is dispatched: queued work becomes a proposal, in-progress work is
+/// interrupted, and remembered approvals, checkout leases and delegation
+/// lineage are dropped. Built by `legacy_import`.
+pub(crate) struct LegacyTaskPlan {
+    pub rows: Vec<crate::legacy_import::Row>,
+    pub problems: Vec<crate::legacy_import::Problem>,
+    tasks: Vec<AssistantTask>,
+    requests: Vec<HumanRequestRecord>,
+    skipped_ids: Vec<String>,
+}
+
+impl LegacyTaskPlan {
+    pub fn importable(&self) -> usize {
+        self.tasks.len()
+    }
+
+    pub fn workspaces(&self) -> std::collections::BTreeSet<String> {
+        self.tasks.iter().map(|task| task.workspace_id.clone()).collect()
+    }
+}
+
+/// The imported id of a legacy task. Prefixed so it never meets a protected task's id.
+pub(crate) fn legacy_task_id(original: &str) -> String {
+    format!("legacy-{original}")
+}
+
+fn status_name(status: TaskStatus) -> String {
+    serde_json::to_value(status).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+}
+
+/// What a legacy task's status becomes, and why. Never a state that runs by itself.
+fn legacy_status(task: &AssistantTask) -> (TaskStatus, &'static str) {
+    use TaskStatus::*;
+    match task.status {
+        Queued if task.attempts.is_empty() => (Proposed, "Was queued before the upgrade. Confirm it again before it runs."),
+        Queued | Running | Applying | NeedsYou => (Interrupted, "Was in progress before the upgrade. Nothing resumes on its own; retry it to run it again."),
+        ReadyForReview => (ReadyForReview, "Kept for review. Applying it still needs your confirmation."),
+        Proposed | NeedsClarification => (task.status, "Kept as it was. It needs your confirmation before it runs."),
+        Done | Failed | Cancelled | Interrupted => (task.status, "Kept as history."),
+    }
+}
+
+pub(crate) fn plan_legacy_import(bytes: &[u8], source_sha256: &str, now: u64) -> Result<LegacyTaskPlan, String> {
+    use crate::legacy_import::{title, LegacyMarker, Problem, Row};
+    let legacy: Document = serde_json::from_slice(bytes).map_err(|e| format!("The legacy task file could not be read: {e}"))?;
+    if legacy.version != 1 {
+        return Err("The legacy task file has an unsupported version.".into());
+    }
+    let mut plan = LegacyTaskPlan { rows: vec![], problems: vec![], tasks: vec![], requests: vec![], skipped_ids: vec![] };
+    for (key, original) in &legacy.tasks {
+        if key != &original.id {
+            plan.skipped_ids.push(format!("task:{key}"));
+            plan.problems.push(Problem { id: key.clone(), reason: "Its saved id does not match its record, so it was not imported.".into() });
+            continue;
+        }
+        let (status, reason) = legacy_status(original);
+        plan.rows.push(Row {
+            id: original.id.clone(),
+            kind: "task",
+            title: title(&original.original_request),
+            original_status: status_name(original.status),
+            import_status: status_name(status),
+            reason: reason.into(),
+        });
+        let mut task = original.clone();
+        task.id = legacy_task_id(&original.id);
+        task.status = status;
+        task.revision = 1;
+        // Delegation lineage authorizes project-memory promotion; legacy lineage is unverified.
+        task.lineage = None;
+        for attempt in &mut task.attempts {
+            if attempt.finished_at_ms.is_none() {
+                attempt.status = TaskStatus::Interrupted;
+                attempt.finished_at_ms = Some(now);
+            }
+            attempt.review_revision = None;
+        }
+        if let Some(data) = task.result_data.as_mut().and_then(|data| data.as_object_mut()) {
+            // A checkout lease would be restored at startup; approvals are imported ungranted.
+            data.insert("leaseHeld".into(), serde_json::json!(false));
+            data.insert("pendingApprovals".into(), serde_json::json!([]));
+            data.insert("pendingQuestions".into(), serde_json::json!([]));
+            if data.contains_key("unknownCostAccepted") {
+                data.insert("unknownCostAccepted".into(), serde_json::json!(false));
+            }
+        }
+        task.legacy = Some(LegacyMarker::new(source_sha256, now, Some(original.id.clone()), Some(status_name(original.status))));
+        plan.tasks.push(task);
+    }
+    let imported = |id: &str| plan.tasks.iter().any(|task| task.legacy.as_ref().and_then(|l| l.original_id.as_deref()) == Some(id));
+    let mut requests = vec![];
+    for (id, request) in &legacy.requests {
+        if !imported(&request.task_id) {
+            plan.skipped_ids.push(format!("request:{id}"));
+            plan.problems.push(Problem { id: id.clone(), reason: "Its task was not imported, so this request record was not either.".into() });
+            continue;
+        }
+        let mut request = request.clone();
+        request.task_id = legacy_task_id(&request.task_id);
+        requests.push(request);
+    }
+    for id in legacy.handoffs.keys() {
+        plan.skipped_ids.push(format!("handoff:{id}"));
+        // A receipt's payload names a batch and request that only meant something to the old ledger.
+        plan.problems.push(Problem { id: id.clone(), reason: "This handoff receipt was not imported; preparing the handoff again creates a new proposal.".into() });
+    }
+    for id in legacy.executions.keys() {
+        plan.skipped_ids.push(format!("execution:{id}"));
+        plan.problems.push(Problem { id: id.clone(), reason: "The assistant's claim on this thread was not restored. It opens as an ordinary chat and is never continued automatically.".into() });
+    }
+    plan.requests = requests;
+    Ok(plan)
+}
+
+/// How an import of one legacy source went.
+pub(crate) enum LegacyImportOutcome {
+    Imported(crate::legacy_import::LedgerImport),
+    /// The same source was imported before; nothing was written.
+    AlreadyImported(crate::legacy_import::LedgerImport),
+}
+
+impl AssistantTasks {
+    pub(crate) fn legacy_import_mark(&self) -> Option<crate::legacy_import::LedgerImport> {
+        self.inner.document.lock().unwrap().legacy_import.clone()
+    }
+
+    /// Merge a legacy plan in one compare-and-swap. Ids already taken in the
+    /// protected ledger keep their protected record; the legacy one is skipped.
+    pub(crate) fn import_legacy(&self, plan: LegacyTaskPlan, mut mark: crate::legacy_import::LedgerImport) -> Result<LegacyImportOutcome, String> {
+        let mut document = self.inner.document.lock().unwrap();
+        if let Some(existing) = &document.legacy_import {
+            return crate::legacy_import::same_source(existing, &mark.source_sha256).map(|()| LegacyImportOutcome::AlreadyImported(existing.clone()));
+        }
+        let before = document.clone();
+        for task in plan.tasks {
+            if document.tasks.contains_key(&task.id) {
+                mark.skipped += 1;
+                mark.skipped_ids.push(format!("task:{}", task.id));
+                continue;
+            }
+            document.tasks.insert(task.id.clone(), task);
+            mark.imported += 1;
+        }
+        for request in plan.requests {
+            if document.requests.contains_key(&request.request_id) || document.handoffs.contains_key(&request.request_id) || !document.tasks.get(&request.task_id).is_some_and(|t| t.legacy.is_some()) {
+                mark.skipped += 1;
+                mark.skipped_ids.push(format!("request:{}", request.request_id));
+                continue;
+            }
+            document.requests.insert(request.request_id.clone(), request);
+        }
+        mark.skipped += plan.skipped_ids.len();
+        mark.skipped_ids.extend(plan.skipped_ids);
+        document.legacy_import = Some(mark.clone());
+        let size = serde_json::to_vec_pretty(&*document).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+        if size > crate::legacy_import::DOCUMENT_BUDGET {
+            *document = before;
+            return Err("Importing these tasks would exceed the protected document limit. Nothing was written.".into());
+        }
+        save_mutation(&self.inner, &mut document, before).map_err(|e| e.to_string())?;
+        Ok(LegacyImportOutcome::Imported(mark))
+    }
+}
+
 fn save_mutation(
     inner: &Inner,
     document: &mut Document,
@@ -1153,45 +1512,13 @@ fn save_mutation(
 }
 
 fn write_document(path: &Path, document: &Document) -> Result<(), TaskError> {
-    use std::io::Write;
     let bytes = serde_json::to_vec_pretty(document).map_err(|e| {
         TaskError::new(
             TaskErrorKind::Storage,
             format!("Could not encode assistant tasks: {e}"),
         )
     })?;
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent).map_err(|e| {
-        TaskError::new(
-            TaskErrorKind::Storage,
-            format!("Could not create assistant task storage: {e}"),
-        )
-    })?;
-    let temp = path.with_extension(format!("tasks-{}.tmp", std::process::id()));
-    let result = (|| -> std::io::Result<()> {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temp, path)?;
-        std::fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    result.map_err(|e| {
-        TaskError::new(
-            TaskErrorKind::Storage,
-            format!("Could not save assistant tasks: {e}"),
-        )
-    })
+    crate::authority_file::write(path,&bytes).map_err(|e|TaskError::new(TaskErrorKind::Storage,format!("Could not save protected assistant tasks: {e}")))
 }
 
 fn now_ms() -> u64 {
@@ -1205,6 +1532,39 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn deleted_task_authority_cannot_start_an_attempt() {
+        let path = folder(); let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("deleted-authority", "Inspect"), "Inspect".into(), Some(destination())).unwrap();
+        let task = store.set_result_data(&task.id, task.revision, &owner(), Some(serde_json::json!({"deletedAtMs": 1}))).unwrap();
+        assert!(store.begin_attempt(&task.id, task.revision, &owner()).is_err(), "deleted task must never execute");
+    }
+
+    #[test]
+    fn lifecycle_delegated_restore_is_inert_and_purge_keeps_replay_authority() {
+        let path=folder();let store=AssistantTasks::open(ledger(&path)).unwrap();
+        let assistant=crate::personal_workspace::AssistantRef{host_id:"h".into(),assistant_id:"a".into()};
+        let input=HandoffPreparation{request_id:"lifecycle-handoff".into(),batch_id:"batch".into(),owner:owner(),revision:1,original_request:"Inspect".into(),brief:"Inspect".into(),destination:destination(),mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:Some(AssistantLineage{assistant:assistant.clone(),project:crate::personal_workspace::ProjectRef{host_id:"h".into(),workspace_id:owner().workspace_id,cwd:owner().cwd},source_event_id:"e".into(),delegation_id:"d".into()}),context:None};
+        let task=store.prepare_handoff(input.clone()).unwrap();
+        assert!(store.lifecycle(&task.id,task.revision,&owner(),false).is_err());
+        let task=store.transition(&task.id,task.revision,&owner(),TaskStatus::Cancelled,None).unwrap();
+        let deleted=store.lifecycle(&task.id,task.revision,&owner(),false).unwrap();
+        assert!(store.prepare_cancelled_retry(&task.id,deleted.revision,&owner()).is_err());
+        let restarted=AssistantTasks::open(ledger(&path)).unwrap();
+        let restored=restarted.lifecycle(&task.id,deleted.revision,&owner(),true).unwrap();
+        assert_eq!(restored.status,TaskStatus::Cancelled);assert!(restored.attempts.is_empty());
+        let deleted=restarted.lifecycle(&task.id,restored.revision,&owner(),false).unwrap();
+        let wrong=crate::personal_workspace::AssistantRef{assistant_id:"other".into(),..assistant.clone()};
+        assert!(restarted.purge_deleted(&wrong,&[task.id.clone()]).is_err());
+        assert!(restarted.purge_deleted(&assistant,&[]).is_err());
+        restarted.purge_deleted(&assistant,&[task.id.clone()]).unwrap();
+        assert!(restarted.get(&task.id).unwrap().is_none());
+        assert_eq!(restarted.purged_for_assistant(&assistant),vec![task.id.clone()]);
+        let reopened=AssistantTasks::open(ledger(&path)).unwrap();assert_eq!(reopened.purged_for_assistant(&assistant),vec![task.id.clone()]);
+        assert!(restarted.prepare_handoff(input).is_err(),"old preparation cannot recreate purged task");
+        assert!(restarted.lifecycle(&task.id,deleted.revision,&owner(),true).is_err());
+    }
 
     fn folder() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1244,11 +1604,128 @@ mod tests {
         }
     }
 
+    /// The acceptance harness plants this file at the user-owned path to show
+    /// the protected ledger wins. "Ignored" only means anything if the planted
+    /// file is a document this code would otherwise accept, so this pins the
+    /// fixture to the real schema: change a field and the harness fixture has
+    /// to change with it.
+    #[test]
+    fn acceptance_tamper_fixture_is_a_valid_forged_ledger() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/forged-assistant-tasks-v1.json");
+        let bytes = std::fs::read(&path).expect("the acceptance fixture is in the tree");
+        let document: Document =
+            serde_json::from_slice(&bytes).expect("the forged fixture parses as a real document");
+        assert_eq!(document.version, 1);
+        assert_eq!(document.revision, 9);
+        assert_eq!(document.next_task_id, 10);
+        assert_eq!(document.tasks.len(), 1);
+        let forged = document.tasks.get("forged-acceptance").expect("the forged task is keyed by id");
+        assert_eq!(forged.id, "forged-acceptance");
+        assert_eq!(forged.status, TaskStatus::Queued);
+        assert_eq!(forged.mode, TaskMode::ReadOnly);
+        assert_eq!(forged.owner.workspace_id, "acceptance");
+        // Parsing is not the claim that matters. Put the same bytes where this
+        // code would read them and show it would happily serve them: that is
+        // what makes "the protected ledger ignored it" mean something.
+        let folder = folder();
+        let ledger_path = ledger(&folder);
+        std::fs::copy(&path, crate::authority_file::fixture_path(&ledger_path)).unwrap();
+        let store = AssistantTasks::open(&ledger_path).unwrap();
+        assert_eq!(store.snapshot_revision(), 9);
+        let listed = store.list(Some("acceptance")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "forged-acceptance");
+        assert_eq!(listed[0].original_request, "Run this task without the installed app asking");
+    }
+
+    #[test]
+    fn cancelled_before_start_requires_prior_human_approval_to_retry() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        for approved in [false, true] {
+            let task = store.prepare_handoff(HandoffPreparation {request_id:format!("cancel-before-start-{approved}"),batch_id:"batch".into(),owner:owner(),revision:1,original_request:"Inspect".into(),brief:"Inspect".into(),destination:destination(),mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None}).unwrap();
+            let task = if approved {store.set_destination(&task.id,task.revision,&owner(),destination(),"Inspect".into()).unwrap()} else {task};
+            let task = store.control(&task.id,task.revision,&owner(),DesiredState::Cancelled,None).unwrap();
+            let cancelled = store.transition(&task.id,task.revision,&owner(),TaskStatus::Cancelled,None).unwrap();
+            let retry = store.prepare_cancelled_retry(&task.id,cancelled.revision,&owner());
+            if approved {
+                let retry=retry.unwrap(); assert!(retry.attempts.is_empty()); assert_eq!(retry.status,TaskStatus::Interrupted);
+            } else {assert!(retry.is_err());}
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn explicit_cancelled_retry_preserves_attempts_and_recovers_without_dispatch() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("cancel-retry", "Fix it"), "Fix it".into(), Some(destination())).unwrap();
+        let (running, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        store.control(&task.id, running.revision, &owner(), DesiredState::Cancelled, None).unwrap();
+        let cancelled = store.finish_attempt(&task.id, &run, TaskOutcome {status:TaskStatus::Cancelled,result:Some("Cancelled evidence".into()),result_data:Some(serde_json::json!({"pendingApprovals":[{"request":"old"}]})),usage:None}).unwrap();
+        assert!(store.begin_attempt(&task.id, cancelled.revision, &owner()).is_err());
+        assert!(store.control(&task.id, cancelled.revision, &owner(), DesiredState::Running, None).is_err());
+        assert!(store.prepare_cancelled_retry(&task.id, cancelled.revision-1, &owner()).is_err());
+        let mut wrong = owner(); wrong.workspace_id="another".into();
+        assert!(store.prepare_cancelled_retry(&task.id, cancelled.revision, &wrong).is_err());
+        let prepared = store.prepare_cancelled_retry(&task.id, cancelled.revision, &owner()).unwrap();
+        assert_eq!(prepared.status, TaskStatus::Interrupted);
+        assert_eq!(prepared.control.desired_state, DesiredState::Running);
+        assert_eq!(prepared.control.control_revision, cancelled.control.control_revision+1);
+        assert_eq!(prepared.attempts, cancelled.attempts);
+        assert_eq!(prepared.result_data.as_ref().unwrap()["pendingApprovals"], serde_json::json!([]));
+        drop(store);
+        let reopened = AssistantTasks::open(ledger(&path)).unwrap();
+        assert_eq!(reopened.get(&task.id).unwrap().unwrap(), prepared);
+        let (retry, new_run) = reopened.begin_attempt(&task.id, prepared.revision, &owner()).unwrap();
+        assert_ne!(new_run, run); assert_eq!(retry.attempts.len(), 2);
+        assert_eq!(retry.attempts[0], cancelled.attempts[0]);
+        assert!(reopened.finish_attempt(&task.id, &run, TaskOutcome {status:TaskStatus::ReadyForReview,result:Some("late".into()),result_data:None,usage:None}).is_err());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn interrupted_pause_preserves_attempt_result_for_retry_and_rejects_late_result() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("pause-attempt", "Fix it"), "Fix it".into(), Some(destination())).unwrap();
+        let (running, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        let paused = store.control(&task.id, running.revision, &owner(), DesiredState::Paused, Some(PauseReason::Manual)).unwrap();
+        let stopped = store.finish_attempt(&task.id, &run, TaskOutcome {status:TaskStatus::Interrupted, result:Some("No checkpoint; retry required".into()), result_data:None, usage:None}).unwrap();
+        assert_eq!(stopped.control, paused.control);
+        assert!(stopped.attempts[0].finished_at_ms.is_some());
+        let resumed = store.control(&task.id, stopped.revision, &owner(), DesiredState::Running, None).unwrap();
+        let (retry, new_run) = store.begin_attempt(&task.id, resumed.revision, &owner()).unwrap();
+        assert_ne!(new_run, run);
+        assert_eq!(retry.attempts[0].result.as_deref(), Some("No checkpoint; retry required"));
+        assert!(store.finish_attempt(&task.id, &run, TaskOutcome {status:TaskStatus::ReadyForReview,result:Some("late".into()),result_data:None,usage:None}).is_err());
+    }
+
+    #[test]
+    fn manual_pause_blocks_start_and_survives_restart_and_stale_resume() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.prepare_handoff(HandoffPreparation { request_id: "pause-child".into(), batch_id:"pause".into(), owner:owner(), revision:1, original_request:"fix it".into(), brief:"fix it".into(), destination:destination(), mode:TaskMode::Isolated, review_criteria:vec![], lineage:None, context:None }).unwrap();
+        let queued = store.set_destination(&task.id, task.revision, &owner(), destination(), "fix it".into()).unwrap();
+        let paused = store.control(&task.id, queued.revision, &owner(), DesiredState::Paused, Some(PauseReason::Manual)).unwrap();
+        assert!(store.begin_attempt(&task.id, paused.revision, &owner()).is_err());
+        assert!(store.control(&task.id, queued.revision, &owner(), DesiredState::Running, None).is_err());
+        let reopened = AssistantTasks::open(ledger(&path)).unwrap();
+        let retained = reopened.get(&task.id).unwrap().unwrap();
+        assert_eq!(retained.control.desired_state, DesiredState::Paused);
+        assert_eq!(retained.control.pause_reason, Some(PauseReason::Manual));
+        assert!(reopened.begin_attempt(&task.id, retained.revision, &owner()).is_err());
+        let resumed = reopened.control(&task.id, retained.revision, &owner(), DesiredState::Running, None).unwrap();
+        let (started, _) = reopened.begin_attempt(&task.id, resumed.revision, &owner()).unwrap();
+        assert_eq!(started.attempts.len(), 1);
+    }
+
     #[test]
     fn handoff_prepare_is_payload_bound_durable_and_proposal_only() {
         let path = folder();
         let store = AssistantTasks::open(ledger(&path)).unwrap();
-        let input = HandoffPreparation { request_id: "child-1".into(), batch_id: "batch-1".into(), owner: owner(), revision: 7, original_request: "Ask Null to fix login and Jigga to test billing".into(), brief: "Fix login".into(), destination: destination(), mode: TaskMode::Isolated, review_criteria: vec!["Login works".into()] };
+        let input = HandoffPreparation { request_id: "child-1".into(), batch_id: "batch-1".into(), owner: owner(), revision: 7, original_request: "Ask Null to fix login and Jigga to test billing".into(), brief: "Fix login".into(), destination: destination(), mode: TaskMode::Isolated, review_criteria: vec!["Login works".into()], lineage: None, context:None };
         let task = store.prepare_handoff(input.clone()).unwrap();
         assert_eq!(task.status, TaskStatus::Proposed);
         assert_eq!(task.mode, TaskMode::Isolated);
@@ -1835,8 +2312,9 @@ mod tests {
         let root = folder();
         std::fs::create_dir_all(&root).unwrap();
         let ledger = root.join("ledger.json");
+        let disk = crate::authority_file::fixture_path(&ledger);
         let store = AssistantTasks::open(&ledger).unwrap();
-        std::fs::create_dir(&ledger).unwrap();
+        std::fs::create_dir(&disk).unwrap();
         assert_eq!(
             store
                 .submit_human_request(request("r", "Do it"), "brief".into(), Some(destination()))
@@ -1845,7 +2323,7 @@ mod tests {
             TaskErrorKind::Storage
         );
         assert!(store.list(None).unwrap().is_empty());
-        std::fs::remove_dir(&ledger).unwrap();
+        std::fs::remove_dir(&disk).unwrap();
         let task = store
             .submit_human_request(request("r", "Do it"), "brief".into(), Some(destination()))
             .unwrap();

@@ -18,7 +18,13 @@ use crate::Host;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
+// Commands arrive one at a time from the UI and are matched once, so the
+// largest payload stays inline: a box would add an indirection to every
+// command to shrink a value that is built, matched and dropped in one call.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
+    /// Exact root-attested command; never an arbitrary nested command.
+    ProvenanceExecute { receipt: apex_provenance::Signed },
     SessionLoad {},
     SessionSave { session: Value },
     SettingsLoad {},
@@ -35,22 +41,45 @@ pub enum Command {
     AssistantMessage { #[serde(flatten)] input: crate::assistant_service::AssistantMessageInput },
     AssistantTasksList { owner: crate::assistant_tasks::TaskOwner, #[serde(default)] request_id: Option<String> },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
+    /// Snapshot pre-provenance ledgers (originals untouched) and describe an import. Read-only.
+    LegacyImportPreview {},
+    /// Import exactly the previewed legacy sources, bound by their sha256. Protected.
+    LegacyImportApply { snapshot: String, sources: std::collections::BTreeMap<String, String> },
+    /// One full legacy transcript from a hashed snapshot, labelled unverified. Read-only.
+    LegacyImportHistory { snapshot: String, request_id: String },
     MonitorSuggestSources { cwd: String },
+    ProjectMemoryList { #[serde(flatten)] input: crate::project_memory_service::ReadNotes },
+    ProjectMemorySave { #[serde(flatten)] input: crate::project_memory_service::SaveNotes },
+    ProjectMemoryForget { #[serde(flatten)] input: crate::project_memory_service::ForgetNote },
+    ProjectMemoryStage { #[serde(flatten)] input: crate::project_memory_service::StageNote },
+    ProjectMemoryPromote { #[serde(flatten)] input: crate::project_memory_service::PromoteNote },
     PersonalList {},
     PersonalGet { assistant_id: String },
     PersonalCreate { #[serde(flatten)] input: crate::personal::CreateInput },
+    /// An assistant proposes project work. Creates a proposal; never dispatches.
+    PersonalProjectDelegate { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
+    PersonalProjectDelegateUi { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
     PersonalSend { assistant_id: String, request_id: String, text: String },
     PersonalReact { assistant_id: String, message_id: String, emoji: String, enabled: bool },
     PersonalDecide { assistant_id: String, request_id: String, decision_id: String, params_hash: String, approve: bool },
+    PersonalArchive { assistant_id: String, expected_revision: u64, archived: bool },
+    PersonalTaskLifecycle { #[serde(flatten)] input: crate::personal_task_lifecycle::LifecycleInput },
+    PersonalReplyCancel { assistant_id: String, request_id: String, event_id: String },
     PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
     PersonalScheduleCancel { assistant_id: String, request_id: String, schedule_id: String },
+    PersonalAvatarOptions { owner: crate::assistant_avatar::Owner },
+    PersonalAvatarGenerate { #[serde(flatten)] input: crate::assistant_avatar::Generate },
+    PersonalAvatarStatus { owner: crate::assistant_avatar::Owner, generation_id: String },
+    PersonalAvatarCancel { owner: crate::assistant_avatar::Owner, generation_id: String },
+    PersonalAvatarAsset { assistant_id: Option<String>, owner: Option<crate::assistant_avatar::Owner>, generation_id: Option<String>, asset_id: String, sha256: String },
+    PersonalWorkspaceConfigure { #[serde(flatten)] input: crate::personal_workspace::Configure },
     PersonalConfigure { assistant_id: String, settings: crate::personal_settings::Settings },
     PersonalRuleAdd { assistant_id: String, text: String, class: crate::personal::ToolClass, mode: crate::personal::ActionMode },
     PersonalRuleRemove { assistant_id: String, rule_id: String },
-    PersonalMemoryAdd { assistant_id: String, text: String },
-    PersonalMemoryCorrect { assistant_id: String, fact_id: String, text: String },
-    PersonalMemoryForget { assistant_id: String, fact_id: String },
+    PersonalMemoryAdd { assistant_id: String, text: String, #[serde(default)] expected_revision: Option<u64> },
+    PersonalMemoryCorrect { assistant_id: String, fact_id: String, text: String, #[serde(default)] expected_revision: Option<u64> },
+    PersonalMemoryForget { assistant_id: String, fact_id: String, #[serde(default)] expected_revision: Option<u64> },
     PersonalNoticesSeen { assistant_id: String, up_to: u64 },
     PersonalPushRegister { assistant_id: String, token: String },
     PersonalMachineLink { assistant_id: String, host_id: String, name: String, folder: String },
@@ -68,7 +97,9 @@ pub enum Command {
     PhoneStart {},
     PhoneStop {},
     PhoneView { since: u64 },
-    PhoneHuman { input: crate::phone::Input },
+    PhoneHuman { input: crate::phone::Input, #[serde(default)] geometry: Option<crate::phone::Geometry> },
+    PhoneDevices {},
+    PhoneControl { control: crate::phone::Control },
     PhoneGiveBack {},
     PhoneBot { room: String, bot: String, name: String, request: crate::phone::BotRequest },
     PhoneChatQueued { room: String },
@@ -100,6 +131,8 @@ pub enum Command {
     PtyResize { id: String, cols: u16, rows: u16 },
     PtyKill { id: String },
     RoomDiff { id: String },
+    RoomGitStatus { id: String },
+    RoomGitAction { id: String, action: crate::git_changes::Action },
     RoomFork { source: String, target: String, upto: Option<usize> },
     /// A thread's snapshot made into a new room here: a fork to this machine, or a thread moved before it started.
     /// With `replace`, a room already called `id` here is written over in one step and then closed, as when a thread that hasn't started moves to another folder.
@@ -118,6 +151,7 @@ pub enum Command {
     LibraryList {},
     LibraryRemove { file: String },
     LibraryRename { file: String, name: String },
+    RoomMount { id: String, cwd: String },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     RoomState { id: String },
     RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
@@ -149,6 +183,7 @@ pub enum Command {
     AgentModels { tool: AgentTool },
     RoomBotModels { room: String, participant: ParticipantId },
     RoomBotBalance { room: String, participant: ParticipantId },
+    RoomPlanReset { room: String, tool: AgentTool, #[serde(default)] credit: Option<String>, #[serde(default)] key: Option<String> },
     OpenTarget { target: String, cwd: Option<String>, reveal: Option<bool> },
     WorkspaceRead { target: String, cwd: Option<String> },
     PathsExist { targets: Vec<String>, cwd: Option<String> },
@@ -162,6 +197,7 @@ pub enum Command {
     FileDuplicate { root: String, path: String },
     FileTrash { root: String, path: String },
     WorktreeList { path: String },
+    BotCopiesSetCheck { root: String, cmd: Option<String> },
     WorktreeAdd { path: String, branch: String, new_branch: bool, base: Option<String>, folder: Option<String> },
     WorktreeRemove { path: String, worktree: String, force: bool },
     WorktreeForget { path: String, worktree: String, force: bool },
@@ -179,10 +215,17 @@ pub enum Command {
 }
 
 impl Command {
+    pub fn requires_provenance(&self) -> bool {
+        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+    }
+
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
     /// may leave `args` out.
     pub fn from_json(mut value: Value) -> Result<Command, String> {
         if let Value::Object(fields) = &mut value {
+            // The signed envelope binds this delivery key. It is transport
+            // metadata, not a field injected into strict command DTOs.
+            fields.remove("provenanceRequestId");
             fields.entry("args").or_insert_with(|| Value::Object(Default::default()));
         }
         serde_json::from_value(value).map_err(|e| e.to_string())
@@ -206,8 +249,53 @@ impl Host {
     /// Session context is supplied by the authenticated transport, never from
     /// a command argument or durable room setting. This host does not execute UI.
     pub async fn call_with_client_capability(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+        #[cfg(feature="test-support")]
+        if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,capability).await;}
+        use Command::*;
+        let needs_receipt = |command:&Command| -> Result<bool,String> {
+            if command.requires_provenance() {return Ok(true);}
+            match command {
+                RoomPost{id,..}|RoomPostTo{id,..}|RoomTurn{id,..} => Ok(self.assistant_tasks.execution(id).map_err(|e|e.to_string())?.is_some()),
+                _ => Ok(false),
+            }
+        };
+        let mut source_key=None;
+        let command = match command {
+            ProvenanceExecute { receipt } => {
+                let data_dir = self.data_dir().to_path_buf();
+                let original = blocking(move || apex_provenance::io::consume(&receipt, &data_dir)).await?;
+                source_key=Some(original.key);
+                let command = Command::from_json(original.command)?;
+                if !(command.requires_provenance() || matches!(command,RoomPost{..}|RoomPostTo{..}|RoomTurn{..})) { return Err("Attested command is outside the protected submission surface".into()); }
+                command
+            }
+            command if needs_receipt(&command)? => return Err("A protected provenance receipt from the installed Apex UI is required; local socket and CLI access do not establish human origin.".into()),
+            command => command,
+        };
+        let result=self.dispatch_command(command,capability).await;
+        if let Some(key)=source_key {
+            let folder=self.data_dir().to_path_buf();
+            let reason=result.as_ref().err().cloned();
+            blocking(move||apex_provenance::io::finish(&folder,&key,reason.as_deref())).await
+                .map_err(|e|format!("The command may have completed, but its protected outcome could not be recorded. Do not retry automatically: {e}"))?;
+        }
+        result
+    }
+
+    // Tests of downstream behavior explicitly assume a previously verified UI
+    // intent. Admission/forgery tests use the real public call() entry point.
+    #[cfg(test)]
+    pub(crate) async fn call_assuming_verified_ui_for_test(self:&Arc<Self>,command:Command)->Result<Value,String>{
+        self.dispatch_command(command,apex_core::GeneratedUiCapability::Unsupported).await
+    }
+    #[cfg(test)]
+    pub(crate) async fn call_with_client_capability_assuming_verified_ui_for_test(self:&Arc<Self>,command:Command,capability:apex_core::GeneratedUiCapability)->Result<Value,String>{
+        self.dispatch_command(command,capability).await
+    }
+    async fn dispatch_command(self:&Arc<Self>,command:Command,capability:apex_core::GeneratedUiCapability)->Result<Value,String>{
         use Command::*;
         match command {
+            ProvenanceExecute { .. } => return Err("Nested provenance commands are forbidden".into()),
             SessionLoad {} => reply(self.session_load()?),
             SessionSave { session } => reply(self.session_save(session)?),
             SettingsLoad {} => reply(self.settings_load()?),
@@ -228,24 +316,57 @@ impl Host {
                 reply(snapshot)
             }
             AssistantTaskAction { input } => reply(self.assistant_task_action(input).await?),
+            LegacyImportPreview {} => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.legacy_import_preview()).await?)
+            }
+            LegacyImportApply { snapshot, sources } => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.legacy_import_apply(snapshot, sources)).await?)
+            }
+            LegacyImportHistory { snapshot, request_id } => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.legacy_import_history(snapshot, request_id)).await?)
+            }
             PersonalList {} => reply(self.personal_list()?),
             PersonalGet { assistant_id } => reply(self.personal_get(&assistant_id)?),
-            PersonalCreate { input } => {
+            PersonalCreate { mut input } => {
+                if input.workspace_version == Some(4) {
+                    // Validate the complete runtime selection before any durable insertion.
+                    let snapshot: crate::personal::PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"creation-validation","hostId":self.local_host_id()?,"name":input.name,"style":"","profile":null,"allowedFolders":[],"paused":false,"revision":0,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).map_err(|e|e.to_string())?;
+                    input.profile=self.workspace_profile(&snapshot,crate::personal_workspace::parse_profile(serde_json::to_value(input.profile).map_err(|e|e.to_string())?)?).await?;
+                }
                 let host = Arc::clone(self);
                 reply(blocking(move || host.personal_create(input)).await?)
             }
+            PersonalProjectDelegate { input } => reply(self.personal_project_delegate(input).await?),
+            PersonalProjectDelegateUi { input } => reply(self.personal_project_delegate_ui(input)?),
             PersonalSend { assistant_id, request_id, text } => reply(self.personal_send(&assistant_id, &request_id, &text)?),
             PersonalReact { assistant_id, message_id, emoji, enabled } => reply(serde_json::json!({"assistant": self.personal_react(&assistant_id, &message_id, &emoji, enabled)?})),
             PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
+            PersonalArchive { assistant_id, expected_revision, archived } => reply(self.personal_archive(&assistant_id, expected_revision, archived)?),
+            PersonalTaskLifecycle { input } => reply(self.personal_task_lifecycle(input).await?),
+            PersonalReplyCancel { assistant_id, request_id, event_id } => reply(self.personal_reply_cancel(&assistant_id, &request_id, &event_id)?),
             PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
-            PersonalPause { assistant_id, request_id, paused } => reply(self.personal_pause(&assistant_id, &request_id, paused)?),
+            PersonalPause { assistant_id, request_id, paused } => { let accepted = self.personal_pause(&assistant_id, &request_id, paused)?; if !paused { self.redispatch_recovered_queued()?; } reply(accepted) },
             PersonalScheduleCancel { assistant_id, request_id, schedule_id } => reply(self.personal_schedule_cancel(&assistant_id, &request_id, &schedule_id)?),
+            ProjectMemoryList { input } => reply(self.project_memory_list(input)?),
+            ProjectMemorySave { input } => reply(self.project_memory_save(input)?),
+            ProjectMemoryForget { input } => reply(self.project_memory_forget(input)?),
+            ProjectMemoryStage { input } => reply(self.project_memory_stage(input)?),
+            ProjectMemoryPromote { input } => reply(self.project_memory_promote(input)?),
+            PersonalAvatarOptions { owner } => reply(self.personal_avatar_options(owner).await?),
+            PersonalAvatarGenerate { input } => reply(self.personal_avatar_generate(input).await?),
+            PersonalAvatarStatus { owner, generation_id } => reply(self.personal_avatar_status(owner, generation_id)?),
+            PersonalAvatarCancel { owner, generation_id } => reply(self.personal_avatar_cancel(owner, generation_id)?),
+            PersonalAvatarAsset { assistant_id, owner, generation_id, asset_id, sha256 } => self.personal_avatar_asset(assistant_id, owner, generation_id, asset_id, sha256),
+            PersonalWorkspaceConfigure { input } => reply(self.personal_workspace_configure(input).await?),
             PersonalConfigure { assistant_id, settings } => reply(self.personal_configure(&assistant_id, settings)?),
             PersonalRuleAdd { assistant_id, text, class, mode } => reply(self.personal_rule_add(&assistant_id, &text, class, mode)?),
             PersonalRuleRemove { assistant_id, rule_id } => reply(self.personal_rule_remove(&assistant_id, &rule_id)?),
-            PersonalMemoryAdd { assistant_id, text } => reply(self.personal_memory_add(&assistant_id, &text)?),
-            PersonalMemoryCorrect { assistant_id, fact_id, text } => reply(self.personal_memory_correct(&assistant_id, &fact_id, &text)?),
-            PersonalMemoryForget { assistant_id, fact_id } => reply(self.personal_memory_forget(&assistant_id, &fact_id)?),
+            PersonalMemoryAdd { assistant_id, text, expected_revision } => reply(self.personal_memory_add_at_revision(&assistant_id, &text, expected_revision)?),
+            PersonalMemoryCorrect { assistant_id, fact_id, text, expected_revision } => reply(self.personal_memory_correct_at_revision(&assistant_id, &fact_id, &text, expected_revision)?),
+            PersonalMemoryForget { assistant_id, fact_id, expected_revision } => reply(self.personal_memory_forget_at_revision(&assistant_id, &fact_id, expected_revision)?),
             PersonalNoticesSeen { assistant_id, up_to } => reply(self.personal_notices_seen(&assistant_id, up_to)?),
             PersonalPushRegister { assistant_id, token } => reply(self.personal_push_register(&assistant_id, &token)?),
             PersonalMachineLink { assistant_id, host_id, name, folder } => reply(self.personal_machine_link(&assistant_id, &host_id, &name, &folder)?),
@@ -266,7 +387,9 @@ impl Host {
             PhoneStart {} => reply(self.phone.start()),
             PhoneStop {} => reply(self.phone.stop().await?),
             PhoneView { since } => reply(self.phone.view(since)),
-            PhoneHuman { input } => reply(self.phone.human(input).await?),
+            PhoneHuman { input, geometry } => reply(self.phone.human_at(input, geometry).await?),
+            PhoneDevices {} => reply(self.phone.devices().await?),
+            PhoneControl { control } => reply(self.phone.human_control(control).await?),
             PhoneGiveBack {} => reply(self.phone.give_back()),
             PhoneBot { room, bot, name, request } => reply(self.phone.bot(crate::phone::BotId { room, bot, name }, request).await?),
             PhoneChatQueued { room } => {
@@ -330,6 +453,8 @@ impl Host {
             PtyResize { id, cols, rows } => reply(self.pty_resize(id, cols, rows)?),
             PtyKill { id } => { self.pty_kill(id); reply(()) },
             RoomDiff { id } => reply(self.room_diff(id).await?),
+            RoomGitStatus { id } => reply(self.room_git_status(id).await?),
+            RoomGitAction { id, action } => reply(self.room_git_action(id, action).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),
             RoomImport { id, snapshot, cwd, replace } => reply(self.room_import(id, snapshot, cwd, replace.unwrap_or(false))?),
             ExportThread { file_name, contents } => reply(self.export_thread(file_name, contents)?),
@@ -345,6 +470,7 @@ impl Host {
             LibraryList {} => reply(self.library_list()),
             LibraryRemove { file } => reply(self.library_remove(file)?),
             LibraryRename { file, name } => reply(self.library_rename(file, name)?),
+            RoomMount { id, cwd } => reply(self.room_mount(id, cwd)?),
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers } => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
@@ -381,6 +507,7 @@ impl Host {
             AgentModels { tool } => reply(self.agent_models(tool)),
             RoomBotModels { room, participant } => reply(self.room_bot_models(&room, &participant).await?),
             RoomBotBalance { room, participant } => reply(self.room_bot_balance(&room, &participant).await?),
+            RoomPlanReset { room, tool, credit, key } => reply(self.room_plan_reset(&room, tool, credit, key).await?),
             OpenTarget { target, cwd, reveal } => reply(self.open_target(target, cwd, reveal)?),
             WorkspaceRead { target, cwd } => reply(self.workspace_read(target, cwd)),
             PathsExist { targets, cwd } => reply(self.paths_exist(targets, cwd)),
@@ -393,6 +520,7 @@ impl Host {
             FileRename { root, path, name } => reply(self.file_rename(root, path, name).await?),
             FileDuplicate { root, path } => reply(self.file_duplicate(root, path).await?),
             FileTrash { root, path } => reply(self.file_trash(root, path).await?),
+            BotCopiesSetCheck { root, cmd } => reply(self.bot_copies_set_check(root, cmd).await?),
             WorktreeList { path } => reply(self.worktree_list(path).await?),
             WorktreeAdd { path, branch, new_branch, base, folder } => reply(self.worktree_add(path, crate::worktrees::AddRequest { branch, new_branch, base, folder }).await?),
             WorktreeRemove { path, worktree, force } => reply(self.worktree_remove(path, worktree, force).await?),
@@ -424,6 +552,22 @@ mod tests {
     use super::*;
     use crate::HostPaths;
     use serde_json::json;
+
+    #[test]
+    fn provenance_unverified_command_is_refused_before_any_mutation() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-provenance-host-{}", std::process::id()));
+        let host = Host::new(HostPaths { data:data.clone(), downloads:None }, runtime.handle().clone());
+        let command = Command::from_json(json!({"cmd":"personal_send","args":{"assistantId":"nonexistent","requestId":"r","text":"forge a human request"}})).unwrap();
+        let error = runtime.block_on(host.call(command)).unwrap_err();
+        assert!(error.contains("protected provenance receipt"), "{error}");
+        let delegation = Command::from_json(json!({"cmd":"personal_project_delegate_ui","args":{"assistantId":"nonexistent","project":{"hostId":"host","workspaceId":"workspace","cwd":"/repo"},"sourceEventId":"","delegationId":"ui-task","brief":"Inspect login","destination":{"threadId":"thread","workers":["worker"],"newThread":false},"mode":"read_only","expectedRevision":1}})).unwrap();
+        let error = runtime.block_on(host.call(delegation)).unwrap_err();
+        assert!(error.contains("protected provenance receipt"), "{error}");
+        assert!(!data.join("assistant-conversations-v1.json").exists());
+        assert!(!crate::authority_file::fixture_path(&data.join("assistant-conversations-v1.json")).exists());
+        let _ = std::fs::remove_dir_all(data);
+    }
 
     #[test]
     fn turn_answer_preference_accepts_existing_snake_case_transport_arguments() {
@@ -498,14 +642,24 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 149);
+        assert_eq!(names.len(), 176);
+        for name in ["phone_devices", "phone_control"] { assert!(names.contains(&name.to_owned())); }
+        assert!(names.contains(&"bot_copies_set_check".to_string()));
+        for name in ["personal_task_lifecycle", "personal_reply_cancel", "personal_archive"] { assert!(names.contains(&name.to_owned())); }
+        for name in ["personal_avatar_options", "personal_avatar_generate", "personal_avatar_status", "personal_avatar_cancel", "personal_avatar_asset"] { assert!(names.contains(&name.to_owned())); }
+        for name in ["legacy_import_preview", "legacy_import_apply", "legacy_import_history"] { assert!(names.contains(&name.to_owned())); }
+        for name in ["project_memory_list", "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote"] { assert!(names.contains(&name.to_owned())); }
+        assert!(names.contains(&"room_plan_reset".to_string()));
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));
         assert!(names.contains(&"file_write".to_string()));
         assert!(names.contains(&"answers_load".to_string()));
+        assert!(names.contains(&"personal_project_delegate".to_string()));
+        assert!(names.contains(&"personal_project_delegate_ui".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
         assert!(names.contains(&"room_steps".to_string()));
+        assert!(names.contains(&"personal_workspace_configure".to_string()));
         assert!(names.contains(&"personal_send".to_string()));
         assert!(names.contains(&"personal_react".to_string()));
         assert!(names.contains(&"monitor_react".to_string()));
@@ -515,6 +669,7 @@ mod tests {
         assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_set_plan".to_string()));
         assert!(names.contains(&"room_state".to_string()));
+        assert!(names.contains(&"room_mount".to_string()));
         assert!(names.contains(&"session_load".to_string()));
         assert!(names.contains(&"mod_env_get".to_string()));
         assert!(names.contains(&"monitor_list".to_string()));

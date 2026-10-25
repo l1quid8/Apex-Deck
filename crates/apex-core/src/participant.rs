@@ -5,7 +5,7 @@ use crate::types::{ContextUse, Message, ParticipantConfig, PlanUsage};
 use crate::view::ViewTurn;
 
 /// What a participant is given when it is asked to speak.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TurnRequest {
     /// Effective workspace access for this turn, enforced by coding adapters.
     pub access: Option<crate::Access>,
@@ -22,6 +22,9 @@ pub struct TurnRequest {
     /// The thread's Plan switch is on: the bot plans and changes nothing.
     /// Agents with a planning mode of their own use it.
     pub plan: bool,
+    /// Working folder override for this turn. When absent, adapters use the
+    /// room's default workspace folder.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// A finished reply.

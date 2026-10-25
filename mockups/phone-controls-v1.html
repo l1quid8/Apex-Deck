@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en" data-theme="clay">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phone controls · Apex Deck</title>
+<style>
+/* The preview uses Deck's existing Clay palette and system UI type. */
+:root { color-scheme:dark; --bg:#262421; --panel:#1e1c1a; --raised:#302d29; --text:#efe9e0; --muted:#c2b9ad; --line:#3b3732; --edge:#544e46; --hover:#3a3630; --accent:#9dc79b; --danger:#f0907f; --stage:#191817; --width:400px; font:13px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--text); background:var(--bg); }
+:root[data-theme="light"] { color-scheme:light; --bg:#f8f5ee; --panel:#f0ece3; --raised:#fffdf9; --text:#29251f; --muted:#58514a; --line:#e1dacd; --edge:#c9c0b1; --hover:#e5dfd2; --accent:#356b3a; --danger:#ad3626; --stage:#e9e4db; }
+:root[data-theme="classic"] { --bg:#14171d; --panel:#1a1e26; --raised:#252a35; --text:#e5e9f0; --muted:#a6afbe; --line:#303643; --edge:#4b5465; --hover:#303745; --accent:#91b6f5; --stage:#101217; }
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { margin:0; min-height:100vh; }
+button,input,select { font:inherit; color:inherit; }
+button { cursor:pointer; border:0; background:transparent; }
+button:disabled { cursor:default; opacity:.45; }
+button:hover:not(:disabled) { background:var(--hover); }
+:is(button,input,select):focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+button[aria-pressed="true"],button[aria-expanded="true"] { background:var(--hover); color:var(--text); }
+svg { display:block; width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+.sprite { position:absolute; width:0; height:0; overflow:hidden; }
+.review-bar { display:flex; align-items:center; gap:12px; padding:17px 24px; border-bottom:1px solid var(--line); }
+.brand { display:flex; align-items:center; gap:8px; font-weight:600; font-size:14px; }
+.brand svg { color:var(--accent); width:23px; height:23px; }
+.preview-tag { color:var(--muted); font-size:12px; margin-left:auto; }
+main { max-width:1180px; margin:auto; padding:42px 28px; display:grid; grid-template-columns:260px minmax(0,1fr); gap:52px; align-items:start; }
+.intro { padding-top:26px; }
+h1 { font-size:25px; line-height:1.2; letter-spacing:-.7px; font-weight:600; margin:0 0 13px; }
+.intro p { font-size:14px; color:var(--muted); line-height:1.6; margin:0 0 25px; }
+.preview-option { margin:22px 0; }
+.preview-option > span { display:block; font-size:12px; margin-bottom:8px; color:var(--muted); }
+.switcher { display:flex; border:1px solid var(--line); border-radius:7px; padding:3px; width:max-content; max-width:100%; gap:3px; }
+.switcher button { border-radius:4px; padding:5px 10px; font-size:12px; color:var(--muted); }
+.switcher button[aria-pressed="true"] { color:var(--text); }
+.preview-note { font-size:12px !important; margin-top:28px !important; }
+.preview-area { min-width:0; display:flex; align-items:center; flex-direction:column; }
+.preview-caption { display:flex; align-items:center; justify-content:space-between; width:min(var(--width),100%); margin:0 0 10px; color:var(--muted); font-size:11px; }
+.panel { width:min(var(--width),100%); height:650px; min-height:430px; max-height:calc(100vh - 160px); display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--edge); border-radius:10px; position:relative; container-type:inline-size; }
+.panel-tabs { display:flex; gap:3px; align-items:center; height:37px; flex:none; padding:4px 8px; border-bottom:1px solid var(--line); }
+.panel-tab { display:grid; place-items:center; width:30px; height:27px; color:var(--muted); border-radius:5px; }
+.panel-tab.selected { background:var(--hover); color:var(--text); }
+.panel-tab-spacer { flex:1; }
+.device-head { padding:10px 10px 8px; display:flex; align-items:center; gap:6px; }
+.device-trigger { min-width:0; display:flex; align-items:center; gap:8px; text-align:left; padding:5px 6px; border-radius:6px; flex:1; }
+.device-trigger > svg:first-child { width:18px; height:25px; }
+.device-copy { min-width:0; display:flex; flex-direction:column; gap:1px; }
+.device-name { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.device-runtime { color:var(--muted); font-size:10px; }
+.device-chevron { width:12px; height:12px; color:var(--muted); margin-left:1px; }
+.connection-dot { width:5px; height:5px; border-radius:50%; background:var(--accent); margin-right:6px; flex:none; }
+.connection-dot.off { background:var(--muted); }
+.toolbar { display:flex; align-items:center; gap:3px; padding:0 12px 10px; flex:none; }
+.tool { display:flex; align-items:center; justify-content:center; height:30px; min-width:30px; border-radius:6px; padding:6px; position:relative; color:var(--muted); }
+.tool:hover { color:var(--text); }
+.tool.named { gap:5px; color:var(--text); padding-inline:8px; font-size:11px; }
+.tool.fold { background:var(--raised); border:1px solid var(--edge); }
+.tool.fold:hover { background:var(--hover); }
+.tool-divider { height:15px; width:1px; background:var(--line); margin-inline:3px; flex:none; }
+.toolbar .push { flex:1; min-width:0; }
+.controls-word { display:none; }
+.tool[data-tip]::after { content:attr(data-tip); position:absolute; top:calc(100% + 7px); left:50%; transform:translateX(-50%); background:var(--raised); color:var(--text); border:1px solid var(--edge); border-radius:5px; padding:4px 7px; font-size:10px; white-space:nowrap; z-index:20; pointer-events:none; opacity:0; }
+.tool[data-tip]:is(:hover,:focus-visible)::after { opacity:1; }
+.stage { position:relative; flex:1; min-height:0; display:grid; place-items:center; margin:0 10px; padding:14px; background:var(--stage); border:1px solid var(--line); border-radius:8px; overflow:hidden; container-type:size; }
+.screen { display:block; width:min(100cqw,calc(100cqh * var(--ratio))); max-width:100%; max-height:100%; height:auto; border-radius:14px; box-shadow:0 5px 18px #0003; }
+.screen.landscape { width:min(100cqh,calc(100cqw * var(--ratio))); max-width:none; max-height:none; transform:rotate(90deg); }
+.screen.locked { filter:brightness(.13); }
+.geometry { display:flex; justify-content:center; align-items:center; gap:6px; color:var(--muted); font-size:10px; height:31px; padding:7px 10px; flex:none; }
+.geometry .dot { width:2px; height:2px; border-radius:50%; background:var(--muted); }
+.driver { border-top:1px solid var(--line); padding:8px 12px; display:flex; align-items:center; gap:7px; height:39px; font-size:11px; }
+.driver-mark { display:grid; place-items:center; width:20px; height:20px; border-radius:50%; background:var(--hover); color:var(--accent); }
+.driver-mark svg { width:12px; height:12px; }
+.driver span { color:var(--muted); }
+.driver strong { font-weight:500; color:var(--text); }
+.driver .give-back { color:var(--muted); font-size:10px; padding:4px 6px; border-radius:4px; margin-left:auto; }
+.driver .help { width:22px; height:22px; padding:4px; border-radius:5px; color:var(--muted); }
+.driver .help svg { width:13px; height:13px; }
+.popover { position:absolute; z-index:30; padding:6px; background:var(--raised); border:1px solid var(--edge); border-radius:9px; box-shadow:0 12px 35px #0005; max-height:calc(100% - 140px); overflow:auto; overscroll-behavior:contain; }
+.popover[hidden] { display:none; }
+.controls-pop { top:130px; right:10px; width:min(302px,calc(100% - 20px)); }
+.devices-pop { top:96px; left:10px; right:10px; }
+.pop-heading { display:flex; align-items:center; justify-content:space-between; margin:5px 7px 7px; font-size:11px; font-weight:600; }
+.pop-heading > span { color:var(--muted); font-size:10px; font-weight:400; }
+.pop-divider { border:0; border-top:1px solid var(--edge); opacity:.65; margin:7px 1px; }
+.setting-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px; font-size:11px; min-height:36px; }
+.setting-row > span { display:flex; align-items:center; gap:7px; }
+.setting-row > span svg { width:14px; height:14px; color:var(--muted); }
+.segmented { display:flex; background:var(--panel); border-radius:5px; padding:2px; gap:1px; }
+.segmented button { padding:4px 7px; border-radius:4px; font-size:10px; }
+.segmented button[aria-pressed="true"] { background:var(--hover); box-shadow:0 1px 2px #0002; }
+.stepper { display:flex; align-items:center; border:1px solid var(--edge); border-radius:5px; }
+.stepper button { padding:3px 7px; font-size:12px; border-radius:4px; }
+.stepper output { text-align:center; min-width:43px; font-size:10px; color:var(--muted); }
+.toggle { position:relative; border-radius:20px; width:29px; height:17px; background:var(--edge); padding:2px; }
+.toggle::before { content:""; display:block; width:13px; height:13px; background:var(--text); border-radius:50%; }
+.toggle[aria-pressed="true"] { background:var(--accent); }
+.toggle[aria-pressed="true"]::before { transform:translateX(12px); background:var(--panel); }
+.menu-action { width:100%; display:flex; align-items:center; gap:8px; padding:8px; border-radius:5px; text-align:left; font-size:11px; min-height:32px; }
+.menu-action svg { width:14px; height:14px; color:var(--muted); }
+.menu-action small { margin-left:auto; font-size:10px; color:var(--muted); }
+.menu-action.danger { color:var(--danger); }
+.menu-action.danger svg { color:inherit; }
+.menu-action.device { padding-block:9px; }
+.menu-action.device .device-list-copy { display:flex; flex-direction:column; gap:1px; }
+.menu-action.device small { margin:0; }
+.menu-action.device .chosen { margin-left:auto; color:var(--accent); }
+.menu-action.device[aria-pressed="true"] { background:var(--hover); }
+.location { padding:5px 7px 8px; }
+.location-inputs { display:flex; gap:5px; }
+.location input { width:0; flex:1; padding:6px 7px; border:1px solid var(--edge); border-radius:5px; background:var(--panel); font-size:10px; }
+.location-actions { display:flex; justify-content:flex-end; gap:4px; margin-top:5px; }
+.location-actions button { font-size:10px; padding:4px 7px; border-radius:4px; }
+.location-actions button:last-child { background:var(--hover); }
+.setting-row input[type="range"] { min-width:0; width:100px; accent-color:var(--accent); }
+.capture-pair { display:flex; gap:3px; padding:3px 1px 1px; }
+.capture-pair button { display:flex; align-items:center; justify-content:center; gap:6px; width:50%; padding:8px 3px; border-radius:5px; font-size:11px; background:var(--panel); }
+.capture-pair button svg { width:14px; height:14px; }
+.recording { color:var(--danger) !important; }
+.record-pill { position:absolute; top:10px; left:10px; display:flex; align-items:center; gap:6px; font-size:10px; padding:4px 7px; border:1px solid var(--edge); border-radius:5px; background:var(--panel); z-index:2; }
+.record-pill[hidden] { display:none; }
+.record-pill i { width:6px; height:6px; border-radius:50%; background:var(--danger); }
+.veil { position:absolute; inset:0; background:var(--stage); display:grid; place-content:center; justify-items:center; gap:10px; color:var(--muted); font-size:11px; z-index:3; }
+.veil[hidden] { display:none; }
+.veil svg { width:24px; height:24px; }
+.veil button { color:var(--text); border:1px solid var(--edge); border-radius:5px; padding:6px 13px; }
+.toast { position:absolute; left:12px; right:12px; bottom:86px; z-index:40; background:var(--raised); border:1px solid var(--edge); border-radius:7px; padding:10px 12px; font-size:11px; box-shadow:0 6px 20px #0003; }
+.toast:empty { display:none; }
+.help-note { position:absolute; z-index:40; left:10px; right:10px; bottom:46px; border:1px solid var(--edge); border-radius:7px; background:var(--raised); color:var(--muted); padding:10px 12px; font-size:11px; }
+.help-note[hidden] { display:none; }
+.under-preview { width:min(var(--width),100%); margin-top:13px; color:var(--muted); font-size:11px; line-height:1.5; }
+@container (min-width:355px) { .controls-word { display:inline; font-size:11px; } .tool.controls { gap:5px; padding-inline:8px; } .toolbar { gap:4px; } }
+@container (max-width:300px) { .toolbar { padding-inline:10px; gap:2px; } .tool-divider { margin-inline:2px; } .tool.named { padding-inline:6px; } .stage { margin-inline:8px; padding:9px; } }
+@media (max-width:850px) { main { grid-template-columns:1fr; gap:25px; padding:24px 16px; } .intro { padding:0; max-width:620px; margin:auto; width:100%; } .intro p { margin-bottom:12px; } .preview-options { display:flex; gap:18px; flex-wrap:wrap; } .preview-option { margin:5px 0; } .preview-note { margin:12px 0 0 !important; } .panel { max-height:none; height:650px; } .review-bar { padding:14px 16px; } }
+@media (pointer:coarse) { .tool { min-width:36px; height:40px; } .toolbar { flex-wrap:wrap; } .setting-row { min-height:44px; } .menu-action { min-height:44px; } .controls-pop { top:140px; } }
+@media (prefers-reduced-motion:no-preference) { .tool, .segmented button { transition:background .12s; } }
+</style>
+</head>
+<body>
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+<symbol id="icon-logo" viewBox="0 0 24 24"><path d="m12 2 10 10-10 10L2 12Z M8 9l3 3-3 3m5 0h4"/></symbol>
+<symbol id="icon-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4m-3 14h2"/></symbol>
+<symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></symbol>
+<symbol id="icon-home" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></symbol>
+<symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></symbol>
+<symbol id="icon-fold" viewBox="0 0 24 24"><path d="m3 5 9-2 9 2v14l-9 2-9-2ZM12 3v18 M8 9l-3 3 3 3m8-6 3 3-3 3"/></symbol>
+<symbol id="icon-rotate" viewBox="0 0 24 24"><path d="M4 8a9 9 0 0 1 15-3l2 2m0-5v5h-5"/><rect x="7" y="8" width="10" height="13" rx="2"/></symbol>
+<symbol id="icon-camera" viewBox="0 0 24 24"><path d="M4 6h4l2-3h4l2 3h4a1 1 0 0 1 1 1v13H3V7a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="4"/></symbol>
+<symbol id="icon-controls" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><rect x="7" y="4" width="3" height="4" rx="1" fill="var(--raised)"/><rect x="14" y="10" width="3" height="4" rx="1" fill="var(--raised)"/><rect x="8" y="16" width="3" height="4" rx="1" fill="var(--raised)"/></symbol>
+<symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 2v10m-5-7a9 9 0 1 0 10 0"/></symbol>
+<symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+<symbol id="icon-text" viewBox="0 0 24 24"><path d="m4 20 6-16 6 16m-10-5h8m4-3h4m-2 0v8"/></symbol>
+<symbol id="icon-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18a9 9 0 0 0 0-18Z" fill="currentColor"/></symbol>
+<symbol id="icon-battery" viewBox="0 0 24 24"><rect x="2" y="6" width="18" height="12" rx="2"/><path d="M23 10v4M5 9h12v6H5Z"/></symbol>
+<symbol id="icon-face" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3m8 0h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3M8 8v2m8-2v2m-4 0v3h-1m-3 3a6 6 0 0 0 8 0"/></symbol>
+<symbol id="icon-record" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/></symbol>
+<symbol id="icon-volume" viewBox="0 0 24 24"><path d="M3 9h4l5-5v16l-5-5H3Zm13-1a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+<symbol id="icon-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
+<symbol id="icon-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
+<symbol id="icon-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="14" rx="3"/><path d="M12 3v4M8 12v2m8-2v2M9 18h6"/></symbol>
+<symbol id="icon-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 1 1 5 2c-2 1-2 2-2 3m0 3h.01"/></symbol>
+<symbol id="icon-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+<symbol id="icon-file" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5Zm9 0v6h5M8 14h8m-8 3h6"/></symbol>
+<symbol id="icon-terminal" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3m6 0h5"/></symbol>
+<symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+<symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+</defs></svg>
+<header class="review-bar"><div class="brand"><svg><use href="#icon-logo"/></svg>Apex Deck</div><span class="preview-tag">Phone controls · Interactive design preview</span></header>
+<main>
+<aside class="intro">
+ <h1>More control.<br>Less clutter.</h1>
+ <p>A quiet device header, a single toolbar, and the simulator given room to breathe.</p>
+ <div class="preview-options">
+ <div class="preview-option"><span>Panel width</span><div class="switcher" id="width-picker"><button data-width="278" aria-pressed="false">Narrow</button><button data-width="400" aria-pressed="true">Default</button><button data-width="620" aria-pressed="false">Wide</button></div></div>
+ <div class="preview-option"><span>Deck theme</span><div class="switcher" id="theme-picker"><button data-theme="clay" aria-pressed="true">Clay</button><button data-theme="light" aria-pressed="false">Light</button><button data-theme="classic" aria-pressed="false">Classic</button></div></div>
+ </div>
+ <p class="preview-note">Try Fold, Rotate, the device picker, and Controls. Actions in this preview are simulated; the phone images are earlier captures of the actual Duo.</p>
+</aside>
+<section class="preview-area" aria-label="Phone tab design preview">
+<div class="preview-caption"><span>Side panel</span><span id="width-label">400 px</span></div>
+<div class="panel" id="panel">
+ <div class="panel-tabs" aria-label="Side panel context">
+  <span class="panel-tab" aria-label="Dashboard"><svg><use href="#icon-grid"/></svg></span><span class="panel-tab" aria-label="Files"><svg><use href="#icon-file"/></svg></span><span class="panel-tab" aria-label="Terminal"><svg><use href="#icon-terminal"/></svg></span><span class="panel-tab selected" aria-label="Phone selected"><svg><use href="#icon-phone"/></svg></span><span class="panel-tab-spacer"></span><span class="panel-tab" aria-label="Close"><svg style="width:13px;height:13px"><use href="#icon-close"/></svg></span>
+ </div>
+ <div class="device-head">
+  <button class="device-trigger" id="device-trigger" aria-label="Choose simulator" aria-expanded="false" aria-controls="devices-pop"><svg><use href="#icon-phone"/></svg><span class="device-copy"><span class="device-name" id="device-name">iPhone Duo</span><span class="device-runtime">iOS 27.1</span></span><svg class="device-chevron"><use href="#icon-chevron"/></svg></button><span class="connection-dot" id="connection" title="Running"></span>
+ </div>
+ <div class="toolbar" aria-label="Simulator controls">
+  <button class="tool" id="home" aria-label="Home" data-tip="Home"><svg><use href="#icon-home"/></svg></button>
+  <button class="tool" id="lock" aria-label="Lock screen" data-tip="Lock screen"><svg><use href="#icon-lock"/></svg></button>
+  <span class="tool-divider"></span>
+  <button class="tool named fold" id="fold" aria-label="Unfold phone"><svg><use href="#icon-fold"/></svg><span id="fold-label">Unfold</span></button>
+  <button class="tool" id="rotate" aria-label="Rotate right" data-tip="Rotate right"><svg><use href="#icon-rotate"/></svg></button>
+  <span class="push"></span>
+  <button class="tool" id="screenshot" aria-label="Save screenshot" data-tip="Screenshot"><svg><use href="#icon-camera"/></svg></button>
+  <button class="tool controls" id="controls-trigger" aria-label="Controls" aria-expanded="false" aria-controls="controls-pop"><svg><use href="#icon-controls"/></svg><span class="controls-word">Controls</span></button>
+ </div>
+ <div class="stage" id="stage">
+  <img class="screen" id="screen" src="phone-controls-assets/folded.png" style="--ratio:466/678" alt="Earlier screenshot of Apex Deck on the folded Duo">
+  <button class="record-pill" id="record-pill" aria-label="Stop recording" hidden><i></i><span id="record-time">0:00</span><svg style="width:11px;height:11px"><use href="#icon-close"/></svg></button>
+  <div class="veil" id="transition" role="status" hidden><svg><use href="#icon-phone"/></svg><span>Switching display…</span></div>
+  <div class="veil" id="off-screen" hidden><svg><use href="#icon-phone"/></svg><span>Simulator is off</span><button id="turn-on">Turn on</button></div>
+ </div>
+ <div class="geometry"><span id="active-screen">Outer display</span><i class="dot"></i><span id="screen-size">466 × 678 pt</span></div>
+ <div class="driver"><div class="driver-mark"><svg id="driver-icon"><use href="#icon-user"/></svg></div><span id="driver-copy"><strong>You’re driving</strong></span><button class="give-back" id="give-back">Give back</button><button class="help" id="help" aria-expanded="false" aria-controls="help-note" aria-label="Keyboard and input help"><svg><use href="#icon-help"/></svg></button></div>
+
+ <div class="popover devices-pop" id="devices-pop" role="dialog" aria-label="Choose simulator" hidden>
+  <div class="pop-heading">Simulators <span>iOS 27.1</span></div>
+  <button class="menu-action device" data-device="iPhone Duo" aria-pressed="true"><svg><use href="#icon-phone"/></svg><span class="device-list-copy">iPhone Duo<small>Outer and inner displays</small></span><svg class="chosen"><use href="#icon-check"/></svg></button>
+  <button class="menu-action device" data-device="iPhone 18 Pro" aria-pressed="false"><svg><use href="#icon-phone"/></svg><span class="device-list-copy">iPhone 18 Pro<small>Standard phone</small></span><svg class="chosen" style="visibility:hidden"><use href="#icon-check"/></svg></button>
+  <button class="menu-action device" data-device="iPad Pro" aria-pressed="false"><svg><use href="#icon-phone"/></svg><span class="device-list-copy">iPad Pro<small>Large workspace</small></span><svg class="chosen" style="visibility:hidden"><use href="#icon-check"/></svg></button>
+ </div>
+ <div class="popover controls-pop" id="controls-pop" role="dialog" aria-label="Simulator controls" hidden>
+  <div class="pop-heading">Display</div>
+  <div class="setting-row"><span><svg><use href="#icon-sun"/></svg>Appearance</span><div class="segmented" id="appearance"><button aria-pressed="false" data-value="Light">Light</button><button aria-pressed="true" data-value="Dark">Dark</button></div></div>
+  <div class="setting-row"><span><svg><use href="#icon-text"/></svg>Text size</span><div class="stepper"><button id="text-smaller" aria-label="Decrease text size">A−</button><output id="text-size">Default</output><button id="text-larger" aria-label="Increase text size">A+</button></div></div>
+  <div class="setting-row"><span><svg><use href="#icon-contrast"/></svg>Increase contrast</span><button class="toggle" aria-label="Increase contrast" aria-pressed="false" data-toggle></button></div>
+  <div class="setting-row"><span><svg><use href="#icon-battery"/></svg>Clean status bar</span><button class="toggle" aria-label="Clean status bar" aria-pressed="false" data-toggle></button></div>
+  <hr class="pop-divider">
+  <div class="pop-heading">Capture</div>
+  <div class="capture-pair"><button id="menu-screenshot"><svg><use href="#icon-camera"/></svg>Screenshot</button><button id="record"><svg><use href="#icon-record"/></svg><span id="record-label">Record</span></button></div>
+  <hr class="pop-divider">
+  <div class="pop-heading">Hardware</div>
+  <div class="setting-row"><span><svg><use href="#icon-rotate"/></svg>Orientation</span><div class="segmented" id="orientations"><button data-orientation="portrait" aria-pressed="true" aria-label="Portrait"><svg><use href="#icon-phone"/></svg></button><button data-orientation="landscape" aria-pressed="false" aria-label="Landscape"><svg style="transform:rotate(90deg)"><use href="#icon-phone"/></svg></button></div></div>
+  <div class="setting-row"><span><svg><use href="#icon-volume"/></svg>Volume</span><input id="volume" type="range" min="0" max="100" value="50" aria-label="Simulator volume"></div>
+  <div class="setting-row"><span><svg><use href="#icon-face"/></svg>Face ID</span><div class="segmented"><button data-action="Face ID match sent">Match</button><button data-action="Face ID failure sent">No match</button></div></div>
+  <hr class="pop-divider">
+  <div class="pop-heading">Location <span id="location-state">Actual</span></div>
+  <form class="location" id="location-form"><div class="location-inputs"><input name="latitude" type="number" step="any" min="-90" max="90" placeholder="Latitude" aria-label="Latitude" required><input name="longitude" type="number" step="any" min="-180" max="180" placeholder="Longitude" aria-label="Longitude" required></div><div class="location-actions"><button type="button" id="location-clear">Clear</button><button type="submit">Set location</button></div></form>
+  <hr class="pop-divider">
+  <button class="menu-action danger" id="turn-off"><svg><use href="#icon-power"/></svg>Turn off simulator</button>
+ </div>
+ <div class="help-note" id="help-note" hidden>Click the phone to take control. Drag to swipe, and type while the screen is focused. Give back lets the bots continue.</div>
+ <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</div>
+<p class="under-preview">Fold and rotation briefly pause input while the new display settles. Capture stays one click away; testing settings live under Controls.</p>
+</section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const root = document.documentElement;
+let folded = true, landscape = false, powered = true, busy = false, recording = false, userDriving = true;
+let toastTimer, recordTimer, recordSeconds = 0, textSize = 0, device = 'iPhone Duo';
+function toast(message) { clearTimeout(toastTimer); $('toast').textContent = `Preview: ${message}`; toastTimer = setTimeout(() => $('toast').textContent = '', 2600); }
+function closePopovers(restore = false) { for (const name of ['devices','controls']) { const trigger = $(name === 'devices' ? 'device-trigger' : 'controls-trigger'); const wasOpen = !$(name + '-pop').hidden; $(name + '-pop').hidden = true; trigger.setAttribute('aria-expanded','false'); if (restore && wasOpen) trigger.focus(); } }
+for (const [triggerId,popId] of [['device-trigger','devices-pop'],['controls-trigger','controls-pop']]) {
+ $(triggerId).onclick = () => { const open = $(popId).hidden; closePopovers(); $(popId).hidden = !open; $(triggerId).setAttribute('aria-expanded',String(open)); };
+}
+document.addEventListener('click', (event) => { if (!event.target.closest('.popover,.device-trigger,#controls-trigger')) closePopovers(); if (!event.target.closest('#help,#help-note')) { $('help-note').hidden = true; $('help').setAttribute('aria-expanded','false'); } });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closePopovers(true); if (!$('help-note').hidden) { $('help-note').hidden = true; $('help').setAttribute('aria-expanded','false'); $('help').focus(); } } });
+document.querySelectorAll('#width-picker button').forEach(button => button.onclick = () => { root.style.setProperty('--width',button.dataset.width+'px'); $('width-label').textContent = button.dataset.width+' px'; document.querySelectorAll('#width-picker button').forEach(item => item.setAttribute('aria-pressed',String(item===button))); });
+document.querySelectorAll('#theme-picker button').forEach(button => button.onclick = () => { root.dataset.theme = button.dataset.theme; document.querySelectorAll('#theme-picker button').forEach(item => item.setAttribute('aria-pressed',String(item===button))); });
+function render() {
+ const duo = device === 'iPhone Duo';
+ $('fold').hidden = !duo;
+ $('fold-label').textContent = folded ? 'Unfold' : 'Fold';
+ $('fold').setAttribute('aria-label',folded ? 'Unfold phone' : 'Fold phone');
+ const inner = duo && !folded;
+ let width = inner ? 951 : 466, height = inner ? 669 : 678;
+ if (landscape) [width,height] = [height,width];
+ $('screen').src = `phone-controls-assets/${inner ? 'unfolded' : 'folded'}.png`;
+ $('screen').alt = `Earlier screenshot of Apex Deck on the ${inner ? 'unfolded' : 'folded'} Duo${landscape ? ', rotated for this preview' : ''}`;
+ // The image rotates only in the throwaway preview; native capture supplies the right pose in Deck.
+ $('screen').style.setProperty('--ratio',inner ? '951/669' : '466/678');
+ $('screen').classList.toggle('landscape',landscape);
+ $('active-screen').textContent = duo ? (inner ? 'Inner display' : 'Outer display') : 'Main display';
+ $('screen-size').textContent = `${width} × ${height} pt`;
+ $('off-screen').hidden = powered;
+ $('connection').classList.toggle('off',!powered);
+ $('connection').title = powered ? 'Running' : 'Off';
+ document.querySelectorAll('.toolbar button').forEach(button => { button.disabled = !powered || busy; });
+ document.querySelectorAll('#orientations button').forEach(button => button.setAttribute('aria-pressed',String((button.dataset.orientation==='landscape')===landscape)));
+}
+function setDriver(human) { userDriving=human; $('driver-icon').querySelector('use').setAttribute('href',human ? '#icon-user' : '#icon-bot'); $('driver-copy').innerHTML=human ? '<strong>You’re driving</strong>' : '<strong>Ready for bots</strong>'; $('give-back').textContent=human ? 'Give back' : 'Take control'; }
+async function transition(change) {
+ if (busy || !powered) return;
+ closePopovers(); if(recording) stopRecording('Recording saved before display change');
+ busy=true; $('transition').hidden=false; render();
+ await new Promise(resolve=>setTimeout(resolve,550)); change(); render();
+ await new Promise(resolve=>setTimeout(resolve,220)); busy=false; $('transition').hidden=true; render();
+}
+$('fold').onclick=()=>transition(()=>{ folded=!folded; });
+$('rotate').onclick=()=>transition(()=>{ landscape=!landscape; });
+document.querySelectorAll('#orientations button').forEach(button=>button.onclick=()=>transition(()=>landscape=button.dataset.orientation==='landscape'));
+$('home').onclick=()=>{ setDriver(true); toast('Home pressed'); };
+$('lock').onclick=()=>{ $('screen').classList.toggle('locked'); setDriver(true); toast($('screen').classList.contains('locked') ? 'Screen locked' : 'Screen unlocked'); };
+$('screen').onclick=()=>{ if (powered&&!busy) { setDriver(true); toast('You’re driving'); } };
+$('give-back').onclick=()=>setDriver(!userDriving);
+$('help').onclick=()=>{ const open=$('help-note').hidden; $('help-note').hidden=!open; $('help').setAttribute('aria-expanded',String(open)); };
+function capture() { toast(`Screenshot saved · ${folded ? 'outer-466x678' : 'inner-951x669'}.png`); closePopovers(); }
+$('screenshot').onclick=capture; $('menu-screenshot').onclick=capture;
+function stopRecording(message) { recording=false; clearInterval(recordTimer); $('record-pill').hidden=true; $('record-label').textContent='Record'; $('record').classList.remove('recording'); toast(message || 'Recording saved'); }
+$('record').onclick=()=>{
+ if(recording) { stopRecording(); return; }
+ recording=true; recordSeconds=0; $('record-time').textContent='0:00'; $('record-pill').hidden=false; $('record-label').textContent='Stop'; $('record').classList.add('recording'); closePopovers();
+ recordTimer=setInterval(()=>{ recordSeconds++; $('record-time').textContent=Math.floor(recordSeconds/60)+':'+String(recordSeconds%60).padStart(2,'0'); },1000);
+};
+$('record-pill').onclick=()=>stopRecording();
+document.querySelectorAll('[data-device]').forEach(button=>button.onclick=async()=>{ if(busy) return; const next=button.dataset.device; await transition(()=>{ device=next; $('device-name').textContent=device; folded=true; landscape=false; }); document.querySelectorAll('[data-device]').forEach(item=>{ item.setAttribute('aria-pressed',String(item===button)); item.querySelector('.chosen').style.visibility=item===button ? '' : 'hidden'; }); if(device!=='iPhone Duo') toast(`${device} selected; Duo image is a placeholder`); });
+document.querySelectorAll('#appearance button').forEach(button=>button.onclick=()=>{ document.querySelectorAll('#appearance button').forEach(item=>item.setAttribute('aria-pressed',String(item===button))); toast(`${button.dataset.value} appearance set`); });
+function resizeText(delta) { textSize=Math.max(-3,Math.min(6,textSize+delta)); $('text-size').textContent=textSize===0 ? 'Default' : (textSize>0 ? '+' : '')+textSize; $('text-smaller').disabled=textSize===-3; $('text-larger').disabled=textSize===6; }
+$('text-smaller').onclick=()=>resizeText(-1); $('text-larger').onclick=()=>resizeText(1);
+document.querySelectorAll('[data-toggle]').forEach(button=>button.onclick=()=>{ const on=button.getAttribute('aria-pressed')!=='true'; button.setAttribute('aria-pressed',String(on)); toast(button.getAttribute('aria-label')+(on ? ' on' : ' off')); });
+document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>toast(button.dataset.action));
+$('volume').onchange=event=>toast(`Volume ${event.target.value}%`);
+$('location-form').onsubmit=event=>{ event.preventDefault(); $('location-state').textContent='Custom'; toast('Location set'); };
+$('location-clear').onclick=()=>{ $('location-form').reset(); $('location-state').textContent='Actual'; toast('Location override cleared'); };
+$('turn-off').onclick=()=>{ if(recording) stopRecording(); powered=false; closePopovers(); render(); };
+$('turn-on').onclick=()=>{ powered=true; render(); };
+render();
+</script>
+</body>
+</html>

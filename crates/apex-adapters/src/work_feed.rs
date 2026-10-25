@@ -61,6 +61,7 @@ fn todo_status(status: &str) -> Option<TodoStatus> {
         "pending" => Some(TodoStatus::Pending),
         "in_progress" | "inProgress" => Some(TodoStatus::InProgress),
         "completed" => Some(TodoStatus::Completed),
+        "cancelled" | "canceled" => Some(TodoStatus::Cancelled),
         _ => None,
     }
 }
@@ -180,6 +181,33 @@ pub(crate) fn todo_write(input: &Value) -> Vec<TodoItem> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+// ------------------------------------------------------------------- Grok
+
+/// Grok's to-do tool. It reaches Deck through the Claude Code reader, but
+/// it hands the list back in the result rather than in the call.
+pub(crate) fn grok_todo_tool(name: &str) -> bool {
+    name == "todo_write"
+}
+
+/// A Grok `todo_write` result as a whole list. The result text is JSON,
+/// `{"type":"Todo","TodosUpdated":{"todos":[{"content","priority","status"}]}}`.
+/// It is always the merged list, even when the call sent only the items
+/// that changed, so the result is the one to read.
+pub(crate) fn grok_todos(text: &str) -> Option<Vec<TodoItem>> {
+    let value: Value = serde_json::from_str(text.trim()).ok()?;
+    let todos = value["TodosUpdated"]["todos"].as_array()?;
+    Some(
+        todos
+            .iter()
+            .filter_map(|t| {
+                let text = t["content"].as_str().or(t["text"].as_str())?.trim();
+                let status = todo_status(t["status"].as_str()?)?;
+                (!text.is_empty()).then(|| TodoItem { text: text.to_string(), status })
+            })
+            .collect(),
+    )
 }
 
 /// The id `TaskCreate` gave its task: from the structured result, or from
@@ -522,8 +550,9 @@ impl MuseSteps {
         }
     }
 
-    /// A `session/todoListChanged` notification's list, whole. `cancelled`
-    /// and unknown statuses are dropped.
+    /// A `session/todoListChanged` notification's list, whole. A cancelled
+    /// step stays in the list, marked as called off; unknown statuses are
+    /// dropped.
     pub(crate) fn todos(params: &Value) -> Option<Vec<TodoItem>> {
         let items = params["items"].as_array()?;
         Some(

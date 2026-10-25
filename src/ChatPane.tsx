@@ -1,11 +1,17 @@
+import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
+import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
+import { VoiceSampleButton } from './voice/VoiceSampleButton';
 import { composerButton } from './voice/callView';
 import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
 import { createThreadVoiceBridge } from './voice/threadBridge';
-import { readVoiceSettings, preferenceFor } from './voice/settings';
+import { CALL_VOICES, defaultVoiceOf, readVoiceSettings, preferenceFor } from './voice/settings';
+import { voiceLabel } from './voice/callView';
 import type { VoiceSettings, VoiceTurn } from './voice/types';
 import { useHostConnection } from "./useHostConnection";
 import { ConnectionBanner } from "./ConnectionBanner";
+import { subscribeToImports } from "./legacyImportRefresh.ts";
+import { LegacyBadge, LegacyImportPanel } from "./LegacyImportScreen";
 import { hostCanMutate } from "./hostAvailability";
 import { createAttachRetry, createRoomRecovery, createRoomTotalsRefresh, isWaitingForOwner, loadRoomAttach, loadRoomState, loadRoomTotals, messageDedup, representedRoomEvent } from "./roomRecovery.ts";
 import { aboveAnchor } from "./floating";
@@ -15,6 +21,7 @@ import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
 import { commandFrom, isRunnable } from "./codeRun.ts";
@@ -59,7 +66,7 @@ import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
 import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
 import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
-import { usePlans } from "./plans";
+import { planOf, usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { HexColorPicker } from "./HexColorPicker";
 import { afterRound, type Attention, type Signal } from "./attention";
@@ -78,6 +85,7 @@ import { recentFiles } from "./recentFiles.ts";
 export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown" | "copy_reply";
 import { DiffPanel } from "./DiffPanel";
 import { ChangedFilesStrip } from "./ChangedFilesStrip";
+import { GitChangesMenu, type GitMenuRequest } from "./GitChangesMenu";
 import { MAX_STEPS_SHOWN, SavedSteps, WorkSteps } from "./WorkSteps.tsx";
 import { applyStepEvent, createStepsIndexLoader, dropStepsFrom, emptyTurnSteps, readReplySteps, savedEntry, type TurnSteps } from "./workSteps.ts";
 import { turnFilesFor } from "./turnChanges";
@@ -90,7 +98,8 @@ import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.t
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
-import { handOffChoices, handOffLabel, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
@@ -126,6 +135,8 @@ interface Props {
   pane: Pane;
   /** The workspace folder. Command-line participants run here. */
   cwd: string;
+  onFolder?: (cwd: string) => void;
+  onWorktrees?: () => void;
   /** Which coding agents are installed, to enable their presets. */
   agents: AgentInfo[];
   backend: Backend;
@@ -198,7 +209,7 @@ interface Props {
 }
 
 /** A line in the transcript from the app. `action` adds Try again or Let them answer. */
-type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction; source?: "room-load" };
+type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction; source?: "room-load" | "mount" };
 /** Where `/compact` cut in: the models see `summary` instead of the messages above it. */
 type Summary = { by: string | null; summary: string; upto: number };
 /** An agent's context has just dropped to the low mark; shown once under its reply. */
@@ -315,6 +326,8 @@ interface Draft {
   command: string;
   persona: string;
   access: Access;
+  /** Its voice on calls. Empty uses the default voice from Settings. */
+  voice?: string;
 }
 
 /** Whether the preset's form asks for an API key. */
@@ -368,7 +381,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", speed: config.speed ?? ("" as const), keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", speed: config.speed ?? ("" as const), voice: config.voice ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -400,7 +413,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.voice ? { voice: draft.voice } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -443,6 +456,12 @@ function saveContext(pane: string, fill: Record<string, ContextFill>) {
 function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
   const b = config?.backend;
   return b?.kind === "agent" ? b.tool : null;
+}
+
+/** The model an agent runs on, for a provider that reads a model's own quota group. */
+function planModel(config: ParticipantConfig | undefined): string | null {
+  const b = config?.backend;
+  return b?.kind === "agent" ? b.model : null;
 }
 
 /** One custom provider account: its address and the name its key is saved under. */
@@ -533,7 +552,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -550,6 +569,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const refreshSteps = useRef<() => void>(() => {});
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
+  const [legacy, setLegacy] = useState<import("./types").RoomState["legacy"]>();
   const [pins, setPins] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<AllowedRule[]>([]);
   /** "Removed. Null asks again next time.", shown for a moment after Remove. */
@@ -584,6 +604,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** Goes up on each /compact, to play the left side's refill. */
   const [compactions, setCompactions] = useState(0);
   const plans = usePlans(backend.host?.id);
+  /** One key per reset the person asked for, by credit id ("" for the provider's pick). Kept after
+   *  a failure, so trying again can't spend a second credit if the first went through. */
+  const resetKeys = useRef(new Map<string, string>());
   /** The chip whose usage card is open. */
   const [card, setCard] = useState<string | null>(null);
   /** Where the hovered bot's usage card sits: above its badge, at the bottom of the pane. */
@@ -630,13 +653,31 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** Which file to auto-expand in the changes panel after a strip file click. Null expands none. */
   const [focusPath, setFocusPath] = useState<string | null>(null);
   /** Files each bot reply changed, from the change events' author and round offset. Model-agnostic. */
-  const turnFiles = useMemo(() => turnFilesFor(messagesOf(entries), changes), [entries, changes]);
-  const openTurnDiff = (seq: number, path?: string) => {
-    const files = turnFiles.get(seq) ?? [];
-    setTurnPaths(files.map((file) => file.path));
-    setFocusPath(path ?? null);
-    details?.show("changes");
-    loadDiff();
+  const [mountHistory, setMountHistory] = useState<MountBoundary[]>([]);
+  const turnFiles = useMemo(() => turnFilesFor(messagesOf(entries), changes, mountHistory), [entries, changes, mountHistory]);
+  const currentPlace = useRef({backend,cwd});
+  // Keep an identity for each folder lifecycle, including a switch away and back.
+  if (currentPlace.current.backend !== backend || currentPlace.current.cwd !== cwd) currentPlace.current = {backend,cwd};
+  const folderChanged = useRef(onFolder); folderChanged.current = onFolder;
+  const [gitMenuRequest, setGitMenuRequest] = useState<GitMenuRequest | null>(null);
+  const [gitCardSeq, setGitCardSeq] = useState<number | null>(null);
+  const [gitCardTarget, setGitCardTarget] = useState<HTMLDivElement | null>(null);
+  const closeGitCard = useCallback(() => { setGitMenuRequest(null); setGitCardSeq(null); }, []);
+  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && turnFiles.get(entry.message.seq)?.length);
+  const latestGitSeq = latestGitReply?.kind === "message" ? latestGitReply.message.seq : null;
+  const openGitCard = (seq: number, paths: string[] | null) => {
+    setGitCardSeq(seq);
+    setGitMenuRequest(previous => ({ paths, nonce: (previous?.nonce ?? 0) + 1 }));
+  };
+  const openStandaloneGitCard = () => {
+    setGitCardSeq(-1);
+    setGitMenuRequest(previous => ({ paths: null, nonce: (previous?.nonce ?? 0) + 1 }));
+  };
+  const openTurnDiff = (seq: number) => {
+    if (gitMenuRequest && gitCardSeq === seq) { closeGitCard(); return; }
+    const origin = changeFolder(mountHistory, seq, cwd);
+    setGitCardSeq(seq);
+    setGitMenuRequest(previous => ({paths: origin === cwd ? (turnFiles.get(seq) ?? []).map(file => file.path) : [], nonce:(previous?.nonce ?? 0)+1, ...(origin === cwd ? {} : {note:`These changes were made in ${origin.split(/[\\/]/).filter(Boolean).at(-1)}.`})}));
   };
   const [quickSettings, setQuickSettings] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [pendingSettings, setPendingSettings] = useState<Record<string, boolean>>({});
@@ -925,6 +966,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
     const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()) ?? questionSignal(questionSnapshot()[pane.id], namesRef.current));
     let recoveredState: import("./types").RoomState | null = null;
+    setLegacy(undefined);
     loadedSteps.current.clear();
     const stepsLoader = createStepsIndexLoader(
       () => backend.roomSteps(pane.id, null),
@@ -998,6 +1040,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           break;
         case "editor_changed":
           setEditor(event.id);
+          break;
+        case "read_only_turn":
+          notify(event.line, "info");
           break;
         case "participant_idle":
           setAnswered(({ [event.id]: _said, ...rest }) => rest);
@@ -1158,6 +1203,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       apply: (state) => {
         if (!alive) return;
         const saved = state.snapshot;
+        setLegacy(state.legacy);
+        setMountHistory(state.mounts ?? []);
+        if (state.cwd && state.cwd !== cwd) folderChanged.current?.(state.cwd);
+        closeGitCard();
         recoveredState = state;
         refreshSteps.current();
         messageNumbers.restore(saved.transcript);
@@ -1187,7 +1236,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
-        setEntries(old => [...restored, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load")]);
+        const mounted = state.mounts?.at(-1);
+        const mountNotice: Entry[] = mounted ? [{kind:"notice", notice:{key:noticeKey.current++, text:mounted.note ?? `Now working in ${mounted.to.split(/[\\/]/).filter(Boolean).at(-1)}.`, tone:"info", source:"mount"}}] : [];
+        setEntries(old => [...restored, ...mountNotice, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load" && e.notice.source !== "mount")]);
         // Open at "New since you looked" when replies came in after you last looked.
         const seen = seenList(saved.transcript);
         const from = firstUnseen(seen, lastSeenRef.current);
@@ -1224,6 +1275,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       recoveredState = null; // a new daemon boot starts its room event numbers over
       await recovery.refresh();
     };
+    const offImports = subscribeToImports(() => { void refresh(); });
     const offRecovery = backend.host?.connection.recover?.(refresh, recovery.pending) ?? (() => {});
     let offHub = () => {};
     void startHub(backend, backend.host?.id).then(off => {
@@ -1235,7 +1287,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     return () => {
       alive = false;
       attachRetry.dispose();
-      recovery.dispose(); offRecovery();
+      recovery.dispose(); offRecovery(); offImports();
       durableRecovery.dispose();
       offHub();
       unregister();
@@ -1243,7 +1295,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       forgetQuestions(pane.id);
       approvals.current?.(pane.id, null);
       // Attach mode only watches: closing the view must never close the owner's room.
-      if (!attach) backend.roomClose(pane.id).catch(() => {});
+      if (!attach && currentPlace.current.cwd === cwd && currentPlace.current.backend === backend) backend.roomClose(pane.id).catch(() => {});
     };
     // The room lives as long as the pane, where the pane runs. A thread that
     // hasn't started can be moved (App imports it there first), so it reopens.
@@ -1533,7 +1585,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   }, [backend, turnQueue]);
   const voiceHost=backend.host?.id??'local';
   const voiceConfig=readVoiceSettings(voiceSettings);
-  const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
+  const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,agentVoice:p.voice,roomTitle:pane.title,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
   const voiceWho:VoiceWho=id=>{const p=participants.find(x=>x.id===id),look=appearance(id);return {...look,kind:p?.backend.kind==='agent'?AGENT_LABEL[p.backend.tool]:undefined};};
   const voiceHint=useVoiceHint({candidates:voiceCandidates,settings:voiceConfig});
   const voiceSlot=useVoiceSlot({candidates:voiceCandidates,settings:voiceConfig});
@@ -1628,7 +1680,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
       .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
   };
-  const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2"/><circle cx="11" cy="2.5" r="1.2"/></svg>;
+  const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2" fill="currentColor"/><circle cx="11" cy="2.5" r="1.2" fill="currentColor"/></svg>;
   /** The message whose Copy reads "Copied" for a moment, by seq. */
   const [copied, setCopied] = useState<number | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -1674,7 +1726,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     const box = range.getBoundingClientRect();
     setPicked({ message, text, x: box.left + box.width / 2, y: box.top });
   };
-  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => ({ ...quoteFor(p.message, (id) => names.get(id) ?? id), text: p.text });
+  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => partQuote(p.message, p.text, (id) => names.get(id) ?? id);
   const addPicked = () => {
     if (!picked) return;
     const next = pickedQuote(picked);
@@ -1685,7 +1737,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   const explainPicked = () => {
     if (!picked || !ready || participants.length === 0) return;
-    const message = replyText("Explain this part in more detail.", pickedQuote(picked), participants);
+    const message = moreDetailsText(pickedQuote(picked), participants);
     setPicked(null);
     window.getSelection()?.removeAllRanges();
     stuck.current = true;
@@ -1694,26 +1746,33 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const retryIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
   const revertIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
   /** The Retry or Revert waiting on its confirmation. */
-  const [goingBack, setGoingBack] = useState<{ kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[] } | null>(null);
+  const [goingBack, setGoingBack] = useState<{ kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[]; place: { backend: Backend; cwd: string } } | null>(null);
+  useEffect(() => { setGoingBack(null); }, [backend, cwd]);
   /** Invalidates generated approval when Retry or Revert starts, before history or files can change. */
   const [goneBack, setGoneBack] = useState(0);
   /** Retry on a bot's reply, Revert on your message: delete from there, put this thread's files back. */
   const goBack = (message: Message) => {
+    if (!ready) return;
     if (busy) return notify("Stop the bots first.", "error");
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${names.get(bot ?? "") ?? bot} isn't in this thread any more, so it can't answer again.`, "error");
+    const origin = currentPlace.current;
     void backend.roomRevertPlan(pane.id, message.seq, bot).then((plan) => {
-      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan) });
+      if (currentPlace.current !== origin) return;
+      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan), place: origin });
       else runGoBack(kind, message, plan, "both", initialFiles(plan));
     }).catch((error) => notify(`Could not ${kind}: ${String(error)}`, "error"));
   };
   const runGoBack = (kind: GoBack, message: Message, plan: RevertPlan, scope: RevertScope, ticked: string[]) => {
+    if (!ready || currentPlace.current.backend !== backend || currentPlace.current.cwd !== cwd) return;
     setGoingBack(null);
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     setGoneBack((n) => n + 1);
+    const origin = currentPlace.current;
     void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+      if (currentPlace.current !== origin) return;
       if (request.chat) discardAnswerSettingsAfter(answerCurrent.current, message.seq);
       if (request.chat) messageNumbers.truncate(message.seq);
       if (request.chat) {
@@ -1734,6 +1793,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   const answerGoBack = (always: boolean) => {
     if (!goingBack) return;
+    if (goingBack.place !== currentPlace.current) { setGoingBack(null); return; }
     if (always) saveGoBackAlways(goingBack.kind, true);
     runGoBack(goingBack.kind, goingBack.message, goingBack.plan, goingBack.scope, goingBack.ticked);
   };
@@ -1894,7 +1954,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         setText(""); return exportAs(command.format);
 
       case "diff":
-        setText(""); setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); return;
+        setText(""); if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); } return;
       case "plan":
         setText(""); void setPlan(!planOn); return;
       case "image": {
@@ -2158,6 +2218,16 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     if (!command.trim()) return null;
     const key = runKey(message, code);
     return <RunButton command={command} running={codeRuns.runs[key]?.state === "running"} onRun={() => codeRuns.run(key, command, cwd)} />;
+  };
+  const terminalOpenAction = (code: CodeInfo) => {
+    if (!onOpenTerminal) return null;
+    const text = code.text.trim();
+    if (!text) return null;
+    return (
+      <button type="button" className="code-open-terminal" title="Open in right sidebar terminal" onClick={() => onOpenTerminal(text)}>
+        Open in terminal
+      </button>
+    );
   };
   const runBelow = (message: { seq: number }, code: CodeInfo) => {
     const key = runKey(message, code);
@@ -2602,7 +2672,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       startedAt: working[p.id].startedAt,
       heardAt: isCommandLine(p.backend) ? heard.current.get(p.id) ?? working[p.id].startedAt : null,
     }));
-  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), hasReply: transcriptFacts.hasReply, lastAt: transcriptFacts.lastAt, started };
+  const status: ThreadStatus = { busy: busy || turnQueue.active, ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), hasReply: transcriptFacts.hasReply, lastAt: transcriptFacts.lastAt, started };
   const statusKey = JSON.stringify(status);
   useEffect(() => { if (!profileMode) onStatus?.(pane.id, status); }, [statusKey]);
   // The title bar's + New agent opens the form here.
@@ -2660,13 +2730,14 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     void turnQueue.halt(id);
     if (warning) notify(`Stopped. ${warning}`, "info");
   };
+  /** The plan a bot shows: its own model's group when the provider reads one
+   *  apart (Gemini's Argon), otherwise the account's figure. */
+  const planStateOf = (p: ParticipantConfig | undefined) => planOf(plans, planProvider(p), planModel(p));
   const levelsFor = (id: string): Levels => {
-    const provider = planProvider(configOf(id));
-    return { context: makesMedia(configOf(id)) ? null : contextLevel(contextFill[id]), plan: provider ? planLevel(plans[provider]?.windows, Date.now() / 1000) : null };
+    return { context: makesMedia(configOf(id)) ? null : contextLevel(contextFill[id]), plan: planLevel(planStateOf(configOf(id))?.windows, Date.now() / 1000) };
   };
   const refillsFor = (id: string): Refills => {
-    const provider = planProvider(configOf(id));
-    return { context: compactions, plan: provider ? (plans[provider]?.resets ?? 0) : 0 };
+    return { context: compactions, plan: planStateOf(configOf(id))?.resets ?? 0 };
   };
   /** Only each agent's newest reply shows live levels; older ones stay as they were drawn. */
   const newestReply = new Map<string, number>();
@@ -2675,17 +2746,33 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   }
   const canCompact = ready && !busy && participants.length > 0;
 
+  /** The quick menu's Resets row for `p`'s provider, when it has granted any. */
+  const resetsFor = (p: ParticipantConfig | undefined) => {
+    const provider = planProvider(p);
+    const state = planStateOf(p);
+    if (!provider || !state?.credits || !backend.roomPlanReset || accountOf(p)) return null;
+    const spend = backend.roomPlanReset;
+    return <QuickResets credits={state.credits} windows={state.windows} provider={AGENT_LABEL[provider]} use={(credit) => {
+      const which = credit?.id ?? "";
+      const key = resetKeys.current.get(which) ?? crypto.randomUUID();
+      resetKeys.current.set(which, key);
+      return spend(pane.id, provider, credit?.id ?? null, key).then((outcome) => { resetKeys.current.delete(which); return outcome; });
+    }} />;
+  };
+
   /** The usage card for a chip: context, plan, session tokens, and a way to compact. */
   const usageCard = (p: ParticipantConfig, at?: { left: number; bottom: number } | null) => {
     const fill = contextFill[p.id];
     const provider = planProvider(p);
-    const windows = provider ? plans[provider]?.windows : undefined;
+    const state = planStateOf(p);
+    const windows = state?.windows;
     const plan = windows ? planLine(windows, new Date()) : null;
     const reports = (p.backend.kind === "agent" && p.backend.tool !== "grok") || p.backend.kind === "open_ai_compatible";
     const account = accountOf(p);
     const left = account ? balances[account.key] : undefined;
     const spent = spendLine(used[p.id], dollars);
-    const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
+    // Bots showing the same figure: one model's own group, or the account's own.
+    const sharing = state ? participants.filter((other) => planStateOf(other) === state).length : 0;
     return (
       <div ref={at ? cardBox : undefined} className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
         {!makesMedia(p) && <div className="usage-row">
@@ -2906,6 +2993,19 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               <span className="hint">{accessNote}</span>
             </div>
           )}
+          <label className="voice-field">
+            Voice
+            <span className="voice-pick">
+              <select name="voice" value={draft.voice ?? ""} onChange={(e) => set("voice", e.target.value)}>
+                <option value="">Default · {voiceLabel(defaultVoiceOf(voiceConfig))}</option>
+                {[...new Set([...(draft.voice ? [draft.voice] : []), ...CALL_VOICES])].map((v) => (
+                  <option key={v} value={v}>{voiceLabel(v)}</option>
+                ))}
+              </select>
+              <VoiceSampleButton voice={draft.voice || defaultVoiceOf(voiceConfig)} />
+            </span>
+            <span className="hint">How it sounds on calls. Default follows Settings. Picking a voice during a call changes only that chat.</span>
+          </label>
           <PersonaDraft
             key={`persona:${editing ?? "new"}`}
             writers={personaWriters(
@@ -3302,7 +3402,6 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       </ul>}
     {removedNote && <p className="allowed-removed" role="status"><span aria-hidden="true">✓</span>{removedNote}</p>}
   </>;
-  const changedFiles = new Set(changes.map((c) => c.change.path)).size;
   const newArtifacts = unseenArtifacts > 0 && !liveView;
   // Labels hide on a crowded top line, so each button names itself for screen readers.
   const threadCounts = (
@@ -3310,9 +3409,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${liveView ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={liveView !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={toggleArtifacts}>
         <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
       </button>}
-      {changes.length > 0 && <button className="ghost small" aria-label={`Changes · ${changedFiles}`} title="Changes" onClick={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }}>
-        <ChangesIcon /><span className="count-label">Changes · </span>{changedFiles}
-      </button>}
+      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length} request={gitMenuRequest} target={gitCardTarget} canOpen={true} onOpen={() => { if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else openStandaloneGitCard(); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
     </div>
   );
   // The bots sit in their own row under the message box.
@@ -3324,6 +3421,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         const levels = levelsFor(p.id);
         const shown = levelsShown(levels, chipParts, isLow);
         const queueCount = queued.filter(item => item.to.includes(p.id)).length;
+        const chipAccess = { read: 'Read-only', ask: 'Ask', edits: 'Edit', full: 'Full' }[p.access];
+        const hasAccess = p.backend.kind === 'agent' || p.backend.kind === 'open_ai_compatible';
+        const accessSummary = hasAccess ? ` · Access: ${chipAccess}${pendingSettings[p.id] ? ' · after this reply' : ''}` : '';
         const phase: string = working[p.id] ? working[p.id].phase : "idle";
         const stateLabel = `${p.display_name}: ${phase}${isLow(levels.context) ? ", context low" : ""}${isLow(levels.plan) ? ", plan low" : ""}${queueCount ? `, ${queueCount} queued` : ""}${editor === p.id ? ", editing" : ""}${lit.has(p.id) ? ", gets your message" : ""}`;
         return (
@@ -3337,12 +3437,12 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
         >
             <span data-editing={editor === p.id} className={lit.has(p.id) ? "chip to" : "chip"} style={{ "--who": color(p.id) } as CSSProperties}>
-              <button className="chip-name" aria-label={`${stateLabel} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open bot settings" : "mention bot"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
+              <button className="chip-name" aria-label={`${stateLabel}${accessSummary} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open bot settings" : "mention bot"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
                 if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
                   setCard(null);
                   setQuickSettings(quickSettings?.id === p.id ? null : { id: p.id, anchor: event.currentTarget });
                 } else mention(p);
-              }} title={`${stateLabel} · ${chipDescription(p, chipParts)}`}>
+              }} title={`${stateLabel}${accessSummary} · ${chipDescription(p, chipParts)}`}>
                 <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
                 <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
                 {(chipParts.style === "stack" || chipParts.style === "tiles") && (isLow(levels.context) || isLow(levels.plan)) && <span className="chip-low" title="Usage running low">low</span>}
@@ -3354,6 +3454,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 {queueCount > 0 && <span className="chip-meta chip-queued" title="Messages waiting for this bot">{queueCount}<span className="chip-queued-word"> queued</span></span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
                 <span className="chip-meta chip-description">{chipDescription(p, chipParts)}</span>
+                {hasAccess && <span className="chip-meta chip-access" title={`Access: ${chipAccess}${pendingSettings[p.id] ? ' · after this reply' : ''}`}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+                  {chipAccess}{pendingSettings[p.id] && <span>· after this reply</span>}
+                </span>}
                 {(shown.context !== null || shown.plan !== null) && (
                   <span className="chip-meta chip-levels">
                     {shown.context !== null && <span title="Context left">ctx {percent(shown.context)}%{isLow(shown.context) && <span className="usage-low"> low</span>}</span>}
@@ -3392,12 +3496,14 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   return (
     <div ref={root} data-bot-chip-style={chipParts.style ?? "classic"} className={`chat ${profileMode ? "" : `thread-chat${landing ? " thread-landing" : ""}`}`}>
       {!profileMode && <ConnectionBanner backend={backend} />}
+      {!profileMode && <LegacyImportPanel backend={backend} />}
+      {!profileMode && legacy && <div className="legacy-room-marker"><LegacyBadge scope="room" /></div>}
       {!profileMode && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
-        if (!saved && attach) { setFormError("This chat isn't open in Deck right now. Return it to Deck and try again."); return; }
+        if (!saved && attach) throw new Error("This chat isn't open in Deck right now. Return it to Deck and try again.");
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
         if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
@@ -3430,10 +3536,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       <div className="transcript" ref={scroller} onScroll={() => { setPicked(null); onTranscriptScroll(); }}
         onMouseUp={() => requestAnimationFrame(pickSelection)} onKeyUp={(e) => e.shiftKey && pickSelection()}
         onMouseDown={(e) => { if (!(e.target as Element).closest(".selection-actions")) setPicked(null); }}>
-        {picked && <span className="selection-actions" role="toolbar" aria-label="Selected text" style={{ left: picked.x, top: picked.y }}>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addPicked}>Add to chat</button>
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={explainPicked} disabled={!ready || participants.length === 0}>More details</button>
-        </span>}
+        {picked && <SelectionActions x={picked.x} y={picked.y} canExplain={ready && participants.length > 0} onAdd={addPicked} onExplain={explainPicked} />}
         {landing && (
           <div className={`empty${quickAdd === "dock" ? " away" : ""}`}>
             <LandingTexture settings={landingTexture} />
@@ -3500,13 +3603,13 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 <span className="speaker">
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
-                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />
+                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}{terminalOpenAction(code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 {(() => {
                   const files = turnFiles.get(entry.message.seq);
                   if (!files?.length) return null;
-                  return <ChangedFilesStrip files={files} onOpenFile={(path) => openTurnDiff(entry.message.seq, path)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />;
+                  return <><ChangedFilesStrip files={files} expanded={Boolean(gitMenuRequest && gitCardSeq === entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />{gitCardSeq === entry.message.seq && <div className="git-changes-slot" ref={setGitCardTarget} />}</>;
                 })()}
                 {(() => {
                   const seq = entry.message.seq;
@@ -3625,6 +3728,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
             </div>
           </div>;
         })}
+        {gitCardSeq === -1 && <div className="git-changes-slot git-changes-slot-standalone" ref={setGitCardTarget} />}
       </div>
       {!profileMode && (unread > 0 || cardsAway.length > 0) && <div className="transcript-pills">
         {cardsAway.length > 0 && <button type="button" className="transcript-pill" onClick={() => showCard(cardsAway[0].request)}>
@@ -3719,7 +3823,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
         <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />
-        <div className={`composer-box${stacked ? " stacked" : ""}${work && !work.started ? " with-tray" : ""}${quickAdd === "dock" ? " adding" : ""}`} ref={field}>
+        <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock"} ref={field}>
           {quickAdd === "dock" && quickAddMenu}
           <ComposerMenu ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
@@ -3766,16 +3870,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           disabled={!roomReady || participants.length === 0}
         />
           </div>
-        {planOn && !profileMode && (
-          <button type="button" className="plan-chip" title="Plan is on: every bot plans and changes nothing. Click to turn it off."
-            aria-label="Plan is on. Turn it off" onPointerDown={(event) => event.preventDefault()} onClick={() => void setPlan(false)}>
-            <span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span>
-          </button>
-        )}
-        <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}
-          // Keep focus in the message box, so you can type straight after.
-          onPointerDown={(e) => e.preventDefault()}
-          onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
+        <ComposerModeControls planOn={planOn && !profileMode} onPlan={() => void setPlan(false)} tldr={tldr} onTldr={() => { toggleTldr(); input.current?.focus(); }} />
           {/* One round button: the mic while the box is empty, Send once it has something. Each reply keeps its own Stop, and Esc stops them all. */}
           {roundButton.mic && <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />}
           {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
@@ -3784,7 +3879,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
             onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
-        </div>
+        </ThreadComposerBox>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
         {botChips}
         </div>
@@ -3813,9 +3908,6 @@ function ArtifactsIcon() {
   return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6M9 14l-2 2 2 2m6-4 2 2-2 2" /></svg>;
 }
 
-function ChangesIcon() {
-  return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 4v8M8 8h8M8 18h8" /></svg>;
-}
 
 function PersonPlus() {
   return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4" /><path d="M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1M19 8v6M16 11h6" /></svg>;

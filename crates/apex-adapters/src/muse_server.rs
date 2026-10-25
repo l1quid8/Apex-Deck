@@ -229,7 +229,7 @@ pub(crate) fn plan(usage: &Value) -> Option<PlanUsage> {
     .into_iter()
     .flatten()
     .collect();
-    (!windows.is_empty()).then_some(PlanUsage { provider: AgentTool::Muse, windows, partial: false })
+    (!windows.is_empty()).then_some(PlanUsage { provider: AgentTool::Muse, windows, partial: false, reset_credits: None })
 }
 
 /// The line shown while a tool runs, such as "Running ls -la".
@@ -780,10 +780,13 @@ mod tests {
                 ("Start helper subagent to count lines in a.txt", TodoStatus::Pending),
             ]
         );
-        // `cancelled` items are dropped.
+        // A cancelled step stays in the list, marked as called off.
         assert_eq!(
             lists[2].iter().map(|t| (t.text.as_str(), t.status)).collect::<Vec<_>>(),
-            [("Read a.txt, ls sub, cat missing, search alpha, append probe", TodoStatus::Completed)]
+            [
+                ("Read a.txt, ls sub, cat missing, search alpha, append probe", TodoStatus::Completed),
+                ("Start helper subagent to count lines in a.txt", TodoStatus::Cancelled),
+            ]
         );
     }
 

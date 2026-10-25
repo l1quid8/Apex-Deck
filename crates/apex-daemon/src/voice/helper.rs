@@ -269,8 +269,10 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Allow the fixture process to start and record its PID before the
+        // readiness deadline, even when executable startup is slow on CI.
         let result = CPU
-            .launch_with_wait(&root, Duration::from_millis(100))
+            .launch_with_wait(&root, Duration::from_secs(2))
             .await;
         assert_eq!(
             result.err().unwrap(),

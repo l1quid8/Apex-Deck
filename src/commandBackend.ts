@@ -9,6 +9,7 @@ import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListin
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
+  supports?(capability: string): boolean;
   call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   listen<T>(event: string, cb: (payload: T) => void): Promise<() => void>;
   saveAttachment(room: string, name: string, bytes: Uint8Array): Promise<string>;
@@ -25,13 +26,16 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
   return {
     demo: false,
     ...shell,
+    supports: capability => transport.supports?.(capability) === true,
     call,
     phone: {
       status: () => call<PhoneStatus>("phone_status"),
       start: () => call<PhoneStatus>("phone_start"),
       stop: () => call<PhoneStatus>("phone_stop"),
       view: (since) => call<PhoneView>("phone_view", { since }),
-      input: (input) => call<PhoneStatus>("phone_human", { input }),
+      input: (input, geometry) => call<PhoneStatus>("phone_human", { input, ...(geometry ? { geometry } : {}) }),
+      devices: () => call<import("./types").PhoneDevice[]>("phone_devices"),
+      control: (control) => call<import("./types").PhoneControlReply>("phone_control", { control }),
       giveBack: () => call<PhoneStatus>("phone_give_back"),
       chatQueued: (room) => call<void>("phone_chat_queued", { room }),
     },
@@ -82,6 +86,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
       const amount = await call<unknown>("room_bot_balance", { room, participant });
       return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
     },
+    roomPlanReset: (room, tool, credit, key) => call("room_plan_reset", { room, tool, credit, key }),
     agentModels: (tool) => call<ModelChoice[]>("agent_models", { tool }),
     personaDraft: (writer, idea, taken) => call<PersonaDraftResult>("persona_draft", { writer, idea, taken }),
     workspaceRead: (target, cwd) => call<string | null>("workspace_read", { target, cwd }),
@@ -95,6 +100,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     fileRename: (root, path, name) => call<string>("file_rename", { root, path, name }),
     fileDuplicate: (root, path) => call<string>("file_duplicate", { root, path }),
     fileTrash: (root, path) => call<void>("file_trash", { root, path }),
+    botCopiesSetCheck: (root, cmd) => call("bot_copies_set_check", { root, cmd }),
     worktreeList: (path) => call<WorktreeList>("worktree_list", { path }),
     worktreeAdd: (path, request) => call<Worktree>("worktree_add", { path, ...request }),
     worktreeRemove: (path, worktree, force) => call("worktree_remove", { path, worktree, force }),

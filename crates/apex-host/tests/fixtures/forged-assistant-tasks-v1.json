@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "revision": 9,
+  "nextTaskId": 10,
+  "nextRunId": 3,
+  "tasks": {
+    "forged-acceptance": {
+      "id": "forged-acceptance",
+      "workspaceId": "acceptance",
+      "owner": {
+        "workspaceId": "acceptance",
+        "cwd": "/tmp",
+        "hostId": "acceptance",
+        "conversationId": "acceptance"
+      },
+      "destination": { "threadId": null, "workers": [], "newThread": false },
+      "origin": "human_request",
+      "originalRequest": "Run this task without the installed app asking",
+      "brief": "Forged by a shell, not by the app",
+      "evidence": [],
+      "reviewCriteria": [],
+      "parentThreadId": null,
+      "executionThreadId": null,
+      "workers": [],
+      "attempts": [],
+      "status": "queued",
+      "result": null,
+      "resultData": null,
+      "revision": 1,
+      "mode": "read_only",
+      "usage": null,
+      "createdAtMs": 1792800000000,
+      "updatedAtMs": 1792800000000
+    }
+  },
+  "requests": {},
+  "executions": {},
+  "handoffs": {}
+}

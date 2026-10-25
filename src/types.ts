@@ -51,6 +51,8 @@ export interface ParticipantConfig {
   appearance?: { seed: string; color: string } | null;
   /** Choices for a bot whose model makes pictures or videos (see media.ts). */
   media?: MediaSettings | null;
+  /** The voice it speaks with on calls. Missing uses the default voice from Settings. */
+  voice?: string | null;
 }
 
 /** A name and persona an AI wrote for a new agent from a short description (persona_draft). Nothing is saved until the person saves the form. */
@@ -200,6 +202,10 @@ export interface Compaction {
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  /** From the protected room manifest; editable transcript files cannot set this. */
+  legacy?: import("./legacyImport").LegacyMarker | null;
+  cwd?: string | null;
+  mounts?: import("./worktreeMount").MountBoundary[];
   recovery_seq?: number;
   snapshot: RoomSnapshot;
   active: string[];
@@ -260,6 +266,7 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "turn_started"; id: string }
   | { type: "participant_idle"; id: string }
   | { type: "editor_changed"; id: string | null }
+  | { type: "read_only_turn"; id: string; editor: string; reason: string; line: string }
   | { type: "tool_servers"; id: string; servers: ToolServer[] }
   | { type: "delta"; id: string; text: string }
   /** What a participant is doing mid-turn, such as reading a file. */
@@ -286,8 +293,9 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cost_micros?: number | null; cost_estimated?: boolean }
   /** How full a participant's context window was on its latest request. */
   | { type: "context_usage"; id: string; used_tokens: number; window_tokens: number }
-  /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value. */
-  | { type: "plan_usage"; provider: AgentTool; windows: PlanWindow[]; partial: boolean }
+  /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value.
+   *  `model` names the model whose own quota group this is, when the provider reads one apart from the account. */
+  | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
   /** The room cut off bots answering each other; `next` is who the last replies asked. */
@@ -308,11 +316,30 @@ export interface PlanWindow {
   resets_at: number | null;
 }
 
+/** Usage resets a provider granted. Using one empties the plan's windows. */
+export interface ResetCredits {
+  /** How many are available. The provider may list fewer. */
+  available: number;
+  credits: ResetCredit[];
+}
+
+export interface ResetCredit {
+  id: string;
+  title?: string;
+  description?: string;
+  /** Unix seconds. */
+  granted_at: number;
+  /** Unix seconds; missing when it never expires. */
+  expires_at?: number;
+}
+
 export interface AgentInfo {
   key: string;
   label: string;
   program: string;
   found: boolean;
+  /** Native executable for isolated assistant replies, independently of Threads' preference. */
+  assistantProgram?: string;
 }
 
 export type PaneKind = "terminal" | "chat" | "preview";
@@ -340,11 +367,15 @@ export type FilePreview =
 export interface FileSearchHit { path: string; line: number; text: string }
 export interface FileSearchResult { hits: FileSearchHit[]; truncated: boolean }
 
-export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean }
-export interface WorktreeList { root: string; items: Worktree[] }
+export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean; copy?: { bot: string; thread: string; threadTitle: string; state: "working" | "folding" | "reconciling" | "needs_you" | "folded"; reason?: string | null } | null }
+export interface WorktreeList { root: string; items: Worktree[]; checkCommand?: string | null }
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 
 export interface Pane {
+  /** A worker destination created for a named assistant; only opt-in lists it. */
+  assistantDraftFor?: {hostId:string;assistantId:string};
+  /** This chat is mounted in another checkout of its project. */
+  mount?: string;
   id: string;
   workspaceId: string;
   kind: PaneKind;
@@ -379,6 +410,8 @@ export interface Pane {
 
 /** What a thread reports to App through ChatPane's `onStatus`. */
 export interface ThreadStatus {
+  /** Includes queued work and waits, not only visible streaming replies. */
+  busy?: boolean;
   /** The muted words in the pane head when no flag shows, e.g. "2 bots · replying". */
   text: string;
   /** Display names of bots producing a reply right now (not counting ones stopped on a card). */
@@ -422,7 +455,7 @@ export type PaneStatus = "working" | "idle" | "exited" | "needs_input" | "failed
 /** Mirrors crates/apex-core/src/work_steps.rs. */
 export type StepKind = "command" | "read" | "search" | "list" | "edit" | "web" | "tool" | "helper" | "thinking" | "other";
 export type StepStatus = "running" | "done" | "failed" | "stopped";
-export type TodoStatus = "pending" | "in_progress" | "completed";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
 /** One thing a bot did while writing a reply. */
 export interface WorkStep {
@@ -455,7 +488,23 @@ export interface StepsIndex { version: number; replies: Record<string, StepsInde
 export type PhoneKey = "enter" | "backspace" | "tab" | "escape" | "space" | "up" | "down" | "left" | "right";
 /** Who has the shared simulated iPhone. */
 export type PhoneHolder = { kind: "free" } | { kind: "human"; secondsLeft: number } | { kind: "bot"; name: string };
-export interface PhoneStatus { on: boolean; starting: boolean; device: string | null; udid: string | null; holder: PhoneHolder; width: number; height: number; problem: string | null }
+export interface PhoneGeometry { generation: number; display: number; orientation: number; width: number; height: number }
+export interface PhoneDevice { runtime: string; deviceType: string; model: string; version: string }
+export type PhoneControl =
+  | { kind: "selectDevice"; runtime: string; deviceType: string }
+  | { kind: "fold"; folded: boolean }
+  | { kind: "rotate"; orientation: number }
+  | { kind: "appearance" | "textSize"; value: string }
+  | { kind: "contrast"; enabled: boolean }
+  | { kind: "statusBar"; clean: boolean }
+  | { kind: "screenshot" }
+  | { kind: "recording"; active: boolean }
+  | { kind: "volume"; direction: "up" | "down" }
+  | { kind: "biometric"; matched: boolean }
+  | { kind: "location"; latitude: number | null; longitude: number | null }
+  | { kind: "stop" };
+export interface PhoneControlReply { status: PhoneStatus; message: string; path: string | null }
+export interface PhoneStatus { orientation?: number | null; pixelWidth?: number; pixelHeight?: number; pointWidth?: number; pointHeight?: number; transitioning?: boolean; inputReady?: boolean; geometry?: PhoneGeometry; displays?: number; model?: string | null; runtime?: string | null; appearance?: string | null; textSize?: string | null; contrast?: boolean | null; recording?: string | null; lastCapture?: string | null; on: boolean; starting: boolean; device: string | null; udid: string | null; holder: PhoneHolder; width: number; height: number; problem: string | null }
 /** One picture of the phone's screen: a base64 JPEG. */
 export interface PhoneFrame { seq: number; image: string; width: number; height: number }
 export interface PhoneView { status: PhoneStatus; frame: PhoneFrame | null }
@@ -465,3 +514,5 @@ export type PhoneInput =
   | { kind: "type"; text: string }
   | { kind: "key"; key: PhoneKey }
   | { kind: "button"; button: "home" | "lock" };
+
+export type { MainView, AssistantSection } from "./assistantWorkspaceModel";

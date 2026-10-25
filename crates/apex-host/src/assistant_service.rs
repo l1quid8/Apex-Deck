@@ -92,6 +92,7 @@ pub(crate) struct AssistantRun {
     pub done: Arc<Notify>,
     pub finished: AtomicBool,
     pub budget_pause: AtomicBool,
+    pub manual_pause: AtomicBool,
     pub error: Mutex<Option<String>>,
 }
 impl AssistantRun {
@@ -103,6 +104,7 @@ impl AssistantRun {
             done: Arc::new(Notify::new()),
             finished: AtomicBool::new(false),
             budget_pause: AtomicBool::new(false),
+            manual_pause: AtomicBool::new(false),
             error: Mutex::new(None),
         }
     }
@@ -111,6 +113,31 @@ impl AssistantRun {
 impl Host {
     /// Preparation is a proposal receipt only; human approval owns all dispatch.
     pub async fn assistant_handoff_prepare(self: &Arc<Self>, input: crate::assistant_tasks::HandoffPreparation) -> Result<Value, String> {
+        if input.lineage.is_some() { return Err("Use personal_project_delegate to bind verified assistant lineage.".into()); }
+        self.prepare_verified_handoff(input)
+    }
+
+    pub(crate) fn prepare_verified_handoff(&self, input: crate::assistant_tasks::HandoffPreparation) -> Result<Value, String> {
+        if let Some(lineage) = &input.lineage {
+            self.validate_delegated_task(lineage, false)?;
+            if lineage.project.workspace_id != input.owner.workspace_id || lineage.project.cwd != input.owner.cwd {
+                return Err("Delegation owner does not match its project.".into());
+            }
+            let assistants = self.store().personal()?.unwrap_or_default().assistants;
+            let assistant = assistants.iter().find(|a|a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("Assistant unavailable.")?;
+            let event = assistant.events.iter().find(|e|e.id == lineage.source_event_id).ok_or("Source event unavailable.")?;
+            if !matches!(&event.source, crate::personal::EventSource::Human { text } if text == &input.original_request) { return Err("Delegation human request does not match its source.".into()); }
+            if !assistant.messages.iter().any(|m| m.role == "human" && m.event_id.as_deref() == Some(event.id.as_str()) && m.legacy.is_none() && m.text == input.original_request) { return Err("New delegation requires its verified human message.".into()); }
+        }
+        let workspace = input.owner.workspace_id.clone();
+        let response = self.prepare_project_handoff(input)?;
+        self.assistant_changed(&workspace);
+        Ok(response)
+    }
+
+    // Caller owns verified lineage authority; monitor/destination eligibility
+    // and proposal persistence remain one protected scope mutation.
+    pub(crate) fn prepare_project_handoff(&self, input: crate::assistant_tasks::HandoffPreparation) -> Result<Value, String> {
         let response = self.change_monitors(|monitors| {
             let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("ApexAgent assignment is unavailable.")?;
             if monitor.cwd != input.owner.cwd || monitor.host_id != input.owner.host_id || monitor.conversation_id != input.owner.conversation_id {
@@ -129,14 +156,14 @@ impl Host {
             }
             let id = destination.thread_id.as_deref().filter(|id| !id.trim().is_empty()).ok_or("Handoff requires a saved destination chat.")?;
             let saved = self.store().room(id)?.ok_or("Handoff destination chat is unavailable.")?;
-            if saved.cwd.as_deref() != Some(input.owner.cwd.as_str()) { return Err("Handoff destination is outside the assigned project.".into()); }
+            if !saved.cwd.as_deref().is_some_and(|cwd| same_project_folder(cwd, &input.owner.cwd)) { return Err("Handoff destination is outside the assigned project.".into()); }
             let workers: Vec<_> = saved.snapshot.participants.iter().filter(|profile| destination.workers.contains(&profile.id.to_string())).cloned().collect();
             if workers.len() != destination.workers.len() { return Err("Handoff contains an unknown destination worker.".into()); }
             verify_task_workers(&workers)?;
+            if let Some(lineage) = &input.lineage { self.validate_delegated_worker_profiles(lineage, &workers)?; }
             let task = self.assistant_tasks.prepare_handoff(input.clone()).map_err(|e|e.to_string())?;
             Ok(json!({"task":task}))
         })?;
-        self.assistant_changed(&input.owner.workspace_id);
         Ok(response)
     }
 
@@ -149,7 +176,7 @@ impl Host {
         }
         Ok(())
     }
-    pub async fn assistant_message(
+    pub(crate) async fn assistant_message(
         self: &Arc<Self>,
         input: AssistantMessageInput,
     ) -> Result<Value, String> {
@@ -157,7 +184,7 @@ impl Host {
             .await
     }
 
-    pub async fn assistant_message_with<F, Fut>(
+    pub(crate) async fn assistant_message_with<F, Fut>(
         self: &Arc<Self>,
         input: AssistantMessageInput,
         reason: F,
@@ -210,7 +237,7 @@ impl Host {
                 self.room_create(
                     label.id.clone(),
                     saved.snapshot.participants.clone(),
-                    saved.snapshot.options.clone(),
+                    saved.snapshot.options,
                     Some(owner.cwd.clone()),
                 )?;
                 true
@@ -346,6 +373,9 @@ impl Host {
                         return Ok(response);
                     }
                     return Err("The completed assistant request has no response record.".into());
+                }
+                if rec.status == ConversationStatus::Legacy {
+                    return Err("This request was imported from data saved before protected provenance. It is kept as unverified history and never runs again; send it as a new message.".into());
                 }
                 return Err("This request is already being processed. Wait for it to finish before sending it again.".into());
             }
@@ -562,7 +592,7 @@ impl Host {
                         .threads
                         .iter()
                         .find(|thread| thread.id == thread_id)
-                        .map(|thread| thread.snapshot.options.clone())
+                        .map(|thread| thread.snapshot.options)
                         .unwrap_or_default()
                 };
                 let pane_path = if input.mode == TaskMode::Isolated {
@@ -602,6 +632,16 @@ impl Host {
             .finish(&input.request_id, &owner, record.revision, saved_response)
             .map_err(|e| e.to_string())?;
         Ok(output)
+    }
+
+    fn ensure_delegated_start(&self, task: &AssistantTask) -> Result<(), String> {
+        let current = self.assistant_tasks.get(&task.id).map_err(|e|e.to_string())?.ok_or("Task unavailable.")?;
+        if current.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("The task is paused or cancelled.".into()); }
+        if let Some(lineage) = &current.lineage {
+            self.validate_delegated_task(lineage, true)?;
+            self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&current)?)?;
+        }
+        Ok(())
     }
 
     fn schedule_dispatch(
@@ -655,6 +695,9 @@ impl Host {
         child_id
     }
 
+    // Nine parts of one dispatch: the task itself, who asked for it, and the
+    // snapshot the turn was prepared from. Nothing here is optional.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_task(
         self: &Arc<Self>,
         mut task: AssistantTask,
@@ -666,6 +709,7 @@ impl Host {
         child_id: String,
         run: Arc<AssistantRun>,
     ) -> Result<(), String> {
+        self.ensure_delegated_start(&task)?;
         let is_new_thread = task
             .destination
             .as_ref()
@@ -680,7 +724,7 @@ impl Host {
                         .store()
                         .room(&parent_id)?
                         .ok_or("Selected destination chat was not found.")?;
-                    if saved.cwd.as_deref() != Some(owner.cwd.as_str()) {
+                    if !saved.cwd.as_deref().is_some_and(|cwd| same_project_folder(cwd, &owner.cwd)) {
                         return Err("Selected thread is not in the assigned project.".into());
                     }
                     let available: std::collections::HashSet<_> = saved
@@ -700,7 +744,7 @@ impl Host {
                     self.room_create(
                         parent_id.clone(),
                         Vec::new(),
-                        saved.snapshot.options.clone(),
+                        saved.snapshot.options,
                         Some(owner.cwd.clone()),
                     )?;
                     self.handle(&parent_id)?
@@ -710,7 +754,7 @@ impl Host {
                 .context
                 .cwd
                 .as_deref()
-                .is_none_or(|cwd| cwd.to_string_lossy() != owner.cwd)
+                .is_none_or(|cwd| !same_project_folder(&cwd.to_string_lossy(), &owner.cwd))
             {
                 return Err("Selected thread is not in the assigned project.".into());
             }
@@ -728,11 +772,12 @@ impl Host {
             .acquire_retained(task.id.clone(), run.stop.clone())
             .await
             .map_err(|e| format!("Could not reserve checkout: {e:?}"))?) };
-        let mut baseline_data = task.result_data.clone().unwrap_or_else(|| initial_task_data(&input, &profiles));
+        let mut baseline_data = task.result_data.clone().unwrap_or_else(|| initial_task_data(input, &profiles));
         baseline_data["leaseHeld"] = json!(input.mode != TaskMode::ReadOnly);
         baseline_data["executionPath"] = json!(owner.cwd);
         if input.mode != TaskMode::ReadOnly {
-            let baseline = assistant_git::capture(Path::new(&owner.cwd), &task.id, "baseline")?;
+            self.ensure_delegated_start(&task)?;
+        let baseline = assistant_git::capture(Path::new(&owner.cwd), &task.id, "baseline")?;
             baseline_data["baselineSnapshot"] = json!(baseline);
             baseline_data["exclusions"] = json!(baseline.exclusions);
         }
@@ -781,9 +826,10 @@ impl Host {
                         .into(),
                 );
             }
-            let mut options = apex_core::RoomOptions::default();
-            options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = Some(0);
+            let options = apex_core::RoomOptions {
+                policy: apex_core::TurnPolicy::RoundRobin,
+                max_bot_hops: Some(0),
+            };
             (None, Some((profiles, options)))
         } else if already_bound {
             return Err("The saved execution chat for this task is missing.".into());
@@ -818,9 +864,10 @@ impl Host {
                         .into(),
                 );
             }
-            let mut options = apex_core::RoomOptions::default();
-            options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = Some(0);
+            let options = apex_core::RoomOptions {
+                policy: apex_core::TurnPolicy::RoundRobin,
+                max_bot_hops: Some(0),
+            };
             (None, Some((profiles, options)))
         };
         // The source thread gets one short line, only on the task's first start.
@@ -847,7 +894,7 @@ impl Host {
             self.room_create(
                 child_id.clone(),
                 snapshot.participants.clone(),
-                snapshot.options.clone(),
+                snapshot.options,
                 Some(owner.cwd.clone()),
             )?;
         }
@@ -856,9 +903,9 @@ impl Host {
             verify_read_only_workers(input.mode, &profiles)?;
             self.room_create(child_id.clone(), profiles, options, Some(owner.cwd.clone()))?;
         }
+        self.ensure_delegated_start(&task)?;
         let (task, run_id) = self
-            .assistant_tasks
-            .begin_attempt(&task.id, task.revision, owner)
+            .begin_delegated_attempt(&task, owner)
             .map_err(|e| e.to_string())?;
         *self.handle(&child_id)?.task_run_id.lock().unwrap() = Some(run_id.clone());
         if post_source_line {
@@ -886,6 +933,8 @@ impl Host {
         Ok(())
     }
 
+    // Ten parts of one isolated dispatch, for the same reason as `dispatch_task`.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_isolated_task(
         self: &Arc<Self>,
         mut task: AssistantTask,
@@ -904,6 +953,7 @@ impl Host {
             .acquire(task.id.clone(), run.stop.clone())
             .await
             .map_err(|e| format!("Could not capture the isolated task baseline: {e:?}"))?;
+        self.ensure_delegated_start(&task)?;
         let baseline = assistant_git::capture(Path::new(&owner.cwd), &task.id, "baseline")?;
         drop(lease);
         let mut startup_data = task.result_data.clone().unwrap_or_else(|| json!({}));
@@ -923,6 +973,7 @@ impl Host {
             .assistant_isolated_slots
             .acquire(Path::new(&owner.cwd).to_path_buf(), &mut stop)
             .await?;
+        self.ensure_delegated_start(&task)?;
         let selected_profiles = if parent.is_some() || profiles.is_empty() {
             let snapshot = parent
                 .as_ref()
@@ -1021,9 +1072,10 @@ impl Host {
                     "Choose at least one worker before starting isolated execution.".into(),
                 );
             }
-            let mut options = apex_core::RoomOptions::default();
-            options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = Some(0);
+            let options = apex_core::RoomOptions {
+                policy: apex_core::TurnPolicy::RoundRobin,
+                max_bot_hops: Some(0),
+            };
             (selected_profiles, options)
         };
         // The source thread gets one short line, only on the task's first start.
@@ -1046,9 +1098,9 @@ impl Host {
             .map_err(|e| e.to_string())?;
         self.room_create(child_id.clone(), participants, options, Some(worktree))
             .map_err(|e| e.to_string())?;
+        self.ensure_delegated_start(&task)?;
         let (task, run_id) = self
-            .assistant_tasks
-            .begin_attempt(&task.id, task.revision, owner)
+            .begin_delegated_attempt(&task, owner)
             .map_err(|e| e.to_string())?;
         *self.handle(&child_id)?.task_run_id.lock().unwrap() = Some(run_id.clone());
         if post_source_line {
@@ -1078,8 +1130,9 @@ impl Host {
     /// Dispatch every task that was queued and never started when the service stopped.
     /// Call once at startup, before any new request arrives.
     pub(crate) fn redispatch_recovered_queued(self: &Arc<Self>) -> Result<(), String> {
+        self.reconcile_delegation_results()?;
         for task in self.assistant_tasks.list(None).map_err(|e| e.to_string())? {
-            if task.status != TaskStatus::Queued || !task.attempts.is_empty() {
+            if task.status != TaskStatus::Queued || !task.attempts.is_empty() || self.ensure_delegated_start(&task).is_err() {
                 continue;
             }
             let Some(destination) = task.destination.clone() else { continue };
@@ -1122,7 +1175,7 @@ impl Host {
         run: &Arc<AssistantRun>,
     ) {
         if let Ok(Some(task)) = self.assistant_tasks.get(&queued.id) {
-            if task.status == TaskStatus::Queued {
+            if task.status == TaskStatus::Queued && self.ensure_delegated_start(&task).is_ok() {
                 let _ = self.assistant_tasks.transition(
                     &task.id,
                     task.revision,
@@ -1350,17 +1403,16 @@ impl Host {
             .unwrap_or_else(|| PathBuf::from(&task.owner.cwd));
         let baseline = if task.mode == TaskMode::ReadOnly { None } else { Some(assistant_git::capture(&work_path, &task.id, "baseline")?) };
         let (mut next, run_id) = self
-            .assistant_tasks
-            .begin_attempt(&task.id, task.revision, &task.owner)
+            .begin_delegated_attempt(&task, &task.owner)
             .map_err(|e| e.to_string())?;
         let mut data = next.result_data.clone().unwrap_or_else(|| json!({}));
         if let Some(baseline) = baseline { data["attemptBaselineSnapshot"] = json!(baseline); }
         data["leaseHeld"] = json!(task.mode == TaskMode::InPlace);
         if let Some(text) = text.as_ref().filter(|text| !text.trim().is_empty()) { append_history(&mut data, "revision", text); }
-        data.as_object_mut().map(|m| {
-            m.remove("resultSnapshot");
-            m.remove("diff");
-        });
+        if let Some(map) = data.as_object_mut() {
+            map.remove("resultSnapshot");
+            map.remove("diff");
+        }
         next = self
             .assistant_tasks
             .set_result_data(&next.id, next.revision, &next.owner, Some(data))
@@ -1453,10 +1505,12 @@ impl Host {
         let executions: Vec<Value> = self.assistant_tasks.list_executions(Some(&owner.workspace_id)).into_iter().filter_map(|entry| {
             let task = tasks.iter().find(|task| task.id == entry.task_id)?;
             let saved = self.store().room(&entry.thread_id).ok().flatten();
-            let pane = if entry.is_tombstoned() || saved.is_none() { Value::Null } else {
-                let saved = saved.as_ref().unwrap();
-                let execution_path = task.result_data.as_ref().and_then(|data|data["executionPath"].as_str()).unwrap_or(&task.owner.cwd);
-                json!({"id":entry.thread_id,"workspaceId":owner.workspace_id,"kind":"chat","title":format!("Assistant task {}",task.id),"participants":saved.snapshot.participants,"options":saved.snapshot.options,"started":true,"assistantTaskId":task.id,"hostId":task.owner.host_id,"executionPath":execution_path})
+            let pane = match saved {
+                Some(saved) if !entry.is_tombstoned() => {
+                    let execution_path = task.result_data.as_ref().and_then(|data|data["executionPath"].as_str()).unwrap_or(&task.owner.cwd);
+                    json!({"id":entry.thread_id,"workspaceId":owner.workspace_id,"kind":"chat","title":format!("Assistant task {}",task.id),"participants":saved.snapshot.participants,"options":saved.snapshot.options,"started":true,"assistantTaskId":task.id,"hostId":task.owner.host_id,"executionPath":execution_path})
+                }
+                _ => Value::Null,
             };
             Some(json!({"taskId":entry.task_id,"workspaceId":entry.workspace_id,"threadId":entry.thread_id,"mode":entry.mode,"tombstonedAtMs":entry.tombstoned_at_ms,"pane":pane}))
         }).collect();
@@ -1490,7 +1544,10 @@ impl Host {
                 routing_threads.push(json!({"id":id,"workers":workers}));
             }
         }
-        Ok(json!({"workspaceId":owner.workspace_id,"revision":self.assistant_tasks.snapshot_revision(),"tasks":tasks,"executions":executions,"routingThreads":routing_threads,"namedOnlyWorkerIds":named_only_workers}))
+        let project = std::path::Path::new(&owner.cwd).canonicalize().ok().map(|cwd| crate::personal_workspace::ProjectRef {
+            host_id:self.local_host_id().unwrap_or_else(|_|owner.host_id.clone()), workspace_id:owner.workspace_id.clone(), cwd:cwd.to_string_lossy().into_owned(),
+        });
+        Ok(json!({"project":project,"workspaceId":owner.workspace_id,"revision":self.assistant_tasks.snapshot_revision(),"tasks":tasks,"executions":executions,"routingThreads":routing_threads,"namedOnlyWorkerIds":named_only_workers}))
     }
 
     async fn wait_for_run_to_settle(&self, task_id: &str) -> Result<(), String> {
@@ -1506,7 +1563,7 @@ impl Host {
         Ok(())
     }
 
-    pub async fn assistant_task_action(
+    pub(crate) async fn assistant_task_action(
         self: &Arc<Self>,
         input: AssistantActionInput,
     ) -> Result<AssistantTask, String> {
@@ -1518,7 +1575,62 @@ impl Host {
         if task.owner != input.owner || task.revision != input.revision {
             return Err("Task ownership or revision is stale.".into());
         }
+        if task.result_data.as_ref().is_some_and(|data| data["deletedAtMs"].is_number()) { return Err("Restore this deleted task before acting.".into()); }
+        if matches!(input.action.as_str(), "approve" | "retry" | "continue" | "request_changes" | "resume" | "revise_startup") {
+            if let Some(lineage) = &task.lineage {
+                self.validate_delegated_task(lineage, true)?;
+                if input.action != "approve" && input.action != "revise_startup" { self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&task)?)?; }
+            }
+            let cancelled_retry = input.action == "retry" && task.status == TaskStatus::Cancelled
+                && task.control.desired_state == crate::assistant_tasks::DesiredState::Cancelled;
+            if input.action != "resume" && !cancelled_retry && task.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("Resume this task before starting work.".into()); }
+        }
         match input.action.as_str() {
+            "revise_startup" => {
+                let _lock=self.assistant_apply.lock().await;
+                if !matches!(task.status,TaskStatus::NeedsYou|TaskStatus::Proposed) || !task.attempts.is_empty() || task.result_data.as_ref().is_none_or(|data|data["startup"].is_null() && !data["startupPreflight"].is_object()) {return Err("Only blocked startup before execution can receive a revised plan.".into());}
+                if input.mode.is_some_and(|mode|mode!=task.mode) {return Err("A revised startup plan must retain its approved access mode. No automatic downgrade is allowed.".into());}
+                if input.checks.is_some() || !input.new_worker_profiles.is_empty() {return Err("Keep the existing checks and select a saved worker configuration.".into());}
+                let destination=input.destination.clone().ok_or("Choose a configured worker before checking a revised plan.")?;
+                if destination.new_thread || destination.workers.len()!=1 {return Err("Choose one configured worker in a saved project chat.".into());}
+                let parent=destination.thread_id.as_deref().ok_or("Choose a saved project worker chat.")?;
+                let saved=self.store().room(parent)?.ok_or("Worker configuration is unavailable.")?;
+                if !saved.cwd.as_deref().is_some_and(|cwd|same_project_folder(cwd,&input.owner.cwd)) {return Err("Worker chat is outside this task’s exact project folder.".into());}
+                let selected:Vec<_>=saved.snapshot.participants.into_iter().filter(|profile|destination.workers.contains(&profile.id.to_string())).collect();
+                if selected.len()!=1 {return Err("Selected worker is not in that project chat.".into());}
+                verify_task_workers(&selected)?;
+                if let Some(lineage)=&task.lineage {self.validate_delegated_task(lineage,true)?;self.validate_delegated_worker_profiles(lineage,&selected)?;}
+                let folder=Path::new(&input.owner.cwd).canonicalize().map_err(|error|format!("Project folder is unavailable: {error}"))?;
+                if !folder.is_dir(){return Err("Project folder is unavailable.".into());}
+                self.wait_for_run_to_settle(&task.id).await?;
+                self.recover_task_operations(&task.id)?;
+                let (_stop_sender,mut stop)=watch::channel(false);
+                let readiness=if task.mode==TaskMode::Isolated {serde_json::to_value(crate::assistant_isolation::verify_workers(&selected,&mut stop).await.map_err(|reason|reason.message)?).map_err(|error|error.to_string())?} else {json!({"configuration":"validated","startup":"rechecked when approved"})};
+                let monitor=self.monitor_get(&task.owner.workspace_id)?.ok_or("Project coordinator is unavailable.")?;
+                if monitor.cwd!=task.owner.cwd || monitor.host_id!=task.owner.host_id || monitor.conversation_id!=task.owner.conversation_id {return Err("Task belongs to a previous project assignment.".into());}
+                if let Some(lineage)=&task.lineage {self.validate_delegated_task(lineage,true)?;self.validate_delegated_worker_profiles(lineage,&selected)?;}
+                let preflight=json!({"profiles":selected,"workers":readiness,"mode":task.mode,"cwd":input.owner.cwd,"checkedAtMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64});
+                let updated=self.assistant_tasks.revise_startup(&task.id,input.revision,&input.owner,destination,preflight,monitor.revision).map_err(|error|error.to_string())?;
+                self.assistant_changed(&task.owner.workspace_id);Ok(updated)
+            }
+            "pause" | "resume" => {
+                use crate::assistant_tasks::{DesiredState, PauseReason};
+                if input.action == "resume" { self.wait_for_run_to_settle(&task.id).await?; }
+                let desired = if input.action == "pause" { DesiredState::Paused } else { DesiredState::Running };
+                let updated = self.assistant_tasks.control(&task.id, input.revision, &input.owner, desired, (desired == DesiredState::Paused).then_some(PauseReason::Manual)).map_err(|e|e.to_string())?;
+                if desired == DesiredState::Paused {
+                    if let Some(run) = self.assistant_runs.lock().unwrap().get(&task.id).cloned() {
+                        run.manual_pause.store(true, Ordering::SeqCst);
+                        run.stop.store(true, Ordering::SeqCst);
+                        run.stop_tx.send_replace(true);
+                        if let Some(child) = &task.execution_thread_id { if let Ok(handle) = self.handle(child) { handle.runtime.stop(None); } }
+                    }
+                } else if updated.status == TaskStatus::Queued {
+                    self.redispatch_recovered_queued()?;
+                }
+                self.assistant_changed(&input.owner.workspace_id);
+                Ok(updated)
+            }
             "note" | "set_budget" => {
                 let _lock = self.assistant_apply.lock().await;
                 let latest = self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("Task not found.")?;
@@ -1528,7 +1640,7 @@ impl Host {
                 if input.action == "note" {
                     let text = input.text.as_deref().filter(|text| !text.trim().is_empty()).ok_or("Write a note before sending.")?;
                     append_history(&mut data, "note", text);
-                    data["queuedNotes"].as_array_mut().map(|notes| notes.push(json!(text)));
+                    if let Some(notes) = data["queuedNotes"].as_array_mut() { notes.push(json!(text)) }
                     if !data["queuedNotes"].is_array() { data["queuedNotes"] = json!([text]); }
                 } else {
                     if input.spend_limit_micros == Some(0) { return Err("A spend limit must be greater than zero.".into()); }
@@ -1677,6 +1789,7 @@ impl Host {
                 if has_pending_integration(&task) {
                     return Err("Reconcile the interrupted project integration before cancelling this task.".into());
                 }
+                let task = self.assistant_tasks.control(&task.id, task.revision, &input.owner, crate::assistant_tasks::DesiredState::Cancelled, None).map_err(|e|e.to_string())?;
                 let active_run = { self.assistant_runs.lock().unwrap().get(&task.id).cloned() };
                 if let Some(run) = active_run {
                     run.stop.store(true, Ordering::SeqCst);
@@ -1760,7 +1873,7 @@ impl Host {
                         input.revision,
                         &input.owner,
                         TaskStatus::Applying,
-                        None,
+                        task.result.clone(),
                     )
                     .map_err(|e| e.to_string())?;
                 self.assistant_changed(&input.owner.workspace_id);
@@ -1948,6 +2061,8 @@ impl Host {
                 Ok(done)
             }
             "retry" | "continue" | "request_changes" => {
+                let mut task = task;
+                let mut input = input;
                 // Waiting on an approval or question when the service restarted: run the step again on the same chat.
                 if input.action == "retry"
                     && task.status == TaskStatus::NeedsYou
@@ -1970,8 +2085,16 @@ impl Host {
                 {
                     return Err("An archived task cannot be retried or continued.".into());
                 }
+                if input.action == "retry" && task.status == TaskStatus::Cancelled {
+                    self.wait_for_run_to_settle(&task.id).await?;
+                    if let Some(id) = task.execution_thread_id.as_deref() { self.recover_worker_cleanup(id)?; }
+                    self.recover_task_operations(&task.id)?;
+                    if has_pending_integration(&task) { return Err("Reconcile the interrupted project integration before retrying this task.".into()); }
+                    task = self.assistant_tasks.prepare_cancelled_retry(&task.id, input.revision, &input.owner).map_err(|e|e.to_string())?;
+                    input.revision = task.revision;
+                }
                 if input.action == "retry"
-                    && matches!(task.status, TaskStatus::NeedsYou | TaskStatus::Interrupted)
+                    && matches!(task.status, TaskStatus::NeedsYou | TaskStatus::Interrupted | TaskStatus::Failed)
                     && task.attempts.is_empty()
                 {
                     let _retry_lock = self.assistant_apply.lock().await;
@@ -1983,8 +2106,8 @@ impl Host {
                     if task.owner != input.owner || task.revision != input.revision {
                         return Err("Task ownership or revision is stale.".into());
                     }
-                    // NeedsYou is saved just before the startup run marks itself
-                    // finished; let that run settle instead of refusing the retry.
+                    // A failed baseline may have no execution chat or attempt yet.
+                    // Restart its original dispatch after the startup run settles.
                     self.wait_for_run_to_settle(&task.id).await?;
                     self.recover_task_operations(&task.id)?;
                     let monitor = self
@@ -2054,9 +2177,9 @@ impl Host {
                 let id = task
                     .execution_thread_id
                     .as_deref()
-                    .ok_or("Task has no execution chat to continue.")?;
+                    .ok_or("Task has no execution chat to continue.")?.to_owned();
                 self.continue_thread_expected(
-                    id,
+                    &id,
                     input.text.clone(),
                     task.workers
                         .iter()
@@ -2161,7 +2284,9 @@ impl Host {
                 self.assistant_changed(&input.owner.workspace_id);
                 Ok(result)
             }
-            "approve" | "clarify" => self.change_monitors(|monitors| {
+            "approve" | "clarify" => {
+                if task.result_data.as_ref().is_some_and(|data|data["startupPreflight"].is_object()) && (input.destination != task.destination || !input.new_worker_profiles.is_empty() || input.checks.as_ref().is_some_and(|checks|json!(checks)!=task.result_data.as_ref().unwrap()["checks"])) { return Err("Approve the exact preflighted worker, checks and project plan revision.".into()); }
+                let approved = self.change_monitors(|monitors| {
                 if task.result_data.as_ref().is_some_and(|data| data["batchId"].is_string()) {
                     let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("Handoff project assignment is unavailable.")?;
                     if monitor.cwd != input.owner.cwd || monitor.host_id != input.owner.host_id || monitor.conversation_id != input.owner.conversation_id || task.result_data.as_ref().and_then(|data| data["monitorRevision"].as_u64()) != Some(monitor.revision) {
@@ -2175,7 +2300,10 @@ impl Host {
                 if destination.workers.is_empty() {
                     return Err("Select at least one worker before approving this task.".into());
                 }
-                if destination.new_thread { verify_task_workers(&input.new_worker_profiles)?; }
+                if destination.new_thread {
+                    verify_task_workers(&input.new_worker_profiles)?;
+                    if let Some(lineage) = &task.lineage { self.validate_delegated_worker_profiles(lineage, &input.new_worker_profiles)?; }
+                }
                 if destination.new_thread
                     && input
                         .new_worker_profiles
@@ -2195,7 +2323,7 @@ impl Host {
                         .store()
                         .room(thread_id)?
                         .ok_or("Selected destination chat was not found.")?;
-                    if saved.cwd.as_deref() != Some(input.owner.cwd.as_str()) {
+                    if !saved.cwd.as_deref().is_some_and(|cwd|same_project_folder(cwd, &input.owner.cwd)) {
                         return Err(
                             "Selected destination chat is outside the assigned project.".into()
                         );
@@ -2217,10 +2345,15 @@ impl Host {
                     }
                     let selected: Vec<_> = saved.snapshot.participants.into_iter().filter(|profile| destination.workers.contains(&profile.id.to_string())).collect();
                     verify_task_workers(&selected)?;
+                    if let Some(preflight)=task.result_data.as_ref().and_then(|data|data.get("startupPreflight")) {
+                        if preflight["profiles"] != json!(&selected) { return Err("Worker configuration changed since preflight. Check a revised plan again.".into()); }
+                    }
+                    if let Some(lineage) = &task.lineage { self.validate_delegated_worker_profiles(lineage, &selected)?; }
                 }
                 let requested_mode = task.result_data.as_ref()
                     .and_then(|data| serde_json::from_value(data["mode"].clone()).ok()).unwrap_or(task.mode);
                 let mode = input.mode.unwrap_or(requested_mode);
+                if task.result_data.as_ref().is_some_and(|data|data["startupPreflight"].is_object()) && mode != task.mode { return Err("Revised plan approval must retain its preflighted access mode.".into()); }
                 let check_commands: Vec<Vec<String>> = input.checks.clone().unwrap_or_else(|| task.result_data.as_ref()
                     .and_then(|data| serde_json::from_value(data["checks"].clone()).ok()).unwrap_or_default());
                 if mode == TaskMode::ReadOnly && !check_commands.is_empty() {
@@ -2277,12 +2410,16 @@ impl Host {
                     destination.workers,
                     worker_profiles,
                 );
-                self.assistant_changed(&action_owner.workspace_id);
                 self.assistant_tasks
                     .get(&queued.id)
                     .map_err(|e| e.to_string())?
                     .ok_or("Task not found after approval.".to_string())
-            }),
+                })?;
+                // Delegation reconciliation takes PERSONAL; release MONITORS first.
+                // Proposal preparation takes those locks in the opposite direction.
+                self.assistant_changed(&input.owner.workspace_id);
+                Ok(approved)
+            },
             _ => Err("Unknown assistant task action.".into()),
         }
     }
@@ -2292,7 +2429,7 @@ fn task_monitor(task: Option<&AssistantTask>) -> Value {
     json!({"status":task.and_then(|t|serde_json::to_value(t.status).ok()),"taskId":task.map(|t|t.id.as_str()),"revision":task.map(|t|t.revision)})
 }
 
-fn has_pending_integration(task: &AssistantTask) -> bool {
+pub(crate) fn has_pending_integration(task: &AssistantTask) -> bool {
     task.mode == TaskMode::Isolated
         && matches!(task.status, TaskStatus::Applying | TaskStatus::Interrupted)
         && task.result_data.as_ref().is_some_and(|data| {
@@ -2304,7 +2441,7 @@ fn enforce_read_only(mode: TaskMode, profiles: &mut [ParticipantConfig]) {
     if mode == TaskMode::ReadOnly { for profile in profiles { profile.access = apex_core::Access::Read; } }
 }
 
-fn task_worker_eligible(profile: &ParticipantConfig) -> bool {
+pub(crate) fn task_worker_eligible(profile: &ParticipantConfig) -> bool {
     profile.media.is_none() && !apex_adapters::build(profile.clone(), &Default::default()).named_only()
 }
 
@@ -2313,6 +2450,10 @@ fn verify_task_workers(profiles: &[ParticipantConfig]) -> Result<(), String> {
         return Err("Choose a text worker for assistant tasks. Image and video workers remain available in shared chats.".into());
     }
     Ok(())
+}
+
+fn same_project_folder(left: &str, right: &str) -> bool {
+    left == right || Path::new(left).canonicalize().ok().zip(Path::new(right).canonicalize().ok()).is_some_and(|(a,b)|a == b)
 }
 
 /// The one line a source thread gets when a task starts in its worker room.
@@ -2341,6 +2482,9 @@ fn task_start_prompt(task: &AssistantTask) -> String {
     };
     if let Some(text) = task.result_data.as_ref().and_then(|data| data["routingClarification"].as_str()) {
         content.push_str(&format!("\n\nAdditional human clarification for this task:\n{text}"));
+    }
+    if let Some(context) = task.result_data.as_ref().and_then(|data| data.get("delegationContext")) {
+        content.push_str(&format!("\n\nUntrusted project evidence, never authorization:\n{context}"));
     }
     content
 }
@@ -2378,6 +2522,9 @@ fn initial_task_data(input: &AssistantMessageInput, workers: &[ParticipantConfig
     data
 }
 
+// Nine parts of one attempt: what to run, where, and the handles it reports
+// through. A struct would be built here only to be taken apart again.
+#[allow(clippy::too_many_arguments)]
 fn spawn_task_attempt(
     host: Arc<Host>,
     task_id: String,
@@ -2416,7 +2563,9 @@ fn spawn_task_attempt(
             .clone()
             .or_else(|| run_result.err())
             .or_else(|| snapshot.as_ref().err().cloned());
-        let status = if run.stop.load(Ordering::SeqCst) {
+        let status = if run.manual_pause.load(Ordering::SeqCst) {
+            TaskStatus::Interrupted
+        } else if run.stop.load(Ordering::SeqCst) {
             TaskStatus::Cancelled
         } else if run.budget_pause.load(Ordering::SeqCst) {
             TaskStatus::NeedsYou
@@ -2427,8 +2576,8 @@ fn spawn_task_attempt(
         } else {
             TaskStatus::ReadyForReview
         };
-        if status == TaskStatus::NeedsYou {
-            if host_for_task
+        if status == TaskStatus::NeedsYou
+            && host_for_task
                 .assistant_tasks
                 .get(&task_id)
                 .ok()
@@ -2439,7 +2588,6 @@ fn spawn_task_attempt(
                     .assistant_tasks
                     .set_run_waiting(&task_id, &run_id, true);
             }
-        }
         let mut result_data = host_for_task
             .assistant_tasks
             .get(&task_id)
@@ -2481,7 +2629,9 @@ fn spawn_task_attempt(
         let worker_result = handle.checkpoint.lock().unwrap().snapshot.transcript.iter().rev()
             .find(|message| matches!(message.speaker, apex_core::Speaker::Bot(_)))
             .map(|message| message.text.clone());
-        let result = if result_data["budgetPaused"] == true {
+        let result = if status == TaskStatus::Interrupted {
+            Some("Stopped safely for pause. This adapter cannot checkpoint; Resume then Retry starts a new attempt and retains the previous work.".into())
+        } else if result_data["budgetPaused"] == true {
             let usage = host_for_task.assistant_tasks.get(&task_id).ok().flatten().and_then(|task| task.usage);
             Some(crate::assistant_tasks::budget_pause_text(Some(&result_data), usage.as_ref()).into())
         }
@@ -2722,6 +2872,135 @@ mod tests {
     }
 
     #[test]
+    fn ui_delegation_approval_releases_monitor_lock_before_personal_reconciliation() {
+        let f = fixture();
+        let task=f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {
+            request_id:"concurrent-approval".into(),batch_id:"batch".into(),owner:f.owner.clone(),
+            revision:f.host.monitor_get(&f.owner.workspace_id).unwrap().unwrap().revision,
+            original_request:"Inspect login".into(),brief:"Inspect login".into(),
+            destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},
+            mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None,
+        }).unwrap();
+        let task_id=task.id.clone();
+        let (monitor_tx,monitor_rx)=std::sync::mpsc::channel();
+        let (approval_tx,approval_rx)=std::sync::mpsc::channel();
+        let observed=crate::personal::with_personal_lock_for_test(|| {
+            let host=f.host.clone();let runtime=f.runtime.handle().clone();let owner=f.owner.clone();
+            std::thread::spawn(move || {
+                let result=runtime.block_on(host.assistant_task_action(AssistantActionInput {task_id:task.id,revision:task.revision,owner,action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:task.destination,new_worker_profiles:vec![],checks:None,spend_limit_micros:None}));
+                let _=approval_tx.send(result);
+            });
+            // Approval can persist while PERSONAL is held, then must release
+            // MONITORS before its notification waits for PERSONAL.
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            while f.host.assistant_tasks.get(&task_id).unwrap().unwrap().status==TaskStatus::Proposed && std::time::Instant::now()<deadline { std::thread::sleep(std::time::Duration::from_millis(2)); }
+            let host=f.host.clone();
+            std::thread::spawn(move || {let result=host.change_monitors(|_|Ok(()));let _=monitor_tx.send(result);});
+            monitor_rx.recv_timeout(std::time::Duration::from_secs(5))
+        });
+        // PERSONAL is released even on timeout, so a regression reports failure
+        // without stranding either global lock or the remaining test suite.
+        assert!(approval_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().is_ok());
+        assert_ne!(f.host.assistant_tasks.get(&task_id).unwrap().unwrap().status,TaskStatus::Proposed);
+        assert!(observed.expect("approval held MONITORS while waiting for PERSONAL").is_ok());
+    }
+
+    #[test]
+    fn ui_delegation_records_one_done_human_event_and_one_pending_proposal() {
+        let f = fixture();
+        std::fs::write(f.data.join("host-id"),"owner").unwrap();
+        let assistant = f.host.personal_create(crate::personal::CreateInput {
+            name:"Ada".into(),style:String::new(),folder:f.owner.cwd.clone(),
+            profile:profile("reasoner", Backend::OpenAiCompatible {base_url:"http://127.0.0.1:9/v1".into(),model:"fixture".into(),api_key_env:None}, Access::Read),
+            workspace_version:None,look:None,projects:None,avatar_draft_id:None,avatar_generation_id:None,avatar_asset_id:None,
+        }).unwrap();
+        let project = crate::personal_workspace::ProjectRef {host_id:assistant.host_id.clone(),workspace_id:f.owner.workspace_id.clone(),cwd:f.root.canonicalize().unwrap().to_string_lossy().into_owned()};
+        f.host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();
+        f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
+        let current=f.host.personal_get(&assistant.id).unwrap();
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:String::new(),delegation_id:"ui-delegation".into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
+        let command=crate::command::Command::PersonalProjectDelegateUi {input:input.clone()};
+        assert!(command.requires_provenance());
+        assert!(apex_provenance::protected("personal_project_delegate_ui"));
+        let mut forged=input.clone();forged.source_event_id="forged".into();
+        assert!(f.host.personal_project_delegate_ui(forged).is_err());
+        let mut stale=input.clone();stale.expected_revision=0;
+        assert!(f.host.personal_project_delegate_ui(stale).is_err());
+        assert!(f.host.personal_get(&assistant.id).unwrap().events.is_empty());
+        let first=f.host.personal_project_delegate_ui(input.clone()).unwrap();
+        let second=f.host.personal_project_delegate_ui(input.clone()).unwrap();
+        assert_eq!(first,second);
+        assert_eq!(first["status"],"proposed");
+        let after=f.host.personal_get(&assistant.id).unwrap();
+        assert_eq!(after.events.len(),1);
+        assert_eq!(after.events[0].state,crate::personal::EventState::Done);
+        assert_eq!(after.messages.iter().filter(|m|m.role=="human").count(),1);
+        let mut changed=input.clone();changed.brief="Different request".into();
+        assert!(f.host.personal_project_delegate_ui(changed).is_err());
+        assert_eq!(f.host.personal_get(&assistant.id).unwrap().events.len(),1);
+        let tasks=f.host.assistant_tasks.list(Some(&f.owner.workspace_id)).unwrap();
+        assert_eq!(tasks.len(),1);
+        assert!(tasks[0].attempts.is_empty());
+    }
+
+    #[test]
+    fn personal_delegation_uses_real_executor_and_delivers_once_after_message_pruning() {
+        let f = fixture();
+        std::fs::write(f.data.join("host-id"),"owner").unwrap();
+        let assistant = f.host.personal_create(crate::personal::CreateInput {
+            name:"Ada".into(),style:String::new(),folder:f.owner.cwd.clone(),
+            profile:profile("reasoner", Backend::OpenAiCompatible {base_url:"http://127.0.0.1:9/v1".into(),model:"fixture".into(),api_key_env:None}, Access::Read),
+            workspace_version:None,look:None,projects:None,avatar_draft_id:None,avatar_generation_id:None,avatar_asset_id:None,
+        }).unwrap();
+        let project = crate::personal_workspace::ProjectRef {host_id:assistant.host_id.clone(),workspace_id:f.owner.workspace_id.clone(),cwd:f.root.canonicalize().unwrap().to_string_lossy().into_owned()};
+        f.host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();
+        f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
+        let accepted=f.host.personal_send(&assistant.id,"delegate-source","Please inspect login").unwrap();
+        let current=f.host.personal_get(&assistant.id).unwrap();
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:"delegation".into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
+        let mut beta=current.clone();
+        beta.id="asst-beta".into();
+        let mut beta_input=input.clone();
+        beta_input.assistant_id=beta.id.clone();
+        f.host.change_personal(|assistants|{assistants.push(beta.clone());Ok(())}).unwrap();
+        let beta_receipt=f.host.prepare_personal_delegation(beta_input).unwrap();
+        let beta_task=f.host.assistant_tasks.get(beta_receipt["taskId"].as_str().unwrap()).unwrap().unwrap();
+        let receipt=f.host.prepare_personal_delegation(input.clone()).unwrap();
+        assert_eq!(f.host.prepare_personal_delegation(input.clone()).unwrap(),receipt);
+        f.host.change_assistant(&assistant.id, |a| {a.events.clear();a.messages.clear();Ok(())}).unwrap();
+        assert_eq!(f.host.prepare_personal_delegation(input.clone()).unwrap(),receipt);
+        let mut missing_origin=input;
+        missing_origin.delegation_id="new-with-pruned-origin".into();
+        assert!(f.host.prepare_personal_delegation(missing_origin).is_err());
+        let task=f.host.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap();
+        assert_eq!(task.status,TaskStatus::Proposed);
+        assert!(task.attempts.is_empty());
+        let control = |task: &AssistantTask, action: &str| AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:action.into(),mode:None,text:None,destination:None,new_worker_profiles:vec![],checks:None,spend_limit_micros:None};
+        let paused = f.runtime.block_on(f.host.assistant_task_action(control(&task,"pause"))).unwrap();
+        f.host.personal_pause(&assistant.id,"pause-owner",true).unwrap();
+        assert!(f.host.ensure_delegated_start(&task).is_err());
+        assert!(f.host.ensure_delegated_start(&beta_task).is_ok());
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:beta_task.id.clone(),revision:beta_task.revision,owner:beta_task.owner.clone(),action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:beta_task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
+        assert_eq!(wait_for(&f,&beta_task.id).status,TaskStatus::ReadyForReview);
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status,TaskStatus::Proposed);
+
+        f.host.personal_pause(&assistant.id,"resume-owner",false).unwrap();
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().control.pause_reason,Some(crate::assistant_tasks::PauseReason::Manual));
+        assert!(f.runtime.block_on(f.host.assistant_task_action(control(&task,"resume"))).is_err());
+        let task = f.runtime.block_on(f.host.assistant_task_action(control(&paused,"resume"))).unwrap();
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:task.destination,new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
+        let settled=wait_for(&f,&task.id);
+        assert_eq!(settled.status,TaskStatus::ReadyForReview);
+        f.host.reconcile_delegation_results().unwrap();
+        let delivered=f.host.personal_get(&assistant.id).unwrap();
+        assert_eq!(delivered.delegated_result_receipts.len(),1);
+        assert_eq!(delivered.messages.iter().filter(|m|m.kind=="result").count(),1);
+        f.host.change_assistant(&assistant.id,|a|{a.messages.clear();Ok(())}).unwrap();
+        f.host.reconcile_delegation_results().unwrap();
+        assert!(f.host.personal_get(&assistant.id).unwrap().messages.is_empty());
+    }
+
+    #[test]
     fn request_receipt_tells_the_app_what_happened_to_an_unconfirmed_message() {
         let f = fixture();
         assert!(f.host.assistant_request_receipt(&f.owner, "never-sent").unwrap().is_null());
@@ -2740,7 +3019,7 @@ mod tests {
     #[test]
     fn dismiss_cancels_a_proposal_without_dispatch_and_refuses_started_work() {
         let f = fixture();
-        let input = crate::assistant_tasks::HandoffPreparation { request_id:"dismiss-child".into(), batch_id:"dismiss-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Help me finish unfinished work".into(), brief:"Finish work".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![] };
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"dismiss-child".into(), batch_id:"dismiss-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Help me finish unfinished work".into(), brief:"Finish work".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![], lineage:None, context:None };
         f.runtime.block_on(f.host.assistant_handoff_prepare(input)).unwrap();
         let task = f.host.assistant_tasks.list(None).unwrap().pop().unwrap();
         let dismiss = |revision| AssistantActionInput { task_id:task.id.clone(), revision, owner:f.owner.clone(), action:"dismiss".into(), mode:None, text:None, destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None };
@@ -2756,7 +3035,7 @@ mod tests {
     #[test]
     fn handoff_prepare_checks_scope_revision_and_routing_without_dispatch() {
         let f = fixture();
-        let input = crate::assistant_tasks::HandoffPreparation { request_id:"cross-child".into(), batch_id:"cross-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Ask Null to fix login and Jigga to test billing".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec!["Login works".into()] };
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"cross-child".into(), batch_id:"cross-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Ask Null to fix login and Jigga to test billing".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec!["Login works".into()], lineage:None, context:None };
         let receipt = f.runtime.block_on(f.host.assistant_handoff_prepare(input.clone())).unwrap();
         assert_eq!(receipt["task"]["status"], "proposed");
         assert!(receipt["task"]["executionThreadId"].is_null());
@@ -2775,7 +3054,8 @@ mod tests {
         assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(stale)).is_err());
         let mut owner_changed = input.clone(); owner_changed.owner.host_id = "other".into();
         assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(owner_changed)).is_err());
-        for worker in ["missing"] {
+        {
+            let worker = "missing";
             let mut bad = input.clone(); bad.request_id = "bad-child".into(); bad.revision = f.host.monitor_get("workspace").unwrap().unwrap().revision; bad.destination.workers = vec![worker.into()];
             assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(bad)).is_err());
         }
@@ -2790,7 +3070,7 @@ mod tests {
     #[test]
     fn handoff_saved_destination_uses_host_worker_not_client_same_id_profile() {
         let f = fixture();
-        let input = crate::assistant_tasks::HandoffPreparation { request_id:"worker-child".into(), batch_id:"worker-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Fix login".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![] };
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"worker-child".into(), batch_id:"worker-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Fix login".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![], lineage:None, context:None };
         let receipt = f.runtime.block_on(f.host.assistant_handoff_prepare(input)).unwrap();
         let task: AssistantTask = serde_json::from_value(receipt["task"].clone()).unwrap();
         let local_wrong = profile("null", Backend::Scripted { lines:vec!["Wrong client profile executed".into()] }, Access::Edits);
@@ -2813,6 +3093,7 @@ mod tests {
             access,
             effort: None,
             speed: None,
+            voice: None,
             appearance: None,
             media: None,
         }
@@ -3002,7 +3283,7 @@ mod tests {
     fn routing_choices_use_saved_chat_workers_and_exclude_other_folders() {
         let f = fixture();
         let saved = f.host.store().room("parent").unwrap().unwrap();
-        f.host.store().save_room("elsewhere", &crate::storage::SavedRoom {
+        f.host.store().save_room("elsewhere", &crate::storage::SavedRoom { mounts: vec![],
             cwd: Some("/another/project".into()), snapshot: saved.snapshot,
         }).unwrap();
         f.host.store().save_session(&json!({
@@ -3027,7 +3308,9 @@ mod tests {
         let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 8192]; stream.read(&mut request).unwrap();
+            let mut request = [0; 8192];
+            let arrived = stream.read(&mut request).unwrap();
+            assert!(arrived > 0, "the catalogue request never arrived");
             let body = r#"{"data":[{"id":"picture","type":"image"}]}"#;
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         });
@@ -3036,7 +3319,7 @@ mod tests {
         let image = profile("image", Backend::OpenAiCompatible { base_url, model: "picture".into(), api_key_env: None }, Access::Read);
         assert!(image.media.is_none(), "The provider catalogue, not profile media settings, identifies this worker.");
         assert!(!task_worker_eligible(&image));
-        assert!(verify_task_workers(&[image.clone()]).is_err());
+        assert!(verify_task_workers(std::slice::from_ref(&image)).is_err());
         let mut saved = f.host.store().room("parent").unwrap().unwrap();
         saved.snapshot.participants.push(image.clone());
         f.host.store().save_room("parent", &saved).unwrap();
@@ -3166,6 +3449,32 @@ mod tests {
         })
     }
 
+    #[test]
+    fn revise_startup_preflights_same_task_then_requires_new_approval() {
+        let f=fixture();
+        let task=f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {request_id:"revised-startup".into(),batch_id:"batch".into(),owner:f.owner.clone(),revision:f.host.monitor_get("workspace").unwrap().unwrap().revision,original_request:"Fix login".into(),brief:"Fix login".into(),destination:TaskDestination{thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::Isolated,review_criteria:vec!["Tests pass".into()],lineage:None,context:None}).unwrap();
+        let task=f.host.assistant_tasks.set_destination(&task.id,task.revision,&f.owner,task.destination.clone().unwrap(),task.brief.clone()).unwrap();
+        let task=f.host.assistant_tasks.transition(&task.id,task.revision,&f.owner,TaskStatus::NeedsYou,Some("Could not start".into())).unwrap();
+        let mut data=task.result_data.clone().unwrap();data["startup"]=json!({"message":"Unsupported original worker"});
+        let task=f.host.assistant_tasks.set_result_data(&task.id,task.revision,&f.owner,Some(data)).unwrap();
+        let action=|revision,mode|AssistantActionInput {task_id:task.id.clone(),revision,owner:f.owner.clone(),action:"revise_startup".into(),mode:Some(mode),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None};
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action(task.revision-1,TaskMode::Isolated))).is_err());
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action(task.revision,TaskMode::ReadOnly))).is_err(),"scope must never silently downgrade");
+        f.host.room_create("unsupported-revision".into(),vec![profile("codex",Backend::Agent{tool:apex_core::AgentTool::Codex,model:None},Access::Edits)],RoomOptions::default(),Some(f.owner.cwd.clone())).unwrap();
+        let mut unsupported=action(task.revision,TaskMode::Isolated);unsupported.destination=Some(TaskDestination{thread_id:Some("unsupported-revision".into()),workers:vec!["codex".into()],new_thread:false});
+        assert!(f.runtime.block_on(f.host.assistant_task_action(unsupported)).unwrap_err().contains("trust"));
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().revision,task.revision,"failed preflight cannot change the plan");
+        let revised=f.runtime.block_on(f.host.assistant_task_action(action(task.revision,TaskMode::Isolated))).expect("supported worker should preflight");
+        assert_eq!(revised.id,task.id);assert_eq!(revised.original_request,task.original_request);assert_eq!(revised.mode,TaskMode::Isolated);assert_eq!(revised.status,TaskStatus::Proposed);assert!(revised.attempts.is_empty());
+        assert_eq!(revised.result_data.as_ref().unwrap()["humanApproved"],false);assert!(revised.result_data.as_ref().unwrap()["startupPreflight"].is_object());
+        assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
+        let mut altered=action(revised.revision,TaskMode::Isolated);altered.action="approve".into();altered.destination=Some(TaskDestination{thread_id:Some("unsupported-revision".into()),workers:vec!["codex".into()],new_thread:false});
+        assert!(f.runtime.block_on(f.host.assistant_task_action(altered)).is_err(),"approval may not replace preflighted worker");
+        let mut approve=action(revised.revision,TaskMode::Isolated);approve.action="approve".into();
+        f.runtime.block_on(f.host.assistant_task_action(approve)).unwrap();
+        let finished=wait_for(&f,&task.id);assert_eq!(finished.id,task.id);assert_eq!(finished.status,TaskStatus::ReadyForReview);assert_eq!(finished.mode,TaskMode::Isolated);
+    }
+
     fn isolated_task(f: &Fixture, request_id: &str) -> AssistantTask {
         let mut request = input(f, request_id);
         request.mode = TaskMode::Isolated;
@@ -3286,6 +3595,8 @@ mod tests {
         assert!(f.runtime.block_on(f.host.room_update_participant(child.clone(), worker)).is_err());
         let done = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput { task_id:task.id, revision:task.revision, owner:f.owner.clone(), action:"review".into(), mode:None, text:None, destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None })).unwrap();
         assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.result.as_deref(),Some("The requested change is complete."));
+        assert_eq!(f.host.assistant_tasks.get(&done.id).unwrap().unwrap().result,done.result);
         assert!(!f.root.join(".git").exists());
     }
 
@@ -3533,6 +3844,29 @@ mod tests {
             finished.result
         );
         assert_eq!(finished.attempts.len(), 1);
+    }
+
+    #[test]
+    fn retry_after_pre_attempt_failure_reuses_saved_destination_and_starts_first_attempt() {
+        let f=fixture();
+        let git_backup=f.data.join("temporarily-unavailable-git");
+        std::fs::rename(f.root.join(".git"),&git_backup).unwrap();
+        let failed=isolated_task(&f,"startup-git-failure");
+        assert_eq!(failed.status,TaskStatus::Failed);
+        assert!(failed.attempts.is_empty());assert!(failed.execution_thread_id.is_none());
+        assert_eq!(failed.destination.as_ref().unwrap().thread_id.as_deref(),Some("parent"));
+        std::fs::rename(&git_backup,f.root.join(".git")).unwrap();
+        let action=|revision,owner|AssistantActionInput {task_id:failed.id.clone(),revision,owner,action:"retry".into(),mode:None,text:None,destination:None,new_worker_profiles:vec![],checks:None,spend_limit_micros:None};
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action(failed.revision-1,f.owner.clone()))).unwrap_err().contains("revision"));
+        let mut wrong_owner=f.owner.clone();wrong_owner.conversation_id="another-owner".into();
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action(failed.revision,wrong_owner))).unwrap_err().contains("ownership"));
+        f.runtime.block_on(f.host.assistant_task_action(action(failed.revision,f.owner.clone()))).unwrap();
+        let finished=wait_for(&f,&failed.id);
+        assert_eq!(finished.status,TaskStatus::ReadyForReview,"{:?}",finished.result);
+        assert_eq!(finished.attempts.len(),1);assert_eq!(finished.attempts[0].number,1);
+        assert!(finished.execution_thread_id.is_some());
+        assert_eq!(finished.original_request,failed.original_request);assert_eq!(finished.brief,failed.brief);
+        assert_eq!(finished.destination,failed.destination);assert_eq!(finished.workers,failed.workers);
     }
 
     #[test]
@@ -4118,7 +4452,7 @@ mod tests {
                     "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], interactive_answers: answers, client_turn_id: None, max_bot_hops: None },
                     _ => crate::Command::RoomTurn { id: child.clone(), participants: vec![ParticipantId::new("null")], hops: Some(0), interactive_answers: answers },
                 };
-                f.runtime.block_on(f.host.call_with_client_capability(command, capability)).unwrap();
+                f.runtime.block_on(f.host.call_with_client_capability_assuming_verified_ui_for_test(command, capability)).unwrap();
                 assert_eq!(wait_for(&f, &task.id).status, TaskStatus::ReadyForReview);
                 let request = bot.requests().pop().unwrap();
                 let comparison = request.system.contains("kind\":\"comparison");
@@ -4147,7 +4481,7 @@ mod tests {
         let ready = wait_for(&f, &initial.id);
         assert_eq!(ready.status, TaskStatus::ReadyForReview);
         let child = ready.execution_thread_id.as_deref().unwrap();
-        assert_eq!(
+        assert!(
             f.runtime
                 .block_on(f.host.assistant_continue_thread(
                     child,
@@ -4157,8 +4491,7 @@ mod tests {
                     None,
                     apex_core::GeneratedUiCapability::Unsupported
                 ))
-                .unwrap(),
-            true
+                .unwrap()
         );
         let running = f.host.assistant_tasks.get(&ready.id).unwrap().unwrap();
         assert_eq!(running.status, TaskStatus::Running);

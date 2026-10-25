@@ -1,0 +1,15 @@
+[package]
+name = "apex-host-production-check"
+description = "Integration tests that must run against apex-host built WITHOUT the test-support feature."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Deliberately no features and no dev-dependency on apex-host with test-support:
+# this crate exists so the forged-storage tests exercise the feature-off build.
+[dependencies]
+apex-host = { path = "../apex-host" }
+
+[dev-dependencies]
+tokio.workspace = true

@@ -4,12 +4,13 @@
 import { addLeaf, insertBeside, leafIds, MIN_SHARE, normalize, removeLeaf, type Dir, type LayoutNode } from "./layout.ts";
 import type { PanelTab, RightPanelState, TabKind } from "./rightPanelModel.ts";
 import type { ChipParts } from "./botChip";
-import type { DashRow } from "./dashboardModel";
+import type { DashboardDestination, DashRow } from "./dashboardModel";
 import type { ServerChoice } from "./PreviewPane";
 import type { LandingTextureSettings } from "./settings";
 import type { AppearanceValues } from "./themes";
 import type { Access, AgentInfo, Pane, ParticipantConfig, RoomOptions } from "./types";
 import type { VoiceSettings } from "./voice/types";
+import type { WorkspaceTaskRow } from "./workspaceTasks.ts";
 
 export type PopoutKind = "pane" | "tab";
 
@@ -55,6 +56,8 @@ export interface ForkResult {
 
 /** What the owner hands the pop-out window so it can show the same item. */
 export interface PopoutSnapshot {
+  pendingMount?: string | null;
+  busyTurn?: boolean;
   kind: PopoutKind;
   /** Pane id when kind is pane, tab id when kind is tab. */
   id: string;
@@ -84,6 +87,8 @@ export interface PopoutSnapshot {
   };
   /** A dashboard's rows at pop-out time; the owner keeps pushing them. */
   dashboardRows?: DashRow[];
+  workspaceTaskRows?: WorkspaceTaskRow[];
+  workspaceTaskProblems?: string[];
   /** A tasks tab's conversation, so it watches the same project. */
   conversationId?: string;
   /** The workspace's display name, for tab titles. */
@@ -119,9 +124,12 @@ export interface TabSpot {
 
 /** What a pop-out asks its owner to do. Starts, closes and saves run in the owner, never in the pop-out. */
 export type PopoutAction =
+  | { type: "mount-worktree"; id: string; path: string }
+  | { type: "cancel-mount"; id: string }
   | { type: "restart-terminal" }
   | { type: "start-pane"; id: string }
   | { type: "show-pane"; id: string }
+  | { type: "dashboard-open"; id: string; destination?: DashboardDestination }
   | { type: "close-pane" }
   | { type: "rename"; title: string }
   | { type: "preview-address"; address: string; servedBy?: string }
@@ -140,6 +148,8 @@ export type PopoutAction =
 
 /** What the owner pushes to a pop-out while it is open: titles, selection, runs and rows. */
 export interface PopoutUpdate {
+  pendingMount?: string | null;
+  busyTurn?: boolean;
   title?: string;
   workspaceId?: string;
   activePaneId?: string;
@@ -159,6 +169,8 @@ export interface PopoutUpdate {
   conversationId?: string;
   /** A dashboard's current rows. */
   dashboardRows?: DashRow[];
+  workspaceTaskRows?: WorkspaceTaskRow[];
+  workspaceTaskProblems?: string[];
   /** A preview's source while it is still open. */
   previewSource?: { title: string; kind: "terminal" | "chat"; running: boolean } | null;
   /** A popped thread's agents, saved Agents and settings, resent whenever they change in Deck. */

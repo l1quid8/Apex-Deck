@@ -8,6 +8,10 @@ export type VoiceCandidate = CallScope & {
   name: string;
   profileId: string;
   aliases: string[];
+  /** The voice set on the agent's form, if any. */
+  agentVoice?: string | null;
+  /** The thread's title: tells apart same-named agents in different threads, on screen and by voice. */
+  roomTitle?: string;
 };
 export type VoiceTurn = {
   callId: string;
@@ -17,9 +21,12 @@ export type VoiceTurn = {
   scope: CallScope;
   text: string;
 };
-export type VoicePreferences = { voice: string; aliases: string[] };
+/** Saved for one agent in one chat. No voice means the agent's own, then the app default. */
+export type VoicePreferences = { voice?: string; aliases: string[] };
 export type VoiceSettings = {
   enabled: boolean;
+  /** The voice for agents with none of their own (Settings). Unset is Michael. */
+  defaultVoice?: string;
   silenceMs: number;
   /** How a running call shows on screen (callView.ts). */
   look: import("./callView.ts").CallLook;
@@ -46,6 +53,8 @@ export type VoiceState = {
   error?: string;
   voices: string[];
   candidates?: VoiceCandidate[];
+  /** An unresolved spoken thread name; choices must be confirmed before dispatch. */
+  threadQuery?: string;
 };
 export type BridgeEvent = {
   requestId: string;

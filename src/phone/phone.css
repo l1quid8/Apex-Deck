@@ -889,13 +889,72 @@
 .ph-undo.ph-undo-up { bottom: calc(136px + env(safe-area-inset-bottom)); }
 .ph-undo > span { flex: 1; min-width: 0; }
 .ph-undo button { background: transparent; border: 0; color: var(--mint); font-weight: 600; min-height: 44px; padding: 0 12px !important; }
-/* A held message opens its menu, so iOS's own text callout stays out of the way. */
-.ph-msg-hold,
-.ph-msg-hold * {
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
+/* The desktop's action buttons, with only Reply/Quote and Copy exposed until opened.
+   Keep the compact clock and all expanded tools on one line, yours mirrored at the right.
+   A touch screen shows the row all the time; a mouse shows it while the message is hovered, as on the desktop. */
+.ph-said { margin-bottom: 12px; }
+.ph-said > .ph-msg { margin-bottom: 2px; }
+.ph-said > .message-actions { flex-wrap: nowrap; gap: 0; }
+.ph-said.mine > .message-actions { justify-content: flex-end; text-align: end; }
+.ph-said :is(.message-primary-actions, .message-action-items) { flex: none; flex-wrap: nowrap; gap: 0; }
+.ph-said .message-action-items[hidden] { display: none; }
+.ph-said .message-time { flex: none; white-space: nowrap; text-wrap: nowrap; }
+.ph-said .message-time-compact { display: none; }
+.ph-said.mine .msg-action.quote svg { transform: scaleX(-1); }
+/* A thumb-sized tap with the desktop's look; the outer icons line up with the text above them. */
+.ph-said .msg-action { flex: none; min-height: 36px; height: 36px; width: 36px; min-width: 36px; padding: 0; }
+/* The smallest phones still fit every tool and the clock without shrinking the icons. */
+@container (max-width: 360px) {
+  .ph-said .msg-action { width: 32px; min-width: 32px; }
+  .ph-said .copied { font-size: 10px; }
 }
+/* At 320px the expanded bot row needs a shorter weekday clock and numeric year. */
+@container (max-width: 340px) {
+  .ph-said .message-time { padding: 0 3px; font-size: 11px; }
+  .ph-said .message-time-label { display: none; }
+  .ph-said .message-time-compact { display: inline; }
+}
+.ph-said:not(.mine) > .message-actions { margin-left: -9px; }
+.ph-said.mine > .message-actions { margin-right: -9px; }
+.ph-said .msg-action:active:not(:disabled) { background: var(--panel-2); }
+@media (hover: hover) {
+  .ph-said:hover .message-actions .msg-action, .ph-said:hover .message-time { opacity: 1; }
+}
+/* iOS keeps :hover on the last tapped button; the desktop's hover fill would stick. */
+@media (hover: none) {
+  .ph-app .msg-action:hover:not(:active):not([aria-pressed="true"]) { background-color: transparent; color: var(--muted); }
+}
+/* Retry and Revert ask under their message with the desktop's words, in the chat instead of floating. */
+.ph-said .goback-pop { position: static; width: auto; margin: 4px 0 6px; box-shadow: none; font-size: 13px; }
+.ph-app .goback-pop p { margin: 6px 0 0; }
+.ph-said .goback-pop strong { font-size: 13.5px; }
+.ph-said .goback-scope { flex-wrap: wrap; gap: 4px 14px; }
+.ph-said :is(.goback-scope, .goback-files) label { min-height: 36px; }
+.ph-said .goback-files { max-height: 220px; }
+.ph-said .goback-pop .row { gap: 8px; }
+.ph-said .goback-pop .row button { min-height: 40px; padding: 8px 14px; font-size: 14px; border-radius: 10px; }
+.ph-said .goback-pop .row .primary { background: var(--brand-gradient); color: var(--accent-ink); }
+
+/* Pinned for every model, under the bots: one line until it's opened. */
+.ph-pins { font-size: 13px; padding: 8px 16px; }
+.ph-pins .pins-label { padding: 4px 0; }
+.ph-pins .pins-list { max-height: 30vh; overflow-y: auto; }
+.ph-pins .pin .icon { min-height: 32px; min-width: 32px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 18px; }
+
+/* Quotes waiting above the box, as on the desktop. */
+.ph-quotes { margin: 6px 0; }
+.ph-quotes .quote-preview-head .ghost.small { min-height: 32px; padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+.ph-quotes .quote-clear-all { min-height: 32px; font-size: 13px; }
+.ph-quotes .quote-cancel { min-height: 36px; width: 36px; height: 36px; color: var(--muted); }
+.ph-quotes .hand-off-menu button { min-height: 40px; font-size: 14px; }
+
+/* Text picked in a message: the desktop's Add to chat / More details on the side iPhone's own Copy menu
+   leaves free, past the selection's handles. Placed in the phone frame, with thumb-sized taps. */
+.ph-app .selection-actions:is(.above, .below) { position: absolute; }
+.ph-app .selection-actions.above { transform: translate(-50%, calc(-100% - 14px)); }
+.ph-app .selection-actions.below { transform: translate(-50%, 14px); }
+.ph-app .selection-actions button { min-height: 36px; padding: 0 12px; font-size: 13px; }
+.ph-app .selection-actions button:active:not(:disabled) { background: var(--panel-2); }
 
 /* Section headings share project controls, with recovery actions alongside. */
 .ph-tl-heading { display: flex; align-items: center; margin-top: 14px; }
@@ -1264,3 +1323,20 @@
 .ph-msg .work-steps-note { font-size: 12px; }
 :root[data-deck-theme="glass"] .ph-msg :is(.work-steps-helper, .work-steps-detail) { border-color: var(--line); }
 :root[data-deck-theme="glass"] .ph-msg .work-steps-output { background: var(--panel-2); border: 0; }
+
+/* The bot sheet's usage resets: a row that opens in place, one row per credit counting down to the second. */
+.ph-resets > .ph-srow.ph-srow { padding: 12px 14px; }
+.ph-reset-pill { flex: none; min-width: 22px; height: 22px; padding: 0 7px; margin-right: 6px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--mint) 18%, transparent); color: var(--mint); font-size: 13px; font-weight: 700; }
+.ph-reset-next, .ph-reset-left { font-variant-numeric: tabular-nums; }
+.ph-reset { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--line); }
+.ph-reset strong { font-size: 15px; font-weight: 500; }
+.ph-reset small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
+.ph-reset.soon { box-shadow: inset 3px 0 0 var(--amber); }
+.ph-reset.soon .ph-reset-left { color: var(--amber); }
+.ph-reset button { flex: none; min-height: 36px; padding: 0 16px; border-radius: 10px; }
+.ph-reset-more { margin: 0; padding: 8px 14px 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.ph-reset-confirm { display: grid; gap: 8px; padding: 12px 14px 14px; border-top: 1px solid var(--line); font-size: 14px; line-height: 1.45; }
+.ph-reset-confirm p { margin: 0; color: var(--muted); }
+.ph-reset-confirm p strong, .ph-reset-confirm p b { color: var(--text); font-weight: 600; }
+.ph-reset-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+.ph-reset-actions button { min-height: 44px; border-radius: 12px; }

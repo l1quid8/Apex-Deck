@@ -47,3 +47,27 @@ test("code-only fallback once", () => {
   ]);
   assert.deepEqual(s.push("", true), []);
 });
+
+
+// Web Audio is unavailable in Node: fake only the device boundary.
+import { playVoiceSample } from "../src/voice/audio.ts";
+for (const failure of ["resume", "start"]) {
+  test(`sample ${failure} failure rejects completion and closes playback`, async (t) => {
+    let closed = 0;
+    const error = Error(`${failure} failed`);
+    const original = globalThis.AudioContext;
+    t.after(() => { if (original === undefined) delete globalThis.AudioContext; else globalThis.AudioContext = original; });
+    globalThis.AudioContext = class {
+      destination = {};
+      createBuffer() { return { getChannelData: () => new Float32Array(1) }; }
+      createBufferSource() {
+        return { connect() {}, start() { if (failure === "start") throw error; }, stop() {} };
+      }
+      resume() { return failure === "resume" ? Promise.reject(error) : Promise.resolve(); }
+      close() { closed++; return Promise.resolve(); }
+    };
+    const player = playVoiceSample(new Int16Array([1]), 24000);
+    await assert.rejects(player.done, (e) => e === error);
+    assert.equal(closed, 1);
+  });
+}

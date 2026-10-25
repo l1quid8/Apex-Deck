@@ -36,6 +36,13 @@ const MESSAGE_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "👀", "
 /// model call or a command run.
 static PERSONAL: Mutex<()> = Mutex::new(());
 
+#[cfg(test)]
+pub(crate) fn with_personal_lock_for_test<T>(run: impl FnOnce() -> T) -> T {
+    let _held = PERSONAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    run()
+}
+
+
 pub(crate) fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -45,6 +52,8 @@ pub(crate) fn now() -> u64 {
 pub struct PersonalDocument {
     pub version: u32,
     pub assistants: Vec<PersonalAssistant>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,6 +166,14 @@ pub struct QuietHours {
 #[serde(rename_all = "camelCase")]
 pub struct Look {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::personal_workspace::AvatarKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<crate::personal_workspace::AssistantAvatarAsset>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<String>,
@@ -190,11 +207,14 @@ pub struct Fact {
     pub superseded_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<u64>,
+    /// Set only on a memory imported from pre-provenance data. Never verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 impl Fact {
     pub fn current(&self, now: u64) -> bool {
-        self.deleted_at.is_none() && self.superseded_by.is_none() && self.expires_at.is_none_or(|at| at > now)
+        crate::memory_lifecycle::current(self.deleted_at, self.superseded_by.as_deref(), self.expires_at, now)
     }
 }
 
@@ -298,6 +318,8 @@ fn default_context_budget() -> u64 { 24_000 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalAssistant {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<u64>,
     pub id: String,
     pub name: String,
     /// Free text for the prompt only. It describes tone, never permissions.
@@ -305,12 +327,21 @@ pub struct PersonalAssistant {
     /// The machine this assistant lives on, from `<data>/host-id`.
     pub host_id: String,
     pub profile: Option<ParticipantConfig>,
+    #[serde(default)]
+    pub projects: Vec<crate::personal_workspace::AssistantProjectBinding>,
+    /// Explicit runtime saves opt into the versioned access ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_config_version: Option<u32>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
     /// Folders on this host its operations may run in.
     pub allowed_folders: Vec<String>,
     pub paused: bool,
     pub revision: u64,
     pub created_at: u64,
     pub counters: Counters,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub delegated_result_receipts: std::collections::BTreeSet<String>,
     pub messages: Vec<PersonalMessage>,
     pub events: Vec<PersonalEvent>,
     pub tasks: Vec<PersonalTask>,
@@ -386,6 +417,8 @@ pub struct PersonalMessage {
     /// Reactions from the authenticated human account, shared by its devices.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -636,6 +669,8 @@ pub struct ProcessMark {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
     pub id: String,
     pub goal: String,
     pub completion_criteria: Vec<String>,
@@ -743,7 +778,7 @@ impl PersonalAssistant {
 
     pub(crate) fn post(&mut self, role: &str, kind: &str, text: String, task_id: Option<String>, event_id: Option<String>, at: u64) {
         let id = self.next_message_id();
-        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new() });
+        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new(), legacy: None });
         if self.messages.len() > MAX_MESSAGES {
             let extra = self.messages.len() - MAX_MESSAGES;
             self.messages.drain(..extra);
@@ -757,10 +792,10 @@ impl PersonalAssistant {
     /// Old finished tasks go, oldest first, and long receipt lists are cut,
     /// so a daily schedule can't grow the record forever.
     pub(crate) fn prune_tasks(&mut self) {
-        let settled = self.tasks.iter().filter(|t| t.status.settled()).count();
+        let settled = self.tasks.iter().filter(|t| t.status.settled() && t.deleted_at.is_none()).count();
         let mut extra = settled.saturating_sub(MAX_SETTLED_TASKS);
         self.tasks.retain(|t| {
-            if extra > 0 && t.status.settled() { extra -= 1; false } else { true }
+            if extra > 0 && t.status.settled() && t.deleted_at.is_none() { extra -= 1; false } else { true }
         });
         for task in &mut self.tasks {
             if task.receipts.len() > MAX_RECEIPTS {
@@ -772,10 +807,11 @@ impl PersonalAssistant {
 
     /// Settled events beyond the limit are dropped oldest first. Pending ones never are.
     fn prune_events(&mut self) {
-        let settled = self.events.iter().filter(|e| matches!(e.state, EventState::Done | EventState::Failed)).count();
+        let referenced: std::collections::BTreeSet<_> = self.tasks.iter().map(|task|task.from_event.clone()).collect();
+        let settled = self.events.iter().filter(|e| !referenced.contains(&e.id) && matches!(e.state, EventState::Done | EventState::Failed)).count();
         let mut extra = settled.saturating_sub(MAX_SETTLED_EVENTS);
         self.events.retain(|e| {
-            if extra > 0 && matches!(e.state, EventState::Done | EventState::Failed) {
+            if extra > 0 && !referenced.contains(&e.id) && matches!(e.state, EventState::Done | EventState::Failed) {
                 extra -= 1;
                 false
             } else {
@@ -861,6 +897,12 @@ pub struct CreateInput {
     pub style: String,
     pub folder: String,
     pub profile: ParticipantConfig,
+    #[serde(default)] pub workspace_version: Option<u32>,
+    #[serde(default)] pub look: Option<Look>,
+    #[serde(default)] pub projects: Option<Vec<crate::personal_workspace::AssistantProjectBinding>>,
+    #[serde(default)] pub avatar_draft_id: Option<String>,
+    #[serde(default)] pub avatar_generation_id: Option<String>,
+    #[serde(default)] pub avatar_asset_id: Option<String>,
 }
 
 impl crate::Host {
@@ -886,7 +928,7 @@ impl crate::Host {
         let before = document.assistants.clone();
         let out = change(&mut document.assistants)?;
         if document.assistants != before {
-            self.store().save_personal(&PersonalDocument { version: document.version.max(1), assistants: document.assistants.clone() })?;
+            self.store().save_personal(&PersonalDocument { version: document.version.max(1), assistants: document.assistants.clone(), extra: document.extra.clone() })?;
             for (assistant, previous) in document.assistants.iter().map(|a| (a, before.iter().find(|b| b.id == a.id))) {
                 if previous != Some(assistant) {
                     self.emit_personal_changed(&assistant.id, assistant.revision);
@@ -895,6 +937,41 @@ impl crate::Host {
             self.personal_wake.notify_one();
         }
         Ok(out)
+    }
+
+    /// Merge pre-provenance assistants in one compare-and-swap of the protected
+    /// document. An assistant id already in it keeps its protected record.
+    pub(crate) fn import_legacy_personal(&self, plan: crate::legacy_personal::LegacyPersonalPlan, mut mark: crate::legacy_import::LedgerImport) -> Result<crate::assistant_tasks::LegacyImportOutcome, String> {
+        use crate::assistant_tasks::LegacyImportOutcome;
+        let _held = PERSONAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut document = self.store().personal()?.unwrap_or_default();
+        if let Some(existing) = document.extra.get("legacyImport") {
+            let existing: crate::legacy_import::LedgerImport = serde_json::from_value(existing.clone()).map_err(|e| e.to_string())?;
+            return crate::legacy_import::same_source(&existing, &mark.source_sha256).map(|()| LegacyImportOutcome::AlreadyImported(existing));
+        }
+        let mut added = vec![];
+        mark.skipped += plan.skipped_ids.len();
+        mark.skipped_ids.extend(plan.skipped_ids);
+        for assistant in plan.assistants {
+            if document.assistants.iter().any(|a| a.id == assistant.id) {
+                mark.skipped += 1;
+                mark.skipped_ids.push(format!("assistant:{}", assistant.id));
+                continue;
+            }
+            added.push((assistant.id.clone(), assistant.revision));
+            document.assistants.push(assistant);
+            mark.imported += 1;
+        }
+        document.version = document.version.max(1);
+        document.extra.insert("legacyImport".into(), serde_json::to_value(&mark).map_err(|e| e.to_string())?);
+        let size = serde_json::to_vec(&document).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+        if size > crate::legacy_import::DOCUMENT_BUDGET {
+            return Err("Importing these assistants would exceed the protected document limit. Nothing was written.".into());
+        }
+        self.store().save_personal(&document)?;
+        for (id, revision) in added { self.emit_personal_changed(&id, revision); }
+        self.personal_wake.notify_one();
+        Ok(LegacyImportOutcome::Imported(mark))
     }
 
     pub(crate) fn change_assistant<T>(&self, id: &str, change: impl FnOnce(&mut PersonalAssistant) -> Result<T, String>) -> Result<T, String> {
@@ -917,7 +994,18 @@ impl crate::Host {
     }
 
     pub fn personal_list(&self) -> Result<Vec<PersonalAssistant>, String> {
-        Ok(self.store().personal()?.unwrap_or_default().assistants)
+        let mut assistants = self.store().personal()?.unwrap_or_default().assistants;
+        let tasks = self.assistant_tasks.list(None).map_err(|error|error.to_string())?;
+        for assistant in &mut assistants {
+            let deleted: Vec<_> = tasks.iter().filter(|task|task.lineage.as_ref().is_some_and(|lineage|lineage.assistant.assistant_id==assistant.id && lineage.assistant.host_id==assistant.host_id) && task.result_data.as_ref().is_some_and(|data|data["deletedAtMs"].is_number())).collect();
+            // Derived from the authoritative ledger, including projects no longer
+            // assigned. Never save a second copy of execution authority here.
+            let purged=self.assistant_tasks.purged_for_assistant(&crate::personal_workspace::AssistantRef{host_id:assistant.host_id.clone(),assistant_id:assistant.id.clone()});
+            if !deleted.is_empty() || !purged.is_empty() || assistant.extra.contains_key("taskLifecycleRevision") { assistant.extra.insert("taskLifecycleSnapshotRevision".into(),serde_json::json!(self.assistant_tasks.snapshot_revision())); }
+            if deleted.is_empty() { assistant.extra.remove("deletedDelegatedTasks"); } else { assistant.extra.insert("deletedDelegatedTasks".into(), serde_json::to_value(deleted).map_err(|error|error.to_string())?); }
+            if purged.is_empty() { assistant.extra.remove("purgedDelegatedTaskIds"); } else { assistant.extra.insert("purgedDelegatedTaskIds".into(),serde_json::json!(purged)); }
+        }
+        Ok(assistants)
     }
 
     pub fn personal_get(&self, id: &str) -> Result<PersonalAssistant, String> {
@@ -927,7 +1015,7 @@ impl crate::Host {
     /// Make an assistant that lives on this machine. Its folder is created if
     /// missing and must be absolute.
     pub fn personal_create(&self, input: CreateInput) -> Result<PersonalAssistant, String> {
-        crate::monitor_check::monitor_profile_ok(&input.profile)?;
+        apex_adapters::assistant_profile_ok(&input.profile)?;
         let name = input.name.trim();
         if name.is_empty() || name.len() > 64 {
             return Err("Give the assistant a name of up to 64 characters.".into());
@@ -947,12 +1035,26 @@ impl crate::Host {
         let folder = folder.canonicalize().map_err(|e| format!("Could not open the assistant's folder: {e}"))?;
         let host_id = self.local_host_id()?;
         let at = now();
-        self.change_personal(|assistants| {
+        if input.workspace_version.is_some_and(|v|v!=4) { return Err("Unsupported assistant creation version.".into()) }
+        let triple = (&input.avatar_draft_id, &input.avatar_generation_id, &input.avatar_asset_id);
+        let selection = match triple {
+            (Some(_),Some(generation_id),Some(asset_id))=>Some(crate::assistant_avatar::Selection::Image{generation_id:generation_id.clone(),asset_id:asset_id.clone()}),
+            (None,None,None)|(Some(_),None,None)=>None,
+            _=>return Err("Apply a complete avatar candidate before creating the assistant.".into())
+        };
+        let owner=crate::assistant_avatar::Owner::Creation{host_id:host_id.clone(),draft_id:input.avatar_draft_id.clone().unwrap_or_else(||"pixel-create".into())};
+        self.with_avatar_selection(owner, selection, |image| self.change_personal(|assistants| {
+            if let Some(draft) = input.avatar_draft_id.as_ref() {
+                if assistants.iter().any(|a|a.extra.get("avatarCreationDraftId").and_then(serde_json::Value::as_str)==Some(draft.as_str())) {return Err("This avatar creation draft was already attached. Refresh the assistant list.".into())}
+            }
             let n = assistants.len() + 1;
             let id = (n..).map(|n| format!("asst-{n}")).find(|id| !assistants.iter().any(|a| &a.id == id)).unwrap();
             let assistant = PersonalAssistant {
+                archived_at: None,
                 id, name: name.to_owned(), style: input.style.trim().to_owned(), host_id,
+                projects: vec![], workspace_config_version: None, extra: Default::default(),
                 profile: Some(input.profile), allowed_folders: vec![folder.to_string_lossy().into_owned()],
+                delegated_result_receipts: Default::default(),
                 paused: false, revision: 1, created_at: at, counters: Counters::default(),
                 messages: vec![], events: vec![], tasks: vec![],
                 look: None, timezone: utc(), utc_offset_minutes: 0, quiet_hours: None,
@@ -961,6 +1063,11 @@ impl crate::Host {
                 machines: vec![], push_devices: vec![],
             };
             let mut assistant = assistant;
+            if let Some(mut look) = input.look { if image.is_some() && (look.image.is_none() || look.image == image) {look.image=None;look.kind=None;} assistant.look = Some(crate::personal_workspace::merge_look(&assistant,look)?); }
+            if let Some(projects) = input.projects { assistant.projects = self.workspace_projects(&assistant,projects)?; }
+            if let Some(image) = image {let look=assistant.look.get_or_insert_with(Look::default);look.kind=Some(crate::personal_workspace::AvatarKind::Image);look.image=Some(image);}
+            if let Some(draft)=input.avatar_draft_id {assistant.costs.extend(self.avatar_creation_costs_locked(&draft)?);assistant.extra.insert("avatarCreationDraftId".into(),serde_json::Value::String(draft));}
+            assistant.workspace_config_version=input.workspace_version;
             // It introduces itself and says what it can do, the way Dot does.
             let intro = format!(
                 "Hi, I'm {name}. I live on this server, so I keep working when your phone and Mac are closed. \
@@ -972,17 +1079,21 @@ impl crate::Host {
             assistant.post("assistant", "chat", intro, None, None, at);
             assistants.push(assistant.clone());
             Ok(assistant)
-        })
+        }))
     }
 
     fn personal_accept(&self, id: &str, request: &str, source: EventSource, human_line: Option<String>) -> Result<Accepted, String> {
         let request = request_id(request)?;
         self.change_assistant(id, |assistant| {
+            if assistant.archived_at.is_some(){return Err("This assistant is archived. Restore it before sending messages or changing execution controls.".into());}
             if let Some(existing) = assistant.events.iter().find(|e| e.request_id == request) {
                 if existing.source != source {
                     return Err("That request id was already used for something else.".into());
                 }
                 return Ok((existing.id.clone(), true));
+            }
+            if assistant.extra.get("purgedTaskAuthority").and_then(serde_json::Value::as_object).is_some_and(|records|records.values().any(|record|record["requestId"].as_str()==Some(&request))) {
+                return Err("This request belongs to a permanently deleted task and cannot run again.".into());
             }
             assistant.counters.event += 1;
             let event_id = format!("pe-{}", assistant.counters.event);
@@ -1017,12 +1128,12 @@ impl crate::Host {
 
     /// Save the human's message and its event, then answer at once. The
     /// worker replies later.
-    pub fn personal_send(&self, id: &str, request_id: &str, text: &str) -> Result<Accepted, String> {
+    pub(crate) fn personal_send(&self, id: &str, request_id: &str, text: &str) -> Result<Accepted, String> {
         let text = message_text(text)?;
         self.personal_accept(id, request_id, EventSource::Human { text: text.clone() }, Some(text))
     }
 
-    pub fn personal_decide(&self, id: &str, request_id: &str, decision_id: &str, params_hash: &str, approve: bool) -> Result<Accepted, String> {
+    pub(crate) fn personal_decide(&self, id: &str, request_id: &str, decision_id: &str, params_hash: &str, approve: bool) -> Result<Accepted, String> {
         let source = EventSource::Decision { decision_id: decision_id.into(), params_hash: params_hash.into(), approve };
         self.personal_accept(id, request_id, source, None)
     }
@@ -1044,6 +1155,29 @@ impl crate::Host {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn assistant_creation_accepts_shared_text_providers_without_relaxing_monitor_profiles() {
+        let root=std::env::temp_dir().join(format!("assistant-providers-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let host=crate::Host::new(crate::HostPaths{data:root.join("data"),downloads:None},tokio::runtime::Handle::current());
+        std::fs::write(root.join("data/host-id"),"owner").unwrap();
+        for tool in ["claude_code","codex","gemini","grok","muse"] {
+            let profile:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"p","display_name":"Provider","backend":{"kind":"agent","tool":tool},"access":"ask"})).unwrap();
+            assert_eq!(crate::monitor_check::monitor_profile_ok(&profile).is_ok(),tool=="claude_code");
+            let input=serde_json::from_value(serde_json::json!({"name":format!("Assistant {tool}"),"style":"Precise","folder":root.join(tool),"profile":profile})).unwrap();
+            let created=host.personal_create(input).unwrap_or_else(|e|panic!("{tool}: {e}"));
+            assert_eq!(created.profile.unwrap(),profile);
+        }
+        drop(host); let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lifecycle_source_receipts_survive_event_pruning_until_explicit_purge() {
+        let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[{"id":"pt-1","goal":"Task","completionCriteria":[],"targetHost":"h","status":"cancelled","fromEvent":"source","maxAttempts":3,"createdAt":0,"updatedAt":0,"deletedAt":1}]})).unwrap();
+        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into()},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false});}
+        assistant.prune_events();
+        assert!(assistant.events.iter().any(|event|event.id=="source"),"source request authority cannot be discarded while a deleted task awaits Empty");
+    }
 
     #[test]
     fn operation_hash_changes_with_any_material_parameter() {

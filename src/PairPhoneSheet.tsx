@@ -4,16 +4,18 @@ import { createPortal } from "react-dom";
 import type { Backend } from "./backend";
 import { TIERS, threadsText, type PairedDevice, type Tier } from "./pairedDevices";
 import {
-  PAIR_DEFAULT_TIER, canApprove, copyLink, countdownText, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession, qrSvgPath, revokedWarning,
-  type PairState,
+  PAIR_DEFAULT_TIER, RENEW_FOR_MS, canApprove, copyLink, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession, qrSvgPath, revokedWarning,
+  spacedCode, timerText, type PairState,
 } from "./pairing";
 
-// Paired devices → Pair phone: a QR the phone scans, the same link to copy,
-// and a 5-minute countdown. When a phone claims it, its name and code show
-// with Approve and Deny. Closing the sheet cancels the invitation.
-// Changing what the phone may do starts a new invitation, so the code
-// always carries the access shown. Remote access is turned on first when
-// it's off, since a phone can't pair without it.
+// Phones → Pair phone: a big QR the phone scans, and a Copy link button.
+// The link text itself is never shown, so nobody copies a cut-off one. Codes
+// renew on their own for 30 minutes from when the sheet opened. When a phone
+// claims one, its name and code show with Approve and Deny. Closing the
+// sheet cancels the invitation. Access is one line until Change; changing it
+// starts a new invitation, so the code always carries the access shown.
+// Phone connections are turned on first when they're off, since a phone
+// can't pair without them. That is live in the daemon; nothing restarts.
 
 export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backend; onClose: () => void; onPaired: (device: PairedDevice) => void }) {
   const api = useMemo(() => pairingApi(backend), [backend]);
@@ -26,6 +28,12 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
   const [turningOn, setTurningOn] = useState(false);
+  // Pairing turned connections on (say so), or couldn't (offer Try again).
+  const [turnedOn, setTurnedOn] = useState(false);
+  const [accessFailed, setAccessFailed] = useState(false);
+  const [changing, setChanging] = useState(false);
+  // Renewals stop 30 minutes after the sheet opened (or Start again).
+  const openedAt = useRef(Date.now());
   const session = useRef<ReturnType<typeof pairingSession> | null>(null);
   const close = useRef(onClose);
   close.current = onClose;
@@ -42,20 +50,23 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
     let current: ReturnType<typeof pairingSession> | null = null;
     let stopped = false;
     const timer = setTimeout(() => {
-      // Remote access first: a code made while it's off is refused.
-      void ensureRemoteAccess(backend.remoteAccess, () => setTurningOn(true)).then((problem) => {
+      // Connections first: a code made while they're off is refused.
+      let flipped = false;
+      void ensureRemoteAccess(backend.remoteAccess, () => { flipped = true; setTurningOn(true); }).then((problem) => {
         if (stopped) return;
         setTurningOn(false);
-        if (problem !== null) { setState({ kind: "ended", reason: null, words: problem }); return; }
+        if (problem !== null) { setAccessFailed(true); setState({ kind: "ended", reason: null, words: problem }); return; }
+        if (flipped) setTurnedOn(true);
         current = pairingSession(api, (next) => {
           setState(next);
           if (next.kind === "paired") paired.current(next.device);
-        });
+        }, undefined, openedAt.current + RENEW_FOR_MS);
         session.current = current;
         current.start(tier, scope);
       });
     }, round === 0 && scope === "all" ? 0 : 300);
     setState({ kind: "starting" });
+    setAccessFailed(false);
     return () => {
       stopped = true;
       clearTimeout(timer);
@@ -81,8 +92,9 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
   const qr = useMemo(() => (invite ? qrSvgPath(invite.link) : null), [invite?.link]);
   const claim = state.kind === "claimed" || state.kind === "approving" ? state.claim : null;
   const scopeLocked = claim !== null || state.kind === "paired";
-  const countdown = invite ? countdownText(invite.expires_at, now) : "";
   const tierLabel = TIERS.find((t) => t.id === tier)?.label ?? tier;
+  const access = `${tierLabel} on ${threadsText(scope ?? "all").toLowerCase()}`;
+  const showCode = !claim && state.kind !== "paired" && state.kind !== "ended";
 
   const copy = async () => {
     if (!invite) return;
@@ -91,48 +103,53 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
       setTimeout(() => setCopied(false), 2000);
     }
   };
+  const startAgain = () => {
+    openedAt.current = Date.now();
+    setRound((n) => n + 1);
+  };
 
   return createPortal(
     <div className="confirm-backdrop">
       <div className="confirm pair-sheet" role="dialog" aria-modal="true" aria-labelledby="pair-title">
         <strong id="pair-title">Pair a phone</strong>
 
-        {!claim && state.kind !== "paired" && state.kind !== "ended" && <>
-          <p className="muted">Open Apex Deck on the phone and scan this code, or paste the link there.</p>
-          {turningOn && <p className="muted" role="status">Turning on Remote access so your phone can reach this Mac from anywhere…</p>}
-          <div className="pair-code-area">
-            <div className="pair-qr" aria-busy={!qr}>
-              {qr
-                ? <svg viewBox={`0 0 ${qr.size} ${qr.size}`} role="img" aria-label="Pairing QR code" shapeRendering="crispEdges"><rect width={qr.size} height={qr.size} fill="#fff" /><path d={qr.d} fill="#000" /></svg>
-                : <span className="muted">{scope === null ? "Pick at least one thread." : "Making a code…"}</span>}
-            </div>
-            <div className="pair-code-side">
-              <span className="pair-countdown mono" aria-label="Time left">{invite ? (countdown === "Expired" ? "Expired" : countdown) : "5:00"}</span>
-              <small className="muted">{invite ? (countdown === "Expired" ? "Start again for a new code." : "until this code expires") : ""}</small>
-              <span className="pair-link mono" title="The pairing link">{invite?.link ?? ""}</span>
-              <button disabled={!invite || countdown === "Expired"} onClick={() => void copy()}>{copied ? "Copied" : "Copy link"}</button>
-            </div>
+        {turningOn && <p className="pair-note" role="status">Turning on phone connections…</p>}
+        {turnedOn && showCode && <p className="pair-note" role="status">Turned on phone connections so your phone can reach this Mac. Nothing was restarted.</p>}
+
+        {showCode && <>
+          <div className="pair-qr" aria-busy={!qr}>
+            {qr
+              ? <svg viewBox={`0 0 ${qr.size} ${qr.size}`} role="img" aria-label="Pairing QR code" shapeRendering="crispEdges"><rect width={qr.size} height={qr.size} fill="#fff" /><path d={qr.d} fill="#000" /></svg>
+              : <span className="muted">{scope === null ? "Pick at least one thread." : "Making a code…"}</span>}
+          </div>
+          <div className="pair-under-qr">
+            <p>Scan with the iPhone camera or the Apex Deck app.</p>
+            <span className="pair-timer" role="status">{invite ? timerText(invite.expires_at, openedAt.current + RENEW_FOR_MS, now) : "\u00a0"}</span>
           </div>
         </>}
 
         {claim && <div className="pair-claim">
-          <p><strong>{claim.label}</strong> wants to pair.</p>
-          <p className="muted">Check that the phone shows the same code:</p>
-          <span className="pair-claim-code mono" aria-label="Pairing code">{claim.code}</span>
-          {revokedWarning(claim.previously_revoked_at) && <p className="pair-warning" role="alert">{revokedWarning(claim.previously_revoked_at)}</p>}
-          <p className="muted">It gets {tierLabel} on {threadsText(scope ?? "all").toLowerCase()}.</p>
+          <span className="pair-claim-phone"><strong>{claim.label}</strong> wants to pair</span>
+          <span className="pair-claim-code mono" aria-label={`Pairing code ${claim.code.split("").join(" ")}`}>{spacedCode(claim.code)}</span>
+          <p className="muted">Approve if your phone shows the same code.</p>
+          <p className="muted">It gets {access}.</p>
         </div>}
+        {claim && revokedWarning(claim.previously_revoked_at) && <p className="pair-note warn" role="alert">{revokedWarning(claim.previously_revoked_at)}</p>}
 
         {state.kind === "paired" && <div className="pair-claim">
-          <p><strong>{state.device.label}</strong> is paired.</p>
-          <p className="muted">It can connect from anywhere while Remote access is on. Change its access or revoke it in Paired devices.</p>
+          <span className="pair-done" aria-hidden="true">✓</span>
+          <span className="pair-claim-phone"><strong>{state.device.label}</strong> is paired</span>
+          <p className="muted">It has {access}. Change it any time in Settings → Phones.</p>
         </div>}
 
-        {state.kind === "ended" && <div className="pair-claim">
-          <p role="alert">{state.words}</p>
+        {state.kind === "ended" && <p className="pair-note bad" role="alert">{state.words}</p>}
+
+        {!scopeLocked && !changing && <div className="pair-scope-line">
+          <span><span className="muted">Access:</span> {tierLabel} · {threadsText(scope ?? "all")}</span>
+          <button className="link-button" onClick={() => setChanging(true)} disabled={turningOn}>Change</button>
         </div>}
 
-        <fieldset className="pair-scope" disabled={scopeLocked || turningOn}>
+        {!scopeLocked && changing && <fieldset className="pair-scope" disabled={turningOn}>
           <label>
             <span>Access</span>
             <select aria-label="Access for the new phone" value={tier} onChange={(e) => setTier(e.target.value as Tier)}>
@@ -152,15 +169,22 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
               <span>{t.title}</span><small className="muted">{t.workspace}</small>
             </label>)}
           </div>}
-        </fieldset>
+        </fieldset>}
 
-        <div className="confirm-actions">
-          {claim && <>
-            <button onClick={() => session.current?.deny()} disabled={state.kind !== "claimed"}>Deny</button>
-            <button className="primary" onClick={() => session.current?.approve()} disabled={!canApprove(state)}>{state.kind === "approving" ? "Approving…" : "Approve"}</button>
-          </>}
-          {(state.kind === "ended" || (invite && countdown === "Expired" && !claim)) && <button onClick={() => setRound((n) => n + 1)}>Start again</button>}
-          {!claim && <button onClick={onClose}>{state.kind === "paired" ? "Done" : "Cancel"}</button>}
+        <div className="confirm-actions pair-actions">
+          <span>{showCode && <button className="ghost" disabled={!invite} onClick={() => void copy()}>{copied ? "Copied" : "Copy link"}</button>}</span>
+          <div className="pair-actions-right">
+            {claim && <>
+              <button onClick={() => session.current?.deny()} disabled={state.kind !== "claimed"}>Deny</button>
+              <button className="primary" onClick={() => session.current?.approve()} disabled={!canApprove(state)}>{state.kind === "approving" ? "Approving…" : "Approve"}</button>
+            </>}
+            {state.kind === "ended" && <>
+              <button onClick={onClose}>Close</button>
+              <button className="primary" onClick={startAgain}>{accessFailed ? "Try again" : "Start again"}</button>
+            </>}
+            {showCode && <button onClick={onClose}>Cancel</button>}
+            {state.kind === "paired" && <button className="primary" onClick={onClose}>Done</button>}
+          </div>
         </div>
       </div>
     </div>,

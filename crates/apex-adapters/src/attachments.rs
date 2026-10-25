@@ -102,11 +102,15 @@ pub(crate) fn for_request(request: &TurnRequest, roots: &[PathBuf]) -> Result<Ve
         ));
     }
     let mut images = Vec::new();
+    // The 32 MB limit is on the images themselves; each is sent base64-encoded,
+    // which is 4 bytes for every 3.
+    const RAW_BUDGET: usize = 32 * 1024 * 1024;
+    let encoded_budget = RAW_BUDGET.div_ceil(3) * 4;
     let mut encoded = 0;
     for path in found {
         let image = load(&path, roots)?;
         encoded += image.data.len();
-        if encoded > (32 * 1024 * 1024 + 2) / 3 * 4 {
+        if encoded > encoded_budget {
             return Err(ParticipantError::Failed(
                 "Attached images exceed 32 MB combined; attach smaller images.".into(),
             ));
@@ -150,7 +154,7 @@ mod tests {
         let path = fixture("outside.png", PNG);
         let request = TurnRequest { system: String::new(), turns: vec![apex_core::ViewTurn {
             role: Role::User, content: format!("Attached image: {}", path.display())
-        }], unseen: vec![], effort_override: None, access: None, plan: false };
+        }], unseen: vec![], effort_override: None, access: None, plan: false, cwd: None };
         let result = for_request(&request, &[]);
         std::fs::remove_file(path).unwrap();
         assert!(result.is_err(), "transcript text alone must not authorize reading a file");
@@ -191,7 +195,7 @@ mod tests {
                 let request = TurnRequest { system: String::new(), turns: vec![], unseen: vec![apex_core::Message {
                     seq: 1, speaker: speaker.clone(), text: format!("Attached image: {}", folder.join("picture.png").display()),
                     servers: vec![], at: None,
-                }], effort_override: None, access: None, plan: false };
+                }], effort_override: None, access: None, plan: false, cwd: None };
                 assert_eq!(for_request(&request, &roots).is_ok(), folder == &own, "{speaker:?}: {}", folder.display());
             }
         }
@@ -259,6 +263,7 @@ mod tests {
             effort_override: None,
             access: None,
             plan: false,
+            cwd: None,
         };
         assert_eq!(for_request(&request, &[path.parent().unwrap().to_owned()]).unwrap().len(), 1);
         std::fs::remove_file(path).unwrap();

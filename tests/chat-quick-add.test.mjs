@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import React from 'react';
+import { sharedComposerSurface } from './helpers/shared-composer-surface.mjs';
 import { personaWriters } from '../src/personaDraft.ts';
 
 const { transform } = createRequire(import.meta.url)('sucrase');
@@ -11,10 +12,18 @@ const quickMenu = () => source.slice(source.indexOf('const quickAddMenu = ('), s
 const agentTile = () => source.slice(source.indexOf('function AgentTile('), source.indexOf('\n}\n', source.indexOf('function AgentTile(')));
 
 test('the add menu grows out of the message box instead of floating', () => {
-  const box = source.match(/<div className=\{`composer-box\$\{[^\n]*?\}`\} ref=\{field\}>\n\s*(.*)/);
-  assert.ok(box, 'the composer box render exists');
-  assert.match(box[0], /quickAdd === "dock" \? " adding" : ""/, 'the box is marked while the menu is open');
-  assert.match(box[1], /\{quickAdd === "dock" && quickAddMenu\}/, 'the menu is the first thing in the box');
+  const opening = source.match(/<ThreadComposerBox\b[^>]*>/)?.[0];
+  assert.ok(opening, 'Threads renders the shared composer box');
+  const firstChild = source.slice(source.indexOf(opening) + opening.length).split('\n')[1].trim();
+  const { React, ThreadComposerBox } = sharedComposerSurface();
+  const code = transform(`return (${opening}${firstChild}</ThreadComposerBox>);`, { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
+  const render = new Function('React', 'ThreadComposerBox', 'stacked', 'work', 'quickAdd', 'field', 'quickAddMenu', code);
+  const field = { current: null }, menu = { type: 'form', props: { className: 'quick-add' }, children: [] };
+  const open = render(React, ThreadComposerBox, false, null, 'dock', field, menu);
+  assert.equal(open.type, 'div');assert.equal(open.props.ref, field);assert.match(open.props.className, /composer-box adding/);
+  assert.equal(open.children[0], menu, 'the menu is rendered inside the shared box before other controls');
+  const closed = render(React, ThreadComposerBox, false, null, null, field, menu);
+  assert.doesNotMatch(closed.props.className, /adding/);assert.equal(closed.children[0], false);
   assert.doesNotMatch(source, /rosterAnchor|roster-pop|quickAddButton\("empty"/, 'no floating copy of the menu is left');
   const seat = source.match(/className="chip-add"[^\n]*/)?.[0] ?? '';
   assert.match(seat, /openQuickAdd\("dock", e\.currentTarget\)/, 'the composer seat opens the same menu');

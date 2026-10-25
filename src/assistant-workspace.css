@@ -1,0 +1,242 @@
+/* Task cards in the assistant chat still use these rules until the chat rewrite
+   in the one-chat plan turns them into plain messages. */
+@import "./assistant-work.css";
+/* Geometry, hierarchy and colors follow mockups/apex-dot. Keep host data and
+   the independent workspace sidebar; only the assistant presentation changes. */
+.app.assistant-active{--shell:var(--bg);--raised:var(--panel-2);--border:var(--line);--dim:var(--muted);--mint:var(--accent);--amber:var(--warn);--hover:color-mix(in srgb,var(--text) 7%,transparent);font-size:13px;color:var(--text);background:var(--shell)}
+.assistant-active .app-body,.assistant-active .canvas,.assistant-active .rail,.assistant-active .thread-details{background:var(--shell);backdrop-filter:none;box-shadow:none}
+.assistant-active .titlebar{background:var(--shell);box-shadow:none;border-bottom:1px solid var(--line)}
+.assistant-active .canvas{background:var(--bg)}
+.assistant-active .rail,.assistant-active .thread-details{border-color:var(--line);border-radius:0}
+.assistant-active .rail-sec{text-transform:none;font-size:11px;letter-spacing:0;color:var(--muted);padding-top:16px}
+.assistant-active .rail .rail-row{font-size:12px}
+.assistant-workspace{flex:1;min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg,var(--panel));font:13px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text)}
+.assistant-workspace button{font:inherit;cursor:pointer;color:inherit}
+.assistant-workspace button:disabled{cursor:default;opacity:.5}
+/* The session strip: exactly 60px, floating over the chat with no fill or edge,
+   so messages scroll up behind it. The capsule is centred on the reading column
+   — the same centre as the transcript and the message box — not on the window. */
+.assistant-workspace-head{position:absolute;left:0;right:0;top:0;z-index:6;height:60px;min-height:60px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 18px;border:0;background:none;pointer-events:none}
+.assistant-workspace-head>*{pointer-events:auto}
+.assistant-workspace-head .identicon-lg{width:36px;height:36px;flex:none}
+.assistant-session{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:6px;max-width:min(70%,480px);min-width:0;padding:3px 10px 3px 4px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.assistant-session-id{display:flex;align-items:center;gap:9px;min-width:0;padding:2px 4px 2px 2px;border:0;border-radius:10px;background:none;text-align:left;line-height:1.25}
+.assistant-session-id:hover:not(:disabled){background:var(--hover)}
+.assistant-session-id:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.assistant-session-id>.identicon{width:36px;height:36px;flex:none}
+.assistant-session-text{display:flex;flex-direction:column;min-width:0}
+.assistant-session-name{font-size:13px;font-weight:600;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.assistant-session-status{font-size:11px;line-height:15px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.assistant-session-status[data-state=needs_you],.assistant-session-status[data-state=working]{color:var(--accent)}
+.assistant-session-status[data-state=failed]{color:var(--danger)}
+.assistant-session-status em{font-style:italic}
+.assistant-session-status[data-state=listening] em{color:var(--good)}
+.assistant-session-status[data-state=muted] em{color:var(--danger)}
+.assistant-strip-sep{color:var(--muted)}
+.assistant-session-status .voice-timer{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.assistant-session-call{display:flex;align-items:center;min-height:0;overflow:hidden;width:0;margin-left:-6px;transition:width .18s ease,margin-left .18s ease}
+.assistant-session.show-ctrls .assistant-session-call{width:112px;margin-left:4px}
+.voice-session-strip{display:flex;align-items:center;gap:2px;height:36px;opacity:0;pointer-events:none;transition:opacity .18s ease}
+.assistant-session.show-ctrls .voice-session-strip{opacity:1;pointer-events:auto}
+.voice-session-strip .voice-callbtn,
+.voice-session-strip .voice-end.round{width:36px;height:36px;min-height:0;padding:0;border:0;border-radius:10px;display:grid;place-items:center;background:transparent;color:var(--muted);box-shadow:none}
+.voice-session-strip .voice-callbtn:hover,
+.voice-session-strip .voice-callbtn:focus-visible{background:color-mix(in srgb,var(--text) 9%,transparent);color:var(--text);filter:none}
+.voice-session-strip .voice-callbtn[aria-pressed=true]{color:var(--danger)}
+.voice-session-strip .voice-end.round{color:color-mix(in srgb,var(--danger) 80%,var(--muted))}
+.voice-session-strip .voice-end.round:hover:not(:disabled),
+.voice-session-strip .voice-end.round:focus-visible{color:var(--danger)!important;background:color-mix(in srgb,var(--danger) 14%,transparent)!important;border-color:transparent!important;filter:none!important}
+.voice-session-strip svg{width:15px;height:15px}
+.voice-session-strip button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media (prefers-reduced-motion:reduce){.assistant-session-call,.voice-session-strip{transition:none}}
+.assistant-strip-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.assistant-strip-button,.assistant-workspace-menu>summary{width:36px;height:36px;box-sizing:border-box;display:grid;place-items:center;padding:0;border:1px solid var(--line);border-radius:50%;background:transparent;color:var(--muted);font-size:17px;line-height:1}
+.assistant-strip-button:hover,.assistant-workspace-menu>summary:hover,.assistant-workspace-menu[open]>summary{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--text)}
+.assistant-strip-button:focus-visible,.assistant-workspace-menu>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.assistant-workspace-menu{position:relative}.assistant-workspace-menu>summary{list-style:none;cursor:pointer}.assistant-workspace-menu>summary::-webkit-details-marker{display:none}.assistant-workspace-menu[open]>div{position:absolute;right:0;top:42px;z-index:30;min-width:188px;background:var(--shell);border:1px solid var(--line);border-radius:9px;padding:6px;box-shadow:0 12px 30px color-mix(in srgb,black 27%,transparent)}.assistant-workspace-menu [role=menuitem]{display:block;width:100%;text-align:left;padding:9px 10px;border:0;border-radius:5px;background:none;font-size:12px}.assistant-workspace-menu [role=menuitem]:hover{background:var(--hover)}.assistant-workspace-menu .assistant-pause{border-top:1px solid var(--line);border-radius:0 0 5px 5px;margin-top:4px;padding-top:10px}
+.assistant-workspace-content{flex:1;min-height:0;display:flex}.assistant-workspace-content[hidden]{display:none}.assistant-workspace-problem{padding:10px 30px;margin:0;color:var(--amber);font-size:12px}
+.assistant-workspace .assistant-conversation{width:100%;height:100%;max-height:none;min-height:0;border:0;border-radius:0;box-shadow:none;background:transparent}
+.assistant-workspace .apex-agent-tabpanel{padding:22px 34px 10px}.assistant-workspace .assistant-chat-transcript{max-width:790px;margin:0 auto;padding:0;gap:22px;width:100%;display:flex;flex-direction:column;justify-content:flex-start}
+.assistant-workspace .assistant-chat-transcript>.apex-agent-message-row{max-width:100%;width:100%;gap:5px;margin:0}.assistant-workspace .apex-agent-message-row.human{max-width:87%;align-self:flex-end;margin-top:4px;margin-bottom:4px}
+.assistant-workspace .assistant-chat-message.assistant{border:0;background:transparent;box-shadow:none;padding:0;border-radius:0;font-size:13px;line-height:1.8;color:var(--text)}
+.assistant-workspace .assistant-chat-message.human{background:var(--raised);border:1px solid color-mix(in srgb,var(--line) 70%,transparent);padding:12px 16px;border-radius:13px 13px 3px 13px;font-size:13px;line-height:1.7;width:100%}
+.assistant-workspace .assistant-chat-message p{margin:0 0 12px}.assistant-workspace .assistant-chat-message p:last-child{margin-bottom:0}.assistant-workspace .apex-agent-message-meta{display:block;font-size:10px;margin-bottom:7px;color:var(--dim)}
+.assistant-workspace .apex-agent-message-actions{opacity:0;transition:opacity .15s}.assistant-workspace .apex-agent-message-row:hover .apex-agent-message-actions,.assistant-workspace .apex-agent-message-row:focus-within .apex-agent-message-actions{opacity:1}.assistant-workspace .apex-agent-message-actions .msg-action{width:25px;height:25px}.assistant-workspace .apex-agent-message-actions .message-time{font-size:10px;color:var(--dim)}
+.assistant-workspace .apex-agent-all-composer{margin:0;padding:12px 34px 14px;border:0;display:flex;gap:0;position:relative}.assistant-workspace .apex-agent-all-compose-box{width:100%;max-width:790px;min-height:92px;margin:0 auto;display:flex;align-items:flex-end;border:1px solid var(--line);border-radius:13px;background:var(--raised);padding:12px 13px 9px}.assistant-workspace .apex-agent-all-compose-box:focus-within{border-color:var(--mint);box-shadow:0 0 0 1px var(--mint)}
+.assistant-workspace .apex-agent-all-input{align-self:flex-start;border:0!important;outline:none!important;box-shadow:none!important;background:none!important;padding:0 0 29px;min-height:50px;font-size:12px;line-height:1.6;color:var(--text);resize:none}
+.assistant-workspace .apex-agent-all-compose-box>div:first-child{position:absolute;left:13px;bottom:9px}.assistant-workspace .apex-agent-all-compose-row{width:100%;max-width:790px;margin:0 auto;position:relative;min-height:15px;justify-content:center!important}.assistant-workspace .apex-agent-all-destination{font-size:9px;text-align:center;color:var(--dim);padding-top:7px}.assistant-workspace .apex-agent-all-send{position:absolute;right:10px;bottom:27px;height:29px;min-width:30px;padding:0 8px;border-radius:7px;background:var(--mint);color:var(--accent-ink);border:0;font-size:0}.assistant-workspace .apex-agent-all-send:after{content:'↑';font-size:18px}.assistant-workspace .apex-agent-all-send:disabled{opacity:.5}
+.assistant-workspace .apex-agent-all-composer>.apex-agent-reply-quote{max-width:790px;width:100%;margin:0 auto 8px}
+.assistant-workspace-subview{overflow:auto;flex:1;min-height:0;padding:28px 34px}.assistant-workspace-subview>*{max-width:790px;margin-left:auto;margin-right:auto}.assistant-settings-back{display:block;width:100%;padding:0;border:0;background:none;text-align:left;font-size:11px!important;color:var(--muted)!important;margin-bottom:20px}
+.assistant-workspace .personal-panels{position:static;width:100%;height:auto;max-width:none;border:0;box-shadow:none;background:transparent}.assistant-workspace .personal-panels-body{overflow:visible}
+.assistant-team-row{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:1px solid transparent!important;background:transparent!important;text-align:left;border-radius:6px!important;box-shadow:none!important}.assistant-team-row>span:not(.identicon){flex:1;min-width:0;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.assistant-team-row .assistant-team-subtitle{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;color:var(--muted);margin-top:2px}.assistant-team-subtitle::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}.assistant-team-subtitle[data-state=needs_you]{color:var(--warn)}.assistant-team-subtitle[data-state=failed]{color:var(--danger)}.assistant-team-row[aria-current=page]{background:var(--panel-2)!important;border-color:var(--line)!important}.assistant-team-row:hover{background:var(--hover)!important}.assistant-team-row>small{display:none}.assistant-team-empty{padding:0 12px;font-size:11px;color:var(--muted)}
+.canvas{position:relative}.assistant-creation{position:absolute;inset:0;z-index:12;background:var(--bg,var(--panel));overflow:auto;padding:28px 34px;font-size:13px}.assistant-creation-host{max-width:790px;margin:0 auto 20px;display:flex;gap:12px;align-items:center;justify-content:space-between;font-size:11px}.assistant-creation-host>button{background:none;border:0;color:var(--muted)}.assistant-creation-host label{display:flex;align-items:center;gap:8px}.assistant-creation-host select{font-size:11px}
+.assistant-source-view{position:absolute;inset:0;z-index:13;overflow:auto;background:var(--panel);padding:24px}.assistant-source-view .apex-agent-sources{max-width:900px;margin:auto}
+@media(max-width:1000px){.assistant-workspace-head{padding:0 20px;height:64px;min-height:64px}.assistant-workspace-subview{padding:23px 20px}.assistant-workspace .apex-agent-tabpanel{padding:22px}.assistant-workspace .apex-agent-all-composer{padding:10px 22px 13px}}
+@media(max-width:620px){.assistant-workspace-head{padding:0 16px}.assistant-workspace-identity h1{font-size:15px}.assistant-workspace .apex-agent-tabpanel{padding:18px 16px}.assistant-workspace .apex-agent-all-composer{padding:9px 15px}.assistant-workspace .apex-agent-message-row.human{max-width:94%}.assistant-workspace-subview{padding:23px 19px}}
+.assistant-workspace-head .identicon-md{width:36px;height:36px;--cell:6px;--gap:1.5px}
+.assistant-creation{position:fixed;inset:0;margin:auto;width:560px;max-width:calc(100vw - 24px);height:fit-content;max-height:calc(100dvh - 36px);border:1px solid var(--line);border-radius:13px;background:var(--shell);color:var(--text);padding:24px;box-shadow:0 24px 80px color-mix(in srgb,black 40%,transparent);overflow:auto}
+.assistant-creation::backdrop{background:color-mix(in srgb,black 53%,transparent);backdrop-filter:blur(5px)}.assistant-creation-heading{display:flex;align-items:center;justify-content:space-between;padding-bottom:20px;border-bottom:1px solid var(--line);margin-bottom:15px}.assistant-creation-heading h2{font-size:15px;font-weight:600;margin:0}.assistant-creation-heading button{background:none;border:0;color:var(--muted);font-size:20px;line-height:1;cursor:pointer}
+.assistant-creation-host{margin-bottom:14px;font-size:11px;justify-content:flex-end}.assistant-creation .assistant-editor-heading{margin:0}.assistant-creation .assistant-setup-intro{font-size:11px}.assistant-creation .assistant-editor-save button{width:100%}
+.assistant-workspace .apex-agent-all-send{width:27px;height:27px;border-radius:50%;min-width:27px;padding:0;display:grid;place-items:center}.assistant-workspace .apex-agent-all-send:after{content:none}.assistant-workspace .apex-agent-all-send svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.assistant-workspace .assistant-entry-group{display:contents}.assistant-workspace .assistant-conversation-day{font-size:10px;color:var(--dim);text-align:center;width:100%;margin:2px 0 4px}.assistant-workspace .assistant-chat-transcript .apex-agent-message-row{display:flex;flex-direction:column;align-items:flex-start;width:100%;max-width:100%;gap:5px;padding:0;border:0;background:none}.assistant-workspace .assistant-chat-transcript .apex-agent-message-row.human{align-self:flex-end;align-items:flex-end;width:auto;max-width:87%}.assistant-workspace .apex-agent-message-row.assistant .apex-agent-message-meta{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;color:var(--text);margin-bottom:10px}.assistant-workspace .apex-agent-message-meta .identicon{width:28px;height:28px;--cell:4px;--gap:1px;padding:3px}.assistant-workspace .apex-agent-message-meta time{font-weight:400;color:var(--dim);font-size:10px}.assistant-workspace .apex-agent-message-row.human .apex-agent-message-meta{display:none}.assistant-workspace .assistant-chat-message.assistant{width:100%}.assistant-workspace .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+.app.assistant-active{background-image:none}.assistant-active .body{background:var(--shell);gap:0;padding:0}.assistant-active .rail{border-right:1px solid var(--line)}.assistant-active .thread-details{border-left:1px solid var(--line)}
+.assistant-chat-back{display:block;width:100%;max-width:790px;margin:12px auto 0;padding:4px 0;border:0;background:none;text-align:left;color:var(--muted);font-size:12px}.assistant-chat-back:hover{color:var(--text)}
+.assistant-work{max-width:860px;margin:0 auto;padding:24px;display:flex;flex-direction:column;gap:28px}.assistant-work-section{display:flex;flex-direction:column;gap:8px}.assistant-work h2{margin:0;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--text)}.assistant-work h2>span{color:var(--muted);font-weight:500;font-variant-numeric:tabular-nums}.assistant-work h2[data-state=needs_you]:before{content:'';width:7px;height:7px;border-radius:50%;background:var(--warn)}
+.assistant-work-row{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 16px;background:var(--panel);border:1px solid var(--line);border-radius:10px}.assistant-work-section:first-child .assistant-work-row{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}.assistant-work-row[data-status=failed],.assistant-work-row[data-status=interrupted]{border-color:color-mix(in srgb,var(--danger) 45%,var(--line))!important}.assistant-work-row-main{flex:1 1 300px;min-width:0;display:flex;flex-direction:column}.assistant-work-row-main strong{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.assistant-work-row-meta{font-size:12px;color:var(--muted)}
+.assistant-work-empty{margin:0;padding:12px 16px;border:1px dashed var(--line);border-radius:10px;color:var(--muted)}.assistant-work-finished>summary{list-style:none;cursor:pointer;padding:4px 0}.assistant-work-finished>summary::-webkit-details-marker{display:none}.assistant-work-finished>summary h2:before{content:'▸';color:var(--muted)}.assistant-work-finished[open]>summary h2:before{content:'▾'}.assistant-work-finished .assistant-work-row{margin-top:6px;background:transparent}.assistant-work-cancelled{margin:8px 0 0;padding:0 16px;color:var(--muted);font-size:12px}
+.assistant-first-run{position:relative;min-height:62vh;display:flex;align-items:center;justify-content:center;padding:40px 24px;overflow:hidden}.assistant-first-run>*:not(.landing-texture-wrap){position:relative;z-index:1}.assistant-first-run .empty-copy{isolation:isolate;max-width:620px;display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;color:color-mix(in srgb,var(--text) 88%,var(--bg));text-shadow:0 1px 4px var(--bg)}.assistant-first-run .landing-texture-wrap+.empty-copy:before{content:'';position:absolute;inset:-40px -48px;z-index:-1;pointer-events:none;background:radial-gradient(ellipse,color-mix(in srgb,var(--bg) 96%,transparent) 45%,transparent 75%)}
+.assistant-first-run .empty-emblem{width:64px;height:64px;display:grid;place-items:center;border-radius:18px;background:color-mix(in srgb,var(--accent) 10%,var(--panel-2));border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line))}.assistant-first-run .eyebrow{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}.assistant-first-run .empty-title{margin:0;font-size:23px;font-weight:600;letter-spacing:-.035em;color:var(--text)}.assistant-first-run p{margin:0;max-width:46ch;color:var(--muted);line-height:1.7}
+.assistant-first-run-suggestions{width:100%;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:10px}.assistant-first-run-suggestion{text-align:left;padding:12px 14px;border-radius:10px;line-height:1.5;color:var(--text);background:color-mix(in srgb,var(--accent) 6%,var(--panel));border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));text-shadow:none}.assistant-first-run-suggestion:hover{background:color-mix(in srgb,var(--accent) 12%,var(--panel))}
+
+/* Approved flow: use the Threads reading column and composer geometry. */
+.assistant-workspace{position:relative}.assistant-workspace .assistant-thread-composer{flex:none;display:flex;flex-direction:column;align-items:stretch;gap:0;margin:0;padding-block:10px;border-top:1px solid var(--line);background:var(--bg);font-size:13px}.assistant-workspace .assistant-thread-composer>.composer-box{width:100%;max-width:none;min-height:0;position:relative}.assistant-workspace .assistant-thread-composer .composer-field>textarea{width:100%;padding:8px 6px;min-height:44px;max-height:200px;border:0;background:transparent;box-shadow:none;outline:none;font:inherit;line-height:20px;resize:none}.assistant-workspace .assistant-thread-composer .composer-tools{position:static;margin:0 auto 0 0}.assistant-workspace .assistant-thread-composer .attachments{order:-2;flex-basis:100%;margin:0 0 8px}.assistant-workspace .assistant-thread-composer .composer-box>input[hidden]{display:none}.assistant-workspace .assistant-thread-composer .composer-box>.apex-agent-all-compose-row[hidden]{display:none}.assistant-workspace .assistant-thread-composer .apex-agent-all-compose-row[hidden]{display:none}.assistant-workspace .assistant-thread-composer .round-send{font-size:16px}.assistant-workspace .assistant-thread-composer .apex-agent-reply-quote{margin-bottom:8px;border:0;border-radius:8px}.assistant-workspace .apex-agent-tabpanel{padding:20px max(24px,calc((100% - var(--deck-message-width,44rem))/2)) 24px}.assistant-workspace .assistant-chat-transcript{width:100%;max-width:none}.assistant-workspace .assistant-reply-progress{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;font-size:12px;color:var(--muted)}.assistant-reply-progress button{font-size:12px;border:0;background:transparent;color:var(--danger);padding:3px 8px}.assistant-work-region.is-detail>.assistant-work{padding:0;max-width:none}.assistant-work-region.is-detail>.assistant-work>:not(.assistant-work-projects){display:none}.assistant-work-region.is-detail .assistant-work-projects>.assistant-work-drawer-trigger{display:none}.assistant-work-region.is-detail .assistant-work-projects{border:0;padding:0}.assistant-work-region.is-detail .assistant-projects{padding:0}.assistant-voice-slot{display:contents;min-width:0}.assistant-voice-slot>span:empty{display:none}.assistant-workspace-head:has(.voice-capsule){height:auto;min-height:70px;flex-wrap:wrap;padding-block:12px}.assistant-workspace .voice-callbar{border-left:0}.assistant-workspace :is(.assistant-chat-message,.apex-agent-task-card,.assistant-work-row,.assistant-work-empty,.assistant-project-outcome,.assistant-project-event,.assistant-notice,.apex-agent-reply-quote,.assistant-task-card){border-left:0!important}.assistant-workspace .assistant-project-event{padding-left:0}.assistant-workspace .apex-agent-task-card:before{display:none}.assistant-workspace :is(.assistant-chat-message,.apex-agent-task-card){border:0}.assistant-work-actions{position:relative}.assistant-work-actions>summary{cursor:pointer;list-style:none}.assistant-work-actions[open]{background:var(--panel-2);border-radius:8px;padding:5px}.assistant-work-actions button{display:block;margin-top:4px}.assistant-work-deleted>summary{cursor:pointer}.assistant-work-section .assistant-work-row{border:0;background:var(--panel)}
+
+.assistant-workspace-subview[hidden]{display:none}.assistant-workspace .assistant-thread-composer[hidden]{display:none}
+
+.assistant-archived-list{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}.assistant-archived-list>summary{cursor:pointer}.assistant-archived-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0}.assistant-archived-row small{display:block;color:var(--muted)}
+
+/* Pending approvals, errors and activity use the same fill-only card treatment. */
+.assistant-workspace :is(.assistant-task-waits,.apex-agent-needs-you,.apex-agent-check-failed,.apex-agent-helper,.assistant-activity-item),.assistant-workspace .apex-agent-task-history ol{border-left:0!important}
+
+/* The session strip keeps one height in every state; the chat scrolls behind it. */
+.assistant-workspace{container-type:inline-size}
+.assistant-workspace .assistant-workspace-head{height:60px;min-height:60px;padding:0 18px;gap:10px;flex-wrap:nowrap}
+.assistant-workspace .assistant-session{padding:3px 10px 3px 4px;max-width:min(70%,480px)}
+/* A problem banner is an alert, not a layout change. It floats under the strip
+   and the scroller keeps its own 78px plus the banner's reserved height, so the
+   first message is never hidden behind either. It used to sit in the flow, which
+   pushed the scroller ~40px down and clipped messages at that line — the solid
+   band that read as a header bar. The old `.assistant-workspace-problem~
+   .assistant-workspace-head{position:relative}` rule could never match at all,
+   because the strip precedes the banner in the DOM. */
+.assistant-workspace{--assistant-problem-h:44px}
+.assistant-workspace-problem{position:absolute;left:0;right:0;top:60px;z-index:5;max-height:var(--assistant-problem-h);overflow:auto;margin:0;pointer-events:none}
+.assistant-workspace:has(>.assistant-workspace-problem) :is(.apex-agent-tabpanel,.assistant-workspace-subview){padding-top:calc(78px + var(--assistant-problem-h))}
+/* The chat has a second alert surface of its own — `.apex-agent-error`, which
+   ApexAgentAll renders in the flow directly above the scroller. In dev that one
+   is usually up as well, and an in-flow error bar pushes the transcript down by
+   its own height, producing the same band. It floats under the strip too, sits
+   below the workspace banner when both are up, and the transcript reserves room
+   for one or two alerts so the first message is never hidden. */
+.assistant-workspace .assistant-conversation>.apex-agent-error{position:absolute;left:0;right:0;top:60px;z-index:5;max-height:var(--assistant-problem-h);overflow:auto}
+.assistant-workspace:has(>.assistant-workspace-problem) .assistant-conversation>.apex-agent-error{top:calc(60px + var(--assistant-problem-h))}
+.assistant-workspace:has(.assistant-conversation>.apex-agent-error) :is(.apex-agent-tabpanel,.assistant-workspace-subview){padding-top:calc(78px + var(--assistant-problem-h))}
+.assistant-workspace:has(>.assistant-workspace-problem):has(.assistant-conversation>.apex-agent-error) :is(.apex-agent-tabpanel,.assistant-workspace-subview){padding-top:calc(78px + var(--assistant-problem-h) * 2)}
+/* Handoff 6.1: the strip floats and paints nothing, so the chat scrolls up
+   behind it. The padding lives on the scroller, which means it scrolls away with
+   the content: at rest the first message clears the strip, and older messages
+   pass underneath it. Taking it off to yank the transcript up hides the first
+   message behind the capsule. */
+.assistant-workspace .apex-agent-tabpanel{padding-top:78px}
+/* One scroll box, and it is the panel. assistant-tasks.css gives the transcript
+   inside it `flex:1;overflow:auto`, which made a second scroll box that started
+   78px down and clipped messages at its own top edge: an empty band under the
+   strip, and pinning that never worked because every scroll read in
+   ApexAgentAll (onScroll, saved positions, isPinnedToBottom) is on the panel. */
+.assistant-workspace .assistant-chat-transcript{overflow:visible;flex:none;min-height:0}
+/* The composer floats too: the chat scrolls right up to and behind the message box, not to a ruled-off strip above it. */
+.assistant-workspace .assistant-conversation>.assistant-thread-composer{position:absolute;left:0;right:0;bottom:0;z-index:2;border-top:0;background:linear-gradient(to bottom,transparent,var(--bg) 10px)}
+.assistant-workspace .assistant-conversation:has(>.assistant-thread-composer:not([hidden])) .apex-agent-tabpanel{padding-bottom:calc(var(--assistant-browser-bottom,112px) + 12px)}
+.assistant-workspace .assistant-workspace-subview{padding-top:78px}
+@container (max-width:580px){
+ .assistant-workspace .assistant-workspace-head{padding:0 14px;gap:8px}
+ .assistant-workspace .assistant-session{max-width:calc(100% - 92px)}
+ .assistant-workspace .assistant-session-name{max-width:96px}
+}
+
+.assistant-workspace .assistant-session:has(.voice-capsule){max-width:min(86%,560px)}
+
+/* Dot-style plain task messages, actions, details and typing indicator */
+.assistant-workspace .dot-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.assistant-workspace .dot-details {
+  border: 0;
+  margin-top: 8px;
+}
+.assistant-workspace .dot-details summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+.assistant-workspace .dot-details summary::-webkit-details-marker {
+  display: none;
+}
+.assistant-workspace .dot-details summary::before {
+  content: '▸ ';
+}
+.assistant-workspace .dot-details[open] summary::before {
+  content: '▾ ';
+}
+.assistant-workspace .dot-details dl {
+  margin-top: 8px;
+}
+.assistant-workspace .dot-draft {
+  background: var(--panel, var(--raised));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.assistant-workspace .dot-draft strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.assistant-workspace .dot-link {
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+.assistant-workspace .dot-link:hover {
+  text-decoration: underline;
+}
+.assistant-workspace .dot-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.assistant-workspace .dot-typing {
+  display: flex;
+  gap: 4px;
+  padding: 6px 0;
+}
+.assistant-workspace .dot-typing i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: dotblink 1.2s infinite;
+}
+.assistant-workspace .dot-typing i:nth-child(2) {
+  animation-delay: .2s;
+}
+.assistant-workspace .dot-typing i:nth-child(3) {
+  animation-delay: .4s;
+}
+@keyframes dotblink {
+  0%, 80%, 100% { opacity: .25; }
+  40% { opacity: 1; }
+}
+@keyframes msg-highlight {
+  0% { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+  100% { background: transparent; }
+}
+.assistant-workspace .is-highlighted {
+  animation: msg-highlight 1.5s ease-out;
+  border-radius: 8px;
+}
+

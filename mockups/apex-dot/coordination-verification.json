@@ -1,0 +1,88 @@
+{
+  "checkedAt": "2026-10-22T19:35:22.044Z",
+  "scope": "Browser-local mockup only; no production integration",
+  "stateSmoke": {
+    "passed": 11,
+    "command": "node mockups/apex-dot/coordination-state.smoke.cjs"
+  },
+  "browserChecks": [
+    {
+      "check": "Tasks selection persists when opening Memory",
+      "pass": true
+    },
+    {
+      "check": "Project notebook contains only selected project notes",
+      "pass": true
+    },
+    {
+      "check": "Pausing Null leaves Atlas working",
+      "pass": true
+    },
+    {
+      "check": "Retry preserves previous history and creates attempt 2",
+      "pass": true
+    },
+    {
+      "check": "Reviewed scratch note appears with source in the correct project notebook",
+      "pass": true
+    },
+    {
+      "check": "Reload restores selected project notebook, promoted note, and global Tasks tab",
+      "pass": true
+    },
+    {
+      "check": "Cannot remove project assignment while its task is active",
+      "pass": true
+    },
+    {
+      "check": "Delegated REA worker receives only Null personal notes and REA project notes",
+      "pass": true
+    },
+    {
+      "check": "Advance demo keeps all active projects working between steps",
+      "pass": true
+    },
+    {
+      "check": "Reload restores Memory Back destination and collapsed Dashboard category",
+      "pass": true
+    },
+    {
+      "check": "Personal note edit creates a versioned saved record",
+      "pass": true
+    },
+    {
+      "check": "Atlas memory excludes Null personal notes",
+      "pass": true
+    },
+    {
+      "check": "Narrow-screen assistant switcher remains available",
+      "pass": true
+    },
+    {
+      "check": "Narrow viewport has no horizontal page overflow",
+      "pass": true
+    },
+    {
+      "check": "Dashboard placement menu opens selected task with correct remote Details",
+      "pass": true
+    },
+    {
+      "check": "No mockup script errors in current browser log",
+      "pass": true,
+      "errors": []
+    }
+  ],
+  "passed": 16,
+  "failed": 0,
+  "screenshots": [
+    "coordinated-projects.png",
+    "worker-context.png",
+    "project-memory.png"
+  ],
+  "notes": [
+    "Pane destinations are simulated in the main pane.",
+    "Concurrent progression uses Advance demo; no worker processes run.",
+    "Test restart reloads browser state, not a remote runtime.",
+    "Chrome extension errors are excluded from application error checks."
+  ]
+}

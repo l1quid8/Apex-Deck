@@ -8,6 +8,8 @@
 //! [`installed_models`] reads the model list a tool keeps for its account.
 
 mod ansi;
+mod assistant;
+pub use assistant::{assistant_profile_ok, build_assistant};
 mod api_tools;
 mod attachments;
 mod api_info;
@@ -18,6 +20,7 @@ mod cli;
 mod gemini_usage;
 mod gateway_sandbox;
 mod codex_server;
+pub mod codex_images;
 mod codex_hook;
 mod events;
 mod grok_images;
@@ -136,7 +139,11 @@ pub fn build_without_tools(config: ParticipantConfig, context: &BuildContext) ->
 /// the login that CLI saved. Every chat shares one answer per provider, so
 /// opening several at once reads only once, and a failed read is logged
 /// once and not retried until its wait is over.
-pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanUsage> {
+///
+/// `model` is the model the bot is set to. A provider can put a model in a
+/// small quota group of its own (Antigravity's Argon), so the answer for one
+/// model is not the answer for another, and each model keeps its own answer.
+pub async fn plan_usage(tool: AgentTool, model: Option<&str>, context: &BuildContext) -> Option<PlanUsage> {
     let name = match tool {
         AgentTool::ClaudeCode => "Claude",
         AgentTool::Codex => "Codex",
@@ -151,11 +158,11 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
             AgentTool::ClaudeCode => claude_usage::read_plan().await,
             AgentTool::Codex => read_codex_plan(context).await.map_err(|why| plan_cache::Failure::new(why, plan_cache::Failure::SHORT)),
             AgentTool::Grok => grok_usage::read_plan().await,
-            AgentTool::Gemini => gemini_usage::read_plan(context.path.as_deref()).await,
+            AgentTool::Gemini => gemini_usage::read_plan(context.path.as_deref(), model).await,
             AgentTool::Muse => unreachable!("answered from the last turn above"),
         }
     };
-    plan_cache::get(tool, read)
+    plan_cache::get(tool, model, read)
         .await
         .map_err(|failure| {
             let wait = failure.wait.as_secs();
@@ -165,7 +172,86 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
         .flatten()
 }
 
+pub use codex_server::ResetOutcome;
+
+/// Use one of a provider's usage resets: `credit`, or the next one when
+/// `None`. Codex and Claude offer them. `key` names the person's attempt; asking
+/// again with the same key after a failure can't spend a second credit, and
+/// a fresh one is made when it is `None`. Gives what happened and, when the
+/// plan could be read after, where it stands now, which is also what the
+/// next `plan_usage` gives.
+pub async fn use_plan_reset(tool: AgentTool, credit: Option<&str>, key: Option<&str>, context: &BuildContext) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
+    let key = key.map_or_else(attempt_key, str::to_string);
+    let (outcome, mut plan) = match tool {
+        AgentTool::Codex => codex_server::consume_reset(start_codex_server(context)?, credit, &key).await?,
+        AgentTool::ClaudeCode => {
+            // Claude needs a grant named; without one, use the one it lists first.
+            let grant = credit
+                .map(str::to_string)
+                .or_else(|| plan_cache::last(tool)?.reset_credits?.credits.first().map(|c| c.id.clone()))
+                .ok_or("Claude has no usage reset to use")?;
+            let outcome = claude_usage::consume_reset(&grant, &key).await?;
+            let plan = if outcome == ResetOutcome::NothingToReset { None } else { claude_usage::read_plan().await.ok() };
+            (outcome, plan)
+        }
+        _ => return Err("only Codex and Claude offer usage resets".to_string()),
+    };
+    if outcome == ResetOutcome::Reset {
+        // The windows started over even if reading them after failed: try
+        // once more, then fall back to the last plan with its windows emptied.
+        if plan.is_none() {
+            plan = match tool {
+                AgentTool::Codex => read_codex_plan(context).await.ok(),
+                _ => claude_usage::read_plan().await.ok(),
+            };
+        }
+        if plan.is_none() {
+            plan = plan_cache::last(tool).map(|mut last| {
+                last.windows.iter_mut().for_each(|w| w.used_percent = 0);
+                last.reset_credits = None;
+                last
+            });
+        }
+        if let Some(plan) = plan.as_mut().filter(|plan| plan.reset_credits.is_none()) {
+            // The credit just used is gone. When the provider picked it,
+            // which one is unknown, so only the count stays.
+            plan.reset_credits = plan_cache::last(tool).and_then(|last| last.reset_credits).map(|mut known| {
+                known.available = known.available.saturating_sub(1);
+                match credit {
+                    Some(used) => known.credits.retain(|c| c.id != used),
+                    None => known.credits.clear(),
+                }
+                known
+            });
+        }
+    }
+    if let Some(plan) = plan.as_ref() {
+        plan_cache::remember(plan);
+    }
+    Ok((outcome, plan))
+}
+
+/// A fresh UUID-shaped key for one reset attempt.
+fn attempt_key() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut bytes = [0u8; 16];
+    for half in bytes.chunks_mut(8) {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        half.copy_from_slice(&hasher.finish().to_le_bytes());
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
 async fn read_codex_plan(context: &BuildContext) -> Result<PlanUsage, String> {
+    codex_server::read_plan(start_codex_server(context)?).await
+}
+
+/// `codex app-server` with all three standard streams piped.
+fn start_codex_server(context: &BuildContext) -> Result<owned_process::OwnedChild, String> {
     let mut command = tokio::process::Command::new("codex");
     command.args(codex_server::ARGS).env("NO_COLOR", "1").env("TERM", "dumb");
     if let Some(path) = &context.path {
@@ -179,9 +265,8 @@ async fn read_codex_plan(context: &BuildContext) -> Result<PlanUsage, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let child = owned_process::Registry::new(context.process_registry.clone()).spawn(&mut command)
-        .map_err(|e| format!("could not start codex: {e}"))?;
-    codex_server::read_plan(child).await
+    owned_process::Registry::new(context.process_registry.clone()).spawn(&mut command)
+        .map_err(|e| format!("could not start codex: {e}"))
 }
 
 /// Verify and stop worker groups persisted by an earlier host process.
@@ -225,6 +310,9 @@ impl Utf8Chunks {
     }
 }
 
+pub use codex_server::list_servers as codex_tool_servers;
+pub use claude_session::list_servers as claude_tool_servers;
+
 #[cfg(test)]
 mod tests {
     use super::Utf8Chunks;
@@ -244,7 +332,3 @@ mod tests {
         assert_eq!(chunks.push(&[b'a', 0xff, b'b']), "a\u{fffd}b");
     }
 }
-
-pub use codex_server::list_servers as codex_tool_servers;
-pub use claude_session::list_servers as claude_tool_servers;
-

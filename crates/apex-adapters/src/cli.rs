@@ -104,9 +104,14 @@ impl CliParticipant {
     }
 
     /// Start a text-only turn with tools disabled at both the CLI and
-    /// protocol boundaries. Only Claude currently has a verified path.
+    /// protocol boundaries. Known agents use provider-specific tool removal and private process isolation.
     pub fn with_tools_disabled(mut self) -> Self {
         self.tools_disabled = true;
+        self.mcp_disabled = true;
+        self.config.access = Access::Read;
+        self.phone = None;
+        self.codex_hook = None;
+        self.attachment_roots.clear();
         self
     }
 
@@ -141,16 +146,14 @@ impl CliParticipant {
     /// The program and arguments for this participant's backend, and how
     /// to read what it prints.
     fn command_line(&self) -> Result<(String, Vec<String>, OutputFormat), ParticipantError> {
-        if self.mcp_disabled && self.isolation.is_none() && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+        if self.mcp_disabled && self.isolation.is_none() && (self.tools_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) || !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })) {
             return Err(ParticipantError::Failed("This CLI has no verified MCP isolation; gateway turn refused.".into()));
         }
         match &self.config.backend {
             Backend::Cli { .. } if self.tools_disabled => Err(ParticipantError::Failed("This CLI does not have a verified tool-free mode, so the monitor check did not run.".into())),
             Backend::Cli { program, args } => Ok((program.clone(), args.clone(), OutputFormat::Text)),
             Backend::Agent { tool, model } => {
-                if self.tools_disabled && *tool != AgentTool::ClaudeCode {
-                    return Err(ParticipantError::Failed("This CLI does not have a verified tool-free mode, so the monitor check did not run.".into()));
-                }
+
                 let (mut program, mut args) =
                     agent_command_in(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.speed, self.config.access, self.plan.is_some(), self.path.as_deref());
                 if self.mcp_disabled && *tool == AgentTool::Gemini {
@@ -168,7 +171,9 @@ impl CliParticipant {
                 if *tool == AgentTool::Codex {
                     args.splice(1..1, phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
                 }
-                if self.tools_disabled {
+                if self.tools_disabled && *tool == AgentTool::Grok { args.push("--disable-web-search".into()); }
+                if self.tools_disabled && *tool == AgentTool::Muse { args.splice(1..1, ["--preset".into(), "empty".into()]); }
+                if self.tools_disabled && *tool == AgentTool::ClaudeCode {
                     let mut safe = Vec::with_capacity(args.len());
                     let mut i = 0;
                     while i < args.len() {
@@ -206,6 +211,11 @@ impl CliParticipant {
         // use, so a Muse bot never sees one.
         if program == "muse" {
             command.env_remove(muse_server::API_KEY_ENV);
+        }
+        // Claude ships the tools that keep a bot's to-do list switched off.
+        // They change no file and run nothing: they only record the plan.
+        if matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
+            command.env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
         }
 
         // Keep colour codes and progress animations out of the reply.
@@ -257,13 +267,21 @@ impl CliParticipant {
         let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
         args.extend(phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
         if self.mcp_disabled {
-            let mut inventory = Command::new(program);
-            inventory.args(GATEWAY_CODEX_FLAGS).args(["mcp", "list", "--json"]).kill_on_drop(true);
-            if let Some(cwd) = &self.cwd { inventory.current_dir(cwd); }
-            if let Some(path) = &self.path { inventory.env("PATH", path); }
-            let output = tokio::time::timeout(Duration::from_secs(20), inventory.output()).await
-                .map_err(|_| ParticipantError::Failed("Codex MCP isolation check timed out.".into()))?
-                .map_err(|_| ParticipantError::Failed("Could not inspect Codex MCP configuration.".into()))?;
+            let mut inventory_args: Vec<String> = GATEWAY_CODEX_FLAGS.iter().map(|s|(*s).into()).collect();
+            inventory_args.extend(["mcp".into(), "list".into(), "--json".into()]);
+            let mut inventory=self.start(program,&inventory_args)?;
+            drop(inventory.stdin.take());
+            let mut stdout=inventory.stdout.take().expect("stdout piped");
+            let mut stderr=inventory.stderr.take().expect("stderr piped");
+            let collected=tokio::time::timeout(Duration::from_secs(20),async {
+                let mut out=Vec::new();let mut err=Vec::new();
+                let (status,read_out,read_err)=tokio::join!(inventory.wait(),stdout.read_to_end(&mut out),stderr.read_to_end(&mut err));
+                let fail=|_|ParticipantError::Failed("Could not inspect Codex MCP configuration.".into());
+                read_out.map_err(fail)?;read_err.map_err(fail)?;
+                Ok::<_,ParticipantError>(std::process::Output{status:status.map_err(fail)?,stdout:out,stderr:err})
+            }).await;
+            inventory.terminate_tree().await.map_err(ParticipantError::CleanupIncomplete)?;
+            let output=collected.map_err(|_|ParticipantError::Failed("Codex MCP isolation check timed out.".into()))??;
             if !output.status.success() {
                 return Err(ParticipantError::Failed("Could not inspect Codex MCP configuration; gateway turn refused.".into()));
             }
@@ -289,6 +307,7 @@ impl CliParticipant {
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
             plan: self.plan.is_some(),
             mcp_disabled: self.mcp_disabled,
+            tools_disabled: self.tools_disabled,
         };
         match codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await {
             Ok(reply) => Ok(reply),
@@ -306,6 +325,8 @@ impl CliParticipant {
     }
 
     /// A Muse Code turn through its session host. See muse_server.rs.
+    // Eight parts of one turn, for the same reason as `run_with_images`.
+    #[allow(clippy::too_many_arguments)]
     async fn run_muse_server(
         &self,
         program: &str,
@@ -652,6 +673,29 @@ impl Participant for CliParticipant {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
+        if self.tools_disabled && (request.access.is_some_and(|access| access != Access::Read) || request.plan) {
+            return Err(ParticipantError::Failed("Text-only turns cannot request workspace access or planning tools.".into()));
+        }
+        let effective_cwd = request.cwd.clone().or_else(|| self.cwd.clone());
+        if effective_cwd != self.cwd {
+            let scoped = Self {
+                config: self.config.clone(),
+                timeout: self.timeout,
+                cwd: effective_cwd,
+                path: self.path.clone(),
+                codex_hook: self.codex_hook.clone(),
+                temp: self.temp.clone(),
+                plan: self.plan,
+                tools_disabled: self.tools_disabled,
+                mcp_disabled: self.mcp_disabled,
+                isolation: self.isolation.clone(),
+                processes: self.processes.clone(),
+                cargo_target_dir: self.cargo_target_dir.clone(),
+                attachment_roots: self.attachment_roots.clone(),
+                phone: self.phone.clone(),
+            };
+            return scoped.respond_with_approvals(request, on_progress, approver).await;
+        }
         let effective = effective_turn_config(&self.config, request.effort_override.as_deref());
         if effective != self.config {
             let mut request = request;
@@ -681,7 +725,7 @@ impl Participant for CliParticipant {
             let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
-        if self.mcp_disabled && self.isolation.is_none() && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+        if self.mcp_disabled && self.isolation.is_none() && (self.tools_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) || !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })) {
             let backend = self.config.backend.clone();
             // Credential lookup may wait on Keychain; keep it off the async worker.
             let isolation = tokio::task::spawn_blocking(move || crate::gateway_sandbox::Isolation::new(&backend))
@@ -800,6 +844,61 @@ impl Participant for CliParticipant {
 
 #[cfg(test)]
 mod tests {
+    use apex_core::AgentTool;
+
+    #[cfg(target_os="macos")]
+    #[tokio::test]
+    async fn assistant_stop_owns_codex_inventory_startup() {
+        use apex_core::Participant;
+        use std::os::unix::fs::PermissionsExt;
+        let folder=crate::attachments::Staged::new().unwrap();
+        let script=folder.dir.join("codex");std::fs::write(&script,"#!/bin/sh\nexec /bin/sleep 30\n").unwrap();
+        std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"}})).unwrap();
+        let mut bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:folder.dir.to_str().map(str::to_owned),..Default::default()}).with_tools_disabled();
+        bot.isolation=Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&apex_core::Backend::Scripted{lines:vec![]}).unwrap()));
+        let request=apex_core::TurnRequest{system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false,cwd:None};
+        let call=bot.respond(request,&|_|{});tokio::pin!(call);
+        let mut owned=false;
+        for _ in 0..100 {
+            tokio::select!{_=&mut call=>panic!("startup unexpectedly completed"),_=tokio::time::sleep(std::time::Duration::from_millis(10))=>{}}
+            if bot.cancel_active_turn().await.unwrap(){owned=true;break;}
+        }
+        assert!(owned,"Stop must own and terminate inventory startup, not only the later model process");
+    }
+
+    #[tokio::test]
+    async fn assistant_request_cannot_reenable_workspace_access() {
+        use apex_core::Participant;
+        let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"},"access":"full"})).unwrap();
+        let bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:Some("/no-assistant-executables".into()),..Default::default()}).with_tools_disabled();
+        let request=apex_core::TurnRequest{system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None};
+        let result=bot.respond(request,&|_|{}).await;
+        assert!(matches!(result,Err(ref why) if why.to_string().contains("Text-only turns cannot")),"workspace escalation must refuse before launching any provider");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn assistant_text_mode_accepts_known_agents_without_inheriting_tools() {
+        for tool in [AgentTool::ClaudeCode, AgentTool::Codex, AgentTool::Gemini, AgentTool::Grok, AgentTool::Muse] {
+            let config: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":tool},"access":"full"})).unwrap();
+            let mut participant = super::CliParticipant::new(config).with_tools_disabled();
+            // Non-Claude CLIs require the private process boundary before launch.
+            if tool != AgentTool::ClaudeCode {
+                participant.isolation = Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&apex_core::Backend::Scripted { lines: vec![] }).unwrap()));
+            }
+            let (program,args,_) = participant.command_line().unwrap_or_else(|e| panic!("{tool:?}: {e}"));
+            assert!(participant.mcp_disabled, "assistant turns disable personal MCP");
+            assert_eq!(participant.config.access, apex_core::Access::Read);
+            match tool {
+                AgentTool::ClaudeCode => assert!(args.windows(2).any(|a| a == ["--tools", ""])),
+                AgentTool::Codex => assert_eq!(program,"codex"),
+                AgentTool::Gemini => assert_eq!(program,"gemini","shared Antigravity service cannot bypass isolation"),
+                AgentTool::Grok => { assert!(args.windows(2).any(|a| a == ["--tools", ""])); assert!(args.contains(&"--no-subagents".into())); assert!(args.contains(&"--disable-web-search".into())); },
+                AgentTool::Muse => assert!(args.windows(2).any(|a| a == ["--preset", "empty"])),
+            }
+        }
+    }
 
     #[test]
     fn gateway_mcp_inventory_disables_every_named_server_and_rejects_bad_shapes() {

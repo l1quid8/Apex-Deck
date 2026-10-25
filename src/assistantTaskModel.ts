@@ -1,3 +1,4 @@
+import type { AssistantRef, ProjectRef } from './assistantIdentity.ts';
 import type { Pane, ParticipantConfig, RoomOptions } from './types.ts';
 
 export type AssistantTaskStatus = 'proposed' | 'needs_clarification' | 'queued' | 'running' | 'needs_you' | 'ready_for_review' | 'applying' | 'done' | 'failed' | 'cancelled' | 'interrupted';
@@ -23,7 +24,12 @@ export interface AssistantTaskDestination {
 }
 export type AssistantTaskMode = 'read_only' | 'in_place' | 'isolated';
 export interface TaskHistoryEntry { atMs: number; kind: string; text: string }
+export interface AssistantLineage { assistant: AssistantRef; project: ProjectRef; sourceEventId: string; delegationId: string }
 export interface AssistantTask {
+  lineage?: AssistantLineage;
+  desiredState?: 'running' | 'paused' | 'cancelled';
+  pauseReason?: 'assistant' | 'manual' | null;
+  controlRevision?: number;
   id: string;
   workspaceId: string;
   owner: AssistantTaskOwner;
@@ -38,8 +44,10 @@ export interface AssistantTask {
   workers: string[];
   attempts: { number: number; runId: string; status: AssistantTaskStatus; startedAtMs: number; finishedAtMs: number | null; reviewRevision: number | null; usage: TaskUsage | null }[];
   status: AssistantTaskStatus;
+  /** Present when this record was imported from an older copy. Never presented as verified. */
+  legacy?: import('./legacyImport').LegacyMarker | null;
   result: string | null;
-  resultData?: { reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; dismissedAtMs?: number; worktreeDiskBytes?: number; spendLimitMicros?: number | null; budgetPaused?: boolean; taskHistory?: TaskHistoryEntry[] } | null;
+  resultData?: { deletedAtMs?: number; reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; startupPreflight?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; dismissedAtMs?: number; worktreeDiskBytes?: number; spendLimitMicros?: number | null; budgetPaused?: boolean; taskHistory?: TaskHistoryEntry[] } | null;
   revision: number;
   mode: AssistantTaskMode;
   usage: TaskUsage | null;
@@ -47,8 +55,9 @@ export interface AssistantTask {
   updatedAtMs: number;
 }
 export interface TaskUsage { inputTokens?: number | null; outputTokens?: number | null; costMicros?: number | null }
-export interface AssistantTaskSnapshot { workspaceId: string; revision: number; tasks: AssistantTask[]; routingThreads?: { id: string; workers: ParticipantConfig[] }[]; namedOnlyWorkerIds?: string[]; executions: { taskId: string; workspaceId: string; threadId: string; mode: AssistantTaskMode; tombstonedAtMs: number | null; pane?: AssistantExecutionPane }[] }
+export interface AssistantTaskSnapshot { project?: ProjectRef; workspaceId: string; revision: number; tasks: AssistantTask[]; routingThreads?: { id: string; workers: ParticipantConfig[] }[]; namedOnlyWorkerIds?: string[]; executions: { taskId: string; workspaceId: string; threadId: string; mode: AssistantTaskMode; tombstonedAtMs: number | null; pane?: AssistantExecutionPane }[] }
 export interface PendingAssistantRequest {
+  lineage?: AssistantLineage;
   requestId: string;
   text: string;
   owner: AssistantTaskOwner;
@@ -61,33 +70,34 @@ export interface PendingAssistantRequest {
   spendLimitMicros?: number | null;
 }
 
-export function pendingRequestStorageKey(owner: AssistantTaskOwner): string {
-  return `apex-agent-pending:${encodeURIComponent(owner.workspaceId)}:${encodeURIComponent(owner.cwd)}:${encodeURIComponent(owner.hostId)}:${encodeURIComponent(owner.conversationId)}`;
+export function pendingRequestStorageKey(owner: AssistantTaskOwner, assistant?: AssistantRef): string {
+  const suffix = assistant ? `:${encodeURIComponent(JSON.stringify([assistant.hostId, assistant.assistantId]))}` : '';
+  return `apex-agent-pending:${encodeURIComponent(owner.workspaceId)}:${encodeURIComponent(owner.cwd)}:${encodeURIComponent(owner.hostId)}:${encodeURIComponent(owner.conversationId)}${suffix}`;
 }
 
-export function pendingRequestMatchesOwner(pending: PendingAssistantRequest, owner: AssistantTaskOwner): boolean {
-  return isTaskOwnedBy({ owner: pending.owner }, owner);
+export function pendingRequestMatchesOwner(pending: PendingAssistantRequest, owner: AssistantTaskOwner, assistant?: AssistantRef): boolean {
+  return isTaskOwnedBy({ owner: pending.owner }, owner) && (assistant ? taskBelongsToAssistant(pending, assistant) : !pending.lineage);
 }
 
-export function loadPendingRequest(storage: Pick<Storage, 'getItem' | 'removeItem'>, owner: AssistantTaskOwner): PendingAssistantRequest | null {
-  const key = pendingRequestStorageKey(owner);
+export function loadPendingRequest(storage: Pick<Storage, 'getItem' | 'removeItem'>, owner: AssistantTaskOwner, assistant?: AssistantRef): PendingAssistantRequest | null {
+  const key = pendingRequestStorageKey(owner, assistant);
   const raw = storage.getItem(key);
   if (!raw) return null;
   try {
     const pending = JSON.parse(raw) as PendingAssistantRequest;
-    if (typeof pending.requestId === 'string' && typeof pending.text === 'string' && pendingRequestMatchesOwner(pending, owner)) return { ...pending, checks: Array.isArray(pending.checks) ? pending.checks : [], mode: pending.mode === 'isolated' || pending.mode === 'read_only' ? pending.mode : 'in_place' };
+    if (typeof pending.requestId === 'string' && typeof pending.text === 'string' && pendingRequestMatchesOwner(pending, owner, assistant)) return { ...pending, checks: Array.isArray(pending.checks) ? pending.checks : [], mode: pending.mode === 'isolated' || pending.mode === 'read_only' ? pending.mode : 'in_place' };
   } catch { /* discard malformed local recovery state */ }
   storage.removeItem(key);
   return null;
 }
 
-export function savePendingRequest(storage: Pick<Storage, 'setItem'>, pending: PendingAssistantRequest, owner: AssistantTaskOwner): void {
-  if (!pendingRequestMatchesOwner(pending, owner)) throw new Error('A pending request cannot be reused for a different assignment.');
-  storage.setItem(pendingRequestStorageKey(owner), JSON.stringify(pending));
+export function savePendingRequest(storage: Pick<Storage, 'setItem'>, pending: PendingAssistantRequest, owner: AssistantTaskOwner, assistant?: AssistantRef): void {
+  if (!pendingRequestMatchesOwner(pending, owner, assistant)) throw new Error('A pending request cannot be reused for a different assignment.');
+  storage.setItem(pendingRequestStorageKey(owner, assistant), JSON.stringify(pending));
 }
 
-export function clearPendingRequest(storage: Pick<Storage, 'removeItem'>, owner: AssistantTaskOwner): void {
-  storage.removeItem(pendingRequestStorageKey(owner));
+export function clearPendingRequest(storage: Pick<Storage, 'removeItem'>, owner: AssistantTaskOwner, assistant?: AssistantRef): void {
+  storage.removeItem(pendingRequestStorageKey(owner, assistant));
 }
 
 export function assistantMessageArgs(owner: AssistantTaskOwner, pending: PendingAssistantRequest, threadLabels: { id: string; label: string }[], checks?: string[][]) {
@@ -213,3 +223,15 @@ export function handoffPreparationArgs(child: HandoffChild, owner: AssistantTask
   if (!isTaskOwnedBy({ owner: child.payload.owner }, owner)) throw new Error('The handoff assignment changed. Reconfirm the affected work.');
   return child.payload;
 }
+
+/** Exact recorded origin; the selected view never supplies task ownership. */
+export function taskBelongsToAssistant(task: { lineage?: AssistantLineage | null }, assistant: AssistantRef): boolean {
+  return task.lineage?.assistant.hostId === assistant.hostId && task.lineage.assistant.assistantId === assistant.assistantId;
+}
+export function taskControlLabel(task: { status: AssistantTaskStatus; desiredState?: AssistantTask['desiredState']; attempts?: { finishedAtMs: number | null }[] }): string {
+  if (task.status === 'interrupted') return 'Interrupted';
+  if (task.desiredState === 'paused') return task.status === 'running' || (task.status === 'needs_you' && task.attempts?.at(-1)?.finishedAtMs == null) ? 'Pausing' : 'Paused';
+  return taskStatusLabel(task.status);
+}
+
+export const taskDisplayStatus = taskControlLabel;

@@ -190,15 +190,19 @@ impl Approver for NoApprover {
     }
 }
 
+/// Questions waiting for an answer: the id they were asked under, who asked,
+/// and the channel the answer goes back through.
+type Waiting<T> = Mutex<HashMap<String, (Option<ParticipantId>, oneshot::Sender<T>)>>;
+
 /// Proposals waiting for an answer.
 #[derive(Default)]
 pub struct ApprovalDesk {
-    waiting: Mutex<HashMap<String, (Option<ParticipantId>, oneshot::Sender<Decision>)>>,
+    waiting: Waiting<Decision>,
     next: AtomicU64,
     /// "Always allow" answers, oldest first.
     always: Mutex<Vec<AllowedRule>>,
     /// Questions waiting for words, not a yes or no. Ids share `next`.
-    asking: Mutex<HashMap<String, (Option<ParticipantId>, oneshot::Sender<Answer>)>>,
+    asking: Waiting<Answer>,
 }
 
 impl ApprovalDesk {

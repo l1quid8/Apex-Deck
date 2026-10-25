@@ -1,0 +1,13 @@
+.workspace-tasks { padding: 16px; min-width: 0; }
+.workspace-tasks header h2 { font-size: 16px; margin: 0 0 4px; }
+.workspace-tasks header p { margin: 0 0 14px; }
+.workspace-tasks-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.workspace-tasks-filters input { grid-column: 1 / -1; }
+.workspace-tasks-filters input, .workspace-tasks-filters select { min-width: 0; width: 100%; }
+.workspace-tasks-group h3 { margin: 16px 0 6px; font-size: 13px; }
+.workspace-tasks-group h3 button { width: 100%; text-align: left; background: transparent; border: 0; }
+.workspace-tasks-group ul { list-style: none; margin: 0; padding: 0; }
+.workspace-task-row { display: grid; gap: 5px; width: 100%; padding: 10px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; text-align: left; overflow-wrap: anywhere; }
+.workspace-task-row strong { font-size: 13px; font-weight: 500; }
+.workspace-task-row span { font-size: 12px; }
+.workspace-tasks-problems { font-size: 12px; overflow-wrap: anywhere; }

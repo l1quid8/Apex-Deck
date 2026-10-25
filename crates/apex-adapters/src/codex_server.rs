@@ -40,7 +40,7 @@ use crate::claude_session::{helpers_line, HELPER_HEARTBEAT, HELPER_LIMIT};
 use crate::codex_hook::{
     hook_state, hooks_list, next_call, serve, trust_edit, Gates, Hook, HookState, McpCall,
 };
-use crate::events::{codex_plan, EventReader, OutputFormat};
+use crate::events::{codex_plan, codex_reset_credits, EventReader, OutputFormat};
 use crate::report;
 
 /// How long the server may take to answer a setup request.
@@ -67,6 +67,7 @@ pub(crate) struct Turn<'a> {
     /// and changes nothing.
     pub plan: bool,
     pub mcp_disabled: bool,
+    pub tools_disabled: bool,
 }
 
 /// Why a turn through the app server did not produce a reply.
@@ -419,6 +420,9 @@ pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
         // Codex's saved sessions stops the history filling with them.
         "ephemeral": true,
     });
+    if turn.tools_disabled {
+        params["developerInstructions"] = json!("Answer as the assistant defined in the supplied conversation. This is a text-only conversation: no tools or subagents are available. Task execution belongs to the host approval workflow.");
+    }
     if let Some(tier) = turn.service_tier {
         params["serviceTier"] = json!(tier);
     }
@@ -664,6 +668,13 @@ pub(crate) async fn run_with_images(
     // Thread start is bookkeeping on every turn. The chat already says
     // Thinking until Codex reports a real step, so this is not announced.
     let mut start = thread_start(&turn);
+    let mut policy=policy;
+    if turn.tools_disabled {
+        for key in ["features.shell_tool", "features.unified_exec", "features.multi_agent", "features.plugins", "features.remote_plugin", "features.apps", "features.image_generation", "features.view_image", "tools.update_plan.enabled"] {
+            policy[key]=json!(false);
+        }
+        policy["web_search"]=json!("disabled");
+    }
     start["params"]["config"] = policy;
     send(&mut stdin, &start)
         .await
@@ -772,6 +783,9 @@ pub(crate) async fn run_with_images(
         };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
             let item = &message["params"]["item"];
+            if turn.tools_disabled && message["method"] == "item/started" && !matches!(item["type"].as_str(),Some("userMessage"|"agentMessage"|"reasoning"|"contextCompaction")) {
+                return Err(TurnError::Failed("A tool was requested during a text-only assistant reply; the turn was stopped.".into()));
+            }
             if message["method"] == "item/started" && item["type"] == "mcpToolCall" {
                 if let Some(id) = item["id"].as_str() {
                     pending_mcp.insert(id.to_string(), item.clone());
@@ -905,7 +919,7 @@ pub(crate) async fn run_with_images(
     // The turn has used some of the plan; read where it stands now.
     if send(&mut stdin, &rate_limits_read(3)).await.is_ok() {
         if let Ok(result) = answer_within(&mut lines, 3, LIMITS_TIMEOUT).await {
-            if let Some(plan) = codex_plan(&result["rateLimits"], false) {
+            if let Some(plan) = plan_from_read(&result) {
                 crate::plan_cache::remember(&plan);
                 on_progress(Progress::Plan(&plan));
             }
@@ -958,33 +972,114 @@ async fn initialize(
         .map_err(|e| format!("the app server went away: {e}"))
 }
 
-/// Read the account's plan limits without starting a turn. `child` must
-/// have been started with `ARGS` and all three standard streams piped.
-pub(crate) async fn read_plan(mut child: OwnedChild) -> Result<PlanUsage, String> {
-    let mut stdin = child.stdin.take().expect("stdin was piped");
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    tokio::spawn(async move {
-        let mut sink = Vec::new();
-        let _ = stderr.read_to_end(&mut sink).await;
-    });
-    let mut lines = BufReader::new(stdout).lines();
-    initialize(&mut stdin, &mut lines).await?;
-    send(&mut stdin, &rate_limits_read(1))
-        .await
-        .map_err(|e| format!("the app server went away: {e}"))?;
-    let result = answer_within(&mut lines, 1, SETUP_TIMEOUT).await;
-    drop(stdin);
-    if tokio::time::timeout(Duration::from_secs(2), child.wait())
-        .await
-        .is_err()
-    {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+/// A short conversation with an app server started outside a turn, for
+/// account requests. `child` must have been started with `ARGS` and all
+/// three standard streams piped.
+struct AccountSession {
+    child: OwnedChild,
+    stdin: ChildStdin,
+    lines: Lines<BufReader<ChildStdout>>,
+}
+
+impl AccountSession {
+    async fn start(mut child: OwnedChild) -> Result<Self, String> {
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let mut stderr = child.stderr.take().expect("stderr was piped");
+        tokio::spawn(async move {
+            let mut sink = Vec::new();
+            let _ = stderr.read_to_end(&mut sink).await;
+        });
+        let mut lines = BufReader::new(stdout).lines();
+        initialize(&mut stdin, &mut lines).await?;
+        Ok(Self { child, stdin, lines })
     }
-    child.terminate_tree().await?;
-    codex_plan(&result?["rateLimits"], false)
-        .ok_or_else(|| "the answer had no rate limits".to_string())
+
+    /// Send `request` and wait up to `limit` for the answer to `id`.
+    async fn ask(&mut self, request: &Value, id: u64, limit: Duration) -> Result<Value, String> {
+        send(&mut self.stdin, request)
+            .await
+            .map_err(|e| format!("the app server went away: {e}"))?;
+        answer_within(&mut self.lines, id, limit).await
+    }
+
+    /// Close the server's input and make sure it and its children are gone.
+    async fn finish(self) -> Result<(), String> {
+        let Self { mut child, stdin, .. } = self;
+        drop(stdin);
+        if tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        child.terminate_tree().await
+    }
+}
+
+/// Read the account's plan limits without starting a turn. `child` is
+/// started as for `AccountSession`.
+pub(crate) async fn read_plan(child: OwnedChild) -> Result<PlanUsage, String> {
+    let mut session = AccountSession::start(child).await?;
+    let result = session.ask(&rate_limits_read(1), 1, SETUP_TIMEOUT).await;
+    session.finish().await?;
+    plan_from_read(&result?).ok_or_else(|| "the answer had no rate limits".to_string())
+}
+
+/// The plan in an `account/rateLimits/read` answer, with its reset credits.
+fn plan_from_read(result: &Value) -> Option<PlanUsage> {
+    let mut plan = codex_plan(&result["rateLimits"], false)?;
+    plan.reset_credits = codex_reset_credits(&result["rateLimitResetCredits"]);
+    Some(plan)
+}
+
+pub(crate) fn reset_credit_consume(id: u64, credit: Option<&str>, key: &str) -> Value {
+    json!({ "method": "account/rateLimitResetCredit/consume", "id": id, "params": { "creditId": credit, "idempotencyKey": key } })
+}
+
+/// What happened when a usage reset was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetOutcome {
+    /// A credit was used and the plan's windows started over.
+    Reset,
+    /// No window was used enough to reset; the credit was kept.
+    NothingToReset,
+    /// The account has no credit left.
+    NoCredit,
+    /// This same attempt had already gone through.
+    AlreadyRedeemed,
+}
+
+impl ResetOutcome {
+    fn from_wire(outcome: &str) -> Option<Self> {
+        Some(match outcome {
+            "reset" => Self::Reset,
+            "nothingToReset" => Self::NothingToReset,
+            "noCredit" => Self::NoCredit,
+            "alreadyRedeemed" => Self::AlreadyRedeemed,
+            _ => return None,
+        })
+    }
+}
+
+/// Use usage-reset credit `credit` (or the next one, when `None`), then
+/// read where the plan stands. `key` names this one attempt, so asking
+/// again with it can't use a second credit. `child` is started as for
+/// `AccountSession`.
+pub(crate) async fn consume_reset(child: OwnedChild, credit: Option<&str>, key: &str) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
+    let mut session = AccountSession::start(child).await?;
+    let outcome = session.ask(&reset_credit_consume(1, credit, key), 1, SETUP_TIMEOUT).await.and_then(|result| {
+        let outcome = result["outcome"].as_str().unwrap_or_default();
+        ResetOutcome::from_wire(outcome).ok_or_else(|| format!("the app server answered with an unknown outcome {outcome:?}"))
+    });
+    let plan = match outcome {
+        Ok(_) => session.ask(&rate_limits_read(2), 2, LIMITS_TIMEOUT).await.ok().and_then(|result| plan_from_read(&result)),
+        Err(_) => None,
+    };
+    session.finish().await?;
+    Ok((outcome?, plan))
 }
 
 fn ended_early(reader: EventReader) -> String {
@@ -992,6 +1087,42 @@ fn ended_early(reader: EventReader) -> String {
         Some(error) => error,
         None => "it stopped before the turn finished".to_string(),
     }
+}
+
+pub async fn list_servers(
+    cwd: Option<String>,
+    path: Option<String>,
+) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    use std::process::Stdio;
+    let mut command = tokio::process::Command::new("codex");
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command
+        .args(ARGS)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let registry = Registry::default();
+    let mut child = registry.spawn(&mut command)
+        .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let result = async {
+        initialize(&mut stdin, &mut lines).await?;
+        mcp_inventory(&mut stdin, &mut lines, false)
+            .await
+            .and_then(|(_, names, _)| names)
+    }
+    .await;
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    child.terminate_tree().await?;
+    result
 }
 
 #[cfg(test)]
@@ -1016,12 +1147,37 @@ cat > /dev/null"#;
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
         let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true };
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, tools_disabled: false };
         let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
         match result {
             Ok(reply) => assert_eq!(reply.text, "Private MCP denied."),
             Err(_) => panic!("gateway accepted a late MCP call or failed the protocol"),
         }
+    }
+
+    #[tokio::test]
+    async fn assistant_stops_if_a_provider_attempts_a_tool() {
+        let script = r#"say() { echo "$1"; }
+read -r l; say '{"id":0,"result":{}}'
+read -r l; read -r l; read -r l
+say '{"id":110,"result":{"marketplaces":[]}}'
+say '{"id":10,"result":{"data":[],"nextCursor":null}}'
+read -r l; say '{"id":1,"result":{"thread":{"id":"T"}}}'
+read -r l
+say '{"method":"item/started","params":{"threadId":"T","item":{"type":"mcpToolCall","id":"c1","server":"probe","tool":"get_balance","arguments":{}}}}'
+say '{"id":99,"method":"mcpServer/elicitation/request","params":{"threadId":"T","serverName":"probe","_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{}}}}'
+read -r l
+case "$l" in *decline*) ;; *) exit 3 ;; esac
+say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"agentMessage","id":"m1","text":"Private MCP denied."}}}'
+say '{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"completed"}}}'
+read -r l; say '{"id":3,"result":{"rateLimits":{}}}'
+cat > /dev/null"#;
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+        let child = Registry::default().spawn(&mut command).unwrap();
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, tools_disabled: true };
+        let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
+        assert!(matches!(result,Err(TurnError::Failed(ref why)) if why.contains("tool was requested")),"assistant mode must stop unexpected tools before accepting any reply");
     }
 
     #[test]
@@ -1233,7 +1389,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         let policy = thread_start(&turn)["params"]["approvalPolicy"].clone();
@@ -1247,7 +1403,7 @@ cat > /dev/null"#;
 
     #[test]
     fn thread_start_sends_the_service_tier_only_when_chosen() {
-        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, plan: false };
+        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, tools_disabled: false, plan: false };
         assert_eq!(thread_start(&turn)["params"]["serviceTier"], "priority");
         turn.service_tier = None;
         assert!(thread_start(&turn)["params"].get("serviceTier").is_none());
@@ -1261,7 +1417,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Edits,
             cwd: Some("/work".into()),
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1276,7 +1432,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Ask,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1289,7 +1445,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Read,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1302,7 +1458,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1417,7 +1573,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false,
+            mcp_disabled: false, tools_disabled: false,
             plan: false,
         };
         let reply = match run(child, turn, "go", &sink, &apex_core::NoApprover, None).await {
@@ -1489,40 +1645,4 @@ cat > /dev/null"#;
             json!({"id":8,"result":{"answers":{}}})
         );
     }
-}
-
-pub async fn list_servers(
-    cwd: Option<String>,
-    path: Option<String>,
-) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
-    use std::process::Stdio;
-    let mut command = tokio::process::Command::new("codex");
-    if let Some(path) = path {
-        command.env("PATH", path);
-    }
-    command
-        .args(ARGS)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    let registry = Registry::default();
-    let mut child = registry.spawn(&mut command)
-        .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
-    let mut stdin = child.stdin.take().unwrap();
-    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-    let result = async {
-        initialize(&mut stdin, &mut lines).await?;
-        mcp_inventory(&mut stdin, &mut lines, false)
-            .await
-            .and_then(|(_, names, _)| names)
-    }
-    .await;
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    child.terminate_tree().await?;
-    result
 }
