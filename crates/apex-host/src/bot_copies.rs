@@ -656,6 +656,15 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
                 conflicts.push(path.clone());
                 continue;
             }
+            // Links and file-type changes never go through a text merge: writing
+            // the merged text would follow the link and overwrite its target.
+            if [c.old_mode.as_str(), c.new_mode.as_str(), m.new_mode.as_str()]
+                .iter()
+                .any(|mode| !mode.starts_with("100"))
+            {
+                conflicts.push(path.clone());
+                continue;
+            }
 
             let c_bytes = get_blob(&root, &c.new_sha)?;
             let m_bytes = get_blob(&root, &m.new_sha)?;
@@ -693,6 +702,10 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
             let _ = std::fs::remove_dir_all(&temp_dir);
 
             let target = work.join(path);
+            if target.is_symlink() {
+                conflicts.push(path.clone());
+                continue;
+            }
             if let Some(parent) = target.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -2052,6 +2065,68 @@ mod tests {
             fs::read_link(&link_dangling).unwrap(),
             PathBuf::from("non_existent.txt")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fold_never_writes_through_a_symlink_both_sides_changed() {
+        let (tmp, root, data) = init_repo("fold-link-both");
+        let outside_a = tmp.path().join("outside-a.txt");
+        let outside_b = tmp.path().join("outside-b.txt");
+        fs::write(&outside_a, "outside a\n").unwrap();
+        fs::write(&outside_b, "outside b\n").unwrap();
+        std::os::unix::fs::symlink(&outside_a, root.join("link")).unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "link"]);
+
+        let copy = create_copy(&root, &data, "t-link-both", "b-link-both").unwrap();
+        fs::remove_file(copy.work.join("link")).unwrap();
+        std::os::unix::fs::symlink(&outside_b, copy.work.join("link")).unwrap();
+        fs::remove_file(root.join("link")).unwrap();
+        std::os::unix::fs::symlink(Path::new("elsewhere"), root.join("link")).unwrap();
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Conflicts { files } => assert_eq!(files, vec!["link".to_string()]),
+            other => panic!("Expected Conflicts, got {:?}", other),
+        }
+        assert_eq!(fs::read_to_string(&outside_a).unwrap(), "outside a\n");
+        assert_eq!(fs::read_to_string(&outside_b).unwrap(), "outside b\n");
+        assert_eq!(fs::read_link(copy.work.join("link")).unwrap(), outside_b);
+        assert_eq!(fs::read_link(root.join("link")).unwrap(), PathBuf::from("elsewhere"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fold_treats_file_type_change_as_conflict() {
+        let (tmp, root, data) = init_repo("fold-type-change");
+        let outside = tmp.path().join("outside.txt");
+        fs::write(&outside, "outside\n").unwrap();
+        fs::write(root.join("f.txt"), "one\ntwo\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "file"]);
+
+        let copy = create_copy(&root, &data, "t-type", "b-type").unwrap();
+        fs::remove_file(copy.work.join("f.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside, copy.work.join("f.txt")).unwrap();
+        fs::write(root.join("f.txt"), "one\ntwo changed\n").unwrap();
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Conflicts { files } => assert_eq!(files, vec!["f.txt".to_string()]),
+            other => panic!("Expected Conflicts, got {:?}", other),
+        }
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "outside\n");
+        assert_eq!(fs::read_link(copy.work.join("f.txt")).unwrap(), outside);
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), "one\ntwo changed\n");
     }
 
     #[tokio::test]
