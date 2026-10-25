@@ -172,10 +172,12 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
       {state.tabs.map((tab, i) => {
         const label = labels[i];
         const active = tab.id === state.active;
+        // The flag belongs to the Tasks tab, not to being in front: it shows while tasks wait,
+        // so you can see them waiting from another tab.
         const flaggedTasks = tab.kind === "tasks" && !!taskAttention?.count;
         const name = flaggedTasks ? taskAttention!.details : label;
         const labelled = layout.fit === "all" || (layout.fit === "mid" && active);
-        return <div key={tab.id} data-tab-id={tab.id} hidden={layout.hidden.includes(tab.id)} className={`right-panel-tab${active ? " active" : ""}${flaggedTasks && active ? " has-attention" : ""}${dragId === tab.id ? " dragging" : ""}`}
+        return <div key={tab.id} data-tab-id={tab.id} hidden={layout.hidden.includes(tab.id)} className={`right-panel-tab${active ? " active" : ""}${flaggedTasks ? " has-attention" : ""}${dragId === tab.id ? " dragging" : ""}`}
           // Every tab can drag out into a window; reordering fixed tabs is refused by moveTab.
           onPointerDown={(e) => beginTabDrag(tab.id, e)}
           onContextMenu={onPopout ? (e) => { e.preventDefault(); setContext({ id: tab.id, x: e.clientX, y: e.clientY }); } : undefined}>
