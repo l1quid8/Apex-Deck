@@ -3,8 +3,15 @@ use image::{DynamicImage, GenericImageView};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Screen {
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub scale: u32,
     pub id: u32,
     pub orientation: u32,
+}
+
+impl Default for Screen {
+    fn default() -> Self { Self { id: 1, orientation: 1, pixel_width: 0, pixel_height: 0, scale: 1 } }
 }
 
 /// `simctl io enumerate` lists connected screens separately from IO ports.
@@ -14,19 +21,23 @@ pub fn parse(listing: &str) -> Vec<Screen> {
     let mut id = None;
     let mut integrated = false;
     let mut orientation = 1;
-    let save = |screens: &mut Vec<Screen>, id: Option<u32>, integrated: bool, orientation: u32| {
+    let mut scale = 1;
+    let save = |screens: &mut Vec<Screen>, id: Option<u32>, integrated: bool, orientation: u32, scale: u32| {
         if let Some(id) = id.filter(|_| integrated) {
-            screens.push(Screen { id, orientation });
+            screens.push(Screen { id, orientation, scale, ..Screen::default() });
         }
     };
     for line in listing.lines().map(str::trim) {
         if let Some(value) = line.strip_prefix("Screen ID: ") {
-            save(&mut screens, id, integrated, orientation);
+            save(&mut screens, id, integrated, orientation, scale);
             id = value.parse::<u32>().ok().filter(|id| (1..=10).contains(id));
             integrated = false;
             orientation = 1;
+            scale = 1;
         } else if let Some(value) = line.strip_prefix("Screen Type: ") {
             integrated = value == "Integrated";
+        } else if let Some(value) = line.strip_prefix("Preferred UI Scale: ") {
+            scale = value.parse().unwrap_or(1);
         } else if let Some(value) = line.strip_prefix("UI Orientation: ") {
             orientation = match value {
                 "Portrait Upside Down" => 2,
@@ -36,10 +47,25 @@ pub fn parse(listing: &str) -> Vec<Screen> {
             };
         }
     }
-    save(&mut screens, id, integrated, orientation);
+    save(&mut screens, id, integrated, orientation, scale);
     screens.sort_by_key(|screen| screen.id);
     screens.dedup_by_key(|screen| screen.id);
     screens
+}
+
+/// Initial point geometry from simctl, avoiding AX accessibility on new runtimes.
+/// The live frame replaces it with the active panel's rotated geometry for input.
+pub fn panel_points(listing: &str) -> Option<(f64, f64)> {
+    let mut size = None;
+    for line in listing.lines().map(str::trim) {
+        if let Some(value) = line.strip_prefix("Pixel Size: {").and_then(|s| s.strip_suffix('}')) {
+            if let Some((w, h)) = value.split_once(',') { size = w.trim().parse::<f64>().ok().zip(h.trim().parse::<f64>().ok()); }
+        }
+        if let Some(scale) = line.strip_prefix("Preferred UI Scale: ").and_then(|s| s.parse::<f64>().ok()).filter(|s| *s > 0.0) {
+            if let Some((w, h)) = size.filter(|(w, h)| *w > 0.0 && *h > 0.0) { return Some((w / scale, h / scale)); }
+        }
+    }
+    None
 }
 
 /// DTUHID uses the panel's unrotated coordinates, not screenshot coordinates.
@@ -110,11 +136,22 @@ async fn capture(
         .map_err(|e| e.to_string())
 }
 
+/// Automatic following for startup and externally controlled devices.
 pub async fn stream(
     xcrun: std::path::PathBuf,
     udid: String,
     frame: std::sync::Arc<std::sync::Mutex<Option<super::Frame>>>,
     seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) { stream_preferred(xcrun, udid, frame, seq, None).await; }
+
+/// After an owned pose change, favor its destination even when the inactive
+/// panel retains a lit framebuffer. Fall back when that panel is black.
+pub async fn stream_preferred(
+    xcrun: std::path::PathBuf,
+    udid: String,
+    frame: std::sync::Arc<std::sync::Mutex<Option<super::Frame>>>,
+    seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    preferred: Option<u32>,
 ) {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -133,7 +170,7 @@ pub async fn stream(
     if tokio::fs::create_dir_all(&directory.0).await.is_err() {
         return;
     }
-    let mut previous = None;
+    let mut previous = preferred;
     loop {
         let listing =
             super::simctl(&xcrun, &["io", &udid, "enumerate"], Duration::from_secs(4)).await;
@@ -161,10 +198,12 @@ pub async fn stream(
             .as_deref()
             .map(parse)
             .is_ok_and(|screens| !screens.is_empty() && screens.len() == candidates.len());
-        let selected = complete.then(|| choose(&candidates, previous)).flatten();
+        let selected = complete.then(|| choose(&candidates, preferred.or(previous))).flatten();
         if let Some(index) = selected {
             let (screen, image) = &candidates[index];
-            let screen = screen.clone();
+            let mut screen = screen.clone();
+            screen.pixel_width = image.width();
+            screen.pixel_height = image.height();
             let image = image.clone();
             let encoded = tokio::task::spawn_blocking(move || {
                 let image = image
@@ -217,7 +256,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let listing = "Screen ID: 1\nScreen Type: Integrated\nUI Orientation: Portrait\nScreen ID: 3\nScreen Type: Integrated\nUI Orientation: Landscape Left\n";
         std::fs::write(directory.join("listing"), listing).unwrap();
-        std::fs::write(directory.join("active"), "3").unwrap();
+        std::fs::write(directory.join("active"), "both").unwrap();
         for (name, w, h, color) in [
             ("1", 100, 200, [10, 20, 30]),
             ("3", 300, 200, [30, 20, 10]),
@@ -236,7 +275,7 @@ case "$4" in
   enumerate) cat listing ;;
   screenshot)
     id=${5#--display=}
-    if [ "$id" = "$(cat active)" ]; then cp "$id.png" "$7"; else cp black.png "$7"; fi ;;
+    if [ "$(cat active)" = "both" ] || [ "$id" = "$(cat active)" ]; then cp "$id.png" "$7"; else cp black.png "$7"; fi ;;
   *) exit 2 ;;
 esac
 "#,
@@ -244,11 +283,12 @@ esac
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let frame = Arc::new(Mutex::new(None));
-        let task = tokio::spawn(stream(
+        let task = tokio::spawn(stream_preferred(
             program,
             "U".into(),
             frame.clone(),
             Arc::new(AtomicU64::new(0)),
+            Some(3),
         ));
         let wait_for = |id| {
             let frame = frame.clone();
@@ -280,6 +320,11 @@ esac
         let outer = wait_for(1).await;
         assert_eq!((outer.width, outer.height), (50, 100));
         assert!(outer.seq > inner.seq);
+        // The destination may still be dark in the first capture after a pose
+        // change. Its preference must survive that fallback once it lights up.
+        std::fs::write(directory.join("active"), "both").unwrap();
+        let restored = wait_for(3).await;
+        assert!(restored.seq > outer.seq);
         task.abort();
         let _ = task.await;
         std::fs::remove_dir_all(directory).unwrap();
@@ -293,11 +338,11 @@ esac
             vec![
                 Screen {
                     id: 1,
-                    orientation: 1
+                    orientation: 1, ..Screen::default()
                 },
                 Screen {
                     id: 3,
-                    orientation: 3
+                    orientation: 3, ..Screen::default()
                 }
             ]
         );
@@ -306,7 +351,7 @@ esac
     fn landscape_touches_follow_the_same_inner_screen_as_the_picture() {
         let screen = Screen {
             id: 3,
-            orientation: 3,
+            orientation: 3, ..Screen::default()
         };
         let (x, y) = touch_ratio(&screen, 0.665, 0.9);
         assert!((x - 0.9).abs() < 1e-9 && (y - 0.335).abs() < 1e-9);
@@ -314,7 +359,7 @@ esac
             touch_ratio(
                 &Screen {
                     id: 1,
-                    orientation: 1
+                    orientation: 1, ..Screen::default()
                 },
                 0.2,
                 0.8
@@ -324,7 +369,7 @@ esac
         let (x, y) = touch_ratio(
             &Screen {
                 id: 3,
-                orientation: 4,
+                orientation: 4, ..Screen::default()
             },
             0.2,
             0.8,

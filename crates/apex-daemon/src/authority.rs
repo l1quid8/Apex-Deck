@@ -150,7 +150,7 @@ pub fn command_needs(command: &Command) -> Need {
         ApiModels { .. } | ApiBalance { .. } | ApiQuote { .. } => Need::Never,
         PreviewProbe { .. } => Need::Never,
         // The phone is this Mac's simulator; paired devices can't drive it.
-        PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
+        PhoneDevices {} | PhoneControl { .. } | PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
         ModRead { .. } | ModInstall { .. } | ModProcessRun { .. } | ModHttpFetch { .. } | ModFsWrite { .. } | ModFsStat { .. } | ModEnvGet { .. } => Need::Never,
         // Legacy migration reads every old ledger and transcript on this Mac, and
         // its apply is a UI-attested intent issued only for this Mac.

@@ -488,7 +488,23 @@ export interface StepsIndex { version: number; replies: Record<string, StepsInde
 export type PhoneKey = "enter" | "backspace" | "tab" | "escape" | "space" | "up" | "down" | "left" | "right";
 /** Who has the shared simulated iPhone. */
 export type PhoneHolder = { kind: "free" } | { kind: "human"; secondsLeft: number } | { kind: "bot"; name: string };
-export interface PhoneStatus { on: boolean; starting: boolean; device: string | null; udid: string | null; holder: PhoneHolder; width: number; height: number; problem: string | null }
+export interface PhoneGeometry { generation: number; display: number; orientation: number; width: number; height: number }
+export interface PhoneDevice { runtime: string; deviceType: string; model: string; version: string }
+export type PhoneControl =
+  | { kind: "selectDevice"; runtime: string; deviceType: string }
+  | { kind: "fold"; folded: boolean }
+  | { kind: "rotate"; orientation: number }
+  | { kind: "appearance" | "textSize"; value: string }
+  | { kind: "contrast"; enabled: boolean }
+  | { kind: "statusBar"; clean: boolean }
+  | { kind: "screenshot" }
+  | { kind: "recording"; active: boolean }
+  | { kind: "volume"; direction: "up" | "down" }
+  | { kind: "biometric"; matched: boolean }
+  | { kind: "location"; latitude: number | null; longitude: number | null }
+  | { kind: "stop" };
+export interface PhoneControlReply { status: PhoneStatus; message: string; path: string | null }
+export interface PhoneStatus { orientation?: number | null; pixelWidth?: number; pixelHeight?: number; pointWidth?: number; pointHeight?: number; transitioning?: boolean; inputReady?: boolean; geometry?: PhoneGeometry; displays?: number; model?: string | null; runtime?: string | null; appearance?: string | null; textSize?: string | null; contrast?: boolean | null; recording?: string | null; lastCapture?: string | null; on: boolean; starting: boolean; device: string | null; udid: string | null; holder: PhoneHolder; width: number; height: number; problem: string | null }
 /** One picture of the phone's screen: a base64 JPEG. */
 export interface PhoneFrame { seq: number; image: string; width: number; height: number }
 export interface PhoneView { status: PhoneStatus; frame: PhoneFrame | null }

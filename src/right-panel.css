@@ -225,3 +225,71 @@
 .right-worktrees-check :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
 .right-worktrees-row.is-bot-copy .right-worktrees-heading > strong { white-space:normal; overflow-wrap:anywhere; line-height:1.5; }
+
+/* Approved Phone controls: one quiet toolbar, settings in a contained disclosure. */
+.phone-designed { padding: 0; gap: 0; position: relative; container-type: inline-size; }
+.phone-designed button { font: inherit; }
+.phone-designed svg { width: 16px; height: 16px; display: block; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.phone-designed :is(button,input,select):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.phone-sr { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.phone-device-head { padding: 10px 10px 8px; display: flex; align-items: center; gap: 6px; flex: none; }
+.phone-device-trigger { min-width: 0; display: flex; align-items: center; gap: 8px; text-align: left; padding: 5px 6px; border: 0; background: none; border-radius: 6px; flex: 1; }
+.phone-device-trigger > svg:first-child { width: 18px; height: 25px; }
+.phone-device-trigger > span { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.phone-device-trigger strong { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone-device-trigger small { color: var(--muted); font-size: 10px; }
+.phone-device-trigger > svg:last-child { width: 12px; height: 12px; color: var(--muted); }
+.phone-connected { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); margin-right: 6px; flex: none; }
+.phone-toolbar { display: flex; align-items: center; gap: 3px; padding: 0 10px 10px; flex: none; }
+.phone-designed .phone-tool { display: flex; align-items: center; justify-content: center; height: 30px; min-width: 30px; border: 0; border-radius: 6px; padding: 6px; background: none; color: var(--muted); }
+.phone-designed button:hover:not(:disabled), .phone-designed button[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.phone-designed .phone-fold { gap: 5px; color: var(--text); padding-inline: 7px; font-size: 11px; background: var(--panel-2); border: 1px solid var(--line); }
+.phone-divider { height: 15px; width: 1px; background: var(--line); margin-inline: 2px; flex: none; }
+.phone-push { flex: 1; min-width: 0; }
+.phone-controls-trigger span { display: none; }
+.phone-stage { position: relative; flex: 1; min-height: 80px; display: grid; place-items: center; margin: 0 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.phone-stage .right-phone-picture { width: 100%; height: 100%; box-sizing: border-box; padding: 10px; }
+.phone-stage .right-phone-screen { box-shadow: 0 5px 18px #0003; }
+.phone-changing { position: absolute; inset: 0; z-index: 3; display: grid; place-content: center; background: var(--bg); color: var(--muted); font-size: 11px; }
+.phone-recording { position: absolute; z-index: 2; top: 8px; left: 8px; color: var(--danger, #e57e77); font-size: 10px !important; padding: 4px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
+.phone-geometry { color: var(--muted); font-size: 10px; text-align: center; padding: 7px 10px; flex: none; }
+.phone-driver { border-top: 1px solid var(--line); padding: 8px 12px; display: flex; align-items: center; gap: 7px; flex: none; }
+.phone-driver .right-phone-state { font-size: 11px; flex: 1; }
+.phone-driver button { flex: none; border: 0; border-radius: 4px; background: none; color: var(--muted); font-size: 10px; padding: 4px 6px; }
+.phone-help { color: var(--muted); font-size: 10px; padding: 0 12px 8px; }
+.phone-help summary { cursor: pointer; }
+.phone-help p { margin: 6px 0 0; }
+.phone-popover { position: absolute; z-index: 8; padding: 6px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 12px 35px #0005; max-height: calc(100% - 130px); overflow: auto; overscroll-behavior: contain; box-sizing: border-box; }
+.phone-popover[hidden] { display: none; }
+.phone-controls-menu { top: 96px; right: 10px; width: min(302px, calc(100% - 20px)); }
+.phone-device-menu { top: 58px; left: 10px; right: 10px; }
+.phone-popover h4 { margin: 7px 7px; font-size: 11px; font-weight: 600; }
+.phone-popover > p { font-size: 11px; padding-inline: 7px; }
+.phone-popover hr { border: 0; border-top: 1px solid var(--line); margin: 7px 1px; }
+.phone-setting { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px; font-size: 11px; min-height: 36px; box-sizing: border-box; }
+.phone-setting > span { flex: none; }
+.phone-segmented { display: flex; background: var(--panel); border-radius: 5px; padding: 2px; gap: 1px; }
+.phone-segmented button { border: 0; padding: 4px 7px; background: none; border-radius: 4px; font-size: 10px; }
+.phone-segmented button[aria-pressed="true"] { background: var(--hover); }
+.phone-stepper { display: flex; min-width: 0; border: 1px solid var(--line); border-radius: 5px; }
+.phone-stepper button { border: 0; padding: 3px 7px; background: none; border-radius: 4px; font-size: 12px; }
+.phone-stepper button:nth-child(2) { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; max-width: 90px; }
+.phone-designed .phone-toggle { border: 0; border-radius: 20px; width: 29px; height: 17px; background: var(--line); padding: 2px; }
+.phone-toggle::before { content: ""; display: block; width: 13px; height: 13px; background: var(--text); border-radius: 50%; }
+.phone-designed .phone-toggle[aria-pressed="true"] { background: var(--accent); }
+.phone-toggle[aria-pressed="true"]::before { transform: translateX(12px); background: var(--panel); }
+.phone-menu-action { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px; border: 0; background: none; border-radius: 5px; text-align: left; font-size: 11px !important; min-height: 32px; }
+.phone-menu-action small { margin-left: auto; font-size: 10px; color: var(--muted); }
+.phone-power { color: var(--danger, #e57e77); }
+.phone-capture-pair { display: flex; gap: 3px; }
+.phone-capture-pair button { width: 50%; justify-content: center; background: var(--panel); }
+.phone-setting select { min-width: 0; max-width: 145px; font-size: 10px; padding: 4px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; }
+.phone-location { display: flex; gap: 6px; padding: 5px 7px; }
+.phone-location label { min-width: 0; width: 50%; font-size: 10px; color: var(--muted); }
+.phone-location input { box-sizing: border-box; width: 100%; padding: 6px 7px; margin-top: 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--text); font-size: 10px; }
+.phone-location-actions { display: flex; justify-content: flex-end; gap: 4px; padding: 0 7px; }
+.phone-location-actions button { border: 0; background: var(--panel); padding: 5px 7px; border-radius: 4px; font-size: 10px; }
+.phone-notice, .phone-capture-path, .phone-designed .right-phone-alert { margin: 0; padding: 6px 12px; font-size: 11px; overflow-wrap: anywhere; }
+.phone-capture-path { max-height: 38px; overflow: auto; color: var(--muted); font-size: 10px; }
+@container (min-width: 355px) { .phone-controls-trigger span { display: inline; font-size: 11px; } .phone-controls-trigger { gap: 5px; } }
+@container (max-width: 300px) { .phone-toolbar { gap: 2px; padding-inline: 8px; } .phone-designed .phone-fold { padding-inline: 6px; } }

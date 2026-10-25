@@ -1,6 +1,7 @@
 //! The shared phone: one headless iOS simulator per data folder, its live
 //! picture, and turn-taking between the person and the bots.
 
+pub mod controls;
 pub mod coords;
 pub mod screens;
 pub mod lock;
@@ -68,6 +69,7 @@ enum Power {
 }
 
 struct State {
+    extra: controls::Extra,
     touch: Option<(PathBuf, String)>,
     power: Power,
     device: Option<SavedDevice>,
@@ -171,6 +173,7 @@ impl Phone {
             clock: Instant::now(),
             me: me.clone(),
             state: Mutex::new(State {
+                extra: controls::Extra::default(),
                 touch: None,
                 power: Power::Off,
                 device,
@@ -197,41 +200,43 @@ impl Phone {
         locked(&self.state)
     }
 
-    pub fn status(&self) -> Status {
-        let size = locked(&self.frame).as_ref().map_or((0, 0), |f| (f.width, f.height));
-        self.status_with(size)
-    }
+    pub fn status(&self) -> Status { self.snapshot().0 }
 
-    fn status_with(&self, (width, height): (u32, u32)) -> Status {
-        let now = self.now();
+    /// One state/frame snapshot: the image's geometry can never come from a
+    /// newer capture or device generation than the image being handed out.
+    fn snapshot(&self) -> (Status, Option<Frame>) {
         let mut state = self.state();
-        let holder = state.lock.view(now);
-        Status {
+        let frame = locked(&self.frame).clone();
+        let geometry = controls::geometry_of(frame.as_ref(), state.extra.generation);
+        let (width, height) = (geometry.width, geometry.height);
+        let screen = frame.as_ref().and_then(|f| f.screen.as_ref());
+        let (pw, ph, scale) = screen.map_or((width, height, 1), |s| (s.pixel_width, s.pixel_height, s.scale.max(1)));
+        let status = Status {
             on: state.power == Power::On,
             starting: state.power == Power::Starting,
             device: state.device.as_ref().map(|d| d.name.clone()),
             udid: state.device.as_ref().map(|d| d.udid.clone()),
-            holder,
-            width,
-            height,
+            holder: state.lock.view(self.now()), width, height,
+            pixel_width: pw, pixel_height: ph, point_width: pw as f64 / scale as f64, point_height: ph as f64 / scale as f64,
+            transitioning: state.extra.transitioning,
+            input_ready: frame.is_some() && !state.extra.transitioning && !state.extra.unconfirmed,
+            geometry,
+            orientation: state.extra.physical_orientation.map(|p| controls::orientation_event(screen.map_or(1, |s| s.id), state.extra.displays > 1, p)),
+            displays: state.extra.displays,
+            model: state.extra.model.clone(), runtime: state.extra.runtime.clone(),
+            appearance: state.extra.appearance.clone(), text_size: state.extra.text_size.clone(), contrast: state.extra.contrast,
+            recording: state.extra.recording.as_ref().map(|r| r.path.clone()), last_capture: state.extra.last_capture.clone(),
             problem: state.problem.clone().or_else(|| (state.power == Power::On && width == 0).then(|| "Waiting for a live phone picture…".into())),
-        }
+        };
+        (status, frame)
     }
 
-    /// The status, plus the latest picture unless it is the one numbered `since`.
     pub fn view(&self, since: u64) -> View {
-        let (size, frame) = {
-            let latest = locked(&self.frame);
-            let size = latest.as_ref().map_or((0, 0), |f| (f.width, f.height));
-            let frame = latest.as_ref().filter(|f| f.seq != since).map(|f| FrameView {
-                seq: f.seq,
-                image: to_base64(&f.jpeg),
-                width: f.width,
-                height: f.height,
-            });
-            (size, frame)
-        };
-        View { status: self.status_with(size), frame }
+        let (status, latest) = self.snapshot();
+        let frame = latest.filter(|f| f.seq != since && !status.transitioning).map(|f| FrameView {
+            seq: f.seq, image: to_base64(&f.jpeg), width: f.width, height: f.height,
+        });
+        View { status, frame }
     }
 
     /// Starts turning the phone on in the background. Does nothing while it's starting or on.
@@ -239,6 +244,7 @@ impl Phone {
         let begun = {
             let mut state = self.state();
             if state.power == Power::Off {
+                state.extra.unconfirmed = false;
                 state.power = Power::Starting;
                 state.problem = None;
                 state.starts += 1;
@@ -270,7 +276,7 @@ impl Phone {
                     Ok(Some((axe, udid))) => {
                         let frame = Arc::clone(&self.frame);
                         let seq = Arc::clone(&self.seq);
-                        state.stream = Some(if state.touch.is_some() {
+                        state.stream = Some(if state.extra.displays > 0 {
                             self.runtime.spawn(screens::stream(state.tools.as_ref().unwrap().xcrun.clone(), udid, frame, seq))
                         } else { self.runtime.spawn(stream(axe, udid, frame, seq)) });
                         state.power = Power::On;
@@ -306,6 +312,17 @@ impl Phone {
         let dir = self.data.join("phone");
         let mut saved = self.find_device(&tools, &dir).await?;
         self.state().device = Some(saved.clone());
+        // Resolve the actual model/runtime even for a legacy saved Duo device.
+        if let Ok(listed) = simctl(&tools.xcrun, &["list", "-j", "devices"], axe::SIMCTL_LIMIT).await {
+            if let Ok(listed) = serde_json::from_str::<serde_json::Value>(&listed) {
+                let found = listed["devices"].as_object().and_then(|groups| groups.iter().find_map(|(runtime, devices)| devices.as_array()?.iter().find(|d| d["udid"] == saved.udid).and_then(|d| d["deviceTypeIdentifier"].as_str().map(|kind| (runtime.clone(), kind.to_string())))));
+                if let Some((runtime, kind)) = found {
+                    if let Ok(choices) = self.devices().await {
+                        if let Some(choice) = choices.into_iter().find(|d| d.runtime == runtime && d.device_type == kind) { let mut s = self.state(); s.extra.model = Some(choice.model); s.extra.runtime = Some(choice.version); }
+                    }
+                }
+            }
+        }
         // Right after Turn off, wait for the shutdown to finish before booting.
         drop(self.shutting_down.lock().await);
         if !self.is_current(start) {
@@ -314,9 +331,17 @@ impl Phone {
         simctl(&tools.xcrun, &["bootstatus", &saved.udid, "-b"], axe::BOOT_LIMIT).await?;
         let listing = simctl(&tools.xcrun, &["io", &saved.udid, "enumerate"], axe::SIMCTL_LIMIT).await?;
         let touch = if screens::parse(&listing).len() > 1 { Some(install::ensure_touch(&self.data).await?) } else { None };
-        self.state().touch = touch;
+        { let mut s = self.state(); s.touch = touch; s.extra.displays = screens::parse(&listing).len(); }
+        for (option, field) in [("appearance", 0), ("content_size", 1), ("increase_contrast", 2)] {
+            if let Ok(value) = simctl(&tools.xcrun, &["ui", &saved.udid, option], axe::SIMCTL_LIMIT).await {
+                let mut s = self.state();
+                match field { 0 => s.extra.appearance = Some(value), 1 => s.extra.text_size = Some(value), _ => s.extra.contrast = match value.as_str() { "enabled" => Some(true), "disabled" => Some(false), _ => None } }
+            }
+        }
         if saved.points.is_none() {
-            let mut points = None;
+            let mut points = screens::panel_points(&listing);
+            if points.is_some() { saved.points = points; }
+            if saved.points.is_none() {
             for tried in 0..MEASURE_TRIES {
                 if tried > 0 {
                     tokio::time::sleep(MEASURE_GAP).await;
@@ -331,6 +356,7 @@ impl Phone {
                 }
             }
             saved.points = Some(points.ok_or(UNREADABLE)?);
+            }
             device::save(&dir, &saved)?;
             self.state().device = Some(saved.clone());
         }
@@ -350,7 +376,7 @@ impl Phone {
     /// Deck's simulator for this data folder: the saved one if it still
     /// exists, else one with its name, else a new one. Saved when it changes.
     async fn find_device(&self, tools: &Tools, dir: &Path) -> Result<SavedDevice, String> {
-        let name = device::device_name(&self.data);
+        let name = device::load(dir).map(|d| d.name).unwrap_or_else(|| device::device_name(&self.data));
         let listed = simctl(&tools.xcrun, &["list", "-j", "devices"], axe::SIMCTL_LIMIT).await?;
         let found = device::find_udid(&listed, &name);
         if let Some(saved) = device::load(dir) {
@@ -386,6 +412,15 @@ impl Phone {
 
     /// Turns the phone off: ends the picture, shuts the simulator down and frees the phone.
     pub async fn stop(&self) -> Result<Status, String> {
+        let generation = { let mut s = self.state(); s.lock.begin_human_input(self.now()); s.starts };
+        let _human = HumanInput(self, generation);
+        let _turn = self.actions.lock().await;
+        self.stop_inner().await
+    }
+
+    async fn stop_inner(&self) -> Result<Status, String> {
+        let recording_result = self.stop_recording().await;
+        self.stop_hid().await;
         // Reserve shutdown before publishing Off, so a new start cannot boot
         // between this stop's stream cleanup and simulator shutdown.
         let _shutting = self.shutting_down.lock().await;
@@ -393,6 +428,11 @@ impl Phone {
         let (stream, udid) = {
             let mut state = self.state();
             state.power = Power::Off;
+            state.extra.transitioning = false;
+            state.extra.unconfirmed = false;
+            state.extra.preferred_display = None;
+            state.extra.physical_orientation = None;
+            state.extra.generation += 1;
             state.lock.reset();
             (state.stream.take(), state.device.as_ref().map(|d| d.udid.clone()))
         };
@@ -402,8 +442,15 @@ impl Phone {
             let _ = stream.await;
         }
         *locked(&self.frame) = None;
-        if let Some(udid) = udid {
-            self.shut_down_locked(&udid).await?;
+        let shutdown_result = if let Some(udid) = udid {
+            self.shut_down_locked(&udid).await
+        } else {
+            Ok(())
+        };
+        match (recording_result, shutdown_result) {
+            (Err(recording), Err(shutdown)) => return Err(format!("{recording} Also, simulator shutdown failed: {shutdown}")),
+            (Err(problem), _) | (_, Err(problem)) => return Err(problem),
+            (Ok(_), Ok(())) => {}
         }
         Ok(self.status())
     }
@@ -417,22 +464,41 @@ impl Phone {
         }
     }
 
-    fn ready(&self) -> Result<Ready, String> {
-        let (tools, udid, points) = {
-            let state = self.state();
-            match (state.power, &state.tools, &state.device) {
-                (Power::On, Some(tools), Some(SavedDevice { udid, points: Some(points), .. })) => (tools.clone(), udid.clone(), *points),
-                _ => return Err(OFF.into()),
-            }
+    fn ready(&self) -> Result<Ready, String> { self.ready_at(None) }
+
+    fn ready_at(&self, expected: Option<&Geometry>) -> Result<Ready, String> {
+        let state = self.state();
+        if state.extra.transitioning { return Err("The phone is changing displays. Wait for the new picture.".into()); }
+        if state.extra.unconfirmed { return Err("The display transition is unconfirmed. Use Fold, Rotate, Home or power controls to recover before tapping.".into()); }
+        let (tools, udid, points) = match (state.power, &state.tools, &state.device) {
+            (Power::On, Some(tools), Some(SavedDevice { udid, points: Some(points), .. })) => (tools.clone(), udid.clone(), *points),
+            _ => return Err(OFF.into()),
         };
-        let (width, height, screen) = locked(&self.frame).as_ref().map(|f| (f.width, f.height, f.screen.clone())).ok_or(NO_PICTURE)?;
-        let touch = self.state().touch.clone();
-        Ok(Ready { tools, udid, points, width, height, screen, touch })
+        let frame = locked(&self.frame).clone().ok_or(NO_PICTURE)?;
+        controls::check_geometry(expected, &controls::geometry_of(Some(&frame), state.extra.generation))?;
+        let screen = frame.screen;
+        let points = screen.as_ref().filter(|s| s.pixel_width > 0 && s.scale > 0).map_or(points, |s| (s.pixel_width as f64 / s.scale as f64, s.pixel_height as f64 / s.scale as f64));
+        Ok(Ready { tools, udid, points, width: frame.width, height: frame.height, screen, touch: state.touch.clone() })
     }
 
     /// Sends one input to the phone and says what was done.
-    async fn act(&self, input: &Input) -> Result<String, String> {
-        let ready = self.ready()?;
+    async fn act(&self, input: &Input) -> Result<String, String> { self.act_at(input, None).await }
+
+    async fn act_at(&self, input: &Input, geometry: Option<&Geometry>) -> Result<String, String> {
+        if let Input::Button { button } = input {
+            let (tools, udid) = self.running()?;
+            let duo = self.state().extra.displays > 1;
+            if duo {
+                let usage = controls::hardware_usage(*button);
+                self.hid(&tools.xcrun, &udid, &format!("key 12 {usage} 1\nkey 12 {usage} 0")).await?;
+            } else {
+                axe::run_tool(&tools.axe, &axe::button_args(&udid, *button), None, axe::INPUT_LIMIT).await?;
+            }
+            let recover = self.state().extra.unconfirmed && matches!(button, HwButton::Home);
+            if recover { self.pose(&tools, &udid, None, None).await?; }
+            return Ok(format!("Pressed the {} button.", wire_name(button)));
+        }
+        let ready = self.ready_at(geometry)?;
         let udid = ready.udid.as_str();
         if let (Input::Type {text}, Some((program,developer))) = (input, &ready.touch) {
             axe::check_text(text)?;
@@ -481,7 +547,9 @@ impl Phone {
     }
 
     /// The person's tap, swipe, typing, key or button. The person always gets the phone.
-    pub async fn human(&self, input: Input) -> Result<Status, String> {
+    pub async fn human(&self, input: Input) -> Result<Status, String> { self.human_at(input, None).await }
+
+    pub async fn human_at(&self, input: Input, geometry: Option<Geometry>) -> Result<Status, String> {
         self.running()?;
         let now = self.now();
         let generation = {
@@ -491,7 +559,7 @@ impl Phone {
         };
         let _human = HumanInput(self, generation);
         let _turn = self.actions.lock().await;
-        self.act(&input).await?;
+        self.act_at(&input, geometry.as_ref()).await?;
         Ok(self.status())
     }
 
@@ -512,11 +580,11 @@ impl Phone {
         use BotRequest as R;
         // Claim the phone only when this action can actually run. A person
         // taking over while it was queued must be able to refuse it.
-        let _turn = if matches!(request, R::Act { .. } | R::TapLabel { .. } | R::Launch { .. } | R::Open { .. }) {
+        let _turn = if matches!(request, R::Control { .. } | R::Act { .. } | R::TapLabel { .. } | R::Launch { .. } | R::Open { .. }) {
             Some(self.actions.lock().await)
         } else { None };
-        if matches!(request, R::Act { .. } | R::TapLabel { .. } | R::Install { .. } | R::Launch { .. } | R::Open { .. }) {
-            self.running()?;
+        if matches!(request, R::Control { .. } | R::Act { .. } | R::TapLabel { .. } | R::Install { .. } | R::Launch { .. } | R::Open { .. }) {
+            if !matches!(request, R::Control { control: Control::SelectDevice { .. } | Control::Stop }) { self.running()?; }
             let now = self.now();
             let turn = self.state().lock.bot_act(&who, now);
             if let Err(busy) = turn {
@@ -524,6 +592,11 @@ impl Phone {
             }
         }
         match request {
+            R::Devices => Ok(BotReply::ok(serde_json::to_string_pretty(&self.devices().await?).map_err(|e| e.to_string())?)),
+            R::Control { control } => {
+                let result = self.control(control).await?;
+                Ok(BotReply::ok(format!("{}{}", result.message, result.path.map(|p| format!("\nSaved: {p}")).unwrap_or_default())))
+            }
             R::Status => Ok(BotReply::ok(guide::status_text(&self.status()))),
             R::Start => self.bot_start().await,
             R::Look => self.look(),
@@ -740,6 +813,70 @@ esac
     fn ann() -> BotId { BotId { room: "r1".into(), bot: "a".into(), name: "Ann".into() } }
     fn bo() -> BotId { BotId { room: "r1".into(), bot: "b".into(), name: "Bo".into() } }
 
+    #[tokio::test]
+    async fn selecting_the_legacy_model_reuses_its_existing_apps_and_data() {
+        let (data, tools) = fake("adopt-legacy");
+        let phone = Phone::with_tools(data.clone(), tokio::runtime::Handle::current(), tools.clone());
+        on(&phone).await;
+        let original = device::load(&data.join("phone")).unwrap();
+        let listing = serde_json::json!({ "devices": { "RT": [{ "udid": original.udid, "name": original.name, "deviceTypeIdentifier": "T", "isAvailable": true }] } });
+        std::fs::write(tools.xcrun.parent().unwrap().join("devices-after.json"), listing.to_string()).unwrap();
+        phone.human_control(Control::SelectDevice { runtime: "RT".into(), device_type: "T".into() }).await.unwrap();
+        on(&phone).await;
+        assert_eq!(device::load(&data.join("phone")).unwrap().udid, original.udid);
+        assert_eq!(device::load(&device::selection_dir(&data, "RT", "T")).unwrap().udid, original.udid);
+        assert_eq!(calls(&tools).matches("xcrun simctl create").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_transition_keeps_gestures_blocked() {
+        let (data, tools) = fake("unconfirmed");
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools);
+        on(&phone).await;
+        phone.state().extra.unconfirmed = true;
+        assert!(!phone.status().input_ready);
+        let error = phone.human(Input::Tap { x: 10, y: 10 }).await.unwrap_err();
+        assert!(error.contains("unconfirmed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_view_always_tags_its_picture_with_the_same_geometry() {
+        let (data, tools) = fake("atomic-view");
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools);
+        on(&phone).await;
+        let stream = phone.state().stream.take().unwrap(); stream.abort(); let _ = stream.await;
+        let updating = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let writer = { let frame = phone.frame.clone(); let updating = updating.clone(); std::thread::spawn(move || { let mut n = 1; while updating.load(Ordering::Relaxed) { n += 1; *locked(&frame) = Some(Frame { seq: n, jpeg: vec![1,2,3], width: if n % 2 == 0 { 600 } else { 900 }, height: 400, screen: None }); } }) };
+        for _ in 0..2000 { let view = phone.view(0); let f = view.frame.unwrap(); assert_eq!(view.status.geometry.width, f.width); assert_eq!(view.status.width, f.width); }
+        updating.store(false, Ordering::Relaxed); writer.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_human_geometry_is_refused_after_waiting_for_a_control() {
+        let (data, tools) = fake("stale-human");
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
+        on(&phone).await;
+        let old = phone.geometry();
+        phone.state().extra.generation += 1;
+        let error = phone.human_at(Input::Tap { x: 10, y: 10 }, Some(old)).await.unwrap_err();
+        assert!(error.contains("display changed"), "{error}");
+        assert!(!calls(&tools).contains("axe tap"));
+    }
+
+    #[tokio::test]
+    async fn native_controls_preserve_human_priority_and_surface_failures() {
+        let (data, tools) = fake("control-priority");
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools);
+        on(&phone).await;
+        phone.human(Input::Button { button: HwButton::Home }).await.unwrap();
+        let reply = phone.bot(ann(), BotRequest::Control { control: Control::Appearance { value: "dark".into() } }).await.unwrap();
+        assert_eq!(reply.code, ReplyCode::Wait);
+        phone.give_back();
+        let error = phone.human_control(Control::Fold { folded: true }).await.unwrap_err();
+        assert!(error.contains("no folding display"));
+        assert!(!phone.status().transitioning);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn turning_on_creates_boots_and_shows_the_screen() {
         let (data, tools) = fake("on");
@@ -771,7 +908,7 @@ esac
         std::fs::write(&helper,"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/touch-args\"\n").unwrap();
         std::fs::set_permissions(&helper,std::fs::Permissions::from_mode(0o755)).unwrap();
         phone.state().touch=Some((helper,"developer".into()));
-        { let mut frame=locked(&phone.frame); let frame=frame.as_mut().unwrap(); frame.width=1000; frame.height=600; frame.screen=Some(screens::Screen { id:3,orientation:3 }); }
+        { let mut frame=locked(&phone.frame); let frame=frame.as_mut().unwrap(); frame.width=1000; frame.height=600; frame.screen=Some(screens::Screen { id:3,orientation:3, ..Default::default() }); }
         phone.act(&Input::Tap {x:400,y:480}).await.unwrap();
         let args=std::fs::read_to_string(tools.axe.parent().unwrap().join("touch-args")).unwrap();
         let args: Vec<_>=args.lines().collect();
@@ -869,6 +1006,40 @@ esac
         phone.bot(ann(), BotRequest::Start).await.unwrap();
         assert!(phone.bot(ann(), BotRequest::Look).await.unwrap().image.is_some());
         phone.stop().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_finishes_cleanup_and_reports_recording_and_shutdown_failures() {
+        let (data, tools) = fake("stop-recording-error");
+        let xcrun = std::fs::read_to_string(&tools.xcrun).unwrap().replace(
+            "  simctl\\ create*) touch \"$dir/created\"; echo FAKE-UDID ;;",
+            "  simctl\\ create*) touch \"$dir/created\"; echo FAKE-UDID ;;\n  simctl\\ io*recordVideo*) echo 'Recording started' >&2; exec sleep 30 ;;\n  simctl\\ shutdown*) echo 'shutdown failed' >&2; exit 1 ;;",
+        );
+        std::fs::write(&tools.xcrun, xcrun).unwrap();
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
+        on(&phone).await;
+        phone.human_control(Control::Recording { active: true }).await.unwrap();
+
+        let error = phone.stop().await.unwrap_err();
+        assert!(error.contains("recording could not be finalized"), "{error}");
+        assert!(error.contains("shutdown failed"), "{error}");
+        assert!(!phone.status().on);
+        assert!(phone.view(0).frame.is_none());
+        assert!(calls(&tools).contains("xcrun simctl shutdown FAKE-UDID"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bot_stop_is_idempotent_when_the_phone_is_already_off() {
+        let (data, tools) = fake("bot-stop-off");
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
+
+        let first = phone.bot(ann(), BotRequest::Control { control: Control::Stop }).await.unwrap();
+        let second = phone.bot(ann(), BotRequest::Control { control: Control::Stop }).await.unwrap();
+
+        assert_eq!(first.code, ReplyCode::Ok);
+        assert_eq!(second.code, ReplyCode::Ok);
+        assert!(!phone.status().on);
+        assert!(!calls(&tools).contains("simctl shutdown"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

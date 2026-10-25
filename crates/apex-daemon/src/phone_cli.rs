@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use apex_host::phone::guide::GUIDE;
-use apex_host::phone::{BotReply, BotRequest, HwButton, Input, Key, ReplyCode};
+use apex_host::phone::{BotReply, BotRequest, Control, HwButton, Input, Key, ReplyCode};
 use base64::Engine;
 use serde_json::json;
 
@@ -125,6 +125,33 @@ pub(crate) fn parse(args: &[String], stdin: impl FnOnce() -> String) -> Result<P
     let act = |input: Input| Ok(Parsed::Request(BotRequest::Act { input }));
     let plain = |request: BotRequest| Ok(Parsed::Request(request));
     match verb.as_str() {
+        "devices" if rest.is_empty() => plain(BotRequest::Devices),
+        "fold" | "unfold" | "rotate" | "appearance" | "text-size" | "contrast" | "status-bar" | "screenshot" | "record" | "volume" | "biometric" | "location" | "device" | "stop" => {
+            let value = || one_word(rest, "This control needs exactly one value. Run phone help.");
+            let switch = |v: &str| -> Result<bool, String> { match v { "on" => Ok(true), "off" => Ok(false), _ => Err("Use on or off.".into()) } };
+            let control = match verb.as_str() {
+                "fold" | "unfold" if rest.is_empty() => Control::Fold { folded: verb == "fold" },
+                "rotate" => Control::Rotate { orientation: match value()? { "portrait" => 1, "upside-down" => 2, "landscape-left" => 3, "landscape-right" => 4, _ => return Err("Rotate needs portrait, upside-down, landscape-left or landscape-right.".into()) } },
+                "appearance" => Control::Appearance { value: value()?.into() },
+                "text-size" => Control::TextSize { value: value()?.into() },
+                "contrast" => Control::Contrast { enabled: switch(value()?)? },
+                "status-bar" => Control::StatusBar { clean: match value()? { "clean" => true, "live" => false, _ => return Err("Use status-bar clean or live.".into()) } },
+                "screenshot" if rest.is_empty() => Control::Screenshot,
+                "record" => Control::Recording { active: match value()? { "start" => true, "stop" => false, _ => return Err("Use record start or stop.".into()) } },
+                "volume" => Control::Volume { direction: value()?.into() },
+                "biometric" => Control::Biometric { matched: match value()? { "match" => true, "fail" => false, _ => return Err("Use biometric match or fail.".into()) } },
+                "location" => match rest {
+                    [word] if word == "reset" => Control::Location { latitude: None, longitude: None },
+                    [a, b] => Control::Location { latitude: Some(a.parse().map_err(|_| "Invalid latitude")?), longitude: Some(b.parse().map_err(|_| "Invalid longitude")?) },
+                    _ => return Err("Use location LAT LON or location reset.".into()),
+                },
+                "device" => match rest { [runtime, device_type] => Control::SelectDevice { runtime: runtime.clone(), device_type: device_type.clone() }, _ => return Err("Use device RUNTIME_ID DEVICE_TYPE_ID from phone devices.".into()) },
+                "stop" if rest.is_empty() => Control::Stop,
+                _ => return Err("Unexpected control arguments. Run phone help.".into()),
+            };
+            apex_host::phone::controls::validate(&control)?;
+            plain(BotRequest::Control { control })
+        }
         "help" => Ok(Parsed::Help),
         "status" => plain(BotRequest::Status),
         "start" => plain(BotRequest::Start),
@@ -233,6 +260,16 @@ mod tests {
     }
     fn req(line: &str) -> BotRequest {
         match p(line).unwrap() { Parsed::Request(r) => r, Parsed::Help => panic!("help") }
+    }
+
+    #[test]
+    fn simulator_controls_share_the_host_contract() {
+        assert_eq!(req("fold"), BotRequest::Control { control: apex_host::phone::Control::Fold { folded: true } });
+        assert_eq!(req("rotate landscape-left"), BotRequest::Control { control: apex_host::phone::Control::Rotate { orientation: 3 } });
+        assert!(p("location 91 0").is_err());
+        assert!(p("appearance purple").is_err());
+        assert!(p("fold surprise").is_err());
+        assert_eq!(req("devices"), BotRequest::Devices);
     }
 
     #[test]
