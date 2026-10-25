@@ -208,7 +208,9 @@ impl Host {
     pub fn try_new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Result<Arc<Host>, String> {
         crate::storage::prepare_private_root(&paths.data)?;
         // Fixture construction is already explicit and isolated. Production,
-        // even with test-support compiled, always uses the protected broker.
+        // even with test-support compiled, always uses the protected broker,
+        // except Linux, whose ledgers are plain files and has no broker to own.
+        let plain = crate::authority_file::plain(&paths.data);
         #[cfg(test)]
         let ownership = None;
         #[cfg(not(test))]
@@ -217,21 +219,23 @@ impl Host {
             let fixture = crate::test_support::isolated(&paths.data);
             #[cfg(not(feature = "test-support"))]
             let fixture = false;
-            if fixture { None } else { Some(apex_provenance::HostOwnership::acquire(&paths.data)) }
+            if fixture || plain { None } else { Some(apex_provenance::HostOwnership::acquire(&paths.data)) }
         };
         let (ownership, mut unavailable) = admit_host_ownership(ownership)?;
-        // Without ownership startup may degrade. Once ownership succeeds,
-        // partial authority must never coexist with empty fallback stores.
+        // Without ownership startup may degrade. Once ownership succeeds, or
+        // on Linux plain files, partial authority must never coexist with
+        // empty fallback stores: a ledger that can't be read stops startup.
+        let strict = ownership.is_some() || plain;
         let tasks_path = paths.data.join("assistant-tasks-v1.json");
-        let assistant_tasks = open_initial_ledger(ownership.is_some(), &mut unavailable,
+        let assistant_tasks = open_initial_ledger(strict, &mut unavailable,
             || crate::assistant_tasks::AssistantTasks::open(&tasks_path),
             || crate::assistant_tasks::AssistantTasks::unavailable(&tasks_path))?;
         let memory_path = paths.data.join("project-memory-v1.json");
-        let project_memory = open_initial_ledger(ownership.is_some(), &mut unavailable,
+        let project_memory = open_initial_ledger(strict, &mut unavailable,
             || crate::project_memory::ProjectMemory::open(&memory_path),
             || crate::project_memory::ProjectMemory::unavailable(&memory_path))?;
         let conversations_path = paths.data.join("assistant-conversations-v1.json");
-        let assistant_conversations = open_initial_ledger(ownership.is_some(), &mut unavailable,
+        let assistant_conversations = open_initial_ledger(strict, &mut unavailable,
             || crate::assistant_conversation::ConversationStore::open(&conversations_path),
             || crate::assistant_conversation::ConversationStore::unavailable(&conversations_path))?;
         let protected_ledgers_available = unavailable.is_none();

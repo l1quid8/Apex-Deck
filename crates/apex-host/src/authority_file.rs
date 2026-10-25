@@ -15,6 +15,12 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 use std::{io, path::Path};
+#[cfg(all(not(test), target_os = "linux"))]
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+};
 #[cfg(all(not(test), not(target_os = "linux")))]
 static REVISIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
 
@@ -156,13 +162,39 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     if !plain(path) {
         return local_read(path);
     }
-    std::fs::read(path)
+    let bytes = std::fs::read(path)?;
+    // A fresh read reopens a ledger closed by an earlier failed start.
+    if let Ok(mut closed) = CLOSED.get_or_init(Default::default).lock() {
+        closed.remove(path);
+    }
+    Ok(bytes)
 }
+/// Plain ledgers whose store started empty because they could not be read.
+/// Writing one would replace the records it failed to read.
+#[cfg(all(not(test), target_os = "linux"))]
+static CLOSED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 #[cfg(all(not(test), target_os = "linux"))]
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(feature = "test-support")]
     if !plain(path) {
         return local_write(path, bytes);
     }
+    let closed = CLOSED.get_or_init(Default::default).lock()
+        .map_err(|_| io::Error::other("Ledger lock poisoned"))?;
+    if closed.contains(path) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+            "This ledger could not be read, so it stays closed to writes until the host restarts."));
+    }
     atomic_write(path, bytes)
+}
+/// Keep an empty fallback store from writing over a plain ledger it could not
+/// read. The Mac broker already refuses writes to a ledger never read.
+pub(crate) fn close(path: &Path) {
+    #[cfg(all(not(test), target_os = "linux"))]
+    if plain(path) {
+        if let Ok(mut closed) = CLOSED.get_or_init(Default::default).lock() {
+            closed.insert(path.to_path_buf());
+        }
+    }
+    let _ = path;
 }
