@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 
 // macOS-only: the codesign authority inventory. Windows has no such API, and the app refuses
 // protected records there instead of pretending the check passed.
@@ -20,7 +21,7 @@ function snapshot() {
   };
 }
 function compare(before, after) {
-  const dir = mkdtempSync('/tmp/apex-inventory-test-');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'apex-inventory-test-'));
   try {
     const paths = ['before', 'after'].map(n => path.join(dir, n + '.json'));
     [before, after].forEach((v, i) => writeFileSync(paths[i], JSON.stringify(v)));
@@ -104,7 +105,7 @@ test_codesign() {
 `;
 
 test('candidate verification rejects a different signed broker and requires its expected hash', MAC_ONLY, () => {
-  const dir = mkdtempSync('/tmp/apex-bundle-test-');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'apex-bundle-test-'));
   try {
     const app = fakeBundle(dir, 'Apex Deck.app');
     const broker = path.join(dir, 'apex-provenance'); writeFileSync(broker, 'broker');
@@ -121,7 +122,7 @@ test('candidate verification rejects a different signed broker and requires its 
 });
 
 test('installed acceptance checks both protected and Applications fuse wires, including every slice', MAC_ONLY, () => {
-  const dir = mkdtempSync('/tmp/apex-fuse-test-');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'apex-fuse-test-'));
   try {
     const app = fakeBundle(dir, 'Trusted.app');
     const installed = fakeBundle(dir, 'Installed.app', ['000011011', '101100011']);
@@ -142,7 +143,7 @@ static_runtime
 });
 
 test('broker-client detection drains strings output instead of treating SIGPIPE as absence', MAC_ONLY, () => {
-  const dir = mkdtempSync('/tmp/apex-strings-test-');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'apex-strings-test-'));
   try {
     const binary = path.join(dir, 'binary');
     writeFileSync(binary, 'dev.apexdeck.provenance\n' + 'padding bytes to fill a pipe\n'.repeat(100000));
@@ -167,7 +168,7 @@ function heredoc(name) {
 // effects are replaced. No live app, authority, service or sudo is accessed.
 test('documented swap stops at each failed rename and rollback preserves authority and both apps', MAC_ONLY, () => {
   for (const failAt of [1, 2, 3, 4, 0]) {
-    const dir = mkdtempSync('/tmp/apex-swap-test-');
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'apex-swap-test-'));
     try {
       const stamp = '20261023-000000';
       const root = path.join(dir, 'authority'), backup = path.join(dir, 'backup'), applications = path.join(dir, 'Applications');

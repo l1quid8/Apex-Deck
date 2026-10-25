@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 
 // macOS-only: the provenance acceptance harness. Windows has no such API, and the app refuses
 // protected records there instead of pretending the check passed.
@@ -17,7 +18,7 @@ const check = script.slice(script.indexOf('tamper_forged_json() {'), script.inde
 const empty = { workspaceId: 'acceptance', revision: 0, tasks: [], executions: [], routingThreads: [], namedOnlyWorkerIds: [] };
 
 function run({ firstLog = '', secondLog = '', answer = empty, rewrite = false } = {}) {
-  const work = mkdtempSync('/tmp/apex-tamper-check-');
+  const work = mkdtempSync(path.join(os.tmpdir(), 'apex-tamper-check-'));
   writeFileSync(path.join(work, 'reply.json'), JSON.stringify({ id: 1, ok: answer }));
   const effects = `
 start_daemon() {

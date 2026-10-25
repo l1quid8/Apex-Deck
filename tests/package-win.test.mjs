@@ -112,6 +112,6 @@ test('the Windows CI job checks the app, not just the service', () => {
   const job = daemon.slice(daemon.indexOf('  test-windows:'), daemon.indexOf('  build:'));
   assert.match(job, /run: npm ci/);
   assert.match(job, /run: npx tsc --noEmit/);
-  assert.match(job, /run: npm test/);
+  assert.match(job, /run: node --experimental-strip-types --test --test-concurrency=2 tests\/\*\.test\.mjs/);
   assert.match(job, /actions\/setup-node@/, 'the Node checks need a known Node, not the runner default');
 });

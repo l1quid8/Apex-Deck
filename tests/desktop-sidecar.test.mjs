@@ -4,11 +4,13 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { daemonBinary, serveArgs, dataDirArgs, developmentDataDir, developmentHostDataDir, waitForSocket } from '../desktop/sidecar.mjs';
+import os from 'node:os';
 
 test('waitForSocket resolves once something listens, and again once it has stopped', async () => {
-  const dir = fs.mkdtempSync('/tmp/deck-wait-');
-  // A Unix socket is a file; Windows listens on a named pipe instead, and the
-  // daemon does the same, so the check runs against whichever this platform has.
+  // A Unix socket path is capped at ~104 bytes, and os.tmpdir() is already too
+  // long for one on macOS, so POSIX keeps the short /tmp. Windows has no socket
+  // files: the daemon listens on a named pipe there, and so does this check.
+  const dir = fs.mkdtempSync(process.platform === 'win32' ? path.join(os.tmpdir(), 'deck-wait-') : '/tmp/deck-wait-');
   const socket = process.platform === 'win32'
     ? `\\\\.\\pipe\\apex-deck-wait-${process.pid}-${Math.random().toString(16).slice(2)}`
     : path.join(dir, 'daemon.sock');

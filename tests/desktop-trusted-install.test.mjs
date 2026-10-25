@@ -5,6 +5,7 @@ import path from 'node:path';
 import { TRUSTED_APP, TRUSTED_DAEMON, TRUSTED_ROOT, bundlePath, bundleVersion, isProtectedCopy, launchPlan, plistDaemonBin, rootProtected } from '../desktop/trustedInstall.mjs';
 import { LABEL, agentPlist, installAgent } from '../desktop/launchAgent.mjs';
 import * as trustedInstall from '../desktop/trustedInstall.mjs';
+import os from 'node:os';
 
 // macOS-only: codesign, /Applications and the LaunchAgent. Windows has no such API, and the app refuses
 // protected records there instead of pretending the check passed.
@@ -161,7 +162,7 @@ test('the daemon an agent plist runs is its first program argument, un-escaped',
 });
 
 test('installing never replaces an agent that runs the protected daemon', async () => {
-  const dir = fs.mkdtempSync('/tmp/deck-trusted-');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-trusted-'));
   const plistPath = path.join(dir, 'LaunchAgents', `${LABEL}.plist`);
   const calls = [];
   const run = async (args) => { calls.push(args.join(' ')); return ''; };

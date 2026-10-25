@@ -77,15 +77,17 @@ jobs:
         run: npx tsc --noEmit
       - name: Test the app
         # Known gap, tracked, not hidden: the app suite has never run off this
-        # Mac. Run 40233880246 gave 2,468 of 2,550 passing on Windows; the rest
-        # are platform assumptions in the tests (a test harness that started
-        # Electron in Node mode, codesign/LaunchDaemon/.pkg tests, /bin/bash,
-        # Unix sockets, process.getuid), not app failures. Windows-only
-        # regressions in the 2,468 do still show up in this log. Flip this to
-        # blocking the day the count reaches zero.
+        # Mac. It went 2,468 of 2,550 passing on run 40233880246, 2,502 of 2,550
+        # on runs 40237448612 and 40239129607. What is left is not the app:
+        # /tmp/... being drive-relative on Windows (fixed here), two
+        # message-actions-narrow scenarios that hang with no output at all, and
+        # a daemon-binary assertion that expects the .exe name M3 adds. Flip
+        # this to blocking the day the count reaches zero.
+        # Two test files at a time: four cores booting four Chromiums at once
+        # crashed scenarios silently, which reads as a failure with no output.
         if: ${{ !cancelled() }}
         continue-on-error: true
-        run: npm test
+        run: node --experimental-strip-types --test --test-concurrency=2 tests/*.test.mjs
 
   build:
     needs: test

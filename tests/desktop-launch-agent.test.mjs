@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { LABEL, agentPlist, agentPlistPath, agentState, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from '../desktop/launchAgent.mjs';
+import os from 'node:os';
 
 // macOS-only: the LaunchAgents folder. Windows has no such API, and the app refuses
 // protected records there instead of pretending the check passed.
@@ -32,7 +33,7 @@ function fakeLaunchctl({ loaded = false, fail = {} } = {}) {
 
 /** A plist path in a scratch folder, so nothing is written to the real ~/Library. */
 function scratchPlist() {
-  const dir = fs.mkdtempSync('/tmp/deck-agent-');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-agent-'));
   return { dir, plistPath: path.join(dir, 'LaunchAgents', `${LABEL}.plist`) };
 }
 
