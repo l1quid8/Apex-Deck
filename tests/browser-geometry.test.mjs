@@ -50,3 +50,12 @@ test('the assistant key reaches the deck from a live native browser', () => {
   assert.deepEqual(shortcutFor({ code: 'KeyK', metaKey: false, ctrlKey: true, shiftKey: true, altKey: false }, false), { kind: 'assistant' });
   assert.ok(OVERLAYS.split(',').includes('[data-apex-agent-overlay]'), 'avatar, bubbles and tooltips must hide an overlapping native browser');
 });
+
+test('the terminal tool shortcut reaches the deck while plain backquote stays in the page', () => {
+  const input = { type: 'keyDown', code: 'Backquote', meta: true, control: false, shift: true, alt: false };
+  assert.equal(deckKey(input, true), true);
+  assert.deepEqual(shortcutFor({ code: input.code, metaKey: true, ctrlKey: false, shiftKey: true, altKey: false }, true), { kind: 'toggle_terminal_tool' });
+  assert.equal(deckKey({ ...input, shift: false }, true), false);
+  assert.equal(deckKey({ ...input, meta: false, control: true }, false), true);
+  assert.equal(deckKey({ ...input, meta: false, control: false, shift: false }, true), false);
+});
