@@ -516,7 +516,12 @@ fn check_unresolved_markers(work: &Path, files_to_check: &[String]) -> Vec<Strin
         let target = work.join(f);
         if let Ok(bytes) = std::fs::read(&target) {
             let s = String::from_utf8_lossy(&bytes);
-            if s.contains("<<<<<<<") && s.contains("=======") && s.contains(">>>>>>>") {
+            let has_marker = s.lines().any(|line| {
+                line.starts_with("<<<<<<< ")
+                    || line.starts_with("=======")
+                    || line.starts_with(">>>>>>> ")
+            });
+            if has_marker {
                 still_conflicted.push(f.clone());
             }
         }
@@ -555,13 +560,7 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
         files.sort();
         files.dedup();
 
-        let mut check_list = files.clone();
-        for f in &files_to_check {
-            if !check_list.contains(f) {
-                check_list.push(f.clone());
-            }
-        }
-        let still_conflicted = check_unresolved_markers(work, &check_list);
+        let still_conflicted = check_unresolved_markers(work, &files_to_check);
         if !still_conflicted.is_empty() {
             return Ok(FoldOutcome::Conflicts { files: still_conflicted });
         }
@@ -725,13 +724,7 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
         .collect();
     files.sort();
 
-    let mut check_list = files.clone();
-    for f in &files_to_check {
-        if !check_list.contains(f) {
-            check_list.push(f.clone());
-        }
-    }
-    let still_conflicted = check_unresolved_markers(work, &check_list);
+    let still_conflicted = check_unresolved_markers(work, &files_to_check);
     if !still_conflicted.is_empty() {
         return Ok(FoldOutcome::Conflicts { files: still_conflicted });
     }
@@ -2694,5 +2687,29 @@ mod tests {
             final_fds <= initial_fds + 5,
             "FDs climbed from {initial_fds} to {final_fds}"
         );
+    }
+
+    #[test]
+    fn fold_allows_marker_text_in_files_that_never_clashed() {
+        let (_tmp, root, data) = init_repo("fold-marker-text-clean");
+        fs::write(root.join("seed.txt"), "seed\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+
+        let copy = create_copy(&root, &data, "t-doc", "bot-doc").unwrap();
+        let doc_content = "// This doc explains conflicts: <<<<<<< copy is a marker\n// along with =======\n// and >>>>>>> main\n";
+        fs::write(copy.work.join("doc.txt"), doc_content).unwrap();
+
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        match outcome {
+            FoldOutcome::Clean { files, .. } => {
+                assert_eq!(files, vec!["doc.txt".to_string()]);
+            }
+            other => panic!("Expected Clean, got {:?}", other),
+        }
     }
 }

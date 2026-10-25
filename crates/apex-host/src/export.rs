@@ -52,9 +52,12 @@ mod tests {
     use super::*;
 
     fn temp_dir() -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "apex-export-{}-{}",
+            "apex-export-{}-{}-{}",
             std::process::id(),
+            seq,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

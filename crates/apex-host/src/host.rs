@@ -308,7 +308,9 @@ impl Host {
                 updated.state = crate::bot_copies::CopyState::NeedsYou {
                     reason: "its chat was deleted".to_string(),
                 };
-                let _ = crate::bot_copies::save_state(&host.paths.data, &updated);
+                if let Err(e) = crate::bot_copies::save_state(&host.paths.data, &updated) {
+                    eprintln!("[apex-deck] could not save copy state during recovery for {thread_id}: {e}");
+                }
                 continue;
             }
             let host_weak = Arc::downgrade(&host);
@@ -1609,7 +1611,13 @@ impl Host {
             let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
         }
         for copy in crate::bot_copies::load_copies(&self.paths.data) {
-            if copy.thread == id && !matches!(copy.state, crate::bot_copies::CopyState::NeedsYou { .. }) {
+            if copy.thread == id
+                && !matches!(
+                    copy.state,
+                    crate::bot_copies::CopyState::NeedsYou { .. }
+                        | crate::bot_copies::CopyState::Folding
+                )
+            {
                 let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
             }
         }
@@ -2422,6 +2430,48 @@ mod tests {
         let remaining = crate::bot_copies::load_copies(&data);
         assert!(!remaining.iter().any(|c| c.thread == "thread-del-test" && c.bot == "bot2"), "working copy should be removed on thread delete");
         assert!(remaining.iter().any(|c| c.thread == "thread-del-test" && c.bot == "bot3"), "NeedsYou copy should be kept on thread delete");
+
+        host.shutdown();
+        drop(host);
+        drop(_enter);
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn delete_skips_copy_mid_fold() {
+        use std::process::Command;
+        let path = std::env::temp_dir().join(format!("apex-del-mid-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+
+        let data = path.join("data");
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let _enter = runtime.enter();
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+
+        // Create a copy and mark its state as Folding
+        let copy = crate::bot_copies::create_copy(&cwd, &data, "t-mid-fold", "bot1").unwrap();
+        let mut folding_copy = copy;
+        folding_copy.state = crate::bot_copies::CopyState::Folding;
+        crate::bot_copies::save_state(&data, &folding_copy).unwrap();
+
+        // Delete room
+        host.room_delete("t-mid-fold".into()).unwrap();
+
+        // The copy in Folding state must NOT have been deleted
+        let copies = crate::bot_copies::load_copies(&data);
+        assert!(
+            copies.iter().any(|c| c.thread == "t-mid-fold" && c.bot == "bot1" && matches!(c.state, crate::bot_copies::CopyState::Folding)),
+            "copy in Folding state should be skipped on room_delete"
+        );
 
         host.shutdown();
         drop(host);

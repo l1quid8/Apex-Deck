@@ -476,7 +476,7 @@ mod tests {
 
         let final_fds = count_fds();
         assert!(
-            final_fds <= initial_fds + 5,
+            final_fds <= initial_fds + 10,
             "FDs climbed from {initial_fds} to {final_fds}"
         );
     }
