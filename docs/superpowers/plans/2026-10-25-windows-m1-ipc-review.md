@@ -301,3 +301,18 @@ The workflow now treats Windows failures as CI failures. Final Jigga review
 remains required before integration.
 No Windows installer, app UI, provider sign-in, Job Object behavior, or Windows 11
 PC acceptance is claimed by this M1 evidence.
+
+## Mac fixture scheduling correction
+
+At workflow-enforcement commit `085b76d`, run `40196417362` passed the enforced
+Windows job (1,399 passed, zero failed, seven ignored), the 27-test Windows
+harness, and both Linux jobs. Mac exposed an existing assumption in the
+phone capture fixture: `create_dir_all` can complete before the first poll, so
+asserting `Pending` without controlling scheduling was nondeterministic.
+
+The test now uses its own current-thread runtime and holds its sole blocking
+worker until the panel changes. This guarantees a real suspension during
+directory creation, keeps the original metadata-coherence assertions, and
+releases the worker even during assertion unwinding. Ten consecutive focused
+local runs passed. Only test code changed; simulator/product behavior is
+unchanged. The complete CI matrix is the final verification for this correction.
