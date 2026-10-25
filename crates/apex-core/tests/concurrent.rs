@@ -1280,3 +1280,11 @@ fn queued_reader_upgraded_to_full_waits_for_other_rooms_checkout_lease() {
         assert_eq!(started.load(Ordering::SeqCst), 1);
     });
 }
+
+#[test]
+fn read_only_line_never_doubles_the_full_stop() {
+    assert_eq!(
+        apex_core::read_only_line("Beta", "Alpha", "The folder is not a Git repository."),
+        "Beta is read-only this turn: Alpha is editing and Deck couldn't make a separate copy (The folder is not a Git repository)."
+    );
+}

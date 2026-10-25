@@ -705,10 +705,11 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
         }
     }
 
+    // <data>/bot-copies/<thread>/<bot>/work, so four levels up is <data>.
     // Update base ref to M: work has now received M's changes (cleanly or with conflict markers)
     run_git(&root, &[], &["update-ref", &base_ref, &m_commit])?;
 
-    if let Some(data_dir) = work.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+    if let Some(data_dir) = work.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent()) {
         let mut updated = copy.clone();
         updated.base = m_commit.clone();
         save_state(data_dir, &updated)?;
@@ -1742,6 +1743,11 @@ mod tests {
 
         let root_content = fs::read_to_string(root.join("file.txt")).unwrap();
         assert_eq!(root_content, "human line\n");
+
+        // The moved base is saved in the copy's own copy.json, not a stray folder.
+        let saved = load_copies(&data).into_iter().find(|c| c.bot == "b-conf").unwrap();
+        assert_ne!(saved.base, copy.base);
+        assert!(!data.join("bot-copies").join("bot-copies").exists());
     }
 
     #[test]

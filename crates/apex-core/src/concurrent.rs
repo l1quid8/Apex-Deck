@@ -743,6 +743,7 @@ impl ConcurrentRoom {
 }
 
 pub fn read_only_line(bot: &str, editor: &str, reason: &str) -> String {
+    let reason = reason.trim_end().trim_end_matches('.');
     format!("{bot} is read-only this turn: {editor} is editing and Deck couldn't make a separate copy ({reason}).")
 }
 
