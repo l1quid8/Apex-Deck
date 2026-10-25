@@ -16,10 +16,16 @@ import path from 'node:path';
  * a SIGKILLed Chromium's stale profile lock never blocks the next attempt.
  */
 export async function runElectronScenario(electron, main, temp, { timeoutMs = 60000, attempts = 2 } = {}) {
+  // An empty ELECTRON_RUN_AS_NODE is not the same as a missing one. On Windows an
+  // empty value still arrives as a set variable, so Electron boots in Node mode
+  // and every scenario dies at its first `require('electron')` (79 failures on
+  // run 40233880246, 45 of them this). Deleting the key unsets it everywhere.
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
   let last = { code: null, output: '' };
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const child = spawn(electron, [main, '--user-data-dir=' + path.join(temp, 'profile-' + attempt)], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, stdio: ['ignore', 'pipe', 'pipe'],
+      env, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
     child.stdout.on('data', bytes => output += bytes);
