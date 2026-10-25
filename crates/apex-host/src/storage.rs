@@ -636,13 +636,7 @@ fn steps_entry(record: &ReplySteps, offset: u64, len: u64) -> StepsIndexEntry {
 
 /// Create the host-owned data directory and remove group/other access.
 pub(crate) fn prepare_private_root(root: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(root).map_err(|e| format!("Could not create private data folder: {e}"))?;
-    #[cfg(unix)] {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("Could not make private data folder private: {e}"))?;
-    }
-    Ok(())
+    crate::private_data::prepare(root).map_err(|e| format!("Could not prepare private data folder: {e}"))
 }
 
 /// Write a room file that must not exist yet, private to this user, flushed to disk.

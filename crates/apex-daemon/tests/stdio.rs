@@ -41,6 +41,7 @@ fn a_chat_a_terminal_an_approval_and_a_restart_over_stdio() {
 
 /// A program the host starts (here `open_target`'s opener) shares the
 /// daemon's stdout; what it prints must not land in the protocol.
+#[cfg(unix)]
 #[test]
 fn output_from_programs_the_host_starts_stays_out_of_the_protocol() {
     let data = temp_dir();

@@ -443,8 +443,11 @@ pub(crate) mod tests {
         assert_eq!((phone.label.as_str(), phone.tier, phone.threads), ("Phone", Tier::Full, Threads::ALL));
         assert_eq!(again.get(&id(2)), None);
         assert_eq!(again.list().unwrap().revoked.iter().map(|r| r.endpoint_id.clone()).collect::<Vec<_>>(), vec![id(2)]);
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(data.0.join(FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(data.0.join(FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
     }
 
     #[test]

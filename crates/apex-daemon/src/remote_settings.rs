@@ -92,6 +92,7 @@ pub fn enabled_at_boot(data: &Path, flag: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn folder() -> std::path::PathBuf {
@@ -117,6 +118,7 @@ mod tests {
         save(&dir, true).unwrap();
         assert_eq!(enabled(&dir), Some(true));
         assert!(enabled_at_boot(&dir, false), "file on");
+        #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(dir.join(FILE))
                 .unwrap()

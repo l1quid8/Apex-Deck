@@ -4,8 +4,6 @@
 
 mod common;
 
-use std::io::Write;
-use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -26,18 +24,6 @@ fn data_dir_prints_the_folder_the_daemon_would_use() {
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim_end(), default.to_str().unwrap());
 }
 
-/// A connection on the daemon's local socket.
-fn socket_conn(data: &std::path::Path) -> Conn {
-    let stream = UnixStream::connect(data.join("daemon.sock")).expect("the socket answers");
-    let mut write = stream.try_clone().unwrap();
-    Conn::new(
-        move |line| {
-            let _ = writeln!(write, "{line}").and_then(|_| write.flush());
-        },
-        Frames::from_lines(stream),
-    )
-}
-
 /// Wait for `daemon.json`, which the daemon writes once it's ready.
 fn wait_ready(process: &mut Process, data: &std::path::Path) {
     let start = Instant::now();
@@ -52,8 +38,9 @@ fn wait_ready(process: &mut Process, data: &std::path::Path) {
 
 /// Start an agent turn that sleeps and a terminal running `sleep 600`;
 /// their pids.
+#[cfg(unix)]
 fn busy(data: &std::path::Path) -> (Conn, String, String) {
-    let mut conn = socket_conn(data);
+    let mut conn = local(data);
     conn.hello(None);
     let agent_pid = data.join("agent.pid");
     let slow = shell("slow", &format!("echo $$ > {}; exec sleep 30", agent_pid.display()));
@@ -67,8 +54,8 @@ fn busy(data: &std::path::Path) -> (Conn, String, String) {
     (conn, agent, terminal)
 }
 
-/// The daemon exits 0 within the wind-down, cleans up, and ends the work.
-fn gone_cleanly(process: &mut Process, data: &std::path::Path, agent: &str, terminal: &str) {
+/// The daemon exits 0 within the wind-down and clears its readiness file.
+fn wait_for_clean_exit(process: &mut Process, data: &std::path::Path) {
     let start = Instant::now();
     let status = loop {
         if let Some(status) = process.child.try_wait().unwrap() {
@@ -78,8 +65,15 @@ fn gone_cleanly(process: &mut Process, data: &std::path::Path, agent: &str, term
         std::thread::sleep(Duration::from_millis(20));
     };
     assert!(status.success(), "{status}:\n{}", process.stderr());
+    #[cfg(unix)]
     assert!(!data.join("daemon.sock").exists());
     assert!(!data.join("daemon.json").exists());
+}
+
+/// The Unix shell work also ends when its daemon exits.
+#[cfg(unix)]
+fn gone_cleanly(process: &mut Process, data: &std::path::Path, agent: &str, terminal: &str) {
+    wait_for_clean_exit(process, data);
     wait_until_dead(agent);
     wait_until_dead(terminal);
 }
@@ -89,12 +83,22 @@ fn serve_exits_when_its_stdin_closes() {
     let data = temp_dir();
     let (mut process, stdin, _) = Process::spawn(&["serve", "--exit-on-stdin-close"], &data.0, &[]);
     wait_ready(&mut process, &data.0);
+    let mut conn = local(&data.0);
+    conn.hello(None);
+    assert!(conn.call("session_load", json!({})).1.is_ok());
+    #[cfg(unix)]
     let (_conn, agent, terminal) = busy(&data.0);
     drop(stdin);
-    gone_cleanly(&mut process, &data.0, &agent, &terminal);
+    wait_for_clean_exit(&mut process, &data.0);
+    #[cfg(unix)]
+    {
+        wait_until_dead(&agent);
+        wait_until_dead(&terminal);
+    }
 }
 
 /// The app is killed outright: the pipe it held closes with it.
+#[cfg(unix)]
 #[test]
 fn serve_exits_when_the_process_holding_its_stdin_is_killed() {
     let data = temp_dir();
@@ -122,7 +126,7 @@ fn serve_exits_when_the_process_holding_its_stdin_is_killed() {
     gone_cleanly(&mut process, &data.0, &agent, &terminal);
 }
 
-/// A child killed when dropped, so a failed test leaves no `sleep 600` behind.
+/// A child killed when dropped, including when a lifecycle assertion fails.
 struct Killed(std::process::Child);
 
 impl Drop for Killed {
@@ -132,12 +136,51 @@ impl Drop for Killed {
     }
 }
 
+/// Electron can close both pipe ends on exit. A write to the closed stderr
+/// reader must not panic before the Windows daemon finishes winding down.
+#[cfg(windows)]
+#[test]
+fn serve_stdin_close_shuts_down_after_its_stderr_reader_closes() {
+    let data = temp_dir();
+    let child = daemon(&["serve", "--exit-on-stdin-close"], &data.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = Killed(child);
+    let stdin = child.0.stdin.take().unwrap();
+    let stderr = child.0.stderr.take().unwrap();
+    let started = Instant::now();
+    while !data.0.join("daemon.json").exists() {
+        assert!(child.0.try_wait().unwrap().is_none(), "the daemon exited before it was ready");
+        assert!(started.elapsed() < PATIENCE, "the daemon never wrote daemon.json");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // A completed hello also puts startup logging behind us: daemon.json is
+    // published immediately before the initial "listening" stderr message.
+    let mut conn = local(&data.0);
+    conn.hello(None);
+    drop(stderr);
+    drop(stdin);
+    let stopped = Instant::now();
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(stopped.elapsed() < WIND_DOWN + Duration::from_secs(5), "the daemon kept running after the app closed its pipes");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "the daemon did not stop cleanly: {status}");
+    assert!(!data.0.join("daemon.json").exists());
+}
+
 #[test]
 fn serve_without_the_option_ignores_its_stdin() {
     let data = temp_dir();
     // `Served` drops the daemon's stdin as soon as it starts.
     let mut served = Served::start(&data.0, &[]);
-    let mut conn = socket_conn(&data.0);
+    let mut conn = local(&data.0);
     conn.hello(None);
     assert!(conn.call("session_load", json!({})).1.is_ok());
     assert!(served.process.child.try_wait().unwrap().is_none(), "the daemon stopped when its stdin closed");
@@ -145,6 +188,7 @@ fn serve_without_the_option_ignores_its_stdin() {
 
 /// The app that started the daemon reads its stderr too; when the app dies,
 /// writing there fails, and the daemon must still stop its work and clean up.
+#[cfg(unix)]
 #[test]
 fn serve_cleans_up_when_the_app_reading_its_stderr_is_killed() {
     let data = temp_dir();

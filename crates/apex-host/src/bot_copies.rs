@@ -2769,6 +2769,29 @@ mod tests {
 
     #[tokio::test]
     async fn fifty_folds_do_not_leak_file_descriptors() {
+        // /dev/fd measures this entire process, including other tests' sockets
+        // and runtimes. Measure in a child running only this exact test.
+        const CHILD_MARKER: &str = "APEX_DECK_FOLD_FD_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "bot_copies::tests::fifty_folds_do_not_leak_file_descriptors",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(CHILD_MARKER, "1")
+                .output()
+                .expect("the isolated fold descriptor test starts");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success() && stdout.contains("running 1 test"),
+                "isolated fold descriptor test exited {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                output.status,
+            );
+            return;
+        }
         let (_tmp, root, data) = init_repo("fold-leak-check");
         fs::write(root.join("seed.txt"), "seed\n").unwrap();
         let run = |args: &[&str]| {

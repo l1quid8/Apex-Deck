@@ -1228,6 +1228,7 @@ mod tests {
         std::fs::remove_dir_all(data).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn integration_preserves_rename_binary_executable_mode_symlink_add_and_delete() {
         use std::os::unix::fs::{symlink, PermissionsExt};

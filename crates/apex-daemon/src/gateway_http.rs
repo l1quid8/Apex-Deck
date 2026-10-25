@@ -1359,6 +1359,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn legacy_allow_mcp_key_cannot_reach_private_servers_over_http() {
         use std::os::unix::fs::PermissionsExt;

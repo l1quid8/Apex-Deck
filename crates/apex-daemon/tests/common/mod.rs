@@ -27,6 +27,7 @@ impl Drop for TempDir {
 pub fn temp_dir() -> TempDir {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!("ad-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
+    #[cfg(unix)]
     debug_assert!(dir.join("daemon.sock").as_os_str().len() < 100, "the daemon socket path would exceed macOS sun_path: {}", dir.display());
     let _ = std::fs::remove_dir_all(&dir);
     TempDir(dir)
@@ -217,6 +218,7 @@ impl Process {
         }
     }
 
+    #[cfg(unix)]
     pub fn signal(&self, signal: &str) {
         assert!(Command::new("kill").arg(format!("-{signal}")).arg(self.child.id().to_string()).status().unwrap().success());
     }
@@ -311,6 +313,44 @@ impl Served {
     }
 }
 
+/// A local connection with independent async reads and writes. Windows blocking
+/// pipe clones share one synchronous file object and cannot provide this.
+pub fn local(data: &Path) -> Conn {
+    use apex_daemon::{ipc, protocol};
+    use futures::{SinkExt, StreamExt};
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let endpoint = ipc::endpoint(data).expect("the local endpoint resolves");
+    let stream = runtime.block_on(ipc::connect(&endpoint)).expect("the local endpoint connects");
+    let (read, write) = ipc::split(stream);
+    let (mut input, mut output) = protocol::lines(read, write);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (in_tx, in_rx) = mpsc::channel();
+    runtime.spawn(async move {
+        while let Some(line) = out_rx.recv().await {
+            if output.send(line).await.is_err() {
+                return;
+            }
+        }
+    });
+    runtime.spawn(async move {
+        while let Some(Ok(line)) = input.next().await {
+            let frame = serde_json::from_str(&line).expect("a local JSON frame");
+            if in_tx.send(frame).is_err() {
+                return;
+            }
+        }
+    });
+    let runtime = Arc::new(runtime);
+    Conn::new(
+        move |line| {
+            let _keep = &runtime;
+            let _ = out_tx.send(line);
+        },
+        Frames::from_channel(in_rx),
+    )
+}
+
 /// A WebSocket connection; its frames are read on a thread.
 pub fn websocket(port: u16) -> Conn {
     use futures::{SinkExt, StreamExt};
@@ -363,7 +403,13 @@ pub fn chat_terminal_and_approval(conn: &mut Conn) {
     assert_eq!(decided, Err("that request is no longer waiting for an answer".into()));
 
     conn.call("pty_spawn", json!({ "id": "term", "agent": null, "cwd": null, "cols": 80, "rows": 24 })).1.unwrap();
-    conn.call("pty_write", json!({ "id": "term", "data": "echo apex-$((40+2))\n" })).1.unwrap();
+    #[cfg(unix)]
+    let terminal_command = "echo apex-$((40+2))\n";
+    // The Windows host uses COMSPEC (cmd.exe). Keep the expected output out of
+    // the input so an echoed command cannot satisfy the terminal assertion.
+    #[cfg(windows)]
+    let terminal_command = "set /a apex_result=40+2\r\necho apex-%apex_result%\r\n";
+    conn.call("pty_write", json!({ "id": "term", "data": terminal_command })).1.unwrap();
     conn.frames.until(|f| f["event"] == "pty-data" && f["payload"]["data"].as_str().unwrap_or_default().contains("apex-42"));
     conn.call("pty_kill", json!({ "id": "term" })).1.unwrap();
 
@@ -384,6 +430,7 @@ pub fn scripted(id: &str, lines: &[&str]) -> Value {
 }
 
 /// A command-line participant: `script` runs under `sh -c` with the prompt on stdin.
+#[cfg(unix)]
 pub fn shell(id: &str, script: &str) -> Value {
     participant(id, Backend::Cli { program: "sh".into(), args: vec!["-c".into(), script.into()] })
 }
@@ -417,6 +464,7 @@ pub fn added_texts(frames: &[Value], room: &str) -> Vec<String> {
 }
 
 /// Whether `pid` is still a live process (a zombie waiting to be reaped is not).
+#[cfg(unix)]
 pub fn alive(pid: &str) -> bool {
     let out = Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
     let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -424,6 +472,7 @@ pub fn alive(pid: &str) -> bool {
 }
 
 /// Wait for a file to hold a pid, and return it.
+#[cfg(unix)]
 pub fn read_pid(path: &Path) -> String {
     let start = Instant::now();
     loop {
@@ -435,6 +484,7 @@ pub fn read_pid(path: &Path) -> String {
     }
 }
 
+#[cfg(unix)]
 pub fn wait_until_dead(pid: &str) {
     let start = Instant::now();
     while alive(pid) {

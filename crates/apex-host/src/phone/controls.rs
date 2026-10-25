@@ -895,6 +895,7 @@ mod tests {
         assert!(name.starts_with(&format!("phone-display-{}-", geometry.display)));
         std::fs::remove_dir_all(data).unwrap();
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn native_hid_keeps_one_service_alive_across_commands_and_closes_on_stop() {
         use std::os::unix::fs::PermissionsExt;

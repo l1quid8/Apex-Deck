@@ -84,15 +84,25 @@ impl Drop for Fixture {
 }
 
 fn make_writable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
     let Ok(meta) = std::fs::symlink_metadata(path) else { return };
+    #[cfg(windows)] {
+        let mut permissions = meta.permissions();
+        permissions.set_readonly(false);
+        let _ = std::fs::set_permissions(path, permissions);
+    }
     if meta.is_dir() {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+        }
         for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
             make_writable(&entry.path());
         }
     } else if meta.is_file() {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
     }
 }
 
@@ -191,7 +201,6 @@ fn record<'a>(ledger: &'a Value, id: &str) -> &'a Value {
 
 #[test]
 fn snapshot_copies_hashes_read_only_keeps_originals_and_is_reused() {
-    use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new("snapshot", write_all_legacy);
     let originals: Vec<(PathBuf, Vec<u8>)> = [f.data.join(TASKS), f.data.join(CONVERSATIONS), room_file(&f.data, ROOM_ID)]
         .into_iter().map(|p| { let bytes = std::fs::read(&p).unwrap(); (p, bytes) }).collect();
@@ -208,7 +217,7 @@ fn snapshot_copies_hashes_read_only_keeps_originals_and_is_reused() {
         assert_eq!(entry["size"], bytes.len());
         let copy = dir.join(entry["file"].as_str().unwrap());
         assert_eq!(&std::fs::read(&copy).unwrap(), bytes);
-        assert_eq!(std::fs::metadata(&copy).unwrap().permissions().mode() & 0o222, 0, "{copy:?} is writable");
+        assert!(std::fs::metadata(&copy).unwrap().permissions().readonly(), "{copy:?} is writable");
     }
     assert_eq!(ledger(&preview, TASKS)["sha256"], sha(&originals[0].1));
 
@@ -394,11 +403,10 @@ fn room_preview_explains_that_saved_access_needs_a_new_decision() {
 
 #[test]
 fn apply_refuses_a_snapshot_changed_after_preview_and_writes_nothing() {
-    use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new("tamper", write_all_legacy);
     let preview = f.preview();
     let copy = f.snapshot_dir(&preview).join(TASKS);
-    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o600)).unwrap();
+    make_writable(&copy);
     let mut forged = legacy_tasks();
     forged["tasks"]["task-3"]["status"] = json!("queued");
     write_json(&copy, &forged);

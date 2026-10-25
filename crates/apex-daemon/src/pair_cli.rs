@@ -18,7 +18,7 @@ use crate::devices::Tier;
 use crate::local_call;
 #[cfg(feature = "remote")]
 use crate::local_call::{Client, Refused};
-use crate::{paths, remote_config, serve};
+use crate::{ipc, paths, remote_config};
 
 pub const USAGE: &str = "\
 usage: apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID]
@@ -95,7 +95,7 @@ pub fn run_remote(data_dir: Option<PathBuf>, action: RemoteAction) -> Result<(),
         RemoteAction::Info => json!({ "cmd": "remote_info", "args": {} }),
         RemoteAction::Advertise(addrs) => json!({ "cmd": "remote_advertise", "args": { "addrs": addrs } }),
     };
-    let answer = match std::os::unix::net::UnixStream::connect(paths.data.join(serve::SOCKET)) {
+    let answer = match ipc::endpoint(&paths.data).and_then(|path| ipc::connect_blocking(&path)) {
         Ok(socket) => local_call::through_daemon(socket, request)?,
         Err(_) => match action {
             RemoteAction::Info => json!({ "enabled": false, "endpoint_id": null, "port": remote_config::port(&paths.data), "advertise": remote_config::advertised(&paths.data) }),
@@ -113,14 +113,16 @@ pub fn run_remote(data_dir: Option<PathBuf>, action: RemoteAction) -> Result<(),
 #[cfg(feature = "remote")]
 pub fn run(data_dir: Option<PathBuf>, options: PairOptions) -> Result<(), String> {
     let paths = paths::host_paths(data_dir)?;
-    let socket = std::os::unix::net::UnixStream::connect(paths.data.join(serve::SOCKET))
-        .map_err(|_| format!("no daemon is running for {}. Start it with `apex-daemon serve --remote`, then try again.", paths.data.display()))?;
-    socket.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let socket = ipc::endpoint(&paths.data).map_err(|e| e.to_string())?;
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let result = runtime.block_on(async {
         // Listening from the start, so an early Ctrl-C is ours to handle.
+        #[cfg(unix)]
         let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|e| format!("could not listen for Ctrl-C: {e}"))?;
-        let stream = tokio::net::UnixStream::from_std(socket).map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        let mut interrupt = tokio::signal::windows::ctrl_c().map_err(|e| format!("could not listen for Ctrl-C: {e}"))?;
+        let stream = ipc::connect(&socket).await
+            .map_err(|_| format!("no daemon is running for {}. Start it with `apex-daemon serve --remote`, then try again.", paths.data.display()))?;
         let mut client = Client::hello(stream).await.map_err(|r| r.err)?;
         let stdin = std::io::BufReader::new(std::io::stdin());
         pair(&mut client, &options, &mut std::io::stdout(), stdin, async move {
@@ -341,12 +343,12 @@ mod tests {
             let port = endpoint.bound_sockets().iter().map(|a| a.port()).find(|p| *p != 0).unwrap();
             let endpoint_id = *endpoint.id().as_bytes();
             daemon.remote.attach(Arc::clone(&daemon), endpoint).await;
-            let socket = data.join(serve::SOCKET);
-            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let socket = ipc::endpoint(data).unwrap();
+            let mut listener = ipc::listen(&socket).unwrap();
             let serving = Arc::clone(&daemon);
             tokio::spawn(async move {
-                while let Ok((stream, _)) = listener.accept().await {
-                    let (read, write) = stream.into_split();
+                while let Ok(stream) = listener.accept().await {
+                    let (read, write) = ipc::split(stream);
                     let (input, output) = protocol::lines(read, write);
                     tokio::spawn(protocol::serve(Arc::clone(&serving), Trust::Local, input, output));
                 }
@@ -378,7 +380,7 @@ mod tests {
         /// Run `pair` against the daemon's socket with `stdin`; the lines it
         /// prints come out of the receiver.
         async fn run_cli(socket: &Path, options: PairOptions, stdin: &'static str, interrupted: tokio::sync::oneshot::Receiver<()>) -> (tokio::task::JoinHandle<Result<(), String>>, mpsc::UnboundedReceiver<String>) {
-            let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+            let stream = ipc::connect(socket).await.unwrap();
             let (tx, rx) = mpsc::unbounded_channel();
             let cli = tokio::spawn(async move {
                 let mut client = Client::hello(stream).await.map_err(|r| r.err)?;
@@ -469,8 +471,11 @@ mod tests {
             let data = crate::devices::tests::folder();
             let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
             let off = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&data.0), host, host_id: "h".into(), boot_id: "b".into(), token: None, devices: Arc::new(Devices::open(&data.0)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), invites: Default::default(), remote: Default::default() });
-            let (ours, theirs) = tokio::net::UnixStream::pair().unwrap();
-            let (read, write) = theirs.into_split();
+            let path = ipc::endpoint(&data.0).unwrap();
+            let mut listener = ipc::listen(&path).unwrap();
+            let ours = ipc::connect(&path).await.unwrap();
+            let theirs = listener.accept().await.unwrap();
+            let (read, write) = ipc::split(theirs);
             let (input, output) = protocol::lines(read, write);
             tokio::spawn(protocol::serve(off, Trust::Local, input, output));
             let mut client = Client::hello(ours).await.unwrap();

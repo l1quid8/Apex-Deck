@@ -1,8 +1,10 @@
 # Windows M1: settings and IPC review
 
-Status: M1 steps 1–2 are implemented on `feat/windows-11`, based on the
-`c48e7fb` catch-up. Jigga reviews this interface before the remaining callers
-move. This checkpoint is not a completed Windows daemon or a Windows release.
+Status: M1 steps 1–2 were approved by Jigga. His three follow-ups are fixed,
+and the 15 IPC tests passed on Windows before the remaining callers moved.
+The caller migration is implemented on `feat/windows-11`, based on the
+`c48e7fb` catch-up, and awaits full Windows CI and Jigga's final review.
+This checkpoint is not a completed Windows daemon or a Windows release.
 
 ## Interface
 
@@ -108,3 +110,37 @@ Never push or merge main from this checkpoint.
   old endpoint implementation (directory creation, case, junction aliases).
   Canonicalization is now implemented; the next Windows run is the gate
   before migrating callers.
+
+- Run `40189074617`, job `121156001494`, passed all 15 IPC tests on Windows.
+  This cleared the review gate before the caller migration started.
+
+## Remaining caller migration
+
+- `serve`, `pair`, `remote`, `devices`, `keys`, and `phone` now use IPC.
+  Pairing and test connections retain independent async reads and writes.
+- Windows skips Unix socket-file cleanup, names pipe collisions clearly,
+  uses `COMPUTERNAME`, and redirects closed stderr to NUL during shutdown.
+- Windows data roots receive a verified, protected current-user-only
+  inheritable DACL before the data lock or daemon token is published. Newly
+  written private files receive an explicit owner-only ACL at creation,
+  verified before contents are written, including in public custom parents.
+  Root preparation preserves existing child ACLs; it does not repair an
+  arbitrary existing tree or certify all storage against hostile ancestor
+  mutation. Protected-authority support remains unavailable on Windows.
+- POSIX-only shell, signal, FIFO, mode, and symlink fixtures are gated
+  narrowly. Portable lifecycle, attach, token, import, and protocol checks
+  remain enabled. Added a real Windows broken-stderr shutdown regression.
+- The independent Windows harness now covers 24 tests, including private-root
+  inheritance, junction aliases, existing-child ACL preservation, explicit
+  private-file creation, and private-file replacement. Runtime results for
+  these additional tests are pending the migration's Windows run.
+- Local checks passed: TypeScript; 2,524 app tests (3 skipped); the CI Rust
+  suite with TMPDIR=/tmp (1,535 passed, 13 ignored); pairing/provenance
+  (63 passed); standalone production checks (3 passed); Unix IPC harness
+  (8 passed); and Windows harness cross-compilation.
+- A fresh read-only review found no critical or important migration issue.
+  Windows runtime verification and final Jigga review remain required.
+- Linux CI exposed a noisy whole-process FD-count test. It now runs its
+  original 50-fold check in an isolated test process with the same threshold;
+  the isolated test passed locally. A separate same-size Git index snapshot
+  failure is being investigated with a controlled reproduction.

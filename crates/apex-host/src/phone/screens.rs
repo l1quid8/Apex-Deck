@@ -244,6 +244,7 @@ pub async fn stream_preferred(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     #[tokio::test]
     async fn live_frames_switch_panels_and_keep_their_touch_geometry() {
         use std::{

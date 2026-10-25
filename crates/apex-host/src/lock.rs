@@ -36,6 +36,9 @@ impl DataLock {
     /// "apex-daemon serve (pid 12)") for anyone who finds it taken.
     pub fn acquire(data: &Path, owner: &str) -> Result<DataLock, LockError> {
         let failed = |e: std::io::Error| LockError::Failed(e.to_string());
+        #[cfg(windows)]
+        crate::private_data::prepare(data).map_err(failed)?;
+        #[cfg(not(windows))]
         std::fs::create_dir_all(data).map_err(failed)?;
         let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(data.join(LOCK_FILE)).map_err(failed)?;
         match file.try_lock() {

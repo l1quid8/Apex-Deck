@@ -206,10 +206,15 @@ mod pairing {
                 return name.chars().take(64).collect();
             }
         }
-        let mut buffer = [0u8; 256];
-        // SAFETY: gethostname writes at most `len` bytes into the buffer.
-        let ok = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } == 0;
-        let name = if ok { String::from_utf8_lossy(buffer.split(|b| *b == 0).next().unwrap_or_default()).into_owned() } else { String::new() };
+        #[cfg(unix)]
+        let name = {
+            let mut buffer = [0u8; 256];
+            // SAFETY: gethostname writes at most `len` bytes into the buffer.
+            let ok = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } == 0;
+            if ok { String::from_utf8_lossy(buffer.split(|b| *b == 0).next().unwrap_or_default()).into_owned() } else { String::new() }
+        };
+        #[cfg(windows)]
+        let name = std::env::var("COMPUTERNAME").unwrap_or_default();
         let name = name.strip_suffix(".local").unwrap_or(&name).trim();
         if name.is_empty() {
             "This computer".into()

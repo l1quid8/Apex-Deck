@@ -194,7 +194,8 @@ fn a_chat_a_terminal_an_approval_and_a_restart() {
 
     // A terminal: what it prints arrives as pty-data, and killing it ends it.
     first.call(json!({ "cmd": "pty_spawn", "args": { "id": "term", "agent": null, "cwd": null, "cols": 80, "rows": 24 } })).unwrap();
-    first.call(json!({ "cmd": "pty_write", "args": { "id": "term", "data": "echo apex-$((40+2))\n" } })).unwrap();
+    let terminal_input = if cfg!(windows) { "set /a apex_host_answer=6*7\r\necho apex-%apex_host_answer%\r\n" } else { "echo apex-$((40+2))\n" };
+    first.call(json!({ "cmd": "pty_write", "args": { "id": "term", "data": terminal_input } })).unwrap();
     assert!(
         first.wait_for(Duration::from_secs(20), |e| matches!(e, HostEvent::PtyData { id, data, .. } if id == "term" && data.contains("apex-42"))),
         "the terminal's output arrives"
@@ -217,12 +218,14 @@ fn a_chat_a_terminal_an_approval_and_a_restart() {
 }
 
 /// Whether `pid` is still a live process (a zombie waiting to be reaped is not).
+#[cfg(unix)]
 fn alive(pid: &str) -> bool {
     let out = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
     let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
     !state.is_empty() && !state.starts_with('Z')
 }
 
+#[cfg(unix)]
 #[test]
 fn winding_down_stops_running_agents_and_keeps_their_chat() {
     let data = std::env::temp_dir().join(format!("apex-host-wind-down-{}", std::process::id()));
@@ -277,6 +280,7 @@ fn winding_down_stops_running_agents_and_keeps_their_chat() {
 
 /// A window that reloads mid-turn opens its chats again; the turn running
 /// in the host must be the one it then sees and can stop.
+#[cfg(unix)]
 #[test]
 fn opening_a_room_again_mid_turn_keeps_the_running_room() {
     let data = std::env::temp_dir().join(format!("apex-host-reopen-{}", std::process::id()));

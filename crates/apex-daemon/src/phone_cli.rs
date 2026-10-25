@@ -56,7 +56,7 @@ pub fn main(args: &[String]) -> i32 {
         },
         other => other,
     };
-    let Ok(socket) = std::os::unix::net::UnixStream::connect(&socket) else {
+    let Ok(socket) = crate::ipc::connect_blocking(Path::new(&socket)) else {
         eprintln!("{NOT_REACHABLE}");
         return 1;
     };

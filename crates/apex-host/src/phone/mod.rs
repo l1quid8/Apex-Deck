@@ -755,7 +755,7 @@ async fn stream_once(program: &Path, udid: &str, frame: &Mutex<Option<Frame>>, s
     let _ = child.kill().await;
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
