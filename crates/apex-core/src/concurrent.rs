@@ -89,6 +89,9 @@ pub trait TurnStartHook: Send + Sync {
 pub trait CopyProvider: Send + Sync {
     fn copy_for<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Result<PathBuf, String>>;
     fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> BoxFuture<'a, ()>;
+    fn active_copy<'a>(&'a self, _id: &'a ParticipantId) -> BoxFuture<'a, Option<PathBuf>> {
+        Box::pin(async move { None })
+    }
 }
 #[derive(Clone)]
 pub struct ConcurrentRoom {
@@ -577,21 +580,39 @@ impl ConcurrentRoom {
                 room.approvals_handle(),
             )
         };
-        let (mut editor, held_by) = {
-            let mut held = self.editor.lock().unwrap();
-            if request.access != Some(Access::Read) {
-                if held.is_none() {
-                    *held = Some(ticket.id.clone());
-                    sink(RoomEvent::EditorChanged { id: held.clone() });
-                    (Some(EditorGuard { editor: self.editor.clone(), sink, retained: false }), None)
-                } else {
-                    (None, held.clone())
-                }
+        let existing_active_copy = if !request.plan && request.access != Some(Access::Read) {
+            if let Some(provider) = &self.copies {
+                provider.active_copy(&ticket.id).await
             } else {
-                (None, None)
+                None
             }
+        } else {
+            None
         };
-        let mut is_copy_turn = false;
+
+        let (mut editor, held_by, mut is_copy_turn) = if let Some(copy_path) = existing_active_copy {
+            request.cwd = Some(copy_path.clone());
+            let copy_line = copy_turn_line(&copy_path);
+            request.system.push_str("\n\n");
+            request.system.push_str(&copy_line);
+            (None, None, true)
+        } else {
+            let (editor, held_by) = {
+                let mut held = self.editor.lock().unwrap();
+                if request.access != Some(Access::Read) {
+                    if held.is_none() {
+                        *held = Some(ticket.id.clone());
+                        sink(RoomEvent::EditorChanged { id: held.clone() });
+                        (Some(EditorGuard { editor: self.editor.clone(), sink, retained: false }), None)
+                    } else {
+                        (None, held.clone())
+                    }
+                } else {
+                    (None, None)
+                }
+            };
+            (editor, held_by, false)
+        };
         if let Some(held_by) = held_by {
             let mut copy_granted = false;
             let mut read_only_reason = None;

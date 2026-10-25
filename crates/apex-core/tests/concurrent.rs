@@ -367,6 +367,72 @@ fn plan_turn_never_asks_for_copy() {
 }
 
 #[test]
+fn reconcile_turn_uses_copy_when_main_is_free() {
+    struct ReconcilingProvider {
+        copy_path: PathBuf,
+        finished: Arc<Mutex<Vec<(ParticipantId, bool)>>>,
+    }
+    impl apex_core::CopyProvider for ReconcilingProvider {
+        fn active_copy<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, Option<PathBuf>> {
+            let path = if id.as_str() == "B" {
+                Some(self.copy_path.clone())
+            } else {
+                None
+            };
+            Box::pin(async move { path })
+        }
+        fn copy_for<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, Result<PathBuf, String>> {
+            Box::pin(async move { Ok(self.copy_path.clone()) })
+        }
+        fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> futures::future::BoxFuture<'a, ()> {
+            self.finished.lock().unwrap().push((id.clone(), cancelled));
+            Box::pin(async move {})
+        }
+    }
+
+    block_on(async {
+        let make_writer = |id: &str| {
+            let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+            config.access = apex_core::Access::Full;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let bot_b = make_writer("B");
+
+        // Only Bot B runs, so main folder is completely free (no one holds editor)
+        let room = Room::new(
+            vec![bot_b.clone()],
+            RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) },
+        );
+        let finished = Arc::new(Mutex::new(Vec::new()));
+        let copy_path = PathBuf::from("/tmp/fake-reconcile-copy-b");
+        let provider = Arc::new(ReconcilingProvider {
+            copy_path: copy_path.clone(),
+            finished: finished.clone(),
+        });
+
+        let concurrent = ConcurrentRoom::new(room).with_copies(provider);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+
+        let batch = concurrent.begin_post("reconcile turn", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+
+        let requests_b = bot_b.requests();
+        assert_eq!(requests_b.len(), 1);
+        let req = &requests_b[0];
+        assert_eq!(req.access, Some(apex_core::Access::Full));
+        assert_eq!(req.cwd, Some(copy_path.clone()), "bot with active copy must use its copy even when main is free");
+        let expected_line = apex_core::copy_turn_line(&copy_path);
+        assert!(req.system.contains(&expected_line));
+
+        let finished_calls = finished.lock().unwrap().clone();
+        assert_eq!(finished_calls, vec![(ParticipantId::new("B"), false)]);
+    });
+}
+
+#[test]
 fn answer_guidance_is_captured_when_a_batch_is_accepted() {
     block_on(async {
         let bot = Arc::new(ScriptedParticipant::new("bot", &["first", "second"]));

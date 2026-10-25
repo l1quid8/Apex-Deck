@@ -301,6 +301,16 @@ impl Host {
 
         for copy in crate::bot_copies::recover_unfolded_copies(&host.paths.data) {
             let thread_id = copy.thread.clone();
+            let thread_exists = host.store.room(&thread_id).ok().flatten().is_some()
+                || host.handle(&thread_id).is_ok();
+            if !thread_exists {
+                let mut updated = copy.clone();
+                updated.state = crate::bot_copies::CopyState::NeedsYou {
+                    reason: "its chat was deleted".to_string(),
+                };
+                let _ = crate::bot_copies::save_state(&host.paths.data, &updated);
+                continue;
+            }
             let host_weak = Arc::downgrade(&host);
             let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
                 let thread_id = thread_id.clone();
@@ -1591,7 +1601,7 @@ impl Host {
             let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
         }
         for copy in crate::bot_copies::load_copies(&self.paths.data) {
-            if copy.thread == id && copy.state == crate::bot_copies::CopyState::Folded {
+            if copy.thread == id && !matches!(copy.state, crate::bot_copies::CopyState::NeedsYou { .. }) {
                 let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
             }
         }
@@ -2356,6 +2366,59 @@ mod tests {
         host.shutdown();
         drop(host);
         assert!(weak_host.upgrade().is_none(), "Host leaked after opening room with folder");
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn deleted_thread_copies_are_not_folded_on_restart() {
+        use std::process::Command;
+        let path = std::env::temp_dir().join(format!("apex-del-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+
+        let data = path.join("data");
+        // Create an unfolded copy for a thread that is NOT in store ("deleted-thread")
+        let copy = crate::bot_copies::create_copy(&cwd, &data, "deleted-thread", "bot1").unwrap();
+        assert!(matches!(copy.state, crate::bot_copies::CopyState::Working));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let _enter = runtime.enter();
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+
+        let copies = crate::bot_copies::load_copies(&data);
+        let ghost_copy = copies.iter().find(|c| c.thread == "deleted-thread" && c.bot == "bot1").unwrap();
+        assert_eq!(
+            ghost_copy.state,
+            crate::bot_copies::CopyState::NeedsYou {
+                reason: "its chat was deleted".to_string()
+            }
+        );
+        assert!(host.fold_queue.is_idle());
+
+        // Verify room_delete cleans up non-NeedsYou copies, but preserves NeedsYou copies
+        let _active_copy = crate::bot_copies::create_copy(&cwd, &data, "thread-del-test", "bot2").unwrap();
+        let needs_you_copy = crate::bot_copies::create_copy(&cwd, &data, "thread-del-test", "bot3").unwrap();
+        let mut ny = needs_you_copy;
+        ny.state = crate::bot_copies::CopyState::NeedsYou { reason: "test keep".into() };
+        crate::bot_copies::save_state(&data, &ny).unwrap();
+
+        host.room_delete("thread-del-test".into()).unwrap();
+
+        let remaining = crate::bot_copies::load_copies(&data);
+        assert!(!remaining.iter().any(|c| c.thread == "thread-del-test" && c.bot == "bot2"), "working copy should be removed on thread delete");
+        assert!(remaining.iter().any(|c| c.thread == "thread-del-test" && c.bot == "bot3"), "NeedsYou copy should be kept on thread delete");
+
+        host.shutdown();
+        drop(host);
+        drop(_enter);
+        drop(runtime);
         let _ = std::fs::remove_dir_all(&path);
     }
 

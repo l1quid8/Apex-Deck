@@ -18,7 +18,11 @@ pub const SHARED_SHORTCUT_PATHS: &[&str] = &["node_modules"];
 pub enum CopyState {
     Working,
     Folding,
-    Reconciling { attempt: u8 },
+    Reconciling {
+        attempt: u8,
+        #[serde(default)]
+        files: Vec<String>,
+    },
     NeedsYou { reason: String },
     Folded,
 }
@@ -506,6 +510,22 @@ fn get_ignored_new_in_work(root: &Path, work: &Path) -> Vec<String> {
     skipped
 }
 
+fn check_unresolved_markers(work: &Path, files_to_check: &[String]) -> Vec<String> {
+    let mut still_conflicted = Vec::new();
+    for f in files_to_check {
+        let target = work.join(f);
+        if let Ok(bytes) = std::fs::read(&target) {
+            let s = String::from_utf8_lossy(&bytes);
+            if s.contains("<<<<<<<") && s.contains("=======") && s.contains(">>>>>>>") {
+                still_conflicted.push(f.clone());
+            }
+        }
+    }
+    still_conflicted.sort();
+    still_conflicted.dedup();
+    still_conflicted
+}
+
 pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
     let root = verify_git_repo(&copy.root)?;
     let work = &copy.work;
@@ -514,6 +534,11 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
         Ok(s) => s,
         Err(_) => copy.base.clone(),
     };
+
+    let mut files_to_check: Vec<String> = Vec::new();
+    if let CopyState::Reconciling { files: ref cf, .. } = copy.state {
+        files_to_check.extend(cf.clone());
+    }
 
     let m_commit = snapshot_tree(&root)?;
     let c_commit = snapshot_tree(work)?;
@@ -530,19 +555,14 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
         files.sort();
         files.dedup();
 
-        let mut still_conflicted = Vec::new();
-        for f in &files {
-            let target = work.join(f);
-            if let Ok(bytes) = std::fs::read(&target) {
-                let s = String::from_utf8_lossy(&bytes);
-                if s.contains("<<<<<<<") && s.contains("=======") && s.contains(">>>>>>>") {
-                    still_conflicted.push(f.clone());
-                }
+        let mut check_list = files.clone();
+        for f in &files_to_check {
+            if !check_list.contains(f) {
+                check_list.push(f.clone());
             }
         }
+        let still_conflicted = check_unresolved_markers(work, &check_list);
         if !still_conflicted.is_empty() {
-            still_conflicted.sort();
-            still_conflicted.dedup();
             return Ok(FoldOutcome::Conflicts { files: still_conflicted });
         }
 
@@ -704,6 +724,18 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
         .cloned()
         .collect();
     files.sort();
+
+    let mut check_list = files.clone();
+    for f in &files_to_check {
+        if !check_list.contains(f) {
+            check_list.push(f.clone());
+        }
+    }
+    let still_conflicted = check_unresolved_markers(work, &check_list);
+    if !still_conflicted.is_empty() {
+        return Ok(FoldOutcome::Conflicts { files: still_conflicted });
+    }
+
     let ignored_skipped = get_ignored_new_in_work(&root, work);
 
     Ok(FoldOutcome::Clean {
@@ -960,24 +992,32 @@ impl FoldQueue {
         });
     }
 
-    async fn handle_clash(&self, copy: &BotCopy, task: &FoldTask, files: &[String]) {
-        let current_attempt = match copy.state {
-            CopyState::Reconciling { attempt } => attempt,
+    async fn send_back(
+        &self,
+        copy: &BotCopy,
+        task: &FoldTask,
+        reason: &str,
+        msg: String,
+        files: &[String],
+    ) {
+        let current_attempt = match &copy.state {
+            CopyState::Reconciling { attempt, .. } => *attempt,
             _ => 0,
         };
         let next_attempt = current_attempt + 1;
         if next_attempt > 2 {
-            self.mark_needs_you(copy, task, "merge conflicts", files);
+            self.mark_needs_you(copy, task, reason, files);
             return;
         }
         let mut updated = copy.clone();
-        updated.state = CopyState::Reconciling { attempt: next_attempt };
-        let _ = save_state(&self.data, &updated);
-
-        let msg = format!(
-            "Your changes clash with work already in the main folder. Fix {} in your copy (conflict markers are in the files), then end your turn.",
-            files.join(", ")
-        );
+        updated.state = CopyState::Reconciling {
+            attempt: next_attempt,
+            files: files.to_vec(),
+        };
+        if let Err(e) = save_state(&self.data, &updated) {
+            self.mark_needs_you(copy, task, &format!("could not save copy state: {e}"), files);
+            return;
+        }
 
         let reconcile = task.reconcile.clone().or_else(|| self.reconcile.lock().unwrap().clone());
         if let Some(starter) = reconcile {
@@ -987,35 +1027,6 @@ impl FoldQueue {
             }
         } else {
             self.mark_needs_you(copy, task, "no reconcile starter available", files);
-        }
-    }
-
-    async fn handle_check_failure(&self, copy: &BotCopy, task: &FoldTask, cmd: &str, output: &str) {
-        let current_attempt = match copy.state {
-            CopyState::Reconciling { attempt } => attempt,
-            _ => 0,
-        };
-        let next_attempt = current_attempt + 1;
-        if next_attempt > 2 {
-            self.mark_needs_you(copy, task, "project check failed", &[]);
-            return;
-        }
-        let mut updated = copy.clone();
-        updated.state = CopyState::Reconciling { attempt: next_attempt };
-        let _ = save_state(&self.data, &updated);
-
-        let msg = format!(
-            "The project check ({cmd}) fails with your changes but passes without them:\n{output}"
-        );
-
-        let reconcile = task.reconcile.clone().or_else(|| self.reconcile.lock().unwrap().clone());
-        if let Some(starter) = reconcile {
-            let bot_id = ParticipantId::new(&copy.bot);
-            if let Err(e) = (starter)(task.thread.clone(), bot_id, msg).await {
-                self.mark_needs_you(copy, task, &format!("could not start reconcile turn: {e}"), &[]);
-            }
-        } else {
-            self.mark_needs_you(copy, task, "no reconcile starter available", &[]);
         }
     }
 
@@ -1063,7 +1074,10 @@ impl FoldQueue {
                     let check_cmd = crate::project_check::resolve_check(&self.data, &copy.root);
                     if let Some(cmd) = check_cmd {
                         if let Some(output) = crate::project_check::check_blames_copy(&copy.root, &copy.work, &cmd).await {
-                            self.handle_check_failure(&copy, &task, &cmd, &output).await;
+                            let msg = format!(
+                                "The project check ({cmd}) fails with your changes but passes without them:\n{output}"
+                            );
+                            self.send_back(&copy, &task, "project check failed", msg, &[]).await;
                             break;
                         }
                     }
@@ -1098,7 +1112,11 @@ impl FoldQueue {
                             continue;
                         }
                         Ok(Ok(FoldOutcome::Conflicts { files })) => {
-                            self.handle_clash(&copy, &task, &files).await;
+                            let msg = format!(
+                                "Your changes clash with work already in the main folder. Fix {} in your copy (conflict markers are in the files), then end your turn.",
+                                files.join(", ")
+                            );
+                            self.send_back(&copy, &task, "merge conflicts", msg, &files).await;
                             break;
                         }
                         Ok(Err(e)) => {
@@ -1112,7 +1130,11 @@ impl FoldQueue {
                     }
                 }
                 FoldOutcome::Conflicts { files } => {
-                    self.handle_clash(&copy, &task, &files).await;
+                    let msg = format!(
+                        "Your changes clash with work already in the main folder. Fix {} in your copy (conflict markers are in the files), then end your turn.",
+                        files.join(", ")
+                    );
+                    self.send_back(&copy, &task, "merge conflicts", msg, &files).await;
                     break;
                 }
                 FoldOutcome::MainMoved => {
@@ -1176,6 +1198,33 @@ impl BotCopies {
 }
 
 impl CopyProvider for BotCopies {
+    fn active_copy<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Option<PathBuf>> {
+        Box::pin(async move {
+            {
+                let active = self.active.lock().unwrap();
+                if let Some(c) = active.get(id) {
+                    return Some(c.work.clone());
+                }
+            }
+            let existing = {
+                let copies = load_copies(&self.data);
+                copies
+                    .into_iter()
+                    .find(|c| c.thread == self.thread && c.bot == id.as_str())
+            };
+            if let Some(copy) = existing {
+                if matches!(
+                    copy.state,
+                    CopyState::Working | CopyState::Folding | CopyState::Reconciling { .. }
+                ) {
+                    self.active.lock().unwrap().insert(id.clone(), copy.clone());
+                    return Some(copy.work);
+                }
+            }
+            None
+        })
+    }
+
     fn copy_for<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Result<PathBuf, String>> {
         Box::pin(async move {
             {
@@ -2334,7 +2383,7 @@ mod tests {
 
         let copies = load_copies(&data);
         assert_eq!(copies.len(), 1);
-        assert_eq!(copies[0].state, CopyState::Reconciling { attempt: 1 });
+        assert_eq!(copies[0].state, CopyState::Reconciling { attempt: 1, files: vec!["seed.txt".to_string()] });
         // Markers left in the copy only
         let copy_seed = fs::read_to_string(copy.work.join("seed.txt")).unwrap();
         assert!(copy_seed.contains("<<<<<<<"), "copy should have conflict markers");
@@ -2544,6 +2593,51 @@ mod tests {
         // Both files cleanly updated in main, never a half-applied state
         assert_eq!(fs::read_to_string(root.join("f1.txt")).unwrap(), "f1 new");
         assert_eq!(fs::read_to_string(root.join("f2.txt")).unwrap(), "f2 new");
+    }
+
+    #[test]
+    fn fold_never_applies_markers_after_main_moves() {
+        let (_tmp, root, data) = init_repo("fold-markers-main-moves");
+        fs::write(root.join("seed.txt"), "line 1\nline 2\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "seed.txt"]);
+        run(&["commit", "-m", "seed base"]);
+
+        let copy = create_copy(&root, &data, "t-markers", "bot-markers").unwrap();
+        fs::write(copy.work.join("seed.txt"), "line 1 bot\nline 2\n").unwrap();
+        fs::write(root.join("seed.txt"), "line 1 human\nline 2\n").unwrap();
+
+        // First fold: this clashes and writes conflict markers to copy's seed.txt
+        let outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(outcome, FoldOutcome::Conflicts { .. }));
+
+        // Now update copy state to Reconciling with the clashed file
+        let mut copy_reconciling = copy.clone();
+        copy_reconciling.state = CopyState::Reconciling {
+            attempt: 1,
+            files: vec!["seed.txt".to_string()],
+        };
+        save_state(&data, &copy_reconciling).unwrap();
+
+        // Main now moves by modifying a completely DIFFERENT file
+        fs::write(root.join("other.txt"), "other content created by human\n").unwrap();
+
+        // Merge main into copy again (takes the slow path because other.txt changed in main)
+        // With conflict markers still in seed.txt, this MUST NOT report Clean
+        let outcome2 = merge_main_into_copy(&copy_reconciling).unwrap();
+        match outcome2 {
+            FoldOutcome::Conflicts { files } => {
+                assert!(files.contains(&"seed.txt".to_string()));
+            }
+            other => panic!("Expected Conflicts because seed.txt still has markers, got {:?}", other),
+        }
+
+        // Apply to main must never put conflict markers into main
+        let main_seed = fs::read_to_string(root.join("seed.txt")).unwrap();
+        assert!(!main_seed.contains("<<<<<<<"), "main should never contain conflict markers");
     }
 
     #[tokio::test]
