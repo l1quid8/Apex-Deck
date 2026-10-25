@@ -2,7 +2,8 @@
 //!
 //! With a daemon running, the request goes through its local socket, so a
 //! revoke also cuts off a connected device at once. Otherwise the registry
-//! file is changed here, under the data folder's lock.
+//! file is changed here on Linux, under the data folder's lock. Mac grants
+//! require the running installed daemon and never fall back to editable JSON.
 
 use std::path::PathBuf;
 
@@ -77,6 +78,10 @@ pub fn run(data_dir: Option<PathBuf>, action: DevicesAction) -> Result<(), Strin
     let answer = match std::os::unix::net::UnixStream::connect(paths.data.join(serve::SOCKET)) {
         Ok(socket) => local_call::through_daemon(socket, request)?,
         Err(_) => {
+            let devices = Devices::open(&paths.data);
+            if devices.requires_ui_receipt() {
+                return Err("Protected phone grants cannot be managed offline. Start the installed Apex Deck for this data directory and retry through its running daemon. If the protected provenance service is unavailable, repair it and restart Deck first.".into());
+            }
             let _lock = match DataLock::acquire(&paths.data, &format!("apex-daemon devices (pid {})", std::process::id())) {
                 Ok(lock) => lock,
                 Err(LockError::Held { owner }) => return Err(format!("{} is in use by {owner}, which takes no connections; quit it first", paths.data.display())),

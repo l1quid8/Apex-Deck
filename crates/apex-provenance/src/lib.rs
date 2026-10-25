@@ -1,5 +1,7 @@
 //! Root-owned submission authority. No shell execution and no general file API.
 pub mod io;
+mod phone;
+pub use phone::phone_command;
 mod ownership;
 pub use ownership::{HostOwnership, HostOwnershipError, prepare_host_lock};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
@@ -349,8 +351,9 @@ impl Journal {
         // Old task-action receipts used one key for every action at a task
         // revision. Preserve those replay barriers while allowing a different
         // explicitly signed action to use its new action-qualified key.
+        let phone_intent = phone::phone_key(uid, data_dir, &command).is_some();
         let content_preflight = content_bound_startup_preflight(&command);
-        if command["cmd"] == "assistant_task_action" && command.get("provenanceRequestId").is_some() {
+        if !phone_intent && command["cmd"] == "assistant_task_action" && command.get("provenanceRequestId").is_some() {
             let mut legacy = command.clone();
             legacy.as_object_mut().unwrap().remove("provenanceRequestId");
             let legacy_key = command_key(uid, data_dir, &legacy)?;
@@ -484,6 +487,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
                 | "room-authority-v1.json"
                 | "personal-machine.json"
                 | "project-memory-v1.json"
+                | "devices.json"
         )
     {
         return Err("Not a protected ledger name".into());
@@ -543,6 +547,7 @@ pub fn protected(name: &str) -> bool {
             // Bound to the UI's delivery ID like room actions; the host also
             // refuses changed content under the same ledger import.
             | "legacy_import_apply"
+            | "devices_add" | "devices_set_tier" | "devices_set_threads" | "pair_approve"
     )
 }
 fn content_bound_startup_preflight(command: &Value) -> bool {
@@ -562,6 +567,7 @@ fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, Stri
     {
         return Err("Expected exactly cmd and args".into());
     }
+    if let Some(key) = phone::phone_key(uid, data_dir, command) { return key; }
     let args = &command["args"];
     let id = if name.starts_with("room_")
         || !matches!(

@@ -4,6 +4,8 @@
 import { FinalError, type Connect, type Link } from "./client.ts";
 import { CLOSE, type RemotePlugin, type Route } from "../phone/remotePlugin.ts";
 
+export const IROH_MAX_FRAME_BYTES = 8 * 1024 * 1024;
+
 export interface IrohTarget {
   hostEndpointId: string;
   addrs: string[];
@@ -48,7 +50,11 @@ export function irohConnect(
       let ended = false;
       const shut = () => { if (!ended) void plugin.close(handle).catch(() => {}); };
       const link: Link = {
-        send: (line) => { if (!ended) plugin.send(handle, line).catch(shut); },
+        maxFrameBytes: IROH_MAX_FRAME_BYTES,
+        send: (line) => {
+          if (new TextEncoder().encode(line).byteLength > IROH_MAX_FRAME_BYTES) throw new Error("This request exceeds the connection's frame limit.");
+          if (!ended) plugin.send(handle, line).catch(shut);
+        },
         close: shut,
         onLine: (cb) => {
           lineCb = cb;

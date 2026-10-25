@@ -82,7 +82,7 @@ export interface MachineNote {
 export function machineNote(link: LinkView | null): MachineNote {
   if (!link) return { words: "Not paired", action: "Pair", down: true };
   if (link.problem) return { words: "Can't connect", action: "Fix", down: true };
-  if (link.status === "offline") return { words: link.kind === "mac" ? "Asleep" : "Offline", action: "Retry", down: true };
+  if (link.status === "offline") return { words: "Offline", action: "Retry", down: true };
   if (link.status === "connecting") return { words: "Connecting…", action: null, down: false };
   return { words: "", action: null, down: false };
 }

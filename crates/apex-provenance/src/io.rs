@@ -219,7 +219,7 @@ pub fn finish(data_dir: &Path, key_id: &str, error: Option<&str>) -> Result<(), 
 mod ownership_admission_tests {
     use super::*;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    fn scope() -> std::path::PathBuf {
+    pub(super) fn scope() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "apex-unowned-{}-{}",
             std::process::id(),
@@ -281,4 +281,62 @@ pub(crate) fn exchange(request: &Value) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     stream.write_all(&bytes).map_err(|e| e.to_string())?;
     read_frame(&mut stream)
+}
+
+/// Only the authenticated device branch of the pinned daemon calls this.
+/// No caller-supplied receipt or local registry can substitute for the grant.
+pub fn consume_device(data_dir: &Path, endpoint: &str, session: &str, id: u64, command: Value, assistant_room: bool) -> Result<Receipt, String> {
+    let canonical = data_dir.canonicalize().map_err(|e| e.to_string())?;
+    let _ownership = crate::ownership::require(&canonical)?;
+    let folder = canonical.to_str().ok_or("Host folder is not UTF-8")?;
+    let uid = unsafe { libc::geteuid() };
+    let nonce = challenge()?;
+    let expected = crate::phone_command(endpoint, session, id, command.clone())?;
+    let response = exchange(&json!({"op":"phone_claim","dataDir":folder,"endpoint":endpoint,"session":session,"requestId":id,"command":command,"assistantRoom":assistant_room,"nonce":nonce}))?;
+    if let Some(error) = response["error"].as_str() { return Err(error.into()); }
+    let key = root_file(&Path::new(ROOT).join("public-key"))?;
+    verify_device_claim(&key, response, uid, folder, &nonce, &expected)
+}
+
+fn verify_device_claim(key: &[u8], response: Value, uid: u32, folder: &str, nonce: &str, expected: &Value) -> Result<Receipt, String> {
+    let response = verify(key, &serde_json::from_value(response).map_err(|e| e.to_string())?)?;
+    let receipt: Receipt = serde_json::from_value(response["receipt"].clone()).map_err(|e| e.to_string())?;
+    if response != json!({"domain":DOMAIN,"kind":"claim","nonce":nonce,"receipt":receipt})
+        || receipt.uid != uid || receipt.data_dir != folder || &receipt.command != expected {
+        return Err("Phone admission response binding mismatch".into());
+    }
+    Ok(receipt)
+}
+
+#[cfg(test)]
+mod phone_claim_tests {
+    use super::*;
+    use ring::signature::KeyPair;
+    #[test]
+    fn phone_claim_verifies_signature_exact_intent_identity_folder_and_challenge() {
+        let key = crate::new_key().unwrap();
+        let uid = 501; let folder = "/tmp/phone-claim";
+        let endpoint = "ab".repeat(32); let session = "cd".repeat(16); let nonce = "ef".repeat(16);
+        let command = json!({"cmd":"room_create","args":{"id":"r","participants":[],"options":{"policy":"mention","max_bot_hops":0}}});
+        let mut journal = crate::Journal::new();
+        journal.write_document(uid,folder,"devices.json",0,json!({"version":1,"devices":[{"endpointId":endpoint,"tier":"full","threads":"all"}],"revoked":[]}),true).unwrap();
+        let ack = journal.claim_device_command(uid,folder,&endpoint,&session,7,command.clone(),false,&nonce,true).unwrap();
+        let response = serde_json::to_value(crate::sign(&key,&ack).unwrap()).unwrap();
+        let expected = crate::phone_command(&endpoint,&session,7,command).unwrap();
+        let verify = |response: Value, uid: u32, folder: &str, nonce: &str, expected: &Value| verify_device_claim(key.public_key().as_ref(),response,uid,folder,nonce,expected);
+        assert!(verify(response.clone(),uid,folder,&nonce,&expected).is_ok());
+        assert!(verify(response.clone(),uid+1,folder,&nonce,&expected).is_err());
+        assert!(verify(response.clone(),uid,"/tmp/other",&nonce,&expected).is_err());
+        assert!(verify(response.clone(),uid,folder,&"00".repeat(16),&expected).is_err());
+        let mut changed=expected.clone();changed["args"]["id"]=json!("other");
+        assert!(verify(response.clone(),uid,folder,&nonce,&changed).is_err());
+        let mut tampered=response;tampered["payload"]=json!("{}");
+        assert!(verify(tampered,uid,folder,&nonce,&expected).is_err());
+    }
+    #[test]
+    fn phone_admission_without_host_ownership_is_refused_before_broker_io() {
+        let dir = super::ownership_admission_tests::scope();
+        assert!(consume_device(&dir,&"ab".repeat(32),&"cd".repeat(16),1,json!({"cmd":"room_create","args":{}}),false).unwrap_err().contains("Host does not own"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

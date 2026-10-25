@@ -28,7 +28,8 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio_util::{
-    codec::{FramedRead, FramedWrite, LinesCodec, LinesCodecError},
+    bytes::BytesMut,
+    codec::{Decoder, FramedRead, FramedWrite, LinesCodec, LinesCodecError},
     sync::CancellationToken,
     task::TaskTracker,
 };
@@ -491,7 +492,7 @@ async fn session(inner: Arc<Inner>, slot: Arc<Slot>, endpoint: Endpoint, addr: E
         Ok(s) => s,
         Err(e) => return ended(e),
     };
-    let mut input = FramedRead::new(recv, LinesCodec::new_with_max_length(MAX_LINE));
+    let mut input = FramedRead::new(recv, Lines(LinesCodec::new_with_max_length(MAX_LINE)));
     let mut output = FramedWrite::new(send, LinesCodec::new());
     let mut last = route(&conn);
     slot.push(&inner, json!({ "type": "opened", "handle": slot.handle }));
@@ -500,10 +501,14 @@ async fn session(inner: Arc<Inner>, slot: Arc<Slot>, endpoint: Endpoint, addr: E
     loop {
         tokio::select! {
             line = input.next() => match line {
-                Some(Ok(line)) => slot.push(&inner, json!({ "type": "line", "handle": slot.handle, "line": line })),
-                Some(Err(LinesCodecError::MaxLineLengthExceeded)) => return (close::PROTOCOL, "the machine sent a line that's too long".into()),
+                Some(Ok(Line::Whole(line))) => slot.push(&inner, json!({ "type": "line", "handle": slot.handle, "line": line })),
+                // Closing here would only bring the app back to ask again.
+                Some(Ok(Line::TooLong(head))) => if let Some(id) = reply_id(&head) {
+                    let refused = json!({ "id": id, "err": "This reply is too large for the phone's connection (over 8 MB)." });
+                    slot.push(&inner, json!({ "type": "line", "handle": slot.handle, "line": refused.to_string() }));
+                },
                 // A read error means the connection ended; report how.
-                Some(Err(LinesCodecError::Io(_))) | None => return ended(conn.closed().await),
+                Some(Err(_)) | None => return ended(conn.closed().await),
             },
             line = out_rx.recv() => {
                 let Some(line) = line else { return (close::CLOSED, "closed".into()) };
@@ -522,6 +527,50 @@ async fn session(inner: Arc<Inner>, slot: Arc<Slot>, endpoint: Endpoint, addr: E
             }
         }
     }
+}
+
+/// A line from the host, or the first bytes of one over the limit.
+enum Line {
+    Whole(String),
+    TooLong(String),
+}
+
+/// `LinesCodec`, except that a line over the limit is skipped and comes out
+/// as `Line::TooLong` instead of an error, so the connection outlives it.
+struct Lines(LinesCodec);
+
+impl Lines {
+    fn map(result: Result<Option<String>, LinesCodecError>, buf: &BytesMut) -> Result<Option<Line>, LinesCodecError> {
+        match result {
+            Ok(line) => Ok(line.map(Line::Whole)),
+            // The codec reports a long line before discarding any of it, so
+            // `buf` still starts with that line.
+            Err(LinesCodecError::MaxLineLengthExceeded) => Ok(Some(Line::TooLong(String::from_utf8_lossy(&buf[..buf.len().min(64)]).into_owned()))),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl Decoder for Lines {
+    type Item = Line;
+    type Error = LinesCodecError;
+
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Line>, LinesCodecError> {
+        let result = self.0.decode(buf);
+        Self::map(result, buf)
+    }
+
+    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Line>, LinesCodecError> {
+        let result = self.0.decode_eof(buf);
+        Self::map(result, buf)
+    }
+}
+
+/// The request a reply answers, from its first bytes. The daemon writes
+/// keys in order, so a reply starts `{"id":n,`.
+fn reply_id(head: &str) -> Option<u64> {
+    let (id, _) = head.strip_prefix("{\"id\":")?.split_once(',')?;
+    id.parse().ok()
 }
 
 /// The phone's proof and six-digit code for one pairing connection.

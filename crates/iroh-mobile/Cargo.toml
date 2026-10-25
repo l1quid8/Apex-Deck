@@ -28,5 +28,5 @@ libc = "=0.2.186"
 
 [dev-dependencies]
 # The real daemon, for loopback pairing tests.
-apex-daemon = { path = "../apex-daemon", features = ["remote"] }
-apex-host = { path = "../apex-host" }
+apex-daemon = { path = "../apex-daemon", features = ["remote", "test-support"] }
+apex-host = { path = "../apex-host", features = ["test-support"] }

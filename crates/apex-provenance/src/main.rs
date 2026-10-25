@@ -163,6 +163,15 @@ fn run() -> Result<(), String> {
                 next.compact_if_due(&key, COMPACT_AT)?;
             }
             let payload = match request["op"].as_str() {
+                Some("phone_claim") => next.claim_device_command(
+                    uid, folder,
+                    request["endpoint"].as_str().ok_or("Missing phone identity")?,
+                    request["session"].as_str().ok_or("Missing phone session")?,
+                    request["requestId"].as_u64().ok_or("Missing phone request ID")?,
+                    request["command"].clone(),
+                    request["assistantRoom"].as_bool().ok_or("Missing assistant scope")?,
+                    request["nonce"].as_str().unwrap_or(""), trusted_daemon,
+                )?,
                 Some("issue") => {
                     let receipt = next.issue(uid, folder, request["command"].clone(), trusted)?;
                     json!({"domain":DOMAIN,"kind":"submission","receipt":receipt})

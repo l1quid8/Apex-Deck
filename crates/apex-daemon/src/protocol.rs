@@ -227,10 +227,24 @@ async fn send<O: Sink<String> + Unpin>(output: &mut O, guard: &mut Option<Guard>
     if guard.as_ref().is_some_and(|g| g.device().is_none()) {
         return Err(Stop::Revoked);
     }
+    let Some(frame) = fit(frame, if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME }) else { return Ok(()) };
     tokio::select! {
         sent = output.send(frame) => sent.map_err(|_| Stop::Closed),
         _ = cut_off(guard) => Err(Stop::Revoked),
     }
+}
+
+/// `frame` if the client can read it. One longer than the client's limit
+/// would make it close the connection, then reconnect and ask again, so a
+/// reply becomes a refusal with the same id and anything else is skipped.
+fn fit(frame: String, max: usize) -> Option<String> {
+    if frame.len() <= max {
+        return Some(frame);
+    }
+    let id = serde_json::from_str::<Value>(&frame).ok().and_then(|v| v.get("id").and_then(Value::as_u64));
+    let mb = |n: usize| format!("{:.1} MB", n as f64 / (1024.0 * 1024.0));
+    eprintln!("apex-daemon: {} of {} not sent; the connection takes {} at most", id.map_or("a frame".into(), |id| format!("the reply to request {id}")), mb(frame.len()), mb(max));
+    id.map(|id| refusal(json!(id), format!("This reply is too large to send over this connection ({}; the limit is {}).", mb(frame.len()), mb(max))))
 }
 
 /// The frame for `reply` as this session may have it right now.
@@ -280,6 +294,7 @@ where
     E: std::fmt::Display,
     O: Sink<String> + Unpin,
 {
+    let phone_session = crate::identity::random_hex(16);
     // A device hears of revokes from before its registry check, so one that
     // lands between the check and `hello` is caught by one or the other.
     let mut guard = match &trust {
@@ -336,6 +351,7 @@ where
         None => (Vec::new(), bus.last_seq()),
     };
     let mut welcome = json!({ "id": hello.id, "ok": {
+        "max_frame_bytes": if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME },
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
         // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
         "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1"],
@@ -486,9 +502,26 @@ where
                             return stop.into();
                         }
                     }
+                    Ok((id, Request::ManagementReceipt(receipt))) => {
+                        if matches!(trust, Trust::Local) {
+                            in_flight += 1;
+                            let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
+                            tokio::spawn(async move {
+                                let frame = match run_management_receipt(daemon, receipt).await {
+                                    Ok(value) => json!({"id":id,"ok":value}),
+                                    Err(refusal) => refusal.frame(id),
+                                };
+                                let _ = frames_tx.send(frame.to_string());
+                            });
+                        } else if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), "not allowed from a remote connection")).await {
+                            return stop.into();
+                        }
+                    }
                     Ok((id, Request::Devices(request))) => {
                         let frame = match trust {
-                            Trust::Local => match manage(&daemon.devices, request) {
+                            Trust::Local => match if daemon.devices.requires_ui_receipt() && !matches!(request, DevicesRequest::List {} | DevicesRequest::Revoke { .. }) {
+                                Err("Changing a phone grant requires a protected receipt from the installed Mac UI".into())
+                            } else { manage(&daemon.devices, request) } {
                                 Ok(value) => json!({ "id": id, "ok": value }),
                                 Err(why) => json!({ "id": id, "err": why }),
                             },
@@ -522,6 +555,10 @@ where
                     }
                     Ok((id, Request::Pairing(request))) => match trust {
                         Trust::Local => {
+                            if daemon.devices.requires_ui_receipt() && matches!(request, crate::pair_commands::PairRequest::PairApprove { .. }) {
+                                if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), "Approving a phone requires a protected receipt from the installed Mac UI")).await { return stop.into(); }
+                                continue;
+                            }
                             in_flight += 1;
                             let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
                             tokio::spawn(async move {
@@ -552,7 +589,11 @@ where
                         match need {
                             Ok(need) => {
                                 in_flight += 1;
-                                run(Arc::clone(&daemon.host), id, *command, need, replies_tx.clone(), hello.client_capability);
+                                let device_intent = guard.as_ref().map(|g| {
+                                    let frame: Value = serde_json::from_str(&text).expect("request already parsed");
+                                    (g.id.clone(), phone_session.clone(), json!({"cmd":frame["cmd"],"args":frame.get("args").cloned().unwrap_or(json!({}))}))
+                                });
+                                run(Arc::clone(&daemon.host), id, *command, need, replies_tx.clone(), hello.client_capability, device_intent);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -684,11 +725,16 @@ where
 
 /// Run `command` on its own task and send its result to `replies`, with
 /// what a device needed to run it (`need`), to be checked again on delivery.
-fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability) {
+fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>) {
     let session = matches!(command, Command::SessionLoad {});
     let task = {
         let host = Arc::clone(&host);
-        tokio::spawn(async move { host.call_with_client_capability(command, client_capability).await })
+        tokio::spawn(async move {
+            match device_intent {
+                Some((endpoint, session, intent)) => host.call_from_device(intent, endpoint, session, id, client_capability).await,
+                None => host.call_with_client_capability(command, client_capability).await,
+            }
+        })
     };
     tokio::spawn(async move {
         let result = match task.await {
@@ -697,6 +743,42 @@ fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>
         };
         let _ = replies.send(Reply { after: host.events().last_seq(), id, result, need, session });
     });
+}
+
+fn management_grant(name: &str) -> bool {
+    matches!(name, "devices_add" | "devices_set_tier" | "devices_set_threads" | "pair_approve")
+}
+
+async fn run_management_receipt(daemon: Arc<Daemon>, receipt: apex_provenance::Signed) -> Result<Value, crate::pair_commands::Refusal> {
+    let admission = |why| crate::pair_commands::Refusal::new(why, "provenance");
+    let folder = daemon.data.clone();
+    let original = tokio::task::spawn_blocking(move || apex_provenance::io::consume(&receipt, &folder))
+        .await.map_err(|_| admission("Phone grant admission failed".into()))?.map_err(admission)?;
+    let result = execute_management_command(&daemon, original.command).await;
+    let folder = daemon.data.clone();
+    let reason = result.as_ref().err().map(|e| e.err.clone());
+    let uncertain = |why| crate::pair_commands::Refusal::new(format!("The phone grant may have changed, but its protected outcome could not be recorded. Do not retry automatically: {why}"), "outcome_uncertain");
+    tokio::task::spawn_blocking(move || apex_provenance::io::finish(&folder, &original.key, reason.as_deref()))
+        .await.map_err(|_| uncertain("Phone grant outcome failed".into()))?.map_err(uncertain)?;
+    result
+}
+
+// Called only after the original command's receipt has been consumed.
+async fn execute_management_command(daemon: &Arc<Daemon>, mut command: Value) -> Result<Value, crate::pair_commands::Refusal> {
+    let invalid = |why| crate::pair_commands::Refusal::new(why, "bad_request");
+    if !management_grant(command["cmd"].as_str().unwrap_or("")) { return Err(invalid("Not a phone grant receipt".into())); }
+    command.as_object_mut().ok_or_else(|| invalid("Invalid grant command".into()))?.remove("provenanceRequestId");
+    command["id"] = json!(0);
+    match read_request(&command.to_string()).map_err(invalid)? {
+        (_, Request::Devices(request)) => {
+            let devices = Arc::clone(&daemon.devices);
+            tokio::task::spawn_blocking(move || manage(&devices, request)).await
+                .map_err(|_| crate::pair_commands::Refusal::new("Phone grant write failed unexpectedly", "registry"))?
+                .map_err(|why| crate::pair_commands::Refusal::new(why, "registry"))
+        }
+        (_, Request::Pairing(request @ crate::pair_commands::PairRequest::PairApprove { .. })) => crate::pair_commands::run(Arc::clone(daemon), request).await,
+        _ => Err(invalid("Not a phone grant command".into())),
+    }
 }
 
 /// Managing remote devices: only from this machine (`Trust::Local`).
@@ -741,6 +823,7 @@ enum Request {
     // enum is built for each frame the daemon reads.
     Host(Box<Command>),
     Devices(DevicesRequest),
+    ManagementReceipt(apex_provenance::Signed),
     Gateway(crate::gateway_cli::KeysRequest),
     GatewayAdmin(crate::gateway_admin::Request),
     Pairing(crate::pair_commands::PairRequest),
@@ -781,6 +864,15 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
     }
     if value["cmd"] == "hello" {
         return Err(refusal(json!(id), "already said hello"));
+    }
+    if value["cmd"] == "provenance_execute" {
+        if let Ok(receipt) = serde_json::from_value::<apex_provenance::Signed>(value["args"]["receipt"].clone()) {
+            // Unverified payload is used ONLY to route; execution verifies and
+            // consumes the receipt before parsing its original command.
+            if serde_json::from_str::<Value>(&receipt.payload).ok().is_some_and(|p| management_grant(p["receipt"]["command"]["cmd"].as_str().unwrap_or(""))) {
+                return Ok((id, Request::ManagementReceipt(receipt)));
+            }
+        }
     }
     if value["cmd"]
         .as_str()
@@ -958,6 +1050,67 @@ mod tests {
         Client { read, write, _data: None }
     }
 
+    #[test]
+    fn pending_management_admission_does_not_block_other_requests() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all().max_blocking_threads(1).build().unwrap();
+        runtime.block_on(async {
+            let (daemon, _data) = daemon();
+            let mut client = connect_to(&daemon, Trust::Local);
+            client.hello().await;
+            // Hold the blocking executor so receipt consumption remains pending,
+            // without installing or replacing the real protected broker.
+            let (release, held) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                let _ = held.recv();
+            });
+            ready.await.unwrap();
+            let receipt = apex_provenance::Signed {
+                payload: json!({"receipt":{"command":{"cmd":"devices_add","args":{}}}}).to_string(),
+                signature: "forged".into(),
+            };
+            client.send(json!({"id":1,"cmd":"provenance_execute","args":{"receipt":receipt}})).await;
+            client.send(json!({"id":2,"cmd":"session_load","args":{}})).await;
+            let reply = tokio::time::timeout(Duration::from_secs(2), client.next()).await;
+            // Release before asserting so failure cannot strand runtime shutdown.
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            let reply = reply.expect("receipt admission blocked the connection loop").unwrap();
+            assert_eq!(reply["id"], 2);
+            assert!(reply.get("ok").is_some(), "{reply}");
+            let refused = client.next().await.unwrap();
+            assert_eq!(refused["id"], 1);
+            assert!(refused.get("err").is_some(), "a forged receipt was accepted: {refused}");
+        });
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn management_pairing_refusals_preserve_reason_for_the_pairing_sheet() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+        use crate::pairing::invites::{HostInfo, LIFETIME_MS};
+        let (daemon, _data) = daemon();
+        let now = crate::devices::now_ms();
+        let host = HostInfo { host: [1; 32], name: "Mac".into(), relay: "".into(), addrs: vec![] };
+        let expired = daemon.invites.start(host.clone(), Tier::Chat, Threads::ALL, now);
+        assert!(daemon.invites.secret(&expired.inv, now + LIFETIME_MS).is_err());
+        let cancelled = daemon.invites.start(host, Tier::Chat, Threads::ALL, now);
+        daemon.invites.cancel(&cancelled.inv).unwrap();
+        for (invitation, expected) in [
+            ("invalid".into(), "bad_request"), ("AAAAAAAAAAAAAAAAAAAAAA".into(), "unknown"),
+            (B64.encode(expired.inv), "expired"), (B64.encode(cancelled.inv), "cancelled"),
+        ] {
+            let result = execute_management_command(&daemon, json!({
+                "cmd":"pair_approve", "args":{"invitation":invitation,"claim_id":"AAAAAAAAAAAAAAAAAAAAAA"}
+            })).await.unwrap_err().frame(7);
+            assert_eq!(result["id"], 7);
+            assert_eq!(result["reason"], expected, "{result}");
+            assert!(result["err"].is_string());
+        }
+    }
+
     impl Client {
         async fn send(&mut self, frame: Value) {
             self.write.send(frame.to_string()).await.unwrap();
@@ -1001,7 +1154,7 @@ mod tests {
     async fn hello_names_the_host_and_this_boot() {
         let mut client = connect(Trust::Local);
         let reply = client.hello().await;
-        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } }));
+        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "max_frame_bytes": MAX_FRAME, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } }));
     }
 
     /// The fields a client reads from a welcome; the build ones may be missing from an older daemon.
@@ -1049,7 +1202,7 @@ mod tests {
 
         let mut back = connect_to(&daemon, Trust::Local);
         back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 1 } } })).await;
-        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() }));
+        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "max_frame_bytes": MAX_FRAME, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 2, "event": "session-changed", "payload": { "version": 2 } }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 3, "event": "session-changed", "payload": { "version": 3 } }));
         // Then live events, with nothing doubled.
@@ -1930,5 +2083,58 @@ mod tests {
         assert_eq!(session.await.unwrap(), Ended::Revoked);
         assert!(!daemon.voice.status().running);
         task.abort();
+    }
+
+    /// A reply too long for the phone's link used to go out anyway; the phone
+    /// closed on it, reconnected, asked again and closed again, every few
+    /// seconds. Now it gets a refusal with the same id, and the session goes on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reply_too_long_for_a_device_is_refused_and_the_session_goes_on() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let mut local = connect_to(&daemon, Trust::Local);
+        local.hello().await;
+        let pad = "x".repeat(DEVICE_MAX_FRAME);
+        local.send(json!({ "id": 1, "cmd": "session_save", "args": { "session": { "version": 1, "pad": pad } } })).await;
+        local.until_reply(1).await;
+
+        let (mut device, session) = connect_device(&daemon, &phone, 1 << 16);
+        device.hello().await;
+        device.send(json!({ "id": 2, "cmd": "session_load" })).await;
+        let refused = device.until_reply(2).await.pop().unwrap();
+        assert!(refused["err"].as_str().is_some_and(|e| e.contains("too large")), "{refused}");
+        assert!(refused.get("ok").is_none());
+        device.send(json!({ "id": 3, "cmd": "pty_list" })).await;
+        assert!(device.until_reply(3).await.pop().unwrap()["ok"].is_array());
+        assert!(!session.is_finished(), "the session must outlive the long reply");
+
+        // The Mac's own window has the larger limit and still gets it whole.
+        local.send(json!({ "id": 4, "cmd": "session_load" })).await;
+        assert_eq!(local.until_reply(4).await.pop().unwrap()["ok"]["pad"].as_str().map(str::len), Some(DEVICE_MAX_FRAME));
+    }
+
+    /// An event too long for the device is skipped; later ones still arrive.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_event_too_long_for_a_device_is_skipped() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let (mut device, session) = connect_device(&daemon, &phone, 1 << 16);
+        device.hello().await;
+        daemon.host.events().emit(pty(&"x".repeat(DEVICE_MAX_FRAME)));
+        let after = daemon.host.events().emit(pty("after"));
+        let frame = device.next().await.unwrap();
+        assert_eq!(frame["seq"], json!(after), "{}", frame.to_string().chars().take(200).collect::<String>());
+        assert!(!session.is_finished());
+    }
+
+    #[test]
+    fn fit_keeps_frames_within_the_limit() {
+        assert_eq!(fit("{\"id\":1,\"ok\":null}".into(), 64).as_deref(), Some("{\"id\":1,\"ok\":null}"));
+        let long = format!("{{\"id\":7,\"ok\":\"{}\"}}", "x".repeat(200));
+        let refused: Value = serde_json::from_str(&fit(long, 150).unwrap()).unwrap();
+        assert_eq!(refused["id"], 7);
+        assert!(refused["err"].as_str().unwrap().contains("too large"));
+        assert_eq!(fit(format!("{{\"seq\":3,\"event\":\"pty\",\"payload\":\"{}\"}}", "x".repeat(200)), 150), None);
+        assert_eq!(fit(format!("{{\"id\":null,\"err\":\"{}\"}}", "x".repeat(200)), 150), None);
     }
 }

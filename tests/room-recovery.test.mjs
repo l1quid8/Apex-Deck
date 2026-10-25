@@ -148,3 +148,26 @@ test('an event at the end of a totals read cannot leave its reread stranded', as
   await recovery.refresh(); await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(applied,[1,2]);
 });
+
+for (const tier of ['read_only', 'chat', 'full']) {
+  test(`existing scoped room reads do not require creation (${tier})`, async () => {
+    const state = {snapshot:{transcript:[]}, active:[], approvals:[]};
+    let creates = 0;
+    const backend = {roomState:async()=>state, roomCreate:async()=>{creates++; throw Error('permission denied');}};
+    assert.equal((await mod.loadRoomState(backend, 'r', [], {}, '')).snapshot, state.snapshot);
+    assert.equal(creates, 0);
+  });
+}
+for (const reason of ['permission denied', 'provenance receipt required', 'connection lost']) {
+  test(`room read failure does not fall through to creation: ${reason}`, async () => {
+    let creates = 0;
+    await assert.rejects(mod.loadRoomState({roomState:async()=>{throw Error(reason);}, roomCreate:async()=>{creates++;}}, 'r', [], {}, ''), new RegExp(reason));
+    assert.equal(creates, 0);
+  });
+}
+test('a missing room may be created and then read with live requests', async()=>{
+  let created = false;
+  const state = {snapshot:{transcript:[]},active:['bot'],approvals:[]};
+  const result = await mod.loadRoomState({roomState:async()=>{if(!created)throw Error('no group chat with id r');return state;},roomCreate:async()=>{created=true;return state.snapshot;}},'r',[],{},'');
+  assert.deepEqual(result,{...state,live:true});
+});

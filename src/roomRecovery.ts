@@ -2,11 +2,21 @@ import type { Backend } from "./backend";
 import type { ParticipantConfig, RoomEvent, RoomOptions, RoomSnapshot, RoomState } from "./types";
 
 export async function loadRoomState(backend: Backend, id: string, participants: ParticipantConfig[], options: RoomOptions, cwd: string): Promise<RoomState> {
-  const snapshot = await backend.roomCreate(id, participants, options, cwd);
+  const unsupported = (error: unknown) => /unknown variant [`'"]?room_state|unknown command.*room_state|unsupported.*room_state/i.test(String(error));
   if (backend.roomState) {
     try { return { ...await backend.roomState(id), live: true }; }
-    catch (error) { if (!/unknown variant [`'"]?room_state|unknown command.*room_state|unsupported.*room_state/i.test(String(error))) throw error; }
+    catch (error) {
+      // Only a genuinely missing room can require creation. Authorization and
+      // connection failures must reach the caller without attempting a write.
+      if (!unsupported(error) && !/no group chat with id/i.test(String(error))) throw error;
+      if (unsupported(error)) {
+        const snapshot = await backend.roomCreate(id, participants, options, cwd);
+        return { snapshot, active: [], approvals: [], live: false };
+      }
+    }
   }
+  const snapshot = await backend.roomCreate(id, participants, options, cwd);
+  if (backend.roomState) return { ...await backend.roomState(id), live: true };
   return { snapshot, active: [], approvals: [], live: false };
 }
 

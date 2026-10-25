@@ -59,7 +59,8 @@ test('a popped-out chat waits for Deck, approves for both windows, and never clo
         // The Deck window owns the room.
         await run(deck,()=>window.fixture.mount(false));
         await wait(deck,()=>document.querySelector('.approval [data-answer="once"]:not([disabled])'),'Deck approval card');
-        assert.ok(await run(deck,()=>window.fixture.count('roomCreate'))>=1,'Deck opens the room');
+        assert.ok(await run(deck,()=>window.fixture.count('roomState'))>=1,'Deck reads the existing room');
+        assert.equal(await run(deck,()=>window.fixture.count('roomCreate')),0,'an existing room does not require global creation authority');
         // The pop-out reads before Deck has the room, as after a service restart: it waits and
         // reads again on its own, with no reconnect, and never creates the room.
         await run(popout,()=>{window.fixture.misses=2;window.fixture.mount(true);});
