@@ -41,13 +41,19 @@ jobs:
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path crates/iroh-mobile/Cargo.toml
 
   # Windows compilation and runtime failures fail CI, just like Unix failures.
+  # The Electron app's Node checks run here too, because the desktop app is a
+  # Windows target now and nothing else tests it there.
   test-windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       # Keep LF line endings so files match the Mac and Linux checkouts.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -63,6 +69,15 @@ jobs:
       - name: Test provenance platform boundary
         if: ${{ !cancelled() }}
         run: cargo test --locked -p apex-provenance --lib
+      - name: Install the app's Node dependencies
+        if: ${{ !cancelled() }}
+        run: npm ci
+      - name: Type-check the app
+        if: ${{ !cancelled() }}
+        run: npx tsc --noEmit
+      - name: Test the app
+        if: ${{ !cancelled() }}
+        run: npm test
 
   build:
     needs: test
