@@ -2220,7 +2220,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     return <RunButton command={command} running={codeRuns.runs[key]?.state === "running"} onRun={() => codeRuns.run(key, command, cwd)} />;
   };
   const terminalOpenAction = (code: CodeInfo) => {
-    if (backend.demo || !onOpenTerminal) return null;
+    if (!onOpenTerminal) return null;
     const text = code.text.trim();
     if (!text) return null;
     return (
