@@ -181,7 +181,7 @@ pub fn snapshot_tree_id(root: &Path) -> Result<String, String> {
     snapshot_tree_and_id(root).map(|(_, tree)| tree)
 }
 
-fn validate_identifier(name: &str, kind: &str) -> Result<(), String> {
+pub(crate) fn validate_identifier(name: &str, kind: &str) -> Result<(), String> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(format!("Invalid {kind} name: cannot be empty, '.' or '..'"));
     }

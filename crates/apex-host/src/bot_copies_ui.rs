@@ -28,15 +28,8 @@ fn same(a: &Path, b: &Path) -> bool {
     }
 }
 fn valid_copy(data: &Path, copy: &BotCopy) -> bool {
-    let valid = |s: &str| {
-        !s.is_empty()
-            && s != "."
-            && s != ".."
-            && s.bytes()
-                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
-    };
-    valid(&copy.thread)
-        && valid(&copy.bot)
+    bot_copies::validate_identifier(&copy.thread, "thread").is_ok()
+        && bot_copies::validate_identifier(&copy.bot, "bot").is_ok()
         && copy.work
             == data
                 .join("bot-copies")
@@ -61,7 +54,8 @@ pub fn list(root: &Path, data: &Path) -> Result<WorktreeList, String> {
             };
             row.copy = Some(CopyInfo {
                 bot: copy.bot.clone(),
-                thread_title: copy.thread.clone(),
+                thread: copy.thread.clone(),
+                thread_title: String::new(),
                 state: state.into(),
                 reason,
             });
@@ -93,7 +87,7 @@ pub fn label_copies(listing: &mut WorktreeList, store: &Store) {
     let session = store.session().ok().flatten();
     for row in &mut listing.items {
         let Some(info) = &mut row.copy else { continue };
-        if let Ok(Some(room)) = store.room(&info.thread_title) {
+        if let Ok(Some(room)) = store.room(&info.thread) {
             if let Some(bot) = room
                 .snapshot
                 .participants
@@ -110,7 +104,7 @@ pub fn label_copies(listing: &mut WorktreeList, store: &Store) {
             .and_then(|panes| {
                 panes
                     .iter()
-                    .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(&info.thread_title))
+                    .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(&info.thread))
             })
             .and_then(|p| p.get("title"))
             .and_then(|v| v.as_str())
@@ -147,27 +141,7 @@ pub fn remove(root: &Path, target: &Path, force: bool, data: &Path) -> Result<()
     if std::fs::symlink_metadata(&copy.work).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err("The copy folder was replaced.".into());
     }
-    git(
-        root,
-        &[
-            "worktree",
-            "remove",
-            "--force",
-            "--force",
-            copy.work.to_str().ok_or("Invalid copy path")?,
-        ],
-    )?;
-    git(
-        root,
-        &[
-            "update-ref",
-            "-d",
-            &format!("refs/apex-copies/{}/{}/base", copy.thread, copy.bot),
-        ],
-    )?;
-    std::fs::remove_dir_all(copy.work.parent().ok_or("Invalid copy path")?)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    bot_copies::remove_copy(data, &copy)
 }
 pub fn set_check(root: &Path, data: &Path, cmd: Option<String>) -> Result<(), String> {
     let listing = worktrees::list(root, &data.join("apex-agent/tasks"))?;
@@ -232,9 +206,20 @@ mod tests {
             .unwrap();
         let info = row.copy.as_ref().unwrap();
         assert_eq!(info.bot, "forge");
-        assert_eq!(info.thread_title, "thread");
+        assert_eq!(serde_json::to_value(info).unwrap()["thread"], "thread");
+        assert_eq!(info.thread_title, "");
         assert_eq!(info.state, "working");
         assert_eq!(row.changes, Some(1));
+        let store = Store::new(data.clone());
+        store
+            .save_session(&serde_json::json!({"panes": [{"id": "thread", "title": "Fix search"}]}))
+            .unwrap();
+        let mut rows = list(&root, &data).unwrap();
+        label_copies(&mut rows, &store);
+        label_copies(&mut rows, &store);
+        let info = rows.items.iter().find_map(|r| r.copy.as_ref()).unwrap();
+        assert_eq!(info.thread, "thread");
+        assert_eq!(info.thread_title, "Fix search");
         fs::remove_dir_all(tmp).unwrap();
     }
     #[test]

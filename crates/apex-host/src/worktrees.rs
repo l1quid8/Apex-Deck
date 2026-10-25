@@ -22,6 +22,7 @@ pub struct Worktree {
 #[serde(rename_all = "camelCase")]
 pub struct CopyInfo {
     pub bot: String,
+    pub thread: String,
     pub thread_title: String,
     pub state: String,
     pub reason: Option<String>,

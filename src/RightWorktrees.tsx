@@ -47,7 +47,7 @@ export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pen
   }, [root, backend]);
   useEffect(() => {
     if (!visible || !listing?.items.some(item => item.copy && item.copy.state !== "needs_you")) return;
-    const timer = window.setInterval(() => void load(), 3000);
+    const timer = window.setInterval(() => void load(), 10000);
     return () => window.clearInterval(timer);
   }, [visible, listing, root, backend]);
   const saveCheck = async () => {
@@ -136,7 +136,7 @@ export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pen
 export function WorktreeRow({ item, busy, confirm, pruneConfirm, mounted = false, pending = false, busyTurn = false, onMount, onCancelMount, onOpen, onCopy, onRemove, onPrune, onCancel }: { item: Worktree; busy: boolean; confirm: boolean; pruneConfirm?: boolean; mounted?: boolean; pending?: boolean; onOpen: (path: string) => void; onCopy: (path: string) => void; onRemove: (force: boolean) => void; onPrune?: (force: boolean) => void; onCancel: () => void } & Omit<MountProps, "mounted">) {
   const copy = item.copy;
   const needsYou = copy?.state === "needs_you";
-  const copyLabel = copy ? `${copy.bot}'s copy · ${copy.threadTitle} · ${item.changes ?? "…"} changed ${item.changes === 1 ? "file" : "files"}` : null;
+  const copyLabel = copy ? `${copy.bot}'s copy · ${copy.threadTitle || copy.thread} · ${item.changes ?? "…"} changed ${item.changes === 1 ? "file" : "files"}` : null;
   const branch = item.branch ?? (item.head ? `detached · ${item.head.slice(0, 8)}` : "detached");
   const labels = [mounted && "Mounted", item.main && "Main", !copy && item.changes != null && item.changes > 0 && `Changes · ${item.changes}`, item.locked && "Locked", item.prunable && "Missing", item.task && "ApexAgent task"].filter(Boolean) as string[];
   const actionable = !item.main && !item.task && !copy;

@@ -367,7 +367,7 @@ export type FilePreview =
 export interface FileSearchHit { path: string; line: number; text: string }
 export interface FileSearchResult { hits: FileSearchHit[]; truncated: boolean }
 
-export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean; copy?: { bot: string; threadTitle: string; state: "working" | "folding" | "reconciling" | "needs_you" | "folded"; reason?: string | null } | null }
+export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean; copy?: { bot: string; thread: string; threadTitle: string; state: "working" | "folding" | "reconciling" | "needs_you" | "folded"; reason?: string | null } | null }
 export interface WorktreeList { root: string; items: Worktree[]; checkCommand?: string | null }
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 

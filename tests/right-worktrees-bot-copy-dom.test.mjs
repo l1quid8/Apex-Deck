@@ -14,7 +14,7 @@ test('copy tab saves checks, confirms discard and renders stalled and active row
     import React from'react';import{createRoot}from'react-dom/client';import{RightWorktreesTab}from'/src/RightWorktrees.tsx';import'/src/styles.css';import'/src/right-panel.css';import'/src/clay-theme.css';
     const copies=[['Forge','Fix search','needs_you','The project check failed. Its copy is kept for you.'],['Null','Update filters','folding',null],['Jigga','Review labels','reconciling',null]];
     let check='npx tsc --noEmit';window.saves=[];window.removes=[];
-    let items=[{path:'/repo',branch:'main',main:true,changes:0},...copies.map(([bot,threadTitle,state,reason],i)=>({path:'/copies/'+bot+'/work',branch:null,locked:true,changes:i+1,copy:{bot,threadTitle,state,reason}}))].map(x=>({head:'abcd1234',main:false,locked:false,prunable:false,changes:0,task:false,...x}));
+    let items=[{path:'/repo',branch:'main',main:true,changes:0},...copies.map(([bot,threadTitle,state,reason],i)=>({path:'/copies/'+bot+'/work',branch:null,locked:true,changes:i+1,copy:{bot,thread:'thread-'+i,threadTitle,state,reason}}))].map(x=>({head:'abcd1234',main:false,locked:false,prunable:false,changes:0,task:false,...x}));
     const backend={worktreeList:async()=>({root:'/repo',items,checkCommand:check}),botCopiesSetCheck:async(root,cmd)=>{window.saves.push([root,cmd]);check=cmd;},worktreeRemove:async(root,target,force)=>{window.removes.push([root,target,force]);if(!force)throw Error('has-changes:confirm');items=items.filter(i=>i.path!==target);}};
     createRoot(document.getElementById('root')).render(React.createElement(RightWorktreesTab,{root:'/repo',backend,visible:true,onMount(){},onOpen(){}}));
   </script></body></html>`;
