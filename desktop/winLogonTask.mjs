@@ -5,6 +5,8 @@
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 export const TASK_NAME = 'ApexDeckDaemon';
 
@@ -17,10 +19,71 @@ export const usesLogonTask = ({ packaged, dataDir, platform = process.platform }
 
 const quoteArg = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
 
-/** The `/TR` command string for `schtasks.exe /Create`. */
-export function taskCommand({ bin, dataDir }) {
-  const parts = [quoteArg(bin), 'serve', ...(dataDir ? ['--data-dir', quoteArg(dataDir)] : [])];
+const xml = (text) => String(text)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&apos;');
+
+/** Arguments passed to `conhost.exe` to start `apex-daemon serve` with no console window. */
+export function taskArguments({ bin, dataDir }) {
+  const parts = ['--headless', quoteArg(bin), 'serve', ...(dataDir ? ['--data-dir', quoteArg(dataDir)] : [])];
   return parts.join(' ');
+}
+
+/** The full command line for starting the headless logon task. */
+export function taskCommand({ bin, dataDir }) {
+  return `conhost.exe ${taskArguments({ bin, dataDir })}`;
+}
+
+/**
+ * Task Scheduler XML for `ApexDeckDaemon`. Runs at user logon with no battery
+ * restrictions (`DisallowStartIfOnBatteries=false`, `StopIfGoingOnBatteries=false`),
+ * no 72-hour execution cap (`ExecutionTimeLimit=PT0S`), and headless `conhost.exe`
+ * so no console window flashes on screen.
+ */
+export function taskXml({ bin, dataDir, build = '' }) {
+  const description = build ? `Apex Deck background daemon (${build})` : 'Apex Deck background daemon';
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>${xml(description)}</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>conhost.exe</Command>
+      <Arguments>${xml(taskArguments({ bin, dataDir }))}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`;
 }
 
 /** `schtasks.exe` with `args`: its output, or an error with what it said. */
@@ -43,30 +106,33 @@ const readJson = (file) => {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Register the logon task and start it. When `stampFile` already records the
- * same command and build and the task is registered, nothing is rewritten.
+ * Register the logon task from XML and start it. When `stampFile` already
+ * records the same XML and the task is registered, nothing is rewritten.
  */
 export async function installLogonTask({ bin, dataDir, build = '', stampFile = '', run = schtasks, fs: files = fs }) {
-  const command = taskCommand({ bin, dataDir });
-  const stamp = `${command}\n${build}`;
+  const xmlText = taskXml({ bin, dataDir, build });
   let current = null;
   if (stampFile) {
     try { current = files.readFileSync(stampFile, 'utf8'); } catch { /* not written yet */ }
   }
   const exists = await taskLoaded(run);
-  if (stampFile && current === stamp && exists) {
+  if (stampFile && current === xmlText && exists) {
     await run(['/Run', '/TN', TASK_NAME]);
     return 'unchanged';
   }
+  const xmlFile = stampFile || path.join(os.tmpdir(), `${TASK_NAME}-${process.pid}.xml`);
   try {
-    await run(['/Create', '/TN', TASK_NAME, '/SC', 'ONLOGON', '/TR', command, '/F']);
-    if (stampFile) {
-      try { files.writeFileSync(stampFile, stamp); } catch { /* best-effort stamp */ }
-    }
+    files.mkdirSync(path.dirname(xmlFile), { recursive: true });
+    files.writeFileSync(xmlFile, xmlText);
+    await run(['/Create', '/TN', TASK_NAME, '/XML', xmlFile, '/F']);
     await run(['/Run', '/TN', TASK_NAME]);
     return 'installed';
   } catch (error) {
     throw new Error(`The background service didn't start: ${error.message}`);
+  } finally {
+    if (!stampFile) {
+      try { files.rmSync(xmlFile, { force: true }); } catch { /* ignore */ }
+    }
   }
 }
 
