@@ -36,6 +36,9 @@ pub struct BotCopy {
     pub work: PathBuf,
     pub base: String,
     pub state: CopyState,
+    /// The bot's display name, for notes. Older copies have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 static SNAPSHOT_INDEX_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -139,18 +142,19 @@ pub fn snapshot_tree_and_id(root: &Path) -> Result<(String, String), String> {
         )?;
     }
 
-    let mut add_args = vec!["add", "-A", "--", "."];
-    let mut excludes = Vec::new();
-    for path in SHARED_SHORTCUT_PATHS {
-        excludes.push(format!(":(exclude){path}"));
-    }
-    for exc in &excludes {
-        add_args.push(exc.as_str());
-    }
+    // An exclude pathspec makes `git add` refuse outright when the path is
+    // also ignored, so add everything and then drop the shared paths.
     run_git(
         &root,
         &[("GIT_INDEX_FILE", temp_index.as_os_str())],
-        &add_args,
+        &["add", "-A", "--", "."],
+    )?;
+    let mut rm_args = vec!["rm", "-r", "--cached", "-q", "--ignore-unmatch", "--"];
+    rm_args.extend_from_slice(SHARED_SHORTCUT_PATHS);
+    run_git(
+        &root,
+        &[("GIT_INDEX_FILE", temp_index.as_os_str())],
+        &rm_args,
     )?;
 
     let tree = run_git(
@@ -289,6 +293,7 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
             work: work.clone(),
             base,
             state: CopyState::Working,
+            name: None,
         };
         save_state(data, &copy)?;
         Ok(copy)
@@ -706,7 +711,7 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
     if let Some(data_dir) = work.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
         let mut updated = copy.clone();
         updated.base = m_commit.clone();
-        let _ = save_state(data_dir, &updated);
+        save_state(data_dir, &updated)?;
     }
 
     if !conflicts.is_empty() {
@@ -836,6 +841,7 @@ pub fn apply_copy_to_main(copy: &BotCopy) -> Result<FoldOutcome, String> {
 }
 
 pub fn human_note_line(bot: &str, files: &[String], reason: &str) -> String {
+    let reason = reason.trim_end().trim_end_matches('.');
     if files.is_empty() {
         format!("{bot}'s changes couldn't be folded in ({reason}). Its copy is kept in the Worktrees tab.")
     } else {
@@ -972,8 +978,10 @@ impl FoldQueue {
         updated.state = CopyState::NeedsYou {
             reason: reason.to_string(),
         };
-        let _ = save_state(&self.data, &updated);
-        let note = human_note_line(&copy.bot, files, reason);
+        if let Err(e) = save_state(&self.data, &updated) {
+            eprintln!("bot copy {}/{}: could not save its Needs you state: {e}", copy.thread, copy.bot);
+        }
+        let note = human_note_line(copy.name.as_deref().unwrap_or(&copy.bot), files, reason);
         (task.event_sink)(RoomEvent::MessageAdded {
             message: Message {
                 servers: Vec::new(),
@@ -1167,6 +1175,7 @@ pub struct BotCopies {
     event_sink: Arc<dyn Fn(RoomEvent) + Send + Sync>,
     queue: Arc<FoldQueue>,
     active: Mutex<HashMap<ParticipantId, BotCopy>>,
+    name_of: Option<Arc<dyn Fn(&ParticipantId) -> Option<String> + Send + Sync>>,
 }
 
 impl BotCopies {
@@ -1186,7 +1195,14 @@ impl BotCopies {
             event_sink,
             queue,
             active: Mutex::default(),
+            name_of: None,
         }
+    }
+
+    /// Looks up a bot's display name for the notes a fold posts.
+    pub fn with_names(mut self, name_of: Arc<dyn Fn(&ParticipantId) -> Option<String> + Send + Sync>) -> Self {
+        self.name_of = Some(name_of);
+        self
     }
 }
 
@@ -1245,9 +1261,17 @@ impl CopyProvider for BotCopies {
             let data = self.data.clone();
             let thread = self.thread.clone();
             let bot = id.as_str().to_string();
-            let copy = tokio::task::spawn_blocking(move || create_copy(&root, &data, &thread, &bot))
-                .await
-                .map_err(|e| e.to_string())??;
+            let name = self.name_of.as_ref().and_then(|f| f(id));
+            let copy = tokio::task::spawn_blocking(move || {
+                let mut copy = create_copy(&root, &data, &thread, &bot)?;
+                if name.is_some() {
+                    copy.name = name;
+                    save_state(&data, &copy)?;
+                }
+                Ok::<_, String>(copy)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
             self.active.lock().unwrap().insert(id.clone(), copy.clone());
             Ok(copy.work)
         })
@@ -1360,6 +1384,35 @@ mod tests {
         assert!(
             !tree_listing.lines().any(|l| l.trim() == "node_modules"),
             "Snapshot tree unexpectedly contained node_modules: {tree_listing}"
+        );
+    }
+
+    #[test]
+    fn copy_works_when_project_has_ignored_node_modules_folder() {
+        let (_tmp, root, data) = init_repo("nm-real-dir");
+        fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&["add", ".gitignore"]);
+        run(&["commit", "-m", "ignore node_modules with slash"]);
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::write(root.join("node_modules/pkg/index.js"), "x").unwrap();
+
+        let commit = snapshot_tree(&root).unwrap();
+        let listing = run_git(&root, &[], &["ls-tree", "-r", "--name-only", &commit]).unwrap();
+        assert!(!listing.lines().any(|l| l.starts_with("node_modules")), "{listing}");
+
+        let copy = create_copy(&root, &data, "t1", "bot-a").unwrap();
+        assert!(copy.work.join("node_modules").symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn human_note_uses_name_and_never_doubles_the_full_stop() {
+        assert_eq!(
+            human_note_line("Beta", &[], "Folder contains several Git checkouts."),
+            "Beta's changes couldn't be folded in (Folder contains several Git checkouts). Its copy is kept in the Worktrees tab."
         );
     }
 

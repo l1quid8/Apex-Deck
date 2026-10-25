@@ -821,7 +821,13 @@ impl Host {
                 runtime.editor_handle(),
                 event_sink,
                 Arc::clone(&self.fold_queue),
-            ));
+            ).with_names(Arc::new({
+                let (this, id) = (Arc::downgrade(self), id.clone());
+                move |bot| {
+                    let room = this.upgrade()?.store.room(&id).ok()??;
+                    room.snapshot.participants.into_iter().find(|p| &p.id == bot).map(|p| p.display_name)
+                }
+            })));
             runtime = runtime.with_copies(bot_copies);
             // Only ApexAgent task threads share the checkout gate; ordinary chat
             // threads in the same folder run their turns concurrently.
