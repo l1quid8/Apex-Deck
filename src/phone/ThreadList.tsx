@@ -6,6 +6,7 @@ import { workspaceHost } from "../hostSession";
 import { ageWords, type ProjectBlock, type SidebarSections } from "../sidebarModel";
 import type { LinkView } from "../phoneRules";
 import type { Pane, Workspace } from "../types";
+import type { LocalChatSession } from "./LocalChatSession";
 import { ChevronRight, Pin, Plus } from "./icons";
 import { archivedLine, foldChoice, DOT_WORDS, machineGroups, machineNote, recentFirst, strongestDot, threadState, type MachineNote, type ThreadState } from "./threadListRules";
 
@@ -39,6 +40,10 @@ export interface ThreadListProps {
   archived: number;
   /** Opens the Archived sheet. */
   onArchived?(): void;
+  /** On-device Local chat sessions backed by stateless /v1 gateway turns. */
+  localSessions?: LocalChatSession[];
+  onOpenLocal?(id: string): void;
+  onNewLocal?(): void;
 }
 
 /** Tap, or hold for a menu as on iOS. `held` stops the tap that ends a hold from also opening the row. */
@@ -64,7 +69,7 @@ function Dot({ state, said }: { state: ThreadState["dot"]; said: boolean }) {
   return said ? <i className={`ph-tl-dot ${state}`} aria-hidden="true" /> : <i className={`ph-tl-dot ${state}`} role="img" aria-label={DOT_WORDS[state]} />;
 }
 
-export function ThreadList({ sections, workspaces, links, folded, draft, waiting, busy, nameOf, loaded, covered, now, machineIcon, onToggle, onOpen, onNew, onPick, onThreadMenu, onProjectMenu, onMachines, onRetry, archived, onArchived }: ThreadListProps) {
+export function ThreadList({ sections, workspaces, links, folded, draft, waiting, busy, nameOf, loaded, covered, now, machineIcon, onToggle, onOpen, onNew, onPick, onThreadMenu, onProjectMenu, onMachines, onRetry, archived, onArchived, localSessions = [], onOpenLocal, onNewLocal }: ThreadListProps) {
   const press = useLongPress();
   const workspaceOf = (pane: Pane) => workspaces.find((item) => item.id === pane.workspaceId);
   const linkOf = (hostId: string) => links.find((link) => link.id === hostId) ?? null;
@@ -151,9 +156,16 @@ export function ThreadList({ sections, workspaces, links, folded, draft, waiting
     );
   };
 
+  const localSection = onNewLocal ? <section aria-label="Local chat" className="ph-tl-machine">
+    <div className="ph-tl-heading"><span className="ph-tl-pname">Local chat</span><button type="button" className="ph-tl-add" aria-label="New local chat session" onClick={onNewLocal}><Plus size={20} /></button></div>
+    {localSessions.map(item => <button type="button" className="ph-tl-thread" key={item.id} onClick={() => onOpenLocal?.(item.id)}><span className="ph-tl-l1"><span className="ph-tl-name">{item.title}</span><span className="ph-tl-age">{item.updatedAt}</span></span><span className="ph-tl-l2">Stored on this iPhone · {item.bots.join(", ")}</span></button>)}
+    {localSessions.length === 0 && <p className="ph-tl-none">Start a Local chat session to keep its history on this iPhone.</p>}
+  </section> : null;
+
   if (links.length === 0) {
     return (
       <main className="ph-content ph-tl" inert={covered}>
+      {localSection}
         <div className="ph-tl-empty">
           <img src="/branding/mark.svg" alt="" width="88" height="88" />
           <strong>Pair this phone with your Mac</strong>
@@ -174,6 +186,7 @@ export function ThreadList({ sections, workspaces, links, folded, draft, waiting
 
   return (
     <main className="ph-content ph-tl" inert={covered}>
+      {localSection}
       {none && <div className="ph-tl-empty"><strong>No threads yet</strong><p>{onPick ? "Pick a project to start one." : "Threads started on your Mac show up here."}</p>{onPick && <button type="button" className="primary ph-wide" onClick={onPick}>New thread</button>}</div>}
       {sections.pinned.length > 0 && <>{sectionHeading("section:pinned", "Pinned", sections.pinned)}{!foldChoice(folded, "section:pinned") && sections.pinned.map((pane) => threadRow(pane, false))}</>}
       {recent.length > 0 && <>{sectionHeading("section:recent", "Recent", recent)}{!foldChoice(folded, "section:recent") && recent.map((pane) => threadRow(pane, false))}</>}
