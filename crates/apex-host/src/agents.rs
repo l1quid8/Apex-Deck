@@ -62,7 +62,11 @@ fn is_posix_like(shell: &str) -> bool {
 
 /// Is `program` an executable file in one of the directories in `path`?
 pub fn on_path(program: &str, path: &str) -> bool {
-    let extensions: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    #[cfg(windows)]
+    { return apex_adapters::executable_on_path(program, path); }
+    #[cfg(not(windows))]
+    let extensions: &[&str] = &[""];
+    #[cfg(not(windows))]
     std::env::split_paths(path).any(|dir| {
         extensions.iter().any(|ext| {
             let candidate = dir.join(format!("{program}{ext}"));
@@ -77,7 +81,7 @@ fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
 }

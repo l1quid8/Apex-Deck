@@ -25,6 +25,10 @@ pub(crate) fn mark(pid: u32) -> Option<ProcessMark> {
 
 /// Kill the saved group if what's running under that id is still ours.
 pub(crate) fn stop_leftover(mark: &ProcessMark) -> Leftover {
+    #[cfg(windows)]
+    { return windows_leftover(mark); }
+    #[cfg(not(windows))]
+    {
     // Never touch init, the whole session, or this service's own group.
     if mark.pgid <= 1 || Some(mark.pgid) == own_group() {
         return Leftover::NotOurs;
@@ -49,7 +53,45 @@ pub(crate) fn stop_leftover(mark: &ProcessMark) -> Leftover {
     }
     kill_group(mark.pgid);
     Leftover::Stopped
+    }
 }
+
+// Windows Jobs are closed by the OS when the owner dies. Recovery never
+// signals a bare PID: a reused PID cannot prove ownership of a Job or its
+// descendants. FILETIME creation identity distinguishes a reused process.
+#[cfg(windows)]
+fn windows_leftover(mark: &ProcessMark) -> Leftover {
+    if mark.pgid <= 1 || mark.boot != boot() { return Leftover::NotOurs; }
+    match windows_started(mark.pgid) {
+        Ok(None) => Leftover::Gone,
+        Ok(Some(started)) if started != mark.started => Leftover::Gone,
+        Ok(Some(_)) | Err(_) => Leftover::NotOurs,
+    }
+}
+
+#[cfg(windows)]
+fn windows_started(pid: u32) -> std::io::Result<Option<u64>> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, FILETIME, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{OpenProcess, GetProcessTimes, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE};
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
+    if raw.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) { Ok(None) } else { Err(error) };
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+    if unsafe { WaitForSingleObject(handle.as_raw_handle().cast(), 0) } == WAIT_OBJECT_0 { return Ok(None); }
+    let mut times = [FILETIME::default(); 4];
+    let [created, exited, kernel, user] = &mut times;
+    if unsafe { GetProcessTimes(handle.as_raw_handle().cast(), created, exited, kernel, user) } == 0 { return Err(std::io::Error::last_os_error()); }
+    Ok(Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)))
+}
+
+#[cfg(windows)]
+fn info(pid: u32) -> Option<(u32, u64)> { windows_started(pid).ok().flatten().map(|started| (pid, started)) }
+
+#[cfg(windows)]
+fn boot() -> String { "windows-job-v1".into() }
 
 #[cfg(unix)]
 fn kill_group(pgid: u32) {
@@ -59,7 +101,7 @@ fn kill_group(pgid: u32) {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn kill_group(_pgid: u32) {}
 
 #[cfg(unix)]
@@ -68,7 +110,7 @@ fn own_group() -> Option<u32> {
     u32::try_from(unsafe { libc::getpgrp() }).ok()
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn own_group() -> Option<u32> {
     None
 }
@@ -132,17 +174,88 @@ fn boot() -> String {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map(|id| id.trim().to_owned()).unwrap_or_default()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn info(_pid: u32) -> Option<(u32, u64)> {
     None
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn members(_pgid: u32) -> Vec<u32> {
     vec![]
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn boot() -> String {
     String::new()
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn recovery_never_signals_a_live_or_reused_process_id() {
+        let mark = mark(std::process::id()).unwrap();
+        assert_eq!(stop_leftover(&mark), Leftover::NotOurs);
+        let reused = ProcessMark { started: mark.started + 1, ..mark };
+        assert_eq!(stop_leftover(&reused), Leftover::Gone);
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn command_tree() {
+        let _child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "personal_worker::process::windows_tests::command_leaf"])
+            .spawn().unwrap();
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn command_leaf() {
+        std::fs::write("child-pid", std::process::id().to_string()).unwrap();
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn cancelling_personal_command_kills_its_windows_descendant() {
+        use crate::personal::{OperationSpec, ProcessMark};
+        use crate::personal_worker::{run_command, COMMAND_TOOL};
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use std::sync::{Arc, Mutex};
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+
+        let dir = std::env::temp_dir().join(format!("apx-personal-job-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join("child-pid"));
+        let spec = OperationSpec { tool: COMMAND_TOOL.into(), host: "test".into(), cwd: dir.to_string_lossy().into(),
+            argv: vec![std::env::current_exe().unwrap().to_string_lossy().into(), "--ignored".into(), "--exact".into(),
+                "personal_worker::process::windows_tests::command_tree".into()], plan: None };
+        let saved = Arc::new(Mutex::new(None::<ProcessMark>));
+        let callback = saved.clone();
+        let running = tokio::spawn(run_command(spec, Arc::new(move |mark| *callback.lock().unwrap() = Some(mark))));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(dir.join("child-pid")).ok().and_then(|text| text.parse::<u32>().ok()) { break pid; }
+            if std::time::Instant::now() >= deadline {
+                running.abort();
+                panic!("personal command's child did not start");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        assert!(!raw.is_null(), "descendant must be alive before cancellation");
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+        assert!(saved.lock().unwrap().is_some(), "Windows command identity is recorded");
+        running.abort();
+        let _ = running.await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while unsafe { WaitForSingleObject(handle.as_raw_handle().cast(), 0) } != WAIT_OBJECT_0 {
+            assert!(std::time::Instant::now() < deadline, "descendant survived cancellation");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

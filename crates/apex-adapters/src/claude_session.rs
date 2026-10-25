@@ -370,7 +370,7 @@ pub async fn list_servers(
     path: Option<String>,
 ) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
     let claude = |args: &[&str]| {
-        let mut command = tokio::process::Command::new("claude");
+        let mut command = tokio::process::Command::new(crate::executable::program("claude", path.as_deref()));
         if let Some(path) = &path {
             command.env("PATH", path);
         }

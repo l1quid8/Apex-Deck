@@ -27,6 +27,70 @@ const DRAIN_WAIT: Duration = Duration::from_secs(2);
 /// Most commands left running at once.
 const JOBS_MAX: usize = 8;
 
+#[cfg(any(windows, test))]
+fn windows_shell(mut env: impl FnMut(&str) -> Option<std::ffi::OsString>, path: Option<&str>) -> PathBuf {
+    let mut candidates = Vec::new();
+    if let Some(explicit) = env("CLAUDE_CODE_GIT_BASH_PATH").filter(|p| !p.is_empty()) {
+        candidates.push(PathBuf::from(explicit));
+    }
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(base) = env(key).filter(|p| !p.is_empty()) {
+            candidates.push(PathBuf::from(base).join("Git/bin/bash.exe"));
+        }
+    }
+    if let Some(base) = env("LOCALAPPDATA").filter(|p| !p.is_empty()) {
+        candidates.push(PathBuf::from(base).join("Programs/Git/bin/bash.exe"));
+    }
+    // Git may have a custom installation root on PATH. Do not select the
+    // unrelated System32/bash.exe (the WSL launcher).
+    let path = path.map(std::ffi::OsString::from).or_else(|| env("PATH")).unwrap_or_default();
+    for directory in std::env::split_paths(&path).filter(|p| !p.as_os_str().is_empty()) {
+        if directory.join("git.exe").is_file() {
+            if let Some(root) = directory.parent() {
+                candidates.extend([root.join("bin/bash.exe"), root.join("usr/bin/bash.exe")]);
+            }
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file()).unwrap_or_else(|| "powershell.exe".into())
+}
+
+#[cfg(test)]
+mod windows_selection_tests {
+    use super::*;
+
+    #[test]
+    fn windows_shell_uses_git_bash_and_falls_back_to_powershell() {
+        let root = std::env::temp_dir().join(format!("apx-bash-{}", std::process::id()));
+        let bash = root.join("Git/bin/bash.exe");
+        std::fs::create_dir_all(bash.parent().unwrap()).unwrap();
+        std::fs::write(&bash, "").unwrap();
+        let environment = |key: &str| (key == "ProgramFiles").then(|| root.clone().into_os_string());
+        assert_eq!(windows_shell(environment, None), bash);
+        std::fs::remove_file(&bash).unwrap();
+        assert_eq!(windows_shell(environment, None), PathBuf::from("powershell.exe"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_runtime_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn selected_windows_shell_reports_output_exit_status_and_timeout() {
+        let env = Env { cwd: Some(std::env::temp_dir()), ..Env::default() };
+        let bash = env.shell_description().starts_with("Git Bash");
+        let script = if bash { "echo out; echo err >&2; exit 3" } else { "Write-Output out; [Console]::Error.WriteLine('err'); exit 3" };
+        let finished = run(&env, &Registry::default(), script, Duration::from_secs(10)).await.unwrap();
+        assert_eq!(finished.code, Some(3));
+        assert!(finished.output.contains("out") && finished.output.contains("err"), "{}", finished.output);
+        assert!(!finished.timed_out);
+        let script = if bash { "sleep 30" } else { "Start-Sleep -Seconds 30" };
+        let finished = run(&env, &Registry::default(), script, Duration::from_millis(300)).await.unwrap();
+        assert!(finished.timed_out);
+    }
+}
+
 /// Where and with what commands run.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Env {
@@ -37,6 +101,16 @@ pub(crate) struct Env {
 }
 
 impl Env {
+    #[cfg(windows)]
+    fn windows_shell(&self) -> PathBuf { windows_shell(|key| std::env::var_os(key), self.path.as_deref()) }
+
+    #[cfg(windows)]
+    pub(super) fn shell_description(&self) -> &'static str {
+        if self.windows_shell().file_name().is_some_and(|p| p.to_string_lossy().eq_ignore_ascii_case("bash.exe")) {
+            "Git Bash (bash -c)"
+        } else { "Windows PowerShell (powershell.exe -NoProfile -NonInteractive -Command)" }
+    }
+
     /// A shell running `script` in the project folder, with nothing to read
     /// from and the output piped back.
     fn command(&self, script: &str) -> Result<Command, String> {
@@ -47,12 +121,19 @@ impl Env {
             command.arg("-c").arg(script);
             command
         };
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         let mut command = {
-            let mut command = Command::new("cmd");
-            command.arg("/C").arg(script);
+            let shell = self.windows_shell();
+            let bash = shell.file_name().is_some_and(|p| p.to_string_lossy().eq_ignore_ascii_case("bash.exe"));
+            let mut command = Command::new(shell);
+            if bash { command.arg("-c"); } else {
+                command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+            }
+            command.arg(script);
             command
         };
+        #[cfg(not(any(unix, windows)))]
+        return Err("Shell commands are unsupported on this platform.".into());
         // No terminal: keep pagers, colours and password prompts out.
         command
             .env("NO_COLOR", "1")

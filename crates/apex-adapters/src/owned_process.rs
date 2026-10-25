@@ -3,7 +3,7 @@
 //! Unix workers get a fresh process group. When a persistent registry is
 //! configured, a pre-exec pipe gate keeps the worker from running until its
 //! PID, PGID and birth signature have been synced to the registry directory.
-//! Windows currently supports direct-child cleanup only.
+//! Windows workers enter a kill-on-close Job before any user code runs.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,8 @@ pub struct Registry {
 
 #[derive(Clone)]
 struct Group {
+    #[cfg(windows)]
+    job: Arc<crate::windows_job::Job>,
     #[cfg(unix)]
     id: i32,
     #[cfg(not(unix))]
@@ -64,6 +66,9 @@ impl Registry {
             Some(gate)
         } else { None };
 
+        #[cfg(windows)]
+        let (child, job) = crate::windows_job::Job::spawn(command)?;
+        #[cfg(not(windows))]
         let child = command.spawn()?;
         let id = child.id().expect("spawned child has a process id");
         #[cfg(unix)]
@@ -91,6 +96,8 @@ impl Registry {
         #[cfg(not(unix))]
         let group_id = id;
         let group = Group {
+            #[cfg(windows)]
+            job: Arc::new(job),
             id: group_id,
             terminated: Arc::new(AtomicBool::new(false)),
             manifest_pending: Arc::new(AtomicBool::new(manifest.is_some())),
@@ -130,7 +137,15 @@ pub(crate) fn recover(directory: &Path) -> Result<(), String> {
     let Some(directory) = registry_directory(directory, false).map_err(|e| format!("invalid worker registry path {}: {e}", directory.display()))? else { return Ok(()); };
     #[cfg(not(unix))]
     {
-        return Err("worker process-tree recovery is unsupported on this platform; manual cleanup is required".into());
+        // Windows Jobs leave no durable PID records: the OS closes their
+        // non-inherited handles when the host dies. An old Unix manifest must
+        // still refuse safely if a data folder was copied between machines.
+        if std::fs::read_dir(directory).map_err(|e| e.to_string())?.any(|entry| {
+            entry.map(|entry| entry.path().extension().is_some_and(|ext| ext == "json")).unwrap_or(true)
+        }) {
+            return Err("this worker registry contains unsupported process records; manual cleanup is required".into());
+        }
+        return Ok(());
     }
     #[cfg(unix)]
     {
@@ -211,7 +226,28 @@ fn terminate_groups_blocking(groups: &[Group]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+async fn terminate_groups(groups: &[Group]) -> Result<(), String> {
+    for group in groups {
+        if !group.terminated.load(Ordering::SeqCst) {
+            group.job.terminate().map_err(|e| format!("could not stop worker job {}: {e}", group.id))?;
+        }
+    }
+    let deadline = Instant::now() + Duration::from_millis(1250);
+    loop {
+        let mut active = false;
+        for group in groups {
+            if !group.terminated.load(Ordering::SeqCst) {
+                active |= group.job.active().map_err(|e| format!("could not verify worker job {}: {e}", group.id))? != 0;
+            }
+        }
+        if !active { return Ok(()); }
+        if Instant::now() >= deadline { return Err("worker job remained after the 1.25 second cleanup window".into()); }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn terminate_groups(_: &[Group]) -> Result<(), String> {
     Err("process-tree cancellation is not supported on this platform; only the direct child is stopped".into())
 }
@@ -252,17 +288,11 @@ impl Group {
 }
 
 impl OwnedChild {
-    /// Terminate the owned process group on Unix and clear its durable record.
-    /// On Windows callers must handle direct-child termination separately.
+    /// Terminate the owned process group/Job and clear its durable record.
     pub async fn terminate_tree(&mut self) -> Result<(), String> {
-        #[cfg(unix)]
         terminate_groups(std::slice::from_ref(&self.group)).await?;
-        // Windows currently relies on Child::kill_on_drop for direct-child
-        // cancellation and does not claim process-tree cleanup. Reaching this
-        // path means the caller has already observed direct-child completion.
-        #[cfg(not(unix))]
-        self.group.terminated.store(true, Ordering::SeqCst);
-        #[cfg(unix)]
+        // Once cleanup proved the group gone, never signal its numeric Unix
+        // id again, even if removing the durable record fails afterwards.
         self.group.terminated.store(true, Ordering::SeqCst);
         if let Some(path) = &self.group.manifest {
             remove_manifest(path).map_err(|e| format!("could not remove worker ownership record {}: {e}", path.display()))?;
@@ -285,6 +315,8 @@ impl Drop for OwnedChild {
     fn drop(&mut self) {
         #[cfg(unix)]
         if !self.group.terminated.load(Ordering::SeqCst) { self.group.signal(libc::SIGKILL); }
+        #[cfg(windows)]
+        if !self.group.terminated.load(Ordering::SeqCst) { let _ = self.group.job.terminate(); }
         if !self.group.manifest_pending.load(Ordering::SeqCst) {
             self.registry.active.lock().unwrap().retain(|group| group.id != self.group.id);
         }

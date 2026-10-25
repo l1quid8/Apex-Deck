@@ -30,7 +30,7 @@ pub(crate) async fn read_plan(path: Option<&str>, model: Option<&str>) -> Result
 
 async fn read_agy_plan(program: &str, path: Option<&str>, model: Option<&str>) -> Result<PlanUsage, Failure> {
     let short = |why: String| Failure::new(why, Failure::SHORT);
-    let mut command = tokio::process::Command::new(program);
+    let mut command = tokio::process::Command::new(crate::executable::program(program, path));
     command.args(["-p", "/usage", "--output-format", "json"]);
     command.env("NO_COLOR", "1").env("TERM", "dumb");
     if let Some(path) = path {

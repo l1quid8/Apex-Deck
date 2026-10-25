@@ -1094,7 +1094,7 @@ pub async fn list_servers(
     path: Option<String>,
 ) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
     use std::process::Stdio;
-    let mut command = tokio::process::Command::new("codex");
+    let mut command = tokio::process::Command::new(crate::executable::program("codex", path.as_deref()));
     if let Some(path) = path {
         command.env("PATH", path);
     }
@@ -1127,6 +1127,7 @@ pub async fn list_servers(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     #[tokio::test]
     async fn gateway_declines_a_late_read_only_mcp_call() {
         let script = r#"say() { echo "$1"; }
@@ -1155,6 +1156,7 @@ cat > /dev/null"#;
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn assistant_stops_if_a_provider_attempts_a_tool() {
         let script = r#"say() { echo "$1"; }
@@ -1532,6 +1534,7 @@ cat > /dev/null"#;
     /// A stand-in for the app server: the turn starts a helper and ends,
     /// the helper finishes in its own thread a moment later, and only then
     /// does Deck ask for a follow-up that passes on what it found.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_reply_waits_for_codex_helpers_and_adds_what_they_found() {
         let script = r#"say() { echo "$1"; }

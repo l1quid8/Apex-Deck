@@ -21,6 +21,33 @@ static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 
+#[cfg(any(windows, test))]
+fn windows_candidates(mut env: impl FnMut(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"].into_iter()
+        .filter_map(|key| env(key).filter(|p| !p.is_empty()).map(PathBuf::from))
+        .flat_map(|base| ["Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe"].map(|tail| base.join(tail)))
+        .collect()
+}
+
+#[cfg(test)]
+mod windows_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn windows_browser_candidates_include_per_user_and_both_program_files_folders() {
+        let paths = windows_candidates(|key| match key {
+            "LOCALAPPDATA" => Some("local".into()),
+            "ProgramFiles" => Some("programs64".into()),
+            "ProgramFiles(x86)" => Some("programs32".into()),
+            _ => None,
+        });
+        for base in ["local", "programs64", "programs32"] {
+            assert!(paths.contains(&PathBuf::from(base).join("Google/Chrome/Application/chrome.exe")));
+            assert!(paths.contains(&PathBuf::from(base).join("Microsoft/Edge/Application/msedge.exe")));
+        }
+    }
+}
+
 struct Running {
     child: tokio::process::Child,
     port: u16,
@@ -35,12 +62,26 @@ fn binary() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("APEX_BROWSER").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(path);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    #[cfg(windows)]
+    if let Some(path) = windows_candidates(|key| std::env::var_os(key)).into_iter().find(|p| p.is_file()) {
+        return Some(path);
+    }
+    let home = std::env::var_os("HOME").filter(|p| !p.is_empty()).or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
+    #[cfg(windows)]
+    let cache = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| home.join("AppData/Local")).join("ms-playwright");
+    #[cfg(not(windows))]
+    let cache = home.join(".cache/ms-playwright");
     // Playwright's Chromium, newest first.
-    let mut found: Vec<PathBuf> = std::fs::read_dir(home.join(".cache/ms-playwright")).into_iter().flatten().flatten()
+    let mut found: Vec<PathBuf> = std::fs::read_dir(cache).into_iter().flatten().flatten()
         .map(|entry| entry.path())
         .filter(|path| path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("chromium-")))
-        .flat_map(|dir| ["chrome-linux64/chrome", "chrome-linux/chrome"].map(|tail| dir.join(tail)))
+        .flat_map(|dir| {
+            #[cfg(windows)]
+            let tails = ["chrome-win64/chrome.exe", "chrome-win/chrome.exe"];
+            #[cfg(not(windows))]
+            let tails = ["chrome-linux64/chrome", "chrome-linux/chrome"];
+            tails.map(|tail| dir.join(tail))
+        })
         .filter(|path| path.is_file())
         .collect();
     found.sort();

@@ -23,6 +23,7 @@ mod codex_server;
 pub mod codex_images;
 mod codex_hook;
 mod events;
+mod executable;
 mod grok_images;
 mod grok_usage;
 pub mod keys;
@@ -36,6 +37,8 @@ mod plan_cache;
 mod presets;
 mod step_labels;
 mod work_feed;
+#[cfg(windows)]
+mod windows_job;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,6 +55,9 @@ pub use openai::{list_models, OpenAiCompatParticipant};
 pub use phone_env::{PhoneEnv, DAEMON_SOCKET, PHONE_HINT};
 pub use presets::{agent_command, allow_reading};
 pub use owned_process::{OwnedChild as OwnedProcessChild, Registry as OwnedProcessRegistry};
+pub use executable::program as executable_program;
+#[cfg(windows)]
+pub use executable::on_path as executable_on_path;
 
 /// Pass on what a tool's output amounted to: text, activity, changes,
 /// work steps and the to-do list.
@@ -252,7 +258,7 @@ async fn read_codex_plan(context: &BuildContext) -> Result<PlanUsage, String> {
 
 /// `codex app-server` with all three standard streams piped.
 fn start_codex_server(context: &BuildContext) -> Result<owned_process::OwnedChild, String> {
-    let mut command = tokio::process::Command::new("codex");
+    let mut command = tokio::process::Command::new(executable::program("codex", context.path.as_deref()));
     command.args(codex_server::ARGS).env("NO_COLOR", "1").env("TERM", "dumb");
     if let Some(path) = &context.path {
         command.env("PATH", path);
