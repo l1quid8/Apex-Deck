@@ -14,6 +14,7 @@ fn this_target_is_built_without_the_test_support_feature(){
         "apex-host was built with test-support; run `cargo test -p apex-host-production-check` on its own"
     );
 }
+#[cfg(target_os = "macos")]
 #[test]
 fn unsigned_same_user_process_cannot_boot_authority_from_forged_json(){
     let root=std::env::temp_dir().join(format!("apex-untrusted-authority-{}",std::process::id()));
@@ -53,6 +54,7 @@ fn unsigned_same_user_process_cannot_boot_authority_from_forged_json(){
 /// short-circuits isolated temp roots to local file IO, which would make this
 /// assertion vacuous. Without a broker the read must fail closed; with a broker
 /// the broker's copy must win and the forged text must never appear.
+#[cfg(target_os = "macos")]
 #[test]
 fn direct_write_to_project_memory_json_is_not_authoritative_after_restart(){
     use apex_host::personal_workspace::ProjectRef;
@@ -212,5 +214,45 @@ async fn linux_phone_keeps_the_existing_host_command_gate() {
     assert!(refused.contains("protected provenance receipt"), "{refused}");
     assert!(host.room_state("no-grant".into()).is_err());
     host.shutdown(); drop(host);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Linux has no Mac broker, so its ledgers are plain owner-only files at their
+/// own paths, as before the broker. Records must survive a restart, the
+/// personal assistant must start, and chats saved before the permission
+/// manifest existed must still open. Run this target alone on Linux.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_ledgers_are_plain_files_that_survive_restart() {
+    use apex_host::assistant_conversation::ConversationStore;
+    use apex_host::storage::{SavedRoom, Store};
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("apex-linux-plain-ledgers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("assistant-conversations-v1.json");
+    std::fs::write(&path, br#"{"version":1,"records":{"kept":{"request":{"requestId":"kept","owner":{"workspaceId":"p","hostId":"local","cwd":"/tmp","conversationId":"c"},"text":"saved before the upgrade"},"status":"pending","response":null,"revision":1}}}"#).unwrap();
+    ConversationStore::open(&path).expect("Linux must read its plain ledger");
+
+    // A chat saved before room-authority-v1.json existed keeps its own settings.
+    let store = Store::new(root.join("saved-chats-v1"));
+    let mut saved = SavedRoom { cwd: Some("/srv/project".into()), mounts: vec![], snapshot: apex_core::Room::new(vec![], apex_core::RoomOptions::default()).snapshot() };
+    saved.snapshot.plan = true;
+    store.save_room("before", &saved).unwrap();
+    let manifest = root.join("saved-chats-v1/room-authority-v1.json");
+    assert_eq!(std::fs::metadata(&manifest).unwrap().permissions().mode() & 0o777, 0o600);
+    std::fs::remove_file(&manifest).unwrap();
+    let reopened = Store::new(root.join("saved-chats-v1")).room("before").unwrap().unwrap();
+    assert_eq!(reopened.cwd.as_deref(), Some("/srv/project"));
+    assert!(reopened.snapshot.plan);
+
+    // Startup reads every ledger and the personal assistant worker starts.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for _ in 0..2 {
+        let host = Host::try_new(HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone()).unwrap();
+        host.start_personal_worker().expect("the personal assistant must start on Linux");
+        host.shutdown();
+    }
+    assert!(path.exists());
     std::fs::remove_dir_all(root).unwrap();
 }

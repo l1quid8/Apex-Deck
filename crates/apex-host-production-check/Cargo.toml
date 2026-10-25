@@ -13,5 +13,6 @@ apex-host = { path = "../apex-host" }
 apex-daemon = { path = "../apex-daemon" }
 
 [dev-dependencies]
+apex-core = { path = "../apex-core" }
 serde_json.workspace = true
 tokio.workspace = true

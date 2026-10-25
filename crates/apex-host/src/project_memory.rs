@@ -237,6 +237,7 @@ impl ProjectMemory {
     /// ledger that was never read. The broker keeps the real records, so
     /// nothing is discarded and a later re-pin brings them back.
     pub fn unavailable(path: impl AsRef<Path>) -> Self {
+        crate::authority_file::close(path.as_ref());
         Self {
             inner: Arc::new(Inner {
                 path: path.as_ref().to_path_buf(),
