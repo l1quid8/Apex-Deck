@@ -10,6 +10,19 @@ on:
   pull_request:
 
 jobs:
+  # This gate runs the production IPC source even while the full Windows
+  # daemon still contains callers awaiting migration. Never allow it to fail.
+  test-windows-ipc:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run pipe security and transport tests on Windows
+        run: cargo test --locked -p apex-ipc-check --lib -- --nocapture
+
   test:
     strategy:
       fail-fast: false

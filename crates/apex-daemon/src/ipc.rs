@@ -16,6 +16,9 @@ pub type Stream = tokio::net::UnixStream;
 #[cfg(unix)]
 pub type BlockingStream = std::os::unix::net::UnixStream;
 #[cfg(windows)]
+/// Synchronous request-then-response transport only. Clones share one Windows
+/// file object: a pending read blocks writes on every clone. Callers needing
+/// concurrent reads and writes must use `connect` and async `Stream` instead.
 pub type BlockingStream = std::fs::File;
 
 pub type ReadHalf = tokio::io::ReadHalf<Stream>;
@@ -163,6 +166,49 @@ mod tests {
             windows::current_user_sid().unwrap()
         );
         assert!(first.to_string_lossy().starts_with(&prefix));
+    }
+
+    // Windows resolves both spellings to one data lock; they must also find
+    // one daemon rather than silently computing different pipe names.
+    #[cfg(windows)]
+    #[test]
+    fn windows_endpoint_uses_one_name_for_different_directory_case() {
+        let fixture = TestEndpoint::new();
+        let alternate = PathBuf::from(fixture.data.to_string_lossy().to_uppercase());
+        assert!(alternate.is_dir(), "the alternate spelling must resolve");
+        assert_eq!(fixture.path, endpoint(&alternate).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_endpoint_creates_the_directory_before_resolving_it() {
+        let fixture = TestEndpoint::new();
+        let data = fixture.data.join("new-data");
+        let path = endpoint(&data).unwrap();
+        assert!(data.is_dir());
+        assert_eq!(path, endpoint(&std::fs::canonicalize(data).unwrap()).unwrap());
+    }
+
+    // Junctions need no symlink privilege and are a common Windows data-folder
+    // alias. The endpoint must use their target, just like the data lock does.
+    #[cfg(windows)]
+    #[test]
+    fn windows_endpoint_uses_the_junction_target_name() {
+        let fixture = TestEndpoint::new();
+        let target = fixture.data.join("target");
+        let alias = fixture.data.join("alias");
+        std::fs::create_dir(&target).unwrap();
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&alias)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let actual = endpoint(&alias).unwrap();
+        let expected = endpoint(&target).unwrap();
+        std::fs::remove_dir(&alias).unwrap();
+        assert_eq!(actual, expected);
     }
 
     // Replacing either half with the wrong direction loses real protocol bytes.
