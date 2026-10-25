@@ -1,6 +1,9 @@
-//! Root-owned submission authority. No shell execution and no general file API.
+//! Root-owned submission authority. No shell execution and no general file API;
+//! updates are one queued request file that launchd hands to the update job.
 #[cfg(unix)]
 pub mod io;
+#[cfg(unix)]
+pub mod update;
 mod phone;
 pub use phone::phone_command;
 #[cfg(unix)]
