@@ -1740,7 +1740,7 @@ export function App() {
         }
         const owner: AssistantTaskOwner = { workspaceId, cwd: monitor.cwd, hostId, conversationId: monitor.conversationId };
         setAssistantOwners((all) => JSON.stringify(all[workspaceId]) === JSON.stringify(owner) ? all : { ...all, [workspaceId]: owner });
-        const snapshot = await route.call<AssistantTaskSnapshot>("assistant_tasks_list", { owner });
+        const snapshot = await route.call<AssistantTaskSnapshot>("assistant_tasks_list", { owner, includeDiffs: true });
         if (!current()) return;
         setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot, Date.now(), authenticatedHostId));
         setAssistantTaskStatuses((all) => {
@@ -2700,7 +2700,7 @@ export function App() {
                 if(!monitor)monitor=await route.call<ProjectMonitor>('monitor_assign',{workspaceId:workspace.id,cwd:project.cwd,hostId:routeHostId,text:`Coordinate work for ${workspace.name}.`,files:[],threads:[],profile:selectedAssistant.assistant.profile,onlyIfAbsent:true});
                 if(!monitor||monitor.workspaceId!==project.workspaceId||monitor.hostId!==routeHostId)throw new Error('The project coordinator returned a different owner.');
                 const owner={workspaceId:monitor.workspaceId,cwd:monitor.cwd,hostId:monitor.hostId,conversationId:monitor.conversationId};
-                const snapshot=await route.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner});
+                const snapshot=await route.call<AssistantTaskSnapshot>('assistant_tasks_list',{owner,includeDiffs:true});
                 if(!snapshot.project||snapshot.project.hostId!==project.hostId||snapshot.project.workspaceId!==project.workspaceId||snapshot.project.cwd!==project.cwd)throw new Error('The project coordinator returned a different folder.');
                 setAssistantOwners(state=>({...state,[owner.workspaceId]:owner}));
                 setAssistantRegistry(state=>reduceAssistantSnapshot(state,owner,snapshot,Date.now(),project.hostId));

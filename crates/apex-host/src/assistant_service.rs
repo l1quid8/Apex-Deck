@@ -1478,7 +1478,7 @@ impl Host {
         Ok(json!({"requestId":request_id,"status":record.status,"taskId":record.task_id}))
     }
 
-    pub fn assistant_tasks_list(&self, owner: TaskOwner) -> Result<Value, String> {
+    pub fn assistant_tasks_list(&self, owner: TaskOwner, include_diffs: bool) -> Result<Value, String> {
         let mut tasks = self
             .assistant_tasks
             .list(Some(&owner.workspace_id))
@@ -1487,6 +1487,12 @@ impl Host {
             .filter(|task| task.owner == owner)
             .collect::<Vec<_>>();
         for task in &mut tasks {
+            if !include_diffs {
+                if let Some(map) = task.result_data.as_mut().and_then(Value::as_object_mut) {
+                    map.remove("diff");
+                    map.remove("reviewDiff");
+                }
+            }
             if task.mode != TaskMode::Isolated
                 || task
                     .result_data
@@ -3293,7 +3299,7 @@ mod tests {
             ],
             "profiles": []
         })).unwrap();
-        let snapshot = f.host.assistant_tasks_list(f.owner.clone()).unwrap();
+        let snapshot = f.host.assistant_tasks_list(f.owner.clone(), false).unwrap();
         let threads = snapshot["routingThreads"].as_array().unwrap();
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0]["id"], "parent");
@@ -3324,9 +3330,28 @@ mod tests {
         saved.snapshot.participants.push(image.clone());
         f.host.store().save_room("parent", &saved).unwrap();
         f.host.store().save_session(&json!({"panes":[{"id":"parent","kind":"chat","workspaceId":"workspace"}],"profiles":[image]})).unwrap();
-        let snapshot = f.host.assistant_tasks_list(f.owner.clone()).unwrap();
+        let snapshot = f.host.assistant_tasks_list(f.owner.clone(), false).unwrap();
         assert_eq!(snapshot["namedOnlyWorkerIds"], json!(["image"]));
         assert_eq!(snapshot["routingThreads"][0]["workers"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn task_list_sends_review_diffs_only_when_asked() {
+        let f = fixture();
+        let task = f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {request_id:"big-diff".into(),batch_id:"batch".into(),owner:f.owner.clone(),revision:f.host.monitor_get("workspace").unwrap().unwrap().revision,original_request:"Fix login".into(),brief:"Fix login".into(),destination:TaskDestination{thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None}).unwrap();
+        let mut data = task.result_data.clone().unwrap_or_else(|| json!({}));
+        let diff = "+x\n".repeat(1 << 20);
+        data["diff"] = json!(diff); data["reviewDiff"] = json!(diff); data["checks"] = json!(["ok"]);
+        f.host.assistant_tasks.set_result_data(&task.id, task.revision, &f.owner, Some(data)).unwrap();
+        let small = f.host.assistant_tasks_list(f.owner.clone(), false).unwrap();
+        let listed = &small["tasks"][0]["resultData"];
+        assert!(listed["diff"].is_null() && listed["reviewDiff"].is_null(), "the phone's list must not carry the diff");
+        assert_eq!(listed["checks"], json!(["ok"]), "other review data stays");
+        assert!(serde_json::to_vec(&small).unwrap().len() < 64 * 1024);
+        let full = f.host.assistant_tasks_list(f.owner.clone(), true).unwrap();
+        assert_eq!(full["tasks"][0]["resultData"]["reviewDiff"], json!(diff));
+        let stored = f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        assert_eq!(stored.result_data.unwrap()["reviewDiff"], json!(diff), "listing never changes the saved task");
     }
 
     #[test]
