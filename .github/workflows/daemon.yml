@@ -41,13 +41,19 @@ jobs:
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path crates/iroh-mobile/Cargo.toml
 
   # Windows compilation and runtime failures fail CI, just like Unix failures.
+  # The Electron app's Node checks run here too, because the desktop app is a
+  # Windows target now and nothing else tests it there.
   test-windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       # Keep LF line endings so files match the Mac and Linux checkouts.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -63,6 +69,25 @@ jobs:
       - name: Test provenance platform boundary
         if: ${{ !cancelled() }}
         run: cargo test --locked -p apex-provenance --lib
+      - name: Install the app's Node dependencies
+        if: ${{ !cancelled() }}
+        run: npm ci
+      - name: Type-check the app
+        if: ${{ !cancelled() }}
+        run: npx tsc --noEmit
+      - name: Test the app
+        # Known gap, tracked, not hidden: the app suite has never run off this
+        # Mac. It went 2,468 of 2,550 passing on run 40233880246, 2,502 of 2,550
+        # on runs 40237448612 and 40239129607. What is left is not the app:
+        # /tmp/... being drive-relative on Windows (fixed here), two
+        # message-actions-narrow scenarios that hang with no output at all, and
+        # a daemon-binary assertion that expects the .exe name M3 adds. Flip
+        # this to blocking the day the count reaches zero.
+        # Two test files at a time: four cores booting four Chromiums at once
+        # crashed scenarios silently, which reads as a failure with no output.
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: node --experimental-strip-types --test --test-concurrency=2 tests/*.test.mjs
 
   build:
     needs: test

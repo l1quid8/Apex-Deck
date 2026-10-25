@@ -19,7 +19,9 @@ test('provenance wrapper binds actual command and rejects a substituted signed r
 test('ordinary commands retain Full access transport and are not signed',async()=>{
   assert.equal(typeof mod.attestFrame,'function');
   const frame={id:2,cmd:'mod_process_run',args:{argv:['git','status']}};
-  assert.deepEqual(await mod.attestFrame(frame,{issue:()=>assert.fail('not a human intent')}),frame);
+  // uid is explicit: attestFrame's default reads process.getuid(), which Windows
+  // does not have. A command that is not a human intent never reaches the receipt.
+  assert.deepEqual(await mod.attestFrame(frame,{uid:501,issue:()=>assert.fail('not a human intent')}),frame);
 });
 test('packaged provenance refuses code injection switches and development URLs',()=>{
   assert.equal(typeof mod.assertTrustedStartup,'function');
@@ -62,7 +64,7 @@ test('legacy import apply is a protected UI intent; its preview and history are 
   assert.deepEqual(issued.args,frame.args);
   assert.match(issued.provenanceRequestId,/^[a-f0-9-]{36}$/);
   const preview={id:10,cmd:'legacy_import_preview',args:{}};
-  assert.deepEqual(await mod.attestFrame(preview,{issue:()=>assert.fail('preview is read-only')}),preview);
+  assert.deepEqual(await mod.attestFrame(preview,{uid:501,issue:()=>assert.fail('preview is read-only')}),preview);
 });
 
 test('explicit project delegation is signed with its exact brief, worker and project',async()=>{

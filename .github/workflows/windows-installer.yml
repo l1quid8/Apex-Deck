@@ -1,0 +1,55 @@
+# Builds the Windows installer on GitHub's Windows runner and attaches it to the
+# run as a downloadable artifact. It publishes nothing: no release, no tag, no
+# upload anywhere else. The Human downloads it from the run summary, tries it on
+# a Windows 11 PC, and only then is a real release cut.
+#
+# The installer is UNSIGNED for now, so Windows shows "unknown publisher" and
+# needs "More info -> Run anyway". Azure Trusted Signing (`win.azureSignOptions`
+# plus the Human's Azure secrets) turns this into the signed M4 installer.
+#
+# Runs only for the branches that carry Windows work, because an Electron build
+# is minutes of runner time nobody asked for on every push.
+name: windows-installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/win-m4-installer
+      - feat/windows-11
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      # Keep LF line endings so files match the Mac and Linux checkouts.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Install the app's dependencies
+        run: npm ci
+      - name: Build the unsigned installer
+        run: npm run desktop:win
+      - name: Show what was built
+        run: Get-ChildItem release | Select-Object Name, Length
+      - name: Attach the installer to this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apex-Deck-Setup-windows-x64
+          path: |
+            release/Apex-Deck-Setup.exe
+            release/Apex-Deck-Setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 30

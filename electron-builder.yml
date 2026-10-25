@@ -1,6 +1,8 @@
-# The Electron app: `npm run desktop:package` builds a signed
-# `release/mac-*/Apex Deck.app` with apex-daemon inside it, and
-# `npm run desktop:dmg` puts that app in `release/Apex-Deck_<version>_<arch>.dmg`.
+# The Electron app. `npm run desktop:package` builds a signed Mac app with
+# apex-daemon inside it and `npm run desktop:dmg` puts that app in a disk image.
+# `npm run desktop:win` builds an unsigned Windows installer (NSIS) instead;
+# signing with Azure Trusted Signing is the last piece of M4 and needs
+# `win.azureSignOptions` plus the Human's Azure secrets in GitHub.
 appId: dev.apexdeck.app
 productName: Apex Deck
 directories:
@@ -26,14 +28,12 @@ files:
   - "!desktop/generated-ui/security-*.mjs"
   - "!desktop/generated-ui/run-packaged-*.mjs"
   - "!desktop/generated-ui/runtime-smoke.mjs"
+# Copied into the app's resources on every platform. The service binary is not
+# here because its file name differs per platform: see `mac:` and `win:` below.
 extraResources:
   - from: voice-sidecar
     to: voice-sidecar
     filter: ["**/*", "!**/__pycache__/**", "!tests/**", "!.venv/**"]
-  - from: target/release/apex-daemon
-    to: bin/apex-daemon
-  - from: target/release/apex-provenance
-    to: bin/apex-provenance
   - from: third_party/open-intelligent-ui/LICENSE
     to: third-party-notices/OpenIntelligentUI-MIT-LICENSE.txt
 mac:
@@ -48,11 +48,41 @@ mac:
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  extraResources:
+    - from: target/release/apex-daemon
+      to: bin/apex-daemon
+    - from: target/release/apex-provenance
+      to: bin/apex-provenance
 dmg:
   # One fixed name, like the installer: each build overwrites the last one
   # instead of leaving release/ full of near-identical disk images. The version
   # and the stamped commit are in the bundle and in the .pkg manifest sidecar.
   artifactName: Apex-Deck.${ext}
+win:
+  icon: build/icons/icon.ico
+  target:
+    # x64 only for now; an arm64 build is M5.
+    - target: nsis
+      arch: [x64]
+  extraResources:
+    # Windows binaries carry .exe, and the app looks for
+    # `resources/bin/apex-daemon.exe` (desktop/sidecar.mjs). `apex-provenance`
+    # is left out on purpose: it is a root LaunchDaemon built on Unix-only
+    # APIs, and Windows refuses the protected assistant records that would use
+    # it with a clear message instead.
+    - from: target/release/apex-daemon.exe
+      to: bin/apex-daemon.exe
+nsis:
+  # A real installer window, not a silent one-click drop into AppData: the
+  # Human picks the folder and can find the app afterwards.
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Apex Deck
+  # Same rule as the dmg: one fixed artifact name per build.
+  artifactName: Apex-Deck-Setup.${ext}
 
 # These are flipped before signing. JS startup checks are only a second layer.
 electronFuses:
