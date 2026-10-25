@@ -2604,7 +2604,7 @@ function ThreadView(props: {
         )}
         {paused && (
           <div className={`ph-banner${props.link.problem ? " bad" : ""}`} role="status">
-            <strong>{props.link.problem ? `${props.machine} can't connect` : `${props.machine} ${props.kind === "mac" && props.link.status === "offline" ? "is asleep" : props.link.status === "offline" ? "is offline" : "is connecting"}`}</strong>
+            <strong>{props.link.problem ? `${props.machine} can't connect` : `${props.machine} ${props.link.status === "offline" ? "can’t be reached" : "is connecting"}`}</strong>
             <p>{downLine(props.link).replace(/\.$/, "")}. Nothing is queued, and your text stays here.</p>
             <div className="ph-banner-actions">
               {!props.link.problem && <button type="button" onClick={props.onRetry}>Retry now</button>}
@@ -2972,7 +2972,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           </form>
         );
         const route = paired && link?.status === "online" ? routes[machine.id] : null;
-        const state = !link ? "Connecting…" : link.status === "online" ? route === "direct" ? "Connected · Direct" : route === "relayed" ? "Connected · Relayed" : "Connected" : link.problem ? "Can't connect" : link.status === "offline" ? machine.kind === "mac" ? "Asleep or unreachable" : "Offline" : "Connecting…";
+        const state = !link ? "Connecting…" : link.status === "online" ? route === "direct" ? "Connected · Direct" : route === "relayed" ? "Connected · Relayed" : "Connected" : link.problem ? "Can't connect" : link.status === "offline" ? "Offline" : "Connecting…";
         return (
           <div key={machine.id} className={`ph-group ph-padded${link?.problem ? " bad" : ""}`}>
             <h3>{machineIcon(machine.id, 18)} {machine.name}</h3>

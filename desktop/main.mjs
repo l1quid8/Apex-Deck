@@ -24,7 +24,7 @@ import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, sta
 import { TRUSTED_DAEMON, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
-import { assertTrustedStartup, attestFrame, protectedCommands } from './provenance.mjs';
+import { assertTrustedStartup, attestFrame, needsAttestation } from './provenance.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
@@ -307,9 +307,10 @@ ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
     event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: 'App preferences are owned by This Mac.' }));
     return;
   }
-  // Existing ordinary remote coding rooms keep their authenticated SSH route.
-  // Remote assistant authority is unavailable until its own broker is deployed.
-  if (protectedCommands.has(frame.cmd) && !(hostId !== LOCAL && frame.cmd.startsWith('room_'))) {
+  // Remote coding rooms and phone-grant management use authenticated SSH;
+  // the destination host enforces its own grant boundary. Remote assistant
+  // authority is unavailable until its own broker is deployed.
+  if (needsAttestation(frame.cmd, hostId !== LOCAL)) {
     try {
       if (hostId !== LOCAL) throw new Error('Protected assistant submissions currently require the installed UI on the same Mac as the project host.');
       const folder = fs.realpathSync(await dataFolder(bin, dataDir));

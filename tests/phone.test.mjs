@@ -36,14 +36,14 @@ test('editing a machine keeps its kind and place, and an empty token keeps the s
   assert.throws(() => editMachine(list, 'gone', mac), /isn't paired/);
 });
 
-test('an asleep Mac does not pause a server thread, and a refused send keeps the draft', () => {
+test('an unreachable Mac does not pause a server thread, and a refused send keeps the draft', () => {
   const links = [
     { id: 'local', name: "Tyler's MacBook", kind: 'mac', status: 'offline' },
     { id: 'hetzner', name: 'Hetzner-EU', kind: 'server', status: 'online' },
   ];
   const asleep = threadSend(links, 'local', 'Fix the typo in README');
   assert.equal(asleep.enabled, false);
-  assert.equal(asleep.reason, "Paused until Tyler's MacBook wakes");
+  assert.equal(asleep.reason, "Paused while Tyler's MacBook reconnects");
   assert.equal(asleep.enabled ? '' : 'Fix the typo in README', 'Fix the typo in README');
   const server = threadSend(links, 'hetzner', 'Fix the typo in README');
   assert.deepEqual(server, { enabled: true, reason: '' });
@@ -55,7 +55,7 @@ test('an asleep Mac does not pause a server thread, and a refused send keeps the
 test('a new thread needs both the Mac and the machine it runs on', () => {
   const asleep = { id: 'local', name: "Tyler's MacBook", kind: 'mac', status: 'offline' };
   const up = { id: 'hetzner', name: 'Hetzner-EU', kind: 'server', status: 'online' };
-  assert.match(newThreadGate(asleep, up).reason, /wakes/);
+  assert.match(newThreadGate(asleep, up).reason, /reconnects/);
   assert.equal(newThreadGate({ ...asleep, status: 'online' }, up).ok, true);
   assert.equal(newThreadGate(undefined, up).ok, false);
 });
@@ -159,7 +159,7 @@ test('a machine that refuses the token says so instead of looking offline', () =
   assert.equal(downLine(refused), words);
   assert.equal(threadSend([refused], 'local', 'hi').reason, words);
   assert.equal(newThreadGate(refused, refused).reason, words);
-  assert.equal(downLine({ ...refused, problem: undefined }), "Paused until Tyler's MacBook wakes");
+  assert.equal(downLine({ ...refused, problem: undefined }), "Paused while Tyler's MacBook reconnects");
   assert.equal(refusalLine('Apex-Terminal', 'this daemon speaks protocol 3, not 2.'), 'Apex-Terminal turned this phone away: this daemon speaks protocol 3, not 2.');
 });
 

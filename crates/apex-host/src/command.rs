@@ -282,6 +282,32 @@ impl Host {
         result
     }
 
+    /// Called only with the peer ID from the daemon's authenticated iroh
+    /// session. Ordinary local/CLI calls retain the public receipt gate above.
+    pub async fn call_from_device(self: &Arc<Self>, intent: Value, endpoint: String, session: String, request_id: u64, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+        let command = Command::from_json(intent.clone())?;
+        if matches!(command, Command::ProvenanceExecute { .. }) { return Err("A paired phone cannot execute desktop receipts".into()); }
+        // Linux has no signed Mac broker. Preserve its existing public command
+        // gate: ordinary reads/chat work, protected commands still need a receipt.
+        if cfg!(target_os = "linux") { return self.call_with_client_capability(command, capability).await; }
+        #[cfg(feature="test-support")]
+        if crate::test_support::isolated(self.data_dir()) { return self.dispatch_command(command, capability).await; }
+        let assistant_room = match intent["args"]["id"].as_str() {
+            Some(id) => self.assistant_tasks.execution(id).map_err(|e| e.to_string())?.is_some(),
+            None => false,
+        };
+        let protected = command.requires_provenance() || (assistant_room && matches!(command, Command::RoomPost { .. } | Command::RoomPostTo { .. } | Command::RoomTurn { .. }));
+        if !protected { return self.call_with_client_capability(command, capability).await; }
+        let folder = self.data_dir().to_path_buf();
+        let receipt = blocking(move || apex_provenance::io::consume_device(&folder, &endpoint, &session, request_id, intent, assistant_room)).await?;
+        let result = self.dispatch_command(command, capability).await;
+        let folder = self.data_dir().to_path_buf();
+        let reason = result.as_ref().err().cloned();
+        blocking(move || apex_provenance::io::finish(&folder, &receipt.key, reason.as_deref())).await
+            .map_err(|e| format!("The phone command may have completed, but its protected outcome could not be recorded. Do not retry automatically: {e}"))?;
+        result
+    }
+
     // Tests of downstream behavior explicitly assume a previously verified UI
     // intent. Admission/forgery tests use the real public call() entry point.
     #[cfg(test)]

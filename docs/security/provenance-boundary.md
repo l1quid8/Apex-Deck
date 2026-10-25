@@ -22,8 +22,50 @@ processes and network access subject to the existing access/privacy rules. It
 is not authority to impersonate UI submissions or create standing approvals.
 
 This candidate is macOS-only. Remote ordinary coding-room traffic keeps its
-existing SSH route; remote assistant authority is refused. This is not a
-security upgrade for an existing Linux/remote daemon.
+existing SSH route. SSH/token connections cannot issue assistant submissions.
+Authenticated paired iPhones use the protected grant path below; this does not
+upgrade an existing Linux/remote daemon.
+
+## Paired iPhone intents
+
+On macOS, the pinned daemon may call `phone_claim` only for the peer identity obtained
+from an authenticated iroh session. The broker reads `devices.json` from its
+protected journal, checks the current device, tier, thread scope and revocation,
+then records and consumes the exact command in one transaction. The replay key
+binds the device, fresh random connection identity and numeric request ID;
+changing the command or verb cannot reuse that identity. The signed response
+also binds the kernel UID, canonical data directory, exact command and a fresh
+challenge. The host verifies it before dispatch and records the outcome.
+
+Ordinary coding socket access cannot establish these grants. `devices_add`,
+`devices_set_tier`, `devices_set_threads` and `pair_approve` require exact
+installed-UI receipts. Revocation remains available through the running
+installed daemon because it removes authority. Offline Mac list/revoke returns
+an actionable instruction to start Deck; it never edits legacy JSON. Device grants use protected compare-and-swap storage; editable legacy
+`devices.json` is retained untouched and grants nothing. Existing devices need
+explicit approval from the installed UI after rollout; no automatic migration
+certifies old device entries. Pairing, grant administration, migration and
+`provenance_execute` cannot obtain phone submission authority.
+
+The daemon still checks every command's normal permission classification before
+admission and checks it again before returning a result. The broker additionally
+requires global Full authority for assistant-owned room intents. A scoped Chat
+grant cannot approve or continue an assistant execution by treating it as an
+ordinary coding room. Personal/assistant intents require global Full authority.
+The OS identity boundary still requires installed signed-app acceptance; broker
+Journal, signed-response, fixture-dispatch and production-negative tests are
+separate evidence, not a physical-iPhone validation.
+
+Linux has no signed Mac broker and retains its owner-only `devices.json`
+registry, local/SSH pairing administration and offline CLI revocation. This is
+a compile-time platform policy, never a fallback triggered by an unavailable
+broker on Mac. Linux phone calls continue through the existing public host
+command gate: ordinary reads/chat retain their previous behavior; protected
+commands still require provenance and are refused without it. The desktop
+forwards remote phone-grant administration to the destination host, whose own
+authorization rules apply. Local Mac phone grants always require attestation,
+including in development builds. Linux does not acquire the Mac protected-grant
+security guarantee. Other protected host ledgers retain their existing policy.
 
 ## Components
 
@@ -32,6 +74,8 @@ It has no command execution or arbitrary-path file API. Its operations are:
 
 - `issue`: accept an exact UI command and return an Ed25519 submission receipt.
 - `claim`: consume that receipt once, durably, before execution.
+- `phone_claim`: authorize and consume an authenticated iPhone intent using the
+  protected device grant; only the pinned daemon may invoke it.
 - `finish`: record the trusted daemon's succeeded/rejected outcome; rejection
   reasons are bounded, and an established outcome cannot be rewritten.
 - `read`/`write`: read and compare-and-swap a fixed set of authority documents.
@@ -95,13 +139,15 @@ decision events, queued tasks, schedules and approval hashes from editable
 `personal-assistants.json`. Room restoration also reused editable remembered
 permissions, participants, options, cwd and fallback mount history.
 
-Production storage now routes these exact ledger names through the broker:
+Production storage routes these ledger names through the broker (`devices.json`
+is broker-backed on Mac only; Linux retains its local registry):
 
 - `assistant-conversations-v1.json`
 - `assistant-tasks-v1.json`
 - `personal-assistants.json`
 - `personal-machine.json`
 - `room-authority-v1.json`
+- `devices.json`
 
 Authority is scoped by kernel UID, canonical data directory and ledger name.
 Writes require the pinned daemon and a current broker revision. Personal

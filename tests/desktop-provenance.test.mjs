@@ -99,3 +99,33 @@ test('only revised startup checks request the versioned content-bound submission
  assert.equal(issued[0].provenanceRequestId,'task-action:revise_startup:content-v1');
  assert.equal(issued[1].provenanceRequestId,'task-action:approve');
 });
+
+test('device grants and pairing approval bind exact installed UI receipts', async()=>{
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  for(const cmd of ['devices_add','devices_set_tier','devices_set_threads','pair_approve']) {
+    const frame={id:1,cmd,args:{id:'phone',tier:'full'}};
+    let issued;
+    const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
+      issued=request.command;
+      const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
+      return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
+    }});
+    assert.equal(result.cmd,'provenance_execute'); assert.equal(issued.cmd,cmd); assert.deepEqual(issued.args,frame.args);
+  }
+});
+
+test('remote device management reaches the host while local Mac grants require attestation', () => {
+  for (const cmd of ['devices_add', 'devices_set_tier', 'devices_set_threads', 'pair_approve']) {
+    assert.equal(mod.needsAttestation(cmd, false), true, `${cmd} on this Mac`);
+    assert.equal(mod.needsAttestation(cmd, true), false, `${cmd} on a remote host`);
+  }
+  assert.equal(mod.needsAttestation('assistant_message', true), true);
+  assert.equal(mod.needsAttestation('room_create', true), false);
+  assert.equal(mod.needsAttestation('room_create', false), true);
+  assert.equal(mod.needsAttestation('devices_revoke', false), false);
+});
+
+test('malformed remote commands cannot crash the desktop admission route', () => {
+  for (const cmd of [undefined, null, {}, []]) assert.equal(mod.needsAttestation(cmd, true), false);
+});

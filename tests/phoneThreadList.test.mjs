@@ -65,9 +65,9 @@ test("projects group under their machine: Mac first, servers next, unpaired mach
   assert.equal(groups[3].link, null);
 });
 
-test("a machine's heading says Asleep or Offline with Retry, and only dims when it's down", () => {
+test("a machine's heading says Offline with Retry, and only dims when it's down", () => {
   assert.deepEqual(machineNote({ id: "local", name: "Mac", kind: "mac", status: "online" }), { words: "", action: null, down: false });
-  assert.deepEqual(machineNote({ id: "local", name: "Mac", kind: "mac", status: "offline" }), { words: "Asleep", action: "Retry", down: true });
+  assert.deepEqual(machineNote({ id: "local", name: "Mac", kind: "mac", status: "offline" }), { words: "Offline", action: "Retry", down: true });
   assert.deepEqual(machineNote({ id: "srv", name: "S", kind: "server", status: "offline" }), { words: "Offline", action: "Retry", down: true });
   assert.deepEqual(machineNote({ id: "srv", name: "S", kind: "server", status: "connecting" }), { words: "Connecting…", action: null, down: false });
   assert.deepEqual(machineNote({ id: "srv", name: "S", kind: "server", status: "offline", problem: "Wrong token" }), { words: "Can't connect", action: "Fix", down: true });

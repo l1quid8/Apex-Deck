@@ -30,7 +30,7 @@ pub fn isolated_host_assuming_verified_ui(
 pub fn protected_fixture_path(ledger: &Path) -> PathBuf {
     crate::authority_file::fixture_path(ledger)
 }
-pub(crate) fn isolated(path: &Path) -> bool {
+pub fn isolated(path: &Path) -> bool {
     // Resolve the nearest existing ancestor; filenames need not exist yet.
     let mut base = path;
     while !base.exists() {
