@@ -33,7 +33,7 @@ class Engines:
   segments=r.get('segments') or []
   if not segments or all(s.get('no_speech_prob',0)>.8 for s in segments):return ''
   text=r['text'].strip()
-  return '' if made_up(text,hints,[s.get('compression_ratio',0) for s in segments]) else text
+  return '' if made_up(text,hints,[s.get('compression_ratio',0) for s in segments],[s.get('no_speech_prob',0) for s in segments],[s.get('avg_logprob',0) for s in segments]) else text
  def synthesize(self,text,voice):
   import numpy as np
   if voice not in self.voices:raise ValueError('Choose an installed voice')

@@ -3,6 +3,7 @@ import argparse,asyncio,concurrent.futures,json,os,secrets,sys,time
 from .protocol import validate_control,decode_audio,encode_audio,PlaybackCredits
 from .endpoint import EndpointDetector
 from .pipeline import Pipeline
+from .made_up import stock_phrase
 
 async def run(args):
  from websockets.asyncio.server import serve
@@ -46,7 +47,7 @@ async def run(args):
    speaker_task=asyncio.create_task(speaker())
    async def transcribe_chunk(pcm):
     return await loop.run_in_executor(pool,engines.transcribe,pcm,hints)
-   async def transcript(tasks,gen,call):
+   async def transcript(tasks,gen,call,over_agent=False):
     t=time.monotonic();parts=await asyncio.gather(*tasks);words=[]
     for part in parts:
      next_words=part.split();overlap=0
@@ -54,6 +55,8 @@ async def run(args):
       if [w.lower().strip('.,!?') for w in words[-n:]]==[w.lower().strip('.,!?') for w in next_words[:n]]:overlap=n
      words.extend(next_words[overlap:])
     text=' '.join(words)
+    # A stock Whisper phrase heard over the agent's own voice is echo or noise, never the user.
+    if over_agent and stock_phrase(text):text=''
     if gen==pipe.generation and call==pipe.call_id and text:
      await send(dict(type='transcript',callId=call,generation=gen,utteranceId=secrets.token_hex(12),text=text))
      await send(dict(type='timing',callId=call,generation=gen,sttMs=round((time.monotonic()-t)*1000)))
@@ -72,7 +75,7 @@ async def run(args):
      if not pipe.call_id or seq<=last_input or len(pcm)!=1024:raise ValueError('Invalid capture sequence')
      last_input=seq
      prob=await asyncio.to_thread(engines.probability,pcm)
-     events=endpoint.push(pcm,prob)
+     events=endpoint.push(pcm,prob,credits.pending>0)
      if 'candidate' in events:
       complete=await loop.run_in_executor(pool,engines.complete,b''.join(endpoint.audio))
       if complete:
@@ -85,7 +88,7 @@ async def run(args):
       elif event=='complete':
        if len(pending)>=2:raise ValueError('Speech processing overloaded')
        chunks.append(asyncio.create_task(transcribe_chunk(endpoint.take())))
-       task=asyncio.create_task(transcript(list(chunks),gen,pipe.call_id));chunks.clear();pending.add(task);task.add_done_callback(pending.discard)
+       task=asyncio.create_task(transcript(list(chunks),gen,pipe.call_id,endpoint.over_agent));chunks.clear();pending.add(task);task.add_done_callback(pending.discard)
     else:
      msg=validate_control(raw);kind=msg['type']
      if kind=='start':

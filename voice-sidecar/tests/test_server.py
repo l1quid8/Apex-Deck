@@ -17,7 +17,7 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
   args=types.SimpleNamespace(token_fd=read,root='unused',port=0,origin=['app://deck','apex-daemon'])
   if getattr(self,'engine',None):args.engine=self.engine
   module='engines_cpu' if getattr(self,'engine',None)=='cpu' else 'engines'
-  self.patch=patch('voice_sidecar.'+module+'.Engines',FakeEngines);self.patch.start()
+  self.patch=patch('voice_sidecar.'+module+'.Engines',getattr(self,'engines_class',FakeEngines));self.patch.start()
   self.output=io.StringIO();self.redirect=contextlib.redirect_stdout(self.output);self.redirect.__enter__()
   self.task=asyncio.create_task(run(args))
   for i in range(100):
@@ -97,3 +97,31 @@ class DaemonAuthTests(SocketTests):
     await second.send(json.dumps({'type':'auth','token':self.token}))
     await asyncio.wait_for(second.wait_closed(),1)
     self.assertEqual(second.close_code,1008)
+
+class EchoEngines(FakeEngines):
+ def probability(self,pcm):return .95 if pcm[:1]==b'\1' else 0
+ def transcribe(self,pcm,hints):return 'Thank you.'
+
+@unittest.skipUnless(importlib.util.find_spec('websockets'),'Socket tests require the managed runtime')
+class EchoTests(SocketTests):
+ engines_class=EchoEngines
+ async def utterance(self,agent_speaking):
+  from websockets.asyncio.client import connect
+  from voice_sidecar.protocol import encode_audio
+  async with connect(self.url,origin='app://deck') as ws:
+   await ws.send(json.dumps({'type':'auth','token':self.token}));await ws.send(json.dumps({'type':'start','callId':'c','generation':0,'voice':'am_michael'}))
+   self.assertEqual(json.loads(await asyncio.wait_for(ws.recv(),2))['type'],'ready')
+   if agent_speaking:
+    await ws.send(json.dumps({'type':'speak','callId':'c','generation':0,'requestId':'r','segmentId':1,'text':'Keep the phone open.'}))
+    while not isinstance(await asyncio.wait_for(ws.recv(),2),bytes):pass
+   for i in range(40):await ws.send(encode_audio(0,i,(b'\1' if i<20 else b'\0')*1024))
+   events=[]
+   with contextlib.suppress(asyncio.TimeoutError):
+    while True:
+     raw=await asyncio.wait_for(ws.recv(),.5)
+     if not isinstance(raw,bytes):events.append(json.loads(raw))
+   return [e for e in events if e['type']=='transcript']
+ async def test_stock_phrase_over_the_agent_never_reaches_the_chat(self):
+  self.assertEqual(await self.utterance(True),[])
+ async def test_stock_phrase_in_a_quiet_room_is_kept(self):
+  self.assertEqual([e['text'] for e in await self.utterance(False)],['Thank you.'])

@@ -22,6 +22,21 @@ class EndpointTests(unittest.TestCase):
   for i in range(23):events+=e.push(b'\0'*1024,.01)
   self.assertEqual(events.count('complete'),1)
   self.assertLessEqual(len(e.audio),int(30000/32))
+class OverAgentEndpointTests(unittest.TestCase):
+ def test_short_echo_does_not_start_speech_while_agent_is_audible(self):
+  e=EndpointDetector(700);events=[]
+  for i in range(6):events+=e.push(b'\0'*1024,.9,True)
+  self.assertNotIn('speechStart',events)
+  for i in range(6):events+=e.push(b'\0'*1024,.7,True)
+  self.assertNotIn('speechStart',events)
+ def test_clear_speech_still_interrupts_the_agent(self):
+  e=EndpointDetector(700);events=[]
+  for i in range(10):events+=e.push(b'\0'*1024,.95,True)
+  self.assertIn('speechStart',events);self.assertTrue(e.over_agent)
+ def test_quiet_room_keeps_the_fast_start(self):
+  e=EndpointDetector(700);events=[]
+  for i in range(4):events+=e.push(b'\0'*1024,.7)
+  self.assertIn('speechStart',events);self.assertFalse(e.over_agent)
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
  async def test_late_synthesis_cannot_publish_after_cancel(self):
   entered=asyncio.Event(); release=asyncio.Event(); sent=[]
