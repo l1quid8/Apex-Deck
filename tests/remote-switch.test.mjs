@@ -51,7 +51,12 @@ test('an import writes the daemon setting and deletes only the old key', async (
   }
 });
 
-test('a failed key delete, a later off, and a re-sent import ends off', async () => {
+// Making the settings rewrite fail takes a read-only folder, which Windows chmod
+// cannot produce: there chmod only toggles a file's read-only flag, so the key is
+// always deleted on the first import and this scenario cannot arise.
+const POSIX_ONLY = process.platform === 'win32' ? { skip: 'posix-only: a read-only folder fails the rewrite' } : {};
+
+test('a failed key delete, a later off, and a re-sent import ends off', POSIX_ONLY, async () => {
   const dir = fs.mkdtempSync('/tmp/deck-rs-');
   const file = path.join(dir, 'desktop-settings.json');
   writeDesktopSettings(file, { remoteAccess: true, theme: 'dark' });
@@ -60,10 +65,7 @@ test('a failed key delete, a later off, and a re-sent import ends off', async ()
     fs.chmodSync(dir, 0o555);
     const info = await importSavedRemoteAccess(file, daemon.call);
     assert.equal(info.enabled, true, 'the daemon took the import');
-    // A read-only folder is how a POSIX machine makes the rewrite fail. Windows
-    // chmod only toggles the read-only flag on files, so there the key is always
-    // rewritten and this half of the contract cannot be provoked.
-    if (process.platform !== 'win32') assert.equal(hasRemoteAccessKey(file), true, 'the key stays when it cannot be deleted');
+    assert.equal(hasRemoteAccessKey(file), true, 'the key stays when it cannot be deleted');
     fs.chmodSync(dir, 0o755);
 
     const off = await setPhoneConnections({ enabled: false, call: daemon.call });
