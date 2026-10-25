@@ -32,6 +32,7 @@ fn request(text: &str) -> TurnRequest {
         turns: vec![ViewTurn { role: Role::User, content: format!("[Human]: {text}") }],
         unseen: vec![],
         plan: false,
+        cwd: None,
     }
 }
 
@@ -319,6 +320,27 @@ async fn cli_runs_in_the_workspace_folder() {
     let (result, _) = ask(&bot, "where are you?").await;
     assert_eq!(result.unwrap().text, real.to_string_lossy());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_turn_runs_in_request_cwd() {
+    let dir_context = std::env::temp_dir().join(format!("apex-cli-ctx-{}", std::process::id()));
+    let dir_request = std::env::temp_dir().join(format!("apex-cli-req-{}", std::process::id()));
+    std::fs::create_dir_all(&dir_context).unwrap();
+    std::fs::create_dir_all(&dir_request).unwrap();
+    let real_request = std::fs::canonicalize(&dir_request).unwrap();
+
+    let context = BuildContext { cwd: Some(dir_context.clone()), ..BuildContext::default() };
+    let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; pwd -P"))).with_context(&context);
+    let mut req = request("where are you?");
+    req.cwd = Some(dir_request.clone());
+
+    let result = bot.respond(req, &|_| {}).await;
+    assert_eq!(result.unwrap().text, real_request.to_string_lossy());
+
+    let _ = std::fs::remove_dir_all(&dir_context);
+    let _ = std::fs::remove_dir_all(&dir_request);
 }
 
 #[cfg(unix)]
@@ -1094,6 +1116,7 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
                 turns: vec![ViewTurn { role: Role::User, content: "[Human]: please fail".into() }],
                 unseen: vec![],
                 plan: false,
+                cwd: None,
             },
             &|piece| streamed.lock().unwrap().push_str(piece),
         )
@@ -2672,4 +2695,187 @@ printf 'GATEWAY_OK 42 PRIVATE_MCP_UNAVAILABLE'
     let (result, _) = ask(&bot, "Use x_mcp and hl_mcp if available").await;
     assert_eq!(result.unwrap().text, "GATEWAY_OK 42 PRIVATE_MCP_UNAVAILABLE");
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_turn_params_use_request_cwd() {
+    let context_dir = std::env::temp_dir().join(format!("apex-codex-ctx-{}", std::process::id()));
+    let request_dir = std::env::temp_dir().join(format!("apex-codex-req-{}", std::process::id()));
+    let log_dir = std::env::temp_dir().join(format!("apex-codex-log-{}", std::process::id()));
+    std::fs::create_dir_all(&context_dir).unwrap();
+    std::fs::create_dir_all(&request_dir).unwrap();
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let real_context = std::fs::canonicalize(&context_dir).unwrap();
+    let real_request = std::fs::canonicalize(&request_dir).unwrap();
+
+    let script = format!(r#"#!/bin/sh
+if [ "$1" != app-server ]; then exit 0; fi
+count_file="{0}/call_count.txt"
+count=0
+if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+count=$((count + 1))
+echo "$count" > "$count_file"
+pwd -P > "{0}/child_cwd_$count.txt"
+while IFS= read -r line; do
+  case "$line" in
+  *'"mcpServerStatus/list"'*) echo '{{"id":10,"result":{{"data":[],"nextCursor":null}}}}' ;;
+  *'"plugin/list"'*) echo '{{"id":110,"result":{{"marketplaces":[]}}}}' ;;
+  *'"initialize"'*) echo '{{"id":0,"result":{{"userAgent":"fake"}}}}' ;;
+  *'"account/rateLimits/read"'*) echo '{{"id":3,"result":{{"rateLimits":{{}}}}}}' ;;
+  *'"thread/start"'*)
+    printf '%s\n' "$line" > "{0}/thread_start_$count.txt"
+    echo '{{"id":1,"result":{{"thread":{{"id":"thread-1"}}}}}}' ;;
+  *'"turn/start"'*)
+    echo '{{"id":2,"result":{{"turn":{{"id":"turn-1","status":"inProgress"}}}}}}'
+    echo '{{"method":"item/completed","params":{{"item":{{"type":"agentMessage","id":"i2","text":"ok"}}}}}}'
+    echo '{{"method":"turn/completed","params":{{"turn":{{"status":"completed","error":null}}}}}}' ;;
+  esac
+done
+"#, log_dir.display());
+
+    let dir = fake_tool("codex-server-req-cwd", "codex", &script);
+
+    let bot = build(
+        config("codex", Backend::Agent { tool: apex_core::AgentTool::Codex, model: None }),
+        &BuildContext { cwd: Some(context_dir.clone()), ..context_in(&dir) },
+    );
+
+    // Turn 1 with request-scoped cwd
+    let mut req1 = request("turn 1");
+    req1.cwd = Some(request_dir.clone());
+    let res1 = bot.respond(req1, &|_| {}).await;
+    assert_eq!(res1.unwrap().text, "ok");
+
+    let thread_start_1 = std::fs::read_to_string(log_dir.join("thread_start_1.txt")).unwrap();
+    let parsed1: serde_json::Value = serde_json::from_str(&thread_start_1).unwrap();
+    assert_eq!(parsed1["params"]["cwd"], request_dir.to_string_lossy().as_ref());
+    let child_cwd_1 = std::fs::read_to_string(log_dir.join("child_cwd_1.txt")).unwrap();
+    assert_eq!(child_cwd_1.trim(), real_request.to_string_lossy());
+
+    // Turn 2 with no request cwd override (falls back to context_dir)
+    let req2 = request("turn 2");
+    let res2 = bot.respond(req2, &|_| {}).await;
+    assert_eq!(res2.unwrap().text, "ok");
+
+    let thread_start_2 = std::fs::read_to_string(log_dir.join("thread_start_2.txt")).unwrap();
+    let parsed2: serde_json::Value = serde_json::from_str(&thread_start_2).unwrap();
+    assert_eq!(parsed2["params"]["cwd"], context_dir.to_string_lossy().as_ref());
+    let child_cwd_2 = std::fs::read_to_string(log_dir.join("child_cwd_2.txt")).unwrap();
+    assert_eq!(child_cwd_2.trim(), real_context.to_string_lossy());
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&context_dir);
+    let _ = std::fs::remove_dir_all(&request_dir);
+    let _ = std::fs::remove_dir_all(&log_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_turns_are_stateless_and_use_per_turn_cwd() {
+    let dir1 = std::env::temp_dir().join(format!("apex-claude-dir1-{}", std::process::id()));
+    let dir2 = std::env::temp_dir().join(format!("apex-claude-dir2-{}", std::process::id()));
+    let log_dir = std::env::temp_dir().join(format!("apex-claude-log-{}", std::process::id()));
+    std::fs::create_dir_all(&dir1).unwrap();
+    std::fs::create_dir_all(&dir2).unwrap();
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let real_dir1 = std::fs::canonicalize(&dir1).unwrap();
+    let real_dir2 = std::fs::canonicalize(&dir2).unwrap();
+
+    let script = format!(r#"#!/bin/sh
+count_file="{0}/call_count.txt"
+count=0
+if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+count=$((count + 1))
+echo "$count" > "$count_file"
+pwd -P > "{0}/cwd_$count.txt"
+echo "$@" > "{0}/args_$count.txt"
+IFS= read -r prompt
+echo "$prompt" > "{0}/prompt_$count.txt"
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
+"#, log_dir.display());
+
+    let dir = fake_tool("claude-cwd-change", "claude", &script);
+
+    // Turn with no folder anywhere (first-turn/no-folder case)
+    let bot_nodir = build(
+        config("claude-nodir", Backend::Agent { tool: apex_core::AgentTool::ClaudeCode, model: None }),
+        &BuildContext { cwd: None, ..context_in(&dir) },
+    );
+    let req_nodir = TurnRequest {
+        system: "sys".into(),
+        turns: vec![ViewTurn { role: Role::User, content: "[Human]: bare first turn".into() }],
+        unseen: vec![apex_core::Message { seq: 0, speaker: Speaker::Human, text: "bare first turn".into(), servers: vec![], at: None }],
+        access: None,
+        effort_override: None,
+        plan: false,
+        cwd: None,
+    };
+    let res_nodir = bot_nodir.respond(req_nodir, &|_| {}).await;
+    assert_eq!(res_nodir.unwrap().text, "ok");
+    let args_nodir = std::fs::read_to_string(log_dir.join("args_1.txt")).unwrap();
+    assert!(!args_nodir.contains("--resume"), "first-turn without folder must not use --resume, got: {args_nodir}");
+    let prompt_nodir = std::fs::read_to_string(log_dir.join("prompt_1.txt")).unwrap();
+    assert!(prompt_nodir.contains("bare first turn"), "must contain full transcript");
+
+    // Bot with context cwd = dir1
+    let bot = build(
+        config("claude", Backend::Agent { tool: apex_core::AgentTool::ClaudeCode, model: None }),
+        &BuildContext { cwd: Some(dir1.clone()), ..context_in(&dir) },
+    );
+
+    // Turn 1: first turn (no folder on turn request)
+    let mut req1 = request("first message");
+    req1.cwd = None;
+    let res1 = bot.respond(req1, &|_| {}).await;
+    assert_eq!(res1.unwrap().text, "ok");
+    let args1 = std::fs::read_to_string(log_dir.join("args_2.txt")).unwrap();
+    assert!(!args1.contains("--resume"), "turn 1 must not use --resume, got: {args1}");
+    let prompt1 = std::fs::read_to_string(log_dir.join("prompt_2.txt")).unwrap();
+    assert!(prompt1.contains("first message"), "turn 1 prompt must hold full transcript, got: {prompt1}");
+    let cwd1 = std::fs::read_to_string(log_dir.join("cwd_2.txt")).unwrap();
+    assert_eq!(cwd1.trim(), real_dir1.to_string_lossy());
+
+    // Turn 2: second turn in a different folder
+    let mut req2 = request("second message");
+    req2.cwd = Some(dir2.clone());
+    req2.turns = vec![
+        ViewTurn { role: Role::User, content: "[Human]: first message".into() },
+        ViewTurn { role: Role::Assistant, content: "ok".into() },
+        ViewTurn { role: Role::User, content: "[Human]: second message".into() },
+    ];
+    req2.unseen = vec![apex_core::Message { seq: 1, speaker: Speaker::Human, text: "second message".into(), servers: vec![], at: None }];
+    let res2 = bot.respond(req2, &|_| {}).await;
+    assert_eq!(res2.unwrap().text, "ok");
+    let args2 = std::fs::read_to_string(log_dir.join("args_3.txt")).unwrap();
+    assert!(!args2.contains("--resume"), "turn 2 must not use --resume, got: {args2}");
+    let prompt2 = std::fs::read_to_string(log_dir.join("prompt_3.txt")).unwrap();
+    assert!(prompt2.contains("first message") && prompt2.contains("second message"), "turn 2 prompt must hold full transcript, got: {prompt2}");
+    let cwd2 = std::fs::read_to_string(log_dir.join("cwd_3.txt")).unwrap();
+    assert_eq!(cwd2.trim(), real_dir2.to_string_lossy());
+
+    // Turn 3: third turn back in the first folder
+    let mut req3 = request("third message");
+    req3.cwd = Some(dir1.clone());
+    req3.turns = vec![
+        ViewTurn { role: Role::User, content: "[Human]: first message".into() },
+        ViewTurn { role: Role::Assistant, content: "ok".into() },
+        ViewTurn { role: Role::User, content: "[Human]: second message".into() },
+        ViewTurn { role: Role::Assistant, content: "ok".into() },
+        ViewTurn { role: Role::User, content: "[Human]: third message".into() },
+    ];
+    req3.unseen = vec![apex_core::Message { seq: 2, speaker: Speaker::Human, text: "third message".into(), servers: vec![], at: None }];
+    let res3 = bot.respond(req3, &|_| {}).await;
+    assert_eq!(res3.unwrap().text, "ok");
+    let args3 = std::fs::read_to_string(log_dir.join("args_4.txt")).unwrap();
+    assert!(!args3.contains("--resume"), "turn 3 must not use --resume, got: {args3}");
+    let prompt3 = std::fs::read_to_string(log_dir.join("prompt_4.txt")).unwrap();
+    assert!(prompt3.contains("first message") && prompt3.contains("second message") && prompt3.contains("third message"), "turn 3 prompt must hold full transcript, got: {prompt3}");
+    let cwd3 = std::fs::read_to_string(log_dir.join("cwd_4.txt")).unwrap();
+    assert_eq!(cwd3.trim(), real_dir1.to_string_lossy());
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir1);
+    let _ = std::fs::remove_dir_all(&dir2);
+    let _ = std::fs::remove_dir_all(&log_dir);
 }

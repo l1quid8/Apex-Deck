@@ -50,6 +50,8 @@ pub mod documents;
 pub mod folders;
 pub mod project_files;
 pub mod worktrees;
+pub mod bot_copies;
+pub mod project_check;
 pub mod phone;
 pub mod lock;
 
@@ -63,3 +65,5 @@ pub use apex_core::{ClientCapabilities, GeneratedUiCapability};
 
 mod next_steps;
 mod step_buffers;
+
+pub mod bot_copies_ui;

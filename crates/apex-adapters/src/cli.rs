@@ -676,6 +676,26 @@ impl Participant for CliParticipant {
         if self.tools_disabled && (request.access.is_some_and(|access| access != Access::Read) || request.plan) {
             return Err(ParticipantError::Failed("Text-only turns cannot request workspace access or planning tools.".into()));
         }
+        let effective_cwd = request.cwd.clone().or_else(|| self.cwd.clone());
+        if effective_cwd != self.cwd {
+            let scoped = Self {
+                config: self.config.clone(),
+                timeout: self.timeout,
+                cwd: effective_cwd,
+                path: self.path.clone(),
+                codex_hook: self.codex_hook.clone(),
+                temp: self.temp.clone(),
+                plan: self.plan,
+                tools_disabled: self.tools_disabled,
+                mcp_disabled: self.mcp_disabled,
+                isolation: self.isolation.clone(),
+                processes: self.processes.clone(),
+                cargo_target_dir: self.cargo_target_dir.clone(),
+                attachment_roots: self.attachment_roots.clone(),
+                phone: self.phone.clone(),
+            };
+            return scoped.respond_with_approvals(request, on_progress, approver).await;
+        }
         let effective = effective_turn_config(&self.config, request.effort_override.as_deref());
         if effective != self.config {
             let mut request = request;
@@ -837,7 +857,7 @@ mod tests {
         let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"}})).unwrap();
         let mut bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:folder.dir.to_str().map(str::to_owned),..Default::default()}).with_tools_disabled();
         bot.isolation=Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&apex_core::Backend::Scripted{lines:vec![]}).unwrap()));
-        let request=apex_core::TurnRequest{system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false};
+        let request=apex_core::TurnRequest{system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false,cwd:None};
         let call=bot.respond(request,&|_|{});tokio::pin!(call);
         let mut owned=false;
         for _ in 0..100 {
@@ -852,7 +872,7 @@ mod tests {
         use apex_core::Participant;
         let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"},"access":"full"})).unwrap();
         let bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:Some("/no-assistant-executables".into()),..Default::default()}).with_tools_disabled();
-        let request=apex_core::TurnRequest{system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false};
+        let request=apex_core::TurnRequest{system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None};
         let result=bot.respond(request,&|_|{}).await;
         assert!(matches!(result,Err(ref why) if why.to_string().contains("Text-only turns cannot")),"workspace escalation must refuse before launching any provider");
     }

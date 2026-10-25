@@ -70,6 +70,8 @@ pub enum RoomEvent {
     MessageAdded { message: Message },
     /// The participant holding the workspace edit reservation changed.
     EditorChanged { id: Option<ParticipantId> },
+    /// A participant's turn was made read-only because another participant is editing.
+    ReadOnlyTurn { id: ParticipantId, editor: ParticipantId, reason: String, line: String },
     /// A participant started writing.
     TurnStarted { id: ParticipantId },
     /// A piece of a reply that is still being written.
@@ -671,7 +673,7 @@ impl Room {
         let outsider = ParticipantId::new("");
         let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
-        let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false };
+        let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None };
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
@@ -816,6 +818,7 @@ impl Room {
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
             plan: false,
+            cwd: None,
         };
         if self.plan.load(Ordering::SeqCst) {
             request.plan = true;

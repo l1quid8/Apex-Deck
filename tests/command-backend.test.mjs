@@ -90,6 +90,8 @@ const COMMANDS = [
   ['fileDuplicate', ['/srv/app', '/srv/app/a.txt'], 'file_duplicate', { root: '/srv/app', path: '/srv/app/a.txt' }],
   ['fileTrash', ['/srv/app', '/srv/app/a.txt'], 'file_trash', { root: '/srv/app', path: '/srv/app/a.txt' }],
   ['fileWrite', ['/srv/app', '/srv/app/a.txt', 'hi', 'v1'], 'file_write', { root: '/srv/app', path: '/srv/app/a.txt', text: 'hi', expected: 'v1' }],
+  ['botCopiesSetCheck', ['/repo', 'cargo check'], 'bot_copies_set_check', { root: '/repo', cmd: 'cargo check' }],
+  ['botCopiesSetCheck', ['/repo', null], 'bot_copies_set_check', { root: '/repo', cmd: null }],
   ['worktreeList', ['/repo'], 'worktree_list', { path: '/repo' }],
   ['worktreeAdd', ['/repo', { branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }], 'worktree_add', { path: '/repo', branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }],
   ['worktreeRemove', ['/repo', '/repo-wt', true], 'worktree_remove', { path: '/repo', worktree: '/repo-wt', force: true }],

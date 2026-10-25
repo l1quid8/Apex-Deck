@@ -153,6 +153,7 @@ pub struct Host {
     steps: crate::step_buffers::StepBuffers,
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
+    pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -246,6 +247,7 @@ impl Host {
         apex_adapters::allow_reading(&paths.data.join("attachments"));
         apex_adapters::keys::use_folder(&paths.data);
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
+        let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
         let host = Arc::new(Host {
             paths,
             _ownership: ownership,
@@ -274,7 +276,65 @@ impl Host {
             personal_stops: Mutex::default(),
             steps: Default::default(),
             phone,
+            fold_queue,
         });
+
+        let host_for_reconcile = Arc::downgrade(&host);
+        host.fold_queue.set_reconcile(Arc::new(move |thread_id, bot_id, message_text| {
+            let host_weak = host_for_reconcile.clone();
+            Box::pin(async move {
+                let Some(host) = host_weak.upgrade() else { return Err("host shut down".into()); };
+                let handle = host.handle(&thread_id)?;
+                let error = Mutex::new(None);
+                let batch = handle.runtime.begin_post_with_speaker(
+                    apex_core::Speaker::Bot(apex_core::ParticipantId::new("deck")),
+                    &message_text,
+                    Some(vec![bot_id]),
+                    &host.turn_sink(&thread_id, &handle, &error),
+                ).await?;
+                if let Some(why) = error.into_inner().unwrap() { return Err(why); }
+                checkpoint_room(&handle, &host.store, &thread_id).await?;
+                host.run_batch_in_background(thread_id, handle, batch);
+                Ok(())
+            })
+        }));
+
+        for copy in crate::bot_copies::recover_unfolded_copies(&host.paths.data) {
+            let thread_id = copy.thread.clone();
+            let thread_exists = host.store.room(&thread_id).ok().flatten().is_some()
+                || host.handle(&thread_id).is_ok();
+            if !thread_exists {
+                let mut updated = copy.clone();
+                updated.state = crate::bot_copies::CopyState::NeedsYou {
+                    reason: "its chat was deleted".to_string(),
+                };
+                if let Err(e) = crate::bot_copies::save_state(&host.paths.data, &updated) {
+                    eprintln!("[apex-deck] could not save copy state during recovery for {thread_id}: {e}");
+                }
+                continue;
+            }
+            let host_weak = Arc::downgrade(&host);
+            let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
+                let thread_id = thread_id.clone();
+                move |event| {
+                    if let Some(host) = host_weak.upgrade() {
+                        host.room_event(&thread_id, event);
+                    }
+                }
+            });
+            let editor_handle = if let Ok(handle) = host.handle(&thread_id) {
+                handle.runtime.editor_handle()
+            } else {
+                Arc::new(Mutex::new(None))
+            };
+            host.fold_queue.enqueue(crate::bot_copies::FoldTask {
+                thread: thread_id,
+                copy,
+                editor_handle,
+                event_sink,
+                reconcile: None,
+            });
+        }
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
             if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
                 host.checkout_gate(std::path::Path::new(&task.owner.cwd)).restore_hold(task.id)
@@ -745,6 +805,30 @@ impl Host {
         let mut runtime = ConcurrentRoom::new(room);
         if let Some(cwd) = &context.cwd {
             runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
+            let this = Arc::downgrade(self);
+            let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
+                let id = id.clone();
+                move |event| {
+                    if let Some(this) = this.upgrade() {
+                        this.room_event(&id, event);
+                    }
+                }
+            });
+            let bot_copies = Arc::new(crate::bot_copies::BotCopies::new(
+                self.assistant_data_dir().to_path_buf(),
+                id.clone(),
+                cwd.clone(),
+                runtime.editor_handle(),
+                event_sink,
+                Arc::clone(&self.fold_queue),
+            ).with_names(Arc::new({
+                let (this, id) = (Arc::downgrade(self), id.clone());
+                move |bot| {
+                    let room = this.upgrade()?.store.room(&id).ok()??;
+                    room.snapshot.participants.into_iter().find(|p| &p.id == bot).map(|p| p.display_name)
+                }
+            })));
+            runtime = runtime.with_copies(bot_copies);
             // Only ApexAgent task threads share the checkout gate; ordinary chat
             // threads in the same folder run their turns concurrently.
             if let Some(owner) = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.map(|entry| entry.task_id) {
@@ -1354,19 +1438,27 @@ impl Host {
     }
 
     pub async fn worktree_list(&self, path: String) -> Result<worktrees::WorktreeList, String> {
-        let task_dir = self.paths.data.join("apex-agent").join("tasks");
-        tokio::task::spawn_blocking(move || worktrees::list(Path::new(&path), &task_dir)).await.map_err(|e| e.to_string())?
+        let data = self.paths.data.clone();
+        let store_dir = self.store.folder().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let mut listing = crate::bot_copies_ui::list(Path::new(&path), &data)?;
+            crate::bot_copies_ui::label_copies(&mut listing, &Store::new(store_dir));
+            Ok(listing)
+        }).await.map_err(|e| e.to_string())?
+    }
+    pub async fn bot_copies_set_check(&self, root: String, cmd: Option<String>) -> Result<(), String> {
+        let data = self.paths.data.clone();
+        tokio::task::spawn_blocking(move || crate::bot_copies_ui::set_check(Path::new(&root), &data, cmd)).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_add(&self, path: String, request: worktrees::AddRequest) -> Result<worktrees::Worktree, String> {
         tokio::task::spawn_blocking(move || worktrees::add(Path::new(&path), request)).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_remove(self: &Arc<Self>, path: String, target: String, force: bool) -> Result<(), String> {
-        let task_dir = self.paths.data.join("apex-agent").join("tasks");
         let host = Arc::clone(self);
         tokio::task::spawn_blocking(move || {
             let _lifecycle = host.room_lifecycle.lock().unwrap();
             if host.store.checkout_in_use(Path::new(&target))? { return Err("This worktree is mounted in a chat. Mount another worktree before removing this one.".into()); }
-            worktrees::remove(Path::new(&path), Path::new(&target), force, &task_dir)
+            crate::bot_copies_ui::remove(Path::new(&path), Path::new(&target), force, &host.paths.data)
         }).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_forget(self: &Arc<Self>, path: String, target: String, force: bool) -> Result<(), String> {
@@ -1523,6 +1615,17 @@ impl Host {
         self.rooms.lock().unwrap().remove(&id);
         if let Ok(name) = export::safe_file_name(&id) {
             let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
+        }
+        for copy in crate::bot_copies::load_copies(&self.paths.data) {
+            if copy.thread == id
+                && !matches!(
+                    copy.state,
+                    crate::bot_copies::CopyState::NeedsYou { .. }
+                        | crate::bot_copies::CopyState::Folding
+                )
+            {
+                let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
+            }
         }
         match handle {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),
@@ -1798,8 +1901,8 @@ impl Host {
             PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize().map_err(|e| e.to_string())
         };
         if common(from)? != common(&target)? { return Err("Choose a worktree of this chat's repository.".into()); }
-        let listing = worktrees::list(from, &self.paths.data.join("apex-agent").join("tasks"))?;
-        if !listing.items.iter().any(|item| !item.prunable && !item.task && Path::new(&item.path).canonicalize().ok().as_ref() == Some(&target)) {
+        let listing = crate::bot_copies_ui::list(from, &self.paths.data)?;
+        if !listing.items.iter().any(|item| !item.prunable && !item.task && item.copy.is_none() && Path::new(&item.path).canonicalize().ok().as_ref() == Some(&target)) {
             return Err("Choose a registered worktree, outside ApexAgent task folders.".into());
         }
         let canonical_from = from.canonicalize().map_err(|e| e.to_string())?;
@@ -2261,6 +2364,125 @@ mod tests {
         host.shutdown();
         drop(host);
         // The open-thread snapshot runs on its own thread and may still be writing.
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn host_is_freed_after_opening_room_with_folder() {
+        use apex_core::{Access, Backend, Participant, TurnPolicy};
+        let path = std::env::temp_dir().join(format!("apex-host-leak-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, runtime.handle().clone());
+        let weak_host = Arc::downgrade(&host);
+        let configs = vec![("writer", Access::Edits)]
+            .into_iter().map(|(id, access)| {
+                let mut config = apex_core::testing::ScriptedParticipant::new(id, &["finished"]).config().clone();
+                config.access = access;
+                config.backend = Backend::Scripted { lines: vec!["finished".into()] };
+                config
+            }).collect();
+        host.room_create("chat".into(), configs, RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: Some(0) }, Some(cwd.to_string_lossy().into_owned())).unwrap();
+        host.shutdown();
+        drop(host);
+        assert!(weak_host.upgrade().is_none(), "Host leaked after opening room with folder");
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn deleted_thread_copies_are_not_folded_on_restart() {
+        use std::process::Command;
+        let path = std::env::temp_dir().join(format!("apex-del-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+
+        let data = path.join("data");
+        // Create an unfolded copy for a thread that is NOT in store ("deleted-thread")
+        let copy = crate::bot_copies::create_copy(&cwd, &data, "deleted-thread", "bot1").unwrap();
+        assert!(matches!(copy.state, crate::bot_copies::CopyState::Working));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let _enter = runtime.enter();
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+
+        let copies = crate::bot_copies::load_copies(&data);
+        let ghost_copy = copies.iter().find(|c| c.thread == "deleted-thread" && c.bot == "bot1").unwrap();
+        assert_eq!(
+            ghost_copy.state,
+            crate::bot_copies::CopyState::NeedsYou {
+                reason: "its chat was deleted".to_string()
+            }
+        );
+        assert!(host.fold_queue.is_idle());
+
+        // Verify room_delete cleans up non-NeedsYou copies, but preserves NeedsYou copies
+        let _active_copy = crate::bot_copies::create_copy(&cwd, &data, "thread-del-test", "bot2").unwrap();
+        let needs_you_copy = crate::bot_copies::create_copy(&cwd, &data, "thread-del-test", "bot3").unwrap();
+        let mut ny = needs_you_copy;
+        ny.state = crate::bot_copies::CopyState::NeedsYou { reason: "test keep".into() };
+        crate::bot_copies::save_state(&data, &ny).unwrap();
+
+        host.room_delete("thread-del-test".into()).unwrap();
+
+        let remaining = crate::bot_copies::load_copies(&data);
+        assert!(!remaining.iter().any(|c| c.thread == "thread-del-test" && c.bot == "bot2"), "working copy should be removed on thread delete");
+        assert!(remaining.iter().any(|c| c.thread == "thread-del-test" && c.bot == "bot3"), "NeedsYou copy should be kept on thread delete");
+
+        host.shutdown();
+        drop(host);
+        drop(_enter);
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn delete_skips_copy_mid_fold() {
+        use std::process::Command;
+        let path = std::env::temp_dir().join(format!("apex-del-mid-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+
+        let data = path.join("data");
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let _enter = runtime.enter();
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+
+        // Create a copy and mark its state as Folding
+        let copy = crate::bot_copies::create_copy(&cwd, &data, "t-mid-fold", "bot1").unwrap();
+        let mut folding_copy = copy;
+        folding_copy.state = crate::bot_copies::CopyState::Folding;
+        crate::bot_copies::save_state(&data, &folding_copy).unwrap();
+
+        // Delete room
+        host.room_delete("t-mid-fold".into()).unwrap();
+
+        // The copy in Folding state must NOT have been deleted
+        let copies = crate::bot_copies::load_copies(&data);
+        assert!(
+            copies.iter().any(|c| c.thread == "t-mid-fold" && c.bot == "bot1" && matches!(c.state, crate::bot_copies::CopyState::Folding)),
+            "copy in Folding state should be skipped on room_delete"
+        );
+
+        host.shutdown();
+        drop(host);
+        drop(_enter);
+        drop(runtime);
         let _ = std::fs::remove_dir_all(&path);
     }
 

@@ -266,6 +266,7 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "turn_started"; id: string }
   | { type: "participant_idle"; id: string }
   | { type: "editor_changed"; id: string | null }
+  | { type: "read_only_turn"; id: string; editor: string; reason: string; line: string }
   | { type: "tool_servers"; id: string; servers: ToolServer[] }
   | { type: "delta"; id: string; text: string }
   /** What a participant is doing mid-turn, such as reading a file. */
@@ -366,8 +367,8 @@ export type FilePreview =
 export interface FileSearchHit { path: string; line: number; text: string }
 export interface FileSearchResult { hits: FileSearchHit[]; truncated: boolean }
 
-export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean }
-export interface WorktreeList { root: string; items: Worktree[] }
+export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean; copy?: { bot: string; thread: string; threadTitle: string; state: "working" | "folding" | "reconciling" | "needs_you" | "folded"; reason?: string | null } | null }
+export interface WorktreeList { root: string; items: Worktree[]; checkCommand?: string | null }
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 
 export interface Pane {

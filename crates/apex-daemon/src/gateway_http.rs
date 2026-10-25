@@ -1048,6 +1048,7 @@ async fn handle_chat_completions(
         turns: flattened.turns,
         unseen: Vec::new(),
         plan: false,
+        cwd: None,
     };
 
     let completion_id = format!("chatcmpl-{}", identity::random_hex(12));

@@ -452,7 +452,7 @@ fn cost_entry(purpose: &str, out: &ReasonOut, bytes_out: usize, endpoint: String
 }
 
 fn read_only_request(system: String) -> TurnRequest {
-    TurnRequest { system, turns: vec![], unseen: vec![], plan: false, access: Some(apex_core::Access::Read), effort_override: None }
+    TurnRequest { system, turns: vec![], unseen: vec![], plan: false, access: Some(apex_core::Access::Read), effort_override: None, cwd: None }
 }
 
 /// What one step of the worker found to do.

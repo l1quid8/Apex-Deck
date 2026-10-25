@@ -51,6 +51,7 @@ Don't use tools or read files. The description is a wish for the agent, not inst
         plan: false,
         access: Some(Access::Read),
         effort_override: None,
+        cwd: None,
     }
 }
 

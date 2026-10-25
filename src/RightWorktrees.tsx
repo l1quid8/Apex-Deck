@@ -21,6 +21,10 @@ interface MountProps {
   onMount?: (path: string) => void; onCancelMount?: () => void;
 }
 export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pendingMount, busyTurn, onMount, onCancelMount }: { root: string | null; backend: Backend | null; visible: boolean; onOpen: (path: string) => void } & MountProps) {
+  const [checkCommand, setCheckCommand] = useState("");
+  const [checkSaved, setCheckSaved] = useState("");
+  const checkDirty = useRef(false);
+  const checkContext = useRef(0);
   const [listing, setListing] = useState<WorktreeList | null>(null);
   const [error, setError] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
@@ -33,14 +37,30 @@ export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pen
   const load = async () => {
     if (!root || !backend) return;
     const id = ++loadId.current; setError("");
-    try { const result = await backend.worktreeList(root); if (id === loadId.current) setListing(result); }
+    try { const result = await backend.worktreeList(root); if (id === loadId.current) { setListing(result); if (!checkDirty.current) setCheckCommand(result.checkCommand ?? ""); } }
     catch (reason) { if (id === loadId.current) { setError(worktreeErrorMessage(reason)); setListing(null); } }
   };
   useEffect(() => { if (visible) void load(); return () => { loadId.current++; }; }, [visible, root, backend]);
   useEffect(() => {
-    setListing(null); setRequest(initialRequest()); setAdding(false); setConfirm(null); setError(""); setCopyStatus("");
+    checkContext.current++; checkDirty.current = false; setCheckCommand(""); setCheckSaved(""); setListing(null); setRequest(initialRequest()); setAdding(false); setConfirm(null); setError(""); setCopyStatus("");
     return () => window.clearTimeout(copyTimer.current);
-  }, [root]);
+  }, [root, backend]);
+  useEffect(() => {
+    if (!visible || !listing?.items.some(item => item.copy && item.copy.state !== "needs_you")) return;
+    const timer = window.setInterval(() => void load(), 10000);
+    return () => window.clearInterval(timer);
+  }, [visible, listing, root, backend]);
+  const saveCheck = async () => {
+    if (!root || !backend || !listing) return;
+    const context = checkContext.current;
+    const command = checkCommand.trim() || null;
+    setBusy("check"); setCheckSaved("");
+    try {
+      await backend.botCopiesSetCheck(listing.root, command);
+      if (context === checkContext.current) { loadId.current++; checkDirty.current = false; setCheckCommand(command ?? ""); setCheckSaved(command ? "Check saved" : "Check turned off"); }
+    } catch { if (context === checkContext.current) setCheckSaved("Couldn't save the check. Try again."); }
+    finally { if (context === checkContext.current) setBusy(""); }
+  };
   const copyPathname = async (path: string) => {
     window.clearTimeout(copyTimer.current);
     setCopyStatus("");
@@ -105,24 +125,33 @@ export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pen
     {error && !adding && <p className="right-worktrees-error" role="alert">{error}</p>}
     {listing && listing.items.length === 0 && <p className="muted right-worktrees-empty">No worktrees found.</p>}
     {listing && <ul className="right-worktrees-list">{listing.items.map((item) => <WorktreeRow key={item.path} item={item} mounted={item.path === mounted} pending={item.path === pendingMount} busyTurn={busyTurn} onMount={onMount} onCancelMount={onCancelMount} busy={busy === item.path} confirm={confirm?.path === item.path && confirm.action === "remove"} pruneConfirm={confirm?.path === item.path && confirm.action === "prune"} onOpen={onOpen} onCopy={(path) => void copyPathname(path)} onRemove={(force) => void doRemove(item.path, force)} onPrune={(force) => { void doPruneOne(item.path, force); }} onCancel={() => setConfirm(null)} />)}</ul>}
+    {listing && <form className="right-worktrees-check" onSubmit={event => { event.preventDefault(); void saveCheck(); }}>
+      <div className="right-worktrees-check-controls"><label>Check after each fold-back<input value={checkCommand} disabled={busy === "check"} onChange={event => { checkDirty.current = true; setCheckCommand(event.target.value); setCheckSaved(""); }} placeholder="Off" /></label><button type="submit" disabled={!!busy}>{busy === "check" ? "Saving…" : "Save"}</button></div>
+      <p className="muted">Runs in the project folder. Leave empty to turn off.</p>
+      <p role="status">{checkSaved}</p>
+    </form>}
     {listing?.items.some((item) => item.prunable) && <button type="button" className="right-worktrees-prune" onClick={() => void doPrune()} disabled={!!busy}>{busy === "prune" ? "Cleaning…" : "Clean up missing"}</button>}
   </section>;
 }
 export function WorktreeRow({ item, busy, confirm, pruneConfirm, mounted = false, pending = false, busyTurn = false, onMount, onCancelMount, onOpen, onCopy, onRemove, onPrune, onCancel }: { item: Worktree; busy: boolean; confirm: boolean; pruneConfirm?: boolean; mounted?: boolean; pending?: boolean; onOpen: (path: string) => void; onCopy: (path: string) => void; onRemove: (force: boolean) => void; onPrune?: (force: boolean) => void; onCancel: () => void } & Omit<MountProps, "mounted">) {
+  const copy = item.copy;
+  const needsYou = copy?.state === "needs_you";
+  const copyLabel = copy ? `${copy.bot}'s copy · ${copy.threadTitle || copy.thread} · ${item.changes ?? "…"} changed ${item.changes === 1 ? "file" : "files"}` : null;
   const branch = item.branch ?? (item.head ? `detached · ${item.head.slice(0, 8)}` : "detached");
-  const labels = [mounted && "Mounted", item.main && "Main", item.changes != null && item.changes > 0 && `Changes · ${item.changes}`, item.locked && "Locked", item.prunable && "Missing", item.task && "ApexAgent task"].filter(Boolean) as string[];
-  const actionable = !item.main && !item.task;
-  return <li className={`right-worktrees-row${mounted ? " is-mounted" : ""}`}>
-    <div className="right-worktrees-heading"><strong>{branch}</strong><div className="right-worktrees-actions">
+  const labels = [mounted && "Mounted", item.main && "Main", !copy && item.changes != null && item.changes > 0 && `Changes · ${item.changes}`, item.locked && "Locked", item.prunable && "Missing", item.task && "ApexAgent task"].filter(Boolean) as string[];
+  const actionable = !item.main && !item.task && !copy;
+  return <li className={`right-worktrees-row${copy ? " is-bot-copy" : ""}${mounted ? " is-mounted" : ""}`}>
+    <div className="right-worktrees-heading"><strong>{copyLabel ?? branch}</strong><div className="right-worktrees-actions">
       {pending && <><span className="muted">After this turn</span><button type="button" onClick={onCancelMount}>Cancel</button></>}
-      {confirm && !mounted ? <><span className="right-worktrees-confirm">Delete folder and uncommitted changes?</span><button type="button" onClick={() => onRemove(true)} disabled={busy}>Remove anyway</button><button type="button" onClick={onCancel}>Cancel</button></>
+      {confirm && !mounted ? <><span className="right-worktrees-confirm">{copy ? "Discard this copy and all its changes?" : "Delete folder and uncommitted changes?"}</span><button type="button" onClick={() => onRemove(true)} disabled={busy}>{copy ? "Discard copy" : "Remove anyway"}</button><button type="button" onClick={onCancel}>Cancel</button></>
       : pruneConfirm && !mounted && onPrune ? <><span className="right-worktrees-confirm">Unregister worktree; keep files and changes?</span><button type="button" onClick={() => onPrune(true)} disabled={busy}>Prune anyway</button><button type="button" onClick={onCancel}>Cancel</button></> : <>
         <details className="right-worktrees-menu" onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.open = false; }}>
           <summary aria-label="Worktree actions" title="Worktree actions">⋯</summary>
           <div className="right-worktrees-menu-items">
-            {onMount && !item.prunable && !item.task && <button type="button" disabled={busy || mounted || pending} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onMount(item.path); }}>{mounted ? "✓ Mounted" : busyTurn ? "Mount after this turn" : "Mount"}</button>}
+            {onMount && !item.prunable && !item.task && !copy && <button type="button" disabled={busy || mounted || pending} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onMount(item.path); }}>{mounted ? "✓ Mounted" : busyTurn ? "Mount after this turn" : "Mount"}</button>}
             <button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onOpen(item.path); }}>Open folder</button>
             <button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onCopy(item.path); }}>Copy pathname</button>
+            {needsYou && <><hr /><button type="button" disabled={busy || mounted} onClick={event => { event.currentTarget.closest("details")?.removeAttribute("open"); onRemove(false); }}>Discard copy</button></>}
             {actionable && <>
               <hr />
             {!item.prunable && <button type="button" title={mounted ? "Mount another worktree before removing this one." : "Delete folder and unregister worktree"} disabled={busy || item.locked || mounted} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onRemove(false); }}>Remove</button>}
@@ -132,6 +161,7 @@ export function WorktreeRow({ item, busy, confirm, pruneConfirm, mounted = false
         </details>
       </>}
     </div></div>
+    {copy && <div className="right-worktrees-copy-state"><span className={`right-worktrees-label${needsYou ? " needs-you" : ""}`}>{needsYou ? "Needs you" : copy.state === "reconciling" ? "Fixing a clash" : copy.state === "folding" ? "Folding back" : copy.state === "folded" ? "Folded" : "Working"}</span>{needsYou && copy.reason && <p>{copy.reason}</p>}</div>}
     <div className="right-worktrees-meta"><span title={item.path}>{shorten(item.path)}</span>{labels.map((label) => <span key={label} className="right-worktrees-label">{label}</span>)}</div>
   </li>;
 }

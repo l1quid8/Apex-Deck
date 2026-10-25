@@ -1041,6 +1041,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         case "editor_changed":
           setEditor(event.id);
           break;
+        case "read_only_turn":
+          notify(event.line, "info");
+          break;
         case "participant_idle":
           setAnswered(({ [event.id]: _said, ...rest }) => rest);
           setPendingSettings(({ [event.id]: _applied, ...rest }) => rest);

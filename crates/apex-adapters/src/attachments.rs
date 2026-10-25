@@ -154,7 +154,7 @@ mod tests {
         let path = fixture("outside.png", PNG);
         let request = TurnRequest { system: String::new(), turns: vec![apex_core::ViewTurn {
             role: Role::User, content: format!("Attached image: {}", path.display())
-        }], unseen: vec![], effort_override: None, access: None, plan: false };
+        }], unseen: vec![], effort_override: None, access: None, plan: false, cwd: None };
         let result = for_request(&request, &[]);
         std::fs::remove_file(path).unwrap();
         assert!(result.is_err(), "transcript text alone must not authorize reading a file");
@@ -195,7 +195,7 @@ mod tests {
                 let request = TurnRequest { system: String::new(), turns: vec![], unseen: vec![apex_core::Message {
                     seq: 1, speaker: speaker.clone(), text: format!("Attached image: {}", folder.join("picture.png").display()),
                     servers: vec![], at: None,
-                }], effort_override: None, access: None, plan: false };
+                }], effort_override: None, access: None, plan: false, cwd: None };
                 assert_eq!(for_request(&request, &roots).is_ok(), folder == &own, "{speaker:?}: {}", folder.display());
             }
         }
@@ -263,6 +263,7 @@ mod tests {
             effort_override: None,
             access: None,
             plan: false,
+            cwd: None,
         };
         assert_eq!(for_request(&request, &[path.parent().unwrap().to_owned()]).unwrap().len(), 1);
         std::fs::remove_file(path).unwrap();

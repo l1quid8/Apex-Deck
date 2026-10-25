@@ -12,6 +12,7 @@ use futures::{
     FutureExt,
 };
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -85,6 +86,13 @@ impl Drop for TurnBatch {
 pub trait TurnStartHook: Send + Sync {
     fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, ()>;
 }
+pub trait CopyProvider: Send + Sync {
+    fn copy_for<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Result<PathBuf, String>>;
+    fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> BoxFuture<'a, ()>;
+    fn active_copy<'a>(&'a self, _id: &'a ParticipantId) -> BoxFuture<'a, Option<PathBuf>> {
+        Box::pin(async move { None })
+    }
+}
 #[derive(Clone)]
 pub struct ConcurrentRoom {
     retired: Arc<AtomicBool>,
@@ -96,6 +104,7 @@ pub struct ConcurrentRoom {
     write_owner: Option<String>,
     cleanup_holds: Arc<Mutex<HashMap<ParticipantId, (String, bool)>>>,
     turn_start: Option<Arc<dyn TurnStartHook>>,
+    copies: Option<Arc<dyn CopyProvider>>,
     voice_requests: VoiceRequests,
 }
 /// Voice turns waiting to start: who asked, the words, and their stop and
@@ -114,8 +123,18 @@ impl ConcurrentRoom {
             write_owner: None,
             cleanup_holds: Arc::default(),
             turn_start: None,
+            copies: None,
             voice_requests: Arc::default(),
         }
+    }
+    /// Attach a provider for per-bot workspace copies.
+    pub fn with_copies(mut self, copies: Arc<dyn CopyProvider>) -> Self {
+        self.copies = Some(copies);
+        self
+    }
+    /// Access the editor slot reservation.
+    pub fn editor_handle(&self) -> Arc<Mutex<Option<ParticipantId>>> {
+        Arc::clone(&self.editor)
     }
     /// Await `hook` before each participant starts a turn.
     pub fn with_turn_start(mut self, hook: Arc<dyn TurnStartHook>) -> Self {
@@ -210,6 +229,15 @@ impl ConcurrentRoom {
         targets: Option<Vec<ParticipantId>>,
         sink: Sink<'_>,
     ) -> Result<TurnBatch, String> {
+        self.begin_post_with_speaker(Speaker::Human, text, targets, sink).await
+    }
+    pub async fn begin_post_with_speaker(
+        &self,
+        speaker: Speaker,
+        text: &str,
+        targets: Option<Vec<ParticipantId>>,
+        sink: Sink<'_>,
+    ) -> Result<TurnBatch, String> {
         let mut room = self.room.lock().await;
         self.check_open()?;
         let resolved = room.resolve_targets(text);
@@ -221,7 +249,7 @@ impl ConcurrentRoom {
         for id in targets { if !unique.contains(&id) { unique.push(id); } }
         let targets = unique;
         room.remember_targets(targets.clone());
-        room.push(Speaker::Human, text.to_string(), sink);
+        room.push(speaker, text.to_string(), sink);
         Ok(self.batch(
             targets,
             room.options().policy == TurnPolicy::RoundRobin,
@@ -552,26 +580,88 @@ impl ConcurrentRoom {
                 room.approvals_handle(),
             )
         };
-        let mut editor = {
-            let mut held = self.editor.lock().unwrap();
-            if request.access != Some(Access::Read) && held.is_none() {
-                *held = Some(ticket.id.clone());
-                sink(RoomEvent::EditorChanged { id: held.clone() });
-                Some(EditorGuard { editor: self.editor.clone(), sink, retained: false })
-            } else { None }
+        let existing_active_copy = if !request.plan && request.access != Some(Access::Read) {
+            if let Some(provider) = &self.copies {
+                provider.active_copy(&ticket.id).await
+            } else {
+                None
+            }
+        } else {
+            None
         };
-        if request.access != Some(Access::Read) && editor.is_none() {
-            request.access = Some(Access::Read);
-            let mut config = participant.config().clone();
-            config.access = Access::Read;
-            let room = self.room.lock().await;
-            let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
-            request.system = crate::view::system_prompt(&config, &room.configs())
-                + &crate::view::pinned_section(room.pins())
-                + &room.checklist_section(&ticket.id)
-                + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
-                + answer_guidance;
-            if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+
+        let (mut editor, held_by, mut is_copy_turn) = if let Some(copy_path) = existing_active_copy {
+            request.cwd = Some(copy_path.clone());
+            let copy_line = copy_turn_line(&copy_path);
+            request.system.push_str("\n\n");
+            request.system.push_str(&copy_line);
+            (None, None, true)
+        } else {
+            let (editor, held_by) = {
+                let mut held = self.editor.lock().unwrap();
+                if request.access != Some(Access::Read) {
+                    if held.is_none() {
+                        *held = Some(ticket.id.clone());
+                        sink(RoomEvent::EditorChanged { id: held.clone() });
+                        (Some(EditorGuard { editor: self.editor.clone(), sink, retained: false }), None)
+                    } else {
+                        (None, held.clone())
+                    }
+                } else {
+                    (None, None)
+                }
+            };
+            (editor, held_by, false)
+        };
+        if let Some(held_by) = held_by {
+            let mut copy_granted = false;
+            let mut read_only_reason = None;
+            if !request.plan {
+                if let Some(provider) = &self.copies {
+                    match provider.copy_for(&ticket.id).await {
+                        Ok(copy_path) => {
+                            request.cwd = Some(copy_path.clone());
+                            let copy_line = copy_turn_line(&copy_path);
+                            request.system.push_str("\n\n");
+                            request.system.push_str(&copy_line);
+                            copy_granted = true;
+                            is_copy_turn = true;
+                        }
+                        Err(reason) => {
+                            read_only_reason = Some(reason);
+                        }
+                    }
+                }
+            }
+            if !copy_granted {
+                let reason = read_only_reason.unwrap_or_else(|| "no copy available".to_string());
+                request.access = Some(Access::Read);
+                let mut config = participant.config().clone();
+                config.access = Access::Read;
+                let room = self.room.lock().await;
+                let (bot_name, editor_name) = {
+                    let configs = room.configs();
+                    let b = configs.iter().find(|c| c.id == ticket.id).map(|c| c.display_name.clone()).unwrap_or_else(|| ticket.id.to_string());
+                    let e = configs.iter().find(|c| c.id == held_by).map(|c| c.display_name.clone()).unwrap_or_else(|| held_by.to_string());
+                    (b, e)
+                };
+                let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
+                request.system = crate::view::system_prompt(&config, &room.configs())
+                    + &crate::view::pinned_section(room.pins())
+                    + &room.checklist_section(&ticket.id)
+                    + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
+                    + answer_guidance;
+                if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+                let line = read_only_line(&bot_name, &editor_name, &reason);
+                request.system.push_str("\n\n");
+                request.system.push_str(&line);
+                sink(RoomEvent::ReadOnlyTurn {
+                    id: ticket.id.clone(),
+                    editor: held_by,
+                    reason,
+                    line,
+                });
+            }
         }
         if let Some(hook) = &self.turn_start {
             hook.before_turn(&ticket.id).await;
@@ -626,6 +716,11 @@ impl ConcurrentRoom {
         }
         let mut room = self.room.lock().await;
         let cancelled = request_stop.load(Ordering::SeqCst);
+        if is_copy_turn {
+            if let Some(copies) = &self.copies {
+                copies.turn_finished(&ticket.id, cancelled).await;
+            }
+        }
         desk.reject_for(&ticket.id);
         room.record_changes(changes.into_inner().unwrap());
         let next = if cancelled {
@@ -645,6 +740,18 @@ impl ConcurrentRoom {
         });
         next
     }
+}
+
+pub fn read_only_line(bot: &str, editor: &str, reason: &str) -> String {
+    let reason = reason.trim_end().trim_end_matches('.');
+    format!("{bot} is read-only this turn: {editor} is editing and Deck couldn't make a separate copy ({reason}).")
+}
+
+pub fn copy_turn_line(path: &Path) -> String {
+    format!(
+        "You are working in your own copy of the project at {}. Deck folds your file changes back into the main folder when your turn ends. Don't commit, push, switch branches, or build installers here.",
+        path.display()
+    )
 }
 
 // Cancellation or a dropped task releases the reservation as well.
