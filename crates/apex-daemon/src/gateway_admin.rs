@@ -262,17 +262,30 @@ mod tests {
         )
         .await
         .unwrap();
-        // As with rebind above, a concurrent fork can briefly retain the listener.
-        tokio::time::timeout(std::time::Duration::from_millis(500), async {
-            while tokio::net::TcpStream::connect((config.bind, port))
-                .await
-                .is_ok()
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        // A concurrent fork can briefly retain the listener. Windows can also
+        // delay reporting refusal after the listener has already closed.
+        let refusal_deadline = if cfg!(windows) {
+            std::time::Duration::from_secs(5)
+        } else {
+            std::time::Duration::from_millis(500)
+        };
+        let mut accepted = 0;
+        let refusal = tokio::time::timeout(refusal_deadline, async {
+            loop {
+                match tokio::net::TcpStream::connect((config.bind, port)).await {
+                    Ok(_) => {
+                        accepted += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    }
+                    Err(error) => break error,
+                }
             }
         })
         .await
-        .expect("disabled gateway still accepts connections after inherited listeners settle");
+        .unwrap_or_else(|_| panic!(
+            "TCP connection did not report refusal after gateway disable within {refusal_deadline:?}; {accepted} successful connections completed"
+        ));
+        assert_eq!(refusal.kind(), std::io::ErrorKind::ConnectionRefused);
         assert_eq!(
             start(&daemon, None, config.bind).await.unwrap()["enabled"],
             false

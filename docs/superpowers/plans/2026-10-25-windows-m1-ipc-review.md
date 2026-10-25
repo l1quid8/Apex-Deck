@@ -263,3 +263,21 @@ Focused local host integration tests passed 20/20; the quoted-command and
 failed-verification tests each passed, and Windows command construction compiled.
 The follow-up native Windows run remains required before removing
 `continue-on-error` or declaring M1 complete.
+
+## Final Windows test correction
+
+Run `40194548255` at `85d6c04` passed the complete Windows core/adapters/host
+step (including 633 host unit tests and both host integration targets), all
+daemon integration targets, and the 35-test provenance target. Daemon tests
+verified private-pipe attachment, CLI device management, chat/terminal/restart
+over stdio and WebSocket, token handling, stdin-close shutdown, and broken-stderr
+shutdown. macOS and both Linux jobs also passed.
+
+Only `gateway_admin::tests::listener_controls_persist_and_failed_rebind_keeps_the_old_listener`
+failed: its 500 ms timeout elapsed while awaiting a post-disable TCP connection
+result. The log did not establish that a connection succeeded after disable.
+The test retains the actual negative connection check, gives Windows five seconds
+to report refusal (Unix stays at 500 ms), now requires `ConnectionRefused`, and
+reports completed successful connections if the timeout expires. Timeout remains
+a failure. Production listener behavior is unchanged. Native verification of
+this last test correction remains pending.
