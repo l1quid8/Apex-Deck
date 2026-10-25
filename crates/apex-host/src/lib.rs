@@ -68,3 +68,13 @@ mod next_steps;
 mod step_buffers;
 
 pub mod bot_copies_ui;
+
+/// Mac device grants share the protected ledger boundary with assistant authority.
+/// Legacy devices.json is never imported here. Linux daemon storage uses its
+/// existing local registry directly instead of these protected helpers.
+pub fn read_device_registry(data: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    authority_file::read(&data.join("devices.json"))
+}
+pub fn write_device_registry(data: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    authority_file::write(&data.join("devices.json"), bytes)
+}

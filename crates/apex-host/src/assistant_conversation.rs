@@ -1010,6 +1010,7 @@ impl ConversationStore {
     /// installed build is not the one the broker pinned. See
     /// `ProjectMemory::unavailable` for why startup degrades instead of failing.
     pub fn unavailable(path: impl AsRef<Path>) -> Self {
+        crate::authority_file::close(path.as_ref());
         Self {
             inner: Arc::new(StoreInner {
                 path: path.as_ref().to_path_buf(),

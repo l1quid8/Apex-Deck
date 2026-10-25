@@ -208,7 +208,9 @@ impl Host {
     pub fn try_new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Result<Arc<Host>, String> {
         crate::storage::prepare_private_root(&paths.data)?;
         // Fixture construction is already explicit and isolated. Production,
-        // even with test-support compiled, always uses the protected broker.
+        // even with test-support compiled, always uses the protected broker,
+        // except Linux, whose ledgers are plain files and has no broker to own.
+        let plain = crate::authority_file::plain(&paths.data);
         #[cfg(test)]
         let ownership = None;
         #[cfg(not(test))]
@@ -217,21 +219,23 @@ impl Host {
             let fixture = crate::test_support::isolated(&paths.data);
             #[cfg(not(feature = "test-support"))]
             let fixture = false;
-            if fixture { None } else { Some(apex_provenance::HostOwnership::acquire(&paths.data)) }
+            if fixture || plain { None } else { Some(apex_provenance::HostOwnership::acquire(&paths.data)) }
         };
         let (ownership, mut unavailable) = admit_host_ownership(ownership)?;
-        // Without ownership startup may degrade. Once ownership succeeds,
-        // partial authority must never coexist with empty fallback stores.
+        // Without ownership startup may degrade. Once ownership succeeds, or
+        // on Linux plain files, partial authority must never coexist with
+        // empty fallback stores: a ledger that can't be read stops startup.
+        let strict = ownership.is_some() || plain;
         let tasks_path = paths.data.join("assistant-tasks-v1.json");
-        let assistant_tasks = open_initial_ledger(ownership.is_some(), &mut unavailable,
+        let assistant_tasks = open_initial_ledger(strict, &mut unavailable,
             || crate::assistant_tasks::AssistantTasks::open(&tasks_path),
             || crate::assistant_tasks::AssistantTasks::unavailable(&tasks_path))?;
         let memory_path = paths.data.join("project-memory-v1.json");
-        let project_memory = open_initial_ledger(ownership.is_some(), &mut unavailable,
+        let project_memory = open_initial_ledger(strict, &mut unavailable,
             || crate::project_memory::ProjectMemory::open(&memory_path),
             || crate::project_memory::ProjectMemory::unavailable(&memory_path))?;
         let conversations_path = paths.data.join("assistant-conversations-v1.json");
-        let assistant_conversations = open_initial_ledger(ownership.is_some(), &mut unavailable,
+        let assistant_conversations = open_initial_ledger(strict, &mut unavailable,
             || crate::assistant_conversation::ConversationStore::open(&conversations_path),
             || crate::assistant_conversation::ConversationStore::unavailable(&conversations_path))?;
         let protected_ledgers_available = unavailable.is_none();
@@ -737,6 +741,11 @@ impl Host {
     /// Open group chat `id`, restoring saved data before creating a new room.
     /// `cwd` is the workspace folder; command-line participants run there.
     pub fn room_create(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>) -> Result<RoomSnapshot, String> {
+        self.room_open(id, participants, options, cwd, false)
+    }
+
+    /// A read may attach to saved authority, but cannot create a new manifest.
+    fn room_open(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>, saved_only: bool) -> Result<RoomSnapshot, String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some_and(|entry| entry.is_tombstoned()) { return Err("This execution thread was deleted.".into()); }
         if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
@@ -745,6 +754,7 @@ impl Host {
             return Ok(handle.checkpoint.lock().unwrap().snapshot.clone());
         }
         let mut saved = self.store.room(&id)?;
+        if saved_only && saved.is_none() { return Err(format!("no group chat with id {id}")); }
         let legacy = self.store.room_legacy(&id)?;
         if let Some(saved) = saved.as_mut() {
             if !saved.mounts.is_empty() && saved.cwd.as_ref().is_some_and(|cwd| !Path::new(cwd).is_dir()) {
@@ -843,7 +853,10 @@ impl Host {
     }
 
     /// Read checkpoint and live requests without the mutex held by a running model.
-    pub fn room_state(&self, id: String) -> Result<serde_json::Value, String> {
+    pub fn room_state(self: &Arc<Self>, id: String) -> Result<serde_json::Value, String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) {
+            self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
+        }
         let handle = self.handle(&id)?;
         let seq = handle.recovery.lock().unwrap();
         let saved = handle.checkpoint.lock().unwrap().clone();
@@ -2680,6 +2693,18 @@ mod host_tests {
         let _ = std::fs::remove_dir_all(&data);
         let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         (host, runtime, data)
+    }
+
+    #[test]
+    fn reading_unopened_saved_room_restores_only_saved_authority() {
+        let (first, runtime, data) = host("phone-read-saved");
+        first.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        first.shutdown(); drop(first);
+        let second=Host::new(HostPaths{data:data.clone(),downloads:None},runtime.handle().clone());
+        assert!(second.room_state("r".into()).is_ok());
+        assert!(second.room_state("missing".into()).is_err());
+        assert!(second.store.room("missing").unwrap().is_none());
+        second.shutdown(); drop(second); std::fs::remove_dir_all(data).unwrap();
     }
 
     #[test]

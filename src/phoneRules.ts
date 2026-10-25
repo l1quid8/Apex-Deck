@@ -139,16 +139,10 @@ export function removeMachine(list: Machine[], id: string): Machine[] {
   return list.filter((machine) => machine.id !== id);
 }
 
-/**
- * Words while a machine can't be reached. A Mac that drops is treated as
- * asleep (the lid is the usual reason). A server is reconnecting. Neither
- * sentence is about any other machine.
- */
+/** Disconnection alone does not establish the machine's power state. */
 export function pauseLine(machine: { name: string; kind: MachineKind }, status: LinkStatus): string | null {
   if (status !== "offline") return null;
-  return machine.kind === "mac"
-    ? `Paused until ${machine.name} wakes`
-    : `Paused while ${machine.name} reconnects`;
+  return `Paused while ${machine.name} reconnects`;
 }
 
 /**

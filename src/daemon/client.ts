@@ -8,6 +8,8 @@ import type { ClientCapabilities } from '../../shared/generatedUiCapability.mjs'
 
 /** One connection to the daemon, carrying whole lines. */
 export interface Link {
+  /** Maximum UTF-8 bytes per line, excluding the newline. */
+  maxFrameBytes?: number;
   send(line: string): void;
   close(): void;
   onLine(cb: (line: string) => void): void;
@@ -38,6 +40,7 @@ export interface Welcome {
   build_dirty?: boolean;
   /** Features implemented by this helper; absent on older protocol-v1 helpers. */
   capabilities?: string[];
+  max_frame_bytes?: number;
   /** Over iroh only: what this phone may do there. */
   access?: { tier: "read_only" | "chat" | "full"; threads: "all" | string[] };
   /** Over iroh only: the addresses the machine says it can be dialed on now. */
@@ -163,8 +166,19 @@ export class DaemonClient {
     if (!link || !this.ready) return Promise.reject(new Error(NOT_CONNECTED));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
+      const line = JSON.stringify({ id, cmd, args });
+      const advertised = this.latest?.max_frame_bytes;
+      const hostLimit = Number.isSafeInteger(advertised) && advertised! > 0 ? advertised! : Infinity;
+      const limit = Math.min(link.maxFrameBytes ?? Infinity, hostLimit);
+      if (new TextEncoder().encode(line).byteLength > limit) {
+        reject(new Error(cmd === "save_attachment"
+          ? "This attachment is too large for this connection. Choose a smaller file; your draft is unchanged."
+          : "This request exceeds the connection's frame limit."));
+        return;
+      }
       this.pending.set(id, { command: cmd, resolve: resolve as (value: unknown) => void, reject });
-      link.send(JSON.stringify({ id, cmd, args }));
+      try { link.send(line); }
+      catch (error) { this.pending.delete(id); reject(error instanceof Error ? error : new Error(String(error))); }
     });
   }
 

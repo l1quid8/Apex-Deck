@@ -1,7 +1,9 @@
 //! The phones this daemon lets in from outside, what each may do, and the
 //! ones revoked for good. A phone is known only by its iroh endpoint ID.
 //!
-//! Kept in `<data>/devices.json`, owner-only. Every change is written to disk
+//! Mac production grants live in the root broker. Its legacy `devices.json`
+//! cannot establish authority. Linux retains its owner-only local registry,
+//! since the signed Mac broker is unavailable there. Every change is durable
 //! before it takes effect, so a revoke survives a crash or restart. A revoked
 //! ID stays as a tombstone: adding it again needs `restore`, a local action.
 
@@ -173,11 +175,21 @@ pub fn check_id(id: &str) -> Result<(), String> {
     }
 }
 
-/// The registry in `path`; a missing file is an empty one, and one that
-/// can't be read refuses every device.
+/// Linux retains its local registry. Mac never selects local authority based
+/// on broker availability: only unit tests and registered fixtures may do so.
+fn local_registry(path: &Path) -> bool {
+    if cfg!(target_os = "linux") { return true; }
+    #[cfg(test)] { let _ = path; return true; }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if apex_host::test_support::isolated(path) { return true; }
+    #[cfg(not(test))] { let _ = path; false }
+}
+
 fn read(path: &Path) -> Result<Registry, String> {
-    let state = match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str::<Registry>(&text).map_err(|e| format!("{} could not be read ({e}); remote devices are refused until it's fixed", path.display())),
+    let bytes = if local_registry(path) { std::fs::read(path) }
+        else { apex_host::read_device_registry(path.parent().unwrap()) };
+    let state = match bytes {
+        Ok(bytes) => serde_json::from_slice::<Registry>(&bytes).map_err(|e| format!("{} could not be read ({e}); remote devices are refused until it's fixed", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Registry::default()),
         Err(e) => Err(format!("{} could not be read ({e}); remote devices are refused until it's fixed", path.display())),
     };
@@ -188,7 +200,8 @@ fn read(path: &Path) -> Result<Registry, String> {
 }
 
 impl Devices {
-    /// Read `<data>/devices.json`; a missing file is an empty registry.
+    /// Open the platform registry. Mac refuses devices without protected
+    /// authority; Linux, unit tests and registered fixtures use local files.
     pub fn open(data: &Path) -> Devices {
         let path = data.join(FILE);
         let state = read(&path);
@@ -200,6 +213,8 @@ impl Devices {
             fail_sync: Default::default(),
         }
     }
+
+    pub fn requires_ui_receipt(&self) -> bool { !local_registry(&self.path) }
 
     /// The device with this ID, if it's listed and not revoked.
     pub fn get(&self, id: &str) -> Option<Device> {
@@ -270,7 +285,8 @@ impl Devices {
 
     #[cfg(not(test))]
     fn write(&self, contents: &str) -> Result<(), String> {
-        files::write_private(&self.path, contents)
+        if local_registry(&self.path) { files::write_private(&self.path, contents) }
+        else { apex_host::write_device_registry(self.path.parent().unwrap(), contents.as_bytes()).map_err(|e| e.to_string()) }
     }
 
     #[cfg(test)]
@@ -278,7 +294,8 @@ impl Devices {
         if self.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
             files::write_private_then(&self.path, contents, |_| Err(std::io::Error::other("sync failed")))
         } else {
-            files::write_private(&self.path, contents)
+            if local_registry(&self.path) { files::write_private(&self.path, contents) }
+        else { apex_host::write_device_registry(self.path.parent().unwrap(), contents.as_bytes()).map_err(|e| e.to_string()) }
         }
     }
 

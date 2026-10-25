@@ -107,6 +107,7 @@ dependencies = [
  "apex-daemon",
  "apex-host",
  "apex-pairing",
+ "apex-provenance",
  "async-trait",
  "base64 0.22.1",
  "dirs",
@@ -154,7 +155,10 @@ dependencies = [
 name = "apex-host-production-check"
 version = "0.9.0"
 dependencies = [
+ "apex-core",
+ "apex-daemon",
  "apex-host",
+ "serde_json",
  "tokio",
 ]
 

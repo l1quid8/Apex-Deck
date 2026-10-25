@@ -243,6 +243,10 @@ impl Store {
     pub fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
         let Some(mut room):Option<SavedRoom>=self.read(&self.room_path(id))? else{return Ok(None)};
         let authority=self.room_authorities()?;
+        // Linux keeps the manifest as a plain file beside the room, so it is no
+        // more trusted than the room file itself. A room saved before the
+        // manifest existed keeps its own settings there, as it did before.
+        if crate::authority_file::plain(&self.root)&&!authority.contains_key(id){return Ok(Some(room));}
         let trusted:RoomAuthority=serde_json::from_value(authority.get(id).cloned().ok_or("This legacy room has no verified authority manifest. It requires explicit reauthorization; its original file was preserved.")?).map_err(|e|e.to_string())?;
         room.cwd=trusted.cwd;
         room.snapshot.participants=trusted.participants;

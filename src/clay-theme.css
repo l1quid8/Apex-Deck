@@ -458,12 +458,8 @@
 }
 :root[data-deck-theme="clay"] .welcome-capabilities { font-family: var(--deck-font-ui); font-size: 11.5px; letter-spacing: 0; }
 
-/* Right panel: text tabs with an underline for the open one; filters as
-   outlined pills; sentence-case group labels. */
-:root[data-deck-theme="clay"] .right-panel-tab { border-radius: 0; box-shadow: inset 0 -2px 0 transparent; }
-:root[data-deck-theme="clay"] .right-panel-tab.active { background: transparent; box-shadow: inset 0 -2px 0 var(--text); }
-:root[data-deck-theme="clay"] .right-panel-tab.active > button[role="tab"] { color: var(--text); }
-:root[data-deck-theme="clay"] .right-panel-tabs { padding-bottom: 0; }
+/* Right panel: the open tab is underlined by the base sheet, so every theme
+   matches; filters as outlined pills; sentence-case group labels. */
 :root[data-deck-theme="clay"] .right-dashboard-filters button { border: 1px solid var(--deck-edge); }
 :root[data-deck-theme="clay"] .right-dashboard-filters button[aria-checked="true"] {
   background: var(--deck-selected);

@@ -20,6 +20,7 @@ required-features = ["test-support"]
 apex-adapters = { path = "../apex-adapters" }
 apex-core = { path = "../apex-core" }
 apex-host = { path = "../apex-host" }
+apex-provenance = { path = "../apex-provenance" }
 dirs = "7"
 serde.workspace = true
 serde_json.workspace = true
