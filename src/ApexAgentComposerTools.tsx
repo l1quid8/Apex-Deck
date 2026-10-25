@@ -178,7 +178,7 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
       if (selection) setAttachments(previous => previous.filter(item => item.id !== selection));
       files.forEach(file => void trackFile(file, chooserSave.current));
     }} />
-    {!!attachments.length && <div className="attachments" aria-label="ApexAgent attachments">{attachments.map(item => <div className="attachment" key={item.id} aria-busy={item.busy}>
+    {!!attachments.length && <div className="attachments" aria-label="Assistant attachments">{attachments.map(item => <div className="attachment" key={item.id} aria-busy={item.busy}>
       {item.preview ? <img src={item.preview} alt={item.name} /> : <span className="attachment-name">{item.name}</span>}
       {item.error && <small role="alert" title={item.error}>Failed · <button className="attachment-retry" type="button" disabled={disabled} onClick={() => retry(item)}>Retry</button></small>}
       <button className="attachment-remove" type="button" disabled={disabled || item.busy} aria-label={`Remove ${item.name}`} onClick={() => { if (item.preview) URL.revokeObjectURL(item.preview); setAttachments(previous => previous.filter(current => current.id !== item.id)); }}>×</button>

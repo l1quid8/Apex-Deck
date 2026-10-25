@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { transform } from 'sucrase';
 import { compatibleMonitorProfiles } from '../src/apexAgentModel.ts';
+import { assistantDisplayName } from '../src/assistantName.ts';
 
 // The per-project Sources sheet owns the monitor load, save and assignment callbacks that the dock relies on.
 const source = await fs.readFile(new URL('../src/ApexAgentSources.tsx', import.meta.url), 'utf8');
@@ -21,11 +22,12 @@ function componentHarness() {
     useMemo(fn) { cursor++; return fn(); },
     useEffect(fn, deps) { const i = cursor++; const prev = effects[i]; if (!prev || !deps || deps.some((v, j) => !Object.is(v, prev.deps[j]))) effects[i] = { fn, deps, changed: true }; },
   };
-  const component = new Function('React', 'useState', 'useRef', 'useMemo', 'useEffect', 'compatibleMonitorProfiles', 'defaultMonitorProfileId', 'parseProjectFiles', 'workspaceHost', 'window', `${compiled}; return ApexAgentSources;`)(
+  const component = new Function('React', 'useState', 'useRef', 'useMemo', 'useEffect', 'compatibleMonitorProfiles', 'defaultMonitorProfileId', 'parseProjectFiles', 'workspaceHost', 'assistantDisplayName', 'window', `${compiled}; return ApexAgentSources;`)(
     React, hooks.useState, hooks.useRef, hooks.useMemo, hooks.useEffect,
     compatibleMonitorProfiles, (_profiles, stored) => stored ?? 'profile-1',
     text => text.split('\n').map(line => line.trim()).filter(path => path && !path.startsWith('../') && !path.startsWith('/')),
     w => w.hostId ?? 'local',
+    assistantDisplayName,
     { confirm: message => { confirmations.push(message); return true; }, localStorage: { getItem: () => null, setItem() {} }, setInterval: fn => { intervals.add(fn); return fn; }, clearInterval: fn => intervals.delete(fn) },
   );
   let props;
@@ -148,7 +150,7 @@ test('closing the sources sheet does not acknowledge or clear monitor state', as
   const h = componentHarness(); let closed = 0;
   const props = base(backend, (...args) => changes.push(args), { onClose: () => { closed++; } });
   let tree = h.render(props); await tick(); tree = h.render(props);
-  find(tree, n => n.type === 'button' && n.props['aria-label'] === 'Close ApexAgent')?.props.onClick();
+  find(tree, n => n.type === 'button' && n.props['aria-label'] === 'Close Assistant')?.props.onClick();
   assert.equal(closed, 1);
   assert.equal(changes.length, 1);
   assert.deepEqual(changes[0], ['project', 'host-a', blocker]);

@@ -158,11 +158,11 @@ export function taskThreadLinks(task: Pick<AssistantTask, 'parentThreadId' | 'ex
 
 /** Reject a snapshot from a different project/host/folder, but hide tasks left by an older monitor assignment. */
 export function assistantTasksForOwner(snapshot: AssistantTaskSnapshot, owner: AssistantTaskOwner): AssistantTask[] {
-  if (snapshot.workspaceId !== owner.workspaceId) throw new Error('ApexAgent received tasks for a different project.');
+  if (snapshot.workspaceId !== owner.workspaceId) throw new Error('The assistant received tasks for a different project.');
   for (const task of snapshot.tasks) {
     if (task.workspaceId !== owner.workspaceId || task.owner.workspaceId !== owner.workspaceId
       || task.owner.cwd !== owner.cwd || task.owner.hostId !== owner.hostId) {
-      throw new Error('ApexAgent received a task for a different project folder or machine.');
+      throw new Error('The assistant received a task for a different project folder or machine.');
     }
   }
   return snapshot.tasks.filter((task) => task.owner.conversationId === owner.conversationId);

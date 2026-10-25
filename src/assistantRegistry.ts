@@ -56,7 +56,7 @@ export function reduceAssistantSnapshot(
   authenticatedHostId?: string,
 ): AssistantRegistryState {
   assistantTasksForOwner(snapshot, owner);
-  if (!Number.isFinite(snapshot.revision)) throw new Error('ApexAgent returned an invalid task registry revision.');
+  if (!Number.isFinite(snapshot.revision)) throw new Error('The assistant returned an invalid task registry revision.');
   const key = ownerKey(owner);
   const saved = state.owners[key];
   const previous = saved && (!authenticatedHostId || !saved.authenticatedHostId || saved.authenticatedHostId === authenticatedHostId) ? saved : undefined;
@@ -69,10 +69,10 @@ export function reduceAssistantSnapshot(
   const registered = new Set(previous?.registeredChildIds ?? []);
   const tombstoned = new Set(previous?.tombstonedChildIds ?? []);
   for (const execution of snapshot.executions ?? []) {
-    if (execution.workspaceId !== owner.workspaceId) throw new Error('ApexAgent returned a child thread for a different project.');
+    if (execution.workspaceId !== owner.workspaceId) throw new Error('The assistant returned a child thread for a different project.');
     const pane = execution.pane;
     if (pane) {
-      if (!validPane(pane, execution, owner.workspaceId)) throw new Error('ApexAgent returned an invalid child thread descriptor.');
+      if (!validPane(pane, execution, owner.workspaceId)) throw new Error('The assistant returned an invalid child thread descriptor.');
       registered.add(pane.id);
     }
     if (execution.tombstonedAtMs != null) {

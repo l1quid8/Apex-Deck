@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { compatibleMonitorProfiles } from '../src/apexAgentModel.ts';
+import { assistantDisplayName } from '../src/assistantName.ts';
 
 const require = createRequire(import.meta.url);
 const { transform } = require('sucrase');
@@ -23,11 +24,12 @@ function harness() {
     useMemo(fn) { cursor++; return fn(); },
     useEffect(fn, deps) { const i = cursor++; const prev = effects[i]; if (!prev || !deps || deps.some((v, j) => !Object.is(v, prev.deps[j]))) effects[i] = { fn, deps, changed: true }; },
   };
-  const component = new Function('React', 'useState', 'useRef', 'useMemo', 'useEffect', 'compatibleMonitorProfiles', 'defaultMonitorProfileId', 'parseProjectFiles', 'workspaceHost', 'window', `${compiled}; return ApexAgentSources;`)(
+  const component = new Function('React', 'useState', 'useRef', 'useMemo', 'useEffect', 'compatibleMonitorProfiles', 'defaultMonitorProfileId', 'parseProjectFiles', 'workspaceHost', 'assistantDisplayName', 'window', `${compiled}; return ApexAgentSources;`)(
     React, hooks.useState, hooks.useRef, hooks.useMemo, hooks.useEffect,
     compatibleMonitorProfiles, (_profiles, stored) => stored ?? 'profile-1',
     text => text.split('\n').map(line => line.trim()).filter(path => path && !path.startsWith('../') && !path.startsWith('/')),
     w => w.hostId ?? 'local',
+    assistantDisplayName,
     { confirm: () => true, localStorage: { getItem: () => null, setItem() {} }, setInterval: fn => { intervals.add(fn); return fn; }, clearInterval: fn => intervals.delete(fn) },
   );
   let props;

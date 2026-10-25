@@ -215,7 +215,7 @@ export class PersonalAssistantsCollection {
       },
       react: async (messageId, emoji, enabled) => {
         try { await after("personal_react", { messageId, emoji, enabled }); }
-        catch (error) { if (unsupportedCommand(error, "personal_react")) throw new Error("This host does not support saved ApexAgent reactions. Update its service to use reactions here."); throw error; }
+        catch (error) { if (unsupportedCommand(error, "personal_react")) throw new Error("This host does not support saved assistant reactions. Update its service to use reactions here."); throw error; }
       },
       saveAttachment: (name, bytes) => attachment(() => route.saveAttachment(need(), name, bytes)),
       pickFolder: async () => { need(); const path = await route.pickFolder(); if (!path) return null; return attachment(() => route.copyAttachment(need(), path)); },

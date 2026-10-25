@@ -21,6 +21,7 @@ import * as assistantRegistry from '../src/assistantRegistry.ts';
 import * as overviewModel from '../src/apexAgentOverview.ts';
 import * as rightPanelModel from '../src/rightPanelModel.ts';
 import * as assistantTaskModel from '../src/assistantTaskModel.ts';
+import * as assistantName from '../src/assistantName.ts';
 
 const appUrl = new URL('../src/App.tsx', import.meta.url);
 const appSource = await fs.readFile(appUrl, 'utf8');
@@ -148,6 +149,7 @@ function appHarness() {
     ...themes,
     ...assistantRegistry,
     ...assistantTaskModel,
+    ...assistantName,
     ...overviewModel,
     ...rightPanelModel,
     selectCurrentAssistantRegistry: assistantRegistry.currentAssistantRegistry,
@@ -611,7 +613,7 @@ test('the rendered section alerts and sidebar badge keep an unresolved ApexAgent
   let rows = attentionRows(nav);
   assert.equal(rows.length, 1, 'the hover list shows a row for the blocker');
   assert.match(textOf(rows[0]), /Track release readiness/);
-  assert.match(textOf(rows[0]), /ApexAgent has 1 active blocker/);
+  assert.match(textOf(rows[0]), /Assistant has 1 active blocker/);
   assert.match(textOf(rows[0]), /Project A · Threads/);
   assert.ok(classOf(find(rows[0], node => classOf(node).includes('dot'))).includes('needs_input'), 'the row dot shows needs you');
 
@@ -631,7 +633,7 @@ test('the rendered section alerts and sidebar badge keep an unresolved ApexAgent
   tree = h.render();
 
   assert.ok(classOf(threadsTab(drawNav(child(tree, 'SectionNavigation').props))).includes('needs_input'), 'the Threads tab still shows the blocker after reading');
-  assert.match(textOf(attentionRows(hoverThreads(drawNav, tree))[0]), /ApexAgent has 1 active blocker/, 'the row is still listed after reading');
+  assert.match(textOf(attentionRows(hoverThreads(drawNav, tree))[0]), /Assistant has 1 active blocker/, 'the row is still listed after reading');
   badge = sidebarBadge(drawSidebar, tree);
   assert.equal(textOf(badge), '1', 'the sidebar badge is still there after reading');
 
@@ -679,7 +681,7 @@ test('the rendered Mark ready as seen button clears ordinary Ready flags but kee
   nav = hoverThreads(drawNav, tree);
   const rows = attentionRows(nav).map(textOf);
   assert.equal(rows.length, 1, 'only the blocker is left');
-  assert.match(rows[0], /ApexAgent has 1 active blocker/);
+  assert.match(rows[0], /Assistant has 1 active blocker/);
   assert.equal(textOf(sidebarBadge(drawSidebar, tree)), '1', 'the sidebar badge drops to just the blocker');
   h.unmount();
 });

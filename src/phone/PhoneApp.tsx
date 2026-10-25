@@ -14,6 +14,7 @@ import { applyPhoneTheme, loadPhoneAppearance, savePhoneAppearance } from "./app
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ApexAgentSources } from "../ApexAgentSources";
+import { assistantDisplayName } from "../assistantName.ts";
 import { ApexAgentAll } from "../ApexAgentAll";
 import { usePersonalAssistant, type PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
@@ -637,7 +638,7 @@ export function PhoneApp() {
         const monitor = await host.backend.call<ProjectMonitor | null>("monitor_get", { workspaceId: project.workspace.id });
         if (!live || versions.get(project.workspace.id) !== version) return;
         if (monitor && (monitor.workspaceId !== project.workspace.id || monitor.cwd !== project.workspace.path || monitor.hostId !== host.machine.id))
-          throw new Error("ApexAgent returned an assignment for a different project folder or machine.");
+          throw new Error("The assistant returned an assignment for a different project folder or machine.");
         if (!monitor) {
           setAssistantOwners((all) => {
             if (!(project.workspace.id in all)) return all;
@@ -1801,7 +1802,7 @@ export function PhoneApp() {
           </div>
         )}
         {personalOpen && (personal?.assistant || personal?.problem) && <div className="apex-agent-backdrop">
-          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That ApexAgent lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
+          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That assistant lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
             if (laneId !== 'personal' || !personal?.assistant || personal.offline) throw new Error('The personal assistant host is unavailable.');
             return personal.saveAttachment(name, bytes);
           }} pickFolderUnavailableReason="Folder selection is unavailable on this phone." onSetUp={() => {}} onClose={() => setPersonalOpen(false)} />
@@ -1813,10 +1814,11 @@ export function PhoneApp() {
             backend={assistantWorkspaceHost.backend}
             profiles={session?.profiles ?? []}
             panes={panes}
+            assistantName={personal?.name}
             onBack={() => setAssistantWorkspaceId(null)}
             onClose={() => setAssistantWorkspaceId(null)}
           /></div>
-          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Phones.</p></section></div>)}
+          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`${assistantDisplayName(personal?.name)} for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label={`Close ${assistantDisplayName(personal?.name)}`}>×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Phones.</p></section></div>)}
         {pairing && plugin && (
           <Sheet title={`Pair ${pairing.name}`} onClose={() => endLink("cancelled")}>
             <PairSheet key={pairing.attempt} plugin={plugin} link={pairing.link} label="iPhone" ready={ready} onFailed={() => settle("failed", false)} onClose={(why) => endLink(why === "failed" ? "failed" : "cancelled")} onPaired={(paired) => {
@@ -3069,11 +3071,11 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
       {tab === "agents" && <>
         <div className="ph-section">Project assistants</div>
         {assistantProjects.length === 0
-          ? <p className="ph-list-note">No projects yet. Add one from Threads to set up ApexAgent.</p>
+          ? <p className="ph-list-note">No projects yet. Add one from Threads to set up the assistant.</p>
           : <div className="ph-list">{assistantProjects.map(({ workspace, link: projectLink, allowed }) => {
             const available = projectLink?.status === "online" && allowed;
             const error = assistantRegistryErrors[workspace.id];
-            const detail = error ? `ApexAgent unavailable: ${error}`
+            const detail = error ? `Assistant unavailable: ${error}`
               : !projectLink ? "Pair its machine to this phone"
               : projectLink.status !== "online" ? downLine(projectLink)
                 : !allowed ? "Needs Full access on its machine" : `${projectLink.name} · Open project assistant`;

@@ -118,7 +118,7 @@ export function WorktreeRow({ item, busy, confirm, pruneConfirm, mounted = false
   const needsYou = copy?.state === "needs_you";
   const copyLabel = copy ? `${copy.bot}'s copy · ${copy.threadTitle || copy.thread} · ${item.changes ?? "…"} changed ${item.changes === 1 ? "file" : "files"}` : null;
   const branch = item.branch ?? (item.head ? `detached · ${item.head.slice(0, 8)}` : "detached");
-  const labels = [mounted && "Mounted", item.main && "Main", !copy && item.changes != null && item.changes > 0 && `Changes · ${item.changes}`, !copy && item.locked && "Locked", item.prunable && "Missing", item.task && "ApexAgent task"].filter(Boolean) as string[];
+  const labels = [mounted && "Mounted", item.main && "Main", !copy && item.changes != null && item.changes > 0 && `Changes · ${item.changes}`, !copy && item.locked && "Locked", item.prunable && "Missing", item.task && "Assistant task"].filter(Boolean) as string[];
   const actionable = !item.main && !item.task && !copy;
   return <li className={`right-worktrees-row${copy ? " is-bot-copy" : ""}${mounted ? " is-mounted" : ""}`}>
     <div className="right-worktrees-heading"><strong>{copyLabel ?? branch}</strong><div className="right-worktrees-actions">
