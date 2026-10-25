@@ -248,3 +248,17 @@ test('every method is accounted for in this file', () => {
     'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });
+
+test('simulator catalog, controls and gesture geometry use the shared phone API', async () => {
+  const transport = recording();
+  const { phone } = commandBackend(transport, stubShell());
+  const geometry = { generation: 2, display: 3, orientation: 1, width: 1000, height: 600 };
+  await phone.devices();
+  await phone.control({ kind: 'fold', folded: true });
+  await phone.input({ kind: 'tap', x: 1, y: 2 }, geometry);
+  assert.deepEqual(transport.calls, [
+    { cmd: 'phone_devices', args: undefined },
+    { cmd: 'phone_control', args: { control: { kind: 'fold', folded: true } } },
+    { cmd: 'phone_human', args: { input: { kind: 'tap', x: 1, y: 2 }, geometry } },
+  ]);
+});

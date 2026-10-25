@@ -280,7 +280,9 @@ export interface PhoneApi {
   stop(): Promise<PhoneStatus>;
   /** The latest status, and the latest picture when its `seq` differs from `since`. */
   view(since: number): Promise<PhoneView>;
-  input(input: PhoneInput): Promise<PhoneStatus>;
+  input(input: PhoneInput, geometry?: import("./types").PhoneGeometry): Promise<PhoneStatus>;
+  devices(): Promise<import("./types").PhoneDevice[]>;
+  control(control: import("./types").PhoneControl): Promise<import("./types").PhoneControlReply>;
   giveBack(): Promise<PhoneStatus>;
   /** A chat message was queued while the person may hold the phone. */
   chatQueued(room: string): Promise<void>;

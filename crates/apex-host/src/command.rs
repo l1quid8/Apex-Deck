@@ -97,7 +97,9 @@ pub enum Command {
     PhoneStart {},
     PhoneStop {},
     PhoneView { since: u64 },
-    PhoneHuman { input: crate::phone::Input },
+    PhoneHuman { input: crate::phone::Input, #[serde(default)] geometry: Option<crate::phone::Geometry> },
+    PhoneDevices {},
+    PhoneControl { control: crate::phone::Control },
     PhoneGiveBack {},
     PhoneBot { room: String, bot: String, name: String, request: crate::phone::BotRequest },
     PhoneChatQueued { room: String },
@@ -385,7 +387,9 @@ impl Host {
             PhoneStart {} => reply(self.phone.start()),
             PhoneStop {} => reply(self.phone.stop().await?),
             PhoneView { since } => reply(self.phone.view(since)),
-            PhoneHuman { input } => reply(self.phone.human(input).await?),
+            PhoneHuman { input, geometry } => reply(self.phone.human_at(input, geometry).await?),
+            PhoneDevices {} => reply(self.phone.devices().await?),
+            PhoneControl { control } => reply(self.phone.human_control(control).await?),
             PhoneGiveBack {} => reply(self.phone.give_back()),
             PhoneBot { room, bot, name, request } => reply(self.phone.bot(crate::phone::BotId { room, bot, name }, request).await?),
             PhoneChatQueued { room } => {
@@ -638,7 +642,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 174);
+        assert_eq!(names.len(), 176);
+        for name in ["phone_devices", "phone_control"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"bot_copies_set_check".to_string()));
         for name in ["personal_task_lifecycle", "personal_reply_cancel", "personal_archive"] { assert!(names.contains(&name.to_owned())); }
         for name in ["personal_avatar_options", "personal_avatar_generate", "personal_avatar_status", "personal_avatar_cancel", "personal_avatar_asset"] { assert!(names.contains(&name.to_owned())); }

@@ -150,7 +150,7 @@ pub fn command_needs(command: &Command) -> Need {
         ApiModels { .. } | ApiBalance { .. } | ApiQuote { .. } => Need::Never,
         PreviewProbe { .. } => Need::Never,
         // The phone is this Mac's simulator; paired devices can't drive it.
-        PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
+        PhoneDevices {} | PhoneControl { .. } | PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
         ModRead { .. } | ModInstall { .. } | ModProcessRun { .. } | ModHttpFetch { .. } | ModFsWrite { .. } | ModFsStat { .. } | ModEnvGet { .. } => Need::Never,
         // Legacy migration reads every old ledger and transcript on this Mac, and
         // its apply is a UI-attested intent issued only for this Mac.
@@ -442,6 +442,8 @@ mod tests {
             ("phone_stop", None, json!({})),
             ("phone_view", None, json!({ "since": 0 })),
             ("phone_human", None, json!({ "input": { "kind": "tap", "x": 1, "y": 1 } })),
+            ("phone_devices", None, json!({})),
+            ("phone_control", None, json!({ "control": { "kind": "screenshot" } })),
             ("phone_give_back", None, json!({})),
             ("phone_bot", None, json!({ "room": "mine", "bot": "a", "name": "A", "request": { "kind": "look" } })),
             ("phone_chat_queued", None, json!({ "room": "mine" })),
