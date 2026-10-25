@@ -114,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("No display orientation")? as u32;
             let width = state["width"].as_f64().ok_or("No frame width")?;
             let height = state["height"].as_f64().ok_or("No frame height")?;
-            let screen = screens::Screen { id, orientation };
+            let screen = screens::Screen { id, orientation, ..Default::default() };
             let point = |x: &str, y: &str| -> Result<(f64, f64), Box<dyn std::error::Error>> {
                 let x: f64 = option(&args, x).ok_or("Missing x")?.parse()?;
                 let y: f64 = option(&args, y).ok_or("Missing y")?.parse()?;

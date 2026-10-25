@@ -442,6 +442,8 @@ mod tests {
             ("phone_stop", None, json!({})),
             ("phone_view", None, json!({ "since": 0 })),
             ("phone_human", None, json!({ "input": { "kind": "tap", "x": 1, "y": 1 } })),
+            ("phone_devices", None, json!({})),
+            ("phone_control", None, json!({ "control": { "kind": "screenshot" } })),
             ("phone_give_back", None, json!({})),
             ("phone_bot", None, json!({ "room": "mine", "bot": "a", "name": "A", "request": { "kind": "look" } })),
             ("phone_chat_queued", None, json!({ "room": "mine" })),
