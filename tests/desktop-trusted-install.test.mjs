@@ -6,6 +6,10 @@ import { TRUSTED_APP, TRUSTED_DAEMON, TRUSTED_ROOT, bundlePath, bundleVersion, i
 import { LABEL, agentPlist, installAgent } from '../desktop/launchAgent.mjs';
 import * as trustedInstall from '../desktop/trustedInstall.mjs';
 
+// macOS-only: codesign, /Applications and the LaunchAgent. Windows has no such API, and the app refuses
+// protected records there instead of pretending the check passed.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: codesign, /Applications and the LaunchAgent' };
+
 const APP = '/Applications/Apex Deck.app';
 const TRUSTED = TRUSTED_APP;
 const UID = 501;
@@ -62,7 +66,7 @@ const plan = (files, over = {}) => launchPlan({
   ...over,
 });
 
-test('the /Applications copy hands off to the protected copy when both are the same version', () => {
+test('the /Applications copy hands off to the protected copy when both are the same version', MAC_ONLY, () => {
   const got = plan(fakeFiles());
   assert.equal(got.kind, 'handoff');
   assert.equal(got.app, TRUSTED);
@@ -78,7 +82,7 @@ test('a missing protected copy is no handoff: the running daemon, and a notice s
   assert.match(got.notice.detail, /isn't installed|is not installed/i);
 });
 
-test('a protected copy of another version is no handoff, and the notice names both versions', () => {
+test('a protected copy of another version is no handoff, and the notice names both versions', MAC_ONLY, () => {
   const got = plan(fakeFiles({ trustedVersion: '0.8.1' }));
   assert.equal(got.kind, 'notice');
   assert.match(got.notice.detail, /0\.8\.1/);
@@ -92,13 +96,13 @@ test('an agent that already runs the protected daemon is never downgraded, even 
   assert.equal(got.daemon, TRUSTED_DAEMON, 'launchd keeps the protected daemon');
 });
 
-test('the protected copy running itself hands off nowhere and keeps its own daemon', () => {
+test('the protected copy running itself hands off nowhere and keeps its own daemon', MAC_ONLY, () => {
   const got = plan(fakeFiles(), { bundle: `${TRUSTED}/Contents/Resources/app.asar` });
   assert.equal(got.kind, 'run');
   assert.equal(got.daemon, TRUSTED_DAEMON);
 });
 
-test('the /Applications copy running from inside its bundle is the same launch', () => {
+test('the /Applications copy running from inside its bundle is the same launch', MAC_ONLY, () => {
   assert.equal(plan(fakeFiles(), { bundle: `${APP}/Contents/Resources/app.asar` }).kind, 'handoff');
 });
 
@@ -111,7 +115,7 @@ test('the protected copy is only trusted while root owns every part of its path'
   assert.match(got.notice.detail, /root/i);
 });
 
-test('/Applications is group-writable, so no copy in it is ever protected, whatever its hashes', () => {
+test('/Applications is group-writable, so no copy in it is ever protected, whatever its hashes', MAC_ONLY, () => {
   const files = fakeFiles();
   assert.equal(rootProtected(APP, files), false);
   assert.equal(isProtectedCopy(APP, files), false);
@@ -134,14 +138,14 @@ test('another platform is left alone', () => {
   assert.equal(got.kind, 'run');
 });
 
-test('a bundle path is found from anywhere inside the bundle', () => {
+test('a bundle path is found from anywhere inside the bundle', MAC_ONLY, () => {
   assert.equal(bundlePath(`${APP}/Contents/Resources/app.asar`), APP);
   assert.equal(bundlePath(`${APP}/Contents/MacOS/Apex Deck`), APP);
   assert.equal(bundlePath(APP), APP);
   assert.equal(bundlePath('/Users/me/apex-deck/desktop/main.mjs'), '/Users/me/apex-deck/desktop/main.mjs');
 });
 
-test('a bundle version is read from Info.plist, and a missing one is null', () => {
+test('a bundle version is read from Info.plist, and a missing one is null', MAC_ONLY, () => {
   const files = fakeFiles();
   assert.equal(bundleVersion(TRUSTED, files), '0.8.2');
   assert.equal(bundleVersion('/nowhere/Apex Deck.app', files), null);
@@ -177,7 +181,7 @@ test('installing never replaces an agent that runs the protected daemon', async 
   }
 });
 
-test('successful startup handoff opens only the protected app and exits before agent work', async () => {
+test('successful startup handoff opens only the protected app and exits before agent work', MAC_ONLY, async () => {
   const events = [];
   const proceed = await trustedInstall.runLaunchPlan(plan(fakeFiles()), {
     open: async (app) => { events.push(['open', app]); return ''; },
@@ -189,7 +193,7 @@ test('successful startup handoff opens only the protected app and exits before a
   assert.equal(proceed, false);
 });
 
-test('failed startup handoff warns and continues even when the rejection has an empty message', async () => {
+test('failed startup handoff warns and continues even when the rejection has an empty message', MAC_ONLY, async () => {
   for (const open of [async () => 'Launch Services refused', async () => { throw new Error(''); }]) {
     const notices = [];
     let quits = 0;
@@ -203,7 +207,7 @@ test('failed startup handoff warns and continues even when the rejection has an 
   }
 });
 
-test('missing installs show the concrete notice and dev startup performs no handoff effects', async () => {
+test('missing installs show the concrete notice and dev startup performs no handoff effects', MAC_ONLY, async () => {
   for (const [launch, expected] of [
     [plan(fakeFiles({ trusted: false })), 1],
     [plan(fakeFiles(), { packaged: false }), 0],

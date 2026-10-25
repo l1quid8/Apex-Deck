@@ -4,6 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LABEL, agentPlist, agentPlistPath, agentState, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from '../desktop/launchAgent.mjs';
 
+// macOS-only: the LaunchAgents folder. Windows has no such API, and the app refuses
+// protected records there instead of pretending the check passed.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the LaunchAgents folder' };
+
 const UID = 501;
 const TARGET = `gui/${UID}/${LABEL}`;
 
@@ -63,7 +67,7 @@ test('every string in the plist is XML-escaped', () => {
   assert.doesNotMatch(plist, /&(?!amp;|lt;|gt;|quot;|apos;)/, 'no bare ampersand');
 });
 
-test('the agent plist sits in the user LaunchAgents folder', () => {
+test('the agent plist sits in the user LaunchAgents folder', MAC_ONLY, () => {
   assert.equal(agentPlistPath('/Users/me'), `/Users/me/Library/LaunchAgents/${LABEL}.plist`);
   assert.equal(LABEL, 'dev.apexdeck.daemon');
 });

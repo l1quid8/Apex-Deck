@@ -4,6 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
+// macOS-only: the codesign authority inventory. Windows has no such API, and the app refuses
+// protected records there instead of pretending the check passed.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the codesign authority inventory' };
+
 const inventory = new URL('../scripts/authority-inventory.sh', import.meta.url).pathname;
 const entry = (inode = 10) => ({ inode, device: 1, uid: 0, gid: 0, mode: '0o600', bytes: 5, sha256: 'abc', symlink: false });
 function snapshot() {
@@ -24,7 +28,7 @@ function compare(before, after) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-test('authority comparison refuses a vanished lock directory even when it was empty', () => {
+test('authority comparison refuses a vanished lock directory even when it was empty', MAC_ONLY, () => {
   const before = snapshot(), after = snapshot();
   before.locks = {}; after.locks = {}; after.locksDirectory = null;
   const result = compare(before, after);
@@ -32,7 +36,7 @@ test('authority comparison refuses a vanished lock directory even when it was em
   assert.match(result.stdout, /FAIL.*host-locks\/ directory/);
 });
 
-test('an unreadable lock listing cannot prove there were no existing locks', () => {
+test('an unreadable lock listing cannot prove there were no existing locks', MAC_ONLY, () => {
   const before = snapshot(), after = snapshot();
   before.locks = {}; after.locks = {}; before.locksReadable = false;
   const result = compare(before, after);
@@ -40,7 +44,7 @@ test('an unreadable lock listing cannot prove there were no existing locks', () 
   assert.match(result.stdout, /INCONCLUSIVE/);
 });
 
-test('authority comparison rejects changed lock device, permissions, or a replaced authority directory', () => {
+test('authority comparison rejects changed lock device, permissions, or a replaced authority directory', MAC_ONLY, () => {
   for (const mutate of [
     s => { s.locks.scope.device = 2; },
     s => { s.locks.scope.uid = 501; },
@@ -54,7 +58,7 @@ test('authority comparison rejects changed lock device, permissions, or a replac
   }
 });
 
-test('new locks are allowed while preserved authority remains verifiable', () => {
+test('new locks are allowed while preserved authority remains verifiable', MAC_ONLY, () => {
   const after = snapshot(); after.locks.newscope = entry(4);
   assert.equal(compare(snapshot(), after).status, 0);
   const beforeMissing = snapshot(); beforeMissing.authority['journal.json'].sha256 = null;
@@ -99,7 +103,7 @@ test_codesign() {
 }
 `;
 
-test('candidate verification rejects a different signed broker and requires its expected hash', () => {
+test('candidate verification rejects a different signed broker and requires its expected hash', MAC_ONLY, () => {
   const dir = mkdtempSync('/tmp/apex-bundle-test-');
   try {
     const app = fakeBundle(dir, 'Apex Deck.app');
@@ -116,7 +120,7 @@ test('candidate verification rejects a different signed broker and requires its 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('installed acceptance checks both protected and Applications fuse wires, including every slice', () => {
+test('installed acceptance checks both protected and Applications fuse wires, including every slice', MAC_ONLY, () => {
   const dir = mkdtempSync('/tmp/apex-fuse-test-');
   try {
     const app = fakeBundle(dir, 'Trusted.app');
@@ -137,7 +141,7 @@ static_runtime
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('broker-client detection drains strings output instead of treating SIGPIPE as absence', () => {
+test('broker-client detection drains strings output instead of treating SIGPIPE as absence', MAC_ONLY, () => {
   const dir = mkdtempSync('/tmp/apex-strings-test-');
   try {
     const binary = path.join(dir, 'binary');
@@ -161,7 +165,7 @@ function heredoc(name) {
 // Execute the documented command bodies with real temporary files and renames.
 // Only the fixed live paths, launchd/process checks, codesign and root ownership
 // effects are replaced. No live app, authority, service or sudo is accessed.
-test('documented swap stops at each failed rename and rollback preserves authority and both apps', () => {
+test('documented swap stops at each failed rename and rollback preserves authority and both apps', MAC_ONLY, () => {
   for (const failAt of [1, 2, 3, 4, 0]) {
     const dir = mkdtempSync('/tmp/apex-swap-test-');
     try {

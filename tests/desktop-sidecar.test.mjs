@@ -7,7 +7,11 @@ import { daemonBinary, serveArgs, dataDirArgs, developmentDataDir, developmentHo
 
 test('waitForSocket resolves once something listens, and again once it has stopped', async () => {
   const dir = fs.mkdtempSync('/tmp/deck-wait-');
-  const socket = path.join(dir, 'daemon.sock');
+  // A Unix socket is a file; Windows listens on a named pipe instead, and the
+  // daemon does the same, so the check runs against whichever this platform has.
+  const socket = process.platform === 'win32'
+    ? `\\\\.\\pipe\\apex-deck-wait-${process.pid}-${Math.random().toString(16).slice(2)}`
+    : path.join(dir, 'daemon.sock');
   try {
     assert.equal(await waitForSocket(socket, { timeout: 150 }), false, 'nothing listening yet');
     const server = net.createServer((c) => c.end()).listen(socket);
@@ -23,10 +27,14 @@ test('waitForSocket resolves once something listens, and again once it has stopp
 
 test('the daemon binary: the environment, then the bundled one, then the dev build', () => {
   const repo = '/src/apex-deck';
-  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: { APEX_DAEMON_BIN: '/x/apex-daemon' } }), '/x/apex-daemon');
-  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: {} }), '/App/Resources/bin/apex-daemon');
-  assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: {} }), '/src/apex-deck/target/debug/apex-daemon');
-  assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: { APEX_DAEMON_BIN: '' } }), '/src/apex-deck/target/debug/apex-daemon');
+  // The bundled and dev binaries carry the platform's executable name, so this
+  // asserts Windows' apex-daemon.exe when the suite runs there.
+  const name = process.platform === 'win32' ? 'apex-daemon.exe' : 'apex-daemon';
+  const dev = path.join(repo, 'target', 'debug', name);
+  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: { APEX_DAEMON_BIN: '/x/' + name } }), '/x/' + name);
+  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: {} }), path.join('/App/Resources', 'bin', name));
+  assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: {} }), dev);
+  assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: { APEX_DAEMON_BIN: '' } }), dev);
 });
 
 test('serve exits with the app, and names a data folder only when one is set', () => {
@@ -42,7 +50,8 @@ test('development data is stable per checkout and the host data folder is isolat
   const a = developmentDataDir('/work/deck-a', env, '/users/tester');
   assert.equal(a, developmentDataDir('/work/deck-a/.', env, '/users/tester'));
   assert.notEqual(a, developmentDataDir('/other/deck-a', env, '/users/tester'));
-  assert.match(a, /^\/users\/tester\/\.apex-deck\/dev\/deck-a-[a-f0-9]{12}$/);
+  // The folder is built with path.join, so accept either separator.
+  assert.match(a, /^[\\/]users[\\/]tester[\\/]\.apex-deck[\\/]dev[\\/]deck-a-[a-f0-9]{12}$/);
   assert.equal(developmentDataDir('/work/deck-a', { APEX_DECK_DATA_DIR: '/tmp/shared' }, '/users/tester'), '/tmp/shared');
   assert.equal(developmentHostDataDir('/tmp/shared'), '/tmp/shared-checkout-host');
 });

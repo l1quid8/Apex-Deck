@@ -60,7 +60,10 @@ test('a failed key delete, a later off, and a re-sent import ends off', async ()
     fs.chmodSync(dir, 0o555);
     const info = await importSavedRemoteAccess(file, daemon.call);
     assert.equal(info.enabled, true, 'the daemon took the import');
-    assert.equal(hasRemoteAccessKey(file), true, 'the key stays when it cannot be deleted');
+    // A read-only folder is how a POSIX machine makes the rewrite fail. Windows
+    // chmod only toggles the read-only flag on files, so there the key is always
+    // rewritten and this half of the contract cannot be provoked.
+    if (process.platform !== 'win32') assert.equal(hasRemoteAccessKey(file), true, 'the key stays when it cannot be deleted');
     fs.chmodSync(dir, 0o755);
 
     const off = await setPhoneConnections({ enabled: false, call: daemon.call });
@@ -99,7 +102,11 @@ test('a daemon error during import leaves the old key', async () => {
 
 /** A socket that speaks one answer, after an event and the hello. */
 function answeringSocket(dir, frames) {
-  const socketPath = path.join(dir, 'daemon.sock');
+  // Windows has no Unix socket files; the daemon this stands in for listens on a
+  // named pipe there, so the double does too.
+  const socketPath = process.platform === 'win32'
+    ? `\\\\.\\pipe\\apex-deck-rs-${process.pid}-${Math.random().toString(16).slice(2)}`
+    : path.join(dir, 'daemon.sock');
   const seen = [];
   const server = net.createServer((socket) => {
     let buf = '';

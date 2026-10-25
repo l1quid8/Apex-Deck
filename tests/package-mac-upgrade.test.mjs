@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {upgradeScripts,validateManifest,validateOutput} from '../scripts/package-mac-upgrade.mjs';
+
+// macOS-only: the signed .pkg upgrade. Windows has no such API, and the app refuses
+// protected records there instead of pretending the check passed.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the signed .pkg upgrade' };
 const manifest={id:'12345678-1234-1234-1234-123456789abc',version:'0.8.2',ui:'a'.repeat(40),daemon:'b'.repeat(40),broker:'c'.repeat(40)};
 function python(program){
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'apex-upgrade-test-'));
@@ -21,14 +25,14 @@ test('installer manifest rejects command syntax and malformed build identity bef
  assert.throws(()=>validateOutput('/tmp/Apex.pkg'),/release/);
  assert.throws(()=>validateOutput('/Users/tylercaldwell/Downloads/apex-deck/release/../bad.pkg'),/release/);
 });
-test('generated Installer scripts target only startup disk and call isolated Python with quoted script paths',()=>{
+test('generated Installer scripts target only startup disk and call isolated Python with quoted script paths', MAC_ONLY, ()=>{
  const scripts=upgradeScripts(manifest);
  for(const script of [scripts.preinstall,scripts.postinstall]){
   assert.match(script,/\$\{3:-\/\}/);assert.match(script,/\/usr\/bin\/python3 -I/);assert.doesNotMatch(script,/sudo|eval |kill|repin-provenance/);
   const result=spawnSync('/bin/bash',['-n'],{input:script,encoding:'utf8'});assert.equal(result.status,0,result.stderr);
  }
 });
-test('config pin update changes only the two hashes and leaves original keys and journal bytes untouched',()=>python(String.raw`
+test('config pin update changes only the two hashes and leaves original keys and journal bytes untouched', MAC_ONLY, ()=>python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  root=pathlib.Path(directory); config=root/'config.json'
  original={'uiCdhash':'old-ui','daemonCdhash':'old-daemon','future':{'boundary':'unchanged'}}
@@ -44,7 +48,7 @@ with tempfile.TemporaryDirectory() as directory:
  except RuntimeError: pass
  else: raise AssertionError('followed linked config')
 `));
-test('bundle validation permits contained framework links but rejects external and broken symlinks',()=>python(String.raw`
+test('bundle validation permits contained framework links but rejects external and broken symlinks', MAC_ONLY, ()=>python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  root=pathlib.Path(directory);app=root/'Apex Deck.app';app.mkdir();(app/'real').write_text('safe');(app/'internal').symlink_to('real');u.bundle_links(app)
  (root/'outside').write_text('outside');(app/'escape').symlink_to(root/'outside')
@@ -56,7 +60,7 @@ with tempfile.TemporaryDirectory() as directory:
  except FileNotFoundError:pass
  else:raise AssertionError('accepted a broken bundle link')
 `));
-test('failed transaction reverses app and broker swaps, restores config, and retains byte-identical authority',()=>python(String.raw`
+test('failed transaction reverses app and broker swaps, restores config, and retains byte-identical authority', MAC_ONLY, ()=>python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  base=pathlib.Path(directory);u.ROOT=base/'authority';u.UPGRADES=base/'upgrades';u.ROOT.mkdir();u.UPGRADES.mkdir()
  u.TRUSTED=u.ROOT/'TrustedUI/Apex Deck.app';u.TRUSTED.parent.mkdir();u.TRUSTED.mkdir();(u.TRUSTED/'old').write_text('trusted')
@@ -94,7 +98,7 @@ with tempfile.TemporaryDirectory() as directory:
  assert (backup/'failed-previous-trusted.app').exists();assert not (u.UPGRADES/'install.lock').exists()
 `));
 
-test('broker readiness retries a stale socket, asynchronous waiting state, old PID, and a dead new PID',()=>python(String.raw`
+test('broker readiness retries a stale socket, asynchronous waiting state, old PID, and a dead new PID', MAC_ONLY, ()=>python(String.raw`
 responses=iter([
  'state = waiting\n',
  'state = running\npid = 111\n',
@@ -113,7 +117,7 @@ u.os.kill=live
 assert u.wait_for_broker(111,(1,10,100))==222
 assert len(calls)==4 and sleeps==[1,1,1] and probes==[(222,0),(222,0)]
 `));
-test('broker readiness refuses a stale socket even with a live replacement service and times out without blocking tests',()=>python(String.raw`
+test('broker readiness refuses a stale socket even with a live replacement service and times out without blocking tests', MAC_ONLY, ()=>python(String.raw`
 sleeps=[];probes=[]
 u.run=lambda *args,**kwargs:subprocess.CompletedProcess(args,0,'state = running\npid = 222\n','')
 u.broker_socket_identity=lambda:(1,10,100)
