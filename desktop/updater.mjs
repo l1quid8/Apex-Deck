@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { once } from 'node:events';
+import { pipeline } from 'node:stream/promises';
 
 export const REPO = 'l1quid8/apex-deck';
 export const MANIFEST_NAME = 'apex-deck-update.json';
@@ -93,6 +93,16 @@ export function disabledReason({ packaged, platform, dataDir, smoke, protectedCo
   return null;
 }
 
+/**
+ * Why "Restart to update" asked from window `asking` must wait, or null. Deck
+ * exits without the file editor's unload warning; the asking window has asked
+ * about its own edits, so only another open window's stop it.
+ */
+export function editsElsewhere(edits, asking, isOpen) {
+  for (const [id, file] of edits) if (id !== asking && isOpen(id)) return `${file} has unsaved changes in another Deck window. Save or discard them there first.`;
+  return null;
+}
+
 /** The Developer ID team in `codesign -d --verbose=2` output, or null for ad hoc. */
 export function teamFrom(details) {
   return /^TeamIdentifier=([A-Z0-9]{10})$/m.exec(String(details))?.[1] ?? null;
@@ -117,27 +127,26 @@ export function fetchManifest(fetchImpl) {
   };
 }
 
-/** Download `url` to `file`, never past `size`; resolves the SHA-256 of what was written. */
+/**
+ * Download `url` to `file`, never past `size`; resolves the SHA-256 of what was written.
+ * pipeline() owns the file stream, so a failed open or write (a missing folder,
+ * a full disk) rejects here for the retries instead of escaping as an uncaught error.
+ */
 export function fetchDownload(fetchImpl, files = fs) {
   return async (url, file, { size, onProgress = () => {} }) => {
     const response = await fetchImpl(url, { cache: 'no-store' });
     if (!response.ok || !response.body) throw new Error(`The download answered ${response.status}.`);
     const hash = crypto.createHash('sha256');
-    const out = files.createWriteStream(file, { mode: 0o600 });
     let received = 0;
-    try {
-      for await (const chunk of response.body) {
+    await pipeline(response.body, async function* (body) {
+      for await (const chunk of body) {
         received += chunk.length;
         if (received > size) throw new Error('The download is larger than the release says.');
         hash.update(chunk);
-        if (!out.write(chunk)) await once(out, 'drain');
+        yield chunk;
         onProgress(received);
       }
-      await new Promise((resolve, reject) => out.end((error) => (error ? reject(error) : resolve())));
-    } catch (error) {
-      out.destroy();
-      throw error;
-    }
+    }, files.createWriteStream(file, { mode: 0o600 }));
     if (received !== size) throw new Error('The download stopped early.');
     return hash.digest('hex');
   };

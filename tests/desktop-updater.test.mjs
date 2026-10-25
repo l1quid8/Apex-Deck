@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { Writable } from 'node:stream';
 import {
-  FEED_URL, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
+  FEED_URL, Updater, assetUrl, compareVersions, disabledReason, editsElsewhere, fetchDownload, fetchManifest,
   packageFor, packageVerifier, parseManifest, teamFrom,
 } from '../desktop/updater.mjs';
 
@@ -203,6 +204,25 @@ test('downloads stop at the promised size and report the hash of what was writte
   assert.deepEqual(await fetchManifest(async () => ({ ok: true, status: 200, text: async () => '{"a":1}' }))('u'), { a: 1 });
 });
 
+test('a file that cannot be written fails the download instead of crashing Deck, and the check retries', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-download-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const body = (chunks) => ({ ok: true, status: 200, body: (async function* () { for (const chunk of chunks) { await new Promise((done) => setTimeout(done, 5)); yield chunk; } })() });
+  // The folder is gone: opening the file fails after the stream is made.
+  await assert.rejects(fetchDownload(async () => body([bytes]))('u', path.join(dir, 'missing', 'a'), { size: bytes.length }), { code: 'ENOENT' });
+  // The disk fills partway through.
+  const full = Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+  const files = { createWriteStream: () => new Writable({ write: (_chunk, _encoding, done) => done(full) }) };
+  await assert.rejects(fetchDownload(async () => body([bytes.subarray(0, 5), bytes.subarray(5), bytes.subarray(5)]), files)('u', path.join(dir, 'b'), { size: bytes.length * 2 }), { code: 'ENOSPC' });
+  // Through the updater: three tries, then a retryable error.
+  let attempts = 0;
+  const { updater } = fixture(t, { download: (url, file, options) => { attempts += 1; return fetchDownload(async () => body([bytes]), files)(url, file, options); } });
+  const status = await updater.check();
+  assert.equal(attempts, 3);
+  assert.equal(status.state, 'error');
+  assert.match(status.error, /no space/);
+});
+
 test('the package check pins this app’s team and the promised version', async (t) => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-verify-test-'));
   t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
@@ -224,4 +244,14 @@ test('the package check pins this app’s team and the promised version', async 
   signed = false;
   await assert.rejects(verify('/cache/u.pkg', { version: '0.9.1' }), /signed by the team/);
   assert.deepEqual(fs.readdirSync(scratch), [], 'each check clears its unpacked copy');
+});
+
+test('unsaved edits in another open window stop Restart to update; the asking window’s own were already asked about', () => {
+  const open = new Set([1, 2]);
+  const isOpen = (id) => open.has(id);
+  assert.equal(editsElsewhere(new Map(), 1, isOpen), null);
+  assert.equal(editsElsewhere(new Map([[1, 'notes.md']]), 1, isOpen), null);
+  assert.match(editsElsewhere(new Map([[1, 'notes.md'], [2, 'plan.md']]), 1, isOpen), /^plan\.md has unsaved changes in another Deck window\. Save or discard them there first\.$/);
+  open.delete(2);
+  assert.equal(editsElsewhere(new Map([[2, 'plan.md']]), 1, isOpen), null, 'a closed window holds nothing');
 });

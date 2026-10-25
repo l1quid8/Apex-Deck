@@ -22,6 +22,12 @@ test('summaries carry paused, tasks and projects for the shared status, not a st
  const f=fixture();f.lists.local=[{...record('mac'),paused:true,tasks:[{id:'t',status:'needsYou'}],projects:[{project:{hostId:'mac',workspaceId:'w',cwd:'/r'},tools:'ask'}]}];await f.collection.refresh();
  const mac=f.collection.snapshot().assistants[0];assert.equal(mac.paused,true);assert.deepEqual(mac.personalTasks.map(t=>t.id),['t']);assert.equal(mac.projects[0].project.cwd,'/r');assert.equal('status' in mac,false);
 });
+test('summaries say which assistants run on this Mac and pass on the replies they are working on',async()=>{
+ const f=fixture();f.lists.local=[{...record('mac'),events:[{id:'e',requestId:'r',state:'processing'}]}];await f.collection.refresh();
+ const [mac,alpha]=f.collection.snapshot().assistants;
+ assert.equal(mac.onThisMac,true);assert.deepEqual(mac.events.map(e=>e.state),['processing']);
+ assert.equal(alpha.onThisMac,false);assert.deepEqual(alpha.events,[]);
+});
 test('offline records retain freshness and selection; successful absence removes them and selects an existing identity',async()=>{
  const f=fixture();await f.collection.refresh();f.collection.select(ref('beta'));const seen=f.collection.snapshot().assistants[3].lastSeen;
  f.offline.add('b');f.lists.b=[];await f.collection.refresh();assert.deepEqual(f.collection.snapshot().selected,ref('beta'));assert.equal(f.collection.snapshot().assistants[3].offline,true);assert.equal(f.collection.snapshot().assistants[3].lastSeen,seen);

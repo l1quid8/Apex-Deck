@@ -149,6 +149,25 @@ assert result['outcome']=='failed' and 'not newer' in result['message']
 shutil.rmtree(directory)
 `));
 
+test('reopening waits for the quitting Deck to close first, and leaves a Deck that never closed alone', () => python(String.raw`
+with tempfile.TemporaryDirectory() as directory:
+ u.TRUSTED=pathlib.Path(directory)/'Apex Deck.app';u.TRUSTED.mkdir()
+ u.os.stat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_uid=501) if p=='/dev/console' else real(p,*a,**k))(u.os.stat)
+ u.pwd.getpwuid=lambda uid:types.SimpleNamespace(pw_name='person')
+ events=[]
+ u.time.sleep=lambda s:events.append('sleep')
+ u.run=lambda *args,required=True:events.append('open') if '/usr/bin/open' in [str(a) for a in args] else None
+ running=[True,True,False]
+ u.app_running=lambda:(events.append('running?') or running.pop(0))
+ u.reopen(501)
+ # A refusal comes back within seconds, while Deck is still quitting: opening then
+ # would only bring the closing copy forward and leave Deck shut once it exits.
+ assert events==['running?','sleep','running?','sleep','running?','open'],events
+ events.clear();u.app_running=lambda:True
+ u.reopen(501)
+ assert 'open' not in events and events.count('sleep')==u.EXIT_WAIT,'still open: nothing to reopen'
+`));
+
 test('a failed transaction that could not roll back is reported as needing attention', () => python(jobFixture + String.raw`
 def broken():
  (u.UPGRADES/'install.lock').mkdir();(u.UPGRADES/'install.lock'/'recovery-needed.txt').write_text('inspect')

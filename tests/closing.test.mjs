@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, restoredLayouts, savedLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning } from "../src/closing.ts";
+import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, restoredLayouts, savedLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning, assistantsRunning } from "../src/closing.ts";
 
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
 const term = (id, extra = {}) => ({ id, workspaceId: "w", kind: "terminal", title: id, ...extra });
@@ -269,4 +269,19 @@ test("Remove project… always asks, and says the folder on disk is kept", async
   assert.match(busy.body, /It ends now\./);
   assert.match(busy.body, /folder on disk isn't deleted/);
   assert.match(removeProjectQuestion("empty", { ...idle, threads: 0 }).body, /^Its folder on disk isn't deleted\.$/);
+});
+
+test("an assistant on this Mac writing a reply or running a task is still running; queued, waiting and held work is not", () => {
+  assert.deepEqual(assistantsRunning([]), []);
+  const idle = { name: "Dot", tasks: [{ goal: "Old job", status: "done" }, { goal: "Later", status: "queued" }, { goal: "Every hour", status: "waiting" }], events: [{ state: "done" }, { state: "held" }, { state: "failed" }] };
+  assert.deepEqual(assistantsRunning([idle]), []);
+  const busy = { name: "Dot", tasks: [{ goal: "Back up the photos", status: "running" }, { goal: "Gone", status: "running", deletedAt: 5 }], events: [{ state: "processing" }, { state: "processing" }] };
+  assert.deepEqual(assistantsRunning([busy]), [
+    { name: "Dot", thread: "", workspace: "", state: "replying" },
+    { name: "Dot", thread: "", workspace: "Back up the photos", state: "working" },
+  ]);
+  assert.deepEqual(assistantsRunning([{ ...idle, events: [{ state: "received" }] }]).map((r) => r.state), ["replying"]);
+  assert.equal(assistantsRunning([{ name: "Dot", tasks: [{ goal: "x".repeat(200), status: "running" }], events: [] }])[0].workspace.length, 60);
+  // With only Assistant work going, quitting asks too.
+  assert.deepEqual(quitQuestion(assistantsRunning([busy])).rows, ["Dot · Back up the photos · Working", "Dot · Replying"]);
 });

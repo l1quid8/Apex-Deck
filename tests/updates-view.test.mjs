@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { restartQuestion, resultNotice, updateNote } from '../src/updates.ts';
+import { restartQuestion, restartQuestions, resultNotice, updateNote } from '../src/updates.ts';
+import { assistantsRunning } from '../src/closing.ts';
 
 const base = { current: '0.9.0', state: 'idle', disabledReason: null, available: null, progress: null, error: null, checkedAt: null, dismissed: false, result: null };
 const now = 10 * 60_000;
@@ -31,4 +32,20 @@ test('restarting to update asks about busy agents even where quitting would not 
   assert.match(asked.body, /background service/);
   assert.match(asked.body, /phones/);
   assert.deepEqual(asked.rows, ['Jigga in Auto update · apex-deck · Replying']);
+});
+
+test('restarting to update asks first about unsaved file edits, which the quit would drop without the editor’s warning', () => {
+  assert.deepEqual(restartQuestions(null, []), []);
+  const [discard] = restartQuestions('notes.md', []);
+  assert.equal(discard.title, 'Discard unsaved changes to notes.md?');
+  assert.equal(discard.action, 'Discard');
+  const busy = [{ name: 'Jigga', thread: 'Auto update', workspace: 'apex-deck', state: 'replying' }];
+  assert.deepEqual(restartQuestions('notes.md', busy).map((q) => q.action), ['Discard', 'Restart and end them']);
+  assert.deepEqual(restartQuestions(null, busy).map((q) => q.action), ['Restart and end them']);
+});
+
+test('restarting to update asks when only personal Assistant work is going', () => {
+  const asked = restartQuestions(null, assistantsRunning([{ name: 'Dot', tasks: [{ goal: 'Back up the photos', status: 'running' }], events: [] }]));
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0].rows, ['Dot · Back up the photos · Working']);
 });

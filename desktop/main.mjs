@@ -26,7 +26,7 @@ import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, needsAttestation, requestUpdate } from './provenance.mjs';
-import { Updater, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
+import { Updater, disabledReason, editsElsewhere, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
@@ -677,9 +677,18 @@ handle('updates:status', async () => updater?.status() ?? null);
 handle('updates:check', async () => updater?.check({ manual: true }) ?? null);
 handle('updates:later', async () => updater?.later());
 handle('updates:dismissResult', async () => updater?.dismissResult());
-// The window has already asked about stopping work and saved its session.
-handle('updates:restart', async () => {
+/** Each Deck window's file with unsaved edits, by window id. Quitting with app.exit skips the editor's unload warning. */
+const unsavedEdits = new Map();
+handle('updates:unsavedEdit', async ({ win }, file) => {
+  if (typeof file === 'string' && file) unsavedEdits.set(win.id, file.slice(0, 200));
+  else unsavedEdits.delete(win.id);
+});
+// The asking window has already asked about its own unsaved edits and stopping
+// work, and saved its session; edits in any other window stop the restart.
+handle('updates:restart', async ({ win }) => {
   if (!updater) throw new Error('Updates are still starting.');
+  const blocked = editsElsewhere(unsavedEdits, win.id, (id) => windows.has(id));
+  if (blocked) throw new Error(blocked);
   await updater.restart();
   void finishQuit();
 });

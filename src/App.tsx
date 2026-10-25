@@ -82,13 +82,13 @@ import { personalTaskKey, projectTaskKey } from "./apexAgentTaskView";
 import { prefillAssistantComposer } from "./assistantComposerDrafts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { unsavedEditName } from "./unsavedEdits";
+import { discardQuestion, unsavedEditName } from "./unsavedEdits";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
 import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning, assistantsRunning } from "./closing";
 import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
@@ -105,7 +105,8 @@ import { RightWorktreesTab } from "./RightWorktrees";
 import { RightTerminalTab } from "./RightTerminal";
 import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
-import { restartQuestion, resultNotice, updateActions, useUpdates } from "./updates.ts";
+import { restartQuestions, resultNotice, updateActions, useUpdates } from "./updates.ts";
+import { ipcWords } from "./electronShell";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A terminal counts as working if it produced output this recently. */
@@ -442,7 +443,7 @@ export function App() {
   const guardUnsavedEdits = (action: () => void) => {
     const file = unsavedEditName();
     if (!file) { action(); return; }
-    setQuestion({ title: `Discard unsaved changes to ${file}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: action });
+    setQuestion({ ...discardQuestion(file), onConfirm: action });
   };
   const closeDetails = () => guardUnsavedEdits(() => { setDetailsOpen(false); detailsToggle.current?.focus(); });
   const changePanel = (next: RightPanelState) => {
@@ -2364,25 +2365,31 @@ export function App() {
     void settleSaves().then(() => backend.quitApp());
   };
 
-  /** Agents and terminals on this Mac that quitting, or installing an update, would end. */
+  /** Agents, terminals and personal Assistants on this Mac that quitting, or installing an update, would end. */
   const busyHere = () => {
     const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
-    return stillRunning(
-      listed.filter((p) => p.kind === "terminal" && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
-      listed.filter((p) => p.kind === "chat" && !deleting.has(p.id) && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
-    );
+    return [
+      ...stillRunning(
+        listed.filter((p) => p.kind === "terminal" && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
+        listed.filter((p) => p.kind === "chat" && !deleting.has(p.id) && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
+      ),
+      ...assistantsRunning(assistants.assistants.filter((a) => a.onThisMac && !a.offline).map((a) => ({ name: a.name, tasks: a.personalTasks, events: a.events }))),
+    ];
   };
 
-  // "Restart to update": the install stops this Mac's background service, so
-  // busy agents are asked about even when an ordinary quit would leave them be.
-  // Deck quits from main once the update is queued; a refusal keeps it open.
+  // "Restart to update": Deck exits without the file editor's unload warning, so
+  // unsaved edits are asked about first. The install stops this Mac's background
+  // service, so busy agents are asked about even when an ordinary quit would leave
+  // them be. Deck quits from main once the update is queued; a refusal keeps it open.
   const restartToUpdate = () => {
     const go = () => {
-      void settleSaves().then(() => updateActions.restart()).catch((error) => toast(`The update didn't start: ${error instanceof Error ? error.message : String(error)}`));
+      void settleSaves().then(() => updateActions.restart()).catch((error) => toast(`The update didn't start: ${ipcWords(error)}`));
     };
-    const asked = restartQuestion(busyHere());
-    if (asked) setQuestion({ ...asked, onConfirm: go });
-    else go();
+    const ask = ([next, ...later]: ReturnType<typeof restartQuestions>) => {
+      if (next) setQuestion({ ...next, onConfirm: () => ask(later) });
+      else go();
+    };
+    ask(restartQuestions(unsavedEditName(), busyHere()));
   };
 
   // Asked to quit: the window's close button, ⌘W, ⌘Q or Quit in the app menu.

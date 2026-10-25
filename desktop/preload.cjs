@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
     later: () => ipcRenderer.invoke('updates:later'),
     dismissResult: () => ipcRenderer.invoke('updates:dismissResult'),
     restart: () => ipcRenderer.invoke('updates:restart'),
+    unsavedEdit: (file) => ipcRenderer.invoke('updates:unsavedEdit', file),
     onChange: (cb) => subscribe('updates:changed', cb),
   },
   googleSignIn: (args) => ipcRenderer.invoke('google:signIn', args),

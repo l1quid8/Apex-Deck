@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { quitQuestion, type Running } from "./closing.ts";
+import { discardQuestion } from "./unsavedEdits.ts";
 
 export type UpdateState = "disabled" | "idle" | "checking" | "up-to-date" | "downloading" | "verifying" | "ready" | "installing" | "error";
 
@@ -27,8 +28,10 @@ export interface UpdatesApi {
   check(): Promise<UpdateStatus | null>;
   later(): Promise<void>;
   dismissResult(): Promise<void>;
-  /** Resolves only if the install was queued; Deck then quits at once. */
+  /** Resolves only if the install was queued; Deck then quits at once. Refused while another window has unsaved edits. */
   restart(): Promise<void>;
+  /** This window's file with unsaved edits, or null. */
+  unsavedEdit(file: string | null): Promise<void>;
   onChange(cb: (status: UpdateStatus) => void): () => void;
 }
 
@@ -108,4 +111,15 @@ export function restartQuestion(busy: Running[]): { title: string; body: string;
     body: "Installing restarts this Mac's background service, which ends them and anything they're running, and disconnects phones for about a minute. Threads and their messages are saved; replies in progress are not.",
     action: "Restart and end them",
   };
+}
+
+type Ask = { title: string; body: string; rows?: string[]; action: string };
+
+/**
+ * What "Restart to update" asks, one after another; empty to go ahead at once.
+ * First unsaved file edits in this window: Deck exits without the editor's own
+ * warning. Then busy agents, which installing ends.
+ */
+export function restartQuestions(unsavedFile: string | null, busy: Running[]): Ask[] {
+  return [unsavedFile ? discardQuestion(unsavedFile) : null, restartQuestion(busy)].filter((ask): ask is Ask => ask !== null);
 }

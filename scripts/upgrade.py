@@ -365,11 +365,14 @@ def use_manifest(manifest,staged):
     global M,STAGED
     M=manifest; STAGED=Path(staged)
 
-def wait_for_exit(seconds=EXIT_WAIT):
+def closed_within(seconds):
     for _ in range(seconds):
-        if not app_running(): return
+        if not app_running(): return True
         time.sleep(1)
-    raise RuntimeError('Apex Deck did not close within '+str(seconds)+' seconds, so nothing was installed')
+    return not app_running()
+
+def wait_for_exit(seconds=EXIT_WAIT):
+    if not closed_within(seconds): raise RuntimeError('Apex Deck did not close within '+str(seconds)+' seconds, so nothing was installed')
 
 def write_result(result):
     if RESULTS.is_symlink(): raise RuntimeError('Linked update results folder')
@@ -384,6 +387,9 @@ def write_result(result):
 
 def reopen(uid):
     # As the person, in their session; never as root. Nobody signed in, or someone else: leave it closed.
+    # A refusal can come back while Deck is still quitting, and opening it then only brings
+    # the closing copy forward. Wait until it is gone; one that never closed needs no reopening.
+    if not closed_within(EXIT_WAIT): return
     if not TRUSTED.is_dir() or os.stat('/dev/console').st_uid!=uid: return
     user=pwd.getpwuid(uid)
     run('/bin/launchctl','asuser',str(uid),'/usr/bin/sudo','-n','-u',user.pw_name,'--','/usr/bin/open',TRUSTED,required=False)

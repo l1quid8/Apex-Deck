@@ -267,7 +267,29 @@ export function stillRunning(terminals: TerminalNow[], threads: ThreadNow[]): Ru
   return out;
 }
 
-const STATE_WORDS: Record<Running["state"], string> = { waiting: "Waiting for you", working: "Working", replying: "Replying", idle: "Idle" };
+/** A personal Assistant whose service is on this Mac, when the app is asked to quit. */
+export interface AssistantNow {
+  name: string;
+  tasks: readonly { goal: string; status: string; deletedAt?: number }[];
+  /** Messages it took in; `received` or `processing` means a reply is on its way. */
+  events: readonly { state: string }[];
+}
+
+/**
+ * What stopping this Mac's service would end of an assistant's work: a reply
+ * it is writing and each task running now. Queued, waiting and held work is
+ * saved with the assistant and carries on after the service is back.
+ */
+export function assistantsRunning(assistants: AssistantNow[]): Running[] {
+  const out: Running[] = [];
+  for (const a of assistants) {
+    if (a.events.some((e) => e.state === "received" || e.state === "processing")) out.push({ name: a.name, thread: "", workspace: "", state: "replying" });
+    for (const t of a.tasks) if (t.status === "running" && t.deletedAt == null) out.push({ name: a.name, thread: "", workspace: t.goal.slice(0, 60), state: "working" });
+  }
+  return out;
+}
+
+const STATE_WORDS: Record<Running["state"], string> ={ waiting: "Waiting for you", working: "Working", replying: "Replying", idle: "Idle" };
 const STATE_ORDER: Running["state"][] = ["waiting", "working", "replying", "idle"];
 
 /**
