@@ -13,6 +13,7 @@ pub mod gateway_cli;
 pub mod gateway_http;
 pub mod gateway_keys;
 pub mod identity;
+pub mod ipc;
 pub mod local_call;
 pub mod log_time;
 pub mod pair_cli;

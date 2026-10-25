@@ -1,4 +1,5 @@
 //! SIGTERM, SIGINT and SIGHUP: stop, end agents and terminals, save, clean up, exit 0.
+#![cfg(unix)]
 
 mod common;
 

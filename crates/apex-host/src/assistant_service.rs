@@ -3202,6 +3202,9 @@ mod tests {
         let f = fixture();
         let process_dir =
             crate::assistant_isolation::operation_process_dir(&f.data, "check-task").unwrap();
+        // Windows does not persist recovery manifests or create their directory.
+        // Give both platforms an existing registry to check for leftover records.
+        std::fs::create_dir_all(&process_dir).unwrap();
         let result = f
             .runtime
             .block_on(run_check(

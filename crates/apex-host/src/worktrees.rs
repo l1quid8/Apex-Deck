@@ -47,7 +47,7 @@ pub struct AddRequest {
 fn git(project: &Path, args: &[String]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(project)
+        .arg(crate::assistant_git::external_path(project).as_os_str())
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
@@ -61,7 +61,7 @@ fn git(project: &Path, args: &[String]) -> Result<String, String> {
     }
 }
 fn arg(s: impl AsRef<std::ffi::OsStr>) -> String {
-    s.as_ref().to_string_lossy().into_owned()
+    crate::assistant_git::external_path(Path::new(s.as_ref())).to_string_lossy().into_owned()
 }
 fn parse_list(raw: &str, task_dir: &Path) -> Vec<Worktree> {
     let mut records: Vec<Vec<&str>> = Vec::new();
@@ -98,7 +98,9 @@ fn parse_list(raw: &str, task_dir: &Path) -> Vec<Worktree> {
                 }
             }
             let path = path?;
-            let task = Path::new(&path).starts_with(task_dir);
+            let resolved = fs_canonical(Path::new(&path)).unwrap_or_else(|| PathBuf::from(&path));
+            let task = crate::assistant_git::external_path(&resolved)
+                .starts_with(crate::assistant_git::external_path(task_dir).as_ref());
             Some(Worktree {
                 path,
                 head,
@@ -322,7 +324,7 @@ fn protect_copy(target: &Path) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         if let Ok(bytes) = std::fs::read(parent.join("copy.json")) {
             if let Ok(copy) = serde_json::from_slice::<crate::bot_copies::BotCopy>(&bytes) {
-                if copy.work == target || matches!((copy.work.canonicalize(), target.canonicalize()), (Ok(a), Ok(b)) if a == b) {
+                if same_path(&copy.work, target) {
                     return Err("Deck manages this bot copy. Use Discard copy when it needs you.".into());
                 }
             }
@@ -376,7 +378,7 @@ pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
     protect_copy(target)?;
     let (_, repos) = repos(project, task_dir)?;
     let (project, row) = repos.iter()
-        .find_map(|repo| repo.items.iter().find(|w| Path::new(&w.path) == target).map(|row| (repo.dir.as_path(), row)))
+        .find_map(|repo| repo.items.iter().find(|w| same_path(Path::new(&w.path), target)).map(|row| (repo.dir.as_path(), row)))
         .ok_or("That folder is not a worktree for this project.")?;
     if row.main { return Err("The main checkout can't be removed here.".into()); }
     if row.task { return Err("ApexAgent manages this worktree.".into()); }
@@ -395,13 +397,13 @@ pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
         let admin = entry.path();
         let gitdir = std::fs::read_to_string(admin.join("gitdir")).map_err(|e| e.to_string())?;
-        if Path::new(gitdir.trim()) != target.join(".git") { continue; }
+        if !same_path(Path::new(gitdir.trim()), &target.join(".git")) { continue; }
         if admin.join("locked").exists() { return Err("Unlock this worktree before pruning it.".into()); }
         let pointer = target.join(".git");
         if let Ok(meta) = std::fs::symlink_metadata(&pointer) {
             if !meta.is_file() || meta.file_type().is_symlink() { return Err("The worktree Git pointer was replaced.".into()); }
             let contents = std::fs::read_to_string(&pointer).map_err(|e| e.to_string())?;
-            if contents.trim().strip_prefix("gitdir: ").map(Path::new) != Some(admin.as_path()) {
+            if !contents.trim().strip_prefix("gitdir: ").is_some_and(|path| same_path(Path::new(path), &admin)) {
                 return Err("The worktree Git pointer was replaced.".into());
             }
             std::fs::remove_file(pointer).map_err(|e| e.to_string())?;
@@ -428,11 +430,25 @@ fn fs_canonical(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path).ok()
 }
 
+fn same_path(a: &Path, b: &Path) -> bool {
+    let a = fs_canonical(a).unwrap_or_else(|| a.to_path_buf());
+    let b = fs_canonical(b).unwrap_or_else(|| b.to_path_buf());
+    crate::assistant_git::external_path(&a) == crate::assistant_git::external_path(&b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::process::Command;
+
+    #[cfg(windows)]
+    #[test]
+    fn task_protection_matches_git_paths_against_verbatim_task_roots() {
+        let rows = parse_list("worktree C:/apex/data/tasks/job/worktree\0HEAD abc\0", Path::new(r"\\?\C:\apex\data\tasks"));
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].task, "native canonical and Git paths must identify the same task subtree");
+    }
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {
@@ -752,10 +768,10 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(parent.join("tool"), parent.join("tool-link")).unwrap();
         let rows = list(&parent, &tasks).unwrap();
-        let shown: Vec<(&str, bool)> = rows.items.iter().map(|w| (w.path.as_str(), w.main)).collect();
+        let shown: Vec<(String, bool)> = rows.items.iter().map(|w| (real(PathBuf::from(&w.path)), w.main)).collect();
         let (app, feature, tool) = (real(parent.join("app")), real(parent.join("app-feature")), real(parent.join("tool")));
-        assert_eq!(shown, vec![(app.as_str(), true), (feature.as_str(), false), (tool.as_str(), true)]);
-        assert_eq!(rows.root, app);
+        assert_eq!(shown, vec![(app.clone(), true), (feature, false), (tool, true)]);
+        assert_eq!(real(PathBuf::from(&rows.root)), app);
         assert!(rows.items.iter().all(|w| w.changes == Some(0)));
     }
     #[test]

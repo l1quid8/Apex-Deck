@@ -910,7 +910,7 @@ mod tests {
         ProjectRef {
             host_id: "host-a".into(),
             workspace_id: "workspace-a".into(),
-            cwd: "/projects/a".into(),
+            cwd: if cfg!(windows) { "C:/projects/a" } else { "/projects/a" }.into(),
         }
     }
     fn other_project() -> ProjectRef {
@@ -985,7 +985,7 @@ mod tests {
                 ..project()
             },
             ProjectRef {
-                cwd: "/projects/b".into(),
+                cwd: if cfg!(windows) { "C:/projects/b" } else { "/projects/b" }.into(),
                 ..project()
             },
         ] {

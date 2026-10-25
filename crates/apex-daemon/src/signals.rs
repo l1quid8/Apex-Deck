@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+#[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 
 /// How long running turns get to stop and save on the way out. systemd's
@@ -13,11 +14,20 @@ pub const WIND_DOWN: Duration = Duration::from_secs(10);
 /// terminal closed), unless SIGHUP came in ignored, as `nohup` leaves it.
 /// Call inside the runtime, before the daemon says it's ready, so no early
 /// signal is missed.
+#[cfg(unix)]
 pub fn stop_requested() -> Result<impl Future<Output = ()>, String> {
-    let listen = |kind: SignalKind| signal(kind).map_err(|e| format!("could not listen for signals: {e}"));
+    let listen =
+        |kind: SignalKind| signal(kind).map_err(|e| format!("could not listen for signals: {e}"));
     let hup_ignored = ignored(libc::SIGHUP);
-    let (mut term, mut int) = (listen(SignalKind::terminate())?, listen(SignalKind::interrupt())?);
-    let mut hup = if hup_ignored { None } else { Some(listen(SignalKind::hangup())?) };
+    let (mut term, mut int) = (
+        listen(SignalKind::terminate())?,
+        listen(SignalKind::interrupt())?,
+    );
+    let mut hup = if hup_ignored {
+        None
+    } else {
+        Some(listen(SignalKind::hangup())?)
+    };
     Ok(async move {
         let hangup = async {
             match hup.as_mut() {
@@ -33,11 +43,30 @@ pub fn stop_requested() -> Result<impl Future<Output = ()>, String> {
     })
 }
 
+/// Resolves on Ctrl-C, closing the console, or Windows shutting down. Set
+/// up every handler before returning so startup cannot miss an early stop.
+#[cfg(windows)]
+pub fn stop_requested() -> Result<impl Future<Output = ()>, String> {
+    let error = |e| format!("could not listen for signals: {e}");
+    let mut interrupt = tokio::signal::windows::ctrl_c().map_err(error)?;
+    let mut close = tokio::signal::windows::ctrl_close().map_err(error)?;
+    let mut shutdown = tokio::signal::windows::ctrl_shutdown().map_err(error)?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = close.recv() => {}
+            _ = shutdown.recv() => {}
+        }
+    })
+}
+
 /// Whether this process started with `signal` ignored.
+#[cfg(unix)]
 fn ignored(signal: libc::c_int) -> bool {
     // SAFETY: with a null new action, sigaction only reads the current one.
     unsafe {
         let mut current: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(signal, std::ptr::null(), &mut current) == 0 && current.sa_sigaction == libc::SIG_IGN
+        libc::sigaction(signal, std::ptr::null(), &mut current) == 0
+            && current.sa_sigaction == libc::SIG_IGN
     }
 }

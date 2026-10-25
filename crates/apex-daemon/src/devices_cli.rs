@@ -11,7 +11,7 @@ use apex_host::lock::{DataLock, LockError};
 use serde_json::{json, Value};
 
 use crate::devices::{Devices, Tier};
-use crate::{local_call, paths, protocol, serve};
+use crate::{ipc, local_call, paths, protocol};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DevicesAction {
@@ -75,7 +75,7 @@ pub fn request(action: &DevicesAction) -> Value {
 pub fn run(data_dir: Option<PathBuf>, action: DevicesAction) -> Result<(), String> {
     let paths = paths::host_paths(data_dir)?;
     let request = request(&action);
-    let answer = match std::os::unix::net::UnixStream::connect(paths.data.join(serve::SOCKET)) {
+    let answer = match ipc::endpoint(&paths.data).and_then(|path| ipc::connect_blocking(&path)) {
         Ok(socket) => local_call::through_daemon(socket, request)?,
         Err(_) => {
             let devices = Devices::open(&paths.data);

@@ -557,8 +557,11 @@ mod tests {
         let data = crate::devices::tests::folder();
         let first = key(&data.0).unwrap();
         assert_eq!(key(&data.0).unwrap().public(), first.public());
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(data.0.join(KEY_FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(data.0.join(KEY_FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         assert_eq!(port(&data.0, None), 0);
         std::fs::write(data.0.join(PORT_FILE), r#"{"port":41641}"#).unwrap();
         assert_eq!(port(&data.0, None), 41641);

@@ -1325,7 +1325,12 @@ async fn tool_free_monitor_refuses_custom_cli_before_starting_it() {
         program: "custom-monitor".into(), args: vec![],
     })).with_context(&context_in(&dir)).with_tools_disabled();
     let (result, _) = ask(&bot, "inspect only").await;
-    assert!(matches!(result, Err(ParticipantError::Failed(message)) if message.contains("verified tool-free mode")));
+    let expected = if cfg!(target_os = "macos") {
+        "verified tool-free mode"
+    } else {
+        "this backend requires the macOS process sandbox on this host"
+    };
+    assert!(matches!(result, Err(ParticipantError::Failed(message)) if message.contains(expected)));
     assert!(!dir.join("marker").exists(), "unsupported backend started despite tool-free mode");
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -1850,7 +1855,9 @@ async fn a_planning_claude_asks_before_it_starts_the_work() {
 
 #[tokio::test]
 async fn a_custom_command_sits_out_while_planning() {
-    let bot = CliParticipant::new(config("aider", sh("echo hi")));
+    let bot = CliParticipant::new(config("aider", Backend::Cli {
+        program: "unused-custom-command".into(), args: vec![],
+    }));
     let result = bot.respond_with_approvals(planning("hi"), &|_| {}, &Fixed::new(Decision::Approve)).await;
     assert_eq!(result.unwrap_err(), ParticipantError::Failed("This custom command can't be held to read-only, so it sits out while Plan is on.".into()));
 }

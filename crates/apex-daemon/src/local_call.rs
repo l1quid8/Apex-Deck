@@ -5,14 +5,12 @@ use std::io::{BufRead, BufReader, Write};
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::UnixStream;
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
-use crate::protocol;
+use crate::{ipc, protocol};
 
 /// Say hello on the daemon's socket, send `request`, and return its answer.
-pub fn through_daemon(socket: std::os::unix::net::UnixStream, mut request: Value) -> Result<Value, String> {
+pub fn through_daemon(socket: ipc::BlockingStream, mut request: Value) -> Result<Value, String> {
     request["id"] = json!(1);
     let mut writer = socket.try_clone().map_err(|e| e.to_string())?;
     let hello = json!({ "id": 0, "cmd": "hello", "args": { "protocol": protocol::PROTOCOL } });
@@ -50,15 +48,15 @@ impl From<String> for Refused {
 /// `pair` does (a long `pair_wait`, then a `pair_cancel` beside it). Events
 /// the daemon sends are skipped.
 pub struct Client {
-    input: FramedRead<OwnedReadHalf, LinesCodec>,
-    output: FramedWrite<OwnedWriteHalf, LinesCodec>,
+    input: FramedRead<ipc::ReadHalf, LinesCodec>,
+    output: FramedWrite<ipc::WriteHalf, LinesCodec>,
     next_id: u64,
 }
 
 impl Client {
     /// Say hello on `stream`.
-    pub async fn hello(stream: UnixStream) -> Result<Client, Refused> {
-        let (read, write) = stream.into_split();
+    pub async fn hello(stream: ipc::Stream) -> Result<Client, Refused> {
+        let (read, write) = ipc::split(stream);
         let (input, output) = protocol::lines(read, write);
         let mut client = Client { input, output, next_id: 0 };
         let id = client.send("hello", json!({ "protocol": protocol::PROTOCOL })).await?;

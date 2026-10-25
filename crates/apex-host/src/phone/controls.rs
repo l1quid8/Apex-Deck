@@ -877,24 +877,45 @@ impl Phone {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test]
-    async fn capture_metadata_comes_from_one_frame_during_a_panel_switch() {
-        let data = std::env::temp_dir().join(format!("deck-capture-snapshot-{}", std::process::id()));
-        let phone = Phone::new(data.clone(), tokio::runtime::Handle::current());
-        let frame = |id, width, height| Frame {
-            seq: id as u64, jpeg: vec![], width: width / 2, height: height / 2,
-            screen: Some(screens::Screen { id, pixel_width: width, pixel_height: height, ..Default::default() }),
-        };
-        *locked(&phone.frame) = Some(frame(1, 100, 200));
-        let mut capture = Box::pin(phone.capture_path("png"));
-        assert!(futures::poll!(capture.as_mut()).is_pending());
-        *locked(&phone.frame) = Some(frame(3, 300, 200));
-        let (path, geometry) = capture.await.unwrap();
-        let name = path.file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with("phone-display-1-100x200-") || name.starts_with("phone-display-3-300x200-"), "mixed capture metadata: {name}");
-        assert!(name.starts_with(&format!("phone-display-{}-", geometry.display)));
-        std::fs::remove_dir_all(data).unwrap();
+    #[test]
+    fn capture_metadata_comes_from_one_frame_during_a_panel_switch() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let data = std::env::temp_dir().join(format!("deck-capture-snapshot-{}", std::process::id()));
+            let phone = Phone::new(data.clone(), tokio::runtime::Handle::current());
+            let frame = |id, width, height| Frame {
+                seq: id as u64, jpeg: vec![], width: width / 2, height: height / 2,
+                screen: Some(screens::Screen { id, pixel_width: width, pixel_height: height, ..Default::default() }),
+            };
+            *locked(&phone.frame) = Some(frame(1, 100, 200));
+            // Queue capture's directory creation behind the sole blocking worker,
+            // so the panel switch happens during a real suspension every time.
+            // The sender lives inside block_on: unwinding drops it before runtime
+            // teardown, releasing the worker even if an assertion fails.
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = released.recv();
+            });
+            ready.await.unwrap();
+            let mut capture = Box::pin(phone.capture_path("png"));
+            assert!(futures::poll!(capture.as_mut()).is_pending());
+            *locked(&phone.frame) = Some(frame(3, 300, 200));
+            drop(release);
+            blocker.await.unwrap();
+            let (path, geometry) = capture.await.unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(name.starts_with("phone-display-1-100x200-") || name.starts_with("phone-display-3-300x200-"), "mixed capture metadata: {name}");
+            assert!(name.starts_with(&format!("phone-display-{}-", geometry.display)));
+            std::fs::remove_dir_all(data).unwrap();
+        });
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn native_hid_keeps_one_service_alive_across_commands_and_closes_on_stop() {
         use std::os::unix::fs::PermissionsExt;

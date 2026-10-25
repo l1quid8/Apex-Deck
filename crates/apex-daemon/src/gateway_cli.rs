@@ -11,7 +11,7 @@ use apex_host::lock::{DataLock, LockError};
 use serde_json::{json, Value};
 
 use crate::gateway_keys::{GatewayKeys, IssueSpec, KeyScope};
-use crate::{local_call, paths, serve};
+use crate::{ipc, local_call, paths};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeysAction {
@@ -191,7 +191,7 @@ pub fn request(action: &KeysAction) -> Value {
 pub fn run(data_dir: Option<PathBuf>, action: KeysAction) -> Result<(), String> {
     let paths = paths::host_paths(data_dir)?;
     let req = request(&action);
-    let answer = match std::os::unix::net::UnixStream::connect(paths.data.join(serve::SOCKET)) {
+    let answer = match ipc::endpoint(&paths.data).and_then(|path| ipc::connect_blocking(&path)) {
         Ok(socket) => local_call::through_daemon(socket, req)?,
         Err(_) => {
             let _lock = match DataLock::acquire(

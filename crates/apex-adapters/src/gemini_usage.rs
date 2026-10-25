@@ -136,7 +136,7 @@ fn words(name: &str) -> Vec<String> {
 
 async fn read_legacy_plan() -> Result<PlanUsage, Failure> {
     let short = |why: String| Failure::new(why, Failure::SHORT);
-    let home = std::env::var_os("HOME").ok_or_else(|| short("no Gemini CLI login found".into()))?;
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).ok_or_else(|| short("no Gemini CLI login found".into()))?;
     let saved = tokio::fs::read_to_string(std::path::PathBuf::from(home).join(".gemini/oauth_creds.json"))
         .await
         .map_err(|_| short("no Gemini CLI login found".into()))?;

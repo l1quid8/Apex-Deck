@@ -56,7 +56,7 @@ pub fn main(args: &[String]) -> i32 {
         },
         other => other,
     };
-    let Ok(socket) = std::os::unix::net::UnixStream::connect(&socket) else {
+    let Ok(socket) = crate::ipc::connect_blocking(Path::new(&socket)) else {
         eprintln!("{NOT_REACHABLE}");
         return 1;
     };
@@ -346,10 +346,20 @@ mod tests {
 
     #[test]
     fn a_relative_install_path_is_made_absolute_against_the_bots_folder() {
+        #[cfg(unix)]
         let here = Path::new("/work/proj");
+        #[cfg(windows)]
+        let here = Path::new(r"C:\work\proj");
+        #[cfg(unix)]
+        let (expected, absolute) = ("/work/proj/build/App.app", "/abs/App.app");
+        #[cfg(windows)]
+        let (expected, absolute) = (r"C:\work\proj\build\App.app", r"C:\abs\App.app");
         let install = |path: &str| BotRequest::Install { path: path.into() };
-        assert_eq!(in_folder(install("build/App.app"), here), install("/work/proj/build/App.app"));
-        assert_eq!(in_folder(install("/abs/App.app"), here), install("/abs/App.app"));
+        let BotRequest::Install { path } = in_folder(install("build/App.app"), here) else {
+            panic!("an install request stays an install request");
+        };
+        assert_eq!(Path::new(&path), Path::new(expected));
+        assert_eq!(in_folder(install(absolute), here), install(absolute));
         assert_eq!(in_folder(BotRequest::Look, here), BotRequest::Look);
     }
 }

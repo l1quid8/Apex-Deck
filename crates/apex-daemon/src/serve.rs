@@ -2,6 +2,7 @@
 //! token-protected localhost WebSocket and on a socket in the data folder
 //! that only this user can reach.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,17 +10,14 @@ use std::sync::Arc;
 use apex_host::lock::DataLock;
 use apex_host::HostPaths;
 use serde_json::json;
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::net::TcpListener;
 
 use crate::cli::ServeOptions;
 use crate::protocol::{self, Daemon, Trust, PROTOCOL};
-use crate::{files, identity, paths, signals, websocket};
+use crate::{files, identity, ipc, paths, signals, websocket};
 
 /// The local socket, inside the data folder.
 pub const SOCKET: &str = "daemon.sock";
-
-/// `sun_path` is 104 bytes on macOS and 108 on Linux; stay under both.
-const SOCKET_PATH_MAX: usize = 100;
 
 pub fn run(data_dir: Option<PathBuf>, options: ServeOptions) -> Result<(), String> {
     if !options.bind.is_loopback() && !options.insecure_bind {
@@ -42,17 +40,20 @@ pub fn run(data_dir: Option<PathBuf>, options: ServeOptions) -> Result<(), Strin
 
 /// Where the socket goes, if its path is short enough to bind.
 pub fn socket_path(data: &Path) -> Result<PathBuf, String> {
-    let socket = data.join(SOCKET);
-    if socket.as_os_str().len() > SOCKET_PATH_MAX {
-        return Err(format!("the socket path {} is longer than {SOCKET_PATH_MAX} bytes; pass a shorter --data-dir", socket.display()));
-    }
-    Ok(socket)
+    ipc::endpoint(data).map_err(|e| e.to_string())
 }
 
 /// Make `data` if needed and let only this user into it.
+#[cfg(unix)]
 fn private_folder(data: &Path) -> Result<(), String> {
     std::fs::create_dir_all(data).map_err(|e| format!("could not create {}: {e}", data.display()))?;
     std::fs::set_permissions(data, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("could not make {} private: {e}", data.display()))
+}
+
+#[cfg(windows)]
+fn private_folder(data: &Path) -> Result<(), String> {
+    apex_host::private_data::prepare(data)
+        .map_err(|e| format!("could not make {} private: {e}", data.display()))
 }
 
 async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: DataLock) -> Result<(), String> {
@@ -81,9 +82,15 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     let remote = start_remote(&daemon, &paths.data, &options).await?;
     let gateway = crate::gateway_admin::start(&daemon, options.gateway_port, options.gateway_bind).await?;
     // Holding the lock means no live daemon is using a socket left here.
+    #[cfg(unix)]
     let _ = std::fs::remove_file(&socket);
-    let local = UnixListener::bind(&socket).map_err(|e| format!("could not listen on {}: {e}", socket.display()))?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).map_err(|e| format!("could not make {} private: {e}", socket.display()))?;
+    let mut local = ipc::listen(&socket).map_err(|e| {
+        #[cfg(windows)]
+        if e.raw_os_error() == Some(5) {
+            return format!("another program is using Apex Deck's pipe name {}: {e}", socket.display());
+        }
+        format!("could not listen on {}: {e}", socket.display())
+    })?;
     // Written last: once it exists, the daemon is ready.
     let info = json!({
         "pid": std::process::id(), "port": port, "bind": options.bind.to_string(), "socket": socket.to_string_lossy(),
@@ -107,7 +114,7 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
                 Err(e) => accept_failed("a WebSocket connection", e).await,
             },
             accepted = local.accept() => match accepted {
-                Ok((stream, _)) => { tokio::spawn(serve_local(Arc::clone(&daemon), stream)); }
+                Ok(stream) => { tokio::spawn(serve_local(Arc::clone(&daemon), stream)); }
                 Err(e) => accept_failed("a socket connection", e).await,
             },
         }
@@ -115,6 +122,7 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     eprintln!("apex-daemon: stopping");
     crate::gateway_admin::stop(&daemon).await;
     drop((listener, local));
+    #[cfg(unix)]
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&info_path);
     daemon.host.wind_down(signals::WIND_DOWN).await;
@@ -165,11 +173,27 @@ async fn stdin_closes() {
 }
 
 /// Point stderr at /dev/null.
+#[cfg(unix)]
 fn quiet_stderr() {
     if let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
         use std::os::fd::AsRawFd;
         // SAFETY: dup2 onto fd 2 only replaces what stderr refers to.
         unsafe { libc::dup2(null.as_raw_fd(), libc::STDERR_FILENO) };
+    }
+}
+
+/// Rust's stderr uses the process standard handle on Windows. Keep this NUL
+/// handle alive until process exit, including while shutdown logs are written.
+#[cfg(windows)]
+fn quiet_stderr() {
+    use std::os::windows::io::{AsRawHandle, IntoRawHandle};
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
+    if let Ok(null) = std::fs::OpenOptions::new().write(true).open("NUL") {
+        // SAFETY: null owns a live writable handle; SetStdHandle does not take
+        // ownership. Leak it only after installing it as the process stderr.
+        if unsafe { SetStdHandle(STD_ERROR_HANDLE, null.as_raw_handle()) } != 0 {
+            let _ = null.into_raw_handle();
+        }
     }
 }
 
@@ -181,15 +205,9 @@ async fn accept_failed(what: &str, e: std::io::Error) {
 }
 
 /// A connection on the local socket: the same trust as stdio, for this user only.
-async fn serve_local(daemon: Arc<Daemon>, stream: UnixStream) {
-    // SAFETY: geteuid has no preconditions.
-    let me = unsafe { libc::geteuid() };
-    match stream.peer_cred() {
-        Ok(peer) if peer.uid() == me => {}
-        Ok(peer) => return eprintln!("apex-daemon: refused a socket connection from user {}", peer.uid()),
-        Err(e) => return eprintln!("apex-daemon: refused a socket connection whose user is unknown: {e}"),
-    }
-    let (read, write) = stream.into_split();
+async fn serve_local(daemon: Arc<Daemon>, stream: ipc::Stream) {
+    // The listener authenticates local peers before handing us the stream.
+    let (read, write) = ipc::split(stream);
     let (input, output) = protocol::lines(read, write);
     protocol::serve(daemon, Trust::Local, input, output).await;
 }

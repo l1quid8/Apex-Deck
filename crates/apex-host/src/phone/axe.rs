@@ -435,6 +435,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn run_tool_returns_output_or_the_last_error_line() {
         let sh = std::path::Path::new("/bin/sh");

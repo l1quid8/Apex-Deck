@@ -123,6 +123,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -147,6 +148,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "trash",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -158,6 +160,16 @@ dependencies = [
  "apex-host",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "apex-ipc-check"
+version = "0.9.0"
+dependencies = [
+ "libc",
+ "sha2 0.10.9",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

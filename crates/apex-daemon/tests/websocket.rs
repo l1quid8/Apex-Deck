@@ -2,6 +2,7 @@
 
 mod common;
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use common::*;
@@ -15,6 +16,7 @@ fn serve_writes_a_private_token_and_where_to_find_it() {
     assert_eq!(served.info["pid"], served.process.child.id());
     assert_eq!(served.info["protocol"], 1);
     let token = data.0.join("daemon-token");
+    #[cfg(unix)]
     assert_eq!(std::fs::metadata(&token).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::read_to_string(&token).unwrap().trim().len(), 64, "32 random bytes as hex");
 }

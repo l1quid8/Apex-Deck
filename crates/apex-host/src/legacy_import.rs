@@ -260,11 +260,22 @@ struct Snapshot {
 
 fn write_read_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o400).open(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o400);
+    }
+    let mut file = options.open(path)?;
     file.write_all(bytes)?;
-    file.sync_all()
+    file.sync_all()?;
+    #[cfg(windows)] {
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        file.set_permissions(permissions)?;
+    }
+    Ok(())
 }
 
 /// The copies still hash as their manifest says.
@@ -279,15 +290,13 @@ fn read_manifest(dir: &Path) -> Option<Manifest> {
 /// Copy `found` into a new read-only snapshot, or reuse an earlier one whose
 /// files and hashes match exactly. The folder appears only once complete.
 fn take_snapshot(data: &Path, found: Vec<Found>) -> Result<Option<Snapshot>, String> {
-    use std::os::unix::fs::PermissionsExt;
     if found.is_empty() { return Ok(None); }
     let mut files: Vec<ManifestFile> = found.iter().map(|f| ManifestFile {
         ledger: f.ledger.into(), source: f.source.to_string_lossy().into_owned(), file: f.file.clone(), size: f.bytes.len() as u64, sha256: sha256(&f.bytes),
     }).collect();
     files.sort_by(|a, b| (&a.ledger, &a.file).cmp(&(&b.ledger, &b.file)));
     let root = data.join(SNAPSHOTS);
-    std::fs::create_dir_all(&root).map_err(|e| format!("Could not create the legacy snapshot folder: {e}"))?;
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("Could not make the legacy snapshot folder private: {e}"))?;
+    crate::storage::prepare_private_root(&root).map_err(|e| format!("Could not prepare the legacy snapshot folder: {e}"))?;
     let mut earlier: Vec<String> = std::fs::read_dir(&root).into_iter().flatten().flatten()
         .filter_map(|entry| entry.file_name().to_str().map(str::to_owned)).filter(|name| valid_snapshot_id(name)).collect();
     earlier.sort();
@@ -314,7 +323,9 @@ fn take_snapshot(data: &Path, found: Vec<Found>) -> Result<Option<Snapshot>, Str
         write_read_only(&partial.join(MANIFEST), &serde_json::to_vec_pretty(&manifest).map_err(std::io::Error::other)?)?;
         let dir = root.join(&id);
         std::fs::rename(&partial, &dir)?;
-        std::fs::File::open(&root)?.sync_all()
+        #[cfg(unix)]
+        std::fs::File::open(&root)?.sync_all()?;
+        Ok(())
     })();
     if let Err(e) = written {
         let _ = std::fs::remove_dir_all(&partial);

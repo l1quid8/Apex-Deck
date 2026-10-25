@@ -100,11 +100,16 @@ pub async fn run_check_with_env(
     timeout: Duration,
     envs: &[(&str, &str)],
 ) -> CheckResult {
-    let mut command = if cfg!(windows) {
+    #[cfg(windows)]
+    let mut command = {
         let mut c = tokio::process::Command::new("cmd");
-        c.args(["/C", cmd]);
+        // This is shell source, so C-runtime argument escaping would corrupt
+        // embedded quotes. /S strips only the wrapper around the raw command.
+        c.args(["/D", "/S", "/C"]).raw_arg(format!("\"{cmd}\""));
         c
-    } else {
+    };
+    #[cfg(not(windows))]
+    let mut command = {
         let mut c = tokio::process::Command::new("sh");
         c.args(["-c", cmd]);
         c
@@ -407,7 +412,8 @@ mod tests {
         run_git(&["commit", "-m", "init"]);
 
         let counter_file = temp.path().join("counter.txt");
-        let counter_path = counter_file.to_string_lossy();
+        let counter_external = crate::assistant_git::external_path(&counter_file);
+        let counter_path = counter_external.to_string_lossy();
         let cmd = format!("echo 1 >> \"{}\"", counter_path);
 
         let res1 = get_or_run_main_check(&repo, &cmd, Duration::from_secs(10)).await;

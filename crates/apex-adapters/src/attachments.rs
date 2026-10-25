@@ -373,8 +373,11 @@ mod staging_tests {
         );
         let prompt = staged.gemini("describe", &images).unwrap();
         assert!(prompt.contains(&format!(
-            "@{}/image-0.png",
-            dir.to_string_lossy().replace(' ', "\\ ")
+            "@{}",
+            dir.join("image-0.png")
+                .to_string_lossy()
+                .replace('\\', "\\\\")
+                .replace(' ', "\\ ")
         )));
         assert_eq!(
             std::fs::read(dir.join("image-0.png")).unwrap(),

@@ -868,6 +868,7 @@ mod tests {
 
     /// A write that never reached the file: approve is an error, nothing is
     /// on disk, and the phone is told no.
+    #[cfg(unix)]
     #[test]
     fn approve_whose_write_never_landed_adds_nothing() {
         use std::os::unix::fs::PermissionsExt;

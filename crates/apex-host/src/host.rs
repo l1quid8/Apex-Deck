@@ -2728,17 +2728,22 @@ mod host_tests {
     }
 
     #[test]
-    fn startup_survives_a_worker_registry_entry_with_no_saved_room() {
+    fn an_orphaned_worker_registry_entry_is_preserved_during_startup() {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let data = std::env::temp_dir().join(format!("apex-host-recover-no-room-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);
         let entry = data.join("worker-processes/ghost");
         std::fs::create_dir_all(&entry).unwrap();
-        let host = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone())
-            .expect("an orphaned registry entry must not stop the daemon from starting");
+        let started = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         assert!(entry.is_dir());
-        host.shutdown();
-        drop(host);
+        #[cfg(unix)]
+        {
+            let host = started.expect("an orphaned registry entry must not stop the daemon from starting");
+            host.shutdown();
+            drop(host);
+        }
+        #[cfg(windows)]
+        assert!(matches!(started, Err(why) if why.contains("process-tree recovery is unsupported") && why.contains("manual cleanup")));
         let _ = std::fs::remove_dir_all(data);
     }
 

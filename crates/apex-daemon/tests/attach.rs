@@ -3,6 +3,7 @@
 
 mod common;
 
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
 use apex_host::lock::DataLock;
@@ -17,12 +18,18 @@ fn token(data: &std::path::Path) -> String {
 fn serve_owns_the_folder_and_listens_on_a_private_socket() {
     let data = temp_dir();
     let served = Served::start(&data.0, &[]);
-    let socket = data.0.join("daemon.sock");
-    let meta = std::fs::metadata(&socket).unwrap();
-    assert!(meta.file_type().is_socket());
-    assert_eq!(meta.permissions().mode() & 0o777, 0o600);
-    assert_eq!(std::fs::metadata(&data.0).unwrap().permissions().mode() & 0o777, 0o700);
+    let socket = apex_daemon::ipc::endpoint(&data.0).unwrap();
+    #[cfg(unix)]
+    {
+        let meta = std::fs::metadata(&socket).unwrap();
+        assert!(meta.file_type().is_socket());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(&data.0).unwrap().permissions().mode() & 0o777, 0o700);
+    }
     assert_eq!(served.info["socket"], json!(socket.to_string_lossy()));
+    let mut client = local(&data.0);
+    client.hello(None);
+    assert!(client.call("session_load", json!({})).1.is_ok());
 
     let (mut second, _, _) = Process::spawn(&["serve"], &data.0, &[]);
     assert!(!second.wait().success());
@@ -47,6 +54,7 @@ fn stdio_attaches_to_the_running_daemon_and_shares_its_rooms() {
     assert!(!ssh.stderr().contains("stops when this connection closes"), "attached, not in-process");
 }
 
+#[cfg(unix)]
 #[test]
 fn an_ssh_session_that_drops_mid_reply_does_not_stop_the_agent() {
     let data = temp_dir();
@@ -83,6 +91,7 @@ fn stdio_will_not_share_a_folder_the_desktop_app_owns() {
     assert!(process.stderr().contains("Apex Deck desktop app"), "{}", process.stderr());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_crashed_daemons_socket_is_replaced_on_the_next_start() {
     let data = temp_dir();
@@ -96,6 +105,7 @@ fn a_crashed_daemons_socket_is_replaced_on_the_next_start() {
     assert_eq!(ssh.hello(None)["boot_id"], restarted.info["boot_id"]);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_data_folder_too_deep_for_a_socket_is_named() {
     let data = temp_dir();

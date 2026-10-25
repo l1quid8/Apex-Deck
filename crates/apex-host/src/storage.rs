@@ -5,6 +5,33 @@ use apex_core::work_steps::{ReplySteps, StepKind};
 use apex_core::{ParticipantId, RoomSnapshot};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+/// Flush through the writable handle that produced the replacement. Windows
+/// requires write access for `sync_all`; reopening with `File::open` is read-only.
+pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Persist directory entries on Unix after creating or replacing a file.
+/// Windows does not support the regular-file directory open/fsync pattern;
+/// callers still flush the writable file before completing the operation.
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return std::fs::File::open(path)?.sync_all();
+    #[cfg(not(unix))] {
+        let _ = path;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SavedRoom {
     pub cwd: Option<String>,
@@ -144,22 +171,13 @@ impl Store {
     }
 
     fn write_bytes_held(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
-        use std::io::Write;
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let temp = path.with_extension("tmp");
         let result = (|| -> std::io::Result<()> {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            #[cfg(unix)] {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&temp)?;
-            file.write_all(bytes)?;
-            file.sync_all()?;
+            write_synced(&temp, bytes)?;
             std::fs::rename(&temp, path)?;
-            std::fs::File::open(parent)?.sync_all()?;
+            sync_directory(parent)?;
             Ok(())
         })();
         result.map_err(|e| format!("Could not save data: {e}"))
@@ -528,7 +546,7 @@ impl Store {
         if let Err(why) = self.copy_steps_held(source, target, fork.snapshot.transcript.len()) {
             eprintln!("[apex-deck] could not copy saved steps from {source} to {target}: {why}");
         }
-        std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
+        sync_directory(parent).map_err(|e| e.to_string())
     }
 
     /// Save a new room `id`. Refuses an id that already has a saved room, or
@@ -544,7 +562,7 @@ impl Store {
         if std::fs::symlink_metadata(&path).is_ok(){return Err("a thread with that id already exists".into());}
         self.save_room_authority(id,saved)?;
         write_new(&path, saved)?;
-        std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
+        sync_directory(parent).map_err(|e| e.to_string())
     }
 
     pub fn delete_room(&self, id: &str) -> Result<(), String> {
@@ -640,13 +658,7 @@ fn steps_entry(record: &ReplySteps, offset: u64, len: u64) -> StepsIndexEntry {
 
 /// Create the host-owned data directory and remove group/other access.
 pub(crate) fn prepare_private_root(root: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(root).map_err(|e| format!("Could not create private data folder: {e}"))?;
-    #[cfg(unix)] {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("Could not make private data folder private: {e}"))?;
-    }
-    Ok(())
+    crate::private_data::prepare(root).map_err(|e| format!("Could not prepare private data folder: {e}"))
 }
 
 /// Write a room file that must not exist yet, private to this user, flushed to disk.

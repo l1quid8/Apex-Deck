@@ -1,0 +1,17 @@
+[package]
+name = "apex-ipc-check"
+description = "Runs the daemon's real IPC tests independently of other platform code."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+sha2 = "0.10"
+tokio.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_Memory", "Win32_System_Pipes"] }

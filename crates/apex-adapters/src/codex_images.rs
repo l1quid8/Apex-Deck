@@ -393,6 +393,7 @@ mod tests {
         std::fs::create_dir_all(root.join("generated_images").join(ID)).unwrap();
         root
     }
+    #[cfg(unix)]
     #[test]
     fn reads_one_png_and_rejects_oversize_and_multiple_files() {
         let root = fixture();
@@ -408,6 +409,21 @@ mod tests {
             .set_len(MAX_IMAGE + 1)
             .unwrap();
         assert!(read_image(&root, ID).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(not(unix))]
+    #[test]
+    fn refuses_image_reads_without_secure_file_access() {
+        let root = fixture();
+        std::fs::write(
+            root.join("generated_images").join(ID).join("image.png"),
+            b"\x89PNG\r\n\x1a\nfixture",
+        )
+        .unwrap();
+        assert_eq!(
+            read_image(&root, ID).unwrap_err(),
+            "ChatGPT avatar generation requires secure Unix file access"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
     #[cfg(unix)]

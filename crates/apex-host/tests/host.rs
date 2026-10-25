@@ -17,6 +17,22 @@ struct Running {
     seen: Arc<Mutex<Vec<Envelope>>>,
 }
 
+// A synchronous command or runtime teardown can block without yielding to a
+// Tokio timeout. Bound the complete fixture, including teardown, from outside
+// its thread so CI reports the last completed phase instead of waiting forever.
+fn within_fixture_deadline(test: impl FnOnce() + Send + 'static) {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+        let _ = send.send(result);
+    });
+    match receive.recv_timeout(Duration::from_secs(90)) {
+        Ok(Ok(())) => {}
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(error) => panic!("host integration fixture did not finish within 90 seconds: {error}"),
+    }
+}
+
 #[test]
 fn an_unreadable_process_recovery_registry_refuses_host_startup() {
     let data = std::env::temp_dir().join(format!("apex-host-recovery-obstructed-{}", std::process::id()));
@@ -78,6 +94,23 @@ impl Running {
 
     fn events(&self) -> Vec<HostEvent> {
         self.seen.lock().unwrap().iter().map(|e| e.event.clone()).collect()
+    }
+
+    fn terminal_output(&self, terminal: &str) -> String {
+        self.events().into_iter().filter_map(|event| match event {
+            HostEvent::PtyData { id, data, .. } if id == terminal => Some(data),
+            _ => None,
+        }).collect()
+    }
+
+    fn wait_for_terminal_output(&self, terminal: &str, needle: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let output = self.terminal_output(terminal);
+            if output.contains(needle) { return; }
+            assert!(Instant::now() < deadline, "terminal {terminal} never produced {needle:?}; output: {output:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Wait up to `limit` for an event that `test` accepts.
@@ -165,6 +198,7 @@ fn forgetting_an_always_allowed_rule_returns_emits_and_persists() {
 
 #[test]
 fn a_chat_a_terminal_an_approval_and_a_restart() {
+    within_fixture_deadline(|| {
     let data = std::env::temp_dir().join(format!("apex-host-e2e-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     let options = serde_json::to_value(RoomOptions::default()).unwrap();
@@ -194,11 +228,17 @@ fn a_chat_a_terminal_an_approval_and_a_restart() {
 
     // A terminal: what it prints arrives as pty-data, and killing it ends it.
     first.call(json!({ "cmd": "pty_spawn", "args": { "id": "term", "agent": null, "cwd": null, "cols": 80, "rows": 24 } })).unwrap();
-    first.call(json!({ "cmd": "pty_write", "args": { "id": "term", "data": "echo apex-$((40+2))\n" } })).unwrap();
-    assert!(
-        first.wait_for(Duration::from_secs(20), |e| matches!(e, HostEvent::PtyData { id, data, .. } if id == "term" && data.contains("apex-42"))),
-        "the terminal's output arrives"
-    );
+    #[cfg(windows)]
+    {
+        // portable-pty requests the initial cursor position with ConPTY's
+        // INHERIT_CURSOR flag. Stand in for the terminal renderer's response
+        // before sending keyboard input, otherwise the shell can wait forever.
+        first.wait_for_terminal_output("term", "\u{1b}[6n");
+        first.call(json!({"cmd":"pty_write","args":{"id":"term","data":"\u{1b}[1;1R"}})).unwrap();
+    }
+    let terminal_input = if cfg!(windows) { "set /a apex_host_answer=6*7\r\necho apex-%apex_host_answer%\r\n" } else { "echo apex-$((40+2))\n" };
+    first.call(json!({ "cmd": "pty_write", "args": { "id": "term", "data": terminal_input } })).unwrap();
+    first.wait_for_terminal_output("term", "apex-42");
     first.call(json!({ "cmd": "pty_kill", "args": { "id": "term" } })).unwrap();
 
     first.call(json!({ "cmd": "session_save", "args": { "session": { "version": 1, "panes": [{ "id": "t1", "kind": "chat" }] } } })).unwrap();
@@ -214,15 +254,18 @@ fn a_chat_a_terminal_an_approval_and_a_restart() {
     second.host.shutdown();
 
     let _ = std::fs::remove_dir_all(&data);
+    });
 }
 
 /// Whether `pid` is still a live process (a zombie waiting to be reaped is not).
+#[cfg(unix)]
 fn alive(pid: &str) -> bool {
     let out = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
     let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
     !state.is_empty() && !state.starts_with('Z')
 }
 
+#[cfg(unix)]
 #[test]
 fn winding_down_stops_running_agents_and_keeps_their_chat() {
     let data = std::env::temp_dir().join(format!("apex-host-wind-down-{}", std::process::id()));
@@ -277,6 +320,7 @@ fn winding_down_stops_running_agents_and_keeps_their_chat() {
 
 /// A window that reloads mid-turn opens its chats again; the turn running
 /// in the host must be the one it then sees and can stop.
+#[cfg(unix)]
 #[test]
 fn opening_a_room_again_mid_turn_keeps_the_running_room() {
     let data = std::env::temp_dir().join(format!("apex-host-reopen-{}", std::process::id()));
@@ -483,17 +527,24 @@ fn importing_with_replace_swaps_an_unstarted_room_for_one_in_another_folder() {
 // write fails, so a failed save leaves both the saved room and its manifest as they were.
 #[test]
 fn a_replace_that_cannot_be_saved_leaves_the_thread_open_and_saved_where_it_was() {
-    let data = std::env::temp_dir().join(format!("apex-host-replace-fails-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&data);
-    let elsewhere = data.join("elsewhere");
+    within_fixture_deadline(|| {
+    let root = std::env::temp_dir().join(format!("apex-host-replace-fails-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // Keep the project separate from the host's data. Otherwise each room's
+    // checkpoints can snapshot the other room's changing snapshot repository.
+    let data = root.join("data");
+    let original = root.join("original");
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&original).unwrap();
     std::fs::create_dir_all(&elsewhere).unwrap();
     let host = Running::start(&data);
+    eprintln!("replacement fixture: source turn");
     // An unstarted fork: history from its source, open in its first folder.
-    host.call(json!({"cmd":"room_create","args":{"id":"source","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default(),"cwd":data.to_string_lossy()}})).unwrap();
+    host.call(json!({"cmd":"room_create","args":{"id":"source","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default(),"cwd":original.to_string_lossy()}})).unwrap();
     host.call(json!({"cmd":"room_post","args":{"id":"source","text":"@bot first"}})).unwrap();
     assert!(host.wait_for(Duration::from_secs(5), |e| matches!(e, HostEvent::Room { room, event: apex_core::RoomEvent::Idle, .. } if room == "source")));
     let snapshot = host.call(json!({"cmd":"room_state","args":{"id":"source"}})).unwrap()["snapshot"].clone();
-    host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":snapshot,"cwd":data.to_string_lossy()}})).unwrap();
+    host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":snapshot,"cwd":original.to_string_lossy()}})).unwrap();
     host.call(json!({"cmd":"room_create","args":{"id":"fork","participants":[],"options":RoomOptions::default()}})).unwrap();
 
     // Force the atomic writer to fail opening its temporary file. A directory
@@ -501,6 +552,7 @@ fn a_replace_that_cannot_be_saved_leaves_the_thread_open_and_saved_where_it_was(
     let rooms = data.join("saved-chats-v1").join("rooms");
     let temp_file = rooms.join("666f726b.tmp");
     std::fs::create_dir(&temp_file).unwrap();
+    eprintln!("replacement fixture: refuse failed save");
     let moved = host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":snapshot,"cwd":elsewhere.to_string_lossy(),"replace":true}}));
     std::fs::remove_dir(&temp_file).unwrap();
     assert!(moved.is_err());
@@ -508,13 +560,17 @@ fn a_replace_that_cannot_be_saved_leaves_the_thread_open_and_saved_where_it_was(
     // Still saved with its history in its first folder, and still open there.
     let store = apex_host::storage::Store::new(data.join("saved-chats-v1"));
     let saved = store.room("fork").unwrap().unwrap();
-    assert_eq!(saved.cwd.as_deref(), Some(data.to_string_lossy().as_ref()));
+    assert_eq!(saved.cwd.as_deref(), Some(original.to_string_lossy().as_ref()));
     assert_eq!(saved.snapshot.transcript.len(), 2);
+    eprintln!("replacement fixture: original fork still answers");
     host.call(json!({"cmd":"room_post","args":{"id":"fork","text":"@bot again"}})).unwrap();
     assert!(host.wait_for(Duration::from_secs(5), |e| matches!(e, HostEvent::Room { room, event: apex_core::RoomEvent::Idle, .. } if room == "fork")));
     assert_eq!(store.room("fork").unwrap().unwrap().snapshot.transcript.len(), 4);
+    eprintln!("replacement fixture: shutdown and cleanup");
     host.host.shutdown();
-    let _ = std::fs::remove_dir_all(data);
+    drop(host);
+    let _ = std::fs::remove_dir_all(root);
+    });
 }
 
 fn steps_host(name: &str) -> (Running, PathBuf) {
