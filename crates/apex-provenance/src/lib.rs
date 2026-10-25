@@ -1,7 +1,14 @@
 //! Root-owned submission authority. No shell execution and no general file API.
+#[cfg(unix)]
 pub mod io;
+#[cfg(unix)]
 mod ownership;
+#[cfg(unix)]
 pub use ownership::{HostOwnership, HostOwnershipError, prepare_host_lock};
+#[cfg(any(not(unix), test))]
+mod unavailable;
+#[cfg(not(unix))]
+pub use unavailable::{io, prepare_host_lock, HostOwnership, HostOwnershipError};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use ring::{
     rand::{SecureRandom, SystemRandom},

@@ -21,6 +21,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p apex-core -p apex-adapters -p apex-host -p apex-daemon --features apex-daemon/remote
+      - name: Test provenance platform boundary
+        run: cargo test --locked -p apex-provenance --lib
       - name: Forged-storage tests against apex-host built without test-support
         run: cargo test --locked -p apex-host-production-check
       - name: Test the standalone mobile bridge with its committed lockfile
@@ -48,6 +50,9 @@ jobs:
       - name: Test apex-daemon
         if: ${{ !cancelled() }}
         run: cargo test --locked --no-fail-fast -p apex-daemon --features remote
+      - name: Test provenance platform boundary
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p apex-provenance --lib
 
   build:
     needs: test

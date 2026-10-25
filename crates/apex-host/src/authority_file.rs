@@ -32,6 +32,7 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
 #[cfg(any(test, feature = "test-support"))]
 fn local_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
     let path = &fixture_path(path);
     if let Some(parent) = path.parent() {
@@ -39,16 +40,17 @@ fn local_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     let temp = path.with_extension(format!("authority-{}.pending", std::process::id()));
     let result = (|| -> io::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temp)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&temp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)?;
-        std::fs::File::open(path.parent().unwrap())?.sync_all()
+        #[cfg(unix)]
+        std::fs::File::open(path.parent().unwrap())?.sync_all()?;
+        Ok(())
     })();
     if result.is_err() {
         // A failed write must not leave an uncommitted temp file behind.
@@ -120,4 +122,33 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         apex_provenance::io::document(&folder, &name, Some((revision, value))).map_err(error)?;
     revisions.insert(folder.join(name), result.revision);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn fixture_updates_replace_protected_document_without_touching_legacy_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "apex-authority-file-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("assistant-tasks-v1.json");
+        std::fs::write(&path, b"legacy").unwrap();
+        write(&path, b"first").unwrap();
+        write(&path, b"replacement").unwrap();
+        assert_eq!(read(&path).unwrap(), b"replacement");
+        assert_eq!(std::fs::read(&path).unwrap(), b"legacy");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(fixture_path(&path)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

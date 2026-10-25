@@ -262,9 +262,17 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(tokio::net::TcpStream::connect((config.bind, port))
-            .await
-            .is_err());
+        // As with rebind above, a concurrent fork can briefly retain the listener.
+        tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            while tokio::net::TcpStream::connect((config.bind, port))
+                .await
+                .is_ok()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("disabled gateway still accepts connections after inherited listeners settle");
         assert_eq!(
             start(&daemon, None, config.bind).await.unwrap()["enabled"],
             false
