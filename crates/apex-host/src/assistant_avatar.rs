@@ -103,15 +103,10 @@ fn save(host: &Host, jobs: &[Job]) -> Result<(), String> {
     let dir = host.data_dir().join("assistant-avatars");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let p = dir.join("jobs.tmp");
-    std::fs::write(&p, serde_json::to_vec(jobs).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    std::fs::File::open(&p)
-        .and_then(|f| f.sync_all())
+    crate::storage::write_synced(&p, &serde_json::to_vec(jobs).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     std::fs::rename(p, dir.join("jobs.json")).map_err(|e| e.to_string())?;
-    std::fs::File::open(dir)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())
+    crate::storage::sync_directory(&dir).map_err(|e| e.to_string())
 }
 fn normalize(bytes: &[u8]) -> Result<Vec<u8>, String> {
     if bytes.len() > 10 * 1024 * 1024 {
@@ -578,10 +573,7 @@ impl Host {
                         .join("assistant-avatars")
                         .join(format!("{sha}.png"));
                     let tmp = path.with_extension("tmp");
-                    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
-                    std::fs::File::open(&tmp)
-                        .and_then(|f| f.sync_all())
-                        .map_err(|e| e.to_string())?;
+                    crate::storage::write_synced(&tmp, &bytes).map_err(|e| e.to_string())?;
                     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
                     j.candidate = Some(AssistantAvatarAsset {
                         asset_id: sha.clone(),
@@ -715,7 +707,7 @@ impl Host {
                 })?;
             }
             // An immutable per-owner/generation tombstone survives ledger loss.
-            // Both the file and its directory are durable before provider dispatch.
+            // Flush the reservation before dispatch; Unix also flushes its directory.
             use std::io::Write;
             let mut marker = std::fs::OpenOptions::new()
                 .write(true)
@@ -726,9 +718,7 @@ impl Host {
                 .write_all(&serde_json::to_vec(&job).map_err(|e| e.to_string())?)
                 .and_then(|_| marker.sync_all())
                 .map_err(|e| e.to_string())?;
-            std::fs::File::open(&dispatch_dir)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| e.to_string())?;
+            crate::storage::sync_directory(&dispatch_dir).map_err(|e| e.to_string())?;
             list.push(job.clone());
             save(self, &list)?;
             ACTIVE
@@ -1218,7 +1208,7 @@ mod tests {
             .join("assistant-avatars")
             .join(format!("{}.png", job.candidate.unwrap().sha256));
         host.personal_avatar_cancel(owner, "orphan".into()).unwrap();
-        std::fs::File::open(&path)
+        std::fs::OpenOptions::new().write(true).open(&path)
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
             .unwrap();

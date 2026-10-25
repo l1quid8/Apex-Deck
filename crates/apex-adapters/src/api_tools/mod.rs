@@ -943,9 +943,15 @@ mod tests {
         let quiet = |_: Progress<'_>| {};
         let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &NoApprover, &quiet)
             .with_cwd(Some(dir_request.clone()));
-        let call = ToolCall { id: "1".into(), name: "run_command".into(), arguments: json!({"command": "pwd -P"}).to_string(), extra: None };
+        // Use the selected shell's built-in command, not a PATH-provided pwd
+        // that can print an MSYS path when the shell is Windows cmd.
+        let command = if cfg!(unix) { "pwd -P" } else { "cd" };
+        let call = ToolCall { id: "1".into(), name: "run_command".into(), arguments: json!({"command": command}).to_string(), extra: None };
         let output = turn.run(&call).await;
-        assert!(output.contains(&dir_request.to_string_lossy().to_string()), "expected {dir_request:?}, got {output}");
+        assert!(
+            output.lines().any(|line| std::path::Path::new(line.trim()).canonicalize().is_ok_and(|cwd| cwd == dir_request)),
+            "expected {dir_request:?}, got {output}"
+        );
         let _ = std::fs::remove_dir_all(dir_context);
         let _ = std::fs::remove_dir_all(dir_request);
     }

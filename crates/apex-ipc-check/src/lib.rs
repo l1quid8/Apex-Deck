@@ -14,5 +14,10 @@ pub mod private_data;
 
 #[cfg(all(test, windows))]
 #[allow(dead_code)]
+#[path = "../../apex-host/src/lock.rs"]
+mod lock;
+
+#[cfg(all(test, windows))]
+#[allow(dead_code)]
 #[path = "../../apex-daemon/src/files.rs"]
 mod files;

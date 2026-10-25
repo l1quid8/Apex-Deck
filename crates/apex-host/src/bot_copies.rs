@@ -13,6 +13,19 @@ use std::{
 
 pub const SHARED_SHORTCUT_PATHS: &[&str] = &["node_modules"];
 
+fn file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    { std::os::unix::fs::symlink(target, link) }
+    #[cfg(windows)]
+    {
+        let _ = (target, link);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Git symlink materialization is not supported on Windows",
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum CopyState {
@@ -59,7 +72,11 @@ fn run_git(
     cmd.current_dir(root);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     for (k, v) in envs {
-        cmd.env(k, v);
+        if *k == "GIT_INDEX_FILE" {
+            cmd.env(k, crate::assistant_git::external_path(Path::new(v)).as_os_str());
+        } else {
+            cmd.env(k, v);
+        }
     }
     cmd.args(args);
     let out = cmd
@@ -213,7 +230,8 @@ pub(crate) fn validate_identifier(name: &str, kind: &str) -> Result<(), String> 
 }
 
 fn cleanup_copy_artifacts(root: &Path, data: &Path, thread: &str, bot: &str, work: &Path) {
-    let work_str = work.to_str().unwrap_or_default();
+    let work_path = crate::assistant_git::external_path(work);
+    let work_str = work_path.to_str().unwrap_or_default();
     let _ = run_git(root, &[], &["worktree", "unlock", work_str]);
     let _ = run_git(root, &[], &["worktree", "remove", "--force", "--force", work_str]);
     let _ = run_git(root, &[], &["worktree", "prune"]);
@@ -259,7 +277,8 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
 
         run_git(&root, &[], &["update-ref", &ref_name, &base])?;
 
-        let work_str = work.to_str().ok_or("Invalid UTF-8 in worktree path")?;
+        let work_path = crate::assistant_git::external_path(&work);
+        let work_str = work_path.to_str().ok_or("Invalid UTF-8 in worktree path")?;
         run_git(
             &root,
             &[],
@@ -282,16 +301,9 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
                 let _ = std::fs::remove_file(&link);
                 let _ = std::fs::remove_dir_all(&link);
             }
-            #[cfg(unix)]
-            {
-                std::os::unix::fs::symlink(&target, &link).map_err(|e| {
-                    format!(
-                        "Could not symlink {} to {}: {e}",
-                        target.display(),
-                        link.display()
-                    )
-                })?;
-            }
+            crate::git_changes::link_dir(&target, &link).map_err(|e| {
+                format!("Could not link {} to {}: {e}", target.display(), link.display())
+            })?;
         }
 
         let copy = BotCopy {
@@ -388,6 +400,26 @@ struct DiffEntry {
     status: char,
     #[allow(dead_code)]
     path: String,
+}
+
+#[cfg(windows)]
+fn check_windows_materialization<'a>(
+    entries: impl IntoIterator<Item = (&'a String, &'a DiffEntry)>,
+) -> Result<(), String> {
+    // Git mode 120000 does not record whether a link targets a directory.
+    // Refuse before any destination writes rather than create a broken Windows
+    // file link, or remove an existing destination before discovering this.
+    for (path, entry) in entries {
+        if entry.new_mode == "120000"
+            && !SHARED_SHORTCUT_PATHS.contains(&path.as_str())
+            && !path.starts_with("node_modules/")
+        {
+            return Err(format!(
+                "Git symlink materialization is not supported on Windows: {path}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn diff_trees(
@@ -584,6 +616,9 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
         });
     }
 
+    #[cfg(windows)]
+    check_windows_materialization(diff_m.iter().filter(|(path, _)| !diff_c.contains_key(*path)))?;
+
     let mut all_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for p in diff_m.keys() {
         all_paths.insert(p.clone());
@@ -622,15 +657,11 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
                         .map_err(|e| format!("Could not remove existing {}: {e}", target.display()))?;
                 }
                 if m.new_mode == "120000" {
-                    #[cfg(unix)]
-                    {
-                        let link_target = String::from_utf8(bytes).map_err(|e| {
-                            format!("Invalid utf-8 in symlink {}: {e}", target.display())
-                        })?;
-                        std::os::unix::fs::symlink(Path::new(&link_target), &target).map_err(
-                            |e| format!("Could not symlink {}: {e}", target.display()),
-                        )?;
-                    }
+                    let link_target = String::from_utf8(bytes).map_err(|e| {
+                        format!("Invalid utf-8 in symlink {}: {e}", target.display())
+                    })?;
+                    file_symlink(Path::new(&link_target), &target)
+                        .map_err(|e| format!("Could not symlink {}: {e}", target.display()))?;
                 } else {
                     std::fs::write(&target, bytes)
                         .map_err(|e| format!("Could not write {}: {e}", target.display()))?;
@@ -783,6 +814,9 @@ pub fn apply_copy_to_main(copy: &BotCopy) -> Result<FoldOutcome, String> {
     let c_prime = snapshot_tree(work)?;
     let diff = diff_trees(&root, &base, &c_prime)?;
 
+    #[cfg(windows)]
+    check_windows_materialization(&diff)?;
+
     let mut files = Vec::new();
 
     for (path, entry) in &diff {
@@ -819,15 +853,12 @@ pub fn apply_copy_to_main(copy: &BotCopy) -> Result<FoldOutcome, String> {
                 let _ = std::fs::remove_file(&tmp);
             }
             if entry.new_mode == "120000" {
-                #[cfg(unix)]
-                {
-                    let link_target = String::from_utf8(bytes).map_err(|e| {
-                        format!("Invalid utf-8 in symlink {}: {e}", target.display())
-                    })?;
-                    std::os::unix::fs::symlink(Path::new(&link_target), &tmp).map_err(|e| {
-                        format!("Could not create symlink at {}: {e}", tmp.display())
-                    })?;
-                }
+                let link_target = String::from_utf8(bytes).map_err(|e| {
+                    format!("Invalid utf-8 in symlink {}: {e}", target.display())
+                })?;
+                file_symlink(Path::new(&link_target), &tmp).map_err(|e| {
+                    format!("Could not create symlink at {}: {e}", tmp.display())
+                })?;
             } else {
                 std::fs::write(&tmp, bytes)
                     .map_err(|e| format!("Could not write to {}: {e}", tmp.display()))?;
@@ -1427,7 +1458,10 @@ mod tests {
         assert!(!listing.lines().any(|l| l.starts_with("node_modules")), "{listing}");
 
         let copy = create_copy(&root, &data, "t1", "bot-a").unwrap();
-        assert!(copy.work.join("node_modules").symlink_metadata().unwrap().file_type().is_symlink());
+        let shared = copy.work.join("node_modules");
+        assert!(fs::read_link(&shared).is_ok(), "shared dependencies must be a link or junction");
+        assert_eq!(fs::canonicalize(&shared).unwrap(), fs::canonicalize(root.join("node_modules")).unwrap());
+        assert_eq!(fs::read_to_string(shared.join("pkg/index.js")).unwrap(), "x");
     }
 
     #[test]
@@ -1552,16 +1586,19 @@ mod tests {
         // Verify git worktree list --porcelain
         let wt_list = run_git(&root, &[], &["worktree", "list", "--porcelain"]).unwrap();
         let work_canonical = fs::canonicalize(&copy.work).unwrap();
-        let work_str = work_canonical.to_str().unwrap();
+        let listed_worktree = wt_list.lines().find_map(|line| {
+            let path = line.strip_prefix("worktree ")?;
+            (fs::canonicalize(path).ok().as_ref() == Some(&work_canonical)).then_some(path)
+        });
         assert!(
-            wt_list.contains(work_str),
+            listed_worktree.is_some(),
             "Worktree list does not contain work dir: {wt_list}"
         );
         assert!(wt_list.contains("locked"), "Worktree is not marked locked");
 
         // Verify work/node_modules is a symlink pointing to root/node_modules
         let work_nm = copy.work.join("node_modules");
-        assert!(work_nm.is_symlink(), "work/node_modules is not a symlink");
+        assert!(fs::read_link(&work_nm).is_ok(), "work/node_modules is not a link or junction");
         let link_target = fs::read_link(&work_nm).unwrap();
         assert_eq!(
             fs::canonicalize(link_target).unwrap(),
@@ -2015,7 +2052,7 @@ mod tests {
         fs::write(pkg_dir.join("pkg.txt"), "root pkg\n").unwrap();
 
         let copy = create_copy(&root, &data, "t-nm", "b-nm").unwrap();
-        assert!(copy.work.join("node_modules").is_symlink());
+        assert!(fs::read_link(copy.work.join("node_modules")).is_ok());
 
         fs::write(copy.work.join("file.txt"), "normal file\n").unwrap();
 
@@ -2063,6 +2100,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn fold_keeps_symlinks_as_links() {
         let (_tmp, root, data) = init_repo("fold-symlinks");
@@ -2105,6 +2143,61 @@ mod tests {
             fs::read_link(&link_dangling).unwrap(),
             PathBuf::from("non_existent.txt")
         );
+    }
+
+    fn stage_directory_link_without_symlink_privileges(repo: &Path) {
+        run_git(repo, &[], &["config", "core.symlinks", "false"]).unwrap();
+        fs::write(repo.join("z-link"), "target-dir").unwrap();
+        let blob = run_git(repo, &[], &["hash-object", "-w", "--", "z-link"]).unwrap();
+        run_git(repo, &[], &["update-index", "--add", "--cacheinfo", "120000", &blob, "z-link"]).unwrap();
+        let snapshot = snapshot_tree(repo).unwrap();
+        let entry = run_git(repo, &[], &["ls-tree", &snapshot, "--", "z-link"]).unwrap();
+        assert!(entry.starts_with("120000 "), "fixture lost symlink mode: {entry}");
+    }
+
+    #[test]
+    fn snapshots_preserve_git_symlink_mode_without_os_symlink_privileges() {
+        let (_tmp, root, _data) = init_repo("link-index-mode");
+        fs::create_dir(root.join("target-dir")).unwrap();
+        stage_directory_link_without_symlink_privileges(&root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_merge_refuses_directory_links_before_replacing_any_files() {
+        let (_tmp, root, data) = init_repo("merge-directory-link");
+        fs::create_dir(root.join("target-dir")).unwrap();
+        fs::write(root.join("target-dir/payload.txt"), "target payload").unwrap();
+        fs::write(root.join("z-link"), "existing file").unwrap();
+        fs::write(root.join("a.txt"), "before").unwrap();
+        let copy = create_copy(&root, &data, "thread", "bot").unwrap();
+        fs::write(root.join("a.txt"), "after").unwrap();
+        stage_directory_link_without_symlink_privileges(&root);
+
+        let error = merge_main_into_copy(&copy).unwrap_err();
+        assert!(error.contains("symlink materialization is not supported on Windows"), "{error}");
+        assert_eq!(fs::read(copy.work.join("z-link")).unwrap(), b"existing file");
+        assert_eq!(fs::read(copy.work.join("a.txt")).unwrap(), b"before");
+        assert_eq!(fs::read(copy.work.join("target-dir/payload.txt")).unwrap(), b"target payload");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_apply_refuses_directory_links_before_replacing_any_files() {
+        let (_tmp, root, data) = init_repo("apply-directory-link");
+        fs::create_dir(root.join("target-dir")).unwrap();
+        fs::write(root.join("target-dir/payload.txt"), "target payload").unwrap();
+        fs::write(root.join("z-link"), "existing file").unwrap();
+        fs::write(root.join("a.txt"), "before").unwrap();
+        let copy = create_copy(&root, &data, "thread", "bot").unwrap();
+        fs::write(copy.work.join("a.txt"), "after").unwrap();
+        stage_directory_link_without_symlink_privileges(&copy.work);
+
+        let error = apply_copy_to_main(&copy).unwrap_err();
+        assert!(error.contains("symlink materialization is not supported on Windows"), "{error}");
+        assert_eq!(fs::read(root.join("z-link")).unwrap(), b"existing file");
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"before");
+        assert_eq!(fs::read(root.join("target-dir/payload.txt")).unwrap(), b"target payload");
     }
 
     #[cfg(unix)]

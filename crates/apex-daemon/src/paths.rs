@@ -147,6 +147,7 @@ mod tests {
         assert_eq!(data, std::env::current_dir().unwrap().join("deck-data"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn on_linux_xdg_data_home_is_honoured() {
         assert_eq!(

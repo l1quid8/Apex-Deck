@@ -98,14 +98,14 @@ fn git(store: &Path, cwd: &Path, index: Option<&Path>, args: &[&str], input: Opt
     let mut command = Command::new("git");
     command.args(["-c", "core.quotePath=false", "-c", "core.excludesFile=", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false"])
         .args(args)
-        .env("GIT_DIR", store)
-        .env("GIT_WORK_TREE", cwd)
+        .env("GIT_DIR", crate::assistant_git::external_path(store).as_os_str())
+        .env("GIT_WORK_TREE", crate::assistant_git::external_path(cwd).as_os_str())
         .current_dir(cwd)
         .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     if let Some(path) = crate::agents::login_path() { command.env("PATH", path); }
-    match index { Some(index) => { command.env("GIT_INDEX_FILE", index); }, None => { command.env_remove("GIT_INDEX_FILE"); } }
+    match index { Some(index) => { command.env("GIT_INDEX_FILE", crate::assistant_git::external_path(index).as_os_str()); }, None => { command.env_remove("GIT_INDEX_FILE"); } }
     let mut child = command.spawn().map_err(|e| format!("could not run git: {e}"))?;
     if let Some(input) = input { child.stdin.take().unwrap().write_all(input).map_err(|e| e.to_string())?; }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
@@ -571,15 +571,32 @@ mod tests {
         assert_eq!(files, [("a.txt", false, false), ("shared.txt", true, true)]);
 
         let paths: Vec<String> = plan.files.iter().map(|f| f.path.clone()).collect();
-        assert!(snaps.restore("t", &cwd, 0, None, &paths).unwrap().is_empty());
+        let failed = snaps.restore("t", &cwd, 0, None, &paths).unwrap();
+        #[cfg(unix)]
+        assert!(failed.is_empty());
+        #[cfg(not(unix))]
+        assert_eq!(failed, vec!["shared.txt"], "unsupported safe deletion must be reported");
         assert_eq!(std::fs::read_to_string(cwd.join("a.txt")).unwrap(), "one\n");
         assert_eq!(std::fs::read_to_string(cwd.join("dist/js/out.js")).unwrap(), "built", "folders the project ignores are left as they are");
+        #[cfg(unix)]
         assert!(!cwd.join("shared.txt").exists());
+        #[cfg(not(unix))]
+        assert_eq!(std::fs::read_to_string(cwd.join("shared.txt")).unwrap(), "human\n");
         assert_eq!(std::fs::read_to_string(cwd.join("mine.txt")).unwrap(), "human\n", "someone else's file is untouched");
         assert_eq!(std::fs::read_to_string(cwd.join("node_modules/x/i.js")).unwrap(), "v2", "package folders are left as they are");
 
         snaps.rewind("t", &cwd, 0, None, Kind::Restore).unwrap();
         assert!(snaps.plan("t", &cwd, 0, None).files.is_empty(), "nothing of this thread's is left to undo");
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn checkpoint_deletion_refuses_unsupported_platform_without_touching_files() {
+        let (cwd, _snaps) = folder("refuse-delete");
+        std::fs::write(cwd.join("keep.txt"), "human").unwrap();
+        let error = remove_project_file(&cwd, "keep.txt").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read_to_string(cwd.join("keep.txt")).unwrap(), "human");
     }
 
     #[test]

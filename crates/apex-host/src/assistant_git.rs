@@ -10,6 +10,38 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(1);
 const MAX_NEW_FILE: u64 = 50 * 1024 * 1024;
 
+/// Git for Windows does not accept Rust's verbatim canonical paths as worktree
+/// arguments. Keep native paths internally and adapt only at the CLI boundary.
+pub(crate) fn external_path(path: &Path) -> std::borrow::Cow<'_, Path> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use std::path::Prefix;
+        let prefix = match path.components().next() {
+            Some(Component::Prefix(prefix)) => prefix.kind(),
+            _ => return std::borrow::Cow::Borrowed(path),
+        };
+        let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        let plain = match prefix {
+            Prefix::VerbatimDisk(_) => wide[4..].to_vec(),
+            Prefix::VerbatimUNC(_, _) => {
+                let mut plain = vec![b'\\' as u16, b'\\' as u16];
+                plain.extend_from_slice(&wide[8..]);
+                plain
+            }
+            // Device and other verbatim namespaces are not ordinary paths.
+            _ => return std::borrow::Cow::Borrowed(path),
+        };
+        return std::borrow::Cow::Owned(PathBuf::from(std::ffi::OsString::from_wide(&plain)));
+    }
+    #[cfg(not(windows))]
+    std::borrow::Cow::Borrowed(path)
+}
+
+fn git_path(path: &Path) -> Result<String, String> {
+    external_path(path).to_str().map(str::to_owned).ok_or_else(|| "Non-UTF-8 Git path".into())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitSnapshot {
@@ -58,7 +90,7 @@ fn run_git(
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0");
     if let Some(index) = index {
-        command.env("GIT_INDEX_FILE", index);
+        command.env("GIT_INDEX_FILE", external_path(index).as_os_str());
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     if input.is_some() {
@@ -404,7 +436,7 @@ pub fn prepare_worktree(
             "worktree",
             "add",
             "--detach",
-            path.to_str().ok_or("Non-UTF-8 worktree path")?,
+            &git_path(&path)?,
             &snapshot.commit,
         ],
     )?;
@@ -532,7 +564,7 @@ pub fn stage_integration(
             "worktree",
             "add",
             "--detach",
-            scratch_path.to_str().ok_or("Non-UTF-8 scratch path")?,
+            &git_path(&scratch_path)?,
             &merged_commit,
         ],
     )?;
@@ -622,7 +654,7 @@ fn write_journal(path: &Path, journal: &ApplyJournal) -> Result<(), String> {
     }
     std::fs::rename(temp, path).map_err(|e| e.to_string())?;
     #[cfg(unix)]
-    if let Some(parent) = path.parent() { std::fs::File::open(parent).and_then(|file|file.sync_all()).map_err(|e|e.to_string())?; }
+    if let Some(parent) = path.parent() { crate::storage::sync_directory(parent).map_err(|e|e.to_string())?; }
     Ok(())
 }
 
@@ -839,7 +871,7 @@ pub fn reconcile_interrupted_apply(
                 "worktree",
                 "add",
                 "--detach",
-                recovery_path.to_str().ok_or("Non-UTF-8 recovery path")?,
+                &git_path(&recovery_path)?,
                 &plan.current_snapshot.commit,
             ],
         )?;
@@ -905,7 +937,7 @@ pub fn reconcile_interrupted_apply(
             "worktree",
             "remove",
             "--force",
-            recovery_path.to_str().ok_or("Non-UTF-8 recovery path")?,
+            &git_path(&recovery_path)?,
         ],
     )?;
     journal.phase = "reconciled".into();
@@ -941,7 +973,7 @@ pub fn archive_worktree(primary: &Path, task_id: &str, data_dir: &Path) -> Resul
                 "worktree",
                 "remove",
                 "--force",
-                path.to_str().ok_or("Non-UTF-8 worktree path")?,
+                &git_path(&path)?,
             ],
         )?;
     }
@@ -951,6 +983,19 @@ pub fn archive_worktree(primary: &Path, task_id: &str, data_dir: &Path) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn git_paths_convert_only_verbatim_disk_and_unc_namespaces() {
+        for (native, external) in [
+            (r"\\?\C:\a folder\worktree", r"C:\a folder\worktree"),
+            (r"\\?\UNC\server\share\worktree", r"\\server\share\worktree"),
+            (r"C:\ordinary\worktree", r"C:\ordinary\worktree"),
+            (r"\\.\pipe\apex", r"\\.\pipe\apex"),
+        ] {
+            assert_eq!(external_path(Path::new(native)).as_ref(), Path::new(external));
+        }
+    }
     #[cfg(unix)]
     #[test]
     fn owned_task_paths_reject_symlinked_ancestors() {

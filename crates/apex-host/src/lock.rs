@@ -31,6 +31,56 @@ impl std::fmt::Display for LockError {
 /// The lock file inside a data folder.
 pub const LOCK_FILE: &str = "owner.lock";
 
+#[cfg(not(windows))]
+fn try_lock(file: &File) -> Result<(), std::fs::TryLockError> {
+    file.try_lock()
+}
+
+#[cfg(windows)]
+fn try_lock(file: &File) -> Result<(), std::fs::TryLockError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
+
+    // Windows byte-range locks are mandatory, including for readers. Reserve
+    // one byte well beyond EOF so other owners can still read the description.
+    // Every owner locks this same byte; closing the handle releases ownership.
+    // LockFileEx permits ranges beyond EOF without extending the file.
+    const OWNER_BYTE: u64 = 0x7fff_ffff_ffff_fffe;
+    let mut overlapped = OVERLAPPED {
+        Anonymous: OVERLAPPED_0 {
+            Anonymous: OVERLAPPED_0_0 {
+                Offset: OWNER_BYTE as u32,
+                OffsetHigh: (OWNER_BYTE >> 32) as u32,
+            },
+        },
+        ..Default::default()
+    };
+    // SAFETY: the file handle remains owned by DataLock. It is synchronous,
+    // and FAIL_IMMEDIATELY ensures the stack OVERLAPPED cannot outlive this call.
+    if unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    } != 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        Err(std::fs::TryLockError::WouldBlock)
+    } else {
+        Err(std::fs::TryLockError::Error(error))
+    }
+}
+
 impl DataLock {
     /// Take the lock on `data`, describing this process as `owner` (say
     /// "apex-daemon serve (pid 12)") for anyone who finds it taken.
@@ -41,7 +91,7 @@ impl DataLock {
         #[cfg(not(windows))]
         std::fs::create_dir_all(data).map_err(failed)?;
         let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(data.join(LOCK_FILE)).map_err(failed)?;
-        match file.try_lock() {
+        match try_lock(&file) {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
                 let mut owner = String::new();

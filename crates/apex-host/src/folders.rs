@@ -36,7 +36,10 @@ pub fn list(path: Option<&str>, home: Option<PathBuf>) -> Result<Folder, String>
         return Err("Use a full path, starting with / or ~.".into());
     };
     let shown = wanted.to_string_lossy().into_owned();
-    let dir = std::fs::canonicalize(&wanted).map_err(|e| unreadable(&shown, e))?;
+    // A picker may send a canonical Windows path with a child or `..` appended.
+    // Verbatim paths disable separator and dot resolution in the Win32 API.
+    let dir = std::fs::canonicalize(crate::assistant_git::external_path(&wanted))
+        .map_err(|e| unreadable(&shown, e))?;
     if !dir.is_dir() {
         return Err(format!("{shown} is a file, not a folder."));
     }
@@ -126,7 +129,8 @@ mod tests {
     fn dot_dot_is_resolved_and_the_root_has_no_parent() {
         let dir = fixture("dots");
         assert_eq!(list(Some(&format!("{}/b-src/..", text(&dir))), None).unwrap().path, text(&dir));
-        assert_eq!(list(Some("/"), None).unwrap().parent, None);
+        let root = dir.ancestors().last().unwrap();
+        assert_eq!(list(Some(&text(root)), None).unwrap().parent, None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

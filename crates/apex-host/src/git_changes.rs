@@ -57,7 +57,7 @@ fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String
     let mut command = Command::new("git");
     command
         .arg("-C")
-        .arg(cwd)
+        .arg(crate::assistant_git::external_path(cwd).as_os_str())
         .args([
             "--literal-pathspecs",
             "-c",
@@ -71,7 +71,7 @@ fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String
         command.env("PATH", path);
     }
     if let Some(index) = index {
-        command.env("GIT_INDEX_FILE", index);
+        command.env("GIT_INDEX_FILE", crate::assistant_git::external_path(index).as_os_str());
     }
     let out = command
         .output()
@@ -313,7 +313,7 @@ fn current(cwd: &Path, expected: &State) -> Result<State, String> {
     }
     Ok(now)
 }
-fn link_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn link_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(from, to)
@@ -323,19 +323,7 @@ fn link_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         if std::os::windows::fs::symlink_dir(from, to).is_ok() {
             return Ok(());
         }
-        // Directory junctions need no elevation, unlike symlinks.
-        let out = Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(to)
-            .arg(from)
-            .output()?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(std::io::Error::other(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ))
-        }
+        junction_dir(from, to)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -343,6 +331,24 @@ fn link_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         Err(std::io::Error::other(
             "Linking folders is not supported on this platform.",
         ))
+    }
+}
+
+#[cfg(windows)]
+fn junction_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    // Junctions need no elevation. Keep path values out of command syntax;
+    // quoted environment expansion also handles spaces, &, %, and Unicode.
+    let out = Command::new("cmd")
+        .args(["/D", "/V:OFF", "/C"])
+        .raw_arg("mklink /J \"%APEX_LINK_TO%\" \"%APEX_LINK_FROM%\"")
+        .env("APEX_LINK_TO", crate::assistant_git::external_path(to).as_os_str())
+        .env("APEX_LINK_FROM", crate::assistant_git::external_path(from).as_os_str())
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string()))
     }
 }
 /// One commit checked out into a scratch folder. Checks must read the commit and
@@ -778,6 +784,21 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn junction_fallback_shares_folders_with_shell_punctuation_in_the_path() {
+        let r = Repo::new();
+        let source = r.0.join("shared café & %literal% (source)");
+        let link = r.0.join("linked café & %literal% (target)");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("package.txt"), "shared").unwrap();
+        junction_dir(&source, &link).unwrap();
+        assert_eq!(std::fs::canonicalize(&link).unwrap(), std::fs::canonicalize(&source).unwrap());
+        assert_eq!(std::fs::read_to_string(link.join("package.txt")).unwrap(), "shared");
+        std::fs::write(link.join("package.txt"), "same directory").unwrap();
+        assert_eq!(std::fs::read_to_string(source.join("package.txt")).unwrap(), "same directory");
+    }
+
     #[test]
     fn index_flags_cannot_hide_unreviewed_selected_contents() {
         let r = Repo::new();
@@ -793,7 +814,13 @@ mod tests {
     #[test]
     fn unusual_names_and_staged_only_changes_remain_visible() {
         let r = Repo::new();
-        r.write("tab\tand\nnewline.txt", "new\n");
+        // Control characters are legal POSIX names; Windows still exercises
+        // spaces, Unicode, and Git pathspec punctuation with a legal filename.
+        #[cfg(unix)]
+        let unusual = "tab\tand\nnewline.txt";
+        #[cfg(not(unix))]
+        let unusual = "café [literal] name.txt";
+        r.write(unusual, "new\n");
         r.write("one.txt", "staged\n");
         r.git(&["add", "one.txt"]);
         r.write("one.txt", "one\n");
@@ -802,7 +829,7 @@ mod tests {
         assert!(state
             .files
             .iter()
-            .any(|f| f.path == "tab\tand\nnewline.txt"));
+            .any(|f| f.path == unusual));
         assert!(state
             .files
             .iter()

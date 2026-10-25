@@ -110,8 +110,8 @@ mod tests {
         assert_eq!(
             new_pictures(&before, &after),
             vec![
-                root.join("new2/images/1.webp").to_string_lossy().into_owned(),
-                root.join("new/images/1.jpg").to_string_lossy().into_owned(),
+                root.join("new2").join("images").join("1.webp").to_string_lossy().into_owned(),
+                root.join("new").join("images").join("1.jpg").to_string_lossy().into_owned(),
             ]
         );
         assert!(new_pictures(&after, &after).is_empty());
