@@ -132,8 +132,16 @@ pub fn snapshot_tree_and_id(root: &Path) -> Result<(String, String), String> {
 
     let real_index = git_dir.join("index");
     if real_index.exists() {
+        // Git uses the index timestamp to decide whether matching cached file
+        // stats could hide a same-size edit. Linux's fs::copy gives the copy
+        // a newer timestamp, which incorrectly makes those entries look clean.
+        let modified = std::fs::metadata(&real_index).and_then(|m| m.modified())
+            .map_err(|e| format!("Could not read real index timestamp: {e}"))?;
         std::fs::copy(&real_index, &temp_index)
             .map_err(|e| format!("Could not seed temporary index from real index: {e}"))?;
+        std::fs::OpenOptions::new().write(true).open(&temp_index)
+            .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(modified)))
+            .map_err(|e| format!("Could not preserve temporary index timestamp: {e}"))?;
     } else {
         run_git(
             &root,

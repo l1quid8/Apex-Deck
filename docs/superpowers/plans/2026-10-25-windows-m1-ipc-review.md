@@ -133,7 +133,8 @@ Never push or merge main from this checkpoint.
 - The independent Windows harness now covers 24 tests, including private-root
   inheritance, junction aliases, existing-child ACL preservation, explicit
   private-file creation, and private-file replacement. Runtime results for
-  these additional tests are pending the migration's Windows run.
+  these additional tests passed on Windows in run `40190007394`, job
+  `121158783308` (24 passed, zero failed).
 - Local checks passed: TypeScript; 2,524 app tests (3 skipped); the CI Rust
   suite with TMPDIR=/tmp (1,535 passed, 13 ignored); pairing/provenance
   (63 passed); standalone production checks (3 passed); Unix IPC harness
@@ -142,5 +143,13 @@ Never push or merge main from this checkpoint.
   Windows runtime verification and final Jigga review remain required.
 - Linux CI exposed a noisy whole-process FD-count test. It now runs its
   original 50-fold check in an isolated test process with the same threshold;
-  the isolated test passed locally. A separate same-size Git index snapshot
-  failure is being investigated with a controlled reproduction.
+  the isolated test passed locally and both Linux CI jobs passed at `2d6beae`.
+- A deterministic same-size Git edit regression was then observed failing
+  on Linux in run `40190253331` (the snapshot returned old contents).
+  Temporary snapshots now preserve the source index timestamp so Git keeps
+  its racy-clean detection. Source index bytes and timestamp remain unchanged.
+- Native Windows compilation exposed the Mac phone-bridge example and a
+  chmod-based failure fixture. Those now compile only on supported platforms.
+  The full local Rust CI suite passed again after these fixes (1,536 passed,
+  13 ignored). The standalone mobile lockfile now includes the two Windows
+  dependency entries; its 18 tests passed with `--locked` locally.

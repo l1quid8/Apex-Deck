@@ -2,9 +2,13 @@
 //! already-running Deck daemon. Install only via scripts/install-phone-screen-bridge.mjs.
 //! A normal new daemon uses phone::screens directly; unrelated AXe commands and
 //! devices are always delegated to the preserved, pinned AXe binary.
+#[cfg(unix)]
 use apex_host::phone::{self, screens, Frame};
+#[cfg(unix)]
 use serde::Deserialize;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(unix)]
 use std::{
     io::Write,
     path::PathBuf,
@@ -12,6 +16,7 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
@@ -22,17 +27,20 @@ struct Config {
     developer: String,
 }
 
+#[cfg(unix)]
 fn option<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
     args.windows(2)
         .find(|pair| pair[0] == key)
         .map(|pair| pair[1].as_str())
 }
+#[cfg(unix)]
 fn legacy(config: &Config, args: &[String]) -> ! {
     let error = std::process::Command::new(&config.legacy).args(args).exec();
     eprintln!("Couldn't run the preserved AXe: {error}");
     std::process::exit(1)
 }
 
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
@@ -154,4 +162,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => legacy(&config, &args),
     }
+}
+
+#[cfg(not(unix))]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Err("The phone screen bridge is unavailable on this platform.".into())
 }

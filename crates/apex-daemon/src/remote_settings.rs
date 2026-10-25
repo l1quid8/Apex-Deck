@@ -182,6 +182,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failure_before_the_rename_leaves_the_old_setting() {
         let dir = folder();
