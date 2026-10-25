@@ -227,10 +227,24 @@ async fn send<O: Sink<String> + Unpin>(output: &mut O, guard: &mut Option<Guard>
     if guard.as_ref().is_some_and(|g| g.device().is_none()) {
         return Err(Stop::Revoked);
     }
+    let Some(frame) = fit(frame, if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME }) else { return Ok(()) };
     tokio::select! {
         sent = output.send(frame) => sent.map_err(|_| Stop::Closed),
         _ = cut_off(guard) => Err(Stop::Revoked),
     }
+}
+
+/// `frame` if the client can read it. One longer than the client's limit
+/// would make it close the connection, then reconnect and ask again, so a
+/// reply becomes a refusal with the same id and anything else is skipped.
+fn fit(frame: String, max: usize) -> Option<String> {
+    if frame.len() <= max {
+        return Some(frame);
+    }
+    let id = serde_json::from_str::<Value>(&frame).ok().and_then(|v| v.get("id").and_then(Value::as_u64));
+    let mb = |n: usize| format!("{:.1} MB", n as f64 / (1024.0 * 1024.0));
+    eprintln!("apex-daemon: {} of {} not sent; the connection takes {} at most", id.map_or("a frame".into(), |id| format!("the reply to request {id}")), mb(frame.len()), mb(max));
+    id.map(|id| refusal(json!(id), format!("This reply is too large to send over this connection ({}; the limit is {}).", mb(frame.len()), mb(max))))
 }
 
 /// The frame for `reply` as this session may have it right now.
@@ -2069,5 +2083,58 @@ mod tests {
         assert_eq!(session.await.unwrap(), Ended::Revoked);
         assert!(!daemon.voice.status().running);
         task.abort();
+    }
+
+    /// A reply too long for the phone's link used to go out anyway; the phone
+    /// closed on it, reconnected, asked again and closed again, every few
+    /// seconds. Now it gets a refusal with the same id, and the session goes on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reply_too_long_for_a_device_is_refused_and_the_session_goes_on() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let mut local = connect_to(&daemon, Trust::Local);
+        local.hello().await;
+        let pad = "x".repeat(DEVICE_MAX_FRAME);
+        local.send(json!({ "id": 1, "cmd": "session_save", "args": { "session": { "version": 1, "pad": pad } } })).await;
+        local.until_reply(1).await;
+
+        let (mut device, session) = connect_device(&daemon, &phone, 1 << 16);
+        device.hello().await;
+        device.send(json!({ "id": 2, "cmd": "session_load" })).await;
+        let refused = device.until_reply(2).await.pop().unwrap();
+        assert!(refused["err"].as_str().is_some_and(|e| e.contains("too large")), "{refused}");
+        assert!(refused.get("ok").is_none());
+        device.send(json!({ "id": 3, "cmd": "pty_list" })).await;
+        assert!(device.until_reply(3).await.pop().unwrap()["ok"].is_array());
+        assert!(!session.is_finished(), "the session must outlive the long reply");
+
+        // The Mac's own window has the larger limit and still gets it whole.
+        local.send(json!({ "id": 4, "cmd": "session_load" })).await;
+        assert_eq!(local.until_reply(4).await.pop().unwrap()["ok"]["pad"].as_str().map(str::len), Some(DEVICE_MAX_FRAME));
+    }
+
+    /// An event too long for the device is skipped; later ones still arrive.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_event_too_long_for_a_device_is_skipped() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let (mut device, session) = connect_device(&daemon, &phone, 1 << 16);
+        device.hello().await;
+        daemon.host.events().emit(pty(&"x".repeat(DEVICE_MAX_FRAME)));
+        let after = daemon.host.events().emit(pty("after"));
+        let frame = device.next().await.unwrap();
+        assert_eq!(frame["seq"], json!(after), "{}", frame.to_string().chars().take(200).collect::<String>());
+        assert!(!session.is_finished());
+    }
+
+    #[test]
+    fn fit_keeps_frames_within_the_limit() {
+        assert_eq!(fit("{\"id\":1,\"ok\":null}".into(), 64).as_deref(), Some("{\"id\":1,\"ok\":null}"));
+        let long = format!("{{\"id\":7,\"ok\":\"{}\"}}", "x".repeat(200));
+        let refused: Value = serde_json::from_str(&fit(long, 150).unwrap()).unwrap();
+        assert_eq!(refused["id"], 7);
+        assert!(refused["err"].as_str().unwrap().contains("too large"));
+        assert_eq!(fit(format!("{{\"seq\":3,\"event\":\"pty\",\"payload\":\"{}\"}}", "x".repeat(200)), 150), None);
+        assert_eq!(fit(format!("{{\"id\":null,\"err\":\"{}\"}}", "x".repeat(200)), 150), None);
     }
 }

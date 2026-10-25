@@ -325,6 +325,56 @@ async fn a_large_reply_arrives_whole() {
     host.close().await;
 }
 
+/// A line over the limit used to close the connection, and the app
+/// reconnected and asked again, every few seconds. Now a reply that long
+/// arrives as a refusal for its request, any other is skipped, and the
+/// connection goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_line_too_long_is_skipped_and_the_connection_goes_on() {
+    let host_key = SecretKey::generate();
+    let host = Endpoint::builder(presets::Minimal).secret_key(host_key.clone()).relay_mode(RelayMode::Disabled).alpns(vec![ALPN.to_vec()]).bind().await.unwrap();
+    let port = host.bound_sockets().iter().map(|a| a.port()).find(|p| *p != 0).unwrap();
+    let pad = "x".repeat(MAX_LINE + 1);
+    let serve = {
+        let (host, pad) = (host.clone(), pad.clone());
+        tokio::spawn(async move {
+            let conn = host.accept().await.unwrap().await.unwrap();
+            let (send, recv) = conn.accept_bi().await.unwrap();
+            let mut input = FramedRead::new(recv, LinesCodec::new_with_max_length(MAX_LINE));
+            let mut out = FramedWrite::new(send, LinesCodec::new());
+            input.next().await.unwrap().unwrap();
+            out.send(format!("{{\"id\":7,\"ok\":\"{pad}\"}}")).await.unwrap();
+            out.send(format!("{{\"event\":\"pty\",\"payload\":\"{pad}\",\"seq\":9}}")).await.unwrap();
+            out.send("{\"id\":8,\"ok\":null}".to_string()).await.unwrap();
+            let _ = conn.closed().await;
+        })
+    };
+    let (b, events, _) = bridge(Mode::Automatic).await;
+    let h = b.connect(&host_key.public().to_string(), &[format!("127.0.0.1:{port}")]).unwrap();
+    b.send(h, "{}".into()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let lines = loop {
+        let lines: Vec<String> = events.of(h).iter().filter(|e| e["type"] == "line").map(|e| e["line"].as_str().unwrap().to_string()).collect();
+        if lines.len() == 2 {
+            break lines;
+        }
+        assert!(events.of(h).iter().all(|e| e["type"] != "closed"), "closed: {:?}", events.of(h).iter().filter(|e| e["type"] != "line").collect::<Vec<_>>());
+        assert!(Instant::now() < deadline, "lines so far: {}", lines.len());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let refused: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(refused["id"], 7);
+    assert!(refused["err"].as_str().unwrap().contains("too large"), "{refused}");
+    assert_eq!(lines[1], "{\"id\":8,\"ok\":null}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(events.of(h).iter().all(|e| e["type"] != "closed"));
+    b.close(h);
+    events.assert_closed_once(h);
+    b.shutdown().await;
+    serve.abort();
+    host.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn handles_are_never_reused_after_shutdown() {
     let (hole, addr) = black_hole();
