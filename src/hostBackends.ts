@@ -22,7 +22,7 @@ const writes = new Set([
   "roomFork", "roomImport", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
   "generateImage", "importReplyImage", "libraryRemove", "libraryRename", "artifactsSave", "answerSave",
   "monitorAssign", "monitorMessage", "monitorPause", "monitorCheckNow", "monitorResolve", "monitorSourcesUpdate",
-  "worktreeAdd", "worktreeRemove", "worktreeForget", "worktreePrune",
+  "botCopiesSetCheck", "worktreeAdd", "worktreeRemove", "worktreeForget", "worktreePrune",
 ]);
 const rawWrites = new Set([...writes].map(key => key.replace(/[A-Z]/g, letter => "_" + letter.toLowerCase())));
 for (const command of ["monitor_assign", "monitor_message", "monitor_react", "monitor_pause", "monitor_check_now", "monitor_resolve",

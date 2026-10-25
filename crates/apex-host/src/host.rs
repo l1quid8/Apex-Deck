@@ -1373,19 +1373,27 @@ impl Host {
     }
 
     pub async fn worktree_list(&self, path: String) -> Result<worktrees::WorktreeList, String> {
-        let task_dir = self.paths.data.join("apex-agent").join("tasks");
-        tokio::task::spawn_blocking(move || worktrees::list(Path::new(&path), &task_dir)).await.map_err(|e| e.to_string())?
+        let data = self.paths.data.clone();
+        let store_dir = self.store.folder().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let mut listing = crate::bot_copies_ui::list(Path::new(&path), &data)?;
+            crate::bot_copies_ui::label_copies(&mut listing, &Store::new(store_dir));
+            Ok(listing)
+        }).await.map_err(|e| e.to_string())?
+    }
+    pub async fn bot_copies_set_check(&self, root: String, cmd: Option<String>) -> Result<(), String> {
+        let data = self.paths.data.clone();
+        tokio::task::spawn_blocking(move || crate::bot_copies_ui::set_check(Path::new(&root), &data, cmd)).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_add(&self, path: String, request: worktrees::AddRequest) -> Result<worktrees::Worktree, String> {
         tokio::task::spawn_blocking(move || worktrees::add(Path::new(&path), request)).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_remove(self: &Arc<Self>, path: String, target: String, force: bool) -> Result<(), String> {
-        let task_dir = self.paths.data.join("apex-agent").join("tasks");
         let host = Arc::clone(self);
         tokio::task::spawn_blocking(move || {
             let _lifecycle = host.room_lifecycle.lock().unwrap();
             if host.store.checkout_in_use(Path::new(&target))? { return Err("This worktree is mounted in a chat. Mount another worktree before removing this one.".into()); }
-            worktrees::remove(Path::new(&path), Path::new(&target), force, &task_dir)
+            crate::bot_copies_ui::remove(Path::new(&path), Path::new(&target), force, &host.paths.data)
         }).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_forget(self: &Arc<Self>, path: String, target: String, force: bool) -> Result<(), String> {
@@ -1817,8 +1825,8 @@ impl Host {
             PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize().map_err(|e| e.to_string())
         };
         if common(from)? != common(&target)? { return Err("Choose a worktree of this chat's repository.".into()); }
-        let listing = worktrees::list(from, &self.paths.data.join("apex-agent").join("tasks"))?;
-        if !listing.items.iter().any(|item| !item.prunable && !item.task && Path::new(&item.path).canonicalize().ok().as_ref() == Some(&target)) {
+        let listing = crate::bot_copies_ui::list(from, &self.paths.data)?;
+        if !listing.items.iter().any(|item| !item.prunable && !item.task && item.copy.is_none() && Path::new(&item.path).canonicalize().ok().as_ref() == Some(&target)) {
             return Err("Choose a registered worktree, outside ApexAgent task folders.".into());
         }
         let canonical_from = from.canonicalize().map_err(|e| e.to_string())?;

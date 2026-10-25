@@ -15,12 +15,24 @@ pub struct Worktree {
     pub prunable: bool,
     pub changes: Option<u32>,
     pub task: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<CopyInfo>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyInfo {
+    pub bot: String,
+    pub thread_title: String,
+    pub state: String,
+    pub reason: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeList {
     pub root: String,
     pub items: Vec<Worktree>,
+    #[serde(default)]
+    pub check_command: Option<String>,
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +107,7 @@ fn parse_list(raw: &str, task_dir: &Path) -> Vec<Worktree> {
                 prunable,
                 changes: None,
                 task,
+                copy: None,
             })
         })
         .collect()
@@ -214,7 +227,7 @@ fn child_repos(folder: &Path) -> Vec<PathBuf> {
 pub fn list(project: &Path, task_dir: &Path) -> Result<WorktreeList, String> {
     let (root, repos) = repos(project, task_dir)?;
     let items = repos.into_iter().flat_map(|repo| repo.items).collect();
-    Ok(WorktreeList { root, items })
+    Ok(WorktreeList { root, items, check_command: None })
 }
 pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
     let branch = req.branch.trim();
@@ -304,7 +317,20 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
     row.changes = Some(0);
     Ok(row)
 }
+fn protect_copy(target: &Path) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        if let Ok(bytes) = std::fs::read(parent.join("copy.json")) {
+            if let Ok(copy) = serde_json::from_slice::<crate::bot_copies::BotCopy>(&bytes) {
+                if copy.work == target || matches!((copy.work.canonicalize(), target.canonicalize()), (Ok(a), Ok(b)) if a == b) {
+                    return Err("Deck manages this bot copy. Use Discard copy when it needs you.".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
 pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
+    protect_copy(target)?;
     let (_, repos) = repos(project, task_dir)?;
     if std::fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err("The worktree folder was replaced.".into());
@@ -346,6 +372,7 @@ pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
 /// Unregister only the selected worktree, retaining its working files.
 /// A separate command prevents older hosts from interpreting Prune as deletion.
 pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
+    protect_copy(target)?;
     let (_, repos) = repos(project, task_dir)?;
     let (project, row) = repos.iter()
         .find_map(|repo| repo.items.iter().find(|w| Path::new(&w.path) == target).map(|row| (repo.dir.as_path(), row)))
