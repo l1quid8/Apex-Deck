@@ -27,6 +27,21 @@ fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+#[cfg(any(windows, test))]
+fn retry_snapshot_write<T>(mut write: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    // Concurrent writers of the same Git object can briefly fail on Windows.
+    // Retry only that diagnostic: six attempts with 775 ms of total delay.
+    for delay_ms in [25, 50, 100, 200, 400] {
+        match write() {
+            Err(error) if error.lines().any(|line| {
+                line.starts_with("error: unable to write file ") && line.ends_with(": Permission denied")
+            }) => std::thread::sleep(std::time::Duration::from_millis(delay_ms)),
+            result => return result,
+        }
+    }
+    write()
+}
+
 /// Write the whole working tree (tracked and untracked, minus ignored files)
 /// as a git tree and return its id.
 pub fn snapshot(cwd: &Path) -> Result<String, String> {
@@ -55,8 +70,14 @@ pub fn snapshot(cwd: &Path) -> Result<String, String> {
             .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(modified)))
             .map_err(|e| format!("could not preserve the temporary index timestamp: {e}"))?;
     }
-    let result = git(cwd, Some(&temp), &["add", "-A", "--", ":/"])
+    // Both commands write only the private index and content-addressed objects,
+    // so a failed object write can safely repeat without changing staging.
+    let write = || git(cwd, Some(&temp), &["add", "-A", "--", ":/"])
         .and_then(|_| git(cwd, Some(&temp), &["write-tree"]));
+    #[cfg(windows)]
+    let result = retry_snapshot_write(write);
+    #[cfg(not(windows))]
+    let result = write();
     result.map(|tree| tree.trim().to_string())
 }
 
@@ -152,6 +173,48 @@ mod tests {
     use apex_core::{ChangeRecord, ParticipantId};
     use std::process::Command;
 
+    const OBJECT_WRITE_DENIED: &str = "error: unable to write file .git/objects/74/1d1c7ce89612c6706f3753acf829468af40adf: Permission denied\nfatal: git-write-tree: error building trees";
+
+    #[test]
+    fn snapshot_write_recovers_from_transient_object_contention() {
+        let mut attempts = 0;
+        let result = retry_snapshot_write(|| {
+            attempts += 1;
+            if attempts <= 2 { Err(OBJECT_WRITE_DENIED.to_string()) } else { Ok("tree-id") }
+        });
+        assert_eq!(result, Ok("tree-id"));
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn snapshot_write_limits_retries_and_keeps_the_last_error() {
+        let mut attempts = 0;
+        let result = retry_snapshot_write::<()>(|| {
+            attempts += 1;
+            Err(format!("{OBJECT_WRITE_DENIED}\nattempt {attempts}"))
+        });
+        assert_eq!(attempts, 6);
+        assert_eq!(result, Err(format!("{OBJECT_WRITE_DENIED}\nattempt 6")));
+    }
+
+    #[test]
+    fn snapshot_write_does_not_retry_other_git_errors() {
+        for error in [
+            "fatal: detected dubious ownership in repository",
+            "error: unable to write file .git/objects/74/object: No space left on device",
+            "error: open('private.txt'): Permission denied",
+            "fatal: Unable to create 'index.lock': Permission denied",
+        ] {
+            let mut attempts = 0;
+            let result = retry_snapshot_write::<()>(|| {
+                attempts += 1;
+                Err(error.to_string())
+            });
+            assert_eq!(result, Err(error.to_string()));
+            assert_eq!(attempts, 1, "retried a permanent or unrelated error: {error}");
+        }
+    }
+
     fn repo() -> PathBuf {
         static NEXT_REPO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let serial = NEXT_REPO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -172,8 +235,12 @@ mod tests {
     fn concurrent_snapshots_use_independent_indexes() {
         let dir = repo();
         std::fs::write(dir.join("parallel.txt"), "unchanged\n").unwrap();
+        let ready = std::sync::Barrier::new(8);
         std::thread::scope(|scope| {
-            let jobs: Vec<_> = (0..8).map(|_| scope.spawn(|| snapshot(&dir).unwrap())).collect();
+            let jobs: Vec<_> = (0..8).map(|_| scope.spawn(|| {
+                ready.wait();
+                snapshot(&dir).unwrap()
+            })).collect();
             let trees: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
             assert!(trees.iter().all(|tree| tree == &trees[0]));
         });
