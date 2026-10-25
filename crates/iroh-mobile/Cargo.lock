@@ -121,6 +121,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -143,6 +144,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "trash",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

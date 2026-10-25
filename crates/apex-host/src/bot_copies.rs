@@ -1464,6 +1464,38 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_rehashes_same_size_edits_when_the_index_is_racy_clean() {
+        let (_tmp, root, _data) = init_repo("snapshot-racy-clean");
+        run_git(&root, &[], &["config", "core.trustctime", "false"]).unwrap();
+        run_git(&root, &[], &["config", "core.checkstat", "minimal"]).unwrap();
+        let cached_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let set_modified = |path: &Path| {
+            fs::OpenOptions::new().write(true).open(path).unwrap()
+                .set_times(fs::FileTimes::new().set_modified(cached_time)).unwrap();
+        };
+        let file = root.join("seed.txt");
+        fs::write(&file, "old\n").unwrap();
+        set_modified(&file);
+        run_git(&root, &[], &["add", "seed.txt"]).unwrap();
+        run_git(&root, &[], &["commit", "-m", "cache old contents"]).unwrap();
+
+        // Git must rehash this entry: its cached stat still matches, but the
+        // original index timestamp marks it as potentially racy clean.
+        fs::write(&file, "new\n").unwrap();
+        set_modified(&file);
+        let index = root.join(".git/index");
+        set_modified(&index);
+        let original_index = fs::read(&index).unwrap();
+        let original_mtime = fs::metadata(&index).unwrap().modified().unwrap();
+
+        let (commit, _) = snapshot_tree_and_id(&root).unwrap();
+        let contents = run_git(&root, &[], &["show", &format!("{commit}:seed.txt")]).unwrap();
+        assert_eq!(contents, "new", "the snapshot must include changed bytes");
+        assert_eq!(fs::read(&index).unwrap(), original_index, "the real index bytes changed");
+        assert_eq!(fs::metadata(&index).unwrap().modified().unwrap(), original_mtime, "the real index timestamp changed");
+    }
+
+    #[test]
     fn snapshot_leaves_index_head_and_status_untouched() {
         let (_tmp, root, _data) = init_repo("snapshot-untouched");
         let run = |args: &[&str]| {
