@@ -1,12 +1,17 @@
-# Windows M1: settings and IPC review
+# Windows M1: daemon implementation and review
 
-Status: M1 steps 1–2 were approved by Jigga. His three follow-ups are fixed,
-and the 15 IPC tests passed on Windows before the remaining callers moved.
-The caller migration is implemented on `feat/windows-11`, based on the
-`c48e7fb` catch-up. Native Windows run `40190900867` compiled all selected
-crates and targets, then exposed runtime failures. The source fixes below
-await another native Windows run and Jigga's final review.
-This checkpoint is not a completed Windows daemon or a Windows release.
+Status: M1 implementation is ready for Jigga's final review. All eight IPC
+callers have migrated, and native Windows run `40195474923` at `eda9c79`
+passed the full Windows job: 1,399 tests passed, seven ignored, zero failed.
+The independent Windows IPC/privacy/lock harness passed all 27 tests. macOS,
+both Linux jobs, and Linux release builds passed in the same run.
+
+The three conditions from Jigga's IPC review were met before the remaining
+callers moved. Windows `continue-on-error` is now removed; subsequent runs
+therefore enforce Windows success in the workflow. No merge into main is authorized or performed.
+This establishes the daemon's build/test milestone, not a native Windows app
+release or real-PC bot/provider validation. The fail-closed limitations below
+remain explicit follow-up work.
 
 ## Interface
 
@@ -223,9 +228,8 @@ Current verification:
   findings after the link-materialization preflight fix. Final Jigga acceptance
   remains pending.
 
-The next native Windows run and final Jigga review remain the acceptance gates.
-The full Windows runtime is not verified fixed; keep its `continue-on-error`
-setting until the job passes.
+At this checkpoint, full Windows runtime and final Jigga review remained the
+acceptance gates. Later native results are recorded below.
 
 ## Second native runtime pass
 
@@ -261,8 +265,8 @@ The remaining source fixes are deliberately scoped:
 
 Focused local host integration tests passed 20/20; the quoted-command and
 failed-verification tests each passed, and Windows command construction compiled.
-The follow-up native Windows run remains required before removing
-`continue-on-error` or declaring M1 complete.
+At this checkpoint, a follow-up native Windows run remained required before
+removing `continue-on-error` or declaring M1 complete.
 
 ## Final Windows test correction
 
@@ -280,4 +284,20 @@ The test retains the actual negative connection check, gives Windows five second
 to report refusal (Unix stays at 500 ms), now requires `ConnectionRefused`, and
 reports completed successful connections if the timeout expires. Timeout remains
 a failure. Production listener behavior is unchanged. Native verification of
-this last test correction remains pending.
+this correction passed in run `40195474923`: all 221 daemon unit tests, every
+daemon integration target, and the complete Windows job were green.
+
+## M1 acceptance evidence
+
+[Run `40195474923`](https://github.com/l1quid8/Apex-Deck/actions/runs/40195474923)
+at `eda9c7900aa3512af8672f6f3ebf17256e7255ea` passed every job. Full Windows
+job `121175265229` executed 1,399 tests with zero failures and seven ignored;
+independent Windows harness job `121175265129` passed 27/27. Native checks
+include the full caller migration, privacy/ownership, path aliases, lock owner
+reporting, symlink refusal, shell quoting, PTY cursor handshake, and lifecycle
+regressions described above. Mac and both Linux jobs remained green.
+
+The workflow now treats Windows failures as CI failures. Final Jigga review
+remains required before integration.
+No Windows installer, app UI, provider sign-in, Job Object behavior, or Windows 11
+PC acceptance is claimed by this M1 evidence.
