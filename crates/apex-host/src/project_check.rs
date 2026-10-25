@@ -183,6 +183,7 @@ pub async fn run_check_with_env(
                 }
             }
             let _ = child.kill().await;
+            let _ = child.wait().await;
             CheckResult::TimedOut
         }
     }
@@ -446,6 +447,37 @@ mod tests {
             !alive,
             "Background child pid {} should have been killed",
             bg_pid
+        );
+    }
+
+    #[tokio::test]
+    async fn fifty_checks_do_not_leak_file_descriptors() {
+        let temp = TempDir::new("check-leak");
+        #[cfg(unix)]
+        fn count_fds() -> usize {
+            std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0)
+        }
+        #[cfg(not(unix))]
+        fn count_fds() -> usize { 0 }
+
+        // Warm up runs
+        let _ = run_check_with_timeout(temp.path(), "echo warm", Duration::from_secs(1)).await;
+        let _ = run_check_with_timeout(temp.path(), "sleep 5", Duration::from_millis(50)).await;
+
+        let initial_fds = count_fds();
+
+        for _ in 0..25 {
+            let res = run_check_with_timeout(temp.path(), "echo pass", Duration::from_secs(1)).await;
+            assert_eq!(res, CheckResult::Pass);
+
+            let res = run_check_with_timeout(temp.path(), "sleep 5", Duration::from_millis(50)).await;
+            assert_eq!(res, CheckResult::TimedOut);
+        }
+
+        let final_fds = count_fds();
+        assert!(
+            final_fds <= initial_fds + 5,
+            "FDs climbed from {initial_fds} to {final_fds}"
         );
     }
 }

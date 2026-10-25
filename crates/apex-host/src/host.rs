@@ -748,11 +748,13 @@ impl Host {
         let mut runtime = ConcurrentRoom::new(room);
         if let Some(cwd) = &context.cwd {
             runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
+            let this = Arc::downgrade(self);
             let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
-                let this = Arc::clone(self);
                 let id = id.clone();
                 move |event| {
-                    this.room_event(&id, event);
+                    if let Some(this) = this.upgrade() {
+                        this.room_event(&id, event);
+                    }
                 }
             });
             let bot_copies = Arc::new(crate::bot_copies::BotCopies::new(
@@ -2280,6 +2282,30 @@ mod tests {
         host.shutdown();
         drop(host);
         // The open-thread snapshot runs on its own thread and may still be writing.
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn host_is_freed_after_opening_room_with_folder() {
+        use apex_core::{Access, Backend, Participant, TurnPolicy};
+        let path = std::env::temp_dir().join(format!("apex-host-leak-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, runtime.handle().clone());
+        let weak_host = Arc::downgrade(&host);
+        let configs = vec![("writer", Access::Edits)]
+            .into_iter().map(|(id, access)| {
+                let mut config = apex_core::testing::ScriptedParticipant::new(id, &["finished"]).config().clone();
+                config.access = access;
+                config.backend = Backend::Scripted { lines: vec!["finished".into()] };
+                config
+            }).collect();
+        host.room_create("chat".into(), configs, RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: Some(0) }, Some(cwd.to_string_lossy().into_owned())).unwrap();
+        host.shutdown();
+        drop(host);
+        assert!(weak_host.upgrade().is_none(), "Host leaked after opening room with folder");
         let _ = std::fs::remove_dir_all(&path);
     }
 
