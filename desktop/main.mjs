@@ -9,6 +9,7 @@ import { VoiceRuntimeManager } from './voiceRuntime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
@@ -21,10 +22,11 @@ import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verified
 import { QuitGate } from './quit.mjs';
 import { answers, daemonBinary, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
-import { TRUSTED_DAEMON, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
+import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
-import { assertTrustedStartup, attestFrame, needsAttestation } from './provenance.mjs';
+import { assertTrustedStartup, attestFrame, needsAttestation, requestUpdate } from './provenance.mjs';
+import { Updater, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
@@ -631,6 +633,57 @@ function askToQuit(entry) {
 handle('shell:quitHeard', async (_entry, request) => gate.heard(Number(request)));
 handle('shell:quitApp', async () => finishQuit());
 
+// ------------------------------------------------------------ updates
+// Checks and downloads run here (updater.mjs); the window shows them and asks
+// before "Restart to update", which quits only once the broker has queued it.
+
+/** A command's output, or a rejection with what it printed. */
+const runCommand = (command, args) => new Promise((resolve, reject) => {
+  execFile(command, args, { encoding: 'utf8', maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
+    if (error) reject(new Error(String(stderr || error.message).trim()));
+    else resolve(`${stdout}${stderr}`);
+  });
+});
+
+/** Null until the app is ready; the window asks again when it hears `updates:changed`. */
+let updater = null;
+
+async function startUpdates() {
+  const running = bundlePath(app.getAppPath());
+  const signed = app.isPackaged && process.platform === 'darwin';
+  const team = signed ? teamFrom(await runCommand('/usr/bin/codesign', ['-d', '--verbose=2', running]).catch(() => '')) : null;
+  const folder = path.join(app.getPath('cache'), 'dev.apexdeck.desktop', 'updates');
+  const fetchWithNet = (url, init) => net.fetch(url, init);
+  updater = new Updater({
+    current: app.getVersion(),
+    arch: process.arch,
+    osVersion: process.getSystemVersion(),
+    cacheDir: path.join(folder, 'downloads'),
+    stateFile: path.join(app.getPath('userData'), 'updates.json'),
+    disabled: disabledReason({ packaged: app.isPackaged, platform: process.platform, dataDir, smoke, protectedCopy: signed && isProtectedCopy(running), team }),
+    fetchJson: fetchManifest(fetchWithNet),
+    download: fetchDownload(fetchWithNet),
+    verify: packageVerifier({ run: runCommand, team, scratch: path.join(folder, 'checks') }),
+    requestInstall: (ready) => requestUpdate(ready),
+    onChange: (status) => {
+      for (const { win } of windows.values()) if (!win.isDestroyed()) win.webContents.send('updates:changed', status);
+    },
+  });
+  updater.start();
+  for (const { win } of windows.values()) if (!win.isDestroyed()) win.webContents.send('updates:changed', updater.status());
+}
+
+handle('updates:status', async () => updater?.status() ?? null);
+handle('updates:check', async () => updater?.check({ manual: true }) ?? null);
+handle('updates:later', async () => updater?.later());
+handle('updates:dismissResult', async () => updater?.dismissResult());
+// The window has already asked about stopping work and saved its session.
+handle('updates:restart', async () => {
+  if (!updater) throw new Error('Updates are still starting.');
+  await updater.restart();
+  void finishQuit();
+});
+
 // ------------------------------------------------------------ the docked browser
 
 const BOUNDS = (b) => ({ x: Math.round(Number(b?.x) || 0), y: Math.round(Number(b?.y) || 0), width: Math.max(0, Math.round(Number(b?.width) || 0)), height: Math.max(0, Math.round(Number(b?.height) || 0)) });
@@ -656,6 +709,13 @@ function menu() {
       label: app.name,
       submenu: [
         { role: 'about' },
+        {
+          label: 'Check for Updates…',
+          click: () => {
+            void updater?.check({ manual: true });
+            toWindow('updates')();
+          },
+        },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: toWindow('settings') },
         { type: 'separator' },
@@ -988,6 +1048,7 @@ app.whenReady().then(async () => {
   // Each window a step down from the one before, so none hides another.
   const first = createWindow(LOCAL);
   rememberWindows();
+  startUpdates().catch((e) => console.warn(`updates: ${e.message}`));
   if (smoke) {
     const { runSmoke } = env.APEX_DECK_ANSWERS_SMOKE ? await import('./answers-smoke.mjs') : env.APEX_DECK_MULTI_HOST_ROOT ? { runSmoke: (await import('./multi-host-smoke.mjs')).runMultiHostSmoke } : await import('./smoke.mjs');
     const code = await runSmoke(first.win, { sidecar: () => local, browser: first.browser }).catch((e) => {
