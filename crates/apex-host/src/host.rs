@@ -278,6 +278,51 @@ impl Host {
             phone,
             fold_queue,
         });
+
+        let host_for_reconcile = Arc::downgrade(&host);
+        host.fold_queue.set_reconcile(Arc::new(move |thread_id, bot_id, message_text| {
+            let host_weak = host_for_reconcile.clone();
+            Box::pin(async move {
+                let Some(host) = host_weak.upgrade() else { return Err("host shut down".into()); };
+                let handle = host.handle(&thread_id)?;
+                let error = Mutex::new(None);
+                let batch = handle.runtime.begin_post_with_speaker(
+                    apex_core::Speaker::Bot(apex_core::ParticipantId::new("deck")),
+                    &message_text,
+                    Some(vec![bot_id]),
+                    &host.turn_sink(&thread_id, &handle, &error),
+                ).await?;
+                if let Some(why) = error.into_inner().unwrap() { return Err(why); }
+                checkpoint_room(&handle, &host.store, &thread_id).await?;
+                host.run_batch_in_background(thread_id, handle, batch);
+                Ok(())
+            })
+        }));
+
+        for copy in crate::bot_copies::recover_unfolded_copies(&host.paths.data) {
+            let thread_id = copy.thread.clone();
+            let host_weak = Arc::downgrade(&host);
+            let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
+                let thread_id = thread_id.clone();
+                move |event| {
+                    if let Some(host) = host_weak.upgrade() {
+                        host.room_event(&thread_id, event);
+                    }
+                }
+            });
+            let editor_handle = if let Ok(handle) = host.handle(&thread_id) {
+                handle.runtime.editor_handle()
+            } else {
+                Arc::new(Mutex::new(None))
+            };
+            host.fold_queue.enqueue(crate::bot_copies::FoldTask {
+                thread: thread_id,
+                copy,
+                editor_handle,
+                event_sink,
+                reconcile: None,
+            });
+        }
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
             if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
                 host.checkout_gate(std::path::Path::new(&task.owner.cwd)).restore_hold(task.id)
@@ -1544,6 +1589,11 @@ impl Host {
         self.rooms.lock().unwrap().remove(&id);
         if let Ok(name) = export::safe_file_name(&id) {
             let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
+        }
+        for copy in crate::bot_copies::load_copies(&self.paths.data) {
+            if copy.thread == id && copy.state == crate::bot_copies::CopyState::Folded {
+                let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
+            }
         }
         match handle {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),

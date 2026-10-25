@@ -181,7 +181,7 @@ pub fn snapshot_tree_id(root: &Path) -> Result<String, String> {
     snapshot_tree_and_id(root).map(|(_, tree)| tree)
 }
 
-fn validate_identifier(name: &str, kind: &str) -> Result<(), String> {
+pub(crate) fn validate_identifier(name: &str, kind: &str) -> Result<(), String> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(format!("Invalid {kind} name: cannot be empty, '.' or '..'"));
     }
@@ -198,7 +198,8 @@ fn validate_identifier(name: &str, kind: &str) -> Result<(), String> {
 
 fn cleanup_copy_artifacts(root: &Path, data: &Path, thread: &str, bot: &str, work: &Path) {
     let work_str = work.to_str().unwrap_or_default();
-    let _ = run_git(root, &[], &["worktree", "remove", "--force", work_str]);
+    let _ = run_git(root, &[], &["worktree", "unlock", work_str]);
+    let _ = run_git(root, &[], &["worktree", "remove", "--force", "--force", work_str]);
     let _ = run_git(root, &[], &["worktree", "prune"]);
     if work.exists() {
         let _ = std::fs::remove_dir_all(work);
@@ -520,6 +521,37 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
     let diff_m = diff_trees(&root, &base, &m_commit)?;
     let diff_c = diff_trees(&root, &base, &c_commit)?;
 
+    if diff_m.is_empty() {
+        let diff_after = diff_trees(&root, &m_commit, &c_commit)?;
+        let mut files: Vec<String> = diff_after
+            .into_keys()
+            .filter(|f| !SHARED_SHORTCUT_PATHS.contains(&f.as_str()) && !f.starts_with("node_modules/"))
+            .collect();
+        files.sort();
+        files.dedup();
+
+        let mut still_conflicted = Vec::new();
+        for f in &files {
+            let target = work.join(f);
+            if let Ok(bytes) = std::fs::read(&target) {
+                let s = String::from_utf8_lossy(&bytes);
+                if s.contains("<<<<<<<") && s.contains("=======") && s.contains(">>>>>>>") {
+                    still_conflicted.push(f.clone());
+                }
+            }
+        }
+        if !still_conflicted.is_empty() {
+            still_conflicted.sort();
+            still_conflicted.dedup();
+            return Ok(FoldOutcome::Conflicts { files: still_conflicted });
+        }
+
+        return Ok(FoldOutcome::Clean {
+            files,
+            ignored_skipped: get_ignored_new_in_work(&root, work),
+        });
+    }
+
     let mut all_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for p in diff_m.keys() {
         all_paths.insert(p.clone());
@@ -649,19 +681,19 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
         }
     }
 
-    if !conflicts.is_empty() {
-        conflicts.sort();
-        conflicts.dedup();
-        return Ok(FoldOutcome::Conflicts { files: conflicts });
-    }
-
-    // Clean: update base ref to M
+    // Update base ref to M: work has now received M's changes (cleanly or with conflict markers)
     run_git(&root, &[], &["update-ref", &base_ref, &m_commit])?;
 
     if let Some(data_dir) = work.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
         let mut updated = copy.clone();
         updated.base = m_commit.clone();
         let _ = save_state(data_dir, &updated);
+    }
+
+    if !conflicts.is_empty() {
+        conflicts.sort();
+        conflicts.dedup();
+        return Ok(FoldOutcome::Conflicts { files: conflicts });
     }
 
     let c_prime = snapshot_tree(work)?;
@@ -786,6 +818,17 @@ pub fn human_note_line(bot: &str, files: &[String], reason: &str) -> String {
     }
 }
 
+pub type ReconcileStarter = Arc<
+    dyn Fn(String, ParticipantId, String) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
+>;
+
+pub fn recover_unfolded_copies(data: &Path) -> Vec<BotCopy> {
+    load_copies(data)
+        .into_iter()
+        .filter(|c| matches!(c.state, CopyState::Working | CopyState::Folding | CopyState::Reconciling { .. }))
+        .collect()
+}
+
 async fn wait_for_quiet_main(root: &Path, quiet_duration: std::time::Duration) -> Result<(), String> {
     let mut last_tree = tokio::task::spawn_blocking({
         let root = root.to_path_buf();
@@ -816,6 +859,7 @@ pub struct FoldTask {
     pub copy: BotCopy,
     pub editor_handle: Arc<Mutex<Option<ParticipantId>>>,
     pub event_sink: Arc<dyn Fn(RoomEvent) + Send + Sync>,
+    pub reconcile: Option<ReconcileStarter>,
 }
 
 pub struct FoldQueue {
@@ -823,6 +867,7 @@ pub struct FoldQueue {
     workers: Mutex<HashSet<PathBuf>>,
     data: PathBuf,
     quiet_duration: std::time::Duration,
+    reconcile: Mutex<Option<ReconcileStarter>>,
 }
 
 impl Default for FoldQueue {
@@ -832,6 +877,7 @@ impl Default for FoldQueue {
             workers: Mutex::default(),
             data: PathBuf::new(),
             quiet_duration: std::time::Duration::from_secs(2),
+            reconcile: Mutex::default(),
         }
     }
 }
@@ -843,7 +889,12 @@ impl FoldQueue {
             workers: Mutex::default(),
             data,
             quiet_duration: std::time::Duration::from_secs(2),
+            reconcile: Mutex::default(),
         }
+    }
+
+    pub fn set_reconcile(&self, starter: ReconcileStarter) {
+        *self.reconcile.lock().unwrap() = Some(starter);
     }
 
     pub fn with_quiet_duration(mut self, d: std::time::Duration) -> Self {
@@ -909,6 +960,65 @@ impl FoldQueue {
         });
     }
 
+    async fn handle_clash(&self, copy: &BotCopy, task: &FoldTask, files: &[String]) {
+        let current_attempt = match copy.state {
+            CopyState::Reconciling { attempt } => attempt,
+            _ => 0,
+        };
+        let next_attempt = current_attempt + 1;
+        if next_attempt > 2 {
+            self.mark_needs_you(copy, task, "merge conflicts", files);
+            return;
+        }
+        let mut updated = copy.clone();
+        updated.state = CopyState::Reconciling { attempt: next_attempt };
+        let _ = save_state(&self.data, &updated);
+
+        let msg = format!(
+            "Your changes clash with work already in the main folder. Fix {} in your copy (conflict markers are in the files), then end your turn.",
+            files.join(", ")
+        );
+
+        let reconcile = task.reconcile.clone().or_else(|| self.reconcile.lock().unwrap().clone());
+        if let Some(starter) = reconcile {
+            let bot_id = ParticipantId::new(&copy.bot);
+            if let Err(e) = (starter)(task.thread.clone(), bot_id, msg).await {
+                self.mark_needs_you(copy, task, &format!("could not start reconcile turn: {e}"), files);
+            }
+        } else {
+            self.mark_needs_you(copy, task, "no reconcile starter available", files);
+        }
+    }
+
+    async fn handle_check_failure(&self, copy: &BotCopy, task: &FoldTask, cmd: &str, output: &str) {
+        let current_attempt = match copy.state {
+            CopyState::Reconciling { attempt } => attempt,
+            _ => 0,
+        };
+        let next_attempt = current_attempt + 1;
+        if next_attempt > 2 {
+            self.mark_needs_you(copy, task, "project check failed", &[]);
+            return;
+        }
+        let mut updated = copy.clone();
+        updated.state = CopyState::Reconciling { attempt: next_attempt };
+        let _ = save_state(&self.data, &updated);
+
+        let msg = format!(
+            "The project check ({cmd}) fails with your changes but passes without them:\n{output}"
+        );
+
+        let reconcile = task.reconcile.clone().or_else(|| self.reconcile.lock().unwrap().clone());
+        if let Some(starter) = reconcile {
+            let bot_id = ParticipantId::new(&copy.bot);
+            if let Err(e) = (starter)(task.thread.clone(), bot_id, msg).await {
+                self.mark_needs_you(copy, task, &format!("could not start reconcile turn: {e}"), &[]);
+            }
+        } else {
+            self.mark_needs_you(copy, task, "no reconcile starter available", &[]);
+        }
+    }
+
     async fn process_task(&self, task: FoldTask) {
         let fold_owner = ParticipantId::new("deck-fold");
         loop {
@@ -953,7 +1063,7 @@ impl FoldQueue {
                     let check_cmd = crate::project_check::resolve_check(&self.data, &copy.root);
                     if let Some(cmd) = check_cmd {
                         if let Some(output) = crate::project_check::check_blames_copy(&copy.root, &copy.work, &cmd).await {
-                            self.mark_needs_you(&copy, &task, &format!("check failed: {output}"), &[]);
+                            self.handle_check_failure(&copy, &task, &cmd, &output).await;
                             break;
                         }
                     }
@@ -961,6 +1071,9 @@ impl FoldQueue {
                     let apply_res = tokio::task::spawn_blocking(move || apply_copy_to_main(&copy_clone)).await;
                     match apply_res {
                         Ok(Ok(FoldOutcome::Clean { files: applied, .. })) => {
+                            let mut finished = copy.clone();
+                            finished.state = CopyState::Folded;
+                            let _ = save_state(&self.data, &finished);
                             let data_clone = self.data.clone();
                             let copy_clone = copy.clone();
                             let _ = tokio::task::spawn_blocking(move || remove_copy(&data_clone, &copy_clone)).await;
@@ -985,7 +1098,7 @@ impl FoldQueue {
                             continue;
                         }
                         Ok(Ok(FoldOutcome::Conflicts { files })) => {
-                            self.mark_needs_you(&copy, &task, "merge conflicts", &files);
+                            self.handle_clash(&copy, &task, &files).await;
                             break;
                         }
                         Ok(Err(e)) => {
@@ -999,7 +1112,7 @@ impl FoldQueue {
                     }
                 }
                 FoldOutcome::Conflicts { files } => {
-                    self.mark_needs_you(&copy, &task, "merge conflicts", &files);
+                    self.handle_clash(&copy, &task, &files).await;
                     break;
                 }
                 FoldOutcome::MainMoved => {
@@ -1071,6 +1184,21 @@ impl CopyProvider for BotCopies {
                     return Ok(c.work.clone());
                 }
             }
+            let existing = {
+                let copies = load_copies(&self.data);
+                copies
+                    .into_iter()
+                    .find(|c| c.thread == self.thread && c.bot == id.as_str())
+            };
+            if let Some(copy) = existing {
+                if matches!(
+                    copy.state,
+                    CopyState::Working | CopyState::Folding | CopyState::Reconciling { .. }
+                ) {
+                    self.active.lock().unwrap().insert(id.clone(), copy.clone());
+                    return Ok(copy.work);
+                }
+            }
             let root = self.root.clone();
             let data = self.data.clone();
             let thread = self.thread.clone();
@@ -1087,13 +1215,16 @@ impl CopyProvider for BotCopies {
         Box::pin(async move {
             let copy = self.active.lock().unwrap().remove(id);
             if let Some(mut copy) = copy {
-                copy.state = CopyState::Folding;
-                let _ = save_state(&self.data, &copy);
+                if !matches!(copy.state, CopyState::Reconciling { .. }) {
+                    copy.state = CopyState::Folding;
+                    let _ = save_state(&self.data, &copy);
+                }
                 let task = FoldTask {
                     thread: self.thread.clone(),
                     copy,
                     editor_handle: Arc::clone(&self.editor_handle),
                     event_sink: Arc::clone(&self.event_sink),
+                    reconcile: None,
                 };
                 self.queue.enqueue(task);
             }
@@ -1332,6 +1463,36 @@ mod tests {
             run_git(&root, &[], &["rev-parse", "--verify", &ref_name]).is_err(),
             "Ref was not deleted"
         );
+    }
+
+    #[test]
+    fn remove_locked_copy_succeeds_and_unregisters_worktree() {
+        let (_tmp, root, data) = init_repo("remove-locked");
+        let copy = create_copy(&root, &data, "thread-locked", "bot-locked").unwrap();
+        // create_copy creates the worktree with --lock
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        let list_before = String::from_utf8_lossy(&out.stdout);
+        assert!(list_before.contains("locked"), "Worktree should be listed as locked: {list_before}");
+
+        remove_copy(&data, &copy).unwrap();
+
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        let list_after = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !list_after.contains("bot-locked"),
+            "Worktree should no longer be registered in git: {list_after}"
+        );
+        assert!(!copy.work.exists(), "Worktree directory should be deleted");
     }
 
     #[test]
@@ -2059,6 +2220,7 @@ mod tests {
             copy: copy.clone(),
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: ev_sink,
+            reconcile: None,
         };
         fold_queue.enqueue(task);
         fold_queue.wait_idle().await;
@@ -2105,6 +2267,7 @@ mod tests {
             copy,
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: Arc::new(|_| {}),
+            reconcile: None,
         };
         fold_queue.enqueue(task);
 
@@ -2121,5 +2284,321 @@ mod tests {
         );
         let seed = fs::read_to_string(root.join("seed.txt")).unwrap();
         assert!(seed.starts_with("bg edit"), "human edit in seed.txt was lost");
+    }
+
+    #[tokio::test]
+    async fn clash_starts_reconcile_turn_for_second_bot_only() {
+        let (_tmp, root, data) = init_repo("clash-reconcile");
+        fs::write(root.join("seed.txt"), "line 1\nline 2\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "seed.txt"]);
+        run(&["commit", "-m", "seed base"]);
+
+        let copy = create_copy(&root, &data, "thread-clash", "bot2").unwrap();
+        fs::write(copy.work.join("seed.txt"), "line 1 bot2\nline 2\n").unwrap();
+
+        // Main is modified concurrently
+        fs::write(root.join("seed.txt"), "line 1 human\nline 2\n").unwrap();
+
+        let reconcile_calls = Arc::new(Mutex::new(Vec::new()));
+        let reconcile_mock: ReconcileStarter = {
+            let calls = Arc::clone(&reconcile_calls);
+            Arc::new(move |thread, bot, msg| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.lock().unwrap().push((thread, bot, msg));
+                    Ok(())
+                })
+            })
+        };
+
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        let task = FoldTask {
+            thread: "thread-clash".into(),
+            copy: copy.clone(),
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: Arc::new(|_| {}),
+            reconcile: Some(reconcile_mock),
+        };
+        fold_queue.enqueue(task);
+        fold_queue.wait_idle().await;
+
+        let calls = reconcile_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "reconcile should be started once");
+        assert_eq!(calls[0].0, "thread-clash");
+        assert_eq!(calls[0].1.as_str(), "bot2");
+        assert!(calls[0].2.contains("Your changes clash with work already in the main folder. Fix seed.txt in your copy (conflict markers are in the files), then end your turn."));
+
+        let copies = load_copies(&data);
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].state, CopyState::Reconciling { attempt: 1 });
+        // Markers left in the copy only
+        let copy_seed = fs::read_to_string(copy.work.join("seed.txt")).unwrap();
+        assert!(copy_seed.contains("<<<<<<<"), "copy should have conflict markers");
+        let main_seed = fs::read_to_string(root.join("seed.txt")).unwrap();
+        assert_eq!(main_seed, "line 1 human\nline 2\n", "main should remain untouched");
+    }
+
+    #[tokio::test]
+    async fn reconciled_copy_folds_on_retry() {
+        let (_tmp, root, data) = init_repo("clash-fix-retry");
+        fs::write(root.join("seed.txt"), "line 1\nline 2\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "seed.txt"]);
+        run(&["commit", "-m", "seed base"]);
+
+        let copy = create_copy(&root, &data, "t-fix", "bot-fix").unwrap();
+        fs::write(copy.work.join("seed.txt"), "line 1 bot\nline 2\n").unwrap();
+        fs::write(root.join("seed.txt"), "line 1 human\nline 2\n").unwrap();
+
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        let queue_clone = Arc::clone(&fold_queue);
+        let copy_work = copy.work.clone();
+        let data_clone = data.clone();
+        let reconcile_starter: ReconcileStarter = Arc::new(move |thread, bot, _msg| {
+            let copy_work = copy_work.clone();
+            let data_clone = data_clone.clone();
+            let queue = Arc::clone(&queue_clone);
+            Box::pin(async move {
+                // Bot resolves the conflict in copy
+                fs::write(copy_work.join("seed.txt"), "line 1 resolved\nline 2\n").unwrap();
+                let mut c = load_copies(&data_clone).into_iter().find(|c| c.thread == thread && c.bot == bot.as_str()).unwrap();
+                c.state = CopyState::Folding;
+                save_state(&data_clone, &c).unwrap();
+                queue.enqueue(FoldTask {
+                    thread,
+                    copy: c,
+                    editor_handle: Arc::new(Mutex::new(None)),
+                    event_sink: Arc::new(|_| {}),
+                    reconcile: None,
+                });
+                Ok(())
+            })
+        });
+
+        fold_queue.enqueue(FoldTask {
+            thread: "t-fix".into(),
+            copy,
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: Arc::new(|_| {}),
+            reconcile: Some(reconcile_starter),
+        });
+        fold_queue.wait_idle().await;
+
+        let main_seed = fs::read_to_string(root.join("seed.txt")).unwrap();
+        assert_eq!(main_seed, "line 1 resolved\nline 2\n");
+        assert!(load_copies(&data).is_empty(), "clean fold removes the copy");
+    }
+
+    #[tokio::test]
+    async fn two_failed_reconciles_post_one_note_and_keep_copy() {
+        let (_tmp, root, data) = init_repo("clash-two-failed");
+        fs::write(root.join("seed.txt"), "line 1\nline 2\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "seed.txt"]);
+        run(&["commit", "-m", "seed base"]);
+
+        let copy = create_copy(&root, &data, "t-fail2", "bot-fail").unwrap();
+        fs::write(copy.work.join("seed.txt"), "line 1 bot\nline 2\n").unwrap();
+        fs::write(root.join("seed.txt"), "line 1 human\nline 2\n").unwrap();
+
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        let queue_clone = Arc::clone(&fold_queue);
+        let data_clone = data.clone();
+        let attempts_seen = Arc::new(Mutex::new(0));
+        let attempts_cb = Arc::clone(&attempts_seen);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let ev_sink = {
+            let ev = Arc::clone(&events);
+            Arc::new(move |e| ev.lock().unwrap().push(e))
+        };
+        let ev_sink_cb = Arc::clone(&ev_sink);
+
+        let reconcile_starter: ReconcileStarter = Arc::new(move |thread, bot, _msg| {
+            let data_clone = data_clone.clone();
+            let queue = Arc::clone(&queue_clone);
+            let attempts_cb = Arc::clone(&attempts_cb);
+            let ev_sink = Arc::clone(&ev_sink_cb);
+            Box::pin(async move {
+                *attempts_cb.lock().unwrap() += 1;
+                // Bot does NOT fix the conflict, just re-queues turn finished
+                let c = load_copies(&data_clone).into_iter().find(|c| c.thread == thread && c.bot == bot.as_str()).unwrap();
+                queue.enqueue(FoldTask {
+                    thread,
+                    copy: c,
+                    editor_handle: Arc::new(Mutex::new(None)),
+                    event_sink: ev_sink,
+                    reconcile: None,
+                });
+                Ok(())
+            })
+        });
+        fold_queue.set_reconcile(reconcile_starter);
+
+        fold_queue.enqueue(FoldTask {
+            thread: "t-fail2".into(),
+            copy: copy.clone(),
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: ev_sink,
+            reconcile: None,
+        });
+        fold_queue.wait_idle().await;
+
+        assert_eq!(*attempts_seen.lock().unwrap(), 2, "reconcile should run exactly twice");
+
+        let copies = load_copies(&data);
+        assert_eq!(copies.len(), 1, "copy must be kept");
+        match &copies[0].state {
+            CopyState::NeedsYou { reason } => {
+                assert_eq!(reason, "merge conflicts");
+            }
+            s => panic!("expected NeedsYou state, got {:?}", s),
+        }
+        assert!(copy.work.exists(), "copy work folder must still exist");
+
+        let evs = events.lock().unwrap();
+        let notes: Vec<_> = evs.iter().filter(|e| matches!(e, RoomEvent::MessageAdded { .. })).collect();
+        assert_eq!(notes.len(), 1, "exactly one human note must be posted");
+        if let RoomEvent::MessageAdded { message } = notes[0] {
+            assert_eq!(
+                message.text,
+                "bot-fail's changes to seed.txt couldn't be folded in (merge conflicts). Its copy is kept in the Worktrees tab."
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_requeues_unfolded_copies() {
+        let (_tmp, root, data) = init_repo("restart-requeue");
+        let copy1 = create_copy(&root, &data, "t1", "bot1").unwrap();
+        fs::write(copy1.work.join("c1.txt"), "c1 content").unwrap();
+
+        let copy2 = create_copy(&root, &data, "t2", "bot2").unwrap();
+        let mut c2 = copy2;
+        c2.state = CopyState::NeedsYou { reason: "prior error".into() };
+        save_state(&data, &c2).unwrap();
+
+        let unrecovered = recover_unfolded_copies(&data);
+        assert_eq!(unrecovered.len(), 1, "only unfolded copy should be recovered");
+        assert_eq!(unrecovered[0].bot, "bot1");
+
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        fold_queue.enqueue(FoldTask {
+            thread: unrecovered[0].thread.clone(),
+            copy: unrecovered[0].clone(),
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: Arc::new(|_| {}),
+            reconcile: None,
+        });
+        fold_queue.wait_idle().await;
+
+        assert!(root.join("c1.txt").exists(), "c1.txt should have folded after restart");
+        assert_eq!(fs::read_to_string(root.join("c1.txt")).unwrap(), "c1 content");
+    }
+
+    #[tokio::test]
+    async fn restart_mid_apply_never_half_writes() {
+        let (_tmp, root, data) = init_repo("restart-atomic");
+        fs::write(root.join("f1.txt"), "f1 orig").unwrap();
+        fs::write(root.join("f2.txt"), "f2 orig").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "f1.txt", "f2.txt"]);
+        run(&["commit", "-m", "init files"]);
+
+        let copy = create_copy(&root, &data, "t-atomic", "bot-atomic").unwrap();
+        fs::write(copy.work.join("f1.txt"), "f1 new").unwrap();
+        fs::write(copy.work.join("f2.txt"), "f2 new").unwrap();
+
+        // Perform merge only
+        let merge_outcome = merge_main_into_copy(&copy).unwrap();
+        assert!(matches!(merge_outcome, FoldOutcome::Clean { .. }));
+
+        // Simulate kill before apply: main is completely untouched
+        assert_eq!(fs::read_to_string(root.join("f1.txt")).unwrap(), "f1 orig");
+        assert_eq!(fs::read_to_string(root.join("f2.txt")).unwrap(), "f2 orig");
+
+        // Now daemon restarts and performs fold
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        fold_queue.enqueue(FoldTask {
+            thread: "t-atomic".into(),
+            copy,
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: Arc::new(|_| {}),
+            reconcile: None,
+        });
+        fold_queue.wait_idle().await;
+
+        // Both files cleanly updated in main, never a half-applied state
+        assert_eq!(fs::read_to_string(root.join("f1.txt")).unwrap(), "f1 new");
+        assert_eq!(fs::read_to_string(root.join("f2.txt")).unwrap(), "f2 new");
+    }
+
+    #[tokio::test]
+    async fn fifty_folds_do_not_leak_file_descriptors() {
+        let (_tmp, root, data) = init_repo("fold-leak-check");
+        fs::write(root.join("seed.txt"), "seed\n").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success());
+        };
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+
+        #[cfg(unix)]
+        fn count_fds() -> usize {
+            std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0)
+        }
+        #[cfg(not(unix))]
+        fn count_fds() -> usize { 0 }
+
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()).with_quiet_duration(std::time::Duration::from_millis(10)));
+        let editor_handle = Arc::new(Mutex::new(None));
+
+        // Warm up run
+        let copy = create_copy(&root, &data, "t-leak", "bot-0").unwrap();
+        fs::write(copy.work.join("file-0.txt"), "content 0\n").unwrap();
+        fold_queue.enqueue(FoldTask {
+            thread: "t-leak".into(),
+            copy,
+            editor_handle: Arc::clone(&editor_handle),
+            event_sink: Arc::new(|_| {}),
+            reconcile: None,
+        });
+        fold_queue.wait_idle().await;
+
+        let initial_fds = count_fds();
+
+        for i in 1..=50 {
+            let bot_name = format!("bot-{i}");
+            let copy = create_copy(&root, &data, "t-leak", &bot_name).unwrap();
+            fs::write(copy.work.join(format!("file-{i}.txt")), format!("content {i}\n")).unwrap();
+            fold_queue.enqueue(FoldTask {
+                thread: "t-leak".into(),
+                copy,
+                editor_handle: Arc::clone(&editor_handle),
+                event_sink: Arc::new(|_| {}),
+                reconcile: None,
+            });
+            fold_queue.wait_idle().await;
+        }
+
+        let final_fds = count_fds();
+        assert!(
+            final_fds <= initial_fds + 5,
+            "FDs climbed from {initial_fds} to {final_fds}"
+        );
     }
 }

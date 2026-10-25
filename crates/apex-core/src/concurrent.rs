@@ -226,6 +226,15 @@ impl ConcurrentRoom {
         targets: Option<Vec<ParticipantId>>,
         sink: Sink<'_>,
     ) -> Result<TurnBatch, String> {
+        self.begin_post_with_speaker(Speaker::Human, text, targets, sink).await
+    }
+    pub async fn begin_post_with_speaker(
+        &self,
+        speaker: Speaker,
+        text: &str,
+        targets: Option<Vec<ParticipantId>>,
+        sink: Sink<'_>,
+    ) -> Result<TurnBatch, String> {
         let mut room = self.room.lock().await;
         self.check_open()?;
         let resolved = room.resolve_targets(text);
@@ -237,7 +246,7 @@ impl ConcurrentRoom {
         for id in targets { if !unique.contains(&id) { unique.push(id); } }
         let targets = unique;
         room.remember_targets(targets.clone());
-        room.push(Speaker::Human, text.to_string(), sink);
+        room.push(speaker, text.to_string(), sink);
         Ok(self.batch(
             targets,
             room.options().policy == TurnPolicy::RoundRobin,
