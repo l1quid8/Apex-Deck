@@ -1,14 +1,21 @@
 //! These are authority-bearing ledgers, not ordinary editable project files.
-//! Production reads/writes only the root broker. Existing user JSON is retained
-//! untouched and is NEVER auto-certified as a trusted migration.
-#[cfg(not(test))]
+//! Mac production reads/writes only the root broker. Existing user JSON is
+//! retained untouched and is NEVER auto-certified as a trusted migration.
+//!
+//! Linux has no root broker, so it keeps each ledger as a plain owner-only file
+//! at its own path, the same way it keeps `devices.json`. That file is only as
+//! trusted as the Linux account, which is how Linux worked before the broker.
+//! The platform is fixed when the code is built: nothing at runtime can move a
+//! Mac onto plain files. Protected commands still need a UI receipt, which
+//! Linux can never produce, so they stay refused there.
+#[cfg(all(not(test), not(target_os = "linux")))]
 use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Mutex, OnceLock},
 };
 use std::{io, path::Path};
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "linux")))]
 static REVISIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
 
 /// Where the local fixture keeps a protected document. Production keeps it in
@@ -31,9 +38,13 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
 }
 #[cfg(any(test, feature = "test-support"))]
 fn local_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    atomic_write(&fixture_path(path), bytes)
+}
+/// Replace `path` in one rename, owner-only, synced to disk.
+#[cfg(any(test, feature = "test-support", target_os = "linux"))]
+fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let path = &fixture_path(path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -60,11 +71,11 @@ fn local_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     local_write(path, bytes)
 }
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "linux")))]
 fn error(e: String) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, e)
 }
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "linux")))]
 fn scope(path: &Path) -> io::Result<(PathBuf, String)> {
     let parent = path
         .parent()
@@ -78,7 +89,7 @@ fn scope(path: &Path) -> io::Result<(PathBuf, String)> {
             .into(),
     ))
 }
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "linux")))]
 pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(feature = "test-support")]
     if crate::test_support::isolated(path) {
@@ -99,7 +110,7 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     }
     serde_json::to_vec(&doc.value).map_err(|e| error(e.to_string()))
 }
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "linux")))]
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(feature = "test-support")]
     if crate::test_support::isolated(path) {
@@ -120,4 +131,38 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         apex_provenance::io::document(&folder, &name, Some((revision, value))).map_err(error)?;
     revisions.insert(folder.join(name), result.revision);
     Ok(())
+}
+/// True when `path` is a Linux production ledger kept as a plain file. Unit
+/// tests and registered fixtures keep the Mac rules on every platform.
+pub(crate) fn plain(path: &Path) -> bool {
+    #[cfg(any(test, not(target_os = "linux")))]
+    {
+        let _ = path;
+        false
+    }
+    #[cfg(all(not(test), target_os = "linux"))]
+    {
+        #[cfg(feature = "test-support")]
+        if crate::test_support::isolated(path) {
+            return false;
+        }
+        let _ = path;
+        true
+    }
+}
+#[cfg(all(not(test), target_os = "linux"))]
+pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
+    #[cfg(feature = "test-support")]
+    if !plain(path) {
+        return local_read(path);
+    }
+    std::fs::read(path)
+}
+#[cfg(all(not(test), target_os = "linux"))]
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(feature = "test-support")]
+    if !plain(path) {
+        return local_write(path, bytes);
+    }
+    atomic_write(path, bytes)
 }
