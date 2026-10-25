@@ -35,13 +35,28 @@ pub fn snapshot(cwd: &Path) -> Result<String, String> {
     let serial = NEXT_INDEX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temp: PathBuf = std::env::temp_dir().join(format!("apex-deck-index-{}-{}-{}", std::process::id(), serial,
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+    struct TemporaryIndex(PathBuf);
+    impl Drop for TemporaryIndex {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(self.0.with_extension("lock"));
+        }
+    }
+    // Cover setup errors as well as Git failures after creating the copy.
+    let _cleanup = TemporaryIndex(temp.clone());
     // Starting from the real index means only changed files are re-read.
     if real.exists() {
+        // Git compares cached file stats with the index timestamp to detect
+        // racy-clean same-size edits. A newer copy timestamp hides those edits.
+        let modified = std::fs::metadata(&real).and_then(|m| m.modified())
+            .map_err(|e| format!("could not read the git index timestamp: {e}"))?;
         std::fs::copy(&real, &temp).map_err(|e| format!("could not copy the git index: {e}"))?;
+        std::fs::OpenOptions::new().write(true).open(&temp)
+            .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(modified)))
+            .map_err(|e| format!("could not preserve the temporary index timestamp: {e}"))?;
     }
     let result = git(cwd, Some(&temp), &["add", "-A", "--", ":/"])
         .and_then(|_| git(cwd, Some(&temp), &["write-tree"]));
-    let _ = std::fs::remove_file(&temp);
     result.map(|tree| tree.trim().to_string())
 }
 
@@ -162,6 +177,38 @@ mod tests {
             let trees: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
             assert!(trees.iter().all(|tree| tree == &trees[0]));
         });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn snapshot_rehashes_same_size_edits_without_changing_real_index() {
+        let dir = repo();
+        git(&dir, None, &["config", "core.trustctime", "false"]).unwrap();
+        git(&dir, None, &["config", "core.checkstat", "minimal"]).unwrap();
+        let cached_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let set_modified = |path: &Path| {
+            std::fs::OpenOptions::new().write(true).open(path).unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(cached_time)).unwrap();
+        };
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "old\n").unwrap();
+        set_modified(&file);
+        git(&dir, None, &["add", "a.txt"]).unwrap();
+        git(&dir, None, &["commit", "-qm", "cache old contents"]).unwrap();
+
+        // The cached stat still matches, but the original index timestamp
+        // requires Git to rehash this potentially racy-clean file.
+        std::fs::write(&file, "new\n").unwrap();
+        set_modified(&file);
+        let index = dir.join(".git/index");
+        set_modified(&index);
+        let original_index = std::fs::read(&index).unwrap();
+        let original_mtime = std::fs::metadata(&index).unwrap().modified().unwrap();
+
+        let tree = snapshot(&dir).unwrap();
+        assert_eq!(git(&dir, None, &["show", &format!("{tree}:a.txt")]).unwrap(), "new\n");
+        assert_eq!(std::fs::read(&index).unwrap(), original_index, "the real index bytes changed");
+        assert_eq!(std::fs::metadata(&index).unwrap().modified().unwrap(), original_mtime, "the real index timestamp changed");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

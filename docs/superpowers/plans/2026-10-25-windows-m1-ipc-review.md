@@ -316,3 +316,19 @@ directory creation, keeps the original metadata-coherence assertions, and
 releases the worker even during assertion unwinding. Ten consecutive focused
 local runs passed. Only test code changed; simulator/product behavior is
 unchanged. The complete CI matrix is the final verification for this correction.
+
+## Diff snapshot timestamp correction
+
+Run `40197209209` verified the deterministic phone fixture on Mac, then exposed
+a second copy of the Git-index timestamp defect in Linux's `changes::snapshot`:
+the existing diff test omitted `a.txt` after a same-size edit. Temporary index
+copies in this path now retain the original index modification time, matching
+the earlier bot-copy snapshot correction. A cleanup guard removes the unique
+temporary index and its lock on setup errors and Git failures.
+
+A deterministic regression forces matching cached file stats and verifies the
+new contents plus unchanged real-index bytes and timestamp. The existing diff
+assertions remain intact. All 18 focused changes/Git-change tests passed locally.
+The new regression was already green on Mac before the fix because Mac's copy
+operation retains timestamps; Linux's native failed diff assertion is the RED
+evidence, and the next complete CI matrix is the acceptance check.
