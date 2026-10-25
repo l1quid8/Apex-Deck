@@ -68,6 +68,17 @@ pub mod io {
     pub fn finish(_data_dir: &Path, _key_id: &str, _error: Option<&str>) -> Result<(), String> {
         Err(UNAVAILABLE.into())
     }
+
+    pub fn consume_device(
+        _data_dir: &Path,
+        _endpoint: &str,
+        _session: &str,
+        _id: u64,
+        _command: Value,
+        _assistant_room: bool,
+    ) -> Result<Receipt, String> {
+        Err(UNAVAILABLE.into())
+    }
 }
 
 #[cfg(test)]
