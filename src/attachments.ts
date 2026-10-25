@@ -2,6 +2,7 @@
  *  and stored as paths in the transcript. Adapters load new image attachments
  *  into each provider's image input; later turns keep the path as context. */
 import { swapFences } from "./markdownText.ts";
+import "./paths.ts";
 
 export interface Attachment {
   id: string;

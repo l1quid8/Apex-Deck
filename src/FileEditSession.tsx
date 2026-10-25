@@ -4,13 +4,14 @@ import type { Backend } from "./backend";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { FileEditor } from "./FileEditor";
 import { isDirty, saveErrorKind, saveErrorMessage, type EditablePreview } from "./fileEditorModel";
+import { pathBase } from "./paths";
 import { writeClipboard } from "./threadCopy";
 
 /** One editing run for one file: the toolbar, the conflict bar and the editor. It owns the draft text. */
 export function FileEditSession({ root, path, backend, initial, onDirty, onDone, onSaved }: {
   root: string; path: string; backend: Backend; initial: EditablePreview; onDirty(dirty: boolean): void; onDone(): void; onSaved(text: string): void;
 }) {
-  const name = path.split("/").pop() ?? path;
+  const name = pathBase(path);
   const [loaded, setLoaded] = useState(initial.text), [generation, setGeneration] = useState(0), [draft, setDraft] = useState(initial.text), [savedText, setSavedText] = useState(initial.text), [version, setVersion] = useState(initial.version);
   const [saving, setSaving] = useState(false), [conflict, setConflict] = useState(false), [problem, setProblem] = useState(""), [status, setStatus] = useState(""), [asking, setAsking] = useState<Question | null>(null);
   const dirty = isDirty(draft, savedText);

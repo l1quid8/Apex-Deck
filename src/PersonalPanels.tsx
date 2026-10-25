@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { AssistantTask } from './assistantTaskModel.ts';
 import type { ProjectRef } from './assistantIdentity.ts';
 import { PersonalBrowser } from './PersonalBrowser.tsx';
+import { pathBase } from './paths.ts';
 import { ProjectMemoryPanel } from './ProjectMemoryPanel.tsx';
 import { CLASS_LABEL, MODE_LABEL, TASK_STATUS, type ActionMode, type ConnectorState, type CostEntry, type PersonalAssistantRecord, type PersonalLane, type PersonalSettings, type PersonalTask, type ToolClass } from './personalAssistant.ts';
 
@@ -258,9 +259,9 @@ export function PersonalPanels({ lane, initial = 'activity', initialProject, del
       setNotebooks(before => ({ ...before, [ownerKey]: event.target.value }));
       setMemorySearches(before => ({ ...before, [ownerKey]: '' }));
       setAddingMemory(before => ({ ...before, [ownerKey]: false }));
-    }}><option value="personal">{rec.name}’s personal notes</option>{projects.map(binding => <option key={bindingKey(binding.project)} value={bindingKey(binding.project)}>Project · {binding.project.cwd.split('/').filter(Boolean).pop() ?? binding.project.cwd} · {binding.project.hostId}</option>)}</select>;
+    }}><option value="personal">{rec.name}’s personal notes</option>{projects.map(binding => <option key={bindingKey(binding.project)} value={bindingKey(binding.project)}>Project · {pathBase(binding.project.cwd)} · {binding.project.hostId}</option>)}</select>;
     if (embedded && selectedProject) return <section className="assistant-panel-page">
-      <div className="assistant-panel-heading"><h2>{selectedProject.project.cwd.split('/').filter(Boolean).pop()} notebook</h2><span className="assistant-panel-tag">Shared project</span></div>
+      <div className="assistant-panel-heading"><h2>{pathBase(selectedProject.project.cwd)} notebook</h2><span className="assistant-panel-tag">Shared project</span></div>
       <p className="assistant-panel-subtitle">Personal notes stay with the assistant. Project notebooks are shared only within that project.</p>
       <ProjectMemoryPanel key={JSON.stringify([rec.hostId, rec.id])} lane={lane} embedded initialProject={selectedProject.project} selectedProject={selectedProject.project} notebookControl={notebookControl} />
     </section>;
