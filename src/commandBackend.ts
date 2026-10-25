@@ -98,6 +98,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     fileRename: (root, path, name) => call<string>("file_rename", { root, path, name }),
     fileDuplicate: (root, path) => call<string>("file_duplicate", { root, path }),
     fileTrash: (root, path) => call<void>("file_trash", { root, path }),
+    botCopiesSetCheck: (root, cmd) => call("bot_copies_set_check", { root, cmd }),
     worktreeList: (path) => call<WorktreeList>("worktree_list", { path }),
     worktreeAdd: (path, request) => call<Worktree>("worktree_add", { path, ...request }),
     worktreeRemove: (path, worktree, force) => call("worktree_remove", { path, worktree, force }),

@@ -65,3 +65,5 @@ pub use apex_core::{ClientCapabilities, GeneratedUiCapability};
 
 mod next_steps;
 mod step_buffers;
+
+pub mod bot_copies_ui;

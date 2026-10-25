@@ -195,6 +195,7 @@ pub enum Command {
     FileDuplicate { root: String, path: String },
     FileTrash { root: String, path: String },
     WorktreeList { path: String },
+    BotCopiesSetCheck { root: String, cmd: Option<String> },
     WorktreeAdd { path: String, branch: String, new_branch: bool, base: Option<String>, folder: Option<String> },
     WorktreeRemove { path: String, worktree: String, force: bool },
     WorktreeForget { path: String, worktree: String, force: bool },
@@ -515,6 +516,7 @@ impl Host {
             FileRename { root, path, name } => reply(self.file_rename(root, path, name).await?),
             FileDuplicate { root, path } => reply(self.file_duplicate(root, path).await?),
             FileTrash { root, path } => reply(self.file_trash(root, path).await?),
+            BotCopiesSetCheck { root, cmd } => reply(self.bot_copies_set_check(root, cmd).await?),
             WorktreeList { path } => reply(self.worktree_list(path).await?),
             WorktreeAdd { path, branch, new_branch, base, folder } => reply(self.worktree_add(path, crate::worktrees::AddRequest { branch, new_branch, base, folder }).await?),
             WorktreeRemove { path, worktree, force } => reply(self.worktree_remove(path, worktree, force).await?),
@@ -636,7 +638,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 173);
+        assert_eq!(names.len(), 174);
+        assert!(names.contains(&"bot_copies_set_check".to_string()));
         for name in ["personal_task_lifecycle", "personal_reply_cancel", "personal_archive"] { assert!(names.contains(&name.to_owned())); }
         for name in ["personal_avatar_options", "personal_avatar_generate", "personal_avatar_status", "personal_avatar_cancel", "personal_avatar_asset"] { assert!(names.contains(&name.to_owned())); }
         for name in ["legacy_import_preview", "legacy_import_apply", "legacy_import_history"] { assert!(names.contains(&name.to_owned())); }

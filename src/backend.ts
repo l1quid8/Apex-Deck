@@ -124,6 +124,7 @@ export interface Backend {
   fileRename(root: string, path: string, name: string): Promise<string>;
   fileDuplicate(root: string, path: string): Promise<string>;
   fileTrash(root: string, path: string): Promise<void>;
+  botCopiesSetCheck(root: string, cmd: string | null): Promise<void>;
   worktreeList(path: string): Promise<WorktreeList>;
   worktreeAdd(path: string, request: WorktreeAdd): Promise<import("./types").Worktree>;
   worktreeRemove(path: string, worktree: string, force: boolean): Promise<void>;
@@ -802,6 +803,7 @@ function demoBackend(): Backend {
     fileRename: async () => { throw new Error("File actions aren't available in the browser demo"); },
     fileDuplicate: async () => { throw new Error("File actions aren't available in the browser demo"); },
     fileTrash: async () => { throw new Error("File actions aren't available in the browser demo"); },
+    botCopiesSetCheck: async () => { throw new Error("Checks aren't available in the browser demo"); },
     worktreeList: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreeAdd: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreeRemove: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
