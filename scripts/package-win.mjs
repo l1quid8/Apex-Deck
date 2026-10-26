@@ -33,9 +33,8 @@ export const INSTALLER_NAME = 'Apex-Deck-Setup.exe';
 /** Plain release builds only: never a test or fixture binary out of target/. */
 export function releaseBuildCommands() {
   return [
-    // No apex-provenance: its binary is a root LaunchDaemon built on Unix-only
-    // APIs, and Windows refuses the protected records that would use it.
     ['cargo', ['build', '--release', '-p', 'apex-daemon', '--features', 'remote']],
+    ['cargo', ['build', '--release', '-p', 'apex-provenance']],
   ];
 }
 

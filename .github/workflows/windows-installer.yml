@@ -42,6 +42,8 @@ jobs:
         run: npm ci
       - name: Build the unsigned installer
         run: npm run desktop:win
+      - name: Test elevated authority ACLs and read-only host locks
+        run: cargo test --locked -p apex-provenance --lib -- --ignored
       - name: Show what was built
         run: Get-ChildItem release | Select-Object Name, Length
       # The shutdown step lives inside the built .exe, so `npm run desktop:win`
@@ -78,13 +80,15 @@ jobs:
           # electron-builder copies the service to resources\bin\apex-daemon.exe
           # through win.extraResources, and desktop/sidecar.mjs runs it from
           # there. No check has ever confirmed the two agree on a real install.
-          $service = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs') `
+          $service = Get-ChildItem -Path (Join-Path $env:ProgramFiles 'Apex Deck') `
             -Recurse -Filter 'apex-daemon.exe' -ErrorAction SilentlyContinue |
             Select-Object -First 1
           if (-not $service) {
             throw 'the installed app has no apex-daemon.exe, so it has no service to start'
           }
           Write-Host "the installed app carries the service at $($service.FullName)"
+          node scripts/windows-authority-smoke.mjs $service.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'installed production authority smoke failed' }
 
           # Now the case the shutdown step exists for: a service from an earlier
           # build is still running. ping -t is always present and never exits, and
@@ -109,6 +113,9 @@ jobs:
             throw 'the service was still running after the install, so it was never stopped'
           }
           Write-Host 'the running service was gone after the install'
+          node scripts/windows-authority-smoke.mjs $service.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'upgraded production authority smoke failed' }
+          & scripts/windows-authority-standard-user.ps1 -Daemon $service.FullName
 
           # Both figures are printed so the baseline is visible; the exit code is
           # what catches the regression, because that bug taxed every install

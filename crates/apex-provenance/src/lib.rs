@@ -1,15 +1,25 @@
-//! Root-owned submission authority. No shell execution and no general file API.
+#[cfg(any(windows, test))]
+pub mod broker;
+// Root-owned submission authority. No shell execution and no general file API.
 #[cfg(unix)]
 pub mod io;
+#[cfg(windows)]
+#[path="io_windows.rs"]
+pub mod io;
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+#[path="ownership_windows.rs"]
+mod ownership;
 mod phone;
 pub use phone::phone_command;
 #[cfg(unix)]
 mod ownership;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use ownership::{HostOwnership, HostOwnershipError, prepare_host_lock};
-#[cfg(any(not(unix), test))]
+#[cfg(any(not(any(unix, windows)), test))]
 mod unavailable;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub use unavailable::{io, prepare_host_lock, HostOwnership, HostOwnershipError};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use ring::{
@@ -352,7 +362,7 @@ impl Journal {
         if self.version != 1 {
             return Err("Unsupported provenance journal version".into());
         }
-        if !data_dir.starts_with('/') || data_dir.len() > 4096 || data_dir.contains('\0') {
+        if !absolute_scope(data_dir) || data_dir.len() > 4096 || data_dir.contains('\0') {
             return Err("Invalid data directory".into());
         }
         // Old task-action receipts used one key for every action at a task
@@ -484,8 +494,14 @@ fn now_ms() -> u64 {
         .as_millis()
         .min(u64::MAX as u128) as u64
 }
+fn absolute_scope(folder: &str) -> bool {
+    // Service admission separately requires the exact canonical filesystem path.
+    // Receipts also need to round-trip on other hosts for audit and verification.
+    folder.starts_with('/') || (folder.as_bytes().get(0).is_some_and(u8::is_ascii_alphabetic)
+        && folder.as_bytes().get(1)==Some(&b':') && folder.as_bytes().get(2)==Some(&b'/'))
+}
 fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> {
-    if !data_dir.starts_with('/')
+    if !absolute_scope(data_dir)
         || !matches!(
             name,
             "personal-assistants.json"

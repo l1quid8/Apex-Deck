@@ -34,11 +34,11 @@ test('the installer is only built where it can run', () => {
   }
 });
 
-test('only the service is built, and as a plain release build', () => {
+test('the daemon and authority are built as plain release builds', () => {
   const lines = releaseBuildCommands().map(([command, args]) => [command, ...args].join(' '));
-  assert.deepEqual(lines, ['cargo build --release -p apex-daemon --features remote']);
+  assert.deepEqual(lines, ['cargo build --release -p apex-daemon --features remote', 'cargo build --release -p apex-provenance']);
   assert.ok(lines.every((line) => !line.includes('test-support') && !line.includes('--tests')));
-  assert.ok(!lines.some((line) => line.includes('apex-provenance')), 'the provenance broker is Unix-only');
+
 });
 
 test('the installer name matches the artifact electron-builder writes', () => {
@@ -54,11 +54,11 @@ test('Windows gets an installer with the service beside the app', () => {
   assert.match(win, /arch: \[x64\]/, 'x64 only until the arm64 build lands in M5');
   assert.match(win, /from: target\/release\/apex-daemon\.exe\s*\n\s*to: bin\/apex-daemon\.exe/,
     'the app looks for resources/bin/apex-daemon.exe');
-  assert.ok(!/from: target\/release\/apex-provenance/.test(win), 'a Unix-only broker cannot be packaged on Windows');
+  assert.match(win, /from: target\/release\/apex-provenance\.exe\s*\n\s*to: bin\/apex-provenance\.exe/);
 
   const nsis = section(yml, 'nsis');
   assert.match(nsis, /oneClick: false/, 'the Human picks the install folder');
-  assert.match(nsis, /allowToChangeInstallationDirectory: true/);
+  assert.match(nsis, /allowToChangeInstallationDirectory: false/);
 });
 
 test('the Mac package is unchanged and does not leak onto Windows', () => {

@@ -65,19 +65,18 @@ win:
     - target: nsis
       arch: [x64]
   extraResources:
-    # Windows binaries carry .exe, and the app looks for
-    # `resources/bin/apex-daemon.exe` (desktop/sidecar.mjs). `apex-provenance`
-    # is left out on purpose: it is a root LaunchDaemon built on Unix-only
-    # APIs, and Windows refuses the protected assistant records that would use
-    # it with a clear message instead.
+    # Both native Windows services are built from the same release checkout.
     - from: target/release/apex-daemon.exe
       to: bin/apex-daemon.exe
+    - from: target/release/apex-provenance.exe
+      to: bin/apex-provenance.exe
 nsis:
   # A real installer window, not a silent one-click drop into AppData: the
   # Human picks the folder and can find the app afterwards.
   oneClick: false
-  perMachine: false
-  allowToChangeInstallationDirectory: true
+  # Trusted executable pins require an administrator-owned Program Files install.
+  perMachine: true
+  allowToChangeInstallationDirectory: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Apex Deck

@@ -93,6 +93,13 @@
 !macroend
 
 !macro customInit
+  ; Stop the protected service before replacing its executable or pinned UI.
+  ; A first install has no service; sc returns 1060 and needs no repair.
+  nsExec::Exec '"$SYSDIR\sc.exe" stop ApexDeckProvenance'
+  Pop $R0
+  ; The image is SYSTEM-owned. Do not race a still-running service replacement.
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "apex-provenance.exe"'
+  Pop $R0
   !insertmacro StopDaemon
 
   ; Say what to do instead of failing later with a locked-file error nobody can
@@ -108,7 +115,23 @@
   ${EndIf}
 !macroend
 
+!macro customInstall
+  nsExec::ExecToStack '"$INSTDIR\resources\bin\apex-provenance.exe" install'
+  Pop $R2
+  Pop $R1
+  ${If} $R2 != 0
+    DetailPrint "$R1"
+    ${IfNot} ${Silent}
+      MessageBox MB_ICONSTOP|MB_OK "Apex Deck could not install its protected authority service.$\n$\n$R1"
+    ${EndIf}
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+!macroend
+
 !macro customUnInstall
+  nsExec::Exec '"$INSTDIR\resources\bin\apex-provenance.exe" uninstall'
+  Pop $R0
   ; An uninstall must not fail on a running image either, and the logon task must
   ; go too: left behind it would point at a binary this is about to delete, and
   ; fail at every sign-in from then on. Ending it is not enough, so remove the

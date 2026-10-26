@@ -131,3 +131,63 @@ test('remote device management reaches the host while local Mac grants require a
 test('malformed remote commands cannot crash the desktop admission route', () => {
   for (const cmd of [undefined, null, {}, []]) assert.equal(mod.needsAttestation(cmd, true), false);
 });
+
+test('Windows receipt admission uses native authority identity without a POSIX UID', async () => {
+  const {publicKey, privateKey} = generateKeyPairSync('ed25519');
+  const raw = publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const frame = {id:81,cmd:'personal_send',args:{assistantId:'a',requestId:'windows-1',text:'hello'}};
+  const options = {platform:'win32', uid:undefined, dataDir:'C:\\Users\\test\\AppData\\Roaming\\Apex Deck',
+    identity:async () => ({uid:0, dataDir:'C:/Users/test/AppData/Roaming/Apex Deck', publicKey:raw.toString('base64')}),
+    issue:async request => {
+      const payload = JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:0,dataDir:request.dataDir,command:request.command,key:'k'}});
+      return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
+    }};
+  const result = await mod.attestFrame(frame, options);
+  assert.equal(result.cmd,'provenance_execute');
+  const payload = JSON.parse(result.args.receipt.payload);
+  assert.equal(payload.receipt.dataDir,'C:/Users/test/AppData/Roaming/Apex Deck');
+  await assert.rejects(mod.attestFrame(frame,{...options,identity:async()=>{throw new Error('untrusted authority key');}}),/untrusted authority key/);
+});
+
+test('Windows transport does not disclose a submission to an unauthenticated pipe', async () => {
+  const net = await import('node:net');
+  const {tmpdir} = await import('node:os');
+  const path = await import('node:path');
+  const endpoint = process.platform==='win32' ? `\\\\.\\pipe\\apex-auth-test-${process.pid}` : path.join('/tmp',`apex-auth-${process.pid}.sock`);
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const received=[];
+  const server=net.createServer(socket=>socket.on('data',data=>{
+    received.push(JSON.parse(data.toString()));
+    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'hello',nonce:'wrong-challenge'});
+    socket.write(JSON.stringify({payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')})+'\n');
+  }));
+  await new Promise(resolve=>server.listen(endpoint,resolve));
+  try{
+    await assert.rejects(mod.issue({op:'issue',command:{text:'private human text'}},{endpoint,platform:'win32',publicKey:raw}),/challenge|authentication/i);
+    assert.equal(received.length,1);
+    assert.equal(received[0].op,'hello');
+    assert.equal(received[0].command,undefined);
+  }finally{await new Promise(resolve=>server.close(resolve));}
+});
+
+test('Windows transport authenticates the pipe before delivering an exactly bound receipt', async () => {
+  const net=await import('node:net');const {tmpdir}=await import('node:os');const path=await import('node:path');
+  const endpoint=process.platform==='win32'?`\\\\.\\pipe\\apex-auth-success-${process.pid}`:path.join('/tmp',`apex-auth-ok-${process.pid}.sock`);
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const seen=[];
+  const server=net.createServer(socket=>{
+    let buffer='';socket.on('data',data=>{buffer+=data;while(buffer.includes('\n')){
+      const end=buffer.indexOf('\n');const request=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);seen.push(request.op);
+      const value=request.op==='hello'?{domain:'apex-provenance-v1',kind:'hello',nonce:request.nonce}:{domain:'apex-provenance-v1',kind:'submission',receipt:{uid:0,dataDir:request.dataDir,command:request.command,key:'k'}};
+      const payload=JSON.stringify(value);socket.write(JSON.stringify({payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')})+'\n');
+    }});
+  });
+  await new Promise(resolve=>server.listen(endpoint,resolve));
+  try{
+    const frame={id:82,cmd:'personal_send',args:{assistantId:'a',requestId:'win-2',text:'hello'}};
+    const result=await mod.attestFrame(frame,{platform:'win32',dataDir:'C:/data',identity:async()=>({uid:0,dataDir:'C:/data',publicKey:raw.toString('base64')}),issue:(request,options)=>mod.issue(request,{...options,endpoint})});
+    assert.deepEqual(seen,['hello','issue']);assert.equal(result.cmd,'provenance_execute');
+    assert.deepEqual(JSON.parse(result.args.receipt.payload).receipt.command,{cmd:'personal_send',args:frame.args});
+  }finally{await new Promise(resolve=>server.close(resolve));}
+});
