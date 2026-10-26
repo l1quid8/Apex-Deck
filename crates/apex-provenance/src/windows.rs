@@ -473,14 +473,14 @@ pub fn exchange(request: &Value) -> Result<Value, String> {
                             .open(PIPE)
                         {
                             Ok(stream) => break stream,
-                            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                            Err(error) if matches!(error.raw_os_error(), Some(code) if code == ERROR_PIPE_BUSY as i32 || code == ERROR_FILE_NOT_FOUND as i32) => {
                                 tokio::time::sleep(Duration::from_millis(10)).await
                             }
                             Err(error) => return Err(error.to_string()),
                         }
                     };
-                    // The singleton pipe object remains alive for the complete
-                    // service lifetime. No untrusted secondary instance exists.
+                    // Every server instance is an exclusive first instance.
+                    // No untrusted secondary server can share its SYSTEM owner.
                     verify_pipe_owner(stream.as_raw_handle())?;
                     let mut bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
                     bytes.push(b'\n');

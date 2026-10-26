@@ -200,14 +200,17 @@ async fn serve(
             return Err("Installed authority build does not match protected pins".into());
         }
     }
-    let mut listener = pipe(true)?;
+    let mut pending = Some(pipe(true)?);
     running()?;
     while !stop.load(Ordering::Relaxed) {
-        match tokio::time::timeout(Duration::from_millis(200), listener.connect()).await {
-            Err(_) => continue,
+        let mut stream = pending.take().ok_or("Missing authority pipe")?;
+        match tokio::time::timeout(Duration::from_millis(200), stream.connect()).await {
+            Err(_) => {
+                pending = Some(stream);
+                continue;
+            }
             Ok(result) => result.map_err(|e| e.to_string())?,
         }
-        let stream = &mut listener;
         let response = tokio::time::timeout(Duration::from_secs(10), async {
             let mut pid = 0;
             if unsafe { GetNamedPipeClientProcessId(stream.as_raw_handle(), &mut pid) } == 0 {
@@ -223,7 +226,7 @@ async fn serve(
                 return Err("Untrusted provenance peer".into());
             }
             let mut bytes = Vec::new();
-            BufReader::new((&mut *stream).take(MAX_BYTES as u64 + 1))
+            BufReader::new((&mut stream).take(MAX_BYTES as u64 + 1))
                 .read_until(b'\n', &mut bytes)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -251,7 +254,7 @@ async fn serve(
                 bytes.push(b'\n');
                 stream.write_all(&bytes).await.map_err(|e| e.to_string())?;
                 let mut bytes = Vec::new();
-                BufReader::new((&mut *stream).take(MAX_BYTES as u64 + 1))
+                BufReader::new((&mut stream).take(MAX_BYTES as u64 + 1))
                     .read_until(b'\n', &mut bytes)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -281,7 +284,12 @@ async fn serve(
             let _ = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut acknowledgement))
                 .await;
         }
-        listener.disconnect().map_err(|e| e.to_string())?;
+        // Mio keeps the completed read/EOF state in a NamedPipeServer. Reusing
+        // that wrapper after DisconnectNamedPipe returns stale EOF to the next
+        // client. Close it and create a fresh exclusive first instance instead.
+        drop(stream);
+        tokio::task::yield_now().await;
+        pending = Some(pipe(true)?);
     }
     Ok(())
 }

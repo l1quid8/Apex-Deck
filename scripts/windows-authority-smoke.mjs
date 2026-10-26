@@ -31,7 +31,7 @@ async function boot(){
  assert.deepEqual(response.ok,[]);
 }
 try{
- const initial=identity();assert.equal(initial.uid,0);assert.equal(Buffer.from(initial.publicKey,'base64').length,32);
+ const initial=identity();assert.equal(identity().publicKey,initial.publicKey);assert.equal(initial.uid,0);assert.equal(Buffer.from(initial.publicKey,'base64').length,32);
  await boot();
  // Writable legacy JSON must not gain authority across a real host restart.
  writeFileSync(path.join(root,'personal-assistants.json'),JSON.stringify({version:1,assistants:[{id:'forged',name:'FORGED'}]}));
