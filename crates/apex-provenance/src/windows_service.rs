@@ -176,7 +176,6 @@ fn pipe(first: bool) -> Result<NamedPipeServer, String> {
     unsafe {
         ServerOptions::new()
             .first_pipe_instance(first)
-            .max_instances(1)
             .reject_remote_clients(true)
             .create_with_security_attributes_raw(
                 win::PIPE,
@@ -200,17 +199,17 @@ async fn serve(
             return Err("Installed authority build does not match protected pins".into());
         }
     }
-    let mut pending = Some(pipe(true)?);
+    let mut listener = pipe(true)?;
     running()?;
     while !stop.load(Ordering::Relaxed) {
-        let mut stream = pending.take().ok_or("Missing authority pipe")?;
-        match tokio::time::timeout(Duration::from_millis(200), stream.connect()).await {
-            Err(_) => {
-                pending = Some(stream);
-                continue;
-            }
+        match tokio::time::timeout(Duration::from_millis(200), listener.connect()).await {
+            Err(_) => continue,
             Ok(result) => result.map_err(|e| e.to_string())?,
         }
+        // Keep a fresh listening instance alive before retiring the used one.
+        // The client also checks this instance's PID against SCM (owner alone
+        // cannot identify a server when Windows shares an object's descriptor).
+        let mut stream = std::mem::replace(&mut listener, pipe(false)?);
         let response = tokio::time::timeout(Duration::from_secs(10), async {
             let mut pid = 0;
             if unsafe { GetNamedPipeClientProcessId(stream.as_raw_handle(), &mut pid) } == 0 {
@@ -284,12 +283,8 @@ async fn serve(
             let _ = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut acknowledgement))
                 .await;
         }
-        // Mio keeps the completed read/EOF state in a NamedPipeServer. Reusing
-        // that wrapper after DisconnectNamedPipe returns stale EOF to the next
-        // client. Close it and create a fresh exclusive first instance instead.
+        // Retire the used wrapper; Mio retains its completed EOF state.
         drop(stream);
-        tokio::task::yield_now().await;
-        pending = Some(pipe(true)?);
     }
     Ok(())
 }

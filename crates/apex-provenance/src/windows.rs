@@ -310,6 +310,25 @@ fn verify_pipe_owner(handle: RawHandle) -> Result<(), String> {
     if result != 0 || sid_string(owner)? != SYSTEM {
         return Err("Authority pipe is not owned by SYSTEM".into());
     }
+    // Pipe instances share a security descriptor. Authenticate the particular
+    // connected server against the service manager's live process identity too.
+    let mut pid = 0;
+    if unsafe { GetNamedPipeServerProcessId(handle, &mut pid) } == 0 {
+        return Err("Cannot identify authority pipe server".into());
+    }
+    use windows_service::{
+        service::{ServiceAccess, ServiceState},
+        service_manager::{ServiceManager, ServiceManagerAccess},
+    };
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|e| e.to_string())?;
+    let service = manager
+        .open_service("ApexDeckProvenance", ServiceAccess::QUERY_STATUS)
+        .map_err(|e| e.to_string())?;
+    let status = service.query_status().map_err(|e| e.to_string())?;
+    if status.current_state != ServiceState::Running || status.process_id != Some(pid) {
+        return Err("Pipe server is not the running protected authority service".into());
+    }
     Ok(())
 }
 pub fn open_protected(path: &Path) -> Result<File, String> {
@@ -479,8 +498,8 @@ pub fn exchange(request: &Value) -> Result<Value, String> {
                             Err(error) => return Err(error.to_string()),
                         }
                     };
-                    // Every server instance is an exclusive first instance.
-                    // No untrusted secondary server can share its SYSTEM owner.
+                    // Check SYSTEM ownership and the actual SCM service PID;
+                    // neither a name nor a shared object owner authenticates a server.
                     verify_pipe_owner(stream.as_raw_handle())?;
                     let mut bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
                     bytes.push(b'\n');

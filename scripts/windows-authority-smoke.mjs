@@ -37,12 +37,15 @@ try{
  writeFileSync(path.join(root,'personal-assistants.json'),JSON.stringify({version:1,assistants:[{id:'forged',name:'FORGED'}]}));
  await boot();assert.equal(identity().publicKey,initial.publicKey);
  // An ordinary same-user Node process cannot issue receipts or read ledgers.
+ let heldSocket;
  const refusal=await new Promise((resolve,reject)=>{
-  const socket=net.createConnection('\\\\.\\pipe\\ApexDeckProvenance-v1');let bytes='';
+  const socket=net.createConnection('\\\\.\\pipe\\ApexDeckProvenance-v1');heldSocket=socket;let bytes='';
   socket.setTimeout(15000,()=>{socket.destroy();reject(new Error('untrusted peer did not receive a bounded refusal'));});
   socket.on('error',reject);socket.on('connect',()=>socket.write(JSON.stringify({op:'issue',dataDir:initial.dataDir,command:{cmd:'room_create',args:{id:'forged'},provenanceRequestId:'forged'}})+'\n'));
-  socket.on('data',data=>{bytes+=data;if(bytes.includes('\n')){socket.destroy();resolve(JSON.parse(bytes.split('\n')[0]));}});
+  socket.on('data',data=>{bytes+=data;if(bytes.includes('\n')){resolve(JSON.parse(bytes.split('\n')[0]));}});
  });
  assert.match(refusal.error,/Untrusted provenance peer/);
+ // A rejected client retaining its handle cannot break subsequent service IO.
+ assert.equal(identity().publicKey,initial.publicKey);heldSocket.destroy();
  console.log('Installed Windows authority: native identity, production host ownership, protected ledger read, restart, legacy forgery refusal, and untrusted peer refusal passed.');
 }finally{rmSync(root,{recursive:true,force:true});}
