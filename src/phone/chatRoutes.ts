@@ -1,0 +1,185 @@
+// Where each chat lives now, as the phone's saved delivery record says. That record (the outbox and
+// move journal) is the one source of truth: the Chats list, the open chat and Send all follow it, so
+// the screen can never name one machine while a message goes to another.
+
+import type { Access } from "../types.ts";
+import type { ChatCatalog, ChatEntry, ChatProfile } from "./chatCatalog.ts";
+import { chatDeliveryStatus, type CachedChat, type ChatDeliveryState, type ChatDeliveryStatus, type ChatOutboxMessage } from "./chatDelivery.ts";
+
+/** The delivery id for a chat the phone hasn't kept yet. Machine and room together, so two machines
+ *  that both have a room called `shared` never share one outbox. */
+export const freshChatId = (hostId: string, room: string): string => JSON.stringify([hostId, room]);
+
+const imported = (step: string) => step === "archive" || step === "complete";
+
+export interface ChatRoute {
+  /** The id the delivery controller keeps this chat under. */
+  chatId: string;
+  /** Where the chat lives now. Differs from the asked-for place only when `moved`. */
+  hostId: string;
+  room: string;
+  /** True when the asked-for place is an old home: the chat was imported somewhere else since. */
+  moved: boolean;
+}
+
+/** The chat a list row or open thread stands for, followed to wherever it lives now. */
+export function chatRoute(state: ChatDeliveryState, hostId: string, room: string): ChatRoute {
+  const here = Object.values(state.chats).find((chat) => chat.machine.id === hostId && chat.room === room);
+  if (here) return { chatId: here.id, hostId, room, moved: false };
+  const move = Object.values(state.moves).find((item) => item.from.id === hostId && item.sourceRoom === room && imported(item.step) && state.chats[item.chat]);
+  if (move) {
+    const chat = state.chats[move.chat];
+    return { chatId: chat.id, hostId: chat.machine.id, room: chat.room, moved: true };
+  }
+  return { chatId: freshChatId(hostId, room), hostId, room, moved: false };
+}
+
+function rowFromCache(chat: CachedChat, updatedAt: number): ChatEntry {
+  return {
+    hostId: chat.machine.id, id: chat.room, kind: "chat", title: chat.title,
+    bots: chat.snapshot.participants.map((bot) => ({ id: bot.id, name: bot.display_name || bot.id })),
+    updatedAt, archived: false, cwd: null, folderName: null, promotedFrom: null, promotedTo: null, movedTo: null,
+    profiles: { ...(chat.snapshot.importProfiles ?? {}) },
+  };
+}
+
+/** The saved list with the delivery record laid over it: an old home of a moved chat drops out, and
+ *  the new home shows even before its machine has listed it (or while that machine is off). */
+export function projectChats(catalog: ChatCatalog, state: ChatDeliveryState): ChatCatalog {
+  const hosts: ChatCatalog["hosts"] = Object.fromEntries(Object.entries(catalog.hosts).map(([id, host]) => [id, { ...host, rooms: [...host.rooms] }]));
+  let changed = false;
+  for (const move of Object.values(state.moves)) {
+    const chat = state.chats[move.chat];
+    if (!imported(move.step) || !chat) continue;
+    const from = hosts[move.from.id];
+    const index = from?.rooms.findIndex((row) => row.id === move.sourceRoom) ?? -1;
+    let age = 0;
+    if (from && index >= 0) {
+      age = from.rooms[index].updatedAt;
+      if (!from.rooms[index].movedTo) { from.rooms[index] = { ...from.rooms[index], movedTo: { host: move.to.id, room: move.targetRoom } }; changed = true; }
+    }
+    // Only the chat's current home is added: an in-between machine on a longer trip stays as it listed.
+    if (chat.machine.id !== move.to.id || chat.room !== move.targetRoom) continue;
+    const to = hosts[chat.machine.id] ??= { name: chat.machine.name, rooms: [] };
+    if (!to.rooms.some((row) => row.id === chat.room)) { to.rooms.push(rowFromCache(chat, age)); changed = true; }
+  }
+  return changed ? { ...catalog, hosts } : catalog;
+}
+
+// ---- What a chat's outbox shows -----------------------------------------------------------------
+
+export interface ChatOutboxRow { id: string; text: string; line: string; kind: ChatDeliveryStatus["kind"]; canRetry: boolean; canSendAnyway: boolean }
+
+/** The outbox lines under a chat. A message already in the transcript hides its line, unless the line
+ *  is how you recover it: Retry for a stopped one, Send here anyway for one stuck on another machine. */
+export function chatOutboxRows(chat: CachedChat | undefined, view: {
+  /** The open chat's place and whether its machine is connected now. */
+  hostId: string; room: string; online: boolean;
+  /** Client message ids already in the transcript on screen. */
+  shown: ReadonlySet<string>;
+  /** The message whose Send here anyway was tapped once and waits for a second tap. */
+  confirming: string | null;
+  /** Why the chat's machine can't take a send right now, when it's connected but can't. */
+  sendWhy: string;
+}): ChatOutboxRow[] {
+  if (!chat) return [];
+  return chat.outbox.flatMap((item: ChatOutboxMessage) => {
+    const status = chatDeliveryStatus(item, chat.machine);
+    const here = item.machine.id === view.hostId && item.room === view.room;
+    if (status.kind === "delivered") return [];
+    if (view.shown.has(item.id) && !status.canRetry && !status.canSendAnyway) return [];
+    if (here && view.online && status.kind === "pending") return [];
+    const line = view.confirming === item.id ? "Both machines may answer this. Tap Send here anyway again to send it."
+      : here && view.online && status.kind === "queued" && view.sendWhy ? view.sendWhy
+      : here && view.online && status.kind === "uncertain" ? "Sending…" : status.line;
+    return [{ id: item.id, text: item.text, line, kind: status.kind, canRetry: status.canRetry, canSendAnyway: status.canSendAnyway }];
+  });
+}
+
+// ---- What this phone may do with chats on a machine -------------------------------------------
+
+export interface ChatRights {
+  /** May ask the machine for its chat list. Any paired level may; the machine filters it. */
+  list: boolean;
+  /** May post, rename, archive and change bots in a chat it can see. */
+  post: boolean;
+  /** May start a chat there or move one in. */
+  create: boolean;
+  /** Why `create` is false, or "". */
+  why: string;
+  /** Why `post` is false, or "". */
+  postWhy: string;
+}
+
+/** Both chat capabilities are needed to send: without `chat_delivery_v1` a machine would ignore the
+ *  message id that stops a resent message being answered twice. */
+export function chatRights(machine: {
+  name: string; online: boolean; rooms: boolean; delivery: boolean;
+  access: { tier: "read_only" | "chat" | "full"; threads: unknown } | null | undefined;
+}): ChatRights {
+  const update = `Update Deck on ${machine.name} to chat here.`;
+  const unknown = !machine.rooms && !machine.online;
+  const capable = machine.rooms && machine.delivery;
+  const readOnly = machine.access?.tier === "read_only";
+  const scoped = !!machine.access && machine.access.threads !== "all";
+  const postWhy = unknown ? `Waiting for ${machine.name} to connect.` : !capable ? update : readOnly ? `This phone can only read on ${machine.name}.` : "";
+  const why = postWhy || (scoped ? `This phone only sees some threads on ${machine.name}.` : "");
+  return { list: machine.rooms, post: !postWhy, create: !why, why, postWhy };
+}
+
+// ---- New chat's bots ---------------------------------------------------------------------------
+
+/** The bots New chat starts with once a machine's list is in: the group last picked there that can
+ *  still join, else the first that can. */
+export function startingBots(list: readonly ChatProfile[], saved: readonly string[]): string[] {
+  const ok = list.filter((item) => item.ok).map((item) => item.profile.id);
+  const kept = saved.filter((id) => ok.includes(id));
+  return kept.length ? kept : ok.slice(0, 1);
+}
+
+// ---- Move to a Work thread ---------------------------------------------------------------------
+
+/** One move to a Work thread, saved on this phone before it is sent. A retry sends exactly this
+ *  again, so a lost reply can't be followed by a request that asks for different access. */
+export interface PromoteTicket { target: string; requestId: string; cwd: string; access: Record<string, Access> }
+export const PROMOTES_KEY = "apex-deck.phone.chat-promotes.v2";
+export const promoteKey = (hostId: string, room: string) => JSON.stringify([hostId, room]);
+
+const ACCESS: readonly string[] = ["read", "ask", "edits", "full"];
+function ticket(value: unknown): PromoteTicket | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.target !== "string" || !raw.target || typeof raw.requestId !== "string" || !raw.requestId || typeof raw.cwd !== "string" || !raw.cwd) return null;
+  if (!raw.access || typeof raw.access !== "object" || Object.values(raw.access).some((level) => !ACCESS.includes(String(level)))) return null;
+  return { target: raw.target, requestId: raw.requestId, cwd: raw.cwd, access: { ...(raw.access as Record<string, Access>) } };
+}
+
+export function readPromoteTickets(storage: Pick<Storage, "getItem">): Record<string, PromoteTicket> {
+  try {
+    const value: unknown = JSON.parse(storage.getItem(PROMOTES_KEY) ?? "{}");
+    if (!value || typeof value !== "object") return {};
+    return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => { const saved = ticket(item); return saved ? [[key, saved]] : []; }));
+  } catch { return {}; }
+}
+
+/** Saves and reads back. Throws when the phone couldn't keep it, so the caller sends nothing. */
+export function writePromoteTickets(storage: Pick<Storage, "getItem" | "setItem">, tickets: Record<string, PromoteTicket>): void {
+  const text = JSON.stringify(tickets);
+  try { storage.setItem(PROMOTES_KEY, text); } catch { throw new Error("This phone couldn't save the move, so nothing was sent. Free some space and try again."); }
+  if (storage.getItem(PROMOTES_KEY) !== text) throw new Error("This phone couldn't save the move, so nothing was sent. Free some space and try again.");
+}
+
+const sameAccess = (a: Record<string, Access>, b: Record<string, Access>) => {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+};
+
+/** The request to send for a move. An unconfirmed earlier move must be finished as it was asked, or
+ *  started over on purpose; it is never quietly resent with other choices. */
+export function promoteRequest(saved: PromoteTicket | undefined, cwd: string, access: Record<string, Access>, fresh: () => { target: string; requestId: string }): { ticket: PromoteTicket; fresh: boolean } {
+  if (saved) {
+    if (saved.cwd !== cwd || !sameAccess(saved.access, access)) throw new Error("A move to a Work thread was started and not confirmed. Finish it as it was, or start over.");
+    return { ticket: saved, fresh: false };
+  }
+  return { ticket: { ...fresh(), cwd, access: { ...access } }, fresh: true };
+}

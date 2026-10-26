@@ -9,6 +9,7 @@ import { ageWords } from "../sidebarModel";
 import type { LinkView } from "../phoneRules";
 import type { Access, FolderListing, ParticipantConfig } from "../types";
 import { botNames, type ChatEntry, type ChatProfile, type LegacyChat } from "./chatCatalog";
+import { startingBots } from "./chatRoutes";
 import { ArrowLeft, Check, ChevronRight, Folder, Lock, MessageSquare, Plus } from "./icons";
 
 const words = (error: unknown) => String(error).replace(/^Error: /, "");
@@ -126,20 +127,30 @@ export function profileLine(config: ParticipantConfig): string {
 
 export function NewChatBody(props: {
   machines: ChatMachineView[]; start: { hostId: string; picked: string[] } | null;
+  /** The group last picked on a machine, applied once its bot list is in. */
+  saved(hostId: string): string[];
   machineIcon(hostId: string, size?: number): ReactNode;
   loadProfiles(hostId: string): Promise<ChatProfile[]>;
   onStart(hostId: string, profiles: string[]): Promise<void>;
 }) {
   const [hostId, setHostId] = useState<string | null>(props.start?.hostId ?? null);
   const [picked, setPicked] = useState<string[]>(props.start?.picked ?? []);
+  // Until the person taps a bot, the picks follow the machine's list as it arrives.
+  const [edited, setEdited] = useState(false);
   const [result, setResult] = useState<{ busy: boolean; error: string }>({ busy: false, error: "" });
   const profiles = useProfiles(hostId, props.loadProfiles);
   const machine = props.machines.find((item) => item.id === hostId) ?? null;
-  // A bot picked on another machine, or one this machine says can't join, is dropped once the list arrives.
+  // Once the list arrives: the saved group (or the first bot that can join) if nothing was tapped yet,
+  // else the taps, minus any bot this machine says can't join.
   useEffect(() => {
-    if (profiles?.list) setPicked((now) => now.filter((id) => profiles.list!.some((item) => item.ok && item.profile.id === id)));
+    if (!profiles?.list || !hostId) return;
+    const list = profiles.list;
+    if (!edited) setPicked(startingBots(list, props.saved(hostId)));
+    else setPicked((now) => now.filter((id) => list.some((item) => item.ok && item.profile.id === id)));
+    // The saved group is read when the list arrives; a later tap is the person's choice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profiles?.list]);
-  const choose = (id: string) => { if (id !== hostId) { setHostId(id); setPicked([]); setResult({ busy: false, error: "" }); } };
+  const choose = (id: string) => { if (id !== hostId) { setHostId(id); setPicked([]); setEdited(false); setResult({ busy: false, error: "" }); } };
   const ready = machine?.chats && machine.status === "online" && picked.length > 0 && !result.busy;
   return <>
     <div className="ph-section">Machine</div>
@@ -156,7 +167,7 @@ export function NewChatBody(props: {
       {!profiles?.list && !profiles?.error && <p className="ph-sheet-text">Asking {machine.name} for its bots…</p>}
       {profiles?.list && profiles.list.length === 0 && <p className="ph-sheet-text">{machine.name} has no bots set up yet. Add one in Deck on that machine.</p>}
       {profiles?.list && <div className="ph-bot-list">{profiles.list.map((item) => (
-        <ProfileRow key={item.profile.id} item={item} picked={picked.includes(item.profile.id)} onToggle={() => setPicked((now) => now.includes(item.profile.id) ? now.filter((id) => id !== item.profile.id) : [...now, item.profile.id])} />
+        <ProfileRow key={item.profile.id} item={item} picked={picked.includes(item.profile.id)} onToggle={() => { setEdited(true); setPicked((now) => now.includes(item.profile.id) ? now.filter((id) => id !== item.profile.id) : [...now, item.profile.id]); }} />
       ))}</div>}
       <p className="ph-sheet-text ph-quiet"><Lock size={13} /> Talk only: bots in a chat can't see or change your files.</p>
     </>}
@@ -173,12 +184,14 @@ export function NewChatBody(props: {
 
 export function ChatBotsBody(props: {
   machine: ChatMachineView; bots: ParticipantConfig[]; working: string[];
+  /** Why this phone can't change bots on that machine, or "" when it can. */
+  locked: string;
   loadProfiles(hostId: string): Promise<ChatProfile[]>;
   onOpen(botId: string): void; onAdd(profile: string): Promise<void>; onRemove(botId: string): Promise<void>;
 }) {
   const profiles = useProfiles(props.machine.id, props.loadProfiles);
   const [state, setState] = useState<{ busy: string; error: string }>({ busy: "", error: "" });
-  const online = props.machine.status === "online";
+  const online = props.machine.status === "online" && !props.locked;
   const run = (key: string, action: Promise<void>) => { setState({ busy: key, error: "" }); action.then(() => setState({ busy: "", error: "" }), (error) => setState({ busy: "", error: words(error) })); };
   const extra = (profiles?.list ?? []).filter((item) => !props.bots.some((bot) => bot.id === item.profile.id));
   return <>
@@ -198,7 +211,8 @@ export function ChatBotsBody(props: {
       ))}</div>
     </>}
     {state.error && <p className="ph-sheet-text ph-red" role="alert">{state.error}</p>}
-    {!online && <p className="ph-sheet-text ph-amber">{props.machine.name} isn't connected. Bots can change once it's back.</p>}
+    {props.locked ? <p className="ph-sheet-text ph-amber">{props.locked}</p>
+      : !online && <p className="ph-sheet-text ph-amber">{props.machine.name} isn't connected. Bots can change once it's back.</p>}
     <p className="ph-sheet-text ph-quiet">Bots are set up on each machine, so this list shows the ones on {props.machine.name}.</p>
   </>;
 }
@@ -248,8 +262,11 @@ export function MoveToWorkBody(props: {
   machine: ChatMachineView; bots: ParticipantConfig[];
   /** Why this machine can't take the move from a phone, or "" when it can. */
   blocked: string;
+  /** A move sent earlier whose answer never came back. It can only be finished as it was, or started over. */
+  unconfirmed: { cwd: string; access: Record<string, Access> } | null;
   listFolder(path: string | null): Promise<FolderListing>;
   onMove(cwd: string, access: Record<string, Access>): Promise<void>;
+  onStartOver(): Promise<void>;
 }) {
   const [listing, setListing] = useState<FolderListing | null>(null);
   const [access, setAccess] = useState<Record<string, Access>>({});
@@ -259,6 +276,29 @@ export function MoveToWorkBody(props: {
   const folder = listing?.path ?? "";
   const name = folder.split(/[\\/]/).filter(Boolean).pop() ?? folder;
   if (props.blocked) return <p className="ph-sheet-text">{props.blocked}</p>;
+  const left = props.unconfirmed;
+  if (left) {
+    const leftName = left.cwd.split(/[\\/]/).filter(Boolean).pop() ?? left.cwd;
+    return <>
+      <p className="ph-sheet-text">A move to <b>{leftName}</b> on {props.machine.name} was sent, but {props.machine.name} never confirmed it. Finish it with the same choices, so it can't make a second thread or change what the bots may do.</p>
+      <p className="ph-path">{left.cwd}</p>
+      <div className="ph-bot-list">{props.bots.map((bot) => { const face = look(bot); const level = left.access[bot.id] ?? "read"; return (
+        <div className="ph-bot-entry" key={bot.id}><div className="ph-bot-row">
+          <span className="ph-bot-info"><Avatar seed={face.seed} color={face.color} size="sm" /><span className="ph-bot-label"><strong>{bot.display_name}</strong><small>{ACCESS.find((choice) => choice.id === level)?.text ?? level}</small></span></span>
+        </div></div>
+      ); })}</div>
+      {props.machine.status !== "online" && <p className="ph-sheet-text ph-amber">{props.machine.name} isn't connected. Finish the move once it's back.</p>}
+      {state.error && <p className="ph-sheet-text ph-red" role="alert">{state.error}</p>}
+      <button type="button" className="primary ph-wide" disabled={state.busy || props.machine.status !== "online"} onClick={() => {
+        setState({ busy: true, error: "" });
+        props.onMove(left.cwd, left.access).then(() => setState({ busy: false, error: "" }), (error) => setState({ busy: false, error: words(error) }));
+      }}>{state.busy ? "Moving…" : `Finish the move to ${leftName}`}</button>
+      <button type="button" className="ph-wide" disabled={state.busy || props.machine.status !== "online"} onClick={() => {
+        setState({ busy: true, error: "" });
+        props.onStartOver().then(() => setState({ busy: false, error: "" }), (error) => setState({ busy: false, error: words(error) }));
+      }}>Start over</button>
+    </>;
+  }
   return <>
     <p className="ph-sheet-text">Pick a folder on <b>{props.machine.name}</b>. The Work thread starts with this chat's messages and the same bots. This chat keeps a link to it.</p>
     {props.machine.status !== "online" && <p className="ph-sheet-text ph-amber">{props.machine.name} isn't connected. Folders show once it's back.</p>}
