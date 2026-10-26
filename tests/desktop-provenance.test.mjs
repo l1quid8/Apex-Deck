@@ -129,3 +129,20 @@ test('remote device management reaches the host while local Mac grants require a
 test('malformed remote commands cannot crash the desktop admission route', () => {
   for (const cmd of [undefined, null, {}, []]) assert.equal(mod.needsAttestation(cmd, true), false);
 });
+
+test('update requests carry only the package facts and accept only a matching signed receipt', async () => {
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const update={version:'0.9.1',package:'/Users/a/Library/Caches/dev.apexdeck.desktop/updates/0.9.1/Apex-Deck-0.9.1-arm64.pkg',sha256:'f'.repeat(64),size:42};
+  const id='12345678-1234-4234-8234-123456789abc';
+  const reply=(fields)=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'update',uid:501,id,version:'0.9.1',...fields});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  let sent;
+  assert.equal(await mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async(request)=>{sent=request;return reply({});}}),id);
+  assert.deepEqual(sent,{op:'update_install',...update});
+  for (const fields of [{uid:502},{version:'0.9.2'},{kind:'submission'},{id:'../../x'}]) {
+    await assert.rejects(mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async()=>reply(fields)}));
+  }
+  const forged=reply({});forged.payload=forged.payload.replace('0.9.1','0.9.1 ');
+  await assert.rejects(mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async()=>forged}),/signature/);
+  await assert.rejects(mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async()=>{throw new Error('Only the installed Apex Deck app can install updates');}}),/installed Apex Deck/);
+});

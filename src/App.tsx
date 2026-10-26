@@ -82,13 +82,13 @@ import { personalTaskKey, projectTaskKey } from "./apexAgentTaskView";
 import { prefillAssistantComposer } from "./assistantComposerDrafts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { unsavedEditName } from "./unsavedEdits";
+import { discardQuestion, unsavedEditName } from "./unsavedEdits";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
 import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning, assistantsRunning } from "./closing";
 import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
@@ -105,6 +105,8 @@ import { RightWorktreesTab } from "./RightWorktrees";
 import { RightTerminalTab } from "./RightTerminal";
 import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
+import { restartQuestions, resultNotice, updateActions, useUpdates } from "./updates.ts";
+import { ipcWords } from "./electronShell";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A terminal counts as working if it produced output this recently. */
@@ -330,6 +332,8 @@ export function App() {
   const [picking, setPicking] = useState(false);
   /** A question waiting for Cancel or go ahead. */
   const [question, setQuestion] = useState<Question | null>(null);
+  /** Automatic updates, from Electron's main process; null where Deck can't update itself. */
+  const updates = useUpdates();
   /** Threads deleted but still inside their undo time, by pane id. */
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
   const deleteTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -439,7 +443,7 @@ export function App() {
   const guardUnsavedEdits = (action: () => void) => {
     const file = unsavedEditName();
     if (!file) { action(); return; }
-    setQuestion({ title: `Discard unsaved changes to ${file}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: action });
+    setQuestion({ ...discardQuestion(file), onConfirm: action });
   };
   const closeDetails = () => guardUnsavedEdits(() => { setDetailsOpen(false); detailsToggle.current?.focus(); });
   const changePanel = (next: RightPanelState) => {
@@ -2352,10 +2356,40 @@ export function App() {
   }, []);
 
   /** Card saves settle before quitting; session writes keep their one-second fallback. */
+  const settleSaves = () => {
+    const sessionSave = Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]);
+    return Promise.allSettled([sessionSave, flushAnswerStores()]);
+  };
   const quitNow = () => {
     if (!backend) return;
-    const sessionSave = Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]);
-    void Promise.allSettled([sessionSave, flushAnswerStores()]).then(() => backend.quitApp());
+    void settleSaves().then(() => backend.quitApp());
+  };
+
+  /** Agents, terminals and personal Assistant work on this Mac (an assistant elsewhere's commands included) that quitting, or installing an update, would end. */
+  const busyHere = () => {
+    const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
+    return [
+      ...stillRunning(
+        listed.filter((p) => p.kind === "terminal" && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
+        listed.filter((p) => p.kind === "chat" && !deleting.has(p.id) && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
+      ),
+      ...assistantsRunning(assistants.assistants, assistants.localHostId),
+    ];
+  };
+
+  // "Restart to update": Deck exits without the file editor's unload warning, so
+  // unsaved edits are asked about first. The install stops this Mac's background
+  // service, so busy agents are asked about even when an ordinary quit would leave
+  // them be. Deck quits from main once the update is queued; a refusal keeps it open.
+  const restartToUpdate = () => {
+    const go = () => {
+      void settleSaves().then(() => updateActions.restart()).catch((error) => toast(`The update didn't start: ${ipcWords(error)}`));
+    };
+    const ask = ([next, ...later]: ReturnType<typeof restartQuestions>) => {
+      if (next) setQuestion({ ...next, onConfirm: () => ask(later) });
+      else go();
+    };
+    ask(restartQuestions(unsavedEditName(), busyHere()));
   };
 
   // Asked to quit: the window's close button, ⌘W, ⌘Q or Quit in the app menu.
@@ -2364,12 +2398,7 @@ export function App() {
   onQuitRequest.current = (request) => {
     if (!backend) return;
     void backend.quitHeard(request).catch(() => {});
-    const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
-    const busy = stillRunning(
-      listed.filter((p) => p.kind === "terminal" && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
-      listed.filter((p) => p.kind === "chat" && !deleting.has(p.id) && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
-    );
-    const asked = quitQuestion(busy, backend.quitStopsWork);
+    const asked = quitQuestion(busyHere(), backend.quitStopsWork);
     if (asked) setQuestion({ ...asked, onConfirm: quitNow });
     else quitNow();
   };
@@ -2381,6 +2410,7 @@ export function App() {
     backend.onMenu((action) => {
       if (action === "settings") setSettingsOpen((open) => (open ? null : "general"));
       if (action === "hosts") setSettingsOpen("hosts");
+      if (action === "updates") setSettingsOpen("general");
     }).then((unlisten) => (live ? (stop = unlisten) : unlisten()));
     return () => { live = false; stop?.(); };
   }, [backend]);
@@ -2442,6 +2472,8 @@ export function App() {
     </div>
   );
 
+  const updateReady = updates?.state === "ready" && !updates.dismissed;
+  const updateNotice = resultNotice(updates);
   let creationBackend: Backend | null = backend;
   try { if (current) creationBackend = backendFor({ workspaceId: current.id } as Pane); } catch { creationBackend = null; }
   const apexWorkspace = typeof apexAgentWorkspace==='string' ? workspaces.find(w=>w.id===apexAgentWorkspace)??null : apexAgentWorkspace ? resolveAssistantProject(apexAgentWorkspace,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) : null;
@@ -2830,7 +2862,7 @@ export function App() {
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}
-        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} onClose={closeSettings} />}
+        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
       {connectionDialog && backend.hosts && <ConnectionDialog mode={connectionDialog} hosts={hostList} api={backend.hosts}
@@ -2843,8 +2875,21 @@ export function App() {
         const pane = viewPanes.find((p) => p.id === headMenu.id);
         return pane ? <MenuList id={`head:${pane.id}`} entries={paneMenuEntries(pane, "head")} anchor={headMenu.anchor} opener={headMenu.opener} onClose={() => setHeadMenu(null)} /> : null;
       })()}
-      {(undoable || undoableRemove || toasts.length > 0) && (
+      {(undoable || undoableRemove || toasts.length > 0 || updateReady || updateNotice) && (
         <div className="toasts">
+          {updateReady && (
+            <div className="toast update-toast" role="status">
+              <span>Apex Deck {updates.available?.version} is ready.</span>
+              <button className="primary" onClick={restartToUpdate}>Restart to update</button>
+              <button onClick={() => void updateActions.later()}>Later</button>
+            </div>
+          )}
+          {updateNotice && (
+            <div className={`toast update-toast${updateNotice.problem ? " problem" : ""}`} role={updateNotice.problem ? "alert" : "status"}>
+              <span>{updateNotice.text}</span>
+              <button onClick={() => void updateActions.dismissResult()}>OK</button>
+            </div>
+          )}
           {undoable && (
             <div className="toast" role="status">
               <span>{undoable.title} deleted.</span>

@@ -21,6 +21,7 @@ import { gatewayOwner } from "./modelGateway";
 import { ModsSettings } from "./ModsSettings";
 import { PhonesSettings } from "./PhonesSettings";
 import { shortcutList } from "./shortcuts";
+import { updateActions, updateNote, type UpdateStatus } from "./updates.ts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
 export type SettingsSection = "general" | "appearance" | "hosts" | "phones" | "providers" | "gateway" | "threads" | "terminal" | "mods" | "shortcuts";
@@ -54,10 +55,13 @@ interface Props {
   agents: AgentInfo[];
   profiles: ParticipantConfig[];
   backend: Backend;
+  /** Null where Deck can't update itself: the phone, the browser preview, older desktops. */
+  updates?: UpdateStatus | null;
+  onRestartToUpdate?: () => void;
   onClose: () => void;
 }
 
-export function SettingsPage({ section, onSection, settings, onChange, agents, profiles, backend, onClose }: Props) {
+export function SettingsPage({ section, onSection, settings, onChange, agents, profiles, backend, updates = null, onRestartToUpdate, onClose }: Props) {
   const appearance = settings.appearance ?? defaultAppearanceSettings();
   // Take focus from the deck, so typing never reaches a terminal underneath.
   const nav = useRef<HTMLElement>(null);
@@ -91,7 +95,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
           <h2>{section === "threads" ? "Defaults for new threads" : SECTIONS[index].label}</h2>
           {LEADS[section] && <p>{LEADS[section]}</p>}
         </header>
-        {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} settings={settings} onChange={onChange} />}
+        {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} settings={settings} onChange={onChange} updates={updates} onRestartToUpdate={onRestartToUpdate} />}
         {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onLandingTexture={(landingTexture) => onChange({ ...settings, landingTexture })} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
         {section === "phones" && backend.hosts && <PhonesSettings backend={backend} />}
@@ -133,7 +137,7 @@ function Stepper({ value, min, max, unit, label, onChange }: { value: number; mi
   </span>;
 }
 
-function General({ backend, themeName, onAppearance, settings, onChange }: { backend: Backend; themeName: string; onAppearance: () => void; settings: AppSettings; onChange: (s: AppSettings) => void }) {
+function General({ backend, themeName, onAppearance, settings, onChange, updates, onRestartToUpdate }: { backend: Backend; themeName: string; onAppearance: () => void; settings: AppSettings; onChange: (s: AppSettings) => void; updates: UpdateStatus | null; onRestartToUpdate?: () => void }) {
   const [folder, setFolder] = useState("");
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
@@ -171,8 +175,23 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
       <button onClick={() => setImporting(true)}>Review…</button>
     </Row>
     {importing && <LegacyImportPanel backend={backend} startOpen onClose={() => setImporting(false)} />}
-    <Row label="Version" note={`Apex Deck ${__APP_VERSION__}`} />
+    {updates ? <VersionRow updates={updates} onRestart={onRestartToUpdate} /> : <Row label="Version" note={`Apex Deck ${__APP_VERSION__}`} />}
   </div>;
+}
+
+/** The version, how updating stands, and the one button that fits it. */
+function VersionRow({ updates, onRestart }: { updates: UpdateStatus; onRestart?: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  const working = ["checking", "downloading", "verifying", "installing"].includes(updates.state);
+  return <Row label="Version" note={<span role="status">{updateNote(updates, now)}</span>}>
+    {updates.state === "ready" && onRestart
+      ? <button className="primary" onClick={onRestart}>Restart to update</button>
+      : updates.state !== "disabled" && <button disabled={working} onClick={() => void updateActions.check()}>{updates.state === "checking" ? "Checking…" : "Check now"}</button>}
+  </Row>;
 }
 
 /** Picture providers read their keys from these names; each one's /image name is shown beside it. */

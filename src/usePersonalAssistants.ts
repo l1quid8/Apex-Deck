@@ -21,6 +21,8 @@ export type PersonalAssistantSummary = {
   ref: AssistantRef; name: string; hostName: string; look?: AssistantLook;
   offline: boolean; revision: number; archivedAt?:number; lastSeen: number; legacy?: PersonalAssistantRecord["legacy"];
   paused: boolean; personalTasks: PersonalTask[]; projects: AssistantProjectBinding[];
+  /** Its service is this Mac's, so restarting that service stops its work. */
+  onThisMac: boolean; events: NonNullable<PersonalAssistantRecord["events"]>;
 };
 type HostState = { routeHostId: string; hostId?: string; name: string; state: "ready" | "empty" | "offline" | "unsupported" | "error"; listedAfter?: number; problem?: string };
 type Row = { ref: AssistantRef; routeHostId: string; route: Backend; assistant: PersonalAssistantRecord; epoch: number; written: number; lastSeen: number };
@@ -99,12 +101,14 @@ export class PersonalAssistantsCollection {
         || this.hosts.get(row.routeHostId)?.state === "error" || this.hosts.get(row.routeHostId)?.state === "unsupported";
     } catch { return true; }
   }
-  private summary(row:Row):PersonalAssistantSummary { return {ref:{...row.ref},name:row.assistant.name,legacy:row.assistant.legacy,look:row.assistant.look,revision:row.assistant.revision,archivedAt:row.assistant.archivedAt,hostName:this.hosts.get(row.routeHostId)?.name??row.routeHostId,offline:this.offline(row),paused:!!row.assistant.paused,personalTasks:row.assistant.tasks,projects:row.assistant.projects??[],lastSeen:row.lastSeen}; }
+  private summary(row:Row):PersonalAssistantSummary { return {ref:{...row.ref},name:row.assistant.name,legacy:row.assistant.legacy,look:row.assistant.look,revision:row.assistant.revision,archivedAt:row.assistant.archivedAt,hostName:this.hosts.get(row.routeHostId)?.name??row.routeHostId,offline:this.offline(row),paused:!!row.assistant.paused,personalTasks:row.assistant.tasks,projects:row.assistant.projects??[],onThisMac:this.options.hosts.some(h=>h.id===row.routeHostId&&!h.remote),events:row.assistant.events??[],lastSeen:row.lastSeen}; }
   snapshot = () => ({
     assistants: [...this.rows.values()].filter(row=>row.assistant.archivedAt==null).map(row=>this.summary(row)),
     archivedAssistants: [...this.rows.values()].filter(row=>row.assistant.archivedAt!=null).map(row=>this.summary(row)),
     selected: this.selected ? { ...this.selected } : null,
     hosts: [...this.hosts.values()],
+    /** This Mac's host id once its service has answered; an assistant elsewhere runs commands here under it. */
+    localHostId: this.localHostId,
   });
   /** Only authenticated welcome identity can bind a transport alias such as `local`. */
   private owner(route: Backend): string {

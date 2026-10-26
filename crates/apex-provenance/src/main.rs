@@ -151,6 +151,16 @@ fn run() -> Result<(), String> {
                 return Err("No kernel peer identity".into());
             }
             let request = read_frame(&mut stream)?;
+            if request["op"] == "update_install" {
+                // Only the pinned UI, never its daemon or a shell, can start an install.
+                if !trusted {
+                    return Err("Only the installed Apex Deck app can install updates".into());
+                }
+                let update = update::parse_request(&request)?;
+                let id = update::new_id()?;
+                update::queue(&update::Paths::system(), uid, &id, &update)?;
+                return sign(&key, &json!({"domain":DOMAIN,"kind":"update","uid":uid,"id":id,"version":update.version}));
+            }
             let folder = request["dataDir"]
                 .as_str()
                 .ok_or("Missing data directory")?;

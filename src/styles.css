@@ -4253,3 +4253,8 @@ button.mod-status:hover { color: var(--text); }
 .reset-tip-key { color: var(--muted); font-size: 11px; }
 .reset-tip-value { font-variant-numeric: tabular-nums; }
 .reset-tip-value + .reset-tip-key { margin-top: 4px; }
+
+/* Automatic updates: the ready and after-restart notices share the toast stack. */
+.toast.update-toast { gap: 8px; max-width: min(640px, calc(100vw - 48px)); }
+.toast.update-toast > span { margin-right: 6px; }
+.toast.update-toast.problem { border-color: var(--warn); }
