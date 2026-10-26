@@ -105,15 +105,20 @@ async function startAgent() {
   const infoFile = path.join(folder, 'daemon.json');
   if (process.platform === 'win32') {
     const stampFile = path.join(app.getPath('userData'), 'logon-task.stamp');
-    const got = await startLogonTaskDaemon({
-      socket,
-      infoFile,
-      answers,
-      install: () => installLogonTask({ bin: agentBin, dataDir, build: daemonBuild(agentBin), stampFile }),
-      remove: () => removeLogonTask({ stampFile }),
-    });
-    if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
-    return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
+    try {
+      const got = await startLogonTaskDaemon({
+        socket,
+        infoFile,
+        answers,
+        install: () => installLogonTask({ bin: agentBin, dataDir, build: daemonBuild(agentBin), stampFile }),
+        remove: () => removeLogonTask({ stampFile }),
+      });
+      if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
+      return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
+    } catch (error) {
+      console.warn(`apex-daemon: Windows logon task unavailable (${error instanceof Error ? error.message : error}); running daemon as child process.`);
+      return localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) });
+    }
   }
   const logFile = agentLogFile();
   fs.mkdirSync(path.dirname(logFile), { recursive: true });

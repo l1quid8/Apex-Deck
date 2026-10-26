@@ -43,7 +43,7 @@ export const endpointArgs = (dataDir) => withDataDir(['endpoint'], dataDir);
 /** The folder the daemon would use. */
 export function dataFolder(bin, dataDir) {
   return new Promise((resolve, reject) => {
-    execFile(bin, dataDirArgs(dataDir), (error, stdout, stderr) => {
+    execFile(bin, dataDirArgs(dataDir), { windowsHide: true }, (error, stdout, stderr) => {
       if (error) reject(new Error(error.code === 'ENOENT' ? `There is no apex-daemon at ${bin}.` : (stderr.trim() || error.message)));
       else resolve(stdout.trim());
     });
@@ -53,7 +53,7 @@ export function dataFolder(bin, dataDir) {
 /** The connection address (`apex-daemon endpoint`): the UNIX socket path or Windows named pipe. */
 export function daemonEndpoint(bin, dataDir) {
   return new Promise((resolve, reject) => {
-    execFile(bin, endpointArgs(dataDir), (error, stdout, stderr) => {
+    execFile(bin, endpointArgs(dataDir), { windowsHide: true }, (error, stdout, stderr) => {
       if (error) reject(new Error(error.code === 'ENOENT' ? `There is no apex-daemon at ${bin}.` : (stderr.trim() || error.message)));
       else resolve(stdout.trim());
     });
@@ -93,7 +93,7 @@ export async function localDaemon({ bin, dataDir, remote = false, log = () => {}
   const socket = await daemonEndpoint(bin, dataDir);
   if (await answers(socket)) return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
 
-  const child = spawn(bin, serveArgs(dataDir, { remote }), { stdio: ['pipe', 'ignore', 'pipe'] });
+  const child = spawn(bin, serveArgs(dataDir, { remote }), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
   let stderr = '';
   let exited = null;
   child.stderr.setEncoding('utf8');

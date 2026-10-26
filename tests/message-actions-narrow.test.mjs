@@ -99,16 +99,16 @@ async function inThreads(name, body, measure, checks) {
     const {app,BrowserWindow}=require('electron');
     const assert=require('node:assert/strict');
     app.whenReady().then(async()=>{
-      const win=new BrowserWindow({show:false,width:900,height:1500,webPreferences:{contextIsolation:true,sandbox:true,backgroundThrottling:false}});
+      const win=new BrowserWindow({show:false,width:900,height:1500,webPreferences:{offscreen:true,contextIsolation:true,sandbox:true,backgroundThrottling:false}});
       const run=code=>win.webContents.executeJavaScript(code);
       try {
         await win.loadURL(${JSON.stringify(url)});
         for(let i=0;i<200;i++){ if(await run("!!window.ready")) break; await new Promise(r=>setTimeout(r,20)); }
         assert.equal(await run("!!window.ready"),true,'fixture must render');
         for(const theme of ${JSON.stringify(THEMES)}){
+          await run('(()=>{const r=document.documentElement; if('+JSON.stringify(theme)+') r.dataset.deckTheme='+JSON.stringify(theme)+'; else delete r.dataset.deckTheme; return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));})()');
           for(const width of ${JSON.stringify(WIDTHS)}){
-            await run('(()=>{const r=document.documentElement; if('+JSON.stringify(theme)+') r.dataset.deckTheme='+JSON.stringify(theme)+'; else delete r.dataset.deckTheme; document.querySelector(".chat-body").style.width="'+width+'px"; return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));})()');
-            const s={...await run('('+${JSON.stringify(contentBox.toString())}+')()'),...await run('('+${JSON.stringify(measure.toString())}+')()')};
+            const s=await run('(()=>{document.querySelector(".chat-body").style.width="'+width+'px"; return {...('+${JSON.stringify(contentBox.toString())}+')(),...('+${JSON.stringify(measure.toString())}+')()};})()');
             const where=(theme||'classic')+' at '+width+'px (thread '+s.offsetWidth+' wide, '+s.clientWidth+' inside, content '+JSON.stringify(s.content)+', '+s.scrollHeight+' tall in '+s.clientHeight+')';
             assert.ok(s.scrollWidth<=s.clientWidth,where+': the thread must not scroll sideways ('+s.scrollWidth+' > '+s.clientWidth+')');
             const inside=(r)=>r.left>=s.content[0]-0.5 && r.right<=s.content[1]+0.5;
