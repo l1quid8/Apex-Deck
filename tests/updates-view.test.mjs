@@ -11,9 +11,12 @@ test('the Settings line says plainly where updating stands', () => {
   assert.equal(updateNote({ ...base, state: 'up-to-date', checkedAt: now - 5 * 60_000 }, now), 'Apex Deck 0.9.0. Up to date, checked 5 min ago.');
   assert.equal(updateNote({ ...base, state: 'downloading', available: { version: '0.9.1', notes: '' }, progress: { received: 52_428_800, total: 209_715_200 } }, now), 'Apex Deck 0.9.0. Downloading 0.9.1… 25% of 200 MB');
   assert.equal(updateNote({ ...base, state: 'verifying', available: { version: '0.9.1', notes: '' } }, now), 'Apex Deck 0.9.0. Checking the download of 0.9.1…');
-  assert.match(updateNote({ ...base, state: 'ready', available: { version: '0.9.1', notes: '' } }, now), /0\.9\.1 is ready\. Restarting installs it; Deck reopens by itself\.$/);
+  // "Version" keeps the two numbers apart: never "Apex Deck 0.9.0. 0.9.1 is ready."
+  assert.equal(updateNote({ ...base, state: 'ready', available: { version: '0.9.1', notes: '' } }, now), 'Apex Deck 0.9.0. Version 0.9.1 is ready. Restarting installs it; Deck reopens by itself.');
   assert.match(updateNote({ ...base, state: 'ready', available: { version: '0.9.1', notes: '' }, error: 'An update is already being installed.' }, now), /Last try: An update is already/);
-  assert.equal(updateNote({ ...base, state: 'error', error: 'offline' }, now), "Apex Deck 0.9.0. Couldn't update: offline");
+  // In the error state the updater words the whole sentence (see desktop-updater.test.mjs).
+  assert.equal(updateNote({ ...base, state: 'error', error: 'Couldn’t reach GitHub. Check your internet connection; Deck will try again later.' }, now), 'Apex Deck 0.9.0. Couldn’t reach GitHub. Check your internet connection; Deck will try again later.');
+  assert.equal(updateNote({ ...base, state: 'error', error: 'Couldn’t update: The download stopped early.' }, now), 'Apex Deck 0.9.0. Couldn’t update: The download stopped early.');
   assert.equal(updateNote({ ...base, state: 'disabled', disabledReason: 'Development builds don’t update themselves.' }, now), 'Apex Deck 0.9.0. Development builds don’t update themselves.');
   for (const state of ['idle', 'checking', 'installing']) assert.ok(!updateNote({ ...base, state, available: { version: '0.9.1', notes: '' } }, now).includes('undefined'));
 });

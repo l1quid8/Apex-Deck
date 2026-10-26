@@ -105,7 +105,8 @@ import { RightWorktreesTab } from "./RightWorktrees";
 import { RightTerminalTab } from "./RightTerminal";
 import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
-import { restartQuestions, resultNotice, updateActions, useUpdates } from "./updates.ts";
+import { restartQuestions, updateActions, useUpdates } from "./updates.ts";
+import { UpdateNotices } from "./UpdateNotices.tsx";
 import { ipcWords } from "./electronShell";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -2472,8 +2473,6 @@ export function App() {
     </div>
   );
 
-  const updateReady = updates?.state === "ready" && !updates.dismissed;
-  const updateNotice = resultNotice(updates);
   let creationBackend: Backend | null = backend;
   try { if (current) creationBackend = backendFor({ workspaceId: current.id } as Pane); } catch { creationBackend = null; }
   const apexWorkspace = typeof apexAgentWorkspace==='string' ? workspaces.find(w=>w.id===apexAgentWorkspace)??null : apexAgentWorkspace ? resolveAssistantProject(apexAgentWorkspace,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) : null;
@@ -2555,6 +2554,7 @@ export function App() {
 
       {monitorPollers.map(({ hostId, backend: hostRoute, version }) => <HostMonitors key={hostId} hostId={hostId} backend={hostRoute} getVersion={monitorHostVersion} onMonitors={acceptHostMonitors(version)} />)}
       {migrationNotice && <div className="connection-banner" role="status">{migrationNotice}<button onClick={() => setMigrationNotice("")}>Dismiss</button></div>}
+      <UpdateNotices updates={updates} onRestart={restartToUpdate} />
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       <div className={`body${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
@@ -2875,21 +2875,8 @@ export function App() {
         const pane = viewPanes.find((p) => p.id === headMenu.id);
         return pane ? <MenuList id={`head:${pane.id}`} entries={paneMenuEntries(pane, "head")} anchor={headMenu.anchor} opener={headMenu.opener} onClose={() => setHeadMenu(null)} /> : null;
       })()}
-      {(undoable || undoableRemove || toasts.length > 0 || updateReady || updateNotice) && (
+      {(undoable || undoableRemove || toasts.length > 0) && (
         <div className="toasts">
-          {updateReady && (
-            <div className="toast update-toast" role="status">
-              <span>Apex Deck {updates.available?.version} is ready.</span>
-              <button className="primary" onClick={restartToUpdate}>Restart to update</button>
-              <button onClick={() => void updateActions.later()}>Later</button>
-            </div>
-          )}
-          {updateNotice && (
-            <div className={`toast update-toast${updateNotice.problem ? " problem" : ""}`} role={updateNotice.problem ? "alert" : "status"}>
-              <span>{updateNotice.text}</span>
-              <button onClick={() => void updateActions.dismissResult()}>OK</button>
-            </div>
-          )}
           {undoable && (
             <div className="toast" role="status">
               <span>{undoable.title} deleted.</span>

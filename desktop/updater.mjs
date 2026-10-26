@@ -195,6 +195,15 @@ export function packageVerifier({ run, team, scratch, files = fs }) {
 
 const message = (error) => (error instanceof Error ? error.message : String(error)) || 'Something went wrong.';
 
+/**
+ * The sentence Settings shows after a failed check or download. Chromium's
+ * network errors ("net::ERR_NAME_NOT_RESOLVED", or a connection dropped
+ * partway) mean GitHub never answered; the next check is CHECK_EVERY_MS away.
+ */
+const failure = (error) => (message(error).startsWith('net::ERR_')
+  ? 'Couldn’t reach GitHub. Check your internet connection; Deck will try again later.'
+  : `Couldn’t update: ${message(error)}`);
+
 export class Updater {
   constructor({
     current, arch, osVersion, cacheDir, stateFile, resultFile = RESULT_FILE, disabled = null,
@@ -330,7 +339,7 @@ export class Updater {
     } catch (error) {
       // A ready update stays ready when a later check, or a newer download, fails.
       if (ready) this.set({ state: 'ready', ...readyView, progress: null, checkedAt: this.now() });
-      else this.set({ state: 'error', error: message(error), progress: null, checkedAt: this.now() });
+      else this.set({ state: 'error', error: failure(error), progress: null, checkedAt: this.now() });
     }
     return this.status();
   }
