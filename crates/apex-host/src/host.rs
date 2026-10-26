@@ -1463,6 +1463,32 @@ impl Host {
         self.promoted_reply(&source, meta.promoted_to.as_deref().unwrap_or(&target))
     }
 
+    /// The phone's "Start over" on a move to a Work thread it never heard back
+    /// about. Waits for any promote already running (they share the lifecycle
+    /// lock), then either reports the Work thread that move made or fences the
+    /// request off so a delayed copy can't make one with the old Access.
+    pub fn chat_promote_abandon(&self, source: String, request_id: String) -> Result<serde_json::Value, String> {
+        if request_id.trim().is_empty() || request_id.len() > 200 {
+            return Err("invalid request id".into());
+        }
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        let chat = match self.rooms.lock().unwrap().get(&source) {
+            Some(handle) => handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(),
+            None => self.store.room(&source)?.ok_or_else(|| format!("no group chat with id {source}"))?.snapshot.kind.is_chat(),
+        };
+        if !chat {
+            return Err("Only a chat can become a Work thread.".into());
+        }
+        match self.store.abandon_promote(&source, &request_id)? {
+            Some(to) => {
+                let mut done = self.promoted_reply(&source, &to)?;
+                done["state"] = "done".into();
+                Ok(done)
+            }
+            None => Ok(serde_json::json!({ "state": "abandoned" })),
+        }
+    }
+
     /// The folder check behind "Move to a Work thread" on a machine with no
     /// signed receipt (Linux): a phone may pick a folder, but only inside one
     /// this machine's own user allowed with `apex-daemon allow-root`. Read from
@@ -4169,6 +4195,44 @@ mod host_tests {
         assert!(host.store.room("33333333-3333-3333-3333-333333333333").unwrap().is_none());
         // Only a chat can be moved.
         let err = host.chat_promote("22222222-2222-2222-2222-222222222222".into(), "44444444-4444-4444-4444-444444444444".into(), cwd.clone(), None, None, None).unwrap_err();
+        assert!(err.contains("Only a chat"), "{err}");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn an_abandoned_promote_can_never_land_and_a_finished_one_is_reported() {
+        use serde_json::json;
+        let (host, _runtime, data) = host("chat-promote-abandon");
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+        host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("denver");
+        std::fs::create_dir_all(&folder).unwrap();
+        let cwd = folder.to_string_lossy().into_owned();
+        let chat = || "11111111-1111-1111-1111-111111111111".to_string();
+        let full = || Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Full)]));
+        let ask_first = || Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Ask)]));
+
+        // Start over before the first request arrived: it is fenced off for good.
+        let gone = host.chat_promote_abandon(chat(), "move-1".into()).unwrap();
+        assert_eq!(gone["state"], "abandoned");
+        // The delayed Full-access copy lands afterwards and is refused, making nothing.
+        let late = host.chat_promote(chat(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, full(), Some("move-1".into())).unwrap_err();
+        assert!(late.contains("cancelled"), "{late}");
+        assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());
+        // The fence survives a restart: it is saved with the chat.
+        assert!(host.store.chat_meta(&chat()).unwrap().unwrap().abandoned_promotes.contains(&"move-1".to_string()));
+        // The new choice goes through with the Access picked the second time.
+        let made = host.chat_promote(chat(), "33333333-3333-3333-3333-333333333333".into(), cwd.clone(), None, ask_first(), Some("move-2".into())).unwrap();
+        assert_eq!(made["room"]["participants"][0]["access"], "ask");
+        // Start over after a move already happened reports that thread instead of fencing.
+        let done = host.chat_promote_abandon(chat(), "move-2".into()).unwrap();
+        assert_eq!(done["state"], "done");
+        assert_eq!(done["work"]["id"], "33333333-3333-3333-3333-333333333333");
+        // Only a chat can be asked.
+        let err = host.chat_promote_abandon("33333333-3333-3333-3333-333333333333".into(), "move-3".into()).unwrap_err();
         assert!(err.contains("Only a chat"), "{err}");
         let _ = std::fs::remove_dir_all(data);
     }

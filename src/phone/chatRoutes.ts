@@ -44,8 +44,10 @@ function rowFromCache(chat: CachedChat, updatedAt: number): ChatEntry {
 }
 
 /** The saved list with the delivery record laid over it: an old home of a moved chat drops out, and
- *  the new home shows even before its machine has listed it (or while that machine is off). */
-export function projectChats(catalog: ChatCatalog, state: ChatDeliveryState): ChatCatalog {
+ *  the new home shows even before its machine has listed it (or while that machine is off). Only on a
+ *  machine still paired (`paired`), and never against that machine's own word: once it has sent a whole
+ *  list asked for after the import, a chat it left out stays out (this phone may no longer see it). */
+export function projectChats(catalog: ChatCatalog, state: ChatDeliveryState, paired: ReadonlySet<string>): ChatCatalog {
   const hosts: ChatCatalog["hosts"] = Object.fromEntries(Object.entries(catalog.hosts).map(([id, host]) => [id, { ...host, rooms: [...host.rooms] }]));
   let changed = false;
   for (const move of Object.values(state.moves)) {
@@ -59,7 +61,9 @@ export function projectChats(catalog: ChatCatalog, state: ChatDeliveryState): Ch
       if (!from.rooms[index].movedTo) { from.rooms[index] = { ...from.rooms[index], movedTo: { host: move.to.id, room: move.targetRoom } }; changed = true; }
     }
     // Only the chat's current home is added: an in-between machine on a longer trip stays as it listed.
-    if (chat.machine.id !== move.to.id || chat.room !== move.targetRoom) continue;
+    if (chat.machine.id !== move.to.id || chat.room !== move.targetRoom || !paired.has(move.to.id)) continue;
+    const listed = hosts[move.to.id]?.listedAt;
+    if (listed !== undefined && (move.importedAt === undefined || listed >= move.importedAt)) continue;
     const to = hosts[chat.machine.id] ??= { name: chat.machine.name, rooms: [] };
     if (!to.rooms.some((row) => row.id === chat.room)) { to.rooms.push(rowFromCache(chat, age)); changed = true; }
   }
@@ -68,7 +72,9 @@ export function projectChats(catalog: ChatCatalog, state: ChatDeliveryState): Ch
 
 // ---- What a chat's outbox shows -----------------------------------------------------------------
 
-export interface ChatOutboxRow { id: string; text: string; line: string; kind: ChatDeliveryStatus["kind"]; canRetry: boolean; canSendAnyway: boolean }
+export interface ChatOutboxRow { id: string; text: string; line: string; kind: ChatDeliveryStatus["kind"]; canRetry: boolean; canSendAnyway: boolean;
+  /** Never left the phone, so it can go back in the box. */
+  canTakeBack: boolean }
 
 /** The outbox lines under a chat. A message already in the transcript hides its line, unless the line
  *  is how you recover it: Retry for a stopped one, Send here anyway for one stuck on another machine. */
@@ -92,7 +98,7 @@ export function chatOutboxRows(chat: CachedChat | undefined, view: {
     const line = view.confirming === item.id ? "Both machines may answer this. Tap Send here anyway again to send it."
       : here && view.online && status.kind === "queued" && view.sendWhy ? view.sendWhy
       : here && view.online && status.kind === "uncertain" ? "Sending…" : status.line;
-    return [{ id: item.id, text: item.text, line, kind: status.kind, canRetry: status.canRetry, canSendAnyway: status.canSendAnyway }];
+    return [{ id: item.id, text: item.text, line, kind: status.kind, canRetry: status.canRetry, canSendAnyway: status.canSendAnyway, canTakeBack: item.state === "unsent" }];
   });
 }
 
@@ -109,6 +115,10 @@ export interface ChatRights {
   why: string;
   /** Why `post` is false, or "". */
   postWhy: string;
+  /** May keep a message on the phone while the machine is away: false once the phone knows it would be refused. */
+  queue: boolean;
+  /** Why `queue` is false, or "". */
+  queueWhy: string;
 }
 
 /** Both chat capabilities are needed to send: without `chat_delivery_v1` a machine would ignore the
@@ -124,7 +134,9 @@ export function chatRights(machine: {
   const scoped = !!machine.access && machine.access.threads !== "all";
   const postWhy = unknown ? `Waiting for ${machine.name} to connect.` : !capable ? update : readOnly ? `This phone can only read on ${machine.name}.` : "";
   const why = postWhy || (scoped ? `This phone only sees some threads on ${machine.name}.` : "");
-  return { list: machine.rooms, post: !postWhy, create: !why, why, postWhy };
+  // Before the first welcome the phone can't know the machine's version, but it may already know its own access.
+  const queueWhy = readOnly ? `This phone can only read on ${machine.name}.` : !unknown && !capable ? update : "";
+  return { list: machine.rooms, post: !postWhy, create: !why, why, postWhy, queue: !queueWhy, queueWhy };
 }
 
 // ---- New chat's bots ---------------------------------------------------------------------------
@@ -174,6 +186,22 @@ const sameAccess = (a: Record<string, Access>, b: Record<string, Access>) => {
   return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
 };
 
+/** The tickets with one move's taken out, but only if it is still that request: a reply to an older move
+ *  must not drop the one that replaced it. */
+export function withoutTicket(tickets: Record<string, PromoteTicket>, key: string, requestId: string): Record<string, PromoteTicket> | null {
+  if (tickets[key]?.requestId !== requestId) return null;
+  const { [key]: _gone, ...rest } = tickets;
+  return rest;
+}
+
+/** A machine's answer to `chat_promote_abandon`: the move was fenced off for good, or it had already happened. */
+export function parseAbandon(raw: unknown): { state: "abandoned" } | { state: "done"; work: unknown; chat: unknown } {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  if (value.state === "abandoned") return { state: "abandoned" };
+  if (value.state === "done" && value.work) return { state: "done", work: value.work, chat: value.chat };
+  throw new Error("The machine didn't say whether the move was stopped. It is kept until it can be checked.");
+}
+
 /** The request to send for a move. An unconfirmed earlier move must be finished as it was asked, or
  *  started over on purpose; it is never quietly resent with other choices. */
 export function promoteRequest(saved: PromoteTicket | undefined, cwd: string, access: Record<string, Access>, fresh: () => { target: string; requestId: string }): { ticket: PromoteTicket; fresh: boolean } {
@@ -182,4 +210,21 @@ export function promoteRequest(saved: PromoteTicket | undefined, cwd: string, ac
     return { ticket: saved, fresh: false };
   }
   return { ticket: { ...fresh(), cwd, access: { ...access } }, fresh: true };
+}
+
+// ---- Which thread is open -----------------------------------------------------------------------
+
+/** The key a thread's on-phone state (draft, quotes, TL;DR, working bots) is kept under. A chat belongs to
+ *  its machine, and two machines can each have a room with the same id, so a chat's key names both. */
+export const threadKey = (pane: { id: string; hostId?: string; workspaceId: string }, isChat: (workspaceId: string) => boolean): string =>
+  pane.hostId && isChat(pane.workspaceId) ? JSON.stringify([pane.hostId, pane.id]) : pane.id;
+
+/** The open thread. With a machine named (a chat or a Work thread opened from Chats), only that machine's
+ *  room is it, so a same-id thread in the Mac's session never stands in for it; without one, the session's. */
+export function pickOpenPane<S extends { id: string }, C extends { id: string; hostId?: string }>(
+  session: readonly S[], chats: readonly C[], openId: string | null, openHost: string | null, hostOf: (pane: S) => string,
+): S | C | null {
+  if (openId === null) return null;
+  if (openHost === null) return session.find((pane) => pane.id === openId) ?? chats.find((pane) => pane.id === openId) ?? null;
+  return chats.find((pane) => pane.id === openId && pane.hostId === openHost) ?? session.find((pane) => pane.id === openId && hostOf(pane) === openHost) ?? null;
 }

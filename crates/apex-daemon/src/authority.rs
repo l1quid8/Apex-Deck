@@ -138,6 +138,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomImport { .. } => full(Global),
         RoomFork { .. } => full(Global),
         ChatPromote { .. } => full(Global),
+        ChatPromoteAbandon { .. } => full(Global),
         SessionSave { .. } => full(Global),
         // ApexAgent reads whole project folders and any chat in them.
         MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
@@ -403,6 +404,7 @@ mod tests {
             ("chat_message_claim", Some((Chat, "thread")), json!({ "id": "mine", "clientMessageId": "m-1" })),
             ("chat_merge_history", Some((Chat, "thread")), json!({ "id": "mine", "entries": [] })),
             ("chat_promote", Some((Full, "global")), json!({ "source": "mine", "target": "mine2", "cwd": "/repo" })),
+            ("chat_promote_abandon", Some((Full, "global")), json!({ "source": "mine", "requestId": "move-1" })),
             ("room_post", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),
             ("room_post_to", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi", "targets": [] })),
             ("room_targets", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),

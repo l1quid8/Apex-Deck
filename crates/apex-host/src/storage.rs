@@ -80,6 +80,11 @@ pub struct ChatRoomMeta {
     /// move returns that Work thread and a different request is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promote_request: Option<String>,
+    /// Promote requests the phone gave up on with `chat_promote_abandon`. A
+    /// delayed copy of one of these is refused, so it can't land after the
+    /// person started a different move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub abandoned_promotes: Vec<String>,
     /// The saved profile each bot was made from, by bot id. A bot's id can be
     /// a copy's alias ("claude-2"), so moving a chat needs both.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -693,6 +698,28 @@ impl Store {
         sync_directory(parent).map_err(|e| e.to_string())
     }
 
+    /// Give up on one promote request for good. Under the same write lock as
+    /// `promote_chat`, so either the move already happened (its Work room id
+    /// is returned) or it never will: the request id is saved as abandoned and
+    /// any copy still on its way is refused.
+    pub(crate) fn abandon_promote(&self, source: &str, request_id: &str) -> Result<Option<String>, String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        let mut chat = metas.remove(source).unwrap_or_default();
+        if let Some(to) = chat.promoted_to.clone() {
+            return Ok(Some(to));
+        }
+        if !chat.abandoned_promotes.iter().any(|gone| gone == request_id) {
+            chat.abandoned_promotes.push(request_id.to_owned());
+            // Only the newest few matter: a phone keeps one unconfirmed move per chat.
+            let extra = chat.abandoned_promotes.len().saturating_sub(32);
+            chat.abandoned_promotes.drain(..extra);
+        }
+        metas.insert(source.to_owned(), chat);
+        self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
+        Ok(None)
+    }
+
     /// Write a promoted Work room and point the chat at it under one write
     /// lock: either the Work room exists and the chat links to it, or nothing
     /// changed. Returns the Work room the chat already pointed at when this
@@ -708,6 +735,9 @@ impl Store {
         let _guard = self.writes.lock().unwrap();
         let mut metas = self.chat_metas_held()?;
         let mut chat = metas.remove(source).unwrap_or_default();
+        if request_id.is_some_and(|id| chat.abandoned_promotes.iter().any(|gone| gone == id)) {
+            return Err("This move was cancelled on the phone. Start it again.".into());
+        }
         if let Some(to) = chat.promoted_to.clone() {
             let name = metas
                 .get(&to)

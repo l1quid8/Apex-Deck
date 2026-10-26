@@ -55,6 +55,8 @@ export interface ChatMoveRecord {
   to: ChatMachine;
   targetRoom: string;
   step: 'export' | 'import' | 'archive' | 'complete';
+  /** When the new machine confirmed the import. A list that machine sent after this is the last word on whether the phone may see the chat there. */
+  importedAt?: number;
   pending: 'wait' | 'stop' | 'leave';
   snapshot: ChatDeliverySnapshot;
   skipped: { participant: string; reason: string }[];
@@ -164,7 +166,8 @@ function assertState(value: unknown): asserts value is ChatDeliveryState {
   for (const move of Object.values(data.moves)) {
     if (!move?.id || !data.chats[move.chat] || !move.from?.id || !move.to?.id || !move.sourceRoom || !move.targetRoom
       || !['export', 'import', 'archive', 'complete'].includes(move.step) || !['wait', 'stop', 'leave'].includes(move.pending)
-      || !Array.isArray(move.merges) || !Array.isArray(move.mergedOrigins) || !Array.isArray(move.skipped)) throw new Error('Invalid saved move');
+      || !Array.isArray(move.merges) || !Array.isArray(move.mergedOrigins) || !Array.isArray(move.skipped)
+      || (move.importedAt !== undefined && !Number.isFinite(move.importedAt))) throw new Error('Invalid saved move');
     assertChatSnapshot(move.snapshot);
     for (const merge of move.merges) {
       if (!merge?.id || !merge.machine || !merge.room || typeof merge.confirmed !== 'boolean' || !Array.isArray(merge.entries)) throw new Error('Invalid saved history merge');
@@ -317,6 +320,14 @@ export class ChatDeliveryController {
       this.applyReceipt(chatId, id, machine, room, result);
     } finally { this.sending.delete(sendingKey); }
   }
+  /** Take a message that never left the phone back out of the outbox, for the box to hold again.
+   *  Only an unsent one: anything that may have reached a machine stays, so it can't be answered unseen. */
+  takeBack(chatId: string, id: string): string {
+    const item = this.outbox(chatId, id);
+    if (item.state !== 'unsent' || this.sending.has(JSON.stringify([item.machine.id, item.room, id]))) throw new Error('This message may already have been sent, so it stays.');
+    this.update(next => { next.chats[chatId].outbox = next.chats[chatId].outbox.filter(message => message.id !== id); });
+    return item.text;
+  }
   async flush(chatId: string): Promise<void> {
     for (const item of [...this.chat(chatId).outbox]) if (item.state === 'unsent') await this.send(chatId, item.id);
   }
@@ -405,7 +416,7 @@ export class ChatDeliveryController {
       const skippedParticipants = [...requested.skipped, ...result.skipped];
       this.update(next => {
         const record = next.moves[id], chat = next.chats[record.chat];
-        record.targetRoom = targetRoom; record.skipped = copy(skippedParticipants); record.step = 'archive'; record.mergedOrigins = record.snapshot.transcript.map(originKey);
+        record.targetRoom = targetRoom; record.skipped = copy(skippedParticipants); record.step = 'archive'; record.importedAt = this.now(); record.mergedOrigins = record.snapshot.transcript.map(originKey);
         chat.machine = copy(record.to); chat.room = record.targetRoom; chat.snapshot = imported;
         const skipped = new Set(skippedParticipants.map(item => item.participant));
         for (const item of chat.outbox) {

@@ -25,7 +25,8 @@ export interface ChatEntry {
 }
 export interface ChatCatalog {
   version: 1;
-  hosts: Record<string, { name: string; rooms: ChatEntry[] }>;
+  /** `listedAt`: when the phone last asked that machine for its whole list and got an answer. */
+  hosts: Record<string, { name: string; rooms: ChatEntry[]; listedAt?: number }>;
   /** What New chat starts with: the last machine and the saved profiles last picked there. */
   last: { hostId: string; profiles: string[] } | null;
 }
@@ -74,9 +75,15 @@ export function parseChatList(hostId: string, raw: unknown): ChatEntry[] {
 /** One row from a `chat_promote` or `chat_create` answer, added before the next full list arrives. */
 export function parseChatEntry(hostId: string, raw: unknown): ChatEntry | null { return entry(hostId, raw); }
 
-/** Replace one machine's rows with what it just listed. */
+/** Replace one machine's rows, keeping when it last listed them all. */
 export function withHostRooms(catalog: ChatCatalog, hostId: string, name: string, rooms: ChatEntry[]): ChatCatalog {
-  return { ...catalog, hosts: { ...catalog.hosts, [hostId]: { name, rooms } } };
+  const listedAt = catalog.hosts[hostId]?.listedAt;
+  return { ...catalog, hosts: { ...catalog.hosts, [hostId]: listedAt === undefined ? { name, rooms } : { name, rooms, listedAt } } };
+}
+
+/** A machine's whole `chat_list` answer, for a request sent at `askedAt`. What it leaves out the phone may not see. */
+export function withListedRooms(catalog: ChatCatalog, hostId: string, name: string, rooms: ChatEntry[], askedAt: number): ChatCatalog {
+  return { ...catalog, hosts: { ...catalog.hosts, [hostId]: { name, rooms, listedAt: askedAt } } };
 }
 
 /** Add or replace one row, keeping the rest of that machine's list. */
@@ -105,6 +112,7 @@ export function readCatalog(raw: string | null): ChatCatalog {
     for (const [hostId, host] of Object.entries(value.hosts)) {
       if (!record(host) || !Array.isArray(host.rooms)) continue;
       hosts[hostId] = { name: typeof host.name === "string" ? host.name : hostId, rooms: host.rooms.flatMap((item) => { const row = entry(hostId, item); return row ? [row] : []; }) };
+      if (typeof host.listedAt === "number" && Number.isFinite(host.listedAt)) hosts[hostId].listedAt = host.listedAt;
     }
     const last = record(value.last) && typeof value.last.hostId === "string" && Array.isArray(value.last.profiles)
       ? { hostId: value.last.hostId, profiles: value.last.profiles.filter((id): id is string => typeof id === "string") } : null;

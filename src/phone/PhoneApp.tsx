@@ -67,8 +67,8 @@ import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList } from "./ThreadList";
-import { chatOutboxRows, chatRights, chatRoute, projectChats, promoteKey, promoteRequest, readPromoteTickets, writePromoteTickets, type ChatRights } from "./chatRoutes";
-import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withHostRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "./chatCatalog";
+import { chatOutboxRows, chatRights, chatRoute, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest, readPromoteTickets, threadKey, withoutTicket, writePromoteTickets, type ChatRights } from "./chatRoutes";
+import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "./chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
 import type { ChatDeliveryStatus } from "./chatDelivery";
@@ -129,7 +129,8 @@ const MAX_STEPS_SHOWN = 6;
 const COPIED_MS = 1500;
 type SavedStepsFor = { id: string; index: import("../types").StepsIndex | null };
 type Room = {
-  id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
+  /** The room and the machine it came from: two machines can each have a room with the same id. */
+  id: string; hostId: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
   /** Each bot's turn in progress, with its reply so far. */
   working: PhoneWorking;
   /** The bots as saved in the thread, for what each runs on. */
@@ -153,8 +154,10 @@ type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | {
 /** What a chat adds to the thread view: its banner and the messages its outbox still holds. */
 interface ChatThreadExtras {
   banner: ReactNode;
-  outbox: { id: string; text: string; line: string; kind: ChatDeliveryStatus["kind"]; canRetry: boolean; canSendAnyway: boolean }[];
+  outbox: { id: string; text: string; line: string; kind: ChatDeliveryStatus["kind"]; canRetry: boolean; canSendAnyway: boolean; canTakeBack: boolean }[];
   onRetry(id: string): void; onSendAnyway(id: string): void;
+  /** Put a message that never left the phone back in the box. */
+  onTakeBack(id: string): void;
 }
 
 type Browse = {
@@ -655,14 +658,16 @@ export function PhoneApp() {
     onChange: () => setDeliveryTick((n) => n + 1),
     onError: (error) => setNotice(words(error)),
     // Without chat_delivery_v1 a machine ignores the message id, so a message waits instead of being marked as maybe sent.
-    canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1"); },
+    // A read-only phone keeps the message too: the machine would refuse it and leave it with no way to recover.
+    canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1") && host.access()?.tier !== "read_only"; },
   });
   const delivery = deliveryRef.current.controller;
   /** The saved list with the delivery record laid over it, so a moved chat shows only where it lives now. */
-  const chatView = useMemo(() => projectChats(catalog, delivery.snapshot()),
+  const pairedKey = machines.map((machine) => machine.id).join("\n");
+  const chatView = useMemo(() => projectChats(catalog, delivery.snapshot(), new Set(pairedKey ? pairedKey.split("\n") : [])),
     // The delivery record changes only through the controller, which bumps deliveryTick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [catalog, deliveryTick]);
+    [catalog, deliveryTick, pairedKey]);
   // Chats, and the Work threads made from them, belong to their machine, not to the Mac's saved
   // session. They open in the same thread view through these stand-in threads and projects.
   const chatPlaces = useMemo(() => {
@@ -679,7 +684,10 @@ export function PhoneApp() {
     }
     return places;
   }, [chatView]);
-  const openPane = panes.find((pane) => pane.id === openId) ?? chatPlaces.panes.find((pane) => pane.id === openId && (openHost === null || pane.hostId === openHost)) ?? null;
+  const sessionHost = (pane: AssistantVisiblePane) => { const workspace = workspaces.find((item) => item.id === pane.workspaceId); return pane.hostId ?? (workspace ? workspaceHost(workspace) : ""); };
+  const openPane = pickOpenPane(panes, chatPlaces.panes, openId, openHost, sessionHost);
+  /** Where the open thread's draft, quotes and TL;DR are kept: a chat's names its machine too. */
+  const openKey = openPane ? threadKey(openPane, isChatSpace) : openId;
   const pendingWorkspace = workspaces.find((workspace) => workspace.id === pending?.workspaceId) ?? null;
   const viewingPending = pending !== null && openId === pending.id;
   const openWorkspace = viewingPending ? pendingWorkspace : workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? chatPlaces.workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? null;
@@ -764,7 +772,7 @@ export function PhoneApp() {
   /** What this phone may do with chats on each machine: list, post, start or move one in. */
   const rightsOf = (hostId: string): ChatRights => {
     const host = phoneHost(hostId);
-    if (!host) return { list: false, post: false, create: false, why: "This machine isn't paired with this phone any more.", postWhy: "This machine isn't paired with this phone any more." };
+    if (!host) { const gone = "This machine isn't paired with this phone any more."; return { list: false, post: false, create: false, why: gone, postWhy: gone, queue: false, queueWhy: gone }; }
     return chatRights({ name: host.machine.name, online: linkOf(hostId)?.status === "online", rooms: host.supports("chat_rooms"), delivery: host.supports("chat_delivery_v1"), access: host.access() });
   };
   /** Which machines can take a new chat from this phone, and why not when they can't. */
@@ -779,8 +787,9 @@ export function PhoneApp() {
   async function refreshChats(hostId: string): Promise<ChatEntry[] | null> {
     const host = phoneHost(hostId);
     if (!host || !host.supports("chat_rooms") || toLink(host.connection.get().status) !== "online") return null;
+    const askedAt = Date.now();
     const rows = parseChatList(hostId, await host.backend.call<unknown>("chat_list", {}));
-    setCatalog((current) => withHostRooms(current, hostId, host.machine.name, rows));
+    setCatalog((current) => withListedRooms(current, hostId, host.machine.name, rows, askedAt));
     return rows;
   }
   // Each machine is asked for its list when it comes online and whenever the person is back on the list.
@@ -839,8 +848,9 @@ export function PhoneApp() {
     if (!openPane || !openPane.hostId || !isChatSpace(openPane.workspaceId)) return;
     const route = chatRoute(delivery.snapshot(), openPane.hostId, openPane.id);
     if (!route.moved) return;
-    const from = openPane.id;
-    setDrafts((all) => all[from] && !all[route.room] ? { ...all, [route.room]: all[from] } : all);
+    const from = threadKey(openPane, isChatSpace);
+    const to = JSON.stringify([route.hostId, route.room]);
+    setDrafts((all) => all[from] && !all[to] ? { ...all, [to]: all[from] } : all);
     setOpenHost(route.hostId);
     setOpenId(route.room);
     refreshChats(route.hostId).catch(() => {});
@@ -877,7 +887,7 @@ export function PhoneApp() {
         const host = phoneHost(row.hostId);
         const link = linkOf(row.hostId);
         if (!host || !link || link.status !== "online") throw new Error(link ? `${downLine(link)}. Nothing changed.` : "That machine isn't paired with this phone.");
-        const saved = roomRef.current?.id === row.id ? roomRef.current.configs.find((config) => config.id === botId) : undefined;
+        const saved = roomRef.current?.id === row.id && roomRef.current.hostId === row.hostId ? roomRef.current.configs.find((config) => config.id === botId) : undefined;
         if (!saved) throw new Error("This bot is no longer in the chat.");
         const next = withPhoneChange(saved, change, reported, apiModels);
         const model = (config: ParticipantConfig) => config.backend.kind === "agent" || config.backend.kind === "open_ai_compatible" ? config.backend.model : null;
@@ -887,7 +897,7 @@ export function PhoneApp() {
         if ((next.speed ?? null) !== (saved.speed ?? null)) patch.speed = next.speed ?? null;
         if (Object.keys(patch).length === 0) return;
         const actual = await host.backend.call<ParticipantConfig>("chat_update_participant", { id: row.id, participant: botId, patch });
-        setRoom((current) => current && current.id === row.id ? { ...current, configs: current.configs.map((config) => config.id === botId ? actual : config), participants: current.participants.map((person) => person.id === botId ? toPerson(actual) : person) } : current);
+        setRoom((current) => current && current.id === row.id && current.hostId === row.hostId ? { ...current, configs: current.configs.map((config) => config.id === botId ? actual : config), participants: current.participants.map((person) => person.id === botId ? toPerson(actual) : person) } : current);
       });
       turnSaves.current.set(key, save);
     }
@@ -918,10 +928,11 @@ export function PhoneApp() {
    *  so a retry gets the same thread with the same access. Nothing is sent if it can't be saved. */
   const [, setPromoteTick] = useState(0);
   const promoteTicket = (row: Pick<ChatEntry, "hostId" | "id">) => readPromoteTickets(localStorage)[promoteKey(row.hostId, row.id)];
-  function forgetPromote(row: Pick<ChatEntry, "hostId" | "id">) {
-    const saved = readPromoteTickets(localStorage);
-    delete saved[promoteKey(row.hostId, row.id)];
-    try { writePromoteTickets(localStorage, saved); } catch { /* kept: finishing it again is harmless */ }
+  /** Drop one move's ticket, only if it is still that move: a late answer to an older one leaves its replacement alone. */
+  function forgetPromote(row: Pick<ChatEntry, "hostId" | "id">, requestId: string) {
+    const rest = withoutTicket(readPromoteTickets(localStorage), promoteKey(row.hostId, row.id), requestId);
+    if (!rest) return;
+    try { writePromoteTickets(localStorage, rest); } catch { /* kept: finishing it again is harmless */ }
     setPromoteTick((n) => n + 1);
   }
   async function promoteChat(row: ChatEntry, cwd: string, access: Record<string, Access>) {
@@ -935,17 +946,27 @@ export function PhoneApp() {
     const work = parseChatEntry(row.hostId, reply?.work);
     const chat = parseChatEntry(row.hostId, reply?.chat);
     if (!work) throw new Error(`${host.machine.name} didn't confirm the Work thread. Try again: the same move is reused.`);
-    forgetPromote(row);
+    forgetPromote(row, ticket.requestId);
     setCatalog((current) => withRoom(chat ? withRoom(current, row.hostId, host.machine.name, chat) : current, row.hostId, host.machine.name, work));
     openChatRow({ hostId: row.hostId, id: work.id });
   }
-  /** Drop an unconfirmed move, but only after the machine says it never happened. If it did, open it. */
+  /** Drop an unconfirmed move, but only once the machine has fenced it off: it then refuses that request for
+   *  good, even a copy still on its way, so the old Access can't land after new choices. If it already
+   *  happened, open it instead. */
   async function startPromoteOver(row: ChatEntry) {
-    const rows = await refreshChats(row.hostId);
-    if (!rows) throw new Error(`${chatMachine(row.hostId).name} isn't connected. The move is kept until it can be checked.`);
-    const now = rows.find((item) => item.id === row.id);
-    forgetPromote(row);
-    if (now?.promotedTo) { setNotice("That move had already happened. Here is the Work thread."); openChatRow({ hostId: row.hostId, id: now.promotedTo }); }
+    const saved = promoteTicket(row);
+    if (!saved) return;
+    const host = phoneHost(row.hostId);
+    if (!host || toLink(host.connection.get().status) !== "online") throw new Error(`${chatMachine(row.hostId).name} isn't connected. The move is kept until it can be checked.`);
+    const outcome = parseAbandon(await host.backend.call<unknown>("chat_promote_abandon", { source: row.id, requestId: saved.requestId }));
+    forgetPromote(row, saved.requestId);
+    if (outcome.state === "done") {
+      const work = parseChatEntry(row.hostId, outcome.work);
+      const chat = parseChatEntry(row.hostId, outcome.chat);
+      setCatalog((current) => { const next = chat ? withRoom(current, row.hostId, host.machine.name, chat) : current; return work ? withRoom(next, row.hostId, host.machine.name, work) : next; });
+      setNotice("That move had already happened. Here is the Work thread.");
+      if (work) openChatRow({ hostId: row.hostId, id: work.id });
+    }
   }
   // The retired Local chat screen's history: offered once per launch, kept until copied or discarded.
   const dropLegacy = () => {
@@ -1071,6 +1092,7 @@ export function PhoneApp() {
   }
 
   function openThread(id: string) {
+    setOpenHost(null);
     setOpenId(id);
     setTab("threads");
     setSheet(null);
@@ -1090,6 +1112,7 @@ export function PhoneApp() {
     const id = action === "move" && pending ? pending.id : (pending?.workspaceId === workspace.id ? pending.id : `draft-${Date.now().toString(36)}`);
     setPending({ id, workspaceId: workspace.id });
     if (!drafts[id]) setDraft(id, emptyDraft());
+    setOpenHost(null);
     setOpenId(id);
     setTab("threads");
     setMenu(null);
@@ -1106,23 +1129,27 @@ export function PhoneApp() {
   useEffect(() => {
     if (!openPane || !openWorkspace) { if (!viewingPending) setRoom(null); return; }
     const host = phoneHost(openHostId);
+    // The room on screen is this one only if it came from this machine too.
+    const sameShown = roomRef.current?.id === openPane.id && roomRef.current.hostId === openHostId;
+    if (roomRef.current && !sameShown && roomRef.current.id === openPane.id) setRoom(null);
+    const key = threadKey(openPane, isChatSpace);
     // Offline keeps what is already on screen under the banner; it reloads when the machine is back.
     // Bots that were mid-reply are cut off: their turn shows as interrupted, not still going.
     if (!host || toLink(host.connection.get().status) !== "online") {
       // A chat opened while its machine is off shows the copy this phone keeps, bots and all.
-      const kept = isChatSpace(openPane.workspaceId) && roomRef.current?.id !== openPane.id ? delivery.snapshot().chats[chatIdFor(openHostId, openPane.id)] : undefined;
+      const kept = isChatSpace(openPane.workspaceId) && !sameShown ? delivery.snapshot().chats[chatIdFor(openHostId, openPane.id)] : undefined;
       if (kept && kept.machine.id === openHostId && kept.room === openPane.id) {
         const snap = kept.snapshot;
-        setRoom({ id: openPane.id, messages: snap.transcript, approvals: [], participants: snap.participants.map(toPerson), asks: NO_ASKS, plan: false, policy: snap.options.policy,
+        setRoom({ id: openPane.id, hostId: openHostId, messages: snap.transcript, approvals: [], participants: snap.participants.map(toPerson), asks: NO_ASKS, plan: false, policy: snap.options.policy,
           working: {}, configs: snap.participants, fill: {}, plans: {}, credits: {}, used: snap.usage ?? {}, pins: snap.pins ?? [] });
         return;
       }
       const shown = roomRef.current;
-      if (shown?.id === openPane.id && Object.keys(shown.working).length > 0) {
+      if (sameShown && shown && Object.keys(shown.working).length > 0) {
         const after = shown.messages[shown.messages.length - 1]?.seq ?? 0;
-        setCuts((all) => ({ ...all, [openPane.id]: cutOff(all[openPane.id] ?? {}, shown.working, after) }));
+        setCuts((all) => ({ ...all, [key]: cutOff(all[key] ?? {}, shown.working, after) }));
       }
-      setRoom((current) => current?.id !== openPane.id ? null : Object.keys(current.working).length === 0 ? current : { ...current, working: {} });
+      setRoom((current) => current?.id !== openPane.id || current.hostId !== openHostId ? null : Object.keys(current.working).length === 0 ? current : { ...current, working: {} });
       return;
     }
     let live = true;
@@ -1151,14 +1178,15 @@ export function PhoneApp() {
         } catch (error) { setNotice(words(error)); }
       }
       void stepsLoader.refresh();
-      setWaiting((all) => ({ ...all, [openPane.id]: state.approvals.map((card) => card.request) }));
-      setBusy((all) => ({ ...all, [openPane.id]: state.active }));
+      setWaiting((all) => ({ ...all, [key]: state.approvals.map((card) => card.request) }));
+      setBusy((all) => ({ ...all, [key]: state.active }));
       const queue = queues.current.get(openPane.id);
       if (queue) queueSync(queue, state.active);
-      setCuts((all) => all[openPane.id] ? { ...all, [openPane.id]: resumeCut(all[openPane.id], state.active, state.snapshot.transcript) } : all);
+      setCuts((all) => all[key] ? { ...all, [key]: resumeCut(all[key], state.active, state.snapshot.transcript) } : all);
       const configs = (rosterHeard ?? state.snapshot.participants).map(config => settingsHeard.get(config.id) ?? config);
       setRoom({
         id: openPane.id,
+        hostId: openHostId,
         messages: state.snapshot.transcript,
         approvals: state.approvals,
         participants: configs.map(toPerson),
@@ -1199,7 +1227,7 @@ export function PhoneApp() {
         credits: event.reset_credits ? { ...current.credits, [event.provider]: event.reset_credits } : current.credits,
       } : current);
       if (event.type === "failed") setNotice(`${roomRef.current?.participants.find((person) => person.id === event.id)?.display_name ?? event.id} couldn't reply: ${event.error}`);
-      setCuts((all) => { const now = all[id]; const next = now && applyCutEvent(now, event); return !now || next === now ? all : { ...all, [id]: next }; });
+      setCuts((all) => { const now = all[key]; const next = now && applyCutEvent(now, event); return !now || next === now ? all : { ...all, [key]: next }; });
       setRoom((current) => {
         if (!current || current.id !== id) return current;
         const asks = applyQuestionEvent({ [id]: current.asks }, id, event, Date.now())[id] ?? NO_ASKS;
@@ -1234,8 +1262,8 @@ export function PhoneApp() {
   // Who the message as typed goes to: its @names, or the bots named last when it has none.
   // Asked again as the draft changes and after each message, since a send can change it.
   const [answerers, setAnswerers] = useState<{ paneId: string; ids: string[] } | null>(null);
-  const quotedNow = openId ? quotes[openId] ?? [] : [];
-  const typed = openId ? (quotedNow.length ? outgoingText(draftFor(openId).text, quotedNow, room?.participants ?? []) : draftFor(openId).text) : "";
+  const quotedNow = openKey ? quotes[openKey] ?? [] : [];
+  const typed = openKey ? (quotedNow.length ? outgoingText(draftFor(openKey).text, quotedNow, room?.participants ?? []) : draftFor(openKey).text) : "";
   useEffect(() => {
     if (!room || !openWorkspace) return;
     const host = phoneHost(openHostId);
@@ -1309,6 +1337,7 @@ export function PhoneApp() {
         setPending(null);
         delete pendingRoomIds.current[pending.id];
         setPendingDraftPlans((all) => { const next = { ...all }; delete next[pending.id]; return next; });
+        setOpenHost(null);
         setOpenId(made.id);
       } else if (pane && room?.id !== pane.id) {
         const state = await loadRoomState(host.backend, pane.id, [], NEW_THREAD, openPath);
@@ -1847,7 +1876,7 @@ export function PhoneApp() {
     void writeClipboard(text, navigator.clipboard).then((ok) => setNotice(ok ? `Copied ${text}` : "The phone couldn't copy that path."));
   }
 
-  const draft = openId ? draftFor(openId) : emptyDraft();
+  const draft = openKey ? draftFor(openKey) : emptyDraft();
   // The open thread's queued messages, and whether Send would queue: everyone it goes to is mid-reply.
   const openRoom = room && openPane && room.id === openPane.id ? room : null;
   const openQueue = openPane ? queued[openPane.id] : undefined;
@@ -1886,7 +1915,7 @@ export function PhoneApp() {
   const showChats = listedChats.rows.length > 0 || listedChats.archivedCount > 0 || chatMachines.some((item) => item.chats);
   const chatList = showChats ? <ChatRows rows={listedChats.rows} archivedCount={listedChats.archivedCount} showArchived={chatsArchived} folded={chatsFolded} now={Date.now()}
     machines={chatMachines} machineIcon={machineIcon}
-    waiting={(row) => outboxOf(row).filter((item) => item.state !== "delivered").length} working={(row) => busy[row.id]?.length ?? 0}
+    waiting={(row) => outboxOf(row).filter((item) => item.state !== "delivered").length} working={(row) => busy[JSON.stringify([row.hostId, row.id])]?.length ?? 0}
     onFold={() => setChatsFolded((now) => !now)} onOpen={openChatRow} onMenu={(row) => { setOpenId(null); setChatSheet({ kind: "menu", hostId: row.hostId, id: row.id }); }}
     onArchived={() => setChatsArchived((now) => !now)} /> : null;
   const fromChats = Object.entries(chatView.hosts).map(([hostId, host]) => ({
@@ -1902,7 +1931,9 @@ export function PhoneApp() {
   /** The chat a sheet acts on: the one it was opened for from the list, else the open chat. */
   const sheetChat = chatSheet?.hostId && chatSheet.id ? findRoom(chatView, chatSheet.hostId, chatSheet.id) : openChat;
   const sheetRights = sheetChat ? rightsOf(sheetChat.hostId) : null;
-  const chatBots = (row: ChatEntry): ParticipantConfig[] => room && room.id === row.id ? room.configs
+  /** The room on screen, when it is this chat on this machine. */
+  const roomFor = (row: Pick<ChatEntry, "hostId" | "id">) => room && room.id === row.id && room.hostId === row.hostId ? room : null;
+  const chatBots = (row: ChatEntry): ParticipantConfig[] => roomFor(row) ? roomFor(row)!.configs
     : row.bots.map((bot) => ({ id: bot.id, display_name: bot.name, backend: { kind: "scripted", lines: [] }, persona: "", access: "read", effort: null }));
   const openChatId = openChat ? chatIdFor(openChat.hostId, openChat.id) : null;
   const [anywayAsk, setAnywayAsk] = useState<string | null>(null);
@@ -1911,9 +1942,11 @@ export function PhoneApp() {
   const chatGate = (() => {
     if (!openChat) return { enabled: false, reason: "" };
     if (!linkOf(openChat.hostId)) return { enabled: false, reason: "This chat's machine isn't paired with this phone." };
-    // Offline, a message waits on the phone; a connected machine that can't take it says why now.
+    // Offline, a message waits on the phone unless the phone already knows the machine would refuse it;
+    // a connected machine that can't take it says why now.
     if (chatOnline && openRights && !openRights.post) return { enabled: false, reason: openRights.postWhy };
-    if ((room && room.id === openChat.id ? room.participants.length : openChat.bots.length) === 0) return { enabled: false, reason: "This chat has no bots yet. Add one from Bots in the ⋯ menu." };
+    if (!chatOnline && openRights && !openRights.queue) return { enabled: false, reason: openRights.queueWhy };
+    if ((roomFor(openChat)?.participants.length ?? openChat.bots.length) === 0) return { enabled: false, reason: "This chat has no bots yet. Add one from Bots in the ⋯ menu." };
     return { enabled: draft.text.trim().length > 0, reason: "" };
   })();
   const backupMachine = openChat && !chatOnline ? chatMachines.find((item) => item.id !== openChat.hostId && item.chats && item.status === "online") ?? null : null;
@@ -1943,9 +1976,16 @@ export function PhoneApp() {
     </>,
     outbox: chatOutboxRows(chatState.chats[openChatId], {
       hostId: openChat.hostId, room: openChat.id, online: chatOnline, confirming: anywayAsk, sendWhy: openRights?.postWhy ?? "",
-      shown: new Set(room && room.id === openChat.id ? room.messages.flatMap((message) => message.clientMessageId ? [message.clientMessageId] : []) : []),
+      shown: new Set(roomFor(openChat)?.messages.flatMap((message) => message.clientMessageId ? [message.clientMessageId] : []) ?? []),
     }),
     onRetry: (id) => { delivery.retry(openChatId, id).catch((error) => setNotice(words(error))); },
+    onTakeBack: (id) => {
+      const key = openKey;
+      if (!key) return;
+      let text: string;
+      try { text = delivery.takeBack(openChatId, id); } catch (error) { setNotice(words(error)); return; }
+      setDrafts((all) => ({ ...all, [key]: giveBack(all[key] ?? emptyDraft(), { text: splitTldr(text).text, files: [] }) }));
+    },
     onSendAnyway: (id) => {
       if (anywayAsk !== id) { setAnywayAsk(id); return; }
       setAnywayAsk(null);
@@ -1954,7 +1994,7 @@ export function PhoneApp() {
   } : undefined;
   /** Send from a chat: the message goes into the phone's outbox first, so the box can clear and nothing is lost. */
   function sendChat(row: ChatEntry) {
-    const id = openId;
+    const id = openKey;
     if (!id || !chatGate.enabled) { if (chatGate.reason) setNotice(chatGate.reason); return; }
     const route = chatRoute(delivery.snapshot(), row.hostId, row.id);
     // The screen follows a move on the next render; until then nothing is sent from the old one.
@@ -1963,7 +2003,7 @@ export function PhoneApp() {
     if (!delivery.snapshot().chats[chatId]) { setNotice(`Open this chat once while ${chatMachine(row.hostId).name} is connected, then send.`); return; }
     const sent = draftFor(id);
     const sentQuotes = quotes[id] ?? [];
-    const body = withTldr(outgoingText(sent.text, sentQuotes, room && room.id === row.id ? room.participants : []), tldrOf(id));
+    const body = withTldr(outgoingText(sent.text, sentQuotes, roomFor(row)?.participants ?? []), tldrOf(id));
     let messageId: string;
     try { messageId = delivery.enqueue(chatId, body, []); } catch (error) { setNotice(words(error)); return; }
     stuckRef.current = true;
@@ -1976,7 +2016,7 @@ export function PhoneApp() {
   }
   return (
     <div className="ph-app" data-rev={tick}>
-      <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(_host,room)=>{setTab("threads");setOpenId(room);}} />
+      <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(host,room)=>{setTab("threads");setOpenHost(host);setOpenId(room);}} />
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
@@ -2038,7 +2078,7 @@ export function PhoneApp() {
               rememberSteps(cache, openPaneRef.current, fromPane, seq, reply);
               return reply;
             }}
-            cut={(openPane && cuts[openPane.id]) || NO_CUTS}
+            cut={(openKey && cuts[openKey]) || NO_CUTS}
             onStop={(id) => { void stopBot(id); }}
             queued={queuedRows}
             queueing={queueing}
@@ -2064,8 +2104,8 @@ export function PhoneApp() {
             pins={room && openPane && room.id === openPane.id ? room.pins : []}
             pinning={pinning}
             onUnpin={(index) => { if (openPane) unpin(openPane.id, index); }}
-            quotes={openId ? quotes[openId] ?? [] : []}
-            onQuotes={(next) => { if (openId) setQuotes((all) => ({ ...all, [openId]: next })); }}
+            quotes={openKey ? quotes[openKey] ?? [] : []}
+            onQuotes={(next) => { if (openKey) setQuotes((all) => ({ ...all, [openKey]: next })); }}
             actions={viewingPending || !openPane ? undefined : {
               onQuote: (message, part) => quoteMessage(openPane.id, message, part),
               onExplain: (message, part) => explainPart(openPane.id, message, part),
@@ -2082,8 +2122,8 @@ export function PhoneApp() {
             goingBack={goingBack}
             onGoingBack={setGoingBack}
             onAnswerGoBack={answerGoBack}
-            onDraft={(text) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, text } }; })}
-            onRemoveFile={(id) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
+            onDraft={(text) => openKey && setDrafts((all) => { const now = all[openKey] ?? emptyDraft(); return { ...all, [openKey]: { ...now, text } }; })}
+            onRemoveFile={(id) => openKey && setDrafts((all) => { const now = all[openKey] ?? emptyDraft(); return { ...all, [openKey]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
             onSend={() => { void send(); }}
             onDecide={decide}
             form={<QuestionForm phone view={formView(room?.asks)} nameOf={(pid) => room?.participants.find((p) => p.id === pid)?.display_name ?? pid}
@@ -2091,8 +2131,8 @@ export function PhoneApp() {
               onAnswer={(request, answers) => { void answer(request, answers); }} onStep={(step, by) => { void sendStep(step, by); }}
               onDismiss={() => setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current)} />}
             plan={room?.plan ?? false}
-            tldr={tldrOf(openId)}
-            onTldr={() => openId && setTldr(openId, !tldrOf(openId))}
+            tldr={tldrOf(openKey)}
+            onTldr={() => openKey && setTldr(openKey, !tldrOf(openKey))}
             onStopPlanning={() => { void stopPlanning(); }}
             onRetry={() => phoneHost(openLink.id)?.connection.retryNow()}
             onOpenOther={(hostId) => {
@@ -2248,7 +2288,7 @@ export function PhoneApp() {
           onPickerStart={startPicker}
           onPick={readAttachments}
           files={draft.files}
-          onRemoveFile={(id) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
+          onRemoveFile={(id) => openKey && setDrafts((all) => { const now = all[openKey] ?? emptyDraft(); return { ...all, [openKey]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
           onTools={() => { setComposerOpen(false); openSheet("tools"); }}
           project={openWorkspace.name}
           machine={openLink.name}
@@ -2291,7 +2331,7 @@ export function PhoneApp() {
                   {tools.length > 8 && <input className="ph-search" type="search" placeholder="Search tools…" value={toolQuery} onChange={(event) => setToolQuery(event.target.value)} aria-label="Search tools" />}
                   {toolSearch(toolRows(tools), toolQuery).length === 0 && <p className="ph-sheet-text">No tools match “{toolQuery.trim()}”.</p>}
                   {toolSearch(toolRows(tools), toolQuery).map((tool) => (
-                  <button key={tool.token} type="button" className="ph-srow" aria-label={`${tool.name}${tool.source ? `, from ${tool.source}` : ""}. Adds !${tool.token}`} onClick={() => { if (openId) setDraft(openId, { ...draft, text: appendToolToken(draft.text, tool.token) }); setSheet(null); }}>
+                  <button key={tool.token} type="button" className="ph-srow" aria-label={`${tool.name}${tool.source ? `, from ${tool.source}` : ""}. Adds !${tool.token}`} onClick={() => { if (openKey) setDraft(openKey, { ...draft, text: appendToolToken(draft.text, tool.token) }); setSheet(null); }}>
                     <span className="ph-srow-icon"><Plug size={18} /></span>
                     <span className="ph-grow"><strong>{tool.name}{tool.source && <span className="ph-tool-source">· {tool.source}</span>}</strong><small className="ph-tool-token">!{tool.token}</small></span>
                   </button>
@@ -2332,7 +2372,7 @@ export function PhoneApp() {
               offline={openLink.status !== "online" ? downLine(openLink) : ""}
               onSave={(change) => openChat ? saveChatTurn(openChat, who.id)({ change, reported, apiModels }) : saveTurn(room.id, openLink.id, who.id)({ change, reported, apiModels })}
               extra={openChat ? <TalkOnlyRow name={who.display_name} onMove={openChat.promotedTo ? undefined : () => { setBotSheet(null); setChatSheet({ kind: "move" }); }} /> : undefined}
-              onMention={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who, room.participants) }); setBotSheet(null); }}
+              onMention={() => { if (openKey) setDraft(openKey, { ...draft, text: tagFromBar(draft.text, who, room.participants) }); setBotSheet(null); }}
               onStop={() => { void stopBot(who.id); setBotSheet(null); }}
               onClose={() => setBotSheet(null)} />
           );
@@ -2538,7 +2578,7 @@ export function PhoneApp() {
         )}
         {chatSheet?.kind === "bots" && sheetChat && (
           <Sheet title="Bots in this chat" onClose={() => setChatSheet(null)}>
-            <ChatBotsBody machine={chatMachine(sheetChat.hostId)} locked={sheetRights?.post ? "" : sheetRights?.postWhy ?? ""} bots={chatBots(sheetChat)} working={[...(busy[sheetChat.id] ?? [])]} loadProfiles={chatProfilesOn}
+            <ChatBotsBody machine={chatMachine(sheetChat.hostId)} locked={sheetRights?.post ? "" : sheetRights?.postWhy ?? ""} bots={chatBots(sheetChat)} working={[...(busy[JSON.stringify([sheetChat.hostId, sheetChat.id])] ?? [])]} loadProfiles={chatProfilesOn}
               onOpen={(botId) => { if (openId === sheetChat.id) { setChatSheet(null); setBotSheet(botId); } else openChatRow(sheetChat); }}
               onAdd={(profile) => changeChatBots(sheetChat, { add: profile })} onRemove={(botId) => changeChatBots(sheetChat, { remove: botId })} />
           </Sheet>
@@ -3245,6 +3285,7 @@ function ThreadView(props: {
               <span className="ph-queued-actions">
                 {item.canRetry && <button type="button" onClick={() => props.chat?.onRetry(item.id)}>Retry</button>}
                 {item.canSendAnyway && <button type="button" onClick={() => props.chat?.onSendAnyway(item.id)}>Send here anyway</button>}
+                {item.canTakeBack && <button type="button" onClick={() => props.chat?.onTakeBack(item.id)}>Take back</button>}
               </span>
             </div>
           </section>

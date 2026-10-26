@@ -188,6 +188,10 @@ pub enum Command {
         #[serde(default)]
         request_id: Option<String>,
     },
+    /// Fence off an unconfirmed `chat_promote` so the phone can start a
+    /// different one: the reply says the move already happened, or that this
+    /// request id will now be refused.
+    ChatPromoteAbandon { source: String, #[serde(alias = "request_id")] request_id: String },
     RoomState { id: String },
     RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     RoomTargets { id: String, text: String },
@@ -552,6 +556,7 @@ impl Host {
             ChatMessageClaim { id, client_message_id } => reply(self.chat_message_claim(id, client_message_id).await?),
             ChatMergeHistory { id, entries } => reply(self.chat_merge_history(id, entries).await?),
             ChatPromote { source, target, cwd, upto, access, request_id } => reply(self.chat_promote(source, target, cwd, upto, access, request_id)?),
+            ChatPromoteAbandon { source, request_id } => reply(self.chat_promote_abandon(source, request_id)?),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers, client_message_id } => match client_message_id {
                 // Work sends retain task continuation, Revert snapshots, and
@@ -756,7 +761,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 187);
+        assert_eq!(names.len(), 188);
         for name in [
             "chat_profiles",
             "chat_list",
@@ -769,6 +774,7 @@ mod tests {
             "chat_message_claim",
             "chat_merge_history",
             "chat_promote",
+            "chat_promote_abandon",
         ] {
             assert!(names.contains(&name.to_owned()), "{name}");
         }
