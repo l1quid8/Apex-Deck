@@ -88,7 +88,7 @@ import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
 import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning, assistantsRunning } from "./closing";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestions, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning, assistantsRunning } from "./closing";
 import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
@@ -2360,9 +2360,16 @@ export function App() {
     const sessionSave = Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]);
     return Promise.allSettled([sessionSave, flushAnswerStores()]);
   };
+  /** Refused while another window holds unsaved edits. */
   const quitNow = () => {
     if (!backend) return;
-    void settleSaves().then(() => backend.quitApp());
+    void settleSaves().then(() => backend.quitApp()).catch((error) => toast(`Deck didn't quit: ${ipcWords(error)}`));
+  };
+
+  /** Asks each question in turn, then runs `go`; cancelling any one stops there. */
+  const askInTurn = ([next, ...later]: Omit<Question, "onConfirm">[], go: () => void) => {
+    if (next) setQuestion({ ...next, onConfirm: () => askInTurn(later, go) });
+    else go();
   };
 
   /** Agents, terminals and personal Assistant work on this Mac (an assistant elsewhere's commands included) that quitting, or installing an update, would end. */
@@ -2382,25 +2389,19 @@ export function App() {
   // service, so busy agents are asked about even when an ordinary quit would leave
   // them be. Deck quits from main once the update is queued; a refusal keeps it open.
   const restartToUpdate = () => {
-    const go = () => {
+    askInTurn(restartQuestions(unsavedEditName(), busyHere()), () => {
       void settleSaves().then(() => updateActions.restart()).catch((error) => toast(`The update didn't start: ${ipcWords(error)}`));
-    };
-    const ask = ([next, ...later]: ReturnType<typeof restartQuestions>) => {
-      if (next) setQuestion({ ...next, onConfirm: () => ask(later) });
-      else go();
-    };
-    ask(restartQuestions(unsavedEditName(), busyHere()));
+    });
   };
 
   // Asked to quit: the window's close button, ⌘W, ⌘Q or Quit in the app menu.
-  // The desktop shell holds the quit until this answers (see quit.rs).
+  // The desktop shell holds the quit until this answers (see quit.rs). Deck exits
+  // without the file editor's unload warning, so unsaved edits are asked about first.
   const onQuitRequest = useRef<(request: number) => void>(() => {});
   onQuitRequest.current = (request) => {
     if (!backend) return;
     void backend.quitHeard(request).catch(() => {});
-    const asked = quitQuestion(busyHere(), backend.quitStopsWork);
-    if (asked) setQuestion({ ...asked, onConfirm: quitNow });
-    else quitNow();
+    askInTurn(quitQuestions(unsavedEditName(), busyHere(), backend.quitStopsWork), quitNow);
   };
   // The Electron app's menu: Settings… (⌘,) is a menu item there, so the key never reaches the window.
   useEffect(() => {

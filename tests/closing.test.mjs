@@ -257,6 +257,20 @@ test('quitting asks nothing when the work goes on without this app', () => {
   assert.equal(quitQuestion(busy, false), null);
 });
 
+test('quitting asks about unsaved file edits first, even when the work goes on without this app', async () => {
+  // Deck quits without the file editor's unload warning, so the window asks itself.
+  const { quitQuestions } = await import("../src/closing.ts");
+  const busy = stillRunning([terminal("Codex", true, "working")], []);
+  assert.deepEqual(quitQuestions(null, [], true), []);
+  const [discard] = quitQuestions("notes.md", [], true);
+  assert.equal(discard.title, "Discard unsaved changes to notes.md?");
+  assert.equal(discard.action, "Discard");
+  assert.deepEqual(quitQuestions("notes.md", busy, true).map((q) => q.action), ["Discard", "Quit and end them"]);
+  assert.deepEqual(quitQuestions("notes.md", busy, false).map((q) => q.action), ["Discard"]);
+  assert.deepEqual(quitQuestions(null, busy, true).map((q) => q.action), ["Quit and end them"]);
+  assert.deepEqual(quitQuestions(null, busy, false), []);
+});
+
 test("Remove project… always asks, and says the folder on disk is kept", async () => {
   const { removeProjectQuestion } = await import("../src/closing.ts");
   const idle = { working: 0, waiting: 0, replying: 0, asking: 0, threads: 2 };

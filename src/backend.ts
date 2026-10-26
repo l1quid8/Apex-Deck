@@ -210,7 +210,8 @@ export interface Backend {
   onQuitRequested(cb: (request: number) => void): Promise<Unlisten>;
   /** Tell the desktop shell the window got quit request `request`, so it waits for the person. */
   quitHeard(request: number): Promise<void>;
-  /** Quit now, ending every terminal. Nothing asks again. */
+  /** Quit now, ending every terminal. Nothing asks again. Refused while
+   *  another window has unsaved file edits; this window asks about its own. */
   quitApp(): Promise<void>;
   /** False when agents and terminals go on after quitting: on another
    *  machine, or a daemon this app didn't start. */
