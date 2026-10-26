@@ -150,6 +150,9 @@ export interface SideEffect { seq: number; by: string; command: string }
 export interface RevertPlan { available: boolean; note: string | null; files: RevertFile[]; skipped: string[]; effects: SideEffect[] }
 export interface ThreadDiff { files: DiffFile[]; note: string | null }
 export interface RoomSnapshot {
+  kind?: "work" | "chat";
+  /** Durable delivery receipts. Interrupted turns only resume with a new message ID. */
+  clientMessages?: Record<string, { state: "running" | "done" | "fenced" | "interrupted"; replySeqs: number[]; humanSeq?: number }>;
   changes?: ChangeRecord[];
   baseline?: string | null;
   /** Facts every model sees on every turn; kept by /clear and /compact. */
@@ -245,6 +248,11 @@ export interface AppSession {
 export type Speaker = { kind: "human" } | { kind: "bot"; id: string };
 
 export interface Message {
+  /** Immutable source position, independent of the visible index after clear/rewind. */
+  originSeq?: number;
+  origin?: { machine: string; room: string; seq: number };
+  clientMessageId?: string;
+  replyToClientMessageId?: string;
   servers?: string[];
   seq: number;
   speaker: Speaker;

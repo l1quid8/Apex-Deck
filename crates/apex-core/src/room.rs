@@ -204,6 +204,8 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero(value: &usize) -> bool { *value == 0 }
+
 fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
     RoomEvent::plan_for(plan, None)
 }
@@ -371,8 +373,42 @@ impl RoomKind {
 }
 
 /// Durable chat data. Running turns and provider processes are never resumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientMessageState { Fenced, Running, Done, Interrupted }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientMessageRecord {
+    pub state: ClientMessageState,
+    #[serde(default)]
+    pub reply_seqs: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_seq: Option<usize>,
+    /// Bind retries to the same request, including across a daemon restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<ClientMessageRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientMessageRequest {
+    pub text: String,
+    pub targets: Vec<ParticipantId>,
+    #[serde(default)]
+    pub voice: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomSnapshot {
+    #[serde(default, rename = "nextOriginSeq", skip_serializing_if = "is_zero")]
+    pub next_origin_seq: usize,
+    #[serde(default, rename = "clientMessages", alias = "client_messages", skip_serializing_if = "HashMap::is_empty")]
+    pub client_messages: HashMap<String, ClientMessageRecord>,
+    /// Import identity and its original omissions are atomic with the history.
+    #[serde(default, rename = "importMoveId", skip_serializing_if = "Option::is_none")]
+    pub import_move_id: Option<String>,
+    #[serde(default, rename = "importSkipped", skip_serializing_if = "Vec::is_empty")]
+    pub import_skipped: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "RoomKind::is_work")]
     pub kind: RoomKind,
     pub participants: Vec<ParticipantConfig>,
@@ -406,10 +442,27 @@ pub struct RoomSnapshot {
 }
 
 impl RoomSnapshot {
+    /// Imported IDs are tombstones, never executable claims from another host.
+    pub fn remember_history_ids(&mut self) {
+        for message in &self.transcript {
+            if let Some(id) = &message.client_message_id {
+                self.client_messages.entry(id.clone()).or_insert_with(|| ClientMessageRecord { state: ClientMessageState::Done, human_seq: Some(message.seq), reply_seqs: vec![], request: None });
+            }
+        }
+        for message in &self.transcript {
+            if let Some(record) = message.reply_to_client_message_id.as_ref().and_then(|id| self.client_messages.get_mut(id)) {
+                if !record.reply_seqs.contains(&message.seq) { record.reply_seqs.push(message.seq); }
+            }
+        }
+    }
     /// Copy the first `upto` messages, retaining only context from that point.
     pub fn fork(&self, upto: usize) -> Self {
         let upto = upto.min(self.transcript.len());
         Self {
+            next_origin_seq: self.next_origin_seq,
+            client_messages: HashMap::new(),
+            import_move_id: None,
+            import_skipped: Vec::new(),
             kind: self.kind,
             participants: self.participants.clone(),
             transcript: self.transcript[..upto].to_vec(),
@@ -430,6 +483,11 @@ impl RoomSnapshot {
 
 /// One group chat.
 pub struct Room {
+    next_origin_seq: usize,
+    client_messages: HashMap<String, ClientMessageRecord>,
+    import_move_id: Option<String>,
+    import_skipped: Vec<serde_json::Value>,
+    reply_client_message_id: Option<String>,
     kind: RoomKind,
     checklists: Checklists,
     roster: Vec<Arc<dyn Participant>>,
@@ -476,6 +534,10 @@ impl Room {
 
     pub fn snapshot(&self) -> RoomSnapshot {
         RoomSnapshot {
+            next_origin_seq: self.next_origin_seq,
+            client_messages: self.client_messages.clone(),
+            import_move_id: self.import_move_id.clone(),
+            import_skipped: self.import_skipped.clone(),
             kind: self.kind,
             participants: self.configs(),
             transcript: self.transcript.clone(),
@@ -497,7 +559,13 @@ impl Room {
         let desk = ApprovalDesk::default();
         desk.set_allowed(snapshot.allowed);
         let plan = !snapshot.kind.is_chat() && snapshot.plan;
+        let next_origin_seq = if snapshot.kind.is_chat() { snapshot.next_origin_seq.max(snapshot.transcript.iter().map(|message| message.origin_seq.unwrap_or(message.seq).saturating_add(1)).max().unwrap_or(0)) } else { 0 };
         Self {
+            next_origin_seq,
+            client_messages: snapshot.client_messages,
+            import_move_id: snapshot.import_move_id,
+            import_skipped: snapshot.import_skipped,
+            reply_client_message_id: None,
             kind: snapshot.kind,
             roster,
             transcript: snapshot.transcript,
@@ -520,6 +588,11 @@ impl Room {
 
     pub fn new(roster: Vec<Arc<dyn Participant>>, options: RoomOptions) -> Self {
         Self {
+            next_origin_seq: 0,
+            client_messages: HashMap::new(),
+            import_move_id: None,
+            import_skipped: Vec::new(),
+            reply_client_message_id: None,
             kind: RoomKind::Work,
             roster,
             transcript: Vec::new(),
@@ -634,6 +707,7 @@ impl Room {
     /// Forget the conversation but keep the participants and settings.
     /// Participants see only the transcript, so this resets their context.
     pub fn clear(&mut self) {
+        for record in self.client_messages.values_mut() { record.human_seq = None; record.reply_seqs.clear(); }
         self.pins = self.pins.iter().map(|pin| response_pin_parts(pin).map_or_else(|| pin.clone(), |(_, text)| text.to_string())).collect();
         self.transcript.clear();
         self.checklists.lock().unwrap().clear();
@@ -650,6 +724,10 @@ impl Room {
         if upto >= self.transcript.len() { return; }
         self.pins.retain(|pin| response_pin_parts(pin).is_none_or(|(seq, _)| seq < upto));
         self.transcript.truncate(upto);
+        for record in self.client_messages.values_mut() {
+            record.human_seq = record.human_seq.filter(|seq| *seq < upto);
+            record.reply_seqs.retain(|seq| *seq < upto);
+        }
         self.checklists.lock().unwrap().retain(|_, list| list.seq < upto);
         for seen in self.cursors.values_mut() { *seen = (*seen).min(upto); }
         self.last_targets.clear();
@@ -789,9 +867,83 @@ impl Room {
     pub(crate) fn push(&mut self, speaker: Speaker, text: String, on_event: EventSink<'_>) {
         let servers = if speaker == Speaker::Human { crate::server_request::parse_server_requests(&text) } else { vec![] };
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64);
-        let message = Message { servers, seq: self.transcript.len(), speaker, text, at };
+        let reply_to_client_message_id = self.reply_client_message_id.clone();
+        let origin_seq = self.kind.is_chat().then_some(self.next_origin_seq);
+        if self.kind.is_chat() { self.next_origin_seq = self.next_origin_seq.saturating_add(1); }
+        let message = Message { origin_seq, origin: None, client_message_id: None, reply_to_client_message_id: reply_to_client_message_id.clone(), servers, seq: self.transcript.len(), speaker, text, at };
+        if let Some(record) = reply_to_client_message_id.and_then(|id| self.client_messages.get_mut(&id)) { record.reply_seqs.push(message.seq); }
         self.transcript.push(message.clone());
         on_event(RoomEvent::MessageAdded { message });
+    }
+
+    pub(crate) fn client_message(&self, id: &str) -> Option<&ClientMessageRecord> { self.client_messages.get(id) }
+
+    pub(crate) fn set_reply_client_message(&mut self, id: Option<String>) { self.reply_client_message_id = id; }
+
+    pub fn finish_client_message(&mut self, id: &str) {
+        if let Some(record) = self.client_messages.get_mut(id) {
+            if record.state == ClientMessageState::Running { record.state = ClientMessageState::Done; }
+        }
+    }
+
+    pub fn interrupt_client_message(&mut self, id: &str) {
+        if let Some(record) = self.client_messages.get_mut(id) {
+            if record.state == ClientMessageState::Running { record.state = ClientMessageState::Interrupted; }
+        }
+    }
+
+    /// Called while the concurrent room holds its transcript mutex. Saving is
+    /// part of acceptance: a failed commit restores all request state.
+    pub(crate) fn accept_client_message(
+        &mut self, id: &str, request: ClientMessageRequest,
+        commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync),
+    ) -> Result<Option<Message>, String> {
+        if id.is_empty() || id.len() > 128 || request.text.trim().is_empty() || request.text.len() > 32_000 { return Err("invalid client message".into()); }
+        if let Some(record) = self.client_messages.get(id) {
+            if record.state == ClientMessageState::Fenced { return Err("this message moved to another machine".into()); }
+            if record.request.as_ref().is_some_and(|prior| prior != &request) { return Err("client message ID reused with different content".into()); }
+            return Ok(None);
+        }
+        let previous_targets = self.last_targets.clone();
+        self.last_targets = request.targets.clone();
+        let seq = self.transcript.len();
+        self.client_messages.insert(id.into(), ClientMessageRecord { state: ClientMessageState::Running, reply_seqs: vec![], human_seq: Some(seq), request: Some(request.clone()) });
+        self.push(Speaker::Human, request.text, &|_| {});
+        self.transcript.last_mut().unwrap().client_message_id = Some(id.into());
+        if let Err(error) = commit(&self.snapshot()) {
+            self.transcript.pop();
+            self.last_targets = previous_targets;
+            self.client_messages.remove(id);
+            return Err(error);
+        }
+        Ok(self.transcript.last().cloned())
+    }
+
+    pub fn claim_client_message(&mut self, id: &str, commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync)) -> Result<ClientMessageRecord, String> {
+        if id.is_empty() || id.len() > 128 { return Err("invalid client message ID".into()); }
+        if let Some(record) = self.client_messages.get(id) { return Ok(record.clone()); }
+        let record = ClientMessageRecord { state: ClientMessageState::Fenced, reply_seqs: vec![], human_seq: None, request: None };
+        self.client_messages.insert(id.into(), record.clone());
+        if let Err(error) = commit(&self.snapshot()) { self.client_messages.remove(id); return Err(error); }
+        Ok(record)
+    }
+
+    /// History-only append, with source identity retained across retries.
+    pub fn merge_history(&mut self, entries: Vec<Message>, commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync)) -> Result<Vec<Message>, String> {
+        if entries.iter().any(|message| message.origin.as_ref().is_none_or(|origin| origin.machine.is_empty() || origin.room.is_empty())) { return Err("every merged entry requires its origin machine, room and seq".into()); }
+        let mut origins: std::collections::HashSet<_> = self.transcript.iter().filter_map(|message| message.origin.clone()).collect();
+        let before = self.transcript.len();
+        for mut message in entries {
+            if !origins.insert(message.origin.clone().unwrap()) { continue; }
+            message.seq = self.transcript.len();
+            self.transcript.push(message);
+        }
+        if self.transcript.len() == before { return Ok(vec![]); }
+        let mut snapshot = self.snapshot();
+        snapshot.remember_history_ids();
+        if let Err(error) = commit(&snapshot) { self.transcript.truncate(before); return Err(error); }
+        self.client_messages = snapshot.client_messages;
+        Ok(self.transcript[before..].to_vec())
     }
 
     /// A host-owned coordination note; it never authorizes a worker turn.

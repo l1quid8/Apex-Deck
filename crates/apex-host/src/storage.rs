@@ -309,6 +309,47 @@ impl Store {
         room.mounts=trusted.mounts;
         Ok(Some(room))
     }
+
+    pub(crate) fn room_ids(&self) -> Result<Vec<String>, String> {
+        let entries = match std::fs::read_dir(self.root.join("rooms")) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(format!("Could not enumerate saved chats: {error}")),
+        };
+        let mut ids = vec![];
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if let Some(id) = entry.file_name().to_str().and_then(room_id_from_file) { ids.push(id); }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Provider processes never resume. Finish recovery durably before the
+    /// host starts any worker or accepts a command, including unopened rooms.
+    pub(crate) fn interrupt_client_messages(&self) -> Result<(), String> {
+        for id in self.room_ids()? {
+            let Some(raw): Option<SavedRoom> = self.read(&self.room_path(&id))? else { continue; };
+            if !raw.snapshot.client_messages.values().any(|record| record.state == apex_core::ClientMessageState::Running) { continue; }
+            let mut saved = self.room(&id)?.ok_or("Saved chat disappeared during recovery")?;
+            for record in saved.snapshot.client_messages.values_mut() {
+                if record.state == apex_core::ClientMessageState::Running { record.state = apex_core::ClientMessageState::Interrupted; }
+            }
+            self.save_room(&id, &saved)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn imported_chat(&self, move_id: &str) -> Result<Option<(String, SavedRoom)>, String> {
+        for id in self.room_ids()? {
+            let Some(raw): Option<SavedRoom> = self.read(&self.room_path(&id))? else { continue; };
+            if raw.snapshot.import_move_id.as_deref() != Some(move_id) { continue; }
+            let saved = self.room(&id)?.ok_or("Imported chat disappeared")?;
+            if !saved.snapshot.kind.is_chat() { return Err("This move does not belong to a chat room".into()); }
+            return Ok(Some((id, saved)));
+        }
+        Ok(None)
+    }
     fn room_authorities(&self)->Result<serde_json::Map<String,serde_json::Value>,String>{
         let path=self.root.join("room-authority-v1.json");
         match crate::authority_file::read(&path){
@@ -836,9 +877,13 @@ pub(crate) fn prepare_private_root(root: &Path) -> Result<(), String> {
     crate::private_data::prepare(root).map_err(|e| format!("Could not prepare private data folder: {e}"))
 }
 
-/// Write a room file that must not exist yet, private to this user, flushed to disk.
+/// Publish a complete, flushed room without replacing an existing thread.
+/// A killed writer can leave a staging file, never a partial room JSON. Hard
+/// linking within this directory provides atomic no-clobber publication on
+/// Unix and Windows; unsupported filesystems fail without publishing a room.
 fn write_new(path: &Path, saved: &SavedRoom) -> Result<(), String> {
     use std::io::Write;
+    static NEXT_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let bytes = serde_json::to_vec_pretty(saved).map_err(|e| e.to_string())?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -846,12 +891,26 @@ fn write_new(path: &Path, saved: &SavedRoom) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { e.to_string() })?;
-    if let Err(e) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
-        let _ = std::fs::remove_file(path);
-        return Err(format!("Could not save: {e}"));
-    }
-    Ok(())
+    let (stage, mut file) = loop {
+        let nonce = NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let stage = path.with_extension(format!("new-{}-{nonce}.tmp", std::process::id()));
+        match options.open(&stage) {
+            Ok(file) => break (stage, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Could not save: {error}")),
+        }
+    };
+    let result = (|| -> std::io::Result<()> {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::hard_link(&stage, path)?;
+        sync_directory(path.parent().unwrap())
+    })();
+    // On publication or sync failure, never unlink the destination: another
+    // writer may own it, or our complete room may already be durable there.
+    let _ = std::fs::remove_file(&stage);
+    result.map_err(|error| if error.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { format!("Could not save: {error}") })
 }
 
 #[cfg(test)]
@@ -865,6 +924,64 @@ mod tests {
         std::env::temp_dir().join(format!("apex-deck-storage-{}-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
+
+    /// Run only in the crash-test child: the kernel terminates the writer in
+    /// the middle of the real room-file write, without unwinding its cleanup.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_import_crash_writer_child() {
+        let Some(root) = std::env::var_os("APEX_ATOMIC_IMPORT_CRASH_ROOT") else { return; };
+        let store = Store::new(PathBuf::from(root).join("saved-chats-v1"));
+        let mut snapshot = Room::new(vec![], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat).snapshot();
+        snapshot.import_move_id = Some("atomic-move".into());
+        snapshot.import_skipped = vec![serde_json::json!({"participant":"test","reason":"x".repeat(16_384)})];
+        let saved = SavedRoom { cwd: None, mounts: vec![], snapshot };
+        std::fs::create_dir_all(store.root.join("rooms")).unwrap();
+        store.save_room_authority("destination", &saved).unwrap();
+        let limit = libc::rlimit { rlim_cur: 128, rlim_max: 128 };
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limit) }, 0);
+        unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_DFL); }
+        let _ = write_new(&store.room_path("destination"), &saved);
+        panic!("the kernel should terminate the oversized room write");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn killed_import_writer_never_publishes_partial_room_and_retry_is_idempotent() {
+        let root = temp();
+        std::fs::create_dir_all(&root).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "storage::tests::atomic_import_crash_writer_child", "--nocapture"])
+            .env("APEX_ATOMIC_IMPORT_CRASH_ROOT", &root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGXFSZ));
+        let store = Store::new(root.join("saved-chats-v1"));
+        assert!(!store.room_path("destination").exists(), "a killed writer must leave no partially published room");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let host = crate::Host::try_new(crate::HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone()).expect("partial staging files never block startup");
+        let import = serde_json::json!({"cmd":"chat_import","args":{"id":"destination","moveId":"atomic-move","participants":[],"entries":[],"title":"Recovered"}});
+        let imported = runtime.block_on(host.call_assuming_verified_ui_for_test(serde_json::from_value(import.clone()).unwrap())).unwrap();
+        assert_eq!(imported["id"], "destination");
+        drop(host);
+        let host = crate::Host::try_new(crate::HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone()).unwrap();
+        let mut repeat = import;
+        repeat["args"]["id"] = "other-destination".into();
+        let imported = runtime.block_on(host.call_assuming_verified_ui_for_test(serde_json::from_value(repeat).unwrap())).unwrap();
+        assert_eq!(imported["id"], "destination");
+        assert!(store.room("other-destination").unwrap().is_none());
+        let bytes = std::fs::read(store.room_path("destination")).unwrap();
+        let saved = store.room("destination").unwrap().unwrap();
+        assert!(store.import_room("destination", &saved).unwrap_err().contains("already exists"));
+        let mut different = saved.clone();
+        different.snapshot.import_move_id = Some("must-not-replace".into());
+        assert!(write_new(&store.room_path("destination"), &different).unwrap_err().contains("already exists"));
+        assert_eq!(std::fs::read(store.room_path("destination")).unwrap(), bytes);
+        drop(host);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

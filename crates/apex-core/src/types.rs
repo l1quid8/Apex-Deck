@@ -169,8 +169,24 @@ pub enum Speaker {
 }
 
 /// One entry in the shared transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MessageOrigin {
+    pub machine: String,
+    pub room: String,
+    pub seq: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
+    /// Stable source position, independent of the editable transcript index.
+    #[serde(default, rename = "originSeq", skip_serializing_if = "Option::is_none")]
+    pub origin_seq: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MessageOrigin>,
+    #[serde(default, rename = "clientMessageId", alias = "client_message_id", skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
+    #[serde(default, rename = "replyToClientMessageId", alias = "reply_to_client_message_id", skip_serializing_if = "Option::is_none")]
+    pub reply_to_client_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<String>,
     /// Position in the transcript, starting at 0.

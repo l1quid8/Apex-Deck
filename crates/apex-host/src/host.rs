@@ -17,6 +17,10 @@ use crate::quit::QuitGate;
 use crate::storage::{SavedRoom, Store};
 use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images, worktrees};
 
+#[cfg(test)]
+#[path = "chat_delivery_tests.rs"]
+mod chat_delivery_tests;
+
 // Contention is a construction error before any ledger or worker recovery.
 // Unavailable service may degrade, but owns no descriptor or registry entry.
 fn admit_host_ownership(
@@ -245,6 +249,7 @@ impl Host {
             );
         }
         let store = Store::new(paths.data.join("saved-chats-v1"));
+        store.interrupt_client_messages()?;
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
         let compacting = Arc::clone(&snapshots);
         std::thread::spawn(move || compacting.compact());
@@ -1166,8 +1171,16 @@ impl Host {
 
     pub(crate) async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
         let _chain = Chain::start(&self.chains);
+        let client_message_id = batch.client_message_id().map(str::to_owned);
         let error = Mutex::new(None);
         handle.runtime.run(batch, &self.turn_sink(id, handle, &error)).await;
+        if let Some(request_id) = client_message_id.as_deref() {
+            // A failed provider-progress save leaves the durable ID owned but
+            // interrupted; it can never dispatch again under the same ID.
+            let mut room = handle.room.lock().await;
+            if error.lock().unwrap().is_some() { room.interrupt_client_message(request_id); }
+            else { room.finish_client_message(request_id); }
+        }
         checkpoint_room(handle, &self.store, id).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
@@ -1229,18 +1242,102 @@ impl Host {
         Ok(())
     }
 
-    pub(crate) async fn room_voice_post(self: &Arc<Self>, id: String, text: String, participant: ParticipantId, request_id: String) -> Result<(), String> {
-        if self.assistant_tasks.execution(&id).ok().flatten().is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
+    /// The commit closure runs under the transcript mutex, always before a
+    /// human-message event or provider invocation. Claim uses that same mutex.
+    fn commit_client_snapshot(&self, id: &str, handle: &RoomHandle, snapshot: &RoomSnapshot) -> Result<(), String> {
+        let _boundary = handle.recovery.lock().unwrap();
+        let mut checkpoint = handle.checkpoint.lock().unwrap();
+        if handle.deleted.load(Ordering::SeqCst) { return Err("This chat was deleted".into()); }
+        let mut saved = checkpoint.clone();
+        saved.snapshot = snapshot.clone();
+        self.store.save_room(id, &saved)?;
+        *checkpoint = saved;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn room_client_post(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<serde_json::Value, String> {
+        if self.assistant_tasks.execution(&id).map_err(|error| error.to_string())?.is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
+        if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
         let handle = self.handle(&id)?;
-        let error = Mutex::new(None);
-        let batch = handle.runtime.begin_voice_post(&text, participant, request_id, &self.turn_sink(&id, &handle, &error)).await?;
-        if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        checkpoint_room(&handle, &self.store, &id).await?;
+        let _action = handle.lock_checkout().await?;
+        // Acceptance already committed this event. Publishing it must not do
+        // a second fallible save and abandon an accepted batch before launch.
+        let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot), &|event| {
+            if let RoomEvent::MessageAdded { message } = &event { update_chat_message_meta(&self.store, &id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message); }
+            self.room_event(&id, event);
+        }).await?;
         if let Some(batch) = batch {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
-            self.run_batch_in_background(id, handle, batch);
+            let batch = batch.with_answer_guidance(if voice { Some(false) } else { answers }, capability);
+            if background { self.run_batch_in_background(id.clone(), handle.clone(), batch); }
+            else { self.run_batch(&id, &handle, batch).await?; }
         }
-        Ok(())
+        let record = if background { record } else { handle.checkpoint.lock().unwrap().snapshot.client_messages.get(&request_id).cloned().unwrap_or(record) };
+        Ok(serde_json::json!({"clientMessageId":request_id,"state":record.state,"replySeqs":record.reply_seqs}))
+    }
+
+    pub(crate) async fn chat_message_claim(self: &Arc<Self>, id: String, client_message_id: String) -> Result<serde_json::Value, String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        let mut room = handle.room.lock().await;
+        if !room.kind().is_chat() { return Err("This command requires a chat room".into()); }
+        let record = room.claim_client_message(&client_message_id, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot))?;
+        Ok(serde_json::json!({"state":record.state,"replySeqs":record.reply_seqs}))
+    }
+
+    pub(crate) async fn chat_merge_history(self: &Arc<Self>, id: String, entries: Vec<apex_core::Message>) -> Result<serde_json::Value, String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        let mut room = handle.room.lock().await;
+        if !room.kind().is_chat() { return Err("This command requires a chat room".into()); }
+        let added = room.merge_history(entries, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot))?;
+        for message in &added {
+            update_chat_message_meta(&self.store, &id, true, message);
+            self.room_event(&id, RoomEvent::MessageAdded { message: message.clone() });
+        }
+        Ok(serde_json::json!({"added":added.len()}))
+    }
+
+    pub(crate) fn chat_import(&self, id: String, move_id: String, title: Option<String>, participants: Vec<ParticipantConfig>, entries: Vec<apex_core::Message>, options: RoomOptions) -> Result<serde_json::Value, String> {
+        if move_id.is_empty() || move_id.len() > 256 { return Err("invalid move ID".into()); }
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if let Some((existing_id, saved)) = self.store.imported_chat(&move_id)? {
+            self.store.update_chat_meta(&existing_id, |meta| { if let Some(title) = &title { meta.title = title.clone(); } })?;
+            return Ok(serde_json::json!({"id":existing_id,"skipped":saved.snapshot.import_skipped,"room":saved.snapshot}));
+        }
+        if self.rooms.lock().unwrap().contains_key(&id) { return Err("a thread with that id already exists".into()); }
+        let path = agents::login_path();
+        let mut accepted = vec![];
+        let mut skipped = vec![];
+        for mut participant in participants {
+            match apex_adapters::chat_profile_ok(&participant, path.as_deref()) {
+                Ok(()) => {
+                    if accepted.iter().any(|prior: &ParticipantConfig| prior.id == participant.id) { return Err("two participants share the same id".into()); }
+                    if let Some(why) = apex_core::mention_clash(&participant, &accepted) { return Err(why); }
+                    participant.access = Access::Read;
+                    participant.media = None;
+                    accepted.push(participant);
+                }
+                Err(reason) => skipped.push(serde_json::json!({"participant":participant.id,"reason":reason})),
+            }
+        }
+        let mut snapshot = Room::new(vec![], options).with_kind(apex_core::RoomKind::Chat).snapshot();
+        snapshot.participants = accepted;
+        snapshot.import_move_id = Some(move_id);
+        snapshot.import_skipped = skipped.clone();
+        snapshot.transcript = entries;
+        let mut origins = std::collections::HashSet::new();
+        snapshot.transcript.retain(|message| message.origin.as_ref().is_none_or(|origin| origins.insert(origin.clone())));
+        for (seq, message) in snapshot.transcript.iter_mut().enumerate() { message.seq = seq; }
+        snapshot.remember_history_ids();
+        let saved = SavedRoom { cwd: None, mounts: vec![], snapshot };
+        self.store.import_room(&id, &saved)?;
+        // The room (including moveId) is already durable if metadata fails.
+        self.store.update_chat_meta(&id, |meta| { meta.title = title.unwrap_or_else(|| "New chat".into()); })?;
+        Ok(serde_json::json!({"id":id,"room":saved.snapshot,"skipped":skipped}))
     }
     pub(crate) fn room_voice_stop(&self, id: String, participant: ParticipantId, request_id: String) -> Result<String, String> {
         let handle = self.handle(&id)?;
@@ -1665,9 +1762,24 @@ impl Host {
 
     pub fn room_close(&self, id: String) {
         // Closing a view detaches it. Active jobs and assistant children are host owned.
-        let mut rooms = self.rooms.lock().unwrap();
-        if rooms.get(&id).is_some_and(|h| h.busy()) || self.assistant_tasks.execution(&id).ok().flatten().is_some() { return; }
-        rooms.remove(&id);
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        let Ok(handle) = self.handle(&id) else { return; };
+        if handle.busy() || self.assistant_tasks.execution(&id).ok().flatten().is_some() { return; }
+        // Admission and retirement share the transcript mutex. A command that
+        // cloned this handle before close must never commit under its detached
+        // mutex after a new handle has opened the same durable room.
+        if handle.runtime.retire_if_idle(|room| {
+            let snapshot = room.snapshot();
+            // Core execution releases its pending reservation just before the
+            // host saves the terminal ledger state. Keep this handle attached
+            // throughout that finalization window.
+            if snapshot.client_messages.values().any(|record| record.state == apex_core::ClientMessageState::Running) { return Err("Wait for the accepted messages to finish saving".into()); }
+            self.commit_client_snapshot(&id, &handle, &snapshot)?;
+            handle.deleted.store(true, Ordering::SeqCst);
+            Ok(())
+        }).is_ok() {
+            self.rooms.lock().unwrap().remove(&id);
+        }
     }
 
     /// The models an OpenAI-compatible server offers, for the model picker.
@@ -2421,7 +2533,14 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         RoomEvent::ParticipantChanged { participant } => {
             for p in &mut checkpoint.snapshot.participants { if p.id == participant.id { *p = participant.clone(); } }
         }
-        RoomEvent::MessageAdded { message } => checkpoint.snapshot.transcript.push(message.clone()),
+        RoomEvent::MessageAdded { message } => {
+            if let Some(seq) = message.origin_seq { checkpoint.snapshot.next_origin_seq = checkpoint.snapshot.next_origin_seq.max(seq.saturating_add(1)); }
+            if message.seq == checkpoint.snapshot.transcript.len() { checkpoint.snapshot.transcript.push(message.clone()); }
+            else if checkpoint.snapshot.transcript.get(message.seq) != Some(message) { return Err("message sequence disagrees with saved history".into()); }
+            if let Some(record) = message.reply_to_client_message_id.as_ref().and_then(|id| checkpoint.snapshot.client_messages.get_mut(id)) {
+                if !record.reply_seqs.contains(&message.seq) { record.reply_seqs.push(message.seq); }
+            }
+        }
         RoomEvent::Changed { id, change } => {
             let seq = checkpoint.snapshot.transcript.len();
             checkpoint.snapshot.changes.push(apex_core::ChangeRecord { by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
@@ -2434,34 +2553,36 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         _ => {}
     }
     store.save_room(id, &checkpoint)?;
-    if let RoomEvent::MessageAdded { message } = event {
-        if checkpoint.snapshot.kind.is_chat() {
-            let now = message.at.unwrap_or_else(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0)
-            });
-            let _ = store.update_chat_meta(id, |meta| {
-                meta.updated_at = meta.updated_at.max(now);
-                if (meta.title.trim().is_empty() || meta.title == "New chat")
-                    && matches!(message.speaker, apex_core::Speaker::Human)
-                {
-                    let first_line = message
-                        .text
-                        .lines()
-                        .map(str::trim)
-                        .find(|line| !line.is_empty() && !line.starts_with("Attached image: "))
-                        .unwrap_or("");
-                    if !first_line.is_empty() {
-                        let snippet: String = first_line.chars().take(60).collect();
-                        meta.title = snippet;
-                    }
-                }
-            });
-        }
-    }
+    if let RoomEvent::MessageAdded { message } = event { update_chat_message_meta(store, id, checkpoint.snapshot.kind.is_chat(), message); }
     Ok(())
+}
+
+fn update_chat_message_meta(store: &Store, id: &str, chat: bool, message: &apex_core::Message) {
+    if chat {
+        let now = message.at.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0)
+        });
+        let _ = store.update_chat_meta(id, |meta| {
+            meta.updated_at = meta.updated_at.max(now);
+            if (meta.title.trim().is_empty() || meta.title == "New chat")
+                && matches!(message.speaker, apex_core::Speaker::Human)
+            {
+                let first_line = message
+                    .text
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty() && !line.starts_with("Attached image: "))
+                    .unwrap_or("");
+                if !first_line.is_empty() {
+                    let snippet: String = first_line.chars().take(60).collect();
+                    meta.title = snippet;
+                }
+            }
+        });
+    }
 }
 
 async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
@@ -3717,7 +3838,7 @@ mod host_tests {
         let own = host.save_attachment("source", "own.png", png).unwrap();
         let other = host.save_attachment("other", "private.png", png).unwrap();
         let mut saved = host.store.room("source").unwrap().unwrap();
-        saved.snapshot.transcript.push(apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human,
+        saved.snapshot.transcript.push(apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human,
             text: format!("Attached image: {own}\nAttached image: {own}\nAttached image: {other}"), servers: vec![], at: None });
         host.store.save_room("source", &saved).unwrap();
         host.room_fork("source".into(), "fork".into(), None).unwrap();
@@ -3739,7 +3860,7 @@ mod host_tests {
         host.room_create("source".into(), vec![], RoomOptions::default(), None).unwrap();
         let image = host.save_attachment("source", "gone.png", b"image").unwrap();
         let mut saved = host.store.room("source").unwrap().unwrap();
-        saved.snapshot.transcript.push(apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human,
+        saved.snapshot.transcript.push(apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human,
             text: format!("Attached image: {image}"), servers: vec![], at: None });
         host.store.save_room("source", &saved).unwrap();
         std::fs::remove_file(image).unwrap();
