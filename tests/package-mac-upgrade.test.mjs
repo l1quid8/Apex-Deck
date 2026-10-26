@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory() as directory:
  for name in u.AUTHORITY:(u.ROOT/name).write_bytes(('old-'+name).encode())
  before={name:u.digest(u.ROOT/name) for name in (*u.AUTHORITY,'config.json')}
  agent=base/'agent.plist';agent.write_text('unchanged agent');u.preflight=lambda payload=False:(types.SimpleNamespace(pw_uid=501),agent)
- u.protected=lambda p:None;u.validate_bundle=lambda p:None;u.app_running=lambda:False
+ u.protected=lambda p:None;u.validate_bundle=lambda p:None;u.app_running=lambda uid=None:False
  u.pwd.getpwall=lambda:[]
  original_rename=u.os.rename
  # Keep all application paths in the fixture while testing the actual swap/recovery code.
@@ -213,6 +213,86 @@ except RuntimeError as error:assert "couldn't stop" in str(error) and 'nothing w
 else:raise AssertionError('installed over a running service')
 assert (u.TRUSTED/'version').read_text()=='old'
 assert ('start',502,str(other_agent),'old') in events,'the stopped services are started again'
+shutil.rmtree(directory)
+`));
+
+test('an account that signs out as the update starts is skipped, not a reason to refuse',()=>python(accountsFixture+String.raw`
+real=u.run
+def signed_out(*args,required=True):
+ if list(map(str,args[:3]))==['/bin/launchctl','bootout','gui/502/dev.apexdeck.daemon']:
+  loaded[502]=running[502]=False
+  if required:raise RuntimeError('Command failed: /bin/launchctl Boot-out failed: 3: No such process')
+  return subprocess.CompletedProcess(args,3,'','Boot-out failed: 3: No such process')
+ return real(*args,required=required)
+u.run=signed_out
+u.install()
+assert (u.TRUSTED/'version').read_text()=='new'
+assert not any(e[:2]==('start',502) for e in events if isinstance(e,tuple)),'nothing to start again there'
+shutil.rmtree(directory)
+`));
+
+test('another account’s service that won’t stop refuses the update by name',()=>python(accountsFixture+String.raw`
+real=u.run
+def stuck(*args,required=True):
+ if list(map(str,args[:3]))==['/bin/launchctl','bootout','gui/502/dev.apexdeck.daemon']:
+  if required:raise RuntimeError('Command failed')
+  return subprocess.CompletedProcess(args,5,'','Boot-out failed: 5: Input/output error')
+ return real(*args,required=required)
+u.run=stuck
+try:u.install()
+except RuntimeError as error:assert '"Other Person"' in str(error) and 'nothing was installed' in str(error),error
+else:raise AssertionError('installed over a service that would not stop')
+assert (u.TRUSTED/'version').read_text()=='old'
+assert ('start',501,str(agent),'old') in events,events
+shutil.rmtree(directory)
+`));
+
+test('a rollback that needs checking names the other accounts whose service stays off',()=>python(accountsFixture+String.raw`
+# pop() takes from the end: the install's broker start fails, then the rollback's.
+fail.extend(['rollback broker failure','injected broker failure'])
+notes=[]
+try:u.install(notes)
+except RuntimeError as error:assert 'injected' in str(error),error
+else:raise AssertionError('failed installation reported success')
+assert (u.UPGRADES/'install.lock'/'recovery-needed.txt').exists()
+assert not any(e[:2]==('start',502) for e in events if isinstance(e,tuple)),'not started on a copy that needs checking'
+assert len(notes)==1 and '"Other Person"' in notes[0] and 'stays off' in notes[0],notes
+shutil.rmtree(directory)
+`));
+
+test('a directory account that getpwall leaves out is still found by its running background service',()=>python(accountsFixture+String.raw`
+net=base/'net';(net/'Library/LaunchAgents').mkdir(parents=True);net_agent=net/'Library/LaunchAgents/dev.apexdeck.daemon.plist';net_agent.write_text('net agent')
+directory_user=types.SimpleNamespace(pw_uid=503,pw_dir=str(net),pw_name='net',pw_gecos='Network Person')
+u.pwd.getpwuid=lambda uid:directory_user if uid==503 else (_ for _ in ()).throw(KeyError(uid))
+loaded[503]=running[503]=True
+real=u.run
+def listing(*args,required=True):
+ if str(args[0])=='/bin/ps':return subprocess.CompletedProcess(list(map(str,args)),0,'  501 /Library/Apex/apex-daemon\n  503 /Library/Application Support/Apex Deck/bin/apex-daemon\n    0 /sbin/launchd\n','')
+ return real(*args,required=required)
+u.run=listing
+u.os.lstat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_mode=real(p).st_mode,st_uid=503) if pathlib.Path(p)==net_agent else real(p,*a,**k))(u.os.lstat)
+found=u.other_services(501)
+assert 503 in found and found[503][0]=='Network Person',found
+shutil.rmtree(directory)
+`));
+
+test('a background service run by an account nobody can look up refuses the update',()=>python(accountsFixture+String.raw`
+u.pwd.getpwuid=lambda uid:(_ for _ in ()).throw(KeyError(uid))
+real=u.run
+u.run=lambda *args,required=True:subprocess.CompletedProcess(list(map(str,args)),0,'  777 /x/apex-daemon\n','') if str(args[0])=='/bin/ps' else real(*args,required=required)
+try:u.install()
+except RuntimeError as error:assert "can't look up" in str(error),error
+else:raise AssertionError('installed past an unknown account')
+assert events==[],events
+shutil.rmtree(directory)
+`));
+
+test('Deck opened in another account as the update starts says so',()=>python(accountsFixture+String.raw`
+u.app_running=lambda uid=None:uid is None
+try:u.install()
+except RuntimeError as error:assert 'in another account' in str(error) and 'opened again' not in str(error),error
+else:raise AssertionError('installed while Deck was open elsewhere')
+assert (u.TRUSTED/'version').read_text()=='old'
 shutil.rmtree(directory)
 `));
 

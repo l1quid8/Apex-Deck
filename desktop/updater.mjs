@@ -188,9 +188,9 @@ const message = (error) => (error instanceof Error ? error.message : String(erro
 /**
  * The sentence Settings shows after a failed check or download. Chromium's
  * network errors ("net::ERR_NAME_NOT_RESOLVED", or a connection dropped
- * partway) mean GitHub never answered; the next check is CHECK_EVERY_MS away.
+ * partway, even inside another message) mean GitHub never answered; the next check is CHECK_EVERY_MS away.
  */
-const failure = (error) => (message(error).startsWith('net::ERR_')
+const failure = (error) => (message(error).includes('net::ERR_')
   ? 'Couldn’t reach GitHub. Check your internet connection; Deck will try again later.'
   : `Couldn’t update: ${message(error)}`);
 

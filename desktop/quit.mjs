@@ -20,11 +20,9 @@ export class QuitGate {
   request() {
     if (this.confirmed) return null;
     const request = ++this.asked;
+    // letThrough answers false to keep Deck open, such as for unsaved edits; the next quit asks again.
     this.timers.setTimeout(() => {
-      if (!this.confirmed && this.answered < request) {
-        this.confirm();
-        this.letThrough();
-      }
+      if (!this.confirmed && this.answered < request && this.letThrough() !== false) this.confirm();
     }, this.answerTime);
     return request;
   }
@@ -46,6 +44,12 @@ export class QuitGate {
  * window has asked about its own edits, so only another open window's stop it.
  */
 export function editsElsewhere(edits, asking, isOpen) {
-  for (const [id, file] of edits) if (id !== asking && isOpen(id)) return `${file} has unsaved changes in another Deck window. Save or discard them there first.`;
+  const file = unsavedFile(edits, (id) => id !== asking && isOpen(id));
+  return file && `${file} has unsaved changes in another Deck window. Save or discard them there first.`;
+}
+
+/** The first file with unsaved edits in a window `isOpen` accepts, or null. */
+export function unsavedFile(edits, isOpen) {
+  for (const [id, file] of edits) if (isOpen(id)) return file;
   return null;
 }
