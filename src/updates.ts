@@ -93,7 +93,9 @@ export function updateNote(status: UpdateStatus | null, now: number): string {
 export function resultNotice(status: UpdateStatus | null): { text: string; problem: boolean } | null {
   const result = status?.result;
   if (!result) return null;
-  if (result.outcome === "installed") return { text: `Updated to Apex Deck ${result.version}.`, problem: false };
+  if (result.outcome === "installed") return result.message
+    ? { text: `Updated to Apex Deck ${result.version}. ${result.message}`, problem: true }
+    : { text: `Updated to Apex Deck ${result.version}.`, problem: false };
   if (result.outcome === "needs-attention") return { text: `The update to ${result.version} stopped partway and needs checking before another can install: ${result.message ?? ""}`.trim(), problem: true };
   return { text: `The update to ${result.version} didn't install, and nothing was changed: ${result.message ?? ""}`.trim(), problem: true };
 }

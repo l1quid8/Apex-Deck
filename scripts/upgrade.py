@@ -145,10 +145,18 @@ def other_services(uid):
         except FileNotFoundError: st=None
         if st is None or not stat.S_ISREG(st.st_mode) or st.st_uid!=person.pw_uid:
             raise RuntimeError('Apex Deck\'s background service in another account on this Mac isn\'t set up the usual way, so nothing was installed. Sign out of that account, then try the update again.')
-        found[person.pw_uid]=plist
+        found[person.pw_uid]=(person.pw_gecos or person.pw_name,plist)
     return found
 
-def install():
+def start_service(uid,plist):
+    # Why the account's background service didn't start, or None once it has.
+    try: result=run('/bin/launchctl','bootstrap','gui/'+str(uid),plist,required=False)
+    except BaseException as error: return str(error) or error.__class__.__name__
+    return (result.stderr.strip() or 'launchctl exited '+str(result.returncode)) if result.returncode else None
+
+def install(notes=None):
+    # `notes` collects what Deck should still be told when the install itself succeeded or rolled back cleanly.
+    notes=[] if notes is None else notes
     user,agent = preflight(payload=True)
     others=other_services(user.pw_uid)
     domain='gui/'+str(user.pw_uid)
@@ -164,8 +172,8 @@ def install():
     try:
         if agent_loaded: run('/bin/launchctl','bootout',domain+'/dev.apexdeck.daemon')
         stopped=True
-        for uid,plist in others.items():
-            run('/bin/launchctl','bootout','gui/'+str(uid)+'/dev.apexdeck.daemon'); others_stopped.append((uid,plist))
+        for uid,(name,plist) in others.items():
+            run('/bin/launchctl','bootout','gui/'+str(uid)+'/dev.apexdeck.daemon'); others_stopped.append((uid,name,plist))
         for _ in range(30):
             if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode!=0: break
             time.sleep(1)
@@ -251,16 +259,22 @@ def install():
     finally:
         if complete or recovery_ok: lock.rmdir()
         else: (lock/'recovery-needed.txt').write_text('Inspect retained rollback evidence at '+str(backup)+' before any further upgrade.\n')
+        # Each service is started on its own, so one that can't start never keeps another stopped.
         # A successful install leaves the user host stopped for explicit native verification.
-        # A failed attempt restarts only the previously loaded, unchanged LaunchAgent.
-        if not complete and stopped and agent_loaded and recovery_ok and digest(agent)==agent_hash:
-            result=run('/bin/launchctl','bootstrap',domain,agent,required=False)
-            if result.returncode: print('Previous user service could not be restarted: '+result.stderr,file=sys.stderr)
-        # Other accounts' services come back either way, on whichever copy is now in place.
+        # A failed attempt restarts only the previously loaded, unchanged LaunchAgent; Deck reopening starts it otherwise.
+        if not complete and stopped and agent_loaded and recovery_ok:
+            try: unchanged=digest(agent)==agent_hash
+            except BaseException: unchanged=False
+            problem=start_service(user.pw_uid,agent) if unchanged else 'its service file changed or is gone'
+            if problem: print('Previous user service could not be restarted: '+problem,file=sys.stderr)
+        # Other accounts' services come back either way, on whichever copy is now in place. Nobody
+        # there is about to open Deck, so one that won't start is reported along with what brings it back.
         if complete or recovery_ok:
-            for uid,plist in others_stopped:
-                result=run('/bin/launchctl','bootstrap','gui/'+str(uid),plist,required=False)
-                if result.returncode: print('The background service for account '+str(uid)+' could not be restarted: '+result.stderr,file=sys.stderr)
+            for uid,name,plist in others_stopped:
+                problem=start_service(uid,plist)
+                if not problem: continue
+                print('The background service for account '+str(uid)+' could not be restarted: '+problem,file=sys.stderr)
+                notes.append('Apex Deck\'s background service in the account "'+name+'" didn\'t start again, so agents and phone connections there stay off until Apex Deck is opened in that account.')
 
 # ---------------------------------------------------------------- update job
 # "Restart to update": the broker, which runs nothing itself, only drops a
@@ -442,6 +456,7 @@ def auto(request_path):
     job=Path(request_path).parent
     if job.parent!=JOBS or job.name!=request['id']: raise RuntimeError('Update request is outside its job folder')
     result={'id':request['id'],'version':request['version'],'from':None,'startedAt':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+    notes=[]
     try:
         if os.stat('/dev/console').st_uid!=request['uid']: raise RuntimeError('The person who asked for this update is not the one signed in')
         result['from']=bundle_info(TRUSTED).get('CFBundleShortVersionString')
@@ -451,12 +466,13 @@ def auto(request_path):
         staged=stage(job,request)
         use_manifest(identify(staged,request),staged)
         wait_for_exit(request['uid'])
-        install()
+        install(notes)
         result['outcome']='installed'
+        if notes: result['message']=' '.join(notes)
     except BaseException as error:
         attention=(UPGRADES/'install.lock'/'recovery-needed.txt').exists()
         result['outcome']='needs-attention' if attention else 'failed'
-        result['message']=str(error) or error.__class__.__name__
+        result['message']=' '.join([str(error) or error.__class__.__name__,*notes])
         print('Apex Deck update stopped: '+result['message'],file=sys.stderr,flush=True)
     result['finishedAt']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
     def clear():

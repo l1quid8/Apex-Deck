@@ -139,14 +139,14 @@ for name in u.AUTHORITY:(u.ROOT/name).write_bytes(('old-'+name).encode())
 agent=base/'agent.plist';agent.write_text('requester agent');u.preflight=lambda payload=False:(types.SimpleNamespace(pw_uid=501),agent)
 other=base/'other';(other/'Library/LaunchAgents').mkdir(parents=True)
 other_agent=other/'Library/LaunchAgents/dev.apexdeck.daemon.plist';other_agent.write_text('other agent')
-accounts=[types.SimpleNamespace(pw_uid=uid,pw_dir=str(home),pw_name=name) for uid,home,name in ((0,'/var/root','root'),(-2,'/var/empty','nobody'),(501,base,'person'),(502,other,'other'))]
+accounts=[types.SimpleNamespace(pw_uid=uid,pw_dir=str(home),pw_name=name,pw_gecos=full) for uid,home,name,full in ((0,'/var/root','root','System Administrator'),(-2,'/var/empty','nobody','Unprivileged User'),(501,base,'person','Person'),(502,other,'other','Other Person'))]
 u.pwd.getpwall=lambda:accounts
 u.os.lstat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_mode=real(p).st_mode,st_uid=502) if pathlib.Path(p)==other_agent else real(p,*a,**k))(u.os.lstat)
 u.protected=lambda p:None;u.validate_bundle=lambda p:None;u.app_running=lambda uid=None:False
 u.wait_for_broker=lambda pid,socket:222;u.install_update_service=lambda:None
 u.Path=lambda p:pathlib.Path(base/'Applications') if str(p)=='/Applications' else pathlib.Path(p)
 u.time.sleep=lambda s:None
-loaded={501:True,502:True};running={501:True,502:True};stray=[False];fail=[]
+loaded={501:True,502:True};running={501:True,502:True};stray=[False];fail=[];refuse_start=set()
 events=[]
 def fake_run(*args,required=True):
  args=list(map(str,args));command=args[0]
@@ -159,6 +159,7 @@ def fake_run(*args,required=True):
    uid=int(target.split('/')[1])
    if verb=='print':return subprocess.CompletedProcess(args,0 if loaded.get(uid) else 113,'','')
    if verb=='bootout':loaded[uid]=running[uid]=False;events.append(('stop',uid))
+   if verb=='bootstrap' and uid in refuse_start:events.append(('refused',uid));return subprocess.CompletedProcess(args,5,'','Bootstrap failed: 5: Input/output error')
    if verb=='bootstrap':loaded[uid]=running[uid]=True;events.append(('start',uid,args[3],(u.TRUSTED/'version').read_text()))
    return subprocess.CompletedProcess(args,0,'','')
   if verb=='print':return subprocess.CompletedProcess(args,0,'state = running\npid = 111\n','')
@@ -212,5 +213,39 @@ except RuntimeError as error:assert "couldn't stop" in str(error) and 'nothing w
 else:raise AssertionError('installed over a running service')
 assert (u.TRUSTED/'version').read_text()=='old'
 assert ('start',502,str(other_agent),'old') in events,'the stopped services are started again'
+shutil.rmtree(directory)
+`));
+
+test('a rollback whose own service file vanished still starts the other account’s background service again',()=>python(accountsFixture+String.raw`
+# The requester's plist disappears while the update is staged, which stops the install.
+u.validate_bundle=lambda p:agent.unlink() if 'upgrade-' in str(p) else None
+try:u.install()
+except FileNotFoundError:pass
+else:raise AssertionError('installed after the service file vanished')
+assert (u.TRUSTED/'version').read_text()=='old'
+assert ('start',502,str(other_agent),'old') in events,events
+assert not any(e[:2]==('start',501) for e in events if isinstance(e,tuple)),'no plist to start the requester’s from'
+assert not (u.UPGRADES/'install.lock').exists()
+shutil.rmtree(directory)
+`));
+
+test('an account whose background service won’t start again is named, with what brings it back',()=>python(accountsFixture+String.raw`
+refuse_start.add(502)
+notes=[]
+u.install(notes)
+assert (u.TRUSTED/'version').read_text()=='new'
+assert ('refused',502) in events and not loaded[502],events
+assert len(notes)==1 and '"Other Person"' in notes[0] and "didn't start again" in notes[0] and 'opened in that account' in notes[0],notes
+shutil.rmtree(directory)
+`));
+
+test('a clean rollback also names an account whose background service won’t start again',()=>python(accountsFixture+String.raw`
+refuse_start.add(502);fail.append('injected broker failure')
+notes=[]
+try:u.install(notes)
+except RuntimeError as error:assert 'injected' in str(error),error
+else:raise AssertionError('failed installation reported success')
+assert (u.TRUSTED/'version').read_text()=='old' and ('start',501,str(agent),'old') in events,events
+assert len(notes)==1 and '"Other Person"' in notes[0],notes
 shutil.rmtree(directory)
 `));

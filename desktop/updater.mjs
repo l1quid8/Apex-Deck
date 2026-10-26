@@ -269,8 +269,9 @@ export class Updater {
     try { found = JSON.parse(this.files.readFileSync(this.resultFile, 'utf8')); } catch { /* not written yet */ }
     let result = null;
     if (found?.id === asked.id) {
+      // An install can succeed and still have something to say, such as another account's service that didn't start again.
       result = found.outcome === 'installed' && this.current === asked.version
-        ? { outcome: 'installed', version: asked.version }
+        ? { outcome: 'installed', version: asked.version, ...(found.message ? { message: String(found.message).slice(0, 500) } : {}) }
         : { outcome: found.outcome === 'needs-attention' ? 'needs-attention' : 'failed', version: asked.version, message: String(found.message ?? 'The update did not install.').slice(0, 500) };
     } else if (this.current === asked.version) {
       result = { outcome: 'installed', version: asked.version };
