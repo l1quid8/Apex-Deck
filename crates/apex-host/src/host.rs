@@ -1463,7 +1463,6 @@ impl Host {
         self.promoted_reply(&source, meta.promoted_to.as_deref().unwrap_or(&target))
     }
 
-    /// The new Work thread and the chat that now points at it.
     /// The folder check behind "Move to a Work thread" on a machine with no
     /// signed receipt (Linux): a phone may pick a folder, but only inside one
     /// this machine's own user allowed with `apex-daemon allow-root`. Read from
@@ -1488,6 +1487,7 @@ impl Host {
         Ok(true)
     }
 
+    /// The new Work thread and the chat that now points at it.
     fn promoted_reply(&self, chat: &str, work: &str) -> Result<serde_json::Value, String> {
         let room = self
             .store
