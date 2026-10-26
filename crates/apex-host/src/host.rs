@@ -744,20 +744,214 @@ impl Host {
         self.room_open(id, participants, options, cwd, false)
     }
 
+    /// Talk-only chat profiles and runnable agents on this machine, with API key env names redacted.
+    pub fn chat_profiles(&self) -> Result<serde_json::Value, String> {
+        let path = agents::login_path();
+        let detected = agents::detect();
+        let mut raw_profiles: Vec<ParticipantConfig> = self
+            .session()?
+            .and_then(|s| s.profiles)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        if raw_profiles.is_empty() {
+            for info in &detected {
+                if !info.found {
+                    continue;
+                }
+                let tool = match info.key.as_str() {
+                    "claude" | "claude_code" => Some(AgentTool::ClaudeCode),
+                    "codex" => Some(AgentTool::Codex),
+                    "gemini" => Some(AgentTool::Gemini),
+                    "grok" => Some(AgentTool::Grok),
+                    "muse" => Some(AgentTool::Muse),
+                    _ => None,
+                };
+                if let Some(tool) = tool {
+                    raw_profiles.push(ParticipantConfig {
+                        id: ParticipantId::new(info.key.clone()),
+                        display_name: info.label.clone(),
+                        persona: String::new(),
+                        backend: apex_core::Backend::Agent { tool, model: None },
+                        effort: None,
+                        speed: None,
+                        access: Access::Read,
+                        appearance: None,
+                        media: None,
+                        voice: None,
+                    });
+                }
+            }
+        }
+        let profiles: Vec<serde_json::Value> = raw_profiles
+            .into_iter()
+            .map(|mut p| {
+                let check = apex_adapters::chat_profile_ok(&p, path.as_deref());
+                p.access = Access::Read;
+                p.media = None;
+                if let apex_core::Backend::OpenAiCompatible { ref mut api_key_env, .. } = p.backend {
+                    *api_key_env = None;
+                }
+                match check {
+                    Ok(()) => serde_json::json!({ "profile": p, "chatOk": true, "reason": serde_json::Value::Null }),
+                    Err(reason) => serde_json::json!({ "profile": p, "chatOk": false, "reason": reason }),
+                }
+            })
+            .collect();
+        let backends: Vec<serde_json::Value> = [
+            AgentTool::ClaudeCode,
+            AgentTool::Codex,
+            AgentTool::Gemini,
+            AgentTool::Grok,
+            AgentTool::Muse,
+        ]
+        .into_iter()
+        .map(|tool| match apex_adapters::chat_tool_ok(tool, path.as_deref()) {
+            Ok(()) => serde_json::json!({ "tool": tool, "chatOk": true, "reason": serde_json::Value::Null }),
+            Err(reason) => serde_json::json!({ "tool": tool, "chatOk": false, "reason": reason }),
+        })
+        .collect();
+        let agents_list: Vec<agents::AgentInfo> = detected
+            .into_iter()
+            .map(|mut info| {
+                if info.found {
+                    let tool = match info.key.as_str() {
+                        "claude" | "claude_code" => Some(AgentTool::ClaudeCode),
+                        "codex" => Some(AgentTool::Codex),
+                        "gemini" => Some(AgentTool::Gemini),
+                        "grok" => Some(AgentTool::Grok),
+                        "muse" => Some(AgentTool::Muse),
+                        _ => None,
+                    };
+                    if let Some(tool) = tool {
+                        if apex_adapters::chat_tool_ok(tool, path.as_deref()).is_err() {
+                            info.found = false;
+                        }
+                    }
+                }
+                info
+            })
+            .collect();
+        Ok(serde_json::json!({ "profiles": profiles, "backends": backends, "agents": agents_list }))
+    }
+
+    /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
+    pub fn chat_list(&self) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({ "rooms": self.store.chat_list()? }))
+    }
+
+    /// Create or reopen talk-only chat room `id`.
+    pub fn chat_create(
+        self: &Arc<Self>,
+        id: String,
+        title: Option<String>,
+        mut participants: Vec<ParticipantConfig>,
+        options: RoomOptions,
+    ) -> Result<RoomSnapshot, String> {
+        let path = agents::login_path();
+        for p in &mut participants {
+            apex_adapters::chat_profile_ok(p, path.as_deref())?;
+            p.access = Access::Read;
+            p.media = None;
+        }
+        let snapshot = self.room_open_with_kind(
+            id.clone(),
+            apex_core::RoomKind::Chat,
+            participants,
+            options,
+            None,
+            false,
+        )?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.store.update_chat_meta(&id, |meta| {
+            if let Some(t) = title.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                meta.title = t.to_string();
+            } else if meta.title.trim().is_empty() {
+                meta.title = "New chat".to_string();
+            }
+            if meta.updated_at == 0 {
+                meta.updated_at = now;
+            }
+        })?;
+        Ok(snapshot)
+    }
+
+    /// Update catalog metadata for a chat room or promoted work room.
+    pub fn chat_update_meta(
+        &self,
+        id: String,
+        title: Option<String>,
+        archived: Option<bool>,
+        moved_to: Option<Option<crate::storage::ChatMovedTo>>,
+    ) -> Result<crate::storage::ChatRoomMeta, String> {
+        if self.store.room(&id)?.is_none() && !self.rooms.lock().unwrap().contains_key(&id) {
+            return Err(format!("no group chat with id {id}"));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.store.update_chat_meta(&id, |meta| {
+            if let Some(t) = title {
+                let trimmed = t.trim();
+                meta.title = if trimmed.is_empty() { "New chat".to_string() } else { trimmed.to_string() };
+            }
+            if let Some(a) = archived {
+                meta.archived = a;
+            }
+            if let Some(m) = moved_to {
+                meta.moved_to = m;
+            }
+            meta.updated_at = meta.updated_at.max(now);
+        })
+    }
+
     /// A read may attach to saved authority, but cannot create a new manifest.
     fn room_open(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>, saved_only: bool) -> Result<RoomSnapshot, String> {
+        self.room_open_with_kind(id, apex_core::RoomKind::Work, participants, options, cwd, saved_only)
+    }
+
+    fn room_open_with_kind(
+        self: &Arc<Self>,
+        id: String,
+        default_kind: apex_core::RoomKind,
+        participants: Vec<ParticipantConfig>,
+        options: RoomOptions,
+        cwd: Option<String>,
+        saved_only: bool,
+    ) -> Result<RoomSnapshot, String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some_and(|entry| entry.is_tombstoned()) { return Err("This execution thread was deleted.".into()); }
         if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
+            let existing = handle.checkpoint.lock().unwrap().snapshot.clone();
+            if default_kind.is_chat() && !existing.kind.is_chat() {
+                return Err("A project thread with that id already exists.".into());
+            }
             // Already open, as when a window that reloaded opens its chats
             // again: keep the room, and any turn it's running, as it is.
-            return Ok(handle.checkpoint.lock().unwrap().snapshot.clone());
+            return Ok(existing);
         }
         let mut saved = self.store.room(&id)?;
         if saved_only && saved.is_none() { return Err(format!("no group chat with id {id}")); }
+        let kind = saved.as_ref().map(|s| s.snapshot.kind).unwrap_or(default_kind);
+        if default_kind.is_chat() && !kind.is_chat() {
+            return Err("A project thread with that id already exists.".into());
+        }
         let legacy = self.store.room_legacy(&id)?;
         if let Some(saved) = saved.as_mut() {
-            if !saved.mounts.is_empty() && saved.cwd.as_ref().is_some_and(|cwd| !Path::new(cwd).is_dir()) {
+            if kind.is_chat() {
+                saved.cwd = None;
+                saved.mounts.clear();
+                saved.snapshot.plan = false;
+                for p in &mut saved.snapshot.participants {
+                    p.access = Access::Read;
+                    p.media = None;
+                }
+            } else if !saved.mounts.is_empty() && saved.cwd.as_ref().is_some_and(|cwd| !Path::new(cwd).is_dir()) {
                 let fallback = saved.mounts.iter().map(|mount| &mount.from).find(|path| Path::new(path).is_dir())
                     .cloned().ok_or("The mounted worktree and original project folder are missing.")?;
                 saved.mounts.push(crate::storage::MountBoundary {change_count:Some(saved.snapshot.changes.len()), seq:saved.snapshot.transcript.len(), from:saved.cwd.clone().unwrap(), to:fallback.clone(), note:Some("The mounted worktree is missing. Now working in the original project folder.".into())});
@@ -765,20 +959,28 @@ impl Host {
                 self.snapshots.delete(&id);
             }
         }
-        let cwd = saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd);
+        let cwd = if kind.is_chat() {
+            None
+        } else {
+            saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd)
+        };
         self.recover_worker_cleanup(&id)?;
-        let cargo_target_dir = self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from));
+        let cargo_target_dir = if kind.is_chat() {
+            None
+        } else {
+            self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from))
+        };
         let context = BuildContext {
-            codex_hook: if cfg!(unix) { std::env::current_exe().ok() } else { None },
+            codex_hook: if !kind.is_chat() && cfg!(unix) { std::env::current_exe().ok() } else { None },
 
             cwd: cwd.filter(|c| !c.is_empty()).map(PathBuf::from),
             path: agents::login_path(),
             temp: thread_temp_dir(&id).ok(),
-            media_dir: self.attachment_dir(&id).ok(),
+            media_dir: if kind.is_chat() { None } else { self.attachment_dir(&id).ok() },
             attachment_roots: vec![self.attachment_dir(&id)?.canonicalize().map_err(|e| format!("Could not resolve the attachments folder: {e}"))?],
             process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
             cargo_target_dir,
-            phone: if cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
+            phone: if !kind.is_chat() && cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
         };
         let mut seen: Vec<&ParticipantId> = Vec::new();
         for config in &participants {
@@ -787,13 +989,24 @@ impl Host {
             }
             seen.push(&config.id);
         }
-        let participants = saved.as_ref().map(|s| s.snapshot.participants.clone()).unwrap_or(participants);
+        let mut participants = saved.as_ref().map(|s| s.snapshot.participants.clone()).unwrap_or(participants);
+        if kind.is_chat() {
+            for p in &mut participants {
+                apex_adapters::chat_profile_ok(p, context.path.as_deref())?;
+                p.access = Access::Read;
+                p.media = None;
+            }
+        }
         self.read_plans(&id, &participants, &context);
-        let roster = participants.into_iter().map(|p| apex_adapters::build(p, &context)).collect();
-        let mounts = saved.as_ref().map(|s| s.mounts.clone()).unwrap_or_default();
+        let roster = participants.into_iter().map(|p| apex_adapters::participant_for_room(kind, p, &context)).collect();
+        let mounts = if kind.is_chat() {
+            Vec::new()
+        } else {
+            saved.as_ref().map(|s| s.mounts.clone()).unwrap_or_default()
+        };
         let room = match saved {
             Some(saved) => Room::restore(roster, saved.snapshot),
-            None => Room::new(roster, options),
+            None => Room::new(roster, options).with_kind(kind),
         };
         let snapshot = room.snapshot();
         let deleted = Arc::<AtomicBool>::default();
@@ -1052,6 +1265,9 @@ impl Host {
     /// with; the next one follows the switch.
     pub fn room_set_plan(&self, id: String, on: bool) -> Result<(), String> {
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Talk-only chat rooms do not use Plan mode.".into());
+        }
         if self.store_plan(&id, &handle, on)? {
             self.room_event(&id, RoomEvent::PlanChanged { on });
         }
@@ -1115,6 +1331,9 @@ impl Host {
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
         self.ensure_task_read_access(&id, &participant)?;
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Use chat_add_participant for talk-only chat rooms.".into());
+        }
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
@@ -1127,9 +1346,45 @@ impl Host {
         if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
             return Err(why);
         }
-        if room.add_participant(apex_adapters::build(participant, &context)) {
+        let built = apex_adapters::participant_for_room(room.kind(), participant, &context);
+        if room.add_participant(built) {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
             self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
+        } else {
+            Err(format!("a participant with the id `{name}` is already in this chat"))
+        }
+    }
+
+    pub async fn chat_add_participant(self: &Arc<Self>, id: String, mut participant: ParticipantConfig) -> Result<(), String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) {
+            self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
+        }
+        let handle = self.handle(&id)?;
+        if !handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("This thread is a project room; use room_add_participant.".into());
+        }
+        let _action = handle.lock_checkout().await?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.require_idle(&id)?;
+        let context = self.room_context(&id)?;
+        apex_adapters::chat_profile_ok(&participant, context.path.as_deref())?;
+        participant.access = Access::Read;
+        participant.media = None;
+        let name = participant.id.clone();
+        self.read_plans(&id, std::slice::from_ref(&participant), &context);
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        self.require_idle(&id)?;
+        if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
+            return Err(why);
+        }
+        let built = apex_adapters::participant_for_room(apex_core::RoomKind::Chat, participant, &context);
+        if room.add_participant(built) {
+            self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
+            self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })?;
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let _ = self.store.update_chat_meta(&id, |meta| { meta.updated_at = meta.updated_at.max(now); });
+            Ok(())
         } else {
             Err(format!("a participant with the id `{name}` is already in this chat"))
         }
@@ -1145,6 +1400,9 @@ impl Host {
     /// can omit it and retain the full-replacement behavior.
     pub async fn room_update_participant_from(self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>) -> Result<ParticipantConfig, String> {
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Use chat_update_participant for talk-only chat rooms.".into());
+        }
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         let name = participant.id.clone();
@@ -1163,7 +1421,7 @@ impl Host {
             if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
         }
         self.ensure_task_read_access(&id, &next)?;
-        let replacement = apex_adapters::build(next.clone(), &context);
+        let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
                 return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
@@ -1177,8 +1435,54 @@ impl Host {
         Ok(next)
     }
 
+    pub async fn chat_update_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>) -> Result<ParticipantConfig, String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) {
+            self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
+        }
+        let handle = self.handle(&id)?;
+        if !handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("This thread is a project room; use room_update_participant.".into());
+        }
+        let _action = handle.lock_checkout().await?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        let name = participant.id.clone();
+        let context = self.room_context(&id)?;
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        let current = room.configs().into_iter().find(|p| p.id == name)
+            .ok_or_else(|| format!("no participant with the id `{name}` is in this chat"))?;
+        let mut next = if let Some(base) = base {
+            if base.id != name { return Err("settings base belongs to another participant".into()); }
+            merge_participant(&current, &base, &participant)?
+        } else { participant };
+        if next.access != Access::Read {
+            return Err("Talk-only chat rooms are locked to read-only access. Move to a Work thread to grant file or command access.".into());
+        }
+        next.access = Access::Read;
+        next.media = None;
+        apex_adapters::chat_profile_ok(&next, context.path.as_deref())?;
+        if next.display_name != current.display_name {
+            if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
+        }
+        let replacement = apex_adapters::participant_for_room(apex_core::RoomKind::Chat, next.clone(), &context);
+        if handle.runtime.busy() {
+            if !room.replace_turn_settings(replacement) {
+                return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
+            }
+        } else { room.replace_participant(replacement); }
+        self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
+        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantChanged { participant: next.clone() })?;
+        self.read_plans(&id, std::slice::from_ref(&next), &context);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.store.update_chat_meta(&id, |meta| { meta.updated_at = meta.updated_at.max(now); });
+        Ok(next)
+    }
+
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Use chat_remove_participant for talk-only chat rooms.".into());
+        }
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
@@ -1188,6 +1492,28 @@ impl Host {
         room.remove_participant(&participant);
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
         self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
+    }
+
+    pub async fn chat_remove_participant(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) {
+            self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
+        }
+        let handle = self.handle(&id)?;
+        if !handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("This thread is a project room; use room_remove_participant.".into());
+        }
+        let _action = handle.lock_checkout().await?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.require_idle(&id)?;
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        self.require_idle(&id)?;
+        room.remove_participant(&participant);
+        self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
+        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.store.update_chat_meta(&id, |meta| { meta.updated_at = meta.updated_at.max(now); });
+        Ok(())
     }
 
     /// Empty a chat's transcript, keeping its participants and settings.
@@ -1305,9 +1631,14 @@ impl Host {
             self.require_idle(&id)?;
             let mut config = room.summarizer().ok_or("add a participant before compacting")?;
             // Writing a summary needs no edits or commands, and an API bot
-            // needs no tools at all for it.
+            // needs no tools at all for it. Talk-only chat rooms still run
+            // inside their isolated empty directory and never grant tools.
             config.access = Access::Read;
-            let summarizer = apex_adapters::build_without_tools(config, &context);
+            let summarizer = if room.kind().is_chat() {
+                apex_adapters::participant_for_room(apex_core::RoomKind::Chat, config, &context)
+            } else {
+                apex_adapters::build_without_tools(config, &context)
+            };
             room.compact(summarizer.as_ref(), &|event| self.room_event(&id, event)).await?;
         }
         self.save_room(&id).await
@@ -1904,6 +2235,9 @@ impl Host {
             return Err("An assistant worker chat cannot mount another worktree.".into());
         }
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Talk-only chat rooms have no project folder. Use Start work in folder to promote this chat.".into());
+        }
         let _action = handle.checkout_action.try_write().map_err(|_| "room-busy: Wait for the current checkout action to finish.")?;
         let from = handle.context.cwd.as_ref().ok_or("This chat has no project folder.")?;
         let target = PathBuf::from(&cwd).canonicalize().map_err(|_| "That worktree folder is missing.")?;
@@ -1948,6 +2282,12 @@ impl Host {
     /// closed, so a failed write leaves it whole and open. Artifacts stay.
     pub fn room_import(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: bool) -> Result<(), String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if snapshot.kind.is_chat() {
+            return Err("Use chat_import for talk-only chat rooms.".into());
+        }
+        if self.store.room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) {
+            return Err("A talk-only chat room cannot be replaced by room_import.".into());
+        }
         if let Some(entry) = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())? {
             if entry.is_tombstoned() { return Err("This assistant chat was deleted and cannot be restored from a stale session.".into()); }
             if replace { return Err("An assistant worker chat cannot be moved or replaced while its task owns it.".into()); }
@@ -2074,7 +2414,35 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         RoomEvent::Usage { id, input_tokens, output_tokens, cost_micros, cost_estimated } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add_turn(*input_tokens, *output_tokens, *cost_micros, *cost_estimated),
         _ => {}
     }
-    store.save_room(id, &checkpoint)
+    store.save_room(id, &checkpoint)?;
+    if let RoomEvent::MessageAdded { message } = event {
+        if checkpoint.snapshot.kind.is_chat() {
+            let now = message.at.unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0)
+            });
+            let _ = store.update_chat_meta(id, |meta| {
+                meta.updated_at = meta.updated_at.max(now);
+                if (meta.title.trim().is_empty() || meta.title == "New chat")
+                    && matches!(message.speaker, apex_core::Speaker::Human)
+                {
+                    let first_line = message
+                        .text
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| !line.is_empty() && !line.starts_with("Attached image: "))
+                        .unwrap_or("");
+                    if !first_line.is_empty() {
+                        let snippet: String = first_line.chars().take(60).collect();
+                        meta.title = snippet;
+                    }
+                }
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
@@ -3415,6 +3783,126 @@ mod host_tests {
         host.settings_save(json!({ "disabledProviders": ["venice"], "confirmSteer": false })).unwrap();
         assert_eq!(host.settings_load().unwrap(), Some(json!({ "disabledProviders": ["venice"], "confirmSteer": false })));
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn chat_rooms_enforce_talk_only_and_support_chat_commands() {
+        use serde_json::json;
+        let (host, runtime, data) = host("chat-rooms-task1");
+        host.session_save(json!({
+            "version": 1,
+            "profiles": [
+                {
+                    "id": "api-bot",
+                    "display_name": "API Bot",
+                    "persona": "",
+                    "access": "full",
+                    "backend": { "kind": "open_ai_compatible", "base_url": "https://api.example.com/v1", "model": "gpt-4o", "api_key_env": "SECRET_KEY" }
+                },
+                {
+                    "id": "cli-bot",
+                    "display_name": "CLI Bot",
+                    "persona": "",
+                    "access": "full",
+                    "backend": { "kind": "cli", "program": "echo", "args": [] }
+                },
+                {
+                    "id": "media-bot",
+                    "display_name": "Media Bot",
+                    "persona": "",
+                    "access": "read",
+                    "media": { "aspect_ratio": "16:9" },
+                    "backend": { "kind": "open_ai_compatible", "base_url": "https://api.example.com/v1", "model": "sora" }
+                }
+            ]
+        })).unwrap();
+
+        let profiles_res = host.chat_profiles().unwrap();
+        let profiles = profiles_res["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(profiles[0]["profile"]["id"], "api-bot");
+        assert_eq!(profiles[0]["chatOk"], true);
+        assert_eq!(profiles[0]["profile"]["access"], "read");
+        assert!(profiles[0]["profile"]["backend"].get("api_key_env").is_none() || profiles[0]["profile"]["backend"]["api_key_env"].is_null());
+        assert_eq!(profiles[1]["profile"]["id"], "cli-bot");
+        assert_eq!(profiles[1]["chatOk"], false);
+        assert!(profiles[1]["reason"].as_str().unwrap().contains("tool-free"));
+        assert_eq!(profiles[2]["profile"]["id"], "media-bot");
+        assert_eq!(profiles[2]["chatOk"], false);
+
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["hello from chat"]).config().clone();
+        bot.access = Access::Full;
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["hello from chat".into()] };
+
+        let snapshot = host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("First chat".into()), vec![bot.clone()], RoomOptions::default()).unwrap();
+        assert_eq!(snapshot.kind, apex_core::RoomKind::Chat);
+        assert_eq!(snapshot.participants.len(), 1);
+        assert_eq!(snapshot.participants[0].access, Access::Read);
+
+        let saved = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert_eq!(saved.snapshot.kind, apex_core::RoomKind::Chat);
+        assert_eq!(saved.cwd, None);
+        assert!(!saved.snapshot.plan);
+        assert_eq!(saved.snapshot.participants[0].access, Access::Read);
+
+        // Talk-only refusals on room_* mutations that could undo talk-only invariants
+        assert!(host.room_set_plan("11111111-1111-1111-1111-111111111111".into(), true).is_err());
+        assert!(host.room_mount("11111111-1111-1111-1111-111111111111".into(), data.to_string_lossy().into_owned()).is_err());
+        assert!(runtime.block_on(host.room_add_participant("11111111-1111-1111-1111-111111111111".into(), bot.clone())).is_err());
+        assert!(runtime.block_on(host.room_update_participant_from("11111111-1111-1111-1111-111111111111".into(), bot.clone(), None)).is_err());
+        assert!(runtime.block_on(host.room_remove_participant("11111111-1111-1111-1111-111111111111".into(), ParticipantId::new("bot"))).is_err());
+        assert!(host.room_import("11111111-1111-1111-1111-111111111111".into(), saved.snapshot.clone(), None, true).is_err());
+
+        // Converting Chat -> Work in place via Store::save_room is refused
+        let mut forged = saved.clone();
+        forged.snapshot.kind = apex_core::RoomKind::Work;
+        assert!(host.store.save_room("11111111-1111-1111-1111-111111111111", &forged).is_err());
+
+        // chat_add_participant, chat_update_participant, chat_remove_participant clamp/refuse non-read access
+        let mut bot2 = apex_core::testing::ScriptedParticipant::new("bot2", &["hi"]).config().clone();
+        bot2.access = Access::Edits;
+        bot2.backend = apex_core::Backend::Scripted { lines: vec!["hi".into()] };
+        runtime.block_on(host.chat_add_participant("11111111-1111-1111-1111-111111111111".into(), bot2.clone())).unwrap();
+        let after_add = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert_eq!(after_add.snapshot.participants.len(), 2);
+        assert!(after_add.snapshot.participants.iter().all(|p| p.access == Access::Read && p.media.is_none()));
+
+        bot2.persona = "Updated role".into();
+        bot2.access = Access::Full;
+        assert!(runtime.block_on(host.chat_update_participant("11111111-1111-1111-1111-111111111111".into(), bot2.clone(), None)).is_err());
+        bot2.access = Access::Read;
+        runtime.block_on(host.chat_update_participant("11111111-1111-1111-1111-111111111111".into(), bot2.clone(), None)).unwrap();
+        let after_update = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        let updated_bot2 = after_update.snapshot.participants.iter().find(|p| p.id.as_str() == "bot2").unwrap();
+        assert_eq!(updated_bot2.persona, "Updated role");
+        assert_eq!(updated_bot2.access, Access::Read);
+
+        runtime.block_on(host.chat_remove_participant("11111111-1111-1111-1111-111111111111".into(), ParticipantId::new("bot2"))).unwrap();
+        let after_remove = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert_eq!(after_remove.snapshot.participants.len(), 1);
+
+        // chat_update_meta updates title and archived
+        let updated_meta = host.chat_update_meta("11111111-1111-1111-1111-111111111111".into(), Some("Renamed chat".into()), Some(true), None).unwrap();
+        assert_eq!(updated_meta.title, "Renamed chat");
+        assert!(updated_meta.archived);
+
+        let listed = host.chat_list().unwrap();
+        let rooms = listed["rooms"].as_array().unwrap();
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0]["title"], "Renamed chat");
+        assert_eq!(rooms[0]["archived"], true);
+
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn host_never_calls_apex_adapters_build_directly_for_room_participants() {
+        let source = include_str!("host.rs");
+        let code_only = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            !code_only.contains("apex_adapters::build("),
+            "host.rs must build room participants through apex_adapters::participant_for_room"
+        );
     }
 }
 

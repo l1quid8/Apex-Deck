@@ -252,22 +252,32 @@ pub fn filter_session(threads: &Threads, session: Value) -> Value {
 /// allowed threads, with cross-thread promotion references redacted when outside scope.
 pub fn filter_chat_list(threads: &Threads, list: Value) -> Value {
     let Threads::Only(allowed) = threads else { return list };
-    let Value::Array(items) = list else { return list };
-    let kept = items
-        .into_iter()
-        .filter(|item| item["id"].as_str().is_some_and(|id| allowed.iter().any(|a| a == id)))
-        .map(|mut item| {
-            if let Value::Object(ref mut obj) = item {
-                for field in ["promotedFrom", "promotedTo"] {
-                    if obj.get(field).and_then(Value::as_str).is_some_and(|other| !allowed.iter().any(|a| a == other)) {
-                        obj.insert(field.into(), Value::Null);
+    fn filter_array(allowed: &[String], items: Vec<Value>) -> Vec<Value> {
+        items
+            .into_iter()
+            .filter(|item| item["id"].as_str().is_some_and(|id| allowed.iter().any(|a| a == id)))
+            .map(|mut item| {
+                if let Value::Object(ref mut obj) = item {
+                    for field in ["promotedFrom", "promotedTo"] {
+                        if obj.get(field).and_then(Value::as_str).is_some_and(|other| !allowed.iter().any(|a| a == other)) {
+                            obj.insert(field.into(), Value::Null);
+                        }
                     }
                 }
+                item
+            })
+            .collect()
+    }
+    match list {
+        Value::Array(items) => Value::Array(filter_array(allowed, items)),
+        Value::Object(mut obj) => {
+            if let Some(Value::Array(items)) = obj.remove("rooms") {
+                obj.insert("rooms".into(), Value::Array(filter_array(allowed, items)));
             }
-            item
-        })
-        .collect();
-    Value::Array(kept)
+            Value::Object(obj)
+        }
+        other => other,
+    }
 }
 
 /// Access required for daemon-owned voice commands.
@@ -611,5 +621,41 @@ mod tests {
         }
         assert_eq!(filter_session(&Threads::ALL, session.clone()), session);
         assert_eq!(filter_session(&Threads::Only(vec![]), Value::Null), Value::Null);
+    }
+
+    #[test]
+    fn a_limited_device_sees_only_its_threads_in_chat_list() {
+        let list = json!([
+            {
+                "id": "mine",
+                "kind": "chat",
+                "title": "My chat",
+                "promotedFrom": "secret-source",
+                "promotedTo": "also-mine"
+            },
+            {
+                "id": "theirs",
+                "kind": "chat",
+                "title": "Secret chat",
+                "promotedFrom": null,
+                "promotedTo": null
+            }
+        ]);
+        let filtered = filter_chat_list(&Threads::Only(vec!["mine".into(), "also-mine".into()]), list.clone());
+        assert_eq!(filtered, json!([
+            {
+                "id": "mine",
+                "kind": "chat",
+                "title": "My chat",
+                "promotedFrom": null,
+                "promotedTo": "also-mine"
+            }
+        ]));
+        assert_eq!(filter_chat_list(&Threads::ALL, list.clone()), list);
+        let wrapped = json!({ "rooms": list });
+        assert_eq!(
+            filter_chat_list(&Threads::Only(vec!["mine".into(), "also-mine".into()]), wrapped),
+            json!({ "rooms": filtered })
+        );
     }
 }
