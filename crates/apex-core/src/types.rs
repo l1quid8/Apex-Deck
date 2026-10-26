@@ -187,6 +187,9 @@ pub struct Message {
     pub client_message_id: Option<String>,
     #[serde(default, rename = "replyToClientMessageId", alias = "reply_to_client_message_id", skip_serializing_if = "Option::is_none")]
     pub reply_to_client_message_id: Option<String>,
+    /// Display label for a reply merged after the chat moved to another host.
+    #[serde(default, rename = "lateReplyFrom", skip_serializing_if = "Option::is_none")]
+    pub late_reply_from: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<String>,
     /// Position in the transcript, starting at 0.

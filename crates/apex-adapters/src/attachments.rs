@@ -192,7 +192,7 @@ mod tests {
         let roots = vec![own.canonicalize().unwrap()];
         for speaker in [apex_core::Speaker::Human, apex_core::Speaker::Bot(apex_core::ParticipantId::new("image-bot"))] {
             for folder in [&own, &sibling, &library] {
-                let request = TurnRequest { system: String::new(), turns: vec![], unseen: vec![apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+                let request = TurnRequest { system: String::new(), turns: vec![], unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                     seq: 1, speaker: speaker.clone(), text: format!("Attached image: {}", folder.join("picture.png").display()),
                     servers: vec![], at: None,
                 }], effort_override: None, access: None, plan: false, cwd: None };
@@ -252,7 +252,7 @@ mod tests {
                 role: Role::User,
                 content: "Attached image: /missing/old.png".into(),
             }],
-            unseen: vec![apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+            unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                 seq: 1,
                 // Another participant's generated picture is also visible to this bot.
                 speaker: apex_core::Speaker::Bot(apex_core::ParticipantId::new("venice")),

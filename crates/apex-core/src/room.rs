@@ -5,6 +5,7 @@ use futures::{FutureExt, pin_mut};
 
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
 
@@ -390,12 +391,50 @@ pub struct ClientMessageRecord {
     pub request: Option<ClientMessageRequest>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClientMessageRequest {
-    pub text: String,
+    #[serde(rename = "textSha256")]
+    pub text_sha256: String,
     pub targets: Vec<ParticipantId>,
-    #[serde(default)]
     pub voice: bool,
+}
+
+impl ClientMessageRequest {
+    fn fingerprint(text: &str) -> String {
+        format!("{:x}", Sha256::digest(text.as_bytes()))
+    }
+
+    fn new(text: &str, targets: Vec<ParticipantId>, voice: bool) -> Self {
+        Self { text_sha256: Self::fingerprint(text), targets, voice }
+    }
+
+    pub(crate) fn matches_text(&self, text: &str) -> bool {
+        self.text_sha256 == Self::fingerprint(text)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClientMessageRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct SavedRequest {
+            #[serde(default, rename = "textSha256")]
+            text_sha256: Option<String>,
+            #[serde(default)]
+            text: Option<String>,
+            targets: Vec<ParticipantId>,
+            #[serde(default)]
+            voice: bool,
+        }
+        let saved = SavedRequest::deserialize(deserializer)?;
+        // Old ledgers stored the entire body. Migrate while loading so even
+        // untouched records stop duplicating transcript text on the next save.
+        let text_sha256 = match (saved.text_sha256, saved.text) {
+            (Some(fingerprint), _) => fingerprint,
+            (None, Some(text)) => Self::fingerprint(&text),
+            (None, None) => return Err(serde::de::Error::missing_field("textSha256")),
+        };
+        Ok(Self { text_sha256, targets: saved.targets, voice: saved.voice })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +448,10 @@ pub struct RoomSnapshot {
     pub import_move_id: Option<String>,
     #[serde(default, rename = "importSkipped", skip_serializing_if = "Vec::is_empty")]
     pub import_skipped: Vec<serde_json::Value>,
+    /// Saved profile ids are atomic with imports and chat roster edits, even
+    /// if catalog saving fails. Aliases alone cannot recover source profiles.
+    #[serde(default, rename = "importProfiles", skip_serializing_if = "HashMap::is_empty")]
+    pub import_profiles: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "RoomKind::is_work")]
     pub kind: RoomKind,
     pub participants: Vec<ParticipantConfig>,
@@ -463,6 +506,7 @@ impl RoomSnapshot {
             client_messages: HashMap::new(),
             import_move_id: None,
             import_skipped: Vec::new(),
+            import_profiles: HashMap::new(),
             kind: self.kind,
             participants: self.participants.clone(),
             transcript: self.transcript[..upto].to_vec(),
@@ -487,6 +531,7 @@ pub struct Room {
     client_messages: HashMap<String, ClientMessageRecord>,
     import_move_id: Option<String>,
     import_skipped: Vec<serde_json::Value>,
+    import_profiles: HashMap<String, String>,
     reply_client_message_id: Option<String>,
     kind: RoomKind,
     checklists: Checklists,
@@ -538,6 +583,7 @@ impl Room {
             client_messages: self.client_messages.clone(),
             import_move_id: self.import_move_id.clone(),
             import_skipped: self.import_skipped.clone(),
+            import_profiles: self.import_profiles.clone(),
             kind: self.kind,
             participants: self.configs(),
             transcript: self.transcript.clone(),
@@ -565,6 +611,7 @@ impl Room {
             client_messages: snapshot.client_messages,
             import_move_id: snapshot.import_move_id,
             import_skipped: snapshot.import_skipped,
+            import_profiles: snapshot.import_profiles,
             reply_client_message_id: None,
             kind: snapshot.kind,
             roster,
@@ -592,6 +639,7 @@ impl Room {
             client_messages: HashMap::new(),
             import_move_id: None,
             import_skipped: Vec::new(),
+            import_profiles: HashMap::new(),
             reply_client_message_id: None,
             kind: RoomKind::Work,
             roster,
@@ -652,6 +700,14 @@ impl Room {
         self.roster.iter().map(|p| p.config().clone()).collect()
     }
 
+    /// The host supplies machine-owned profile names with chat roster edits.
+    /// Save these with the roster, so a stale catalog cannot reuse an alias.
+    pub fn set_chat_profiles(&mut self, mut profiles: HashMap<String, String>) {
+        if !self.kind.is_chat() { return; }
+        profiles.retain(|alias, _| self.roster.iter().any(|bot| bot.config().id.as_str() == alias));
+        self.import_profiles = profiles;
+    }
+
     /// Add a participant. Returns false if that id is already in the room.
     pub fn add_participant(&mut self, participant: Arc<dyn Participant>) -> bool {
         if self.has(&participant.config().id) {
@@ -698,6 +754,7 @@ impl Room {
     pub fn remove_participant(&mut self, id: &ParticipantId) -> bool {
         let before = self.roster.len();
         self.roster.retain(|p| &p.config().id != id);
+        self.import_profiles.remove(id.as_str());
         self.cursors.remove(id);
         self.checklists.lock().unwrap().remove(id);
         self.last_targets.retain(|t| t != id);
@@ -870,7 +927,7 @@ impl Room {
         let reply_to_client_message_id = self.reply_client_message_id.clone();
         let origin_seq = self.kind.is_chat().then_some(self.next_origin_seq);
         if self.kind.is_chat() { self.next_origin_seq = self.next_origin_seq.saturating_add(1); }
-        let message = Message { origin_seq, origin: None, client_message_id: None, reply_to_client_message_id: reply_to_client_message_id.clone(), servers, seq: self.transcript.len(), speaker, text, at };
+        let message = Message { origin_seq, origin: None, client_message_id: None, reply_to_client_message_id: reply_to_client_message_id.clone(), late_reply_from: None, servers, seq: self.transcript.len(), speaker, text, at };
         if let Some(record) = reply_to_client_message_id.and_then(|id| self.client_messages.get_mut(&id)) { record.reply_seqs.push(message.seq); }
         self.transcript.push(message.clone());
         on_event(RoomEvent::MessageAdded { message });
@@ -895,10 +952,11 @@ impl Room {
     /// Called while the concurrent room holds its transcript mutex. Saving is
     /// part of acceptance: a failed commit restores all request state.
     pub(crate) fn accept_client_message(
-        &mut self, id: &str, request: ClientMessageRequest,
+        &mut self, id: &str, text: &str, targets: Vec<ParticipantId>, voice: bool,
         commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync),
     ) -> Result<Option<Message>, String> {
-        if id.is_empty() || id.len() > 128 || request.text.trim().is_empty() || request.text.len() > 32_000 { return Err("invalid client message".into()); }
+        if id.is_empty() || id.len() > 128 || text.trim().is_empty() { return Err("invalid client message".into()); }
+        let request = ClientMessageRequest::new(text, targets, voice);
         if let Some(record) = self.client_messages.get(id) {
             if record.state == ClientMessageState::Fenced { return Err("this message moved to another machine".into()); }
             if record.request.as_ref().is_some_and(|prior| prior != &request) { return Err("client message ID reused with different content".into()); }
@@ -908,7 +966,7 @@ impl Room {
         self.last_targets = request.targets.clone();
         let seq = self.transcript.len();
         self.client_messages.insert(id.into(), ClientMessageRecord { state: ClientMessageState::Running, reply_seqs: vec![], human_seq: Some(seq), request: Some(request.clone()) });
-        self.push(Speaker::Human, request.text, &|_| {});
+        self.push(Speaker::Human, text.into(), &|_| {});
         self.transcript.last_mut().unwrap().client_message_id = Some(id.into());
         if let Err(error) = commit(&self.snapshot()) {
             self.transcript.pop();

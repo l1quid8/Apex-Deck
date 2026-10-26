@@ -248,7 +248,7 @@ impl ConcurrentRoom {
         // later roster edits cannot make an old request executable again.
         if let Some(record) = room.client_message(&request_id) {
             if record.state == crate::ClientMessageState::Fenced { return Err("this message moved to another machine".into()); }
-            if record.request.as_ref().is_some_and(|prior| prior.text != text || prior.voice != voice || targets.as_ref().is_some_and(|ids| ids != &prior.targets)) { return Err("client message ID reused with different content".into()); }
+            if record.request.as_ref().is_some_and(|prior| !prior.matches_text(text) || prior.voice != voice || targets.as_ref().is_some_and(|ids| ids != &prior.targets)) { return Err("client message ID reused with different content".into()); }
             return Ok((None, record.clone()));
         }
         let targets = targets.unwrap_or_else(|| room.resolve_targets(text));
@@ -256,8 +256,7 @@ impl ConcurrentRoom {
         let mut unique = Vec::new();
         for id in targets { if !unique.contains(&id) { unique.push(id); } }
         if voice && unique.len() != 1 { return Err("voice requires one recipient".into()); }
-        let request = crate::ClientMessageRequest { text: text.into(), targets: unique.clone(), voice };
-        let message = room.accept_client_message(&request_id, request, commit)?.expect("new request accepted");
+        let message = room.accept_client_message(&request_id, text, unique.clone(), voice, commit)?.expect("new request accepted");
         let record = room.client_message(&request_id).unwrap().clone();
         let mut batch = self.batch(unique.clone(), !voice && room.options().policy == TurnPolicy::RoundRobin, if voice { Some(0) } else { hops.or(room.options().max_bot_hops) }, room.configs().into_iter().map(|c| c.id).collect(), !voice && room.answers_handle().load(Ordering::SeqCst));
         batch.client_message_id = Some(request_id.clone());

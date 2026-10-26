@@ -161,7 +161,7 @@ pub enum Command {
     ChatAddParticipant { id: String, participant: crate::chat_bots::ChatBotRequest },
     ChatUpdateParticipant { id: String, participant: ParticipantId, patch: crate::chat_bots::ChatBotPatch },
     ChatRemoveParticipant { id: String, participant: ParticipantId },
-    ChatImport { id: String, #[serde(alias = "move_id")] move_id: String, #[serde(default)] title: Option<String>, participants: Vec<ParticipantConfig>, entries: Vec<apex_core::Message>, #[serde(default)] options: RoomOptions },
+    ChatImport { id: String, #[serde(alias = "move_id")] move_id: String, #[serde(default)] title: Option<String>, participants: Vec<crate::chat_bots::ChatBotRequest>, entries: Vec<apex_core::Message>, #[serde(default)] options: RoomOptions },
     ChatMessageClaim { id: String, #[serde(alias = "client_message_id")] client_message_id: String },
     ChatMergeHistory { id: String, entries: Vec<apex_core::Message> },
     ChatPromote { source: String, target: String, cwd: String, #[serde(default)] upto: Option<usize> },
@@ -523,8 +523,10 @@ impl Host {
             ChatPromote { .. } => Err("not built yet".into()),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers, client_message_id } => match client_message_id {
-                Some(request_id) => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
-                None => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
+                // Work sends retain task continuation, Revert snapshots, and
+                // requested-server validation in the existing post handlers.
+                Some(request_id) if self.store().room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
+                _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
             RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id } => {
@@ -532,9 +534,12 @@ impl Host {
                     if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
                     if client_message_id.as_ref().is_some_and(|id| id != &request_id) { return Err("voice and client message IDs must match".into()); }
                     reply(self.room_client_post(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability).await?)
-                } else if let Some(request_id) = client_message_id {
-                    reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?)
-                } else { reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?) }
+                } else {
+                    match client_message_id {
+                        Some(request_id) if self.store().room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
+                        _ => reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?),
+                    }
+                }
             },
             VoiceCapabilities {} => reply(serde_json::json!({"voice_turn_correlation_v1": true})),
             RoomStopRequest { id, participant, client_turn_id } => reply(self.room_voice_stop(id, participant, client_turn_id)?),

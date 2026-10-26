@@ -353,6 +353,7 @@
 .ph-by { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .ph-by > span { color: var(--agent-color, var(--accent)); }
 .ph-msg > p { font-size: 15px; line-height: 1.55; white-space: pre-wrap; }
+.ph-msg > .late-reply-label { font-size: 12px; white-space: normal; }
 .ph-msg.human { background: var(--panel-2); padding: 10px 14px; border-radius: 18px 18px 4px 18px; margin-left: auto; width: fit-content; max-width: 85%; }
 .ph-md { font-size: 15px; line-height: 1.55; }
 .ph-md pre { overflow-x: auto; font-size: 12px; }

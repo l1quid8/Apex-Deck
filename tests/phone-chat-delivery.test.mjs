@@ -7,6 +7,7 @@ async function api() {
 }
 
 const snapshot = () => ({kind:'chat',participants:[],options:{policy:'everyone',max_bot_hops:3},transcript:[]});
+const participant = id => ({id,display_name:id,backend:{kind:'agent',tool:'codex',model:null},persona:'',access:'read',effort:null});
 function machine(reply = {}) {
   const calls = [];
   const caps = new Set(['chat_rooms','chat_delivery_v1']);
@@ -84,6 +85,38 @@ test('import refuses a Work result and preserves the destination ID from an idem
   assert.deepEqual(good.calls,[{cmd:'chat_import',args:input}]);
 });
 
+test('online exports carry the saved profile mapping independently of copied bot aliases', async () => {
+  const {createChatDeliveryRpc} = await api();
+  const {host} = machine(cmd => cmd === 'room_state'
+    ? {snapshot:{...snapshot(),participants:[participant('copy-2')]}}
+    : {rooms:[{id:'other',profiles:{'copy-2':'wrong'}},{id:'r',profiles:{'copy-2':'saved-original'}}]});
+  const exported = await createChatDeliveryRpc(() => host).exportRoom('linux','r');
+  assert.deepEqual(exported.importProfiles,{'copy-2':'saved-original'});
+});
+
+test('online exports prefer durable roster mappings and discard removed aliases from a stale catalog', async () => {
+  const {createChatDeliveryRpc} = await api();
+  const {host} = machine(cmd => cmd === 'room_state'
+    ? {snapshot:{...snapshot(),participants:[participant('x'),participant('new-bot')],importProfiles:{x:'b','new-bot':'a'}}}
+    : {rooms:[{id:'r',profiles:{x:'a',removed:'a'}}]});
+  const exported = await createChatDeliveryRpc(() => host).exportRoom('linux','r');
+  assert.deepEqual(exported.importProfiles,{x:'b','new-bot':'a'});
+});
+
+test('the import RPC strips machine configuration and accepts destination profile provenance', async () => {
+  const {createChatDeliveryRpc} = await api();
+  const input = {id:'proposed',moveId:'move-1',title:'Chat',entries:[],participants:[{
+    profile:'saved-original',id:'copy-2',display_name:'Copy',model:'chat-model',effort:'high',speed:'fast',
+    backend:{kind:'cli',program:'/source/tool',args:['--source']},persona:'Source instructions',access:'full',api_key_env:'SOURCE_KEY',
+  }],backend:{kind:'cli',program:'/source/tool'}};
+  const {host,calls} = machine({id:'original',room:snapshot(),profiles:{'copy-2':'saved-original'},skipped:[]});
+  const imported = await createChatDeliveryRpc(() => host).importRoom('linux',input);
+  assert.deepEqual(calls,[{cmd:'chat_import',args:{id:'proposed',moveId:'move-1',title:'Chat',entries:[],participants:[
+    {profile:'saved-original',id:'copy-2',display_name:'Copy',model:'chat-model',effort:'high',speed:'fast'},
+  ]}}]);
+  assert.deepEqual(imported.room.importProfiles,{'copy-2':'saved-original'});
+});
+
 test('the phone entry point saves uncertain before RPC and restores confirmed delivery after relaunch', async () => {
   const {createPhoneChatDelivery} = await api();
   const disk = new Map();
@@ -95,7 +128,7 @@ test('the phone entry point saves uncertain before RPC and restores confirmed de
   });
   const options = {storage,findHost:()=>host,onChange:()=>{},onError:()=>{}};
   const runtime = createPhoneChatDelivery(options);
-  runtime.controller.cacheChat({id:'chat',title:'Chat',machine:host.machine,room:'r',snapshot:snapshot()});
+  runtime.controller.cacheChat({id:'chat',title:'Chat',machine:host.machine,room:'r',profiles:{},snapshot:snapshot()});
   const id = runtime.controller.enqueue('chat','Hello',['null','jigga']);
   await runtime.controller.send('chat',id);
   const relaunched = createPhoneChatDelivery(options);
@@ -110,7 +143,7 @@ test('an offline machine leaves a new message unsent rather than inventing an un
   const {host,calls} = machine();
   host.connection.get = () => ({status:{kind:'disconnected'}});
   const runtime = createPhoneChatDelivery({storage:{getItem:key=>disk.get(key)??null,setItem:(key,value)=>disk.set(key,value)},findHost:()=>host,onError:()=>{}});
-  runtime.controller.cacheChat({id:'chat',title:'Chat',machine:host.machine,room:'r',snapshot:snapshot()});
+  runtime.controller.cacheChat({id:'chat',title:'Chat',machine:host.machine,room:'r',profiles:{},snapshot:snapshot()});
   const id = runtime.controller.enqueue('chat','Wait for the machine',['null']);
   await runtime.controller.send('chat',id);
   assert.equal(runtime.controller.snapshot().chats.chat.outbox[0].state,'unsent');

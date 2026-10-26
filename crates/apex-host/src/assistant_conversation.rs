@@ -38,7 +38,7 @@ mod tests {
                 cwd: "/p".into(),
                 named_only_workers: vec!["image-bot".into()],
                 snapshot: RoomSnapshot {
-                    next_origin_seq: 0, client_messages: Default::default(), import_move_id: None, import_skipped: vec![],
+                    next_origin_seq: 0, client_messages: Default::default(), import_move_id: None, import_skipped: vec![], import_profiles: Default::default(),
                     kind: apex_core::RoomKind::Work,
                     participants: profiles,
                     transcript: vec![],
@@ -527,7 +527,7 @@ mod tests {
         duplicate_request.threads[0]
             .snapshot
             .transcript
-            .push(apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+            .push(apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                 speaker: apex_core::Speaker::Human,
                 text: "Later unrelated response".into(),
                 seq: 0,
@@ -690,13 +690,13 @@ mod tests {
         SavedRoom { mounts: vec![],
             cwd: Some(cwd.into()),
             snapshot: RoomSnapshot {
-                    next_origin_seq: 0, client_messages: Default::default(), import_move_id: None, import_skipped: vec![],
+                next_origin_seq: 0, client_messages: Default::default(), import_move_id: None, import_skipped: vec![], import_profiles: Default::default(),
                 kind: apex_core::RoomKind::Work,
                 participants: vec![],
                 transcript: messages
                     .into_iter()
                     .enumerate()
-                    .map(|(seq, (speaker, text, at))| apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+                    .map(|(seq, (speaker, text, at))| apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                         servers: vec![],
                         seq,
                         speaker,

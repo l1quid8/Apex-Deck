@@ -37,6 +37,16 @@ export type ParticipantBackend =
 
 export type Speed = "standard" | "fast";
 
+/** A machine-owned saved profile plus the settings a phone may override. */
+export interface ChatBotRequest {
+  profile: string;
+  id?: string;
+  display_name?: string;
+  model?: string | null;
+  effort?: string | null;
+  speed?: Speed | null;
+}
+
 export interface ParticipantConfig {
   id: string;
   display_name: string;
@@ -253,6 +263,8 @@ export interface Message {
   origin?: { machine: string; room: string; seq: number };
   clientMessageId?: string;
   replyToClientMessageId?: string;
+  /** Source machine name for a reply appended after a chat moved. */
+  lateReplyFrom?: string;
   servers?: string[];
   seq: number;
   speaker: Speaker;

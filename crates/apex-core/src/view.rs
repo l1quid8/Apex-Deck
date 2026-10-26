@@ -379,7 +379,7 @@ mod tests {
     }
 
     fn msg(seq: usize, speaker: Speaker, text: &str) -> Message {
-        Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, servers: vec![], seq, speaker, text: text.to_string(), at: None }
+        Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, late_reply_from: None, servers: vec![], seq, speaker, text: text.to_string(), at: None }
     }
 
     #[test]

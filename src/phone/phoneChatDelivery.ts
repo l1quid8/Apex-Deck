@@ -1,7 +1,7 @@
 import type { Backend } from "../backend.ts";
 import type { HostConnectionStore } from "../hostConnections.ts";
-import type { RoomSnapshot } from "../types.ts";
-import { ChatDeliveryController, JsonChatDeliveryStorage, type CachedChat, type ChatOutboxMessage, type ChatDeliveryRpc } from "./chatDelivery.ts";
+import type { ChatBotRequest } from "../types.ts";
+import { ChatDeliveryController, JsonChatDeliveryStorage, chatProfileMapping, type CachedChat, type ChatOutboxMessage, type ChatDeliveryRpc, type ChatDeliverySnapshot } from "./chatDelivery.ts";
 import { watchChatDelivery, type ChatDeliveryWatchHost } from "./chatDeliveryWatch.ts";
 
 export interface ChatDeliveryHost {
@@ -42,7 +42,14 @@ function receipt(value: unknown): { state: "running" | "done" | "fenced" | "inte
   return { state: value.state as "running" | "done" | "fenced" | "interrupted", replySeqs: value.replySeqs };
 }
 
-function chatSnapshot(value: unknown): RoomSnapshot {
+function profiles(value: unknown): Record<string, string> {
+  if (!record(value) || Object.entries(value).some(([alias, profile]) => !alias.trim() || typeof profile !== "string" || !profile.trim())) {
+    throw new Error("The machine returned an invalid chat profile mapping. The saved transcript is kept.");
+  }
+  return { ...value } as Record<string, string>;
+}
+
+function chatSnapshot(value: unknown): ChatDeliverySnapshot {
   if (!record(value) || value.kind !== "chat" || !Array.isArray(value.transcript) || !Array.isArray(value.participants)) {
     throw new Error("This operation requires a talk-only chat.");
   }
@@ -53,6 +60,7 @@ function chatSnapshot(value: unknown): RoomSnapshot {
     && record(item.speaker) && (item.speaker.kind === "human" || (item.speaker.kind === "bot" && typeof item.speaker.id === "string"))
     && (item.at === undefined || integer(item.at)) && (item.originSeq === undefined || integer(item.originSeq)) && (item.origin === undefined || origin(item.origin))
     && (item.clientMessageId === undefined || typeof item.clientMessageId === "string")
+    && (item.lateReplyFrom === undefined || (typeof item.lateReplyFrom === "string" && item.lateReplyFrom.trim().length > 0))
     && (item.replyToClientMessageId === undefined || typeof item.replyToClientMessageId === "string"));
   const options = value.options;
   if (!validMessages || !record(options) || !["everyone", "mention", "round_robin"].includes(String(options.policy))
@@ -66,7 +74,19 @@ function chatSnapshot(value: unknown): RoomSnapshot {
       catch { throw new Error("The machine returned an invalid chat snapshot ledger."); }
     }
   }
-  return value as unknown as RoomSnapshot;
+  if (value.importProfiles !== undefined) profiles(value.importProfiles);
+  return value as unknown as ChatDeliverySnapshot;
+}
+
+/** Project the wire request explicitly even if a JavaScript caller supplies extra fields. */
+function importParticipant(value: ChatBotRequest): ChatBotRequest {
+  if (typeof value.profile !== "string" || !value.profile.trim()) throw new Error("A saved profile is required to move this bot safely.");
+  return { profile: value.profile,
+    ...(value.id !== undefined ? { id: value.id } : {}),
+    ...(value.display_name !== undefined ? { display_name: value.display_name } : {}),
+    ...(value.model !== undefined ? { model: value.model } : {}),
+    ...(value.effort !== undefined ? { effort: value.effort } : {}),
+    ...(value.speed !== undefined ? { speed: value.speed } : {}) };
 }
 
 /** Uses the chosen machine directly, without the Mac session or gateway HTTP keys. */
@@ -81,8 +101,16 @@ export function createChatDeliveryRpc(findHost: (id: string) => ChatDeliveryHost
   };
   return {
     async exportRoom(machine, room) {
-      const state = await backend(machine).call<{ snapshot: unknown }>("room_state", { id: room });
-      return chatSnapshot(state?.snapshot);
+      const source = backend(machine);
+      const state = await source.call<{ snapshot: unknown }>("room_state", { id: room });
+      const snapshot = chatSnapshot(state?.snapshot);
+      let list: unknown;
+      try { list = await source.call<unknown>("chat_list", {}); } catch { /* The saved/imported mapping remains usable when metadata cannot be refreshed. */ }
+      if (record(list) && Array.isArray(list.rooms)) {
+        const entry = list.rooms.find(item => record(item) && item.id === room);
+        if (record(entry) && entry.profiles !== undefined) return { ...snapshot, importProfiles: chatProfileMapping(snapshot, profiles(entry.profiles)) };
+      }
+      return snapshot;
     },
     async post(machine, room, message) {
       const { targets, ...body } = message;
@@ -98,12 +126,15 @@ export function createChatDeliveryRpc(findHost: (id: string) => ChatDeliveryHost
       return receipt(await backend(machine).call("chat_message_claim", { id: room, clientMessageId }));
     },
     async importRoom(machine, input) {
-      const value = await backend(machine).call<unknown>("chat_import", input);
+      const value = await backend(machine).call<unknown>("chat_import", { id: input.id, moveId: input.moveId, title: input.title,
+        participants: input.participants.map(importParticipant), entries: input.entries,
+        ...(input.options !== undefined ? { options: input.options } : {}) });
       if (!record(value) || typeof value.id !== "string" || !value.id.trim() || !Array.isArray(value.skipped)
         || !value.skipped.every(item => record(item) && typeof item.participant === "string" && typeof item.reason === "string")) {
         throw new Error("The destination did not confirm the imported chat. The move is saved for recovery.");
       }
-      return { id: value.id, room: chatSnapshot(value.room), skipped: value.skipped as { participant: string; reason: string }[] };
+      const room = chatSnapshot(value.room);
+      return { id: value.id, room: value.profiles === undefined ? room : { ...room, importProfiles: profiles(value.profiles) }, skipped: value.skipped as { participant: string; reason: string }[] };
     },
     async mergeHistory(machine, room, entries) {
       const value = await backend(machine).call<unknown>("chat_merge_history", { id: room, entries });

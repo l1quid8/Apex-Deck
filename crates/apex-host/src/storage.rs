@@ -766,6 +766,9 @@ impl Store {
                 .and_then(|p| Path::new(p).file_name())
                 .and_then(|n| n.to_str())
                 .map(str::to_owned);
+            let mut profiles = meta.profiles;
+            profiles.extend(saved.snapshot.import_profiles);
+            profiles.retain(|alias, _| saved.snapshot.participants.iter().any(|bot| bot.id.as_str() == alias));
             let participants = saved
                 .snapshot
                 .participants
@@ -789,7 +792,7 @@ impl Store {
                 promoted_from: meta.promoted_from,
                 promoted_to: meta.promoted_to,
                 moved_to: meta.moved_to,
-                profiles: meta.profiles,
+                profiles,
             });
         }
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id)));

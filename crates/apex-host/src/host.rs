@@ -1301,33 +1301,49 @@ impl Host {
         Ok(serde_json::json!({"added":added.len()}))
     }
 
-    pub(crate) fn chat_import(&self, id: String, move_id: String, title: Option<String>, participants: Vec<ParticipantConfig>, entries: Vec<apex_core::Message>, options: RoomOptions) -> Result<serde_json::Value, String> {
+    pub(crate) fn chat_import(&self, id: String, move_id: String, title: Option<String>, participants: Vec<crate::chat_bots::ChatBotRequest>, entries: Vec<apex_core::Message>, options: RoomOptions) -> Result<serde_json::Value, String> {
         if move_id.is_empty() || move_id.len() > 256 { return Err("invalid move ID".into()); }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if let Some((existing_id, saved)) = self.store.imported_chat(&move_id)? {
-            self.store.update_chat_meta(&existing_id, |meta| { if let Some(title) = &title { meta.title = title.clone(); } })?;
-            return Ok(serde_json::json!({"id":existing_id,"skipped":saved.snapshot.import_skipped,"room":saved.snapshot}));
+            let meta = self.store.update_chat_meta(&existing_id, |meta| {
+                if let Some(title) = &title { meta.title = title.clone(); }
+                meta.profiles.retain(|alias, _| saved.snapshot.participants.iter().any(|bot| bot.id.as_str() == alias));
+                for bot in &saved.snapshot.participants {
+                    if let Some(profile) = saved.snapshot.import_profiles.get(bot.id.as_str()) {
+                        meta.profiles.insert(bot.id.as_str().to_owned(), profile.clone());
+                    }
+                }
+            })?;
+            return Ok(serde_json::json!({"id":existing_id,"skipped":saved.snapshot.import_skipped,"room":saved.snapshot,"profiles":meta.profiles}));
         }
         if self.rooms.lock().unwrap().contains_key(&id) { return Err("a thread with that id already exists".into()); }
         let path = agents::login_path();
         let mut accepted = vec![];
         let mut skipped = vec![];
-        for mut participant in participants {
-            match apex_adapters::chat_profile_ok(&participant, path.as_deref()) {
-                Ok(()) => {
+        let saved_profiles = self.chat_saved_profiles()?;
+        let mut made_from = HashMap::new();
+        for bot in participants {
+            let profile = bot.profile.clone();
+            let requested_id = bot.id.clone().unwrap_or_else(|| ParticipantId::new(&profile));
+            let resolved = crate::chat_bots::resolve(&saved_profiles, bot).and_then(|participant| {
+                apex_adapters::chat_profile_ok(&participant, path.as_deref())?;
+                Ok(participant)
+            });
+            match resolved {
+                Ok(participant) => {
                     if accepted.iter().any(|prior: &ParticipantConfig| prior.id == participant.id) { return Err("two participants share the same id".into()); }
                     if let Some(why) = apex_core::mention_clash(&participant, &accepted) { return Err(why); }
-                    participant.access = Access::Read;
-                    participant.media = None;
+                    made_from.insert(participant.id.as_str().to_owned(), profile);
                     accepted.push(participant);
                 }
-                Err(reason) => skipped.push(serde_json::json!({"participant":participant.id,"reason":reason})),
+                Err(reason) => skipped.push(serde_json::json!({"participant":requested_id,"reason":reason})),
             }
         }
         let mut snapshot = Room::new(vec![], options).with_kind(apex_core::RoomKind::Chat).snapshot();
         snapshot.participants = accepted;
         snapshot.import_move_id = Some(move_id);
         snapshot.import_skipped = skipped.clone();
+        snapshot.import_profiles = made_from;
         snapshot.transcript = entries;
         let mut origins = std::collections::HashSet::new();
         snapshot.transcript.retain(|message| message.origin.as_ref().is_none_or(|origin| origins.insert(origin.clone())));
@@ -1336,8 +1352,11 @@ impl Host {
         let saved = SavedRoom { cwd: None, mounts: vec![], snapshot };
         self.store.import_room(&id, &saved)?;
         // The room (including moveId) is already durable if metadata fails.
-        self.store.update_chat_meta(&id, |meta| { meta.title = title.unwrap_or_else(|| "New chat".into()); })?;
-        Ok(serde_json::json!({"id":id,"room":saved.snapshot,"skipped":skipped}))
+        let meta = self.store.update_chat_meta(&id, |meta| {
+            meta.title = title.unwrap_or_else(|| "New chat".into());
+            meta.profiles = saved.snapshot.import_profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect();
+        })?;
+        Ok(serde_json::json!({"id":id,"room":saved.snapshot,"skipped":skipped,"profiles":meta.profiles}))
     }
     pub(crate) fn room_voice_stop(&self, id: String, participant: ParticipantId, request_id: String) -> Result<String, String> {
         let handle = self.handle(&id)?;
@@ -1496,8 +1515,13 @@ impl Host {
         }
         let built = apex_adapters::participant_for_room(apex_core::RoomKind::Chat, participant, &context);
         if room.add_participant(built) {
+            let mut profiles: HashMap<_, _> = self.store.chat_meta(&id).ok().flatten().unwrap_or_default().profiles.into_iter().collect();
+            profiles.extend(room.snapshot().import_profiles);
+            profiles.insert(name.as_str().to_owned(), profile.clone());
+            room.set_chat_profiles(profiles);
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
-            self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })?;
+            self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+            self.room_event(&id, RoomEvent::ParticipantsChanged { participants: room.configs() });
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
             self.store.update_chat_meta(&id, |meta| {
                 meta.updated_at = meta.updated_at.max(now);
@@ -1621,9 +1645,13 @@ impl Host {
         let room = self.room(&id)?;
         let mut room = room.lock().await;
         self.require_idle(&id)?;
+        let mut profiles: HashMap<_, _> = self.store.chat_meta(&id).ok().flatten().unwrap_or_default().profiles.into_iter().collect();
+        profiles.extend(room.snapshot().import_profiles);
+        room.set_chat_profiles(profiles);
         room.remove_participant(&participant);
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
-        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })?;
+        self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+        self.room_event(&id, RoomEvent::ParticipantsChanged { participants: room.configs() });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         self.store.update_chat_meta(&id, |meta| {
             meta.updated_at = meta.updated_at.max(now);
@@ -3838,7 +3866,7 @@ mod host_tests {
         let own = host.save_attachment("source", "own.png", png).unwrap();
         let other = host.save_attachment("other", "private.png", png).unwrap();
         let mut saved = host.store.room("source").unwrap().unwrap();
-        saved.snapshot.transcript.push(apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human,
+        saved.snapshot.transcript.push(apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human,
             text: format!("Attached image: {own}\nAttached image: {own}\nAttached image: {other}"), servers: vec![], at: None });
         host.store.save_room("source", &saved).unwrap();
         host.room_fork("source".into(), "fork".into(), None).unwrap();
@@ -3860,7 +3888,7 @@ mod host_tests {
         host.room_create("source".into(), vec![], RoomOptions::default(), None).unwrap();
         let image = host.save_attachment("source", "gone.png", b"image").unwrap();
         let mut saved = host.store.room("source").unwrap().unwrap();
-        saved.snapshot.transcript.push(apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human,
+        saved.snapshot.transcript.push(apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human,
             text: format!("Attached image: {image}"), servers: vec![], at: None });
         host.store.save_room("source", &saved).unwrap();
         std::fs::remove_file(image).unwrap();

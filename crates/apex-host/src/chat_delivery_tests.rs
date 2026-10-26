@@ -41,7 +41,9 @@ fn fixture(name: &str) -> (tokio::runtime::Runtime, Arc<Host>, PathBuf) {
         apex_core::testing::ScriptedParticipant::new("a", &["@b first", "retry a"]).config().clone(),
         apex_core::testing::ScriptedParticipant::new("b", &["second", "retry b"]).config().clone(),
     ];
-    host.chat_create("r".into(), Some("test".into()), bots, RoomOptions::default()).unwrap();
+    host.session_save(json!({"version":1,"profiles":bots})).unwrap();
+    let requests = serde_json::from_value(json!([{"profile":"a"},{"profile":"b"}])).unwrap();
+    host.chat_create("r".into(), Some("test".into()), requests, RoomOptions::default()).unwrap();
     (runtime, host, path)
 }
 
@@ -243,11 +245,92 @@ fn local_origin_sequence_never_reuses_cleared_or_rewound_history() {
 }
 
 #[test]
+fn import_refuses_phone_selected_credentials_and_resolves_target_profiles() {
+    let (runtime, host, path) = fixture("import-trusted-profile");
+    let safe = json!({"id":"api", "display_name":"Saved API", "persona":"Target persona", "access":"full",
+        "backend":{"kind":"open_ai_compatible","base_url":"https://target.example/v1","model":"saved-model","api_key_env":"TARGET_KEY"}});
+    host.session_save(json!({"version":1,"profiles":[safe.clone()]})).unwrap();
+    runtime.block_on(async {
+        let mut forged = safe;
+        forged["backend"]["base_url"] = "https://attacker.example".into();
+        let attack = json!({"command":"chat_import","id":"forged","moveId":"attack","participants":[forged],"entries":[]});
+        assert!(call(&host, attack).await.is_err(), "raw phone bot configs must not be accepted");
+        assert!(host.store.room("forged").unwrap().is_none());
+        let injected = json!({"command":"chat_import","id":"injected","moveId":"inject","participants":[{"profile":"api","backend":{"kind":"open_ai_compatible","base_url":"https://attacker.example","model":"x","api_key_env":"TARGET_KEY"}}],"entries":[]});
+        assert!(call(&host, injected).await.is_err(), "a profile request must refuse backend overrides");
+        let command = json!({"command":"chat_import","id":"safe","moveId":"safe-move","participants":[
+            {"profile":"api","id":"api-2","display_name":"Alias","model":"chosen-model","effort":"high","speed":"fast"},
+            {"profile":"missing","id":"left-behind"}],"entries":[]});
+        let result = call(&host, command.clone()).await.unwrap();
+        let saved = host.store.room("safe").unwrap().unwrap();
+        let bot = &saved.snapshot.participants[0];
+        assert_eq!(bot.id.as_str(), "api-2");
+        assert_eq!(bot.display_name, "Alias");
+        assert_eq!(bot.persona, "Target persona");
+        assert_eq!(bot.access, Access::Read);
+        assert_eq!(bot.effort.as_deref(), Some("high"));
+        assert_eq!(bot.speed, Some(apex_core::Speed::Fast));
+        assert_eq!(bot.backend, apex_core::Backend::OpenAiCompatible { base_url:"https://target.example/v1".into(), model:"chosen-model".into(), api_key_env:Some("TARGET_KEY".into()) });
+        assert_eq!(result["profiles"], json!({"api-2":"api"}));
+        assert_eq!(result["skipped"][0]["participant"], "left-behind");
+        assert!(result["skipped"][0]["reason"].as_str().unwrap().contains("missing"));
+        let rows = host.chat_list().unwrap();
+        assert_eq!(rows["rooms"].as_array().unwrap().iter().find(|r| r["id"] == "safe").unwrap()["profiles"], json!({"api-2":"api"}));
+        // The same move keeps its chosen profiles even if the phone changes
+        // the request or the target's saved profiles are later removed.
+        host.session_save(json!({"version":1,"profiles":[]})).unwrap();
+        let mut retry = command;
+        retry["participants"] = json!([]);
+        let repeated = call(&host, retry).await.unwrap();
+        assert_eq!(repeated["profiles"], result["profiles"]);
+        assert_eq!(repeated["room"], result["room"]);
+    });
+    drop(host);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn imported_profile_mapping_tracks_alias_reuse_without_catalog_access() {
+    let (runtime, host, path) = fixture("import-profile-alias-reuse");
+    runtime.block_on(async {
+        call(&host, json!({"command":"chat_import","id":"imported","moveId":"alias-reuse","participants":[{"profile":"a","id":"x"}],"entries":[]})).await.unwrap();
+        let meta_path = host.store.folder().join("chat-meta-v1.json");
+        let old_meta = std::fs::read(&meta_path).unwrap();
+        call(&host, json!({"command":"chat_remove_participant","id":"imported","participant":"x"})).await.unwrap();
+        assert!(!host.store.room("imported").unwrap().unwrap().snapshot.import_profiles.contains_key("x"));
+        call(&host, json!({"command":"chat_add_participant","id":"imported","participant":{"profile":"b","id":"x"}})).await.unwrap();
+        call(&host, json!({"command":"chat_add_participant","id":"imported","participant":{"profile":"a","id":"new-bot"}})).await.unwrap();
+        // A crash after the atomic room save may leave a readable old catalog.
+        std::fs::write(&meta_path, old_meta).unwrap();
+        assert_eq!(host.chat_list().unwrap()["rooms"].as_array().unwrap().iter().find(|r| r["id"] == "imported").unwrap()["profiles"], json!({"x":"b","new-bot":"a"}));
+        let repeated = call(&host, json!({"command":"chat_import","id":"unused","moveId":"alias-reuse","participants":[],"entries":[]})).await.unwrap();
+        assert_eq!(repeated["profiles"], json!({"x":"b","new-bot":"a"}));
+        // Losing catalog access cannot resurrect x's original profile or
+        // hide the newly added bot's profile from the saved room state.
+        std::fs::remove_file(&meta_path).unwrap();
+        std::fs::create_dir(&meta_path).unwrap();
+        let snapshot = call(&host, json!({"command":"room_state","id":"imported"})).await.unwrap()["snapshot"].clone();
+        assert_eq!(snapshot["importProfiles"], json!({"x":"b","new-bot":"a"}));
+        assert_eq!(host.store.room("imported").unwrap().unwrap().snapshot.import_profiles.get("x").map(String::as_str), Some("b"));
+        std::fs::remove_dir(&meta_path).unwrap();
+    });
+    drop(host);
+    let recovered = Host::new(HostPaths { data: path.clone(), downloads: None }, runtime.handle().clone());
+    runtime.block_on(async {
+        let snapshot = call(&recovered, json!({"command":"room_state","id":"imported"})).await.unwrap()["snapshot"].clone();
+        assert_eq!(snapshot["importProfiles"], json!({"x":"b","new-bot":"a"}));
+        assert_eq!(recovered.chat_list().unwrap()["rooms"].as_array().unwrap().iter().find(|r| r["id"] == "imported").unwrap()["profiles"], json!({"x":"b","new-bot":"a"}));
+    });
+    drop(recovered);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn import_is_folderless_idempotent_and_merge_preserves_new_history() {
     let (runtime, host, path) = fixture("import");
     runtime.block_on(async {
-        let participants = host.store.room("r").unwrap().unwrap().snapshot.participants;
-        let entry = json!({"seq":9,"speaker":{"kind":"bot","id":"a"},"text":"late","origin":{"machine":"A","room":"old","seq":9},"replyToClientMessageId":"old-message"});
+        let participants = json!([{"profile":"a"},{"profile":"b"}]);
+        let entry = json!({"seq":9,"speaker":{"kind":"bot","id":"a"},"text":"late","origin":{"machine":"A","room":"old","seq":9},"lateReplyFrom":"Studio MacBook","replyToClientMessageId":"old-message"});
         let import = json!({"command":"chat_import","id":"destination","moveId":"move-1","participants":participants,"entries":[],"title":"Moved","options":{"policy":"round_robin","max_bot_hops":null}});
         let created = call(&host, import.clone()).await.unwrap();
         assert_eq!(created["room"]["kind"], "chat");
@@ -263,6 +346,7 @@ fn import_is_folderless_idempotent_and_merge_preserves_new_history() {
         assert_eq!(saved.snapshot.transcript.len(), before + 1);
         assert_eq!(saved.snapshot.transcript.last().unwrap().text, "late");
         assert_eq!(saved.snapshot.transcript.last().unwrap().reply_to_client_message_id.as_deref(), Some("old-message"));
+        assert_eq!(serde_json::to_value(saved.snapshot.transcript.last().unwrap()).unwrap()["lateReplyFrom"], "Studio MacBook");
         let mut retry = import;
         retry["id"] = "different-id".into();
         let repeated = call(&host, retry).await.unwrap();
@@ -354,7 +438,10 @@ fn import_sanitizes_profiles_and_keeps_move_identity_across_metadata_failure() {
     unsupported.id = ParticipantId::new("unsupported");
     unsupported.display_name = "Unsupported".into();
     unsupported.backend = apex_core::Backend::Cli { program: "unsupported".into(), args: vec![] };
-    participants.push(unsupported);
+    let mut profiles = participants.clone();
+    profiles.push(unsupported);
+    host.session_save(json!({"version":1,"profiles":profiles})).unwrap();
+    let participants = json!([{"profile":"a","id":"a-copy"},{"profile":"b"},{"profile":"unsupported"}]);
     let meta_path = host.store.folder().join("chat-meta-v1.json");
     std::fs::remove_file(&meta_path).unwrap();
     std::fs::create_dir(&meta_path).unwrap();
@@ -375,6 +462,7 @@ fn import_sanitizes_profiles_and_keeps_move_identity_across_metadata_failure() {
         let result = call(&host, retry).await.unwrap();
         assert_eq!(result["id"], "imported");
         assert_eq!(result["skipped"][0]["participant"], "unsupported");
+        assert_eq!(host.chat_list().unwrap()["rooms"].as_array().unwrap().iter().find(|r| r["id"] == "imported").unwrap()["profiles"]["a-copy"], "a");
         assert!(host.store.room("other-target").unwrap().is_none());
         let before = host.store.room("imported").unwrap().unwrap().snapshot.transcript;
         assert_eq!(call(&host, json!({"command":"room_post","id":"imported","text":"old","clientMessageId":"old-id"})).await.unwrap()["state"], "done");

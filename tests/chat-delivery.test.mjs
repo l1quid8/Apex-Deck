@@ -45,7 +45,11 @@ function harness() {
       const moveKey = `${machine}/${payload.moveId}`;
       if (!imports.has(moveKey)) {
         imports.set(moveKey, payload.id);
-        remote.set(key(machine, payload.id), { ...snapshot(payload.entries), participants: payload.participants });
+        remote.set(key(machine, payload.id), { ...snapshot(payload.entries),
+          participants: payload.participants.map(request => ({ ...snapshot().participants[0], id: request.id ?? request.profile,
+            display_name: request.display_name ?? request.profile, backend: { kind: 'agent', tool: 'codex', model: request.model ?? null },
+            effort: request.effort ?? null, ...(request.speed ? { speed: request.speed } : {}) })),
+          importProfiles: Object.fromEntries(payload.participants.map(request => [request.id ?? request.profile, request.profile])) });
       }
       return { room: structuredClone(remote.get(key(machine, imports.get(moveKey)))), skipped: [] };
     },
@@ -69,10 +73,76 @@ function harness() {
   };
   const create = () => new ChatDeliveryController({ storage, rpc, id: () => `id-${++next}`, now: () => 100 });
   const controller = create();
-  controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', snapshot: snapshot() });
+  controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', profiles: { null: 'saved-null' }, snapshot: snapshot() });
   return { controller, create, disk, local, storage, remote, calls, rpc, offline, fail };
 }
 const message = h => h.controller.snapshot().chats.chat.outbox[0];
+
+test('machine moves send saved profile references for copied aliases with only allowed settings', async () => {
+  const h = harness();
+  const source = snapshot([human(1, 'saved history')]);
+  source.participants = [{ id: 'reviewer-2', display_name: 'Second reviewer',
+    backend: { kind: 'open_ai_compatible', base_url: 'https://source.example/v1', model: 'source-model', api_key_env: 'SOURCE_KEY' },
+    persona: 'Source machine instructions', access: 'full', effort: 'high', speed: 'fast', voice: 'source-voice' }];
+  h.remote.set('studio/r1', source);
+  h.controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', profiles: { 'reviewer-2': 'saved-reviewer' }, snapshot: source });
+  await h.controller.move('chat', B);
+  assert.deepEqual(h.calls.find(call => call[0] === 'import')[2].participants,
+    [{ profile: 'saved-reviewer', id: 'reviewer-2', display_name: 'Second reviewer', model: 'source-model', effort: 'high', speed: 'fast' }]);
+});
+
+test('profile provenance survives online refresh, a lost import acknowledgement and phone restart', async () => {
+  const h = harness();
+  const source = snapshot();
+  source.participants[0].id = 'copy-2';
+  h.remote.set('studio/r1', source);
+  h.controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', profiles: { 'copy-2': 'saved-original' }, snapshot: source });
+  await h.controller.reconnect(A.id);
+  const actualImport = h.rpc.importRoom;
+  h.rpc.importRoom = async (...args) => { await actualImport(...args); throw Error('Import ack lost'); };
+  await assert.rejects(h.controller.move('chat', B), /Import ack lost/);
+  assert.deepEqual(Object.values(h.storage.load().moves)[0].snapshot.importProfiles, { 'copy-2': 'saved-original' });
+  h.rpc.importRoom = actualImport;
+  h.controller = h.create();
+  await h.controller.resume();
+  assert.deepEqual(h.create().snapshot().chats.chat.snapshot.importProfiles, { 'copy-2': 'saved-original' });
+  assert.deepEqual(h.calls.filter(call => call[0] === 'import').map(call => call[2].participants[0].profile), ['saved-original', 'saved-original']);
+});
+
+test('cache uses durable roster mappings over a stale catalog before export and after restart', async () => {
+  const h = harness();
+  const source = snapshot();
+  source.participants = ['x', 'new-bot'].map(id => ({ ...snapshot().participants[0], id }));
+  source.importProfiles = { x: 'b', 'new-bot': 'a' };
+  h.remote.set('studio/r1', source);
+  h.controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', profiles: { x: 'a', removed: 'a' }, snapshot: source });
+  assert.deepEqual(h.controller.snapshot().chats.chat.snapshot.importProfiles, { x: 'b', 'new-bot': 'a' });
+  h.controller = h.create();
+  await h.controller.reconnect(A.id);
+  assert.deepEqual(h.controller.snapshot().chats.chat.snapshot.importProfiles, { x: 'b', 'new-bot': 'a' });
+  h.offline.add(A.id);
+  await h.controller.move('chat', B);
+  assert.deepEqual(h.calls.find(call => call[0] === 'import')[2].participants.map(({ id, profile }) => ({ id, profile })),
+    [{ id: 'x', profile: 'b' }, { id: 'new-bot', profile: 'a' }]);
+});
+
+test('legacy cached copies without profile provenance are skipped and explicit sends stay held', async () => {
+  const h = harness();
+  const saved = h.storage.load();
+  saved.chats.chat.snapshot.participants[0].id = 'null-2';
+  delete saved.chats.chat.snapshot.importProfiles;
+  h.disk.set('apex.phone.chat-delivery.v1', JSON.stringify(saved));
+  h.controller = h.create();
+  h.offline.add(A.id);
+  h.controller.enqueue('chat', 'only this copy', ['null-2']);
+  await h.controller.move('chat', B);
+  assert.deepEqual(h.calls.find(call => call[0] === 'import')[2].participants, []);
+  const move = Object.values(h.controller.snapshot().moves)[0];
+  assert.equal(move.skipped[0].participant, 'null-2');
+  assert.match(move.skipped[0].reason, /profile.*unknown|unknown.*profile/i);
+  assert.match(message(h).blockedReason, /not set up/i);
+  assert.equal(h.calls.filter(call => call[0] === 'post').length, 0);
+});
 
 test('persists uncertain before writing and a lost acknowledgement never becomes unsent on restart', async () => {
   const h = harness();
@@ -105,7 +175,7 @@ test('storage write failure and quota exhaustion stop all network writes', async
 
 test('offline move imports saved history and only never-sent messages can reach B', async () => {
   const h = harness();
-  h.controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', snapshot: snapshot([human(1, 'old')]) });
+  h.controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', profiles: { null: 'saved-null' }, snapshot: snapshot([human(1, 'old')]) });
   const maybe = h.controller.enqueue('chat', 'maybe', ['null']);
   h.offline.add(A.id);
   await assert.rejects(h.controller.send('chat', maybe));
@@ -170,7 +240,26 @@ test('late replies append after B conversation, keep reply links, and repeat mer
   assert.deepEqual(target.transcript.map(m => m.text), ['A question', 'new one', 'new two', 'late answer']);
   assert.deepEqual(target.transcript.at(-1).origin, { machine: A.id, room: 'r1', seq: 2 });
   assert.equal(target.transcript.at(-1).replyToClientMessageId, id);
+  assert.equal(target.transcript.at(-1).lateReplyFrom, 'Studio MacBook');
+  assert.equal(h.create().snapshot().chats.chat.snapshot.transcript.at(-1).lateReplyFrom, 'Studio MacBook');
+  assert.equal(target.transcript[0].lateReplyFrom, undefined, 'history copied during the move is not a late reply');
   assert.equal(message(h).accepted, 'done');
+});
+
+test('a late reply retains the original machine name when the chat moves again', async () => {
+  const h = harness();
+  const id = h.controller.enqueue('chat', 'A question');
+  await h.controller.send('chat', id);
+  await h.controller.move('chat', B, { pending: 'leave' });
+  const source = h.remote.get('studio/r1');
+  source.transcript.push(bot(2, 'late answer', { replyToClientMessageId: id }));
+  source.clientMessages[id] = { state: 'done', replySeqs: [2] };
+  await h.controller.reconnect(A.id);
+  await h.controller.move('chat', { id: 'third', name: 'Windows PC' }, { pending: 'leave' });
+  const chat = h.create().snapshot().chats.chat;
+  const answer = h.remote.get(`third/${chat.room}`).transcript.find(entry => entry.text === 'late answer');
+  assert.equal(answer.lateReplyFrom, 'Studio MacBook');
+  assert.deepEqual(answer.origin, { machine: A.id, room: 'r1', seq: 2 });
 });
 
 test('an interrupted message remains history until an explicit Retry creates a fresh id', async () => {
@@ -329,7 +418,7 @@ test('pending answers accepted on another device also require wait or stop befor
 
 test('work snapshots and corrupted durable outbox data fail closed', () => {
   const h = harness();
-  assert.throws(() => h.controller.cacheChat({ id: 'work', title: 'Work', machine: A, room: 'work', snapshot: { ...snapshot(), kind: 'work' } }), /Only chat/);
+  assert.throws(() => h.controller.cacheChat({ id: 'work', title: 'Work', machine: A, room: 'work', profiles: {}, snapshot: { ...snapshot(), kind: 'work' } }), /Only chat/);
   const saved = h.storage.load();
   saved.chats.chat.outbox.push({ id: 'bad', state: 'mystery' });
   h.disk.set('apex.phone.chat-delivery.v1', JSON.stringify(saved));
@@ -485,7 +574,7 @@ test('late replies reach current C while intermediate B is offline', async () =>
 
 test('monotonic originSeq distinguishes new content after transcript seq is reused', async () => {
   const h = harness();
-  h.controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', snapshot: snapshot([human(1, 'old', { originSeq: 1 })]) });
+  h.controller.cacheChat({ id: 'chat', title: 'Chat', machine: A, room: 'r1', profiles: { null: 'saved-null' }, snapshot: snapshot([human(1, 'old', { originSeq: 1 })]) });
   const cleared = snapshot([human(1, 'after clear', { originSeq: 2 })]);
   h.remote.set('studio/r1', cleared);
   await h.controller.observe('chat', A.id, 'r1', cleared);

@@ -2655,6 +2655,7 @@ function ThreadView(props: {
           <section key={message.seq} className="ph-said" data-seq={message.seq}>
             <div className="ph-msg">
               {by(message.speaker.id)}
+              {message.lateReplyFrom && <p className="late-reply-label">Late reply from {message.lateReplyFrom}</p>}
               <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
                 ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
                 : undefined)} /></div>

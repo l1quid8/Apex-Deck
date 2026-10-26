@@ -1,4 +1,4 @@
-import type { Message, ParticipantConfig, RoomOptions, RoomSnapshot } from '../types.ts';
+import type { ChatBotRequest, Message, RoomOptions, RoomSnapshot } from '../types.ts';
 
 export interface ChatMachine { id: string; name: string }
 export type ChatAcceptedState = 'running' | 'done' | 'interrupted' | 'fenced';
@@ -13,6 +13,8 @@ export type ChatHistoryEntry = Message & {
 export type ChatDeliverySnapshot = RoomSnapshot & {
   kind?: 'chat' | 'work';
   clientMessages?: Record<string, ChatReceipt & { humanSeq?: number }>;
+  /** Chat-local alias to saved profile ID; an alias alone never proves profile identity. */
+  importProfiles?: Record<string, string>;
 };
 export interface ChatOutboxMessage {
   id: string;
@@ -72,7 +74,7 @@ export interface ChatDeliveryRpc {
   exportRoom(machine: string, room: string): Promise<ChatDeliverySnapshot>;
   post(machine: string, room: string, message: { clientMessageId: string; text: string; targets: string[] }): Promise<ChatReceipt>;
   claim(machine: string, room: string, clientMessageId: string): Promise<ChatReceipt>;
-  importRoom(machine: string, payload: { id: string; moveId: string; title: string; participants: ParticipantConfig[]; options?: RoomOptions; entries: ChatHistoryEntry[] }): Promise<{ id?: string; room: ChatDeliverySnapshot; skipped: { participant: string; reason: string }[] }>;
+  importRoom(machine: string, payload: { id: string; moveId: string; title: string; participants: ChatBotRequest[]; options?: RoomOptions; entries: ChatHistoryEntry[] }): Promise<{ id?: string; room: ChatDeliverySnapshot; skipped: { participant: string; reason: string }[] }>;
   mergeHistory(machine: string, room: string, entries: ChatHistoryEntry[]): Promise<{ added: number }>;
   archive(machine: string, room: string, movedTo: { host: string; room: string }): Promise<void>;
   stop(machine: string, room: string): Promise<void>;
@@ -172,13 +174,16 @@ function assertState(value: unknown): asserts value is ChatDeliveryState {
 }
 function assertChatSnapshot(snapshot: ChatDeliverySnapshot): void {
   if (!snapshot || snapshot.kind !== 'chat' || !Array.isArray(snapshot.transcript) || !Array.isArray(snapshot.participants) || !snapshot.options) throw new Error('Only chat rooms can use phone chat delivery');
+  if (snapshot.importProfiles !== undefined && (!snapshot.importProfiles || typeof snapshot.importProfiles !== 'object' || Array.isArray(snapshot.importProfiles)
+    || Object.entries(snapshot.importProfiles).some(([alias, profile]) => !alias.trim() || typeof profile !== 'string' || !profile.trim()))) throw new Error('Invalid saved chat profile mapping');
   for (const entry of snapshot.transcript) assertHistoryEntry(entry);
   for (const [id, known] of Object.entries(snapshot.clientMessages ?? {})) receipt(known, id);
 }
 function assertHistoryEntry(entry: ChatHistoryEntry, requireOrigin = false): void {
   if (!entry || typeof entry.text !== 'string' || !Number.isSafeInteger(entry.seq) || !entry.speaker
     || (entry.speaker.kind !== 'human' && entry.speaker.kind !== 'bot')
-    || (entry.speaker.kind === 'bot' && typeof entry.speaker.id !== 'string')) throw new Error('Invalid saved transcript message');
+    || (entry.speaker.kind === 'bot' && typeof entry.speaker.id !== 'string')
+    || (entry.lateReplyFrom !== undefined && (typeof entry.lateReplyFrom !== 'string' || !entry.lateReplyFrom.trim()))) throw new Error('Invalid saved transcript message');
   if (requireOrigin || entry.origin) {
     const origin = entry.origin;
     if (!origin || typeof origin.machine !== 'string' || !origin.machine || typeof origin.room !== 'string' || !origin.room || !Number.isSafeInteger(origin.seq)) throw new Error('Invalid saved message origin');
@@ -199,6 +204,31 @@ function withOrigins(snapshot: ChatDeliverySnapshot, machine: string, room: stri
   result.transcript = result.transcript.map((message: ChatHistoryEntry) => ({ ...message, origin: message.origin ?? { machine, room, seq: message.originSeq ?? message.seq } }));
   return result;
 }
+function preserveProfiles(snapshot: ChatDeliverySnapshot, previous: ChatDeliverySnapshot): ChatDeliverySnapshot {
+  const result = copy(snapshot);
+  if (result.importProfiles === undefined && previous.importProfiles !== undefined) result.importProfiles = copy(previous.importProfiles);
+  return result;
+}
+/** The durable roster wins over catalog metadata, which may lag a saved roster edit. */
+export function chatProfileMapping(snapshot: ChatDeliverySnapshot, catalog: Record<string, string> = {}): Record<string, string> {
+  const aliases = new Set(snapshot.participants.map(participant => participant.id));
+  return Object.fromEntries(Object.entries({ ...catalog, ...snapshot.importProfiles }).filter(([alias]) => aliases.has(alias)));
+}
+function importParticipants(snapshot: ChatDeliverySnapshot): { participants: ChatBotRequest[]; skipped: { participant: string; reason: string }[] } {
+  const participants: ChatBotRequest[] = [], skipped: { participant: string; reason: string }[] = [];
+  for (const participant of snapshot.participants) {
+    const profile = Object.hasOwn(snapshot.importProfiles ?? {}, participant.id) ? snapshot.importProfiles![participant.id] : undefined;
+    if (!profile) {
+      skipped.push({ participant: participant.id, reason: 'The saved profile for this bot is unknown. Open this chat on its original machine to refresh its profile mapping.' });
+      continue;
+    }
+    participants.push({ profile, id: participant.id, display_name: participant.display_name,
+      ...('model' in participant.backend ? { model: participant.backend.model } : {}),
+      ...(participant.effort !== undefined ? { effort: participant.effort } : {}),
+      ...(participant.speed !== undefined ? { speed: participant.speed } : {}) });
+  }
+  return { participants, skipped };
+}
 function appendHistory(chat: CachedChat, entries: readonly ChatHistoryEntry[]): void {
   const seen = new Set(chat.snapshot.transcript.map(originKey));
   let seq = Math.max(0, ...chat.snapshot.transcript.map(entry => entry.seq));
@@ -207,6 +237,12 @@ function appendHistory(chat: CachedChat, entries: readonly ChatHistoryEntry[]): 
     chat.snapshot.transcript.push({ ...copy(entry), seq: ++seq });
     seen.add(originKey(entry));
   }
+}
+
+function lateHistory(entries: readonly ChatHistoryEntry[], from: ChatMachine): ChatHistoryEntry[] {
+  return entries.map(entry => entry.speaker.kind === 'bot'
+    ? { ...entry, lateReplyFrom: entry.lateReplyFrom ?? from.name }
+    : entry);
 }
 
 /** No Mac, session, React or connection globals: the folderless phone route supplies storage and RPC. */
@@ -245,8 +281,8 @@ export class ChatDeliveryController {
   private outbox(chat: string, id: string): ChatOutboxMessage {
     const item = this.chat(chat).outbox.find(message => message.id === id); if (!item) throw new Error('Message is not in this chat outbox'); return item;
   }
-  cacheChat(input: { id: string; title: string; machine: ChatMachine; room: string; snapshot: ChatDeliverySnapshot }): void {
-    const normalized = withOrigins(input.snapshot, input.machine.id, input.room);
+  cacheChat(input: { id: string; title: string; machine: ChatMachine; room: string; profiles: Record<string, string>; snapshot: ChatDeliverySnapshot }): void {
+    const normalized = withOrigins({ ...input.snapshot, importProfiles: chatProfileMapping(input.snapshot, input.profiles) }, input.machine.id, input.room);
     this.advanceRead(input.machine.id, input.room);
     this.update(next => {
       const existing = next.chats[input.id];
@@ -255,7 +291,7 @@ export class ChatDeliveryController {
         if (existing.machine.id === input.machine.id && existing.room === input.room) {
           this.syncCurrentSnapshot(existing, normalized);
         }
-      } else next.chats[input.id] = { ...copy(input), snapshot: normalized, outbox: [] };
+      } else next.chats[input.id] = { id: input.id, title: input.title, machine: copy(input.machine), room: input.room, snapshot: normalized, outbox: [] };
     });
   }
   enqueue(chatId: string, text: string, targets: string[] = []): string {
@@ -312,7 +348,7 @@ export class ChatDeliveryController {
   }
   private syncCurrentSnapshot(chat: CachedChat, snapshot: ChatDeliverySnapshot): void {
     const previousLedger = chat.snapshot.clientMessages;
-    chat.snapshot = copy(snapshot); chat.snapshot.clientMessages = copy(previousLedger ?? {});
+    chat.snapshot = preserveProfiles(snapshot, chat.snapshot); chat.snapshot.clientMessages = copy(previousLedger ?? {});
     this.acceptSnapshot(chat, chat.machine.id, chat.room, snapshot);
   }
   async move(chatId: string, to: ChatMachine, options: { pending?: 'wait' | 'stop' | 'leave'; targetRoom?: string } = {}): Promise<string> {
@@ -362,14 +398,16 @@ export class ChatDeliveryController {
     }
     move = this.state.moves[id];
     if (move.step === 'import') {
-      const result = await this.rpc.importRoom(move.to.id, { id: move.targetRoom, moveId: move.id, title: this.chat(move.chat).title, participants: copy(move.snapshot.participants), options: copy(move.snapshot.options), entries: copy(move.snapshot.transcript) });
+      const requested = importParticipants(move.snapshot);
+      const result = await this.rpc.importRoom(move.to.id, { id: move.targetRoom, moveId: move.id, title: this.chat(move.chat).title, participants: requested.participants, options: copy(move.snapshot.options), entries: copy(move.snapshot.transcript) });
       const targetRoom = result.id ?? move.targetRoom;
       const imported = withOrigins(result.room, move.to.id, targetRoom);
+      const skippedParticipants = [...requested.skipped, ...result.skipped];
       this.update(next => {
         const record = next.moves[id], chat = next.chats[record.chat];
-        record.targetRoom = targetRoom; record.skipped = copy(result.skipped); record.step = 'archive'; record.mergedOrigins = record.snapshot.transcript.map(originKey);
+        record.targetRoom = targetRoom; record.skipped = copy(skippedParticipants); record.step = 'archive'; record.mergedOrigins = record.snapshot.transcript.map(originKey);
         chat.machine = copy(record.to); chat.room = record.targetRoom; chat.snapshot = imported;
-        const skipped = new Set(result.skipped.map(item => item.participant));
+        const skipped = new Set(skippedParticipants.map(item => item.participant));
         for (const item of chat.outbox) {
           if (!routeMatches(item, record.from.id, record.sourceRoom) || (item.state !== 'unsent' && !(item.accepted === 'fenced' && item.fenceClaimed))) continue;
           const hadTargets = item.targets.length > 0;
@@ -400,9 +438,9 @@ export class ChatDeliveryController {
     const move = this.state.moves[id], normalized = withOrigins(snapshot, move.from.id, move.sourceRoom);
     this.update(next => {
       const record = next.moves[id], chat = next.chats[record.chat];
-      record.snapshot = normalized;
+      record.snapshot = preserveProfiles(normalized, record.snapshot);
       if (chat.machine.id === record.from.id && chat.room === record.sourceRoom) this.syncCurrentSnapshot(chat, normalized);
-      else { this.acceptSnapshot(chat, record.from.id, record.sourceRoom, normalized); appendHistory(chat, normalized.transcript); }
+      else { this.acceptSnapshot(chat, record.from.id, record.sourceRoom, normalized); appendHistory(chat, lateHistory(normalized.transcript, record.from)); }
     });
   }
   private async reconcileMove(id: string): Promise<void> {
@@ -437,7 +475,7 @@ export class ChatDeliveryController {
         for (const entry of merge.entries) known.add(originKey(entry));
       }
     }
-    const entries = this.state.moves[id].snapshot.transcript.filter(entry => !known.has(originKey(entry)));
+    const entries = lateHistory(this.state.moves[id].snapshot.transcript.filter(entry => !known.has(originKey(entry))), move.from);
     if (entries.length) this.update(next => { next.moves[id].merges.push({ id: this.id(), machine: current.machine.id, room: current.room, entries: copy(entries), confirmed: false }); });
     for (const merge of [...this.state.moves[id].merges]) {
       if (merge.confirmed) continue;

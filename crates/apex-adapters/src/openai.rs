@@ -813,7 +813,7 @@ mod tests {
         let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text.clone() },
                 apex_core::ViewTurn { role: Role::Assistant, content: text.clone() }],
-            unseen: vec![apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false, cwd: None };
+            unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false, cwd: None };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");

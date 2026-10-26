@@ -2812,7 +2812,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let req_nodir = TurnRequest {
         system: "sys".into(),
         turns: vec![ViewTurn { role: Role::User, content: "[Human]: bare first turn".into() }],
-        unseen: vec![apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: Speaker::Human, text: "bare first turn".into(), servers: vec![], at: None }],
+        unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: Speaker::Human, text: "bare first turn".into(), servers: vec![], at: None }],
         access: None,
         effort_override: None,
         plan: false,
@@ -2851,7 +2851,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
         ViewTurn { role: Role::Assistant, content: "ok".into() },
         ViewTurn { role: Role::User, content: "[Human]: second message".into() },
     ];
-    req2.unseen = vec![apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 1, speaker: Speaker::Human, text: "second message".into(), servers: vec![], at: None }];
+    req2.unseen = vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 1, speaker: Speaker::Human, text: "second message".into(), servers: vec![], at: None }];
     let res2 = bot.respond(req2, &|_| {}).await;
     assert_eq!(res2.unwrap().text, "ok");
     let args2 = std::fs::read_to_string(log_dir.join("args_3.txt")).unwrap();
@@ -2871,7 +2871,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
         ViewTurn { role: Role::Assistant, content: "ok".into() },
         ViewTurn { role: Role::User, content: "[Human]: third message".into() },
     ];
-    req3.unseen = vec![apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 2, speaker: Speaker::Human, text: "third message".into(), servers: vec![], at: None }];
+    req3.unseen = vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 2, speaker: Speaker::Human, text: "third message".into(), servers: vec![], at: None }];
     let res3 = bot.respond(req3, &|_| {}).await;
     assert_eq!(res3.unwrap().text, "ok");
     let args3 = std::fs::read_to_string(log_dir.join("args_4.txt")).unwrap();

@@ -1036,7 +1036,7 @@ impl FoldQueue {
         }
         let note = human_note_line(copy.name.as_deref().unwrap_or(&copy.bot), files, reason);
         (task.event_sink)(RoomEvent::MessageAdded {
-            message: Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+            message: Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                 servers: Vec::new(),
                 seq: 0,
                 speaker: Speaker::Bot(ParticipantId::new("deck")),
