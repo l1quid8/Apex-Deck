@@ -270,11 +270,18 @@ mod tests {
             std::time::Duration::from_millis(500)
         };
         let mut accepted = 0;
+        let mut reset = 0;
         let refusal = tokio::time::timeout(refusal_deadline, async {
             loop {
                 match tokio::net::TcpStream::connect((config.bind, port)).await {
                     Ok(_) => {
                         accepted += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+                        // Closing the old listener can reset a queued connection.
+                        // Keep waiting until the port actually refuses connections.
+                        reset += 1;
                         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                     }
                     Err(error) => break error,
@@ -283,7 +290,7 @@ mod tests {
         })
         .await
         .unwrap_or_else(|_| panic!(
-            "TCP connection did not report refusal after gateway disable within {refusal_deadline:?}; {accepted} successful connections completed"
+            "TCP connection did not report refusal after gateway disable within {refusal_deadline:?}; {accepted} successful connections completed; {reset} connections reset"
         ));
         assert_eq!(refusal.kind(), std::io::ErrorKind::ConnectionRefused);
         assert_eq!(
