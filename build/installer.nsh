@@ -16,20 +16,33 @@
 !define APEX_DAEMON_IMAGE "apex-daemon.exe"
 
 ; Stop the previous build's service: end the scheduled task, then end any daemon
-; the app started itself as a child. taskkill exits 128 when there is no such
-; process, which is how this loop knows it is done; anything else means a
-; process was still there (or still dying), so ask again. Bounded at 20 x 500ms
-; so a daemon that refuses to exit cannot hold the installer open forever.
-; Leaves $R1 at the attempt count: 20 means it never went away.
+; the app started itself as a child.
+;
+; The taskkill filter keeps this to our own user. /IM alone matches every user's
+; copy, and on a shared PC we may neither end somebody else's nor count it as our
+; problem -- that is how you get "the service is still running" when nothing of
+; ours is running at all.
+;
+; It must be $USERNAME, not %USERNAME%: nsExec launches taskkill.exe directly, so
+; nothing turns %USERNAME% into a name. It would reach the filter as literal
+; text, match no process, and quietly skip the daemon we came to stop. (cmd.exe
+; is what expands %USERNAME%, and we do not run through it.)
+;
+; The loop repeats only while taskkill reports success, i.e. while it keeps
+; finding a copy to end. Any other result -- no such process, or another user's
+; process we may not touch -- means there is nothing left for us to do, so it
+; stops instead of guessing which exit code means "not found". Bounded at 20 x
+; 500ms so a service that keeps respawning cannot hold the installer open
+; forever. Leaves $R1 at the attempt count: 20 means it kept coming back.
 !macro StopDaemon
   nsExec::Exec '"$SYSDIR\schtasks.exe" /End /TN "${APEX_DAEMON_TASK}"'
   Pop $R0
 
   StrCpy $R1 0
   ${Do}
-    nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_DAEMON_IMAGE}"'
+    nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_DAEMON_IMAGE}" /FI "USERNAME eq $USERNAME"'
     Pop $R0
-    ${If} $R0 == "128"
+    ${If} $R0 != "0"
       ${ExitDo}
     ${EndIf}
     IntOp $R1 $R1 + 1
@@ -48,14 +61,18 @@
   ; failure through its exit code, not wait on a dialog.
   ${If} $R1 >= 20
     ${IfNot} ${Silent}
-      MessageBox MB_ICONSTOP|MB_OK "Apex Deck's background service is still running, so this version cannot replace it.$\n$\nClose Apex Deck, end apex-daemon.exe on Task Manager's Details tab, then run this installer again."
+      MessageBox MB_ICONSTOP|MB_OK "Apex Deck's background service keeps restarting, so this version cannot replace it.$\n$\nClose Apex Deck, end apex-daemon.exe on Task Manager's Details tab, then run this installer again."
       Quit
     ${EndIf}
   ${EndIf}
 !macroend
 
 !macro customUnInstall
-  ; An uninstall must not fail on a running image either, and a logon task left
-  ; behind would point at a binary that is about to be deleted.
+  ; An uninstall must not fail on a running image either, and the logon task must
+  ; go too: left behind it would point at a binary this is about to delete, and
+  ; fail at every sign-in from then on. Ending it is not enough, so remove the
+  ; definition as well.
   !insertmacro StopDaemon
+  nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /TN "${APEX_DAEMON_TASK}" /F'
+  Pop $R0
 !macroend

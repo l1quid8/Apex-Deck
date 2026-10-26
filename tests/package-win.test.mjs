@@ -117,6 +117,10 @@ test('the installer stops the old service before it copies files', () => {
   // An uninstall must not fail on a running image, or leave a task pointing at
   // a binary it is about to delete.
   assert.match(hook, /!macro customUnInstall[\s\S]*?!insertmacro StopDaemon/);
+  const uninstallAt = hook.indexOf('!macro customUnInstall');
+  const uninstall = hook.slice(uninstallAt, hook.indexOf('!macroend', uninstallAt));
+  assert.match(uninstall, /schtasks\.exe" \/Delete \/TN "\$\{APEX_DAEMON_TASK\}" \/F/,
+    'ending the task is not enough: the definition would outlive the binary it starts');
 
   const task = hook.match(/!define APEX_DAEMON_TASK "([^"]+)"/)?.[1];
   assert.equal(task, 'ApexDeckDaemon');
@@ -124,6 +128,13 @@ test('the installer stops the old service before it copies files', () => {
     'ending the task first lets the service shut down in order');
   assert.match(hook, /taskkill\.exe" \/F \/IM "\$\{APEX_DAEMON_IMAGE\}"/,
     'a daemon the app started as a child is not in the task, so it needs killing too');
+  assert.match(hook, /\/IM "\$\{APEX_DAEMON_IMAGE\}" \/FI "USERNAME eq \$USERNAME"/,
+    'without the user filter /IM also offers to end other users\' daemons');
+  // nsExec launches taskkill directly, so %USERNAME% would arrive as literal text
+  // and the filter would match nothing. (The file's own comments mention it, so
+  // this checks executable lines only.)
+  const code = hook.split('\n').filter((line) => !line.trimStart().startsWith(';')).join('\n');
+  assert.ok(!/%USERNAME%/.test(code), 'cmd.exe is not in the path here, so %USERNAME% never expands');
   assert.match(hook, /!define APEX_DAEMON_IMAGE "apex-daemon\.exe"/);
 
   // After M3 the app registers the task itself; keep the two names from drifting
@@ -156,4 +167,8 @@ test('the Windows CI job checks the app, not just the service', () => {
   const testAt = job.indexOf('run: node --experimental-strip-types');
   assert.ok(fetchAt > 0, 'the binary must be fetched in its own step');
   assert.ok(fetchAt < testAt, 'and before any test file can import electron');
+
+  // The merged Windows branch reads 0 app-test failures (run 40253047144), so
+  // this fails the run again: a Windows regression must not pass as a warning.
+  assert.ok(!/continue-on-error/.test(job), 'a Windows app-test failure must fail the run');
 });
