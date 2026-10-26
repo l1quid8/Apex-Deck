@@ -44,6 +44,76 @@ jobs:
         run: npm run desktop:win
       - name: Show what was built
         run: Get-ChildItem release | Select-Object Name, Length
+      # The shutdown step lives inside the built .exe, so `npm run desktop:win`
+      # cannot prove anything about it. An earlier version compiled, passed every
+      # check, and would have refused to install on a machine that never had Apex
+      # Deck: with a /FI filter, taskkill answers 0 both for "ended one" and for
+      # "found none", so the retry loop never saw an end. Only running it catches
+      # that, so run it -- once with a service already running, once with none.
+      - name: Run the installer, with a service running and without
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Join-Path $PWD 'release\Apex-Deck-Setup.exe'
+          if (-not (Test-Path $setup)) { throw "no installer at $setup" }
+
+          function Install-ApexDeck([string] $label) {
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $proc = Start-Process -FilePath $setup -ArgumentList '/S' -PassThru
+            if (-not $proc.WaitForExit(180000)) { throw "$label did not finish within 3 minutes" }
+            $watch.Stop()
+            $seconds = $watch.Elapsed.TotalSeconds
+            Write-Host ("{0}: exit {1} after {2:N1} s" -f $label, $proc.ExitCode, $seconds)
+            # A silent install that cannot stop the service now reports it here
+            # instead of going on to fail on a locked image.
+            if ($proc.ExitCode -ne 0) { throw "$label exited $($proc.ExitCode)" }
+            if ($seconds -ge 90) { throw "$label took $seconds s: something is waiting a long time" }
+            return [double] $seconds
+          }
+
+          # Nothing running, which is what a first install looks like.
+          $idle = Install-ApexDeck 'install with nothing running'
+
+          # electron-builder copies the service to resources\bin\apex-daemon.exe
+          # through win.extraResources, and desktop/sidecar.mjs runs it from
+          # there. No check has ever confirmed the two agree on a real install.
+          $service = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs') `
+            -Recurse -Filter 'apex-daemon.exe' -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $service) {
+            throw 'the installed app has no apex-daemon.exe, so it has no service to start'
+          }
+          Write-Host "the installed app carries the service at $($service.FullName)"
+
+          # Now the case the shutdown step exists for: a service from an earlier
+          # build is still running. ping -t is always present and never exits, and
+          # the image name is what the installer looks for.
+          $fakeDir = Join-Path $env:RUNNER_TEMP 'fake-service'
+          New-Item -ItemType Directory -Force -Path $fakeDir | Out-Null
+          $fake = Join-Path $fakeDir 'apex-daemon.exe'
+          Copy-Item "$env:SystemRoot\System32\PING.EXE" $fake -Force
+          Start-Process -FilePath $fake -ArgumentList '-t', '127.0.0.1'
+          Start-Sleep -Milliseconds 500
+          if (-not (Get-Process -Name 'apex-daemon' -ErrorAction SilentlyContinue)) {
+            throw 'the stand-in service did not start, so this would prove nothing'
+          }
+
+          $upgrade = Install-ApexDeck 'install over a running service'
+
+          $deadline = (Get-Date).AddSeconds(5)
+          while ((Get-Process -Name 'apex-daemon' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 200
+          }
+          if (Get-Process -Name 'apex-daemon' -ErrorAction SilentlyContinue) {
+            throw 'the service was still running after the install, so it was never stopped'
+          }
+          Write-Host 'the running service was gone after the install'
+
+          # Both figures are printed so the baseline is visible; the exit code is
+          # what catches the regression, because that bug taxed every install
+          # equally and so hides in the difference.
+          Write-Host ("the running service added {0:N1} s to the install" -f ($upgrade - $idle))
       - name: Attach the installer to this run
         uses: actions/upload-artifact@v4
         with:
