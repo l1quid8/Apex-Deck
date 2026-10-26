@@ -744,10 +744,13 @@ impl Host {
         self.room_open(id, participants, options, cwd, false)
     }
 
-    /// Talk-only chat profiles and runnable agents on this machine, with API key env names redacted.
-    pub fn chat_profiles(&self) -> Result<serde_json::Value, String> {
-        let path = agents::login_path();
-        let detected = agents::detect();
+    /// This machine's saved bot profiles, or its detected agents on a
+    /// headless box with none saved. Unredacted: never send these to a phone.
+    pub fn chat_saved_profiles(&self) -> Result<Vec<ParticipantConfig>, String> {
+        self.chat_saved_profiles_from(&agents::detect())
+    }
+
+    fn chat_saved_profiles_from(&self, detected: &[agents::AgentInfo]) -> Result<Vec<ParticipantConfig>, String> {
         let mut raw_profiles: Vec<ParticipantConfig> = self
             .session()?
             .and_then(|s| s.profiles)
@@ -756,7 +759,7 @@ impl Host {
             .filter_map(|v| serde_json::from_value(v).ok())
             .collect();
         if raw_profiles.is_empty() {
-            for info in &detected {
+            for info in detected {
                 if !info.found {
                     continue;
                 }
@@ -784,15 +787,19 @@ impl Host {
                 }
             }
         }
-        let profiles: Vec<serde_json::Value> = raw_profiles
+        Ok(raw_profiles)
+    }
+
+    /// Talk-only chat profiles and runnable agents on this machine, with API key env names redacted.
+    pub fn chat_profiles(&self) -> Result<serde_json::Value, String> {
+        let path = agents::login_path();
+        let detected = agents::detect();
+        let profiles: Vec<serde_json::Value> = self
+            .chat_saved_profiles_from(&detected)?
             .into_iter()
-            .map(|mut p| {
+            .map(|p| {
                 let check = apex_adapters::chat_profile_ok(&p, path.as_deref());
-                p.access = Access::Read;
-                p.media = None;
-                if let apex_core::Backend::OpenAiCompatible { ref mut api_key_env, .. } = p.backend {
-                    *api_key_env = None;
-                }
+                let p = crate::chat_bots::redacted(p);
                 match check {
                     Ok(()) => serde_json::json!({ "profile": p, "chatOk": true, "reason": serde_json::Value::Null }),
                     Err(reason) => serde_json::json!({ "profile": p, "chatOk": false, "reason": reason }),
@@ -846,14 +853,19 @@ impl Host {
         self: &Arc<Self>,
         id: String,
         title: Option<String>,
-        mut participants: Vec<ParticipantConfig>,
+        bots: Vec<crate::chat_bots::ChatBotRequest>,
         options: RoomOptions,
     ) -> Result<RoomSnapshot, String> {
         let path = agents::login_path();
-        for p in &mut participants {
-            apex_adapters::chat_profile_ok(p, path.as_deref())?;
-            p.access = Access::Read;
-            p.media = None;
+        let saved = self.chat_saved_profiles()?;
+        let mut participants = Vec::with_capacity(bots.len());
+        let mut made_from = std::collections::BTreeMap::new();
+        for bot in bots {
+            let profile = bot.profile.clone();
+            let p = crate::chat_bots::resolve(&saved, bot)?;
+            apex_adapters::chat_profile_ok(&p, path.as_deref())?;
+            made_from.insert(p.id.as_str().to_owned(), profile);
+            participants.push(p);
         }
         let snapshot = self.room_open_with_kind(
             id.clone(),
@@ -875,6 +887,13 @@ impl Host {
             }
             if meta.updated_at == 0 {
                 meta.updated_at = now;
+            }
+            // Reopening an existing chat keeps its own bots, so only record
+            // the ones it actually holds.
+            for p in &snapshot.participants {
+                if let Some(profile) = made_from.get(p.id.as_str()) {
+                    meta.profiles.entry(p.id.as_str().to_owned()).or_insert_with(|| profile.clone());
+                }
             }
         })?;
         Ok(snapshot)
@@ -1355,7 +1374,9 @@ impl Host {
         }
     }
 
-    pub async fn chat_add_participant(self: &Arc<Self>, id: String, mut participant: ParticipantConfig) -> Result<(), String> {
+    pub async fn chat_add_participant(self: &Arc<Self>, id: String, bot: crate::chat_bots::ChatBotRequest) -> Result<(), String> {
+        let profile = bot.profile.clone();
+        let participant = crate::chat_bots::resolve(&self.chat_saved_profiles()?, bot)?;
         if !self.rooms.lock().unwrap().contains_key(&id) {
             self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
         }
@@ -1368,8 +1389,6 @@ impl Host {
         self.require_idle(&id)?;
         let context = self.room_context(&id)?;
         apex_adapters::chat_profile_ok(&participant, context.path.as_deref())?;
-        participant.access = Access::Read;
-        participant.media = None;
         let name = participant.id.clone();
         self.read_plans(&id, std::slice::from_ref(&participant), &context);
         let room = self.room(&id)?;
@@ -1383,7 +1402,10 @@ impl Host {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
             self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })?;
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-            let _ = self.store.update_chat_meta(&id, |meta| { meta.updated_at = meta.updated_at.max(now); });
+            self.store.update_chat_meta(&id, |meta| {
+                meta.updated_at = meta.updated_at.max(now);
+                meta.profiles.insert(name.as_str().to_owned(), profile);
+            })?;
             Ok(())
         } else {
             Err(format!("a participant with the id `{name}` is already in this chat"))
@@ -1435,7 +1457,9 @@ impl Host {
         Ok(next)
     }
 
-    pub async fn chat_update_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>) -> Result<ParticipantConfig, String> {
+    /// Change a chat bot's name, model, reasoning or Speed. Its backend,
+    /// address, key and Access come from the machine and never change here.
+    pub async fn chat_update_participant(self: &Arc<Self>, id: String, participant: ParticipantId, patch: crate::chat_bots::ChatBotPatch) -> Result<ParticipantConfig, String> {
         if !self.rooms.lock().unwrap().contains_key(&id) {
             self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
         }
@@ -1445,21 +1469,13 @@ impl Host {
         }
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
-        let name = participant.id.clone();
+        let name = participant;
         let context = self.room_context(&id)?;
         let room = self.room(&id)?;
         let mut room = room.lock().await;
         let current = room.configs().into_iter().find(|p| p.id == name)
             .ok_or_else(|| format!("no participant with the id `{name}` is in this chat"))?;
-        let mut next = if let Some(base) = base {
-            if base.id != name { return Err("settings base belongs to another participant".into()); }
-            merge_participant(&current, &base, &participant)?
-        } else { participant };
-        if next.access != Access::Read {
-            return Err("Talk-only chat rooms are locked to read-only access. Move to a Work thread to grant file or command access.".into());
-        }
-        next.access = Access::Read;
-        next.media = None;
+        let next = crate::chat_bots::apply(&current, patch)?;
         apex_adapters::chat_profile_ok(&next, context.path.as_deref())?;
         if next.display_name != current.display_name {
             if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
@@ -1512,7 +1528,10 @@ impl Host {
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
         self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })?;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.store.update_chat_meta(&id, |meta| { meta.updated_at = meta.updated_at.max(now); });
+        self.store.update_chat_meta(&id, |meta| {
+            meta.updated_at = meta.updated_at.max(now);
+            meta.profiles.remove(participant.as_str());
+        })?;
         Ok(())
     }
 
@@ -3833,8 +3852,51 @@ mod host_tests {
         let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["hello from chat"]).config().clone();
         bot.access = Access::Full;
         bot.backend = apex_core::Backend::Scripted { lines: vec!["hello from chat".into()] };
+        let ask = |profile: &str, id: Option<&str>| -> crate::chat_bots::ChatBotRequest {
+            serde_json::from_value(json!({ "profile": profile, "id": id })).unwrap()
+        };
 
-        let snapshot = host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("First chat".into()), vec![bot.clone()], RoomOptions::default()).unwrap();
+        // A phone names a saved profile; a whole bot it built itself is refused.
+        assert!(serde_json::from_value::<crate::command::Command>(json!({
+            "cmd": "chat_create",
+            "args": { "id": "x", "options": RoomOptions::default(), "participants": [{ "profile": "api-bot", "backend": { "kind": "open_ai_compatible", "base_url": "https://evil.example", "model": "m", "api_key_env": "SECRET_KEY" } }] }
+        })).is_err());
+        assert!(host.chat_create("22222222-2222-2222-2222-222222222222".into(), None, vec![ask("not-saved", None)], RoomOptions::default()).is_err());
+        assert!(host.chat_create("22222222-2222-2222-2222-222222222222".into(), None, vec![ask("cli-bot", None)], RoomOptions::default()).is_err());
+
+        // The API bot keeps the machine's address and key, which the phone never saw.
+        let api_chat = host.chat_create("33333333-3333-3333-3333-333333333333".into(), None, vec![ask("api-bot", Some("api-2"))], RoomOptions::default()).unwrap();
+        assert_eq!(api_chat.participants[0].id.as_str(), "api-2");
+        assert_eq!(api_chat.participants[0].access, Access::Read);
+        assert_eq!(
+            api_chat.participants[0].backend,
+            apex_core::Backend::OpenAiCompatible { base_url: "https://api.example.com/v1".into(), model: "gpt-4o".into(), api_key_env: Some("SECRET_KEY".into()) }
+        );
+        let listed = host.chat_list().unwrap();
+        let api_row = listed["rooms"].as_array().unwrap().iter().find(|r| r["id"] == "33333333-3333-3333-3333-333333333333").unwrap();
+        assert_eq!(api_row["profiles"]["api-2"], "api-bot");
+        assert!(api_row["participants"][0]["backend"]["api_key_env"].is_null());
+        let patched = runtime.block_on(host.chat_update_participant(
+            "33333333-3333-3333-3333-333333333333".into(),
+            ParticipantId::new("api-2"),
+            serde_json::from_value(json!({ "model": "gpt-4.1", "speed": "fast" })).unwrap(),
+        )).unwrap();
+        assert_eq!(
+            patched.backend,
+            apex_core::Backend::OpenAiCompatible { base_url: "https://api.example.com/v1".into(), model: "gpt-4.1".into(), api_key_env: Some("SECRET_KEY".into()) }
+        );
+        assert!(serde_json::from_value::<crate::chat_bots::ChatBotPatch>(json!({ "access": "full" })).is_err());
+
+        // Scripted bots stand in for saved profiles below.
+        let mut profiles = host.session().unwrap().unwrap().profiles.unwrap();
+        profiles.push(serde_json::to_value(&bot).unwrap());
+        let mut bot2 = apex_core::testing::ScriptedParticipant::new("bot2", &["hi"]).config().clone();
+        bot2.access = Access::Edits;
+        bot2.backend = apex_core::Backend::Scripted { lines: vec!["hi".into()] };
+        profiles.push(serde_json::to_value(&bot2).unwrap());
+        host.session_save(json!({ "version": 1, "profiles": profiles })).unwrap();
+
+        let snapshot = host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("First chat".into()), vec![ask("bot", None)], RoomOptions::default()).unwrap();
         assert_eq!(snapshot.kind, apex_core::RoomKind::Chat);
         assert_eq!(snapshot.participants.len(), 1);
         assert_eq!(snapshot.participants[0].access, Access::Read);
@@ -3859,27 +3921,26 @@ mod host_tests {
         assert!(host.store.save_room("11111111-1111-1111-1111-111111111111", &forged).is_err());
 
         // chat_add_participant, chat_update_participant, chat_remove_participant clamp/refuse non-read access
-        let mut bot2 = apex_core::testing::ScriptedParticipant::new("bot2", &["hi"]).config().clone();
-        bot2.access = Access::Edits;
-        bot2.backend = apex_core::Backend::Scripted { lines: vec!["hi".into()] };
-        runtime.block_on(host.chat_add_participant("11111111-1111-1111-1111-111111111111".into(), bot2.clone())).unwrap();
+        runtime.block_on(host.chat_add_participant("11111111-1111-1111-1111-111111111111".into(), ask("bot2", None))).unwrap();
         let after_add = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
         assert_eq!(after_add.snapshot.participants.len(), 2);
         assert!(after_add.snapshot.participants.iter().all(|p| p.access == Access::Read && p.media.is_none()));
+        assert_eq!(host.store.chat_meta("11111111-1111-1111-1111-111111111111").unwrap().unwrap().profiles.get("bot2").map(String::as_str), Some("bot2"));
 
-        bot2.persona = "Updated role".into();
-        bot2.access = Access::Full;
-        assert!(runtime.block_on(host.chat_update_participant("11111111-1111-1111-1111-111111111111".into(), bot2.clone(), None)).is_err());
-        bot2.access = Access::Read;
-        runtime.block_on(host.chat_update_participant("11111111-1111-1111-1111-111111111111".into(), bot2.clone(), None)).unwrap();
+        runtime.block_on(host.chat_update_participant(
+            "11111111-1111-1111-1111-111111111111".into(),
+            ParticipantId::new("bot2"),
+            serde_json::from_value(json!({ "display_name": "Second bot" })).unwrap(),
+        )).unwrap();
         let after_update = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
         let updated_bot2 = after_update.snapshot.participants.iter().find(|p| p.id.as_str() == "bot2").unwrap();
-        assert_eq!(updated_bot2.persona, "Updated role");
+        assert_eq!(updated_bot2.display_name, "Second bot");
         assert_eq!(updated_bot2.access, Access::Read);
 
         runtime.block_on(host.chat_remove_participant("11111111-1111-1111-1111-111111111111".into(), ParticipantId::new("bot2"))).unwrap();
         let after_remove = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
         assert_eq!(after_remove.snapshot.participants.len(), 1);
+        assert!(!host.store.chat_meta("11111111-1111-1111-1111-111111111111").unwrap().unwrap().profiles.contains_key("bot2"));
 
         // chat_update_meta updates title and archived
         let updated_meta = host.chat_update_meta("11111111-1111-1111-1111-111111111111".into(), Some("Renamed chat".into()), Some(true), None).unwrap();
@@ -3888,9 +3949,10 @@ mod host_tests {
 
         let listed = host.chat_list().unwrap();
         let rooms = listed["rooms"].as_array().unwrap();
-        assert_eq!(rooms.len(), 1);
-        assert_eq!(rooms[0]["title"], "Renamed chat");
-        assert_eq!(rooms[0]["archived"], true);
+        assert_eq!(rooms.len(), 2);
+        let first = rooms.iter().find(|r| r["id"] == "11111111-1111-1111-1111-111111111111").unwrap();
+        assert_eq!(first["title"], "Renamed chat");
+        assert_eq!(first["archived"], true);
 
         let _ = std::fs::remove_dir_all(data);
     }

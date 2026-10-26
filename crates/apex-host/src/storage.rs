@@ -76,6 +76,10 @@ pub struct ChatRoomMeta {
     pub promoted_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_to: Option<ChatMovedTo>,
+    /// The saved profile each bot was made from, by bot id. A bot's id can be
+    /// a copy's alias ("claude-2"), so moving a chat needs both.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub profiles: std::collections::BTreeMap<String, String>,
 }
 
 /// One row returned by `chat_list`.
@@ -93,6 +97,9 @@ pub struct ChatListEntry {
     pub promoted_from: Option<String>,
     pub promoted_to: Option<String>,
     pub moved_to: Option<ChatMovedTo>,
+    /// Bot id to saved profile id, as in `ChatRoomMeta::profiles`.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -741,6 +748,7 @@ impl Store {
                 promoted_from: meta.promoted_from,
                 promoted_to: meta.promoted_to,
                 moved_to: meta.moved_to,
+                profiles: meta.profiles,
             });
         }
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id)));
