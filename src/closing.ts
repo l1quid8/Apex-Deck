@@ -8,6 +8,7 @@
 import type { LayoutNode } from "./layout";
 import { leafIds, removeLeaf, validate } from "./layout.ts";
 import { normalizeAddress } from "./previewAddress.ts";
+import { discardQuestion } from "./unsavedEdits.ts";
 import type { Pane, PaneStatus, ThreadStatus } from "./types";
 
 /** How long a deleted thread can still be brought back. */
@@ -329,4 +330,15 @@ export function quitQuestion(busy: Running[], stopsWork = true): { title: string
     rows,
     action: "Quit and end them",
   };
+}
+
+type Ask = { title: string; body: string; rows?: string[]; action: string };
+
+/**
+ * What quitting asks, one after another; empty to quit at once. First unsaved
+ * file edits in this window, which are lost whether or not the work goes on:
+ * Deck exits without the editor's own warning. Then busy agents (`quitQuestion`).
+ */
+export function quitQuestions(unsavedFile: string | null, busy: Running[], stopsWork = true): Ask[] {
+  return [unsavedFile ? discardQuestion(unsavedFile) : null, quitQuestion(busy, stopsWork)].filter((ask): ask is Ask => ask !== null);
 }

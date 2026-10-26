@@ -19,14 +19,14 @@ import { openTauriApps, tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
-import { QuitGate } from './quit.mjs';
+import { QuitGate, editsElsewhere } from './quit.mjs';
 import { answers, daemonBinary, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
 import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, needsAttestation, requestUpdate } from './provenance.mjs';
-import { Updater, disabledReason, editsElsewhere, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
+import { Updater, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
@@ -630,8 +630,22 @@ function askToQuit(entry) {
   return true;
 }
 
+/** Each Deck window's file with unsaved edits, by window id. Quitting with app.exit skips the editor's unload warning. */
+const unsavedEdits = new Map();
+handle('updates:unsavedEdit', async ({ win }, file) => {
+  if (typeof file === 'string' && file) unsavedEdits.set(win.id, file.slice(0, 200));
+  else unsavedEdits.delete(win.id);
+});
+/** Why window `asking` can't quit Deck yet: another open window, pop-outs included, holds unsaved edits. */
+const editsBlockingQuit = (asking) => editsElsewhere(unsavedEdits, asking, (id) => windows.has(id) || popoutWindows.has(id));
+
 handle('shell:quitHeard', async (_entry, request) => gate.heard(Number(request)));
-handle('shell:quitApp', async () => finishQuit());
+// The asking window has already asked about its own unsaved edits and stopping work.
+handle('shell:quitApp', async ({ win }) => {
+  const blocked = editsBlockingQuit(win.id);
+  if (blocked) throw new Error(blocked);
+  await finishQuit();
+});
 
 // ------------------------------------------------------------ updates
 // Checks and downloads run here (updater.mjs); the window shows them and asks
@@ -677,17 +691,11 @@ handle('updates:status', async () => updater?.status() ?? null);
 handle('updates:check', async () => updater?.check({ manual: true }) ?? null);
 handle('updates:later', async () => updater?.later());
 handle('updates:dismissResult', async () => updater?.dismissResult());
-/** Each Deck window's file with unsaved edits, by window id. Quitting with app.exit skips the editor's unload warning. */
-const unsavedEdits = new Map();
-handle('updates:unsavedEdit', async ({ win }, file) => {
-  if (typeof file === 'string' && file) unsavedEdits.set(win.id, file.slice(0, 200));
-  else unsavedEdits.delete(win.id);
-});
 // The asking window has already asked about its own unsaved edits and stopping
 // work, and saved its session; edits in any other window, pop-outs included, stop the restart.
 handle('updates:restart', async ({ win }) => {
   if (!updater) throw new Error('Updates are still starting.');
-  const blocked = editsElsewhere(unsavedEdits, win.id, (id) => windows.has(id) || popoutWindows.has(id));
+  const blocked = editsBlockingQuit(win.id);
   if (blocked) throw new Error(blocked);
   await updater.restart();
   void finishQuit();

@@ -93,16 +93,6 @@ export function disabledReason({ packaged, platform, dataDir, smoke, protectedCo
   return null;
 }
 
-/**
- * Why "Restart to update" asked from window `asking` must wait, or null. Deck
- * exits without the file editor's unload warning; the asking window has asked
- * about its own edits, so only another open window's stop it.
- */
-export function editsElsewhere(edits, asking, isOpen) {
-  for (const [id, file] of edits) if (id !== asking && isOpen(id)) return `${file} has unsaved changes in another Deck window. Save or discard them there first.`;
-  return null;
-}
-
 /** The Developer ID team in `codesign -d --verbose=2` output, or null for ad hoc. */
 export function teamFrom(details) {
   return /^TeamIdentifier=([A-Z0-9]{10})$/m.exec(String(details))?.[1] ?? null;

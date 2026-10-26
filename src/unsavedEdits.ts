@@ -7,7 +7,7 @@ export function setUnsavedEdit(owner: symbol, file: string | null) {
   report();
 }
 
-/** Tells the desktop app, which refuses "Restart to update" from another window while this one holds edits. */
+/** Tells the desktop app, which refuses Quit and "Restart to update" from another window while this one holds edits. */
 function report() {
   if (typeof window !== "undefined") void window.apexDeck?.updates?.unsavedEdit(unsavedEditName()).catch(() => {});
 }

@@ -39,3 +39,13 @@ export class QuitGate {
     this.confirmed = true;
   }
 }
+
+/**
+ * Why quitting, or "Restart to update", asked from window `asking` must wait,
+ * or null. Deck exits without the file editor's unload warning; the asking
+ * window has asked about its own edits, so only another open window's stop it.
+ */
+export function editsElsewhere(edits, asking, isOpen) {
+  for (const [id, file] of edits) if (id !== asking && isOpen(id)) return `${file} has unsaved changes in another Deck window. Save or discard them there first.`;
+  return null;
+}

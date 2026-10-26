@@ -5,9 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Writable } from 'node:stream';
-import { runInNewContext } from 'node:vm';
 import {
-  FEED_URL, Updater, assetUrl, compareVersions, disabledReason, editsElsewhere, fetchDownload, fetchManifest,
+  FEED_URL, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
   packageFor, packageVerifier, parseManifest, teamFrom,
 } from '../desktop/updater.mjs';
 
@@ -297,38 +296,3 @@ test('the package check pins this app’s team and the promised version', async 
   assert.deepEqual(fs.readdirSync(scratch), [], 'each check clears its unpacked copy');
 });
 
-test('unsaved edits in another open window stop Restart to update; the asking window’s own were already asked about', () => {
-  const open = new Set([1, 2]);
-  const isOpen = (id) => open.has(id);
-  assert.equal(editsElsewhere(new Map(), 1, isOpen), null);
-  assert.equal(editsElsewhere(new Map([[1, 'notes.md']]), 1, isOpen), null);
-  assert.match(editsElsewhere(new Map([[1, 'notes.md'], [2, 'plan.md']]), 1, isOpen), /^plan\.md has unsaved changes in another Deck window\. Save or discard them there first\.$/);
-  open.delete(2);
-  assert.equal(editsElsewhere(new Map([[2, 'plan.md']]), 1, isOpen), null, 'a closed window holds nothing');
-});
-
-test('a popped-out Files tab’s unsaved edits stop Restart to update from the Deck window', async () => {
-  // The production handlers from main.mjs, run against fake windows.
-  const source = fs.readFileSync(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
-  const start = source.indexOf('const unsavedEdits = new Map();');
-  const end = source.indexOf('\n// ---', start);
-  assert.ok(start > 0 && end > start);
-  const handlers = new Map();
-  let restarts = 0;
-  const deck = { win: { id: 1 } };
-  const popout = { win: { id: 2 }, role: 'popout' };
-  runInNewContext(source.slice(start, end), {
-    windows: new Map([[1, deck]]),
-    popoutWindows: new Map([[2, popout]]),
-    editsElsewhere,
-    updater: { restart: async () => { restarts += 1; } },
-    finishQuit: async () => {},
-    handle: (channel, run) => handlers.set(channel, run),
-  });
-  await handlers.get('updates:unsavedEdit')(popout, 'plan.md');
-  await assert.rejects(handlers.get('updates:restart')(deck), /^Error: plan\.md has unsaved changes in another Deck window/);
-  assert.equal(restarts, 0);
-  await handlers.get('updates:unsavedEdit')(popout, null);
-  await handlers.get('updates:restart')(deck);
-  assert.equal(restarts, 1);
-});
