@@ -825,7 +825,8 @@ impl Store {
         Ok(self.promote_roots()?.roots.into_iter().find(|root| real.starts_with(Path::new(&root.path))))
     }
 
-    pub fn delete_room(&self, id: &str) -> Result<(), String> {        let _guard = self.writes.lock().unwrap();
+    pub fn delete_room(&self, id: &str) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
         let mut authorities=self.room_authorities()?;
         authorities.remove(id);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
