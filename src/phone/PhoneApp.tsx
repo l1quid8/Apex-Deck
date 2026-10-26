@@ -1009,6 +1009,10 @@ export function PhoneApp() {
   const screenRef = useRef({hostId:openHostId,roomId:openPane?.id ?? '',shown:tab==='threads' && openId!==null});
   screenRef.current={hostId:openHostId,roomId:openPane?.id ?? '',shown:tab==='threads' && openId!==null};
   if (room && openHostId) participantsRef.current.set(JSON.stringify([openHostId,room.id]),room.configs.map(p=>({id:p.id,display_name:p.display_name,media:p.media})));
+  // Each thread's own bots and turn rule, as last seen on screen: a queue for a thread that is offscreen still routes
+  // an untagged follow-up behind its own pending @tag, which its machine hasn't been sent yet and can't know about.
+  const rostersRef = useRef(new Map<string, Pick<Room, "participants" | "policy">>());
+  if (room) rostersRef.current.set(queueKey(room.hostId, room.id), { participants: room.participants, policy: room.policy });
   const phoneVoiceRef = useRef<PhoneVoice | null>(null);
   if (!phoneVoiceRef.current) phoneVoiceRef.current=createPhoneVoice({
     host:id=> {const h=hostsRef.current.find(h=>h.machine.id===id); if(!h)return null;return {name:h.machine.name,backend:h.backend,voice:h.voice,canCall:()=>h.supports('voice_server_v1')&&h.access()?.tier!=='read_only',whenConnected:ms=>new Promise<void>((resolve,reject)=>{if(h.connection.get().status.kind==='connected'){resolve();return;}const timer=setTimeout(()=>{off();reject(Error(`Can't reach ${h.machine.name} right now.`));},ms);const off=h.connection.subscribe(()=>{if(h.connection.get().status.kind==='connected'){clearTimeout(timer);off();resolve();}});})};},
@@ -1047,8 +1051,10 @@ export function PhoneApp() {
     const queue: ParticipantQueues = new ParticipantQueues(
       async (text) => {
         const shown = roomRef.current;
-        // Only the room on screen for this same machine may answer here; otherwise this queue's own machine decides.
-        const sticky = shown?.id === paneId && shown.hostId === hostId ? queuedSticky(text, shown.participants, shown.policy, queue.items) : null;
+        // This thread's own bots and rule, never another machine's room that shares its id. Offscreen, the last
+        // seen copy still knows the pending @tag its machine hasn't received; with none, the machine decides.
+        const own = shown?.id === paneId && shown.hostId === hostId ? shown : rostersRef.current.get(queueKey(hostId, paneId));
+        const sticky = own ? queuedSticky(text, own.participants, own.policy, queue.items) : null;
         return sticky ?? backend().roomTargets(paneId, text);
       },
       async (text, to, kind, hops, voice) => {

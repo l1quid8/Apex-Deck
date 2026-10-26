@@ -73,7 +73,7 @@ test('a Work thread\'s queued rows and Edit stay on their own machine when anoth
   let queued={},drafts={},quotes={};const notices=[],posts=[];
   const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async()=>['bot'],roomPostTo:async(room,text,to)=>{posts.push({id,room,text,to})},roomStop:async()=>{}}}));
   const env={machineThreadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),
-  queues:{current:new Map()},hostsRef:{current:hosts},roomRef:{current:{id:'shared',hostId:'A',participants:[{id:'bot',display_name:'Bot'}],policy:'everyone'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},
+  queues:{current:new Map()},hostsRef:{current:hosts},roomRef:{current:{id:'shared',hostId:'A',participants:[{id:'bot',display_name:'Bot'}],policy:'everyone'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},rostersRef:{current:new Map()},
   openHostId:'A',setQueued:fn=>queued=fn(queued),setDrafts:fn=>drafts=fn(drafts),setQuotes:fn=>quotes=fn(quotes),setNotice:n=>notices.push(n),words:String,toLink:x=>x};
   const h=new Function('env',`with(env){${code};return {queueFor,unqueue}}`)(env);
   const a=h.queueFor('shared','A');a.started('bot');await a.send('A private queued text');
@@ -135,13 +135,14 @@ test('a queued Work message picks its bots with its own machine\'s rules, not th
   const {machineThreadKey}=await import(new URL('../src/phone/chatRoutes.ts', import.meta.url).href);
   const source=fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url),'utf8');
   const slice=(s,e)=>{const at=source.indexOf(s),end=source.indexOf(e,at);assert.ok(at>=0&&end>at,s);return source.slice(at,end)};
-  const code=transform([slice('  const queueKey =','\n  const [queued'),slice('  function takeBack(','\n  const sessionEdits')].join('\n'),{transforms:['typescript']}).code;
+  const code=transform([slice('  const queueKey =','\n  const [queued'),slice('  const rostersRef =','\n  const phoneVoiceRef'),slice('  function takeBack(','\n  const sessionEdits')].join('\n'),{transforms:['typescript']}).code;
   let queued={},drafts={},quotes={};const targetCalls=[];
   const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async(room,text)=>{targetCalls.push({id,room,text});return text.includes('@One')?['one']:['one','two']},roomPostTo:async()=>{},roomStop:async()=>{}}}));
   const people=[{id:'one',display_name:'One'},{id:'two',display_name:'Two'}];
   const env={machineThreadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),queues:{current:new Map()},hostsRef:{current:hosts},
-    roomRef:{current:{id:'shared',hostId:'A',participants:people,policy:'everyone'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},
+    roomRef:{current:{id:'shared',hostId:'A',participants:people,policy:'everyone'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},useRef:current=>({current}),
     setQueued:fn=>{queued=fn(queued)},setDrafts:fn=>{drafts=fn(drafts)},setQuotes:fn=>{quotes=fn(quotes)},setNotice:()=>{},words:String,toLink:x=>x};
+  env.room=env.roomRef.current;
   const h=new Function('env',`with(env){${code};return {queueFor}}`)(env);
   const a=h.queueFor('shared','A');a.started('one');a.started('two');
   await a.send('@One wait');
@@ -150,4 +151,40 @@ test('a queued Work message picks its bots with its own machine\'s rules, not th
   await a.send('A follow-up captured before switching to B');
   assert.deepEqual(a.items.map(x=>x.to),[['one'],['one','two']]);
   assert.deepEqual(targetCalls.map(c=>c.id),['A','A'],'A is asked, B never is');
+});
+
+test('an offscreen Work queue keeps an untagged follow-up behind its own pending @tag', async () => {
+  const {ParticipantQueues}=await import(new URL('../src/turnQueue.ts', import.meta.url).href);
+  const {queuedSticky,giveBack}=await import(new URL('../src/phoneQueue.ts', import.meta.url).href);
+  const {postFromPhone}=await import(new URL('../src/phone/phonePost.ts', import.meta.url).href);
+  const {splitTldr}=await import(new URL('../src/tldr.ts', import.meta.url).href);
+  const {quotesBack}=await import(new URL('../src/reply.ts', import.meta.url).href);
+  const {machineThreadKey}=await import(new URL('../src/phone/chatRoutes.ts', import.meta.url).href);
+  const source=fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url),'utf8');
+  const slice=(s,e)=>{const at=source.indexOf(s),end=source.indexOf(e,at);assert.ok(at>=0&&end>at,s);return source.slice(at,end)};
+  const code=transform([slice('  const queueKey =','\n  const [queued'),slice('  const rostersRef =','\n  const phoneVoiceRef'),slice('  function takeBack(','\n  const sessionEdits')].join('\n'),{transforms:['typescript']}).code;
+  const people=[{id:'one',display_name:'One'},{id:'two',display_name:'Two'}];
+  const run=async(next)=>{
+    const targetCalls=[],posts=[];
+    // Each machine last posted to Two, so it answers an untagged message with Two: it hasn't been sent the queued @One.
+    const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async(room,text)=>{targetCalls.push({id,room,text});return text.includes('@One')?['one']:['two']},roomPostTo:async(room,text,to)=>{posts.push({id,room,text,to})},roomStop:async()=>{}}}));
+    const env={machineThreadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),queues:{current:new Map()},hostsRef:{current:hosts},
+      roomRef:{current:{id:'shared',hostId:'A',participants:people,policy:'mention'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},useRef:current=>({current}),
+      setQueued:()=>{},setDrafts:()=>{},setQuotes:()=>{},setNotice:()=>{},words:String,toLink:x=>x};
+    env.room=env.roomRef.current;
+    const h=new Function('env',`with(env){${code};return {queueFor}}`)(env);
+    const a=h.queueFor('shared','A');a.started('one');
+    await a.send('@One wait');
+    // The phone moves on: the same id on B, or another thread on A. The A follow-up lands only now.
+    env.roomRef.current=next;
+    await a.send('A follow-up finishing after navigation');
+    assert.deepEqual(a.items.map(x=>x.to),[['one'],['one']]);
+    a.idle('one');await new Promise(r=>setTimeout(r,0));
+    assert.deepEqual(posts.map(p=>[p.id,p.text,p.to]),[['A','@One wait',['one']]]);
+    a.idle('one');await new Promise(r=>setTimeout(r,0));
+    assert.deepEqual(posts.map(p=>[p.id,p.text,p.to]),[['A','@One wait',['one']],['A','A follow-up finishing after navigation',['one']]]);
+    assert.ok(targetCalls.every(c=>c.id==='A'),'B is never asked');
+  };
+  await run({id:'shared',hostId:'B',participants:people,policy:'mention'});
+  await run({id:'other-room',hostId:'A',participants:people,policy:'mention'});
 });
