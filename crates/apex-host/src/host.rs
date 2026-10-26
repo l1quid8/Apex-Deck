@@ -1464,6 +1464,30 @@ impl Host {
     }
 
     /// The new Work thread and the chat that now points at it.
+    /// The folder check behind "Move to a Work thread" on a machine with no
+    /// signed receipt (Linux): a phone may pick a folder, but only inside one
+    /// this machine's own user allowed with `apex-daemon allow-root`. Read from
+    /// disk on every call, so a new folder works without restarting the daemon.
+    pub fn promote_root_allows(&self, cwd: &str) -> Result<(), String> {
+        let folder = std::path::Path::new(cwd.trim());
+        if self.store.promote_root_covering(folder)?.is_some() {
+            return Ok(());
+        }
+        let where_to = if cwd.trim().is_empty() { "that folder".to_string() } else { cwd.trim().to_string() };
+        Err(format!(
+            "This machine hasn't allowed {where_to} for phone moves. On the machine, run `apex-daemon allow-root {where_to}`, then try again."
+        ))
+    }
+
+    /// What a paired phone may do about folders on a machine with no broker.
+    /// `Ok(true)` means the command is this one and is allowed through;
+    /// `Ok(false)` means it isn't a folder command and keeps the usual gate.
+    pub fn device_folder_command(&self, command: &crate::Command) -> Result<bool, String> {
+        let crate::Command::ChatPromote { cwd, .. } = command else { return Ok(false) };
+        self.promote_root_allows(cwd)?;
+        Ok(true)
+    }
+
     fn promoted_reply(&self, chat: &str, work: &str) -> Result<serde_json::Value, String> {
         let room = self
             .store
@@ -4176,6 +4200,35 @@ mod host_tests {
         assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());
         assert_eq!(host.store.chat_meta("11111111-1111-1111-1111-111111111111").unwrap().unwrap().promoted_to, None);
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_phone_may_only_promote_inside_a_folder_the_machine_allowed() {
+        let (host, _runtime, data) = host("promote-roots");
+        let inside = data.join("project");
+        std::fs::create_dir_all(&inside).unwrap();
+        let cwd = inside.to_string_lossy().into_owned();
+        let promote = |cwd: String, target: &str| crate::Command::ChatPromote {
+            source: "chat".into(),
+            target: target.into(),
+            cwd,
+            upto: None,
+            access: None,
+            request_id: None,
+        };
+        // Nothing allowed yet: refused, and the message says how to allow it.
+        let refused = host.device_folder_command(&promote(cwd.clone(), "work-1")).unwrap_err();
+        assert!(refused.contains("apex-daemon allow-root"), "{refused}");
+        // A chat edit isn't a folder command, so it keeps the ordinary gate.
+        assert!(!host.device_folder_command(&crate::Command::ChatList {}).unwrap());
+        // The machine's own user allows the folder: through.
+        host.store.allow_promote_root(std::path::Path::new(&cwd)).unwrap();
+        assert!(host.device_folder_command(&promote(cwd.clone(), "work-1")).unwrap());
+        // A folder outside the grant is still refused.
+        let outside = data.join("somewhere-else");
+        std::fs::create_dir_all(&outside).unwrap();
+        let refused = host.device_folder_command(&promote(outside.to_string_lossy().into_owned(), "work-2")).unwrap_err();
+        assert!(refused.contains("hasn't allowed"), "{refused}");
     }
 
     /// A stand-in `codex` that proves it really ran: as `codex app-server` it

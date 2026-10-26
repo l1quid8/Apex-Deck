@@ -10,6 +10,7 @@ pub mod devices_cli;
 pub mod files;
 pub mod gateway_admin;
 pub mod gateway_cli;
+pub mod promote_cli;
 pub mod gateway_http;
 pub mod gateway_keys;
 pub mod identity;

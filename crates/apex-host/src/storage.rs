@@ -106,6 +106,24 @@ pub struct ChatListEntry {
     pub profiles: std::collections::BTreeMap<String, String>,
 }
 
+/// The folders a paired phone may turn a chat into a Work thread inside. Only
+/// `apex-daemon allow-root`, run by the machine's own user, writes this file;
+/// the daemon only ever reads it, so a new folder works without a restart.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PromoteRoots {
+    pub version: u32,
+    pub roots: Vec<PromoteRoot>,
+}
+
+/// One allowed folder, stored canonical, with when it was allowed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromoteRoot {
+    pub path: String,
+    pub added_at: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MountBoundary {
     pub seq: usize,
@@ -755,6 +773,58 @@ impl Store {
         Ok(())
     }
 
+    fn promote_roots_path(&self) -> PathBuf {
+        self.root.join("promote-roots-v1.json")
+    }
+
+    /// The folders this machine allows a phone to turn a chat into a Work
+    /// thread inside. Empty when nothing was allowed, or the file is missing.
+    pub fn promote_roots(&self) -> Result<PromoteRoots, String> {
+        Ok(self.read::<PromoteRoots>(&self.promote_roots_path())?.unwrap_or_default())
+    }
+
+    /// Allow one folder, and the folders inside it, for phone promotions.
+    /// Adding a folder that is already allowed returns the existing entry.
+    pub fn allow_promote_root(&self, folder: &Path) -> Result<PromoteRoot, String> {
+        let real = canonical_folder(folder)?;
+        let ours = std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+        if real.starts_with(&ours) {
+            return Err("That folder belongs to Deck. Choose a project folder.".into());
+        }
+        let _guard = self.writes.lock().unwrap();
+        let mut roots = self.read::<PromoteRoots>(&self.promote_roots_path())?.unwrap_or_default();
+        if let Some(existing) = roots.roots.iter().find(|root| Path::new(&root.path) == real) {
+            return Ok(existing.clone());
+        }
+        let added = PromoteRoot { path: real.to_string_lossy().into_owned(), added_at: now_ms() };
+        roots.roots.push(added.clone());
+        roots.version = 1;
+        self.write_held(&self.promote_roots_path(), &roots)?;
+        Ok(added)
+    }
+
+    /// Stop allowing one folder. Returns whether it was on the list.
+    pub fn remove_promote_root(&self, folder: &Path) -> Result<bool, String> {
+        let real = canonical_folder(folder)?;
+        let _guard = self.writes.lock().unwrap();
+        let mut roots = self.read::<PromoteRoots>(&self.promote_roots_path())?.unwrap_or_default();
+        let before = roots.roots.len();
+        roots.roots.retain(|root| Path::new(&root.path) != real);
+        if roots.roots.len() == before {
+            return Ok(false);
+        }
+        self.write_held(&self.promote_roots_path(), &roots)?;
+        Ok(true)
+    }
+
+    /// The allowed folder that contains `folder`, if any. This is the whole
+    /// authorization behind a phone's "Move to a Work thread": the phone can
+    /// pick a folder, but only inside one the machine's own user listed.
+    pub fn promote_root_covering(&self, folder: &Path) -> Result<Option<PromoteRoot>, String> {
+        let real = canonical_folder(folder)?;
+        Ok(self.promote_roots()?.roots.into_iter().find(|root| real.starts_with(Path::new(&root.path))))
+    }
+
     pub fn delete_room(&self, id: &str) -> Result<(), String> {        let _guard = self.writes.lock().unwrap();
         let mut authorities=self.room_authorities()?;
         authorities.remove(id);
@@ -969,6 +1039,24 @@ pub(crate) fn prepare_private_root(root: &Path) -> Result<(), String> {
     crate::private_data::prepare(root).map_err(|e| format!("Could not prepare private data folder: {e}"))
 }
 
+/// A folder the way the machine sees it: a full path, resolved, and really a
+/// folder. Both `allow-root` and the promotion check use this, so a grant and
+/// a request can never disagree about `..`, `.` or a symlink.
+fn canonical_folder(folder: &Path) -> Result<PathBuf, String> {
+    if !folder.is_absolute() {
+        return Err(format!("{} isn't a full path.", folder.display()));
+    }
+    let real = std::fs::canonicalize(folder).map_err(|_| format!("There's no folder at {}.", folder.display()))?;
+    if !real.is_dir() {
+        return Err(format!("{} isn't a folder.", folder.display()));
+    }
+    Ok(real)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
 /// Publish a complete, flushed room without replacing an existing thread.
 /// A killed writer can leave a staging file, never a partial room JSON. Hard
 /// linking within this directory provides atomic no-clobber publication on
@@ -1016,6 +1104,34 @@ mod tests {
         std::env::temp_dir().join(format!("apex-deck-storage-{}-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
+
+    #[test]
+    fn promote_roots_are_stored_canonical_and_only_cover_their_own_tree() {
+        let root = temp();
+        let store = Store::new(root.join("saved-chats-v1"));
+        let projects = root.join("projects");
+        std::fs::create_dir_all(projects.join("denver")).unwrap();
+        let allowed = store.allow_promote_root(&projects).unwrap();
+        assert_eq!(allowed.path, std::fs::canonicalize(&projects).unwrap().to_string_lossy());
+        // Allowing the same folder twice is still one grant.
+        store.allow_promote_root(&projects).unwrap();
+        assert_eq!(store.promote_roots().unwrap().roots.len(), 1);
+        // A folder inside is covered; a sibling is not.
+        assert!(store.promote_root_covering(&projects.join("denver")).unwrap().is_some());
+        let sibling = root.join("somewhere-else");
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert!(store.promote_root_covering(&sibling).unwrap().is_none());
+        // A folder that isn't there can be neither granted nor matched.
+        assert!(store.allow_promote_root(&root.join("missing")).is_err());
+        assert!(store.promote_root_covering(&root.join("missing")).is_err());
+        // Removing it takes the grant away from everything inside.
+        assert!(store.remove_promote_root(&projects).unwrap());
+        assert!(!store.remove_promote_root(&projects).unwrap());
+        assert!(store.promote_root_covering(&projects.join("denver")).unwrap().is_none());
+        assert!(store.promote_roots().unwrap().roots.is_empty());
+        // Deck's own folder is never a project folder.
+        assert!(store.allow_promote_root(&root.join("saved-chats-v1")).is_err());
     }
 
     /// Run only in the crash-test child: the kernel terminates the writer in

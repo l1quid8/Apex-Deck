@@ -324,7 +324,15 @@ impl Host {
         if matches!(command, Command::ProvenanceExecute { .. }) { return Err("A paired phone cannot execute desktop receipts".into()); }
         // Linux has no signed Mac broker. Preserve its existing public command
         // gate: ordinary reads/chat work, protected commands still need a receipt.
-        if cfg!(target_os = "linux") { return self.call_with_client_capability(command, capability).await; }
+        if cfg!(target_os = "linux") {
+            // The one exception: a chat becoming a Work thread. There is no
+            // receipt to check here, so the machine's own folder list is the
+            // authorization — see `apex-daemon allow-root`.
+            if self.device_folder_command(&command)? {
+                return self.dispatch_command(command, capability).await;
+            }
+            return self.call_with_client_capability(command, capability).await;
+        }
         #[cfg(feature="test-support")]
         if crate::test_support::isolated(self.data_dir()) { return self.dispatch_command(command, capability).await; }
         let assistant_room = match intent["args"]["id"].as_str() {
