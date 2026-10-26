@@ -107,6 +107,41 @@ test('the build is reachable and CI builds it on Windows', () => {
   assert.match(workflow, new RegExp(`release/${INSTALLER_NAME.replace(/\./g, '\\.')}`));
 });
 
+test('the installer stops the old service before it copies files', () => {
+  const nsis = section(read('electron-builder.yml'), 'nsis');
+  assert.match(nsis, /include: build\/installer\.nsh/, 'without the include the hooks never run');
+  const hook = read('build/installer.nsh');
+
+  // .onInit, before instFiles copies anything: the image stays locked otherwise.
+  assert.match(hook, /!macro customInit[\s\S]*?!insertmacro StopDaemon/);
+  // An uninstall must not fail on a running image, or leave a task pointing at
+  // a binary it is about to delete.
+  assert.match(hook, /!macro customUnInstall[\s\S]*?!insertmacro StopDaemon/);
+
+  const task = hook.match(/!define APEX_DAEMON_TASK "([^"]+)"/)?.[1];
+  assert.equal(task, 'ApexDeckDaemon');
+  assert.match(hook, /schtasks\.exe" \/End \/TN "\$\{APEX_DAEMON_TASK\}"/,
+    'ending the task first lets the service shut down in order');
+  assert.match(hook, /taskkill\.exe" \/F \/IM "\$\{APEX_DAEMON_IMAGE\}"/,
+    'a daemon the app started as a child is not in the task, so it needs killing too');
+  assert.match(hook, /!define APEX_DAEMON_IMAGE "apex-daemon\.exe"/);
+
+  // After M3 the app registers the task itself; keep the two names from drifting
+  // apart, because a wrong name makes /End silently do nothing.
+  let registered;
+  try {
+    registered = read('desktop/winLogonTask.mjs').match(/TASK_NAME = '([^']+)'/)?.[1];
+  } catch {
+    registered = undefined;
+  }
+  if (registered) assert.equal(task, registered, 'the installer must end the task the app creates');
+
+  // Bounded, so a daemon that refuses to die cannot hang the installer.
+  assert.match(hook, /\$R1 >= 20/, 'the wait must be bounded');
+  assert.match(hook, /Sleep/, 'and must not spin');
+  assert.match(hook, /\$\{IfNot\} \$\{Silent\}/, 'a silent upgrade reports through its exit code, not a dialog');
+});
+
 test('the Windows CI job checks the app, not just the service', () => {
   const daemon = read('.github/workflows/daemon.yml');
   const job = daemon.slice(daemon.indexOf('  test-windows:'), daemon.indexOf('  build:'));
@@ -114,4 +149,11 @@ test('the Windows CI job checks the app, not just the service', () => {
   assert.match(job, /run: npx tsc --noEmit/);
   assert.match(job, /run: node --experimental-strip-types --test --test-concurrency=2 tests\/\*\.test\.mjs/);
   assert.match(job, /actions\/setup-node@/, 'the Node checks need a known Node, not the runner default');
+
+  // electron unzips itself on the first import, so two test files doing it at
+  // once raced on electron.exe and the loser got `spawn EBUSY`.
+  const fetchAt = job.indexOf("import('electron')");
+  const testAt = job.indexOf('run: node --experimental-strip-types');
+  assert.ok(fetchAt > 0, 'the binary must be fetched in its own step');
+  assert.ok(fetchAt < testAt, 'and before any test file can import electron');
 });

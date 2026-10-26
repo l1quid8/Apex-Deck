@@ -72,17 +72,31 @@ jobs:
       - name: Install the app's Node dependencies
         if: ${{ !cancelled() }}
         run: npm ci
+      # `require('electron')` downloads and unzips dist/electron.exe on the first
+      # import; npm ci does not, because this repo's install-script allowlist
+      # skips electron's postinstall (the "Downloading Electron binary..." line
+      # in the readback is that first import). Two test files importing it at the
+      # same moment both ran the download, and whoever finished first got
+      # `spawn EBUSY` on an electron.exe the other was still writing. Extract it
+      # once, before any test file starts.
+      - name: Fetch the Electron binary once, so the tests cannot race for it
+        if: ${{ !cancelled() }}
+        run: node -e "import('electron').then((m) => console.log(m.default))"
       - name: Type-check the app
         if: ${{ !cancelled() }}
         run: npx tsc --noEmit
       - name: Test the app
-        # Known gap, tracked, not hidden: the app suite has never run off this
-        # Mac. It went 2,468 of 2,550 passing on run 40233880246, 2,502 of 2,550
-        # on runs 40237448612 and 40239129607. What is left is not the app:
-        # /tmp/... being drive-relative on Windows (fixed here), two
-        # message-actions-narrow scenarios that hang with no output at all, and
-        # a daemon-binary assertion that expects the .exe name M3 adds. Flip
-        # this to blocking the day the count reaches zero.
+        # Known gap, tracked, not hidden. The app suite never ran off this Mac
+        # until M4: it started at 2,468 of 2,550 failing on run 40233880246 and
+        # is at 2,513 of 2,551 on 40250672155. What is left is not this branch:
+        #   - 1 desktop-sidecar assertion expects apex-daemon.exe (M3).
+        #   - 2 message-actions-narrow scenarios (M3: hidden windows get no
+        #     BeginFrame, so 64 rAFs took 64s and hit the 60s harness limit).
+        # On feat/windows-11 (M2+M3, before this branch) run 40248283610 was
+        # 2,527 of 2,563 with one left: the electron-download race, which the
+        # step above now rules out. The two sides' leftovers are each other's
+        # fixes, so one merged run should read zero. Flip this to blocking the
+        # day that run does.
         # Two test files at a time: four cores booting four Chromiums at once
         # crashed scenarios silently, which reads as a failure with no output.
         if: ${{ !cancelled() }}
