@@ -4178,6 +4178,128 @@ mod host_tests {
         let _ = std::fs::remove_dir_all(data);
     }
 
+    /// A stand-in `codex` that proves it really ran: as `codex app-server` it
+    /// answers the requests a turn makes, and on the turn it runs a real
+    /// command in its working folder and reports what happened.
+    #[cfg(unix)]
+    fn fake_codex(tag: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("apex-fake-codex-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("codex"),
+            r#"#!/bin/sh
+if [ "$1" != app-server ]; then
+  cat >/dev/null
+  echo '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"from exec"}}'
+  exit 0
+fi
+while IFS= read -r line; do
+  case "$line" in
+  *'"initialize"'*) echo '{"id":0,"result":{"userAgent":"fake"}}' ;;
+  *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[],"nextCursor":null}}' ;;
+  *'"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
+  *'"thread/start"'*) echo '{"id":1,"result":{"thread":{"id":"thread-promote"}}}' ;;
+  *'"turn/start"'*)
+    echo '{"id":2,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}'
+    if said=$(sh -c 'echo ran > codex-ran.txt && pwd' 2>&1); then
+      said="Ran a command in $said"
+    else
+      said="Could not run a command: $said"
+    fi
+    echo "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"agentMessage\",\"id\":\"r\",\"text\":\"$said\"}}}"
+    echo '{"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}' ;;
+  *'"account/rateLimits/read"'*) echo '{"id":3,"result":{}}' ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(dir.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    /// The acceptance test for "Move to a Work thread": the bots the work
+    /// thread runs are rebuilt from the machine's own saved profile, and at
+    /// Full access that bot really starts and runs a command in the folder.
+    #[cfg(unix)]
+    #[test]
+    fn a_promoted_codex_bot_at_full_access_really_runs_a_command() {
+        use apex_core::{Role, TurnRequest, ViewTurn};
+        use serde_json::json;
+        let (host, runtime, data) = host("chat-promote-codex");
+        let bin = fake_codex("promote");
+        host.session_save(json!({ "version": 1, "profiles": [{
+            "id": "codex",
+            "display_name": "Codex",
+            "backend": { "kind": "agent", "tool": "codex", "model": "gpt-5-codex" },
+            "access": "read"
+        }] }))
+        .unwrap();
+        let chat = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+        let work = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "codex" })).unwrap();
+        host.chat_create(chat.into(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("project");
+        std::fs::create_dir_all(&folder).unwrap();
+        let promoted = host
+            .chat_promote(
+                chat.into(),
+                work.into(),
+                folder.to_string_lossy().into_owned(),
+                None,
+                Some(std::collections::BTreeMap::from([("codex".to_string(), Access::Full)])),
+                Some("move-codex".into()),
+            )
+            .unwrap();
+        let real = std::fs::canonicalize(&folder).unwrap();
+        assert_eq!(promoted["work"]["kind"], "work");
+        assert_eq!(promoted["work"]["cwd"].as_str(), Some(real.to_string_lossy().as_ref()), "the Work thread runs in the chosen folder");
+
+        // The bot exactly as the Work room saved it, built the way a room builds it.
+        let saved = host.store.room(work).unwrap().unwrap();
+        let config = saved.snapshot.participants[0].clone();
+        assert_eq!(config.access, Access::Full, "the promoted bot keeps the access chosen on the move screen");
+        let turn = || TurnRequest {
+            effort_override: None,
+            access: None,
+            system: "You are Codex.".into(),
+            turns: vec![ViewTurn { role: Role::User, content: "[Human]: run pwd".into() }],
+            unseen: vec![],
+            plan: false,
+            cwd: None,
+        };
+        let context = apex_adapters::BuildContext {
+            cwd: saved.cwd.as_ref().map(PathBuf::from),
+            path: Some(format!("{}:/usr/bin:/bin", bin.display())),
+            codex_hook: None,
+            temp: None,
+            process_registry: None,
+            cargo_target_dir: None,
+            media_dir: None,
+            attachment_roots: Vec::new(),
+            phone: None,
+        };
+        let bot = apex_adapters::participant_for_room(apex_core::RoomKind::Work, config.clone(), &context);
+        let answer = runtime.block_on(async { bot.respond_with_progress(turn(), &|_| {}).await }).expect("the promoted bot answers");
+        println!("work room reply: {}", answer.text);
+        println!("marker left in the folder: {:?}", std::fs::read_to_string(folder.join("codex-ran.txt")));
+        assert!(answer.text.starts_with("Ran a command in"), "the bot really ran a command: {}", answer.text);
+        assert_eq!(std::fs::read_to_string(folder.join("codex-ran.txt")).unwrap().trim(), "ran", "the command ran in the Work thread's own folder");
+
+        // The same bot in the chat that made it doesn't get to run anything.
+        std::fs::remove_file(folder.join("codex-ran.txt")).unwrap();
+        let chat_context = apex_adapters::BuildContext { cwd: None, ..context };
+        let talk = apex_adapters::participant_for_room(apex_core::RoomKind::Chat, config, &chat_context);
+        let refused = runtime.block_on(async { talk.respond_with_progress(turn(), &|_| {}).await });
+        println!("chat room: {refused:?}");
+        println!("marker after the Chat turn: {:?}", std::fs::read_to_string(folder.join("codex-ran.txt")));
+        assert!(!folder.join("codex-ran.txt").exists(), "the chat bot never gets to run a command");
+        let _ = std::fs::remove_dir_all(data);
+        let _ = std::fs::remove_dir_all(&bin);
+    }
+
     #[test]
     fn settings_load_picks_up_providers_an_old_session_turned_off() {
         use serde_json::json;
