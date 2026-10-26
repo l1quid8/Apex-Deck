@@ -250,6 +250,7 @@ impl Host {
         }
         let store = Store::new(paths.data.join("saved-chats-v1"));
         store.interrupt_client_messages()?;
+        store.settle_promotes()?;
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
         let compacting = Arc::clone(&snapshots);
         std::thread::spawn(move || compacting.compact());
@@ -4235,6 +4236,68 @@ mod host_tests {
         assert!(host.store.room("44444444-4444-4444-4444-444444444444").unwrap().is_none());
         host.shutdown();
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_promote_cut_off_by_a_crash_is_finished_or_undone_on_restart() {
+        use crate::storage::{PromoteCrash, PROMOTE_CRASH};
+        use serde_json::json;
+        for (n, crash) in [PromoteCrash::AfterIntent, PromoteCrash::AfterAuthority, PromoteCrash::AfterRoom].into_iter().enumerate() {
+            for start_over in [false, true] {
+                let (host, runtime, data) = host(&format!("chat-promote-crash-{n}-{start_over}"));
+                let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+                bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+                host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+                let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+                let chat = || "11111111-1111-1111-1111-111111111111".to_string();
+                let work = || "22222222-2222-2222-2222-222222222222".to_string();
+                host.chat_create(chat(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+                let folder = data.join("denver");
+                std::fs::create_dir_all(&folder).unwrap();
+                let cwd = folder.to_string_lossy().into_owned();
+                let full = || Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Full)]));
+
+                PROMOTE_CRASH.with(|at| at.set(Some(crash)));
+                assert!(host.chat_promote(chat(), work(), cwd.clone(), None, full(), Some("move-1".into())).is_err());
+                PROMOTE_CRASH.with(|at| at.set(None));
+                host.shutdown();
+                drop(host);
+                let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+
+                let listed = host.chat_list().unwrap();
+                let rows = listed["rooms"].as_array().unwrap();
+                let source = rows.iter().find(|row| row["id"] == chat()).unwrap();
+                let landed = crash == PromoteCrash::AfterRoom;
+                // Nothing half-made: the Work room exists and is linked and listed, or none of it is there.
+                assert_eq!(host.store.room(&work()).unwrap().is_some(), landed, "{crash:?}");
+                assert_eq!(source["promotedTo"] == work(), landed, "{crash:?}: {source}");
+                assert_eq!(rows.iter().any(|row| row["id"] == work()), landed, "{crash:?}");
+                assert!(host.store.chat_meta(&chat()).unwrap().unwrap().promoting.is_none());
+
+                if start_over {
+                    let over = host.chat_promote_abandon(chat(), "move-1".into()).unwrap();
+                    // Start over never calls a move cancelled while its Work room is there.
+                    assert_eq!(over["state"], if landed { "done" } else { "abandoned" }, "{crash:?}");
+                    if !landed {
+                        let late = host.chat_promote(chat(), work(), cwd.clone(), None, full(), Some("move-1".into())).unwrap_err();
+                        assert!(late.contains("cancelled"), "{late}");
+                        let ask_first = Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Ask)]));
+                        host.chat_promote(chat(), "33333333-3333-3333-3333-333333333333".into(), cwd.clone(), None, ask_first, Some("move-2".into())).unwrap();
+                        assert!(host.store.room(&work()).unwrap().is_none());
+                    }
+                } else {
+                    // The phone's retry of the same move gets that one Work room, with the Access it asked for.
+                    let again = host.chat_promote(chat(), work(), cwd.clone(), None, full(), Some("move-1".into())).unwrap();
+                    assert_eq!(again["work"]["id"], work(), "{crash:?}");
+                    let saved = host.store.room(&work()).unwrap().unwrap();
+                    assert_eq!(saved.snapshot.participants[0].access, Access::Full);
+                    let twice = host.chat_promote(chat(), work(), cwd.clone(), None, full(), Some("move-1".into())).unwrap();
+                    assert_eq!(twice["work"]["id"], work());
+                }
+                host.shutdown();
+                let _ = std::fs::remove_dir_all(data);
+            }
+        }
     }
 
     #[test]

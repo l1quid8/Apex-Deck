@@ -7,6 +7,7 @@ import { ageWords, type ProjectBlock, type SidebarSections } from "../sidebarMod
 import type { LinkView } from "../phoneRules";
 import type { Pane, Workspace } from "../types";
 import { ChevronRight, Pin, Plus } from "./icons";
+import { machineThreadKey } from "./chatRoutes";
 import { archivedLine, foldChoice, DOT_WORDS, machineGroups, machineNote, recentFirst, strongestDot, threadState, type MachineNote, type ThreadState } from "./threadListRules";
 
 export interface ThreadListProps {
@@ -72,12 +73,15 @@ export function ThreadList({ sections, workspaces, links, folded, draft, waiting
   const press = useLongPress();
   const workspaceOf = (pane: Pane) => workspaces.find((item) => item.id === pane.workspaceId);
   const linkOf = (hostId: string) => links.find((link) => link.id === hostId) ?? null;
-  const stateOf = (pane: Pane): ThreadState => {
+  const stateOf = (pane: Pane & { hostId?: string }): ThreadState => {
     const workspace = workspaceOf(pane);
+    const hostId = pane.hostId ?? (workspace ? workspaceHost(workspace) : null);
+    // Live state is kept by machine and thread, so a same-id thread on another machine never lights this row.
+    const at = hostId === null ? null : machineThreadKey(hostId, pane.id);
     return threadState({
-      down: machineNote(workspace ? linkOf(workspaceHost(workspace)) : null).down,
-      waiting: (waiting[pane.id]?.length ?? 0) > 0,
-      working: (busy[pane.id] ?? []).map(nameOf),
+      down: machineNote(hostId === null ? null : linkOf(hostId)).down,
+      waiting: at !== null && (waiting[at]?.length ?? 0) > 0,
+      working: (at === null ? [] : busy[at] ?? []).map(nameOf),
       unread: Boolean(pane.unread),
     });
   };

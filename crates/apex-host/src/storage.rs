@@ -85,11 +85,40 @@ pub struct ChatRoomMeta {
     /// person started a different move.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub abandoned_promotes: Vec<String>,
+    /// A move to a Work thread that started but hasn't been linked yet. It is
+    /// saved before the Work room's files, so a crash in between is finished
+    /// (the room was written) or undone (it wasn't) when the store next opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoting: Option<PromoteIntent>,
     /// The saved profile each bot was made from, by bot id. A bot's id can be
     /// a copy's alias ("claude-2"), so moving a chat needs both.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub profiles: std::collections::BTreeMap<String, String>,
 }
+
+/// The Work room a chat is being moved into, saved before that room exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromoteIntent {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    pub title: String,
+}
+
+/// Where a test stops `promote_chat` as if the machine crashed there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromoteCrash { AfterIntent, AfterAuthority, AfterRoom }
+#[cfg(test)]
+thread_local! { pub(crate) static PROMOTE_CRASH: std::cell::Cell<Option<PromoteCrash>> = const { std::cell::Cell::new(None) }; }
+#[cfg(test)]
+fn crash_here(at: PromoteCrash) -> Result<(), String> {
+    if PROMOTE_CRASH.with(|crash| crash.get()) == Some(at) { return Err(format!("test crash {at:?}")); }
+    Ok(())
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn crash_here(_: PromoteCrash) -> Result<(), String> { Ok(()) }
 
 /// One row returned by `chat_list`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -704,7 +733,10 @@ impl Store {
     /// any copy still on its way is refused.
     pub(crate) fn abandon_promote(&self, source: &str, request_id: &str) -> Result<Option<String>, String> {
         let _guard = self.writes.lock().unwrap();
+        // A move cut off by a crash is finished or undone first, so Start over
+        // never calls a move cancelled while its Work room is on disk.
         let mut metas = self.chat_metas_held()?;
+        self.settle_promote_held(&mut metas, source)?;
         let mut chat = metas.remove(source).unwrap_or_default();
         if let Some(to) = chat.promoted_to.clone() {
             return Ok(Some(to));
@@ -724,6 +756,11 @@ impl Store {
     /// lock: either the Work room exists and the chat links to it, or nothing
     /// changed. Returns the Work room the chat already pointed at when this
     /// replays a move already made with the same request.
+    ///
+    /// The steps survive a crash between any two of them: the chat first saves
+    /// which room it is moving into (`promoting`), then the room's authority
+    /// and file are written, then the link replaces the note. Whatever a crash
+    /// leaves is settled by `settle_promote_held` before anything reads it.
     pub(crate) fn promote_chat(
         &self,
         source: &str,
@@ -734,6 +771,7 @@ impl Store {
     ) -> Result<Option<String>, String> {
         let _guard = self.writes.lock().unwrap();
         let mut metas = self.chat_metas_held()?;
+        self.settle_promote_held(&mut metas, source)?;
         let mut chat = metas.remove(source).unwrap_or_default();
         if request_id.is_some_and(|id| chat.abandoned_promotes.iter().any(|gone| gone == id)) {
             return Err("This move was cancelled on the phone. Start it again.".into());
@@ -753,42 +791,101 @@ impl Store {
         let path = self.room_path(target);
         let parent = path.parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
-        if self.thread_paths(target).iter().any(|leftover| std::fs::symlink_metadata(leftover).is_ok()) {
+        if self.thread_paths(target).iter().any(|leftover| std::fs::symlink_metadata(leftover).is_ok())
+            || self.room_authorities()?.contains_key(target)
+        {
             return Err("a thread with that id already exists".into());
         }
-        self.save_room_authority(target, work)?;
-        if let Err(why) = write_new(&path, work) {
-            let _ = self.forget_authority_held(target);
+        // 1. The note: from here on, files under `target` are this move's.
+        chat.promoting = Some(PromoteIntent { target: target.to_owned(), request: request_id.map(str::to_owned), title: title.trim().to_owned() });
+        metas.insert(source.to_owned(), chat);
+        self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
+        crash_here(PromoteCrash::AfterIntent)?;
+        // 2. The room. A failure here undoes it; the note stays if the undo
+        //    fails too, and the next settle finishes the job.
+        let written = (|| {
+            self.save_room_authority(target, work)?;
+            crash_here(PromoteCrash::AfterAuthority)?;
+            write_new(&path, work)?;
+            sync_directory(&parent).map_err(|e| e.to_string())
+        })();
+        #[cfg(test)]
+        if written.as_ref().is_err_and(|why| why.starts_with("test crash")) { return written.map(|_| None); }
+        if let Err(why) = written {
+            self.undo_promote_held(&mut metas, source, target)?;
             return Err(why);
         }
+        crash_here(PromoteCrash::AfterRoom)?;
+        // 3. The link, in one write with the Work room's own catalog entry.
+        self.link_promote_held(&mut metas, source)?;
+        Ok(None)
+    }
+
+    /// Finish or undo a move a crash cut off, for one chat. The caller holds
+    /// the write lock. A Work room file on disk means the move got that far,
+    /// so it is linked; anything less is removed so the move can run again.
+    fn settle_promote_held(&self, metas: &mut std::collections::BTreeMap<String, ChatRoomMeta>, source: &str) -> Result<(), String> {
+        let Some(intent) = metas.get(source).and_then(|chat| chat.promoting.clone()) else { return Ok(()) };
+        // The authority entry is written first and the room file last, so the file alone says it's whole.
+        if self.read::<SavedRoom>(&self.room_path(&intent.target))?.is_some() && self.room_authorities()?.contains_key(&intent.target) {
+            self.link_promote_held(metas, source)
+        } else {
+            self.undo_promote_held(metas, source, &intent.target)
+        }
+    }
+
+    /// Settle every move a crash cut off. Runs when the host opens, before any command.
+    pub(crate) fn settle_promotes(&self) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        let cut_off: Vec<String> = metas.iter().filter(|(_, chat)| chat.promoting.is_some()).map(|(id, _)| id.clone()).collect();
+        for source in cut_off {
+            self.settle_promote_held(&mut metas, &source)?;
+        }
+        Ok(())
+    }
+
+    /// Replace a chat's `promoting` note with the link and the Work room's catalog entry.
+    fn link_promote_held(&self, metas: &mut std::collections::BTreeMap<String, ChatRoomMeta>, source: &str) -> Result<(), String> {
+        let mut chat = metas.remove(source).unwrap_or_default();
+        let Some(intent) = chat.promoting.take() else { metas.insert(source.to_owned(), chat); return Ok(()) };
+        let profiles = self
+            .read::<SavedRoom>(&self.room_path(&intent.target))?
+            .map(|room| room.snapshot.import_profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect())
+            .unwrap_or_default();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        chat.promoted_to = Some(target.to_owned());
-        chat.promote_request = request_id.map(str::to_owned);
+        chat.promoted_to = Some(intent.target.clone());
+        chat.promote_request = intent.request.clone();
         chat.abandoned_promotes.clear();
         chat.updated_at = chat.updated_at.max(now);
         let work_meta = ChatRoomMeta {
-            title: title.trim().to_owned(),
+            title: intent.title.clone(),
             updated_at: now,
             promoted_from: Some(source.to_owned()),
-            profiles: work.snapshot.import_profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect(),
+            profiles,
             ..Default::default()
         };
         metas.insert(source.to_owned(), chat);
-        metas.insert(target.to_owned(), work_meta);
-        if let Err(why) = self.write_held(&self.root.join("chat-meta-v1.json"), &metas) {
-            // The room is on disk but the chat doesn't link to it: undo it so a
-            // retry can create the same thread again.
-            for leftover in self.thread_paths(target) {
-                let _ = std::fs::remove_file(leftover);
+        metas.insert(intent.target.clone(), work_meta);
+        self.write_held(&self.root.join("chat-meta-v1.json"), metas)
+    }
+
+    /// Remove what a move wrote under `target` and drop its note, so the same
+    /// move, or a different one after Start over, can run again.
+    fn undo_promote_held(&self, metas: &mut std::collections::BTreeMap<String, ChatRoomMeta>, source: &str, target: &str) -> Result<(), String> {
+        for leftover in self.thread_paths(target) {
+            match std::fs::remove_file(&leftover) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("Could not undo an unfinished move: {e}")),
             }
-            let _ = self.forget_authority_held(target);
-            return Err(why);
         }
-        sync_directory(&parent).map_err(|e| e.to_string())?;
-        Ok(None)
+        self.forget_authority_held(target)?;
+        if let Some(chat) = metas.get_mut(source) { chat.promoting = None; }
+        self.write_held(&self.root.join("chat-meta-v1.json"), metas)
     }
 
     /// Drop one room's authority entry; the caller already holds the write lock.

@@ -67,7 +67,7 @@ import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList } from "./ThreadList";
-import { chatOutboxRows, chatRights, chatRoute, mayPostIn, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest, readPromoteTickets, threadKey, withoutTicket, writePromoteTickets, type ChatRights } from "./chatRoutes";
+import { chatOutboxRows, chatRights, chatRoute, machineThreadKey, mayPostIn, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest, readPromoteTickets, threadKey, withoutTicket, writePromoteTickets, type ChatRights } from "./chatRoutes";
 import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "./chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
@@ -127,6 +127,8 @@ const NO_CUTS: PhoneCuts = {};
 const MAX_STEPS_SHOWN = 6;
 /** How long a message's Copy reads "Copied", as on the desktop. */
 const COPIED_MS = 1500;
+/** The thread a button was drawn for: a room id and the machine it came from. */
+type ShownThread = { id: string; hostId: string };
 type SavedStepsFor = { id: string; index: import("../types").StepsIndex | null };
 type Room = {
   /** The room and the machine it came from: two machines can each have a room with the same id. */
@@ -447,8 +449,10 @@ export function PhoneApp() {
   const sendingRef = useRef(false);
   /** Each thread's messages waiting for a bot to finish, as on the desktop. They live on the phone while the app is open. */
   const queues = useRef(new Map<string, ParticipantQueues>());
-  /** Queues are kept by machine and thread: two machines can each have a thread with the same id. */
-  const queueKey = (hostId: string, paneId: string) => JSON.stringify([hostId, paneId]);
+  /** Queues, and every thread's live state (working bots, queued rows, approvals, queued drafts), are kept by
+   *  machine and thread: two machines can each have a thread with the same id, and one machine's events
+   *  must never show, or be acted on, in the other's. */
+  const queueKey = machineThreadKey;
   const [queued, setQueued] = useState<Record<string, { items: ParticipantMessage[]; paused: string[]; lost: boolean }>>({});
   /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files and quotes.
    *  `inBox` while Send is still waiting on it: the box keeps it until the machine has it or it is queued. */
@@ -510,11 +514,12 @@ export function PhoneApp() {
     hosts.forEach((host) => {
       host.backend.onRoomEvent((id, event) => {
         if (event.type === "message_added") setSeen((all) => ({ ...all, [id]: Date.now() }));
-        setBusy((all) => { const now = all[id] ?? []; const next = busyAfter(now, event); return next === now ? all : { ...all, [id]: next }; });
-        const queue = queues.current.get(queueKey(host.machine.id, id));
+        const at = queueKey(host.machine.id, id);
+        setBusy((all) => { const now = all[at] ?? []; const next = busyAfter(now, event); return next === now ? all : { ...all, [at]: next }; });
+        const queue = queues.current.get(at);
         if (queue) queueHears(queue, event);
-        if (event.type === "approval_requested") setWaiting((all) => ({ ...all, [id]: [...(all[id] ?? []).filter((request) => request !== event.request), event.request] }));
-        if (event.type === "approval_resolved") setWaiting((all) => ({ ...all, [id]: (all[id] ?? []).filter((request) => request !== event.request) }));
+        if (event.type === "approval_requested") setWaiting((all) => ({ ...all, [at]: [...(all[at] ?? []).filter((request) => request !== event.request), event.request] }));
+        if (event.type === "approval_resolved") setWaiting((all) => ({ ...all, [at]: (all[at] ?? []).filter((request) => request !== event.request) }));
       }).then((stop) => { if (live) stops.push(stop); else stop(); }).catch(() => {});
     });
     return () => { live = false; stops.forEach((stop) => stop()); };
@@ -545,7 +550,7 @@ export function PhoneApp() {
   const linkOfPane = (pane: Pane & { hostId?: string }) => { const workspace = (session?.workspaces ?? []).find((item) => item.id === pane.workspaceId); return workspace ? linkOf(pane.hostId ?? workspaceHost(workspace)) : null; };
   /** Where a bot is working, for Agents. A turn on a machine that dropped is cut off, not still going. */
   const botDoing = (id: string): { working: string | null; cutOff: string | null } => {
-    const turns = (session?.panes ?? []).filter((pane) => !pane.archived && busy[pane.id]?.includes(id));
+    const turns = (session?.panes ?? []).filter((pane) => { const link = linkOfPane(pane); return !pane.archived && link !== null && busy[queueKey(link.id, pane.id)]?.includes(id); });
     const live = turns.find((pane) => linkOfPane(pane)?.status === "online");
     if (live) return { working: live.title, cutOff: null };
     const lost = turns[0];
@@ -606,11 +611,11 @@ export function PhoneApp() {
     for (const hostId of back) {
       const host = phoneHost(hostId);
       if (!host?.backend.roomState) continue;
-      const there = (session?.panes ?? []).filter((pane) => ((busy[pane.id]?.length ?? 0) > 0 || (queued[pane.id]?.items.length ?? 0) > 0) && linkOfPane(pane)?.id === hostId);
+      const there = (session?.panes ?? []).filter((pane) => linkOfPane(pane)?.id === hostId && ((busy[queueKey(hostId, pane.id)]?.length ?? 0) > 0 || (queued[queueKey(hostId, pane.id)]?.items.length ?? 0) > 0));
       for (const pane of there) {
         const settle = (active: readonly string[]) => {
           if (!live) return;
-          setBusy((all) => ({ ...all, [pane.id]: active }));
+          setBusy((all) => ({ ...all, [queueKey(hostId, pane.id)]: active }));
           const queue = queues.current.get(queueKey(hostId, pane.id));
           if (queue) queueSync(queue, active);
         };
@@ -1021,8 +1026,8 @@ export function PhoneApp() {
   const busyRef = useRef(busy);
   busyRef.current = busy;
   /** Put a queued message back in its thread's box, with the files and quotes it was sent with. */
-  function takeBack(paneId: string, text: string) {
-    const key = `${paneId}\u0000${text}`;
+  function takeBack(hostId: string, paneId: string, text: string) {
+    const key = `${queueKey(hostId, paneId)}\u0000${text}`;
     const sent = queuedDrafts.current.get(key);
     const back = sent?.draft ?? { text: splitTldr(text).text, files: [] };
     queuedDrafts.current.delete(key);
@@ -1048,7 +1053,7 @@ export function PhoneApp() {
       async (text, to, kind, hops, voice) => {
         // Retry asks the bot again on the chat as it is, posting nothing, as on the desktop.
         if (kind === "turn") { await backend().roomTurn(paneId, to, hops ?? null); return; }
-        const key = `${paneId}\u0000${text}`;
+        const key = `${queueKey(hostId, paneId)}\u0000${text}`;
         try { await postFromPhone(backend(), paneId, text, to, voice); }
         catch (error) {
           if (voice) { phoneVoice.failed(hostId,paneId,to[0],voice.requestId,error); throw error; }
@@ -1058,18 +1063,18 @@ export function PhoneApp() {
           if (sent) setTimeout(() => { for (const bot of to) if (!queue.items.some((item) => item.to.includes(bot))) queue.resume(bot); }, 0);
           // Still in the box when Send is waiting on it; a message that had been queued goes back into it.
           if (sent?.inBox) { sent.failed = true; throw new Error(`${words(error)}. Your message is still in the box.`); }
-          if (sent) { takeBack(paneId, text); throw new Error(`${words(error)}. Your message is back in the box.`); }
+          if (sent) { takeBack(hostId, paneId, text); throw new Error(`${words(error)}. Your message is back in the box.`); }
           throw error;
         }
         queuedDrafts.current.delete(key);
       },
       (id) => backend().roomStop(paneId, id),
-      (items) => setQueued((all) => ({ ...all, [paneId]: { items, paused: [...queue.paused], lost: queue.connectionPaused } })),
+      (items) => setQueued((all) => ({ ...all, [queueKey(hostId, paneId)]: { items, paused: [...queue.paused], lost: queue.connectionPaused } })),
       (error) => setNotice(words(error)),
       () => { const found = host(); return queues.current.get(queueKey(hostId, paneId)) === queue && found !== null && toLink(found.connection.get().status) === "online"; },
       false, // Phone restores the complete draft itself on dispatch failure.
     );
-    for (const id of busyRef.current[paneId] ?? []) queue.started(id);
+    for (const id of busyRef.current[queueKey(hostId, paneId)] ?? []) queue.started(id);
     queues.current.set(queueKey(hostId, paneId), queue);
     return queue;
   }
@@ -1134,7 +1139,8 @@ export function PhoneApp() {
     const host = phoneHost(openHostId);
     // The room on screen is this one only if it came from this machine too.
     const sameShown = roomRef.current?.id === openPane.id && roomRef.current.hostId === openHostId;
-    if (roomRef.current && !sameShown && roomRef.current.id === openPane.id) setRoom(null);
+    // Anything else on screen goes at once, so its form and buttons can't act while this one loads.
+    if (roomRef.current && !sameShown) setRoom(null);
     const key = threadKey(openPane, isChatSpace);
     // Offline keeps what is already on screen under the banner; it reloads when the machine is back.
     // Bots that were mid-reply are cut off: their turn shows as interrupted, not still going.
@@ -1181,9 +1187,10 @@ export function PhoneApp() {
         } catch (error) { setNotice(words(error)); }
       }
       void stepsLoader.refresh();
-      setWaiting((all) => ({ ...all, [key]: state.approvals.map((card) => card.request) }));
-      setBusy((all) => ({ ...all, [key]: state.active }));
-      const queue = queues.current.get(queueKey(openHostId, openPane.id));
+      const at = queueKey(openHostId, openPane.id);
+      setWaiting((all) => ({ ...all, [at]: state.approvals.map((card) => card.request) }));
+      setBusy((all) => ({ ...all, [at]: state.active }));
+      const queue = queues.current.get(at);
       if (queue) queueSync(queue, state.active);
       setCuts((all) => all[key] ? { ...all, [key]: resumeCut(all[key], state.active, state.snapshot.transcript) } : all);
       const configs = (rosterHeard ?? state.snapshot.participants).map(config => settingsHeard.get(config.id) ?? config);
@@ -1272,7 +1279,7 @@ export function PhoneApp() {
     const host = phoneHost(openHostId);
     if (!host || toLink(host.connection.get().status) !== "online") return;
     // An untagged message behind a queued tag goes where that tag goes, before the thread has heard it.
-    const sticky = queuedSticky(typed, room.participants, room.policy, queued[room.id]?.items ?? []);
+    const sticky = queuedSticky(typed, room.participants, room.policy, queued[queueKey(room.hostId, room.id)]?.items ?? []);
     if (sticky) { setAnswerers({ paneId: room.id, ids: sticky }); return; }
     let live = true;
     // A short wait so typing doesn't ask the machine on every key; a slower answer for older text is ignored.
@@ -1281,12 +1288,12 @@ export function PhoneApp() {
     }, typed ? 150 : 0);
     return () => { live = false; window.clearTimeout(ask); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room?.id, room?.messages.length, openLink?.status, openHostId, typed, queued[room?.id ?? ""]?.items]);
+  }, [room?.id, room?.hostId, room?.messages.length, openLink?.status, openHostId, typed, queued[room ? queueKey(room.hostId, room.id) : ""]?.items]);
 
   // A bot's details belong to the thread they were opened in.
   useEffect(() => { setBotSheet(null); setSteerAsk(null); setGoingBack(null); }, [openId]);
   // Steer now stops asking once its message has gone, been steered, or been taken back.
-  const queuedIds = (openId ? queued[openId]?.items ?? [] : []).map((item) => item.id).join(",");
+  const queuedIds = (openId ? queued[queueKey(openHostId, openId)]?.items ?? [] : []).map((item) => item.id).join(",");
   useEffect(() => { setSteerAsk((asking) => asking !== null && queuedIds.split(",").includes(String(asking)) ? asking : null); }, [queuedIds]);
 
   // Follow the newest message and a reply as it streams in, unless the person scrolled up to read.
@@ -1359,7 +1366,7 @@ export function PhoneApp() {
       // The room picks who answers, as on the desktop: whoever is @named, or whoever was named last.
       // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
       // This resolves once the machine has it, or once it is queued; until then the box keeps it.
-      const key = `${sentPane.id}\u0000${body}`;
+      const key = `${queueKey(host.machine.id, sentPane.id)}\u0000${body}`;
       const entry: QueuedDraft = { draft, quotes: sentQuotes, inBox: true };
       queuedDrafts.current.set(key, entry);
       try { await queueFor(sentPane.id, host.machine.id).send(body); }
@@ -1389,17 +1396,24 @@ export function PhoneApp() {
   }
 
   /** Answer the question on the form, or skip it with `null`. */
-  async function answer(request: string, answers: string[][] | null) {
-    if (!openPane || !openLink) return;
+  async function answer(request: string, answers: string[][] | null, from: ShownThread) {
+    if (!openPane || !openLink || !stillShown(from)) return;
     const host = phoneHost(openLink.id);
     if (!host || openLink.status !== "online") { setNotice(downLine(openLink)); return; }
     try { await host.backend.roomAnswer(openPane.id, request, answers); }
     catch (error) { setNotice(words(error)); }
   }
 
-  /** Send a next step to the bot that suggested it. */
-  async function sendStep(step: NextStep, by: string) {
+  /** Whether the thread a button was drawn for is still the one open and on screen. */
+  function stillShown(from: ShownThread) {
+    const shown = roomRef.current;
+    return openPane?.id === from.id && openHostId === from.hostId && shown?.id === from.id && shown.hostId === from.hostId;
+  }
+
+  /** Send a next step to the bot that suggested it, in the thread the step was shown in, and only there. */
+  async function sendStep(step: NextStep, by: string, from: ShownThread) {
     if (!openPane || !openLink) return;
+    if (!stillShown(from)) { setNotice("That suggestion was for another thread."); return; }
     if (openChat) {
       const queued = enqueueChat(openChat, step.prompt, [by]);
       if (!queued) return;
@@ -1439,7 +1453,7 @@ export function PhoneApp() {
     const found = queue?.items.find((entry) => entry.id === item);
     if (!queue || !found) return;
     queue.remove(item);
-    takeBack(paneId, found.text);
+    takeBack(openHostId, paneId, found.text);
   }
 
   /** Ask the thread's machine which models a bot's tool offers, once per machine and tool. */
@@ -1568,8 +1582,8 @@ export function PhoneApp() {
     const host = phoneHost(openLink.id);
     if (!host || openLink.status !== "online") throw new Error(downLine(openLink));
     await host.backend.roomDecide(openPane.id, request, approve, always);
-    const id = openPane.id;
-    setWaiting((all) => ({ ...all, [id]: (all[id] ?? []).filter((item) => item !== request) }));
+    const at = queueKey(openLink.id, openPane.id);
+    setWaiting((all) => ({ ...all, [at]: (all[at] ?? []).filter((item) => item !== request) }));
     setRoom((current) => current ? { ...current, approvals: current.approvals.filter((card) => card.request !== request) } : current);
   }
 
@@ -1667,7 +1681,7 @@ export function PhoneApp() {
             queue.availabilityChanged();
             for (const item of [...queue.items]) queue.remove(item.id);
           }
-          for (const key of queuedDrafts.current.keys()) if (key.startsWith(`${paneId}\u0000`)) queuedDrafts.current.delete(key);
+          for (const key of queuedDrafts.current.keys()) if (key.startsWith(`${queueKey(hostId, paneId)}\u0000`)) queuedDrafts.current.delete(key);
         });
         const removed = removeProjectFrom(current, id);
         made.undo = removed.undo;
@@ -1768,7 +1782,7 @@ export function PhoneApp() {
       return;
     }
     if (openLink.status !== "online") { setNotice(downLine(openLink)); return; }
-    const key = `${paneId}\u0000${body}`;
+    const key = `${queueKey(openLink.id, paneId)}\u0000${body}`;
     queuedDrafts.current.set(key, { draft: { text: MORE_DETAILS, files: [] }, quotes: [quote], inBox: false });
     stuckRef.current = true;
     queueFor(paneId, openLink.id).send(body).catch((error) => { queuedDrafts.current.delete(key); setNotice(words(error)); });
@@ -1902,8 +1916,11 @@ export function PhoneApp() {
 
   const draft = openKey ? draftFor(openKey) : emptyDraft();
   // The open thread's queued messages, and whether Send would queue: everyone it goes to is mid-reply.
-  const openRoom = room && openPane && room.id === openPane.id ? room : null;
-  const openQueue = openPane ? queued[openPane.id] : undefined;
+  // The room on screen is the open thread's only when it came from that thread's machine too. Everything
+  // drawn from it (messages, working bots, the question form and its Next buttons) reads this, so a room
+  // still showing while another machine's thread loads can never be acted on as the new one.
+  const openRoom = room && openPane && room.id === openPane.id && room.hostId === openHostId ? room : null;
+  const openQueue = openPane ? queued[queueKey(openHostId, openPane.id)] : undefined;
   const queuedRows = openQueue && openLink ? queuedViews(openQueue.items, Object.keys(openRoom?.working ?? {}), openQueue.paused, openQueue.lost,
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
   const nextTo = openRoom && answerers?.paneId === openRoom.id ? answerers.ids : [];
@@ -1930,7 +1947,7 @@ export function PhoneApp() {
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
 
   const callSlot = usePhoneCallSlot({ voice: phoneVoice, hostId: openHostId, roomId: openPane?.id ?? "" });
-  const callWho: PhoneVoiceWho = (id) => (room && openPane && room.id === openPane.id ? room.participants : []).find((p) => p.id === id)?.look;
+  const callWho: PhoneVoiceWho = (id) => (openRoom ? openRoom.participants : []).find((p) => p.id === id)?.look;
 
   // ---- What the chat screens show ----------------------------------------------------------------
   const chatState = delivery.snapshot();
@@ -1939,7 +1956,7 @@ export function PhoneApp() {
   const showChats = listedChats.rows.length > 0 || listedChats.archivedCount > 0 || chatMachines.some((item) => item.chats);
   const chatList = showChats ? <ChatRows rows={listedChats.rows} archivedCount={listedChats.archivedCount} showArchived={chatsArchived} folded={chatsFolded} now={Date.now()}
     machines={chatMachines} machineIcon={machineIcon}
-    waiting={(row) => outboxOf(row).filter((item) => item.state !== "delivered").length} working={(row) => busy[JSON.stringify([row.hostId, row.id])]?.length ?? 0}
+    waiting={(row) => outboxOf(row).filter((item) => item.state !== "delivered").length} working={(row) => busy[queueKey(row.hostId, row.id)]?.length ?? 0}
     onFold={() => setChatsFolded((now) => !now)} onOpen={openChatRow} onMenu={(row) => { setOpenId(null); setChatSheet({ kind: "menu", hostId: row.hostId, id: row.id }); }}
     onArchived={() => setChatsArchived((now) => !now)} /> : null;
   const fromChats = Object.entries(chatView.hosts).map(([hostId, host]) => ({
@@ -2084,21 +2101,21 @@ export function PhoneApp() {
             link={openLink}
             hostIcon={machineIcon(openLink.id, 15)}
             started={started}
-            messages={room && openPane && room.id === openPane.id ? room.messages : []}
-            approvals={room && openPane && room.id === openPane.id ? room.approvals : []}
-            participants={room && openPane && room.id === openPane.id ? room.participants : []}
-            toIds={room && openPane && room.id === openPane.id && answerers?.paneId === room.id ? answerers.ids : null}
+            messages={openRoom ? openRoom.messages : []}
+            approvals={openRoom ? openRoom.approvals : []}
+            participants={openRoom ? openRoom.participants : []}
+            toIds={openRoom && answerers?.paneId === openRoom.id ? answerers.ids : null}
             crewShut={crewShut}
             onCrew={foldCrew}
             onBot={setBotSheet}
-            meters={room && openPane && room.id === openPane.id ? Object.fromEntries(room.configs.map((config) => {
+            meters={openRoom ? Object.fromEntries(openRoom.configs.map((config) => {
               const provider = config.backend.kind === "agent" ? config.backend.tool : null;
-              return [config.id, pillMeter(provider, room.fill[config.id], planOf(room.plans, provider, config.backend.kind === "agent" ? config.backend.model : null), new Date())];
+              return [config.id, pillMeter(provider, openRoom.fill[config.id], planOf(openRoom.plans, provider, config.backend.kind === "agent" ? config.backend.model : null), new Date())];
             })) : {}}
-            to={room && openPane && room.id === openPane.id && answerers?.paneId === room.id
-              ? recipientName({ targets: answerers.ids, roster: room.participants.map((p) => ({ id: p.id, name: p.display_name })), policy: room.policy })
+            to={openRoom && answerers?.paneId === openRoom.id
+              ? recipientName({ targets: answerers.ids, roster: openRoom.participants.map((p) => ({ id: p.id, name: p.display_name })), policy: openRoom.policy })
               : null}
-            working={room && openPane && room.id === openPane.id ? room.working : {}}
+            working={openRoom ? openRoom.working : {}}
             paneId={openPane?.id ?? ""}
             stepsIndex={openPane && savedSteps?.id === openPane.id ? savedSteps.index : null}
             loadedSteps={loadedSteps.current}
@@ -2134,7 +2151,7 @@ export function PhoneApp() {
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
             onMenu={() => { if (openChat) setChatSheet({ kind: "menu" }); else if (openWork) setChatSheet({ kind: "work-menu", hostId: openWork.hostId, id: openWork.id }); else if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
-            pins={room && openPane && room.id === openPane.id ? room.pins : []}
+            pins={openRoom ? openRoom.pins : []}
             pinning={pinning}
             onUnpin={(index) => { if (openPane) unpin(openPane.id, index); }}
             quotes={openKey ? quotes[openKey] ?? [] : []}
@@ -2159,9 +2176,10 @@ export function PhoneApp() {
             onRemoveFile={(id) => openKey && setDrafts((all) => { const now = all[openKey] ?? emptyDraft(); return { ...all, [openKey]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
             onSend={() => { void send(); }}
             onDecide={decide}
-            form={<QuestionForm phone view={formView(room?.asks)} nameOf={(pid) => room?.participants.find((p) => p.id === pid)?.display_name ?? pid}
+            form={<QuestionForm phone view={formView(openRoom?.asks)} nameOf={(pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid}
               highlighted={-1} collapsed={false} notice={null} onHighlight={() => {}} onExpand={() => {}}
-              onAnswer={(request, answers) => { void answer(request, answers); }} onStep={(step, by) => { void sendStep(step, by); }}
+              onAnswer={(request, answers) => { if (openRoom) void answer(request, answers, { id: openRoom.id, hostId: openRoom.hostId }); }}
+              onStep={(step, by) => { if (openRoom) void sendStep(step, by, { id: openRoom.id, hostId: openRoom.hostId }); }}
               onDismiss={() => setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current)} />}
             plan={room?.plan ?? false}
             tldr={tldrOf(openKey)}
@@ -2445,7 +2463,7 @@ export function PhoneApp() {
           const full = !!host && canStartOn(host.machine.id);
           const absent = (session?.profiles ?? []).filter((profile) => !room.configs.some((config) => config.id === profile.id));
           const change = async (config: ParticipantConfig, remove: boolean) => {
-            if (!host || botChangeLock.current || botChangeGate(full, remove && (busy[room.id] ?? []).includes(config.id), false)) return;
+            if (!host || botChangeLock.current || botChangeGate(full, remove && (busy[queueKey(room.hostId, room.id)] ?? []).includes(config.id), false)) return;
             botChangeLock.current = true;
             setBotChange({ roomId: room.id, botId: config.id, pending: true, error: "" });
             try {
@@ -2464,7 +2482,7 @@ export function PhoneApp() {
           const row = (config: ParticipantConfig, member: boolean) => {
             const who = toPerson(config);
             const state = botChange?.roomId === room.id && botChange.botId === config.id ? botChange : null;
-            const reason = botChangeGate(full, member && (busy[room.id] ?? []).includes(config.id), botChangeLock.current);
+            const reason = botChangeGate(full, member && (busy[queueKey(room.hostId, room.id)] ?? []).includes(config.id), botChangeLock.current);
             return <div className="ph-bot-entry" key={config.id}>
               <div className="ph-bot-row">
                 <button type="button" className="ph-bot-info" disabled={!member} onClick={() => { setMenu(null); setBotSheet(config.id); }}>
@@ -2475,7 +2493,7 @@ export function PhoneApp() {
                   {state?.pending ? <span className="ph-bot-spinner" aria-label="Saving" /> : member ? <span aria-hidden="true">−</span> : <Plus size={18} />}
                 </button>
               </div>
-              {member && (busy[room.id] ?? []).includes(config.id) && <p className="ph-meta">Stop this bot’s reply before removing it.</p>}
+              {member && (busy[queueKey(room.hostId, room.id)] ?? []).includes(config.id) && <p className="ph-meta">Stop this bot’s reply before removing it.</p>}
               {state?.error && <p className="ph-bot-error" role="alert">{state.error} <button type="button" disabled={!!reason} onClick={() => void change(config, member)}>Retry</button></p>}
             </div>;
           };
@@ -2611,7 +2629,7 @@ export function PhoneApp() {
         )}
         {chatSheet?.kind === "bots" && sheetChat && (
           <Sheet title="Bots in this chat" onClose={() => setChatSheet(null)}>
-            <ChatBotsBody machine={chatMachine(sheetChat.hostId)} locked={sheetRights?.post ? "" : sheetRights?.postWhy ?? ""} bots={chatBots(sheetChat)} working={[...(busy[JSON.stringify([sheetChat.hostId, sheetChat.id])] ?? [])]} loadProfiles={chatProfilesOn}
+            <ChatBotsBody machine={chatMachine(sheetChat.hostId)} locked={sheetRights?.post ? "" : sheetRights?.postWhy ?? ""} bots={chatBots(sheetChat)} working={[...(busy[queueKey(sheetChat.hostId, sheetChat.id)] ?? [])]} loadProfiles={chatProfilesOn}
               onOpen={(botId) => { if (openId === sheetChat.id) { setChatSheet(null); setBotSheet(botId); } else openChatRow(sheetChat); }}
               onAdd={(profile) => changeChatBots(sheetChat, { add: profile })} onRemove={(botId) => changeChatBots(sheetChat, { remove: botId })} />
           </Sheet>

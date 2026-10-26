@@ -222,6 +222,10 @@ export function promoteRequest(saved: PromoteTicket | undefined, cwd: string, ac
 
 // ---- Which thread is open -----------------------------------------------------------------------
 
+/** The key a thread's live state (working bots, queued rows, approvals) is kept under on the phone:
+ *  the machine and the room, since two machines can each have a room with the same id. */
+export const machineThreadKey = (hostId: string, id: string): string => JSON.stringify([hostId, id]);
+
 /** The key a thread's on-phone state (draft, quotes, TL;DR, working bots) is kept under. A chat belongs to
  *  its machine, and two machines can each have a room with the same id, so a chat's key names both. */
 export const threadKey = (pane: { id: string; hostId?: string; workspaceId: string }, isChat: (workspaceId: string) => boolean): string =>
