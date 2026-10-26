@@ -21,7 +21,6 @@ export function ConfirmDialog({ question, onCancel }: { question: Question; onCa
   cancelled.current = onCancel;
   useEffect(() => {
     opener.current = document.activeElement;
-    cancel.current?.focus();
     const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelled.current(); } };
     window.addEventListener("keydown", key, true);
     return () => {
@@ -29,6 +28,8 @@ export function ConfirmDialog({ question, onCancel }: { question: Question; onCa
       if (opener.current instanceof HTMLElement && opener.current.isConnected) opener.current.focus();
     };
   }, []);
+  // A question asked straight after another reuses this dialog, so each one starts on Cancel.
+  useEffect(() => { cancel.current?.focus(); }, [question]);
   return createPortal(
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
       <div className="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby={question.rows?.length ? "confirm-body confirm-rows" : "confirm-body"}>
