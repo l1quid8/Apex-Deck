@@ -129,7 +129,7 @@ const MAX_STEPS_SHOWN = 6;
 const COPIED_MS = 1500;
 /** The thread a button was drawn for: a room id and the machine it came from. */
 type ShownThread = { id: string; hostId: string };
-type SavedStepsFor = { id: string; index: import("../types").StepsIndex | null };
+type SavedStepsFor = { id: string; hostId: string; index: import("../types").StepsIndex | null };
 type Room = {
   /** The room and the machine it came from: two machines can each have a room with the same id. */
   id: string; hostId: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
@@ -1047,7 +1047,8 @@ export function PhoneApp() {
     const queue: ParticipantQueues = new ParticipantQueues(
       async (text) => {
         const shown = roomRef.current;
-        const sticky = shown?.id === paneId ? queuedSticky(text, shown.participants, shown.policy, queue.items) : null;
+        // Only the room on screen for this same machine may answer here; otherwise this queue's own machine decides.
+        const sticky = shown?.id === paneId && shown.hostId === hostId ? queuedSticky(text, shown.participants, shown.policy, queue.items) : null;
         return sticky ?? backend().roomTargets(paneId, text);
       },
       async (text, to, kind, hops, voice) => {
@@ -1132,8 +1133,9 @@ export function PhoneApp() {
   const [savedSteps, setSavedSteps] = useState<SavedStepsFor | null>(null);
   const loadedSteps = useRef(new Map<number, import("../types").ReplySteps>());
   const refreshSteps = useRef<() => void>(() => {});
+  // The open thread as machine plus id: a steps load that comes back for another thread, even one with the same id, is dropped.
   const openPaneRef = useRef<string | null>(null);
-  openPaneRef.current = openPane?.id ?? null;
+  openPaneRef.current = openPane ? queueKey(openHostId, openPane.id) : null;
   useEffect(() => {
     if (!openPane || !openWorkspace) { if (!viewingPending) setRoom(null); return; }
     const host = phoneHost(openHostId);
@@ -1166,13 +1168,16 @@ export function PhoneApp() {
     const paneId = openPane.id;
     // A chat lives on its machine: it is read, never created here, and the phone keeps a copy for its outbox.
     const chatHost = isChatSpace(openPane.workspaceId) ? openHostId : null;
-    loadedSteps.current.clear();
+    // A fresh cache per thread, so a load still on its way for the last one lands in a map nobody reads.
+    const stepsCache = new Map<number, import("../types").ReplySteps>();
+    loadedSteps.current = stepsCache;
+    const stepsHost = openHostId;
     const stepsLoader = createStepsIndexLoader(
       () => host.backend.roomSteps(paneId, null),
       (index) => {
         if (!live) return;
-        for (const seq of [...loadedSteps.current.keys()]) if (!index?.replies[String(seq)]) loadedSteps.current.delete(seq);
-        setSavedSteps({ id: paneId, index });
+        for (const seq of [...stepsCache.keys()]) if (!index?.replies[String(seq)]) stepsCache.delete(seq);
+        setSavedSteps({ id: paneId, hostId: stepsHost, index });
       },
     );
     refreshSteps.current = () => { void stepsLoader.refresh(); };
@@ -1845,7 +1850,7 @@ export function PhoneApp() {
     try {
       const failed = await host.backend.roomRevert(paneId, message.seq, bot, request.chat, request.files);
       if (request.chat) {
-        setSavedSteps((saved) => saved && saved.id === paneId ? { id: paneId, index: dropStepsFrom(saved.index, loadedSteps.current, message.seq) } : saved);
+        setSavedSteps((saved) => saved && saved.id === paneId && saved.hostId === host.machine.id ? { ...saved, index: dropStepsFrom(saved.index, loadedSteps.current, message.seq) } : saved);
         refreshSteps.current();
         setRoom((current) => current && current.id === paneId ? cutBack(current, message.seq) : current);
         // A reply that was cut off mid-way goes with the rest.
@@ -2117,15 +2122,18 @@ export function PhoneApp() {
               : null}
             working={openRoom ? openRoom.working : {}}
             paneId={openPane?.id ?? ""}
-            stepsIndex={openPane && savedSteps?.id === openPane.id ? savedSteps.index : null}
+            stepsIndex={openPane && savedSteps?.id === openPane.id && savedSteps.hostId === openHostId ? savedSteps.index : null}
             loadedSteps={loadedSteps.current}
             loadSteps={async (seq) => {
               const host = phoneHost(openHostId);
               if (!host || !openPane) return null;
               const fromPane = openPane.id;
+              const from = queueKey(openHostId, fromPane);
               const cache = loadedSteps.current;
               const reply = readReplySteps(await host.backend.roomSteps(fromPane, seq));
-              rememberSteps(cache, openPaneRef.current, fromPane, seq, reply);
+              // Another thread opened while this was loading, maybe one with the same id on another machine: drop it.
+              if (openPaneRef.current !== from || loadedSteps.current !== cache) return null;
+              rememberSteps(cache, openPaneRef.current, from, seq, reply);
               return reply;
             }}
             cut={(openKey && cuts[openKey]) || NO_CUTS}
@@ -2969,7 +2977,7 @@ function ThreadView(props: {
   const [copied, setCopied] = useState<number | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(copiedTimer.current), []);
-  useEffect(() => { setMessageMenu(null); setCopied(null); }, [props.paneId]);
+  useEffect(() => { setMessageMenu(null); setCopied(null); }, [props.link.id, props.paneId]);
   // A tap anywhere but a message's actions folds them, as a click away does on the desktop; so does Escape.
   useEffect(() => {
     if (messageMenu === null) return;
@@ -3239,7 +3247,7 @@ function ThreadView(props: {
                 : undefined)} /></div>
               {(() => {
                 const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
-                return saved ? <SavedSteps key={`${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
+                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
               })()}
             </div>
             {actionsFor(message, message.text)}
@@ -3344,7 +3352,7 @@ function ThreadView(props: {
         <div ref={props.endRef} />
       </main>
       {/* Text picked inside one message: the desktop's Add to chat and More details, clear of iPhone's own menu. */}
-      {props.actions && <PickedText key={props.paneId} chat={chatRef} covered={props.covered} canExplain={!paused && props.participants.length > 0}
+      {props.actions && <PickedText key={`${props.link.id}:${props.paneId}`} chat={chatRef} covered={props.covered} canExplain={!paused && props.participants.length > 0}
         onAdd={(seq, text) => {
           const message = props.messages.find((m) => m.seq === seq);
           if (!message) return;

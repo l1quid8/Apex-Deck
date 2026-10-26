@@ -97,3 +97,57 @@ test('a Work thread\'s queued rows and Edit stay on their own machine when anoth
   assert.equal(queued[K('A','shared')].items.length,1);
   void ('B row shows B text; Edit took back B only; A still queued:',JSON.stringify(a.items.map(x=>x.text)));
 });
+
+test('saved steps that finish loading after another machine\'s same-id thread opens are dropped', async () => {
+  const {readReplySteps,rememberSteps}=await import(new URL('../src/workSteps.ts', import.meta.url).href);
+  const {machineThreadKey}=await import(new URL('../src/phone/chatRoutes.ts', import.meta.url).href);
+  const source=fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url),'utf8');
+  const head='            loadSteps={async (seq) => {';
+  const start=source.indexOf(head)+head.length,end=source.indexOf('\n            }}',start);
+  assert.ok(start>head.length&&end>start);
+  const code=transform('async function loadSteps(seq) {'+source.slice(start,end)+'\n}',{transforms:['typescript']}).code;
+  let release;
+  const env={queueKey:machineThreadKey,openHostId:'A',openPane:{id:'shared'},openPaneRef:{current:machineThreadKey('A','shared')},loadedSteps:{current:new Map()},readReplySteps,rememberSteps,
+    phoneHost:id=>({backend:{roomSteps:()=>{assert.equal(id,'A');return new Promise(r=>{release=r})}}})};
+  const load=new Function('env','with(env){'+code+';return loadSteps}')(env);
+  const pending=load(7);
+  // B/shared opens while A's load is still out: the room effect gives B a fresh cache.
+  env.openHostId='B';env.loadedSteps.current=new Map();env.openPaneRef.current=machineThreadKey('B','shared');
+  const privateA={by:'bot',seq:7,steps:[{key:'private',parent:null,kind:'command',label:'A PRIVATE COMMAND',folder:'/A/private',detail:'cat A-private-report',output:'SECRET-A OUTPUT',status:'done',exit_code:0,duration_ms:10}],todo:[],dropped:0};
+  release(privateA);
+  assert.equal(await pending,null,'the late A reply is not handed to whatever is on screen');
+  assert.equal(env.loadedSteps.current.get(7),undefined,'B\'s cache never holds A\'s steps');
+  // B's own load still works.
+  env.phoneHost=id=>({backend:{roomSteps:async()=>{assert.equal(id,'B');return {...privateA,steps:[{...privateA.steps[0],label:'B command',output:'B output'}]}}}});
+  const own=await load(7);
+  assert.equal(own.steps[0].label,'B command');
+  assert.equal(env.loadedSteps.current.get(7).steps[0].label,'B command');
+  // The rendered steps are keyed by machine too, so A's mounted line can't carry over to B.
+  assert.match(source,/<SavedSteps key=\{`\$\{props\.link\.id\}:\$\{props\.paneId\}:\$\{message\.seq\}`\}/);
+});
+
+test('a queued Work message picks its bots with its own machine\'s rules, not the same-id room on screen', async () => {
+  const {ParticipantQueues}=await import(new URL('../src/turnQueue.ts', import.meta.url).href);
+  const {queuedSticky,giveBack}=await import(new URL('../src/phoneQueue.ts', import.meta.url).href);
+  const {postFromPhone}=await import(new URL('../src/phone/phonePost.ts', import.meta.url).href);
+  const {splitTldr}=await import(new URL('../src/tldr.ts', import.meta.url).href);
+  const {quotesBack}=await import(new URL('../src/reply.ts', import.meta.url).href);
+  const {machineThreadKey}=await import(new URL('../src/phone/chatRoutes.ts', import.meta.url).href);
+  const source=fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url),'utf8');
+  const slice=(s,e)=>{const at=source.indexOf(s),end=source.indexOf(e,at);assert.ok(at>=0&&end>at,s);return source.slice(at,end)};
+  const code=transform([slice('  const queueKey =','\n  const [queued'),slice('  function takeBack(','\n  const sessionEdits')].join('\n'),{transforms:['typescript']}).code;
+  let queued={},drafts={},quotes={};const targetCalls=[];
+  const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async(room,text)=>{targetCalls.push({id,room,text});return text.includes('@One')?['one']:['one','two']},roomPostTo:async()=>{},roomStop:async()=>{}}}));
+  const people=[{id:'one',display_name:'One'},{id:'two',display_name:'Two'}];
+  const env={machineThreadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),queues:{current:new Map()},hostsRef:{current:hosts},
+    roomRef:{current:{id:'shared',hostId:'A',participants:people,policy:'everyone'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},
+    setQueued:fn=>{queued=fn(queued)},setDrafts:fn=>{drafts=fn(drafts)},setQuotes:fn=>{quotes=fn(quotes)},setNotice:()=>{},words:String,toLink:x=>x};
+  const h=new Function('env',`with(env){${code};return {queueFor}}`)(env);
+  const a=h.queueFor('shared','A');a.started('one');a.started('two');
+  await a.send('@One wait');
+  // B/shared, which only answers when tagged, is now on screen; an A message still in flight reaches the queue.
+  env.roomRef.current={id:'shared',hostId:'B',participants:people,policy:'mention'};
+  await a.send('A follow-up captured before switching to B');
+  assert.deepEqual(a.items.map(x=>x.to),[['one'],['one','two']]);
+  assert.deepEqual(targetCalls.map(c=>c.id),['A','A'],'A is asked, B never is');
+});
