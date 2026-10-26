@@ -373,8 +373,11 @@ def closed_within(seconds,uid=None):
         time.sleep(1)
     return not app_running(uid)
 
-def wait_for_exit(seconds=EXIT_WAIT):
-    if not closed_within(seconds): raise RuntimeError('Apex Deck did not close within '+str(seconds)+' seconds, so nothing was installed')
+def wait_for_exit(uid,seconds=EXIT_WAIT):
+    # The requester's copy is quitting for this update, so give it time. Another signed-in
+    # person's copy isn't, but it runs from the bundle being replaced: stop now and say so.
+    if not closed_within(seconds,uid): raise RuntimeError('Apex Deck did not close within '+str(seconds)+' seconds, so nothing was installed')
+    if app_running(): raise RuntimeError('Apex Deck is still open in another account on this Mac. Quit it there, then try the update again.')
 
 def write_result(result):
     if RESULTS.is_symlink(): raise RuntimeError('Linked update results folder')
@@ -421,7 +424,7 @@ def auto(request_path):
         shutil.copyfile(VERIFIER,verifier); os.chmod(verifier,0o700); VERIFIER=verifier
         staged=stage(job,request)
         use_manifest(identify(staged,request),staged)
-        wait_for_exit()
+        wait_for_exit(request['uid'])
         install()
         result['outcome']='installed'
     except BaseException as error:

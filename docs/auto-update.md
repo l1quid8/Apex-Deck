@@ -66,7 +66,9 @@ Backups from administrator-run packages are never removed by it.
 ## When something goes wrong
 
 - Refused before installing (wrong team, not newer, checksum, Deck didn't close
-  within two minutes): nothing changes, Deck reopens and says why.
+  within two minutes, Deck still open in another signed-in account): nothing
+  changes, Deck reopens and says why. Another account's copy is not waited on,
+  since it isn't quitting for this update.
 - Failed during the transaction: it rolls back as a `.pkg` would, Deck reopens
   and says so.
 - Rollback itself failed, or the Mac lost power mid-install:
