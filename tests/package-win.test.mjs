@@ -132,6 +132,13 @@ test('the installer stops the old service before it copies files', () => {
   assert.match(hook, /ReadEnvStr \$R6 "USERNAME"/, 'the user name has to be read from the environment');
   assert.match(hook, /StrCpy \$R8 '\/FI "USERNAME eq \$R6"'/, 'the filter keeps taskkill to this user');
   assert.match(hook, /\/IM "\$\{APEX_DAEMON_IMAGE\}" \$R8/, 'and the filter has to reach the command');
+  // With a /FI filter, taskkill answers 0 for "ended one" and for "found none"
+  // alike (measured on windows-latest), so the loop must never read its exit
+  // code: it asks tasklist what is still running instead.
+  assert.match(hook, /nsExec::ExecToStack '"\$SYSDIR\\tasklist\.exe" \/FI "IMAGENAME eq \$\{APEX_DAEMON_IMAGE\}" \$R8 \/FO CSV \/NH'/,
+    'whether the service is gone has to be asked of tasklist, not of taskkill');
+  assert.match(hook, /\$\{If\} \$R9 != '"'/,
+    'a matching CSV row starts with a quote and the translated INFO line does not');
   // Neither spelling of the environment token works: nsExec starts taskkill
   // directly, so nothing expands %USERNAME%, and NSIS has no $USERNAME at all --
   // makensis only warns 6000 and drops it, which leaves a filter matching no
@@ -154,7 +161,14 @@ test('the installer stops the old service before it copies files', () => {
   // Bounded, so a daemon that refuses to die cannot hang the installer.
   assert.match(hook, /\$R7 >= 20/, 'the wait must be bounded');
   assert.match(hook, /Sleep/, 'and must not spin');
+  // The regression this replaces: `${If} $R0 != "0"` read taskkill's exit code,
+  // so a fresh install waited out the whole loop and then quit.
+  assert.ok(!/\$R0 (==|!=) /.test(code),
+    'taskkill answers 0 both for "ended one" and for "found none", so its exit code cannot be read');
   assert.match(hook, /\$\{IfNot\} \$\{Silent\}/, 'a silent upgrade reports through its exit code, not a dialog');
+  // The dialog is skipped when silent, so the failure has to reach the exit code.
+  // Otherwise an unattended upgrade reports success and leaves a locked image.
+  assert.match(hook, /SetErrorLevel 2\s*\n\s*Quit/, 'a silent install that cannot stop the service must fail');
 });
 
 test('the Windows CI job checks the app, not just the service', () => {
@@ -175,4 +189,28 @@ test('the Windows CI job checks the app, not just the service', () => {
   // The merged Windows branch reads 0 app-test failures (run 40253047144), so
   // this fails the run again: a Windows regression must not pass as a warning.
   assert.ok(!/continue-on-error/.test(job), 'a Windows app-test failure must fail the run');
+});
+
+test('the installer is actually run on Windows before it is published', () => {
+  const workflow = read('.github/workflows/windows-installer.yml');
+
+  // `npm run desktop:win` only proves the installer compiles. The shutdown step
+  // runs *inside* the built installer, so nothing caught a change that made every
+  // install wait 10 seconds and quit -- including on a machine that had never run
+  // Apex Deck. Only running it can.
+  assert.match(workflow, /apex-daemon\.exe/, 'a stand-in service has to be running first');
+  assert.match(workflow, /PING\.EXE/i, 'a real executable, renamed to the service image name');
+  assert.match(workflow, /-ArgumentList '\/S'/, 'and run silently, so no dialog waits for a human');
+  assert.match(workflow, /ExitCode -ne 0/, 'a failed install must fail the step, not just print');
+  assert.match(workflow, /\$seconds -ge \d+/, 'and so must one that waits an implausibly long time');
+  assert.match(workflow, /Get-Process -Name 'apex-daemon'/, 'the stand-in service has to be gone afterwards');
+  assert.match(workflow, /the installed app has no apex-daemon\.exe/,
+    'and the install has to carry the service where the app looks for it');
+
+  // It has to happen before the download is offered: a broken installer must not
+  // reach the Human, and the artifact is how it would.
+  const smokeAt = workflow.indexOf('Run the installer');
+  const uploadAt = workflow.indexOf('upload-artifact');
+  assert.ok(smokeAt > 0, 'the installer must be run');
+  assert.ok(smokeAt < uploadAt, 'and before the artifact is attached');
 });

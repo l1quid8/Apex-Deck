@@ -29,12 +29,23 @@
 ; drops it, and the filter then matches no process. electron-builder treats that
 ; warning as fatal, which is how this was caught rather than shipped.
 ;
-; The loop repeats only while taskkill reports success, i.e. while it keeps
-; finding a copy to end. Any other result -- no such process, or another user's
-; process we may not touch -- means there is nothing left for us to do, so it
-; stops instead of guessing which exit code means "not found". Bounded at 20 x
-; 500ms so a service that keeps respawning cannot hold the installer open
-; forever. Leaves $R7 at the attempt count: 20 means it kept coming back.
+; taskkill's exit code is thrown away, and that is the whole point of the loop
+; below. Measured on windows-latest: without a /FI filter it answers 128 for "no
+; such process", but as soon as a filter is present it answers 0 both for
+; "terminated one" and for "nothing matched" -- so the exit code cannot tell
+; those apart, and an earlier version of this loop spun its full 10 seconds and
+; then refused to install on a machine that had never run Apex Deck. Whether the
+; service is really gone is therefore asked of tasklist, which reports facts
+; rather than a status code.
+;
+; tasklist is read as CSV and judged by its first character: a match starts with
+; `"apex-daemon.exe"`, and the no-match line starts with "INFO:". The image name
+; is never translated, the INFO text is, so this holds on any Windows language.
+; Leading blank lines are skipped in case the runner adds one.
+;
+; Bounded at 20 x 500ms so a service that keeps respawning cannot hold the
+; installer open forever. Leaves $R7 at the attempt count: 20 means it kept
+; coming back, which is the only case that is the user's problem.
 !macro StopDaemon
   nsExec::Exec '"$SYSDIR\schtasks.exe" /End /TN "${APEX_DAEMON_TASK}"'
   Pop $R0
@@ -45,32 +56,55 @@
     StrCpy $R8 '/FI "USERNAME eq $R6"'
   ${EndIf}
 
+  ; End any daemon the app started as its own child. Silent about the result:
+  ; the check below is what decides whether it worked.
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_DAEMON_IMAGE}" $R8'
+  Pop $R0
+
   StrCpy $R7 0
-  ${Do}
-    nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_DAEMON_IMAGE}" $R8'
-    Pop $R0
-    ${If} $R0 != "0"
-      ${ExitDo}
-    ${EndIf}
-    IntOp $R7 $R7 + 1
-    ${If} $R7 >= 20
-      ${ExitDo}
-    ${EndIf}
-    Sleep 500
-  ${Loop}
+  ${If} $R8 != ""
+    ${Do}
+      nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${APEX_DAEMON_IMAGE}" $R8 /FO CSV /NH'
+      Pop $R0
+      Pop $R1
+      ; First non-blank character of the report -> $R9.
+      ${Do}
+        StrCpy $R9 $R1 1
+        ${If} $R9 == "$\r"
+        ${OrIf} $R9 == "$\n"
+        ${OrIf} $R9 == " "
+          StrCpy $R1 $R1 "" 1
+        ${Else}
+          ${ExitDo}
+        ${EndIf}
+      ${Loop}
+      ${If} $R9 != '"'
+        ${ExitDo}
+      ${EndIf}
+      IntOp $R7 $R7 + 1
+      ${If} $R7 >= 20
+        ${ExitDo}
+      ${EndIf}
+      Sleep 500
+      nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_DAEMON_IMAGE}" $R8'
+      Pop $R0
+    ${Loop}
+  ${EndIf}
 !macroend
 
 !macro customInit
   !insertmacro StopDaemon
 
   ; Say what to do instead of failing later with a locked-file error nobody can
-  ; read. Silent installs skip the box: an unattended upgrade should report the
-  ; failure through its exit code, not wait on a dialog.
+  ; read. Silent installs skip the box but must not skip the failure: reporting
+  ; success and then leaving a locked image behind is how an unattended upgrade
+  ; breaks with nothing in the log to explain it.
   ${If} $R7 >= 20
     ${IfNot} ${Silent}
       MessageBox MB_ICONSTOP|MB_OK "Apex Deck's background service keeps restarting, so this version cannot replace it.$\n$\nClose Apex Deck, end apex-daemon.exe on Task Manager's Details tab, then run this installer again."
-      Quit
     ${EndIf}
+    SetErrorLevel 2
+    Quit
   ${EndIf}
 !macroend
 
