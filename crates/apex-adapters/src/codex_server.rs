@@ -205,18 +205,30 @@ fn mcp_call(params: &Value, pending: &HashMap<String, Value>) -> Option<McpCall>
 /// a bare accept: a form that asks for nothing required. Computer Use tags
 /// its nested app permission as a tool call, but its app arguments differ
 /// from the enclosing JavaScript call. It must get a separate human decision,
-/// never reuse the hook's decision. Other unmatched tool approvals reject.
+/// never reuse the hook's decision. Browser uploads likewise need their own
+/// origin-scoped human decision. Other unmatched tool approvals reject.
 fn mcp_question(params: &Value) -> Option<ProposedAction> {
     let meta = &params["_meta"];
-    let app = if meta["codex_approval_kind"] == "mcp_tool_call" {
-        if meta["connector_id"] != "computer-use" {
-            return None;
+    let mut upload = false;
+    let target = if meta["codex_approval_kind"] == "mcp_tool_call" {
+        match meta["connector_id"].as_str()? {
+            "computer-use" => Some(format!("App: {}", meta["tool_params"]["app"]
+                .as_str().filter(|app| !app.trim().is_empty())?)),
+            "browser-use" if meta["tool_name"] == "upload_browser_files"
+                && meta["file_transfer"] == "upload" => {
+                let origin = meta["tool_params"]["origin"].as_str()?;
+                let url = reqwest::Url::parse(origin).ok()?;
+                // Accept only a canonical web origin, bound to both metadata fields.
+                if !matches!(url.scheme(), "https" | "http")
+                    || url.origin().ascii_serialization() != origin
+                    || meta["origin"] != origin {
+                    return None;
+                }
+                upload = true;
+                Some(format!("Upload destination: {origin}"))
+            }
+            _ => return None,
         }
-        Some(
-            meta["tool_params"]["app"]
-                .as_str()
-                .filter(|app| !app.trim().is_empty())?,
-        )
     } else {
         None
     };
@@ -236,8 +248,8 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
     let message = params["message"]
         .as_str()
         .filter(|text| !text.trim().is_empty())?;
-    let detail = match app {
-        Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
+    let detail = match target {
+        Some(target) => format!("{message}\n\n{target}\nRequested by: {server}"),
         None => message.to_string(),
     };
     Some(ProposedAction {
@@ -245,7 +257,7 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
         title: format!("{server} asks permission"),
         detail,
         expires_at: None,
-        risky: high_risk(params),
+        risky: upload || high_risk(params),
     })
 }
 
@@ -1381,6 +1393,38 @@ cat > /dev/null"#;
         let mut form = ask.clone();
         form["requestedSchema"]["required"] = json!(["choice"]);
         assert!(mcp_question(&form).is_none());
+    }
+
+    #[test]
+    fn nested_browser_upload_permission_reaches_its_own_card() {
+        // Actual browser upload elicitation shape from the daemon log.
+        let ask = json!({"serverName":"cua_repl", "mode":"form",
+            "message":"Allow upload to https://app.fieldwire.com/projects/darby?",
+            "requestedSchema":{"type":"object","properties":{}},
+            "_meta":{"codex_approval_kind":"mcp_tool_call","connector_id":"browser-use",
+                "file_transfer":"upload","origin":"https://app.fieldwire.com",
+                "tool_name":"upload_browser_files",
+                "tool_params":{"origin":"https://app.fieldwire.com"},"persist":["session","always"]}});
+        let action = mcp_question(&ask).expect("upload permission must reach a human decision");
+        assert!(action.detail.contains("https://app.fieldwire.com"));
+        assert!(action.risky, "file disclosure needs explicit approval");
+        for (field, value) in [
+            ("connector_id", json!("unknown")),
+            ("tool_name", json!("other_tool")),
+            ("file_transfer", json!("download")),
+            ("origin", json!("https://other.example")),
+            ("tool_params", json!({"origin":""})),
+            ("tool_params", json!({"origin":"https://app.fieldwire.com/path"})),
+        ] {
+            let mut invalid = ask.clone();
+            invalid["_meta"][field] = value;
+            assert!(mcp_question(&invalid).is_none(), "invalid {field} must reject");
+        }
+        let mut required = ask.clone();
+        required["requestedSchema"]["required"] = json!(["answer"]);
+        assert!(mcp_question(&required).is_none());
+        // A decline stays a decline; recognizing a request never approves it.
+        assert_eq!(mcp_response(&json!(5), Decision::Reject)["result"]["action"], "decline");
     }
 
     #[test]

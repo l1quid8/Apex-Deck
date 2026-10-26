@@ -1717,6 +1717,26 @@ async fn computer_use_app_permission_is_separate_from_an_outer_tool_approval() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_upload_permission_delivers_the_humans_decision() {
+    use apex_core::AgentTool;
+    let script = FAKE_MCP_CODEX.replace(
+        r#""_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{"quantity":"0.001"}}"#,
+        r#""mode":"form","message":"Allow upload to https://app.fieldwire.com?","requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call","connector_id":"browser-use","tool_name":"upload_browser_files","file_transfer":"upload","origin":"https://app.fieldwire.com","tool_params":{"origin":"https://app.fieldwire.com"}}"#);
+    let dir = fake_tool("codex-upload-permission", "codex", &script);
+    for decision in [Decision::Approve, Decision::Reject] {
+        let approver = Fixed::new(decision);
+        let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context_in(&dir));
+        let (result, _, _) = work_asking(bot.as_ref(), &approver).await;
+        assert_eq!(result.unwrap().text, if decision.approved() { "allowed=3 denied=0" } else { "allowed=0 denied=3" });
+        let asked = approver.asked.lock().unwrap();
+        assert_eq!(asked.len(), 3, "each upload asks separately from the outer tool call");
+        assert!(asked.iter().all(|a| a.kind == ActionKind::Other && a.risky && a.detail.contains("Upload destination: https://app.fieldwire.com")));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A stand-in for Claude Code asking two questions with AskUserQuestion.
 #[cfg(unix)]
 const FAKE_CLAUDE_QUESTION: &str = r#"#!/bin/sh
