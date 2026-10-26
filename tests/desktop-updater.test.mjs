@@ -186,6 +186,7 @@ test('after relaunch Deck says once how the requested update went', (t) => {
   const id = '12345678-1234-4234-8234-123456789abc';
   const cases = [
     [{ id, outcome: 'installed' }, '0.9.1', 0, { outcome: 'installed', version: '0.9.1' }],
+    [{ id, outcome: 'installed', message: 'Background service note.' }, '0.9.1', 0, { outcome: 'installed', version: '0.9.1', message: 'Background service note.' }],
     [{ id, outcome: 'failed', message: 'Version 0.9.1 is not newer' }, '0.9.0', 0, { outcome: 'failed', version: '0.9.1', message: 'Version 0.9.1 is not newer' }],
     [{ id, outcome: 'needs-attention', message: 'injected' }, '0.9.0', 0, { outcome: 'needs-attention', version: '0.9.1', message: 'injected' }],
     [{ id: 'another', outcome: 'installed' }, '0.9.0', 20 * 60 * 1000, { outcome: 'failed', version: '0.9.1', message: 'The update did not run. Nothing was changed.' }],

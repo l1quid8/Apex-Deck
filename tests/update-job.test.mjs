@@ -121,14 +121,15 @@ def fake_stage(job,request):
  events.append('stage');staged=u.UPGRADES/request['id']/'Apex Deck.app';staged.mkdir(parents=True);return staged
 u.stage=fake_stage
 u.identify=lambda staged,request:(events.append('identify') or {'id':rid,'version':'0.9.1','ui':'a'*40,'daemon':'b'*40,'broker':'c'*40})
-u.wait_for_exit=lambda:events.append('wait')
+wait_for_exit=u.wait_for_exit
+u.wait_for_exit=lambda uid:events.append(('wait',uid))
 u.reopen=lambda uid:events.append(('reopen',uid))
 `;
 
 test('a verified update installs only after Deck has closed, then records the result and reopens Deck', () => python(jobFixture + String.raw`
-u.install=lambda:events.append(('install',u.M['id'],str(u.STAGED)))
+u.install=lambda notes:events.append(('install',u.M['id'],str(u.STAGED)))
 assert u.auto(job/'request.json')==0
-assert events[:3]==['stage','identify','wait'] and events[3][0]=='install' and events[3][2].endswith(rid+'/Apex Deck.app')
+assert events[:3]==['stage','identify',('wait',501)] and events[3][0]=='install' and events[3][2].endswith(rid+'/Apex Deck.app')
 assert events[-1]==('reopen',501)
 result=json.loads((u.RESULTS/'last-update.json').read_text())
 assert result['outcome']=='installed' and result['from']=='0.9.0' and result['version']=='0.9.1' and result['id']==rid
@@ -141,9 +142,9 @@ shutil.rmtree(directory)
 test('a refused update installs nothing, says why, and still reopens Deck', () => python(jobFixture + String.raw`
 def refuse(staged,request): raise RuntimeError('Version 0.9.1 is not newer than the installed 0.9.1')
 u.identify=refuse
-u.install=lambda:events.append('install')
+u.install=lambda notes:events.append('install')
 assert u.auto(job/'request.json')==1
-assert 'install' not in events and 'wait' not in events and events[-1]==('reopen',501)
+assert 'install' not in events and ('wait',501) not in events and events[-1]==('reopen',501)
 result=json.loads((u.RESULTS/'last-update.json').read_text())
 assert result['outcome']=='failed' and 'not newer' in result['message']
 shutil.rmtree(directory)
@@ -189,8 +190,60 @@ with tempfile.TemporaryDirectory() as directory:
  assert u.app_running()
 `));
 
+test('installing waits for the requester’s own Deck to close, and says it didn’t when it stays open', () => python(String.raw`
+sleeps=[]
+u.time.sleep=lambda s:sleeps.append(s)
+u.run=lambda *args,required=True:types.SimpleNamespace(returncode=0)
+raises(lambda:u.wait_for_exit(501),'did not close within 120 seconds')
+assert len(sleeps)==u.EXIT_WAIT,len(sleeps)
+u.run=lambda *args,required=True:types.SimpleNamespace(returncode=1)
+u.wait_for_exit(501)
+`));
+
+test('another signed-in person’s open Deck stops the update at once, and the message says it is open in another account', () => python(jobFixture + String.raw`
+u.wait_for_exit=wait_for_exit
+u.install=lambda notes:events.append('install')
+sleeps=[]
+u.time.sleep=lambda s:sleeps.append(s)
+def run(*args,required=True):
+ args=[str(a) for a in args]
+ assert args[0]=='/usr/bin/pgrep',args
+ # Fast User Switching: the requester's (501) Deck has quit; uid 502's is still open.
+ return types.SimpleNamespace(returncode=1 if args[1:3]==['-U','501'] else 0)
+u.run=run
+assert u.auto(job/'request.json')==1
+assert 'install' not in events and events[-1]==('reopen',501)
+message=json.loads((u.RESULTS/'last-update.json').read_text())['message']
+assert 'did not close' not in message,message
+assert 'another account' in message,message
+# That copy isn't quitting, so holding the requester's Deck shut for two minutes gains nothing.
+assert sleeps==[],sleeps
+shutil.rmtree(directory)
+`));
+
+test('an installed update says which other account’s background service didn’t start again', () => python(jobFixture + String.raw`
+note='Apex Deck\'s background service in the account "Other Person" didn\'t start again.'
+u.install=lambda notes:notes.append(note)
+assert u.auto(job/'request.json')==0
+result=json.loads((u.RESULTS/'last-update.json').read_text())
+assert result['outcome']=='installed' and result['message']==note,result
+assert events[-1]==('reopen',501)
+shutil.rmtree(directory)
+`));
+
+test('a rolled-back update adds the other account’s service note to its reason', () => python(jobFixture + String.raw`
+def rolled_back(notes):
+ notes.append('Apex Deck\'s background service in the account "Other Person" didn\'t start again.')
+ raise RuntimeError('injected')
+u.install=rolled_back
+assert u.auto(job/'request.json')==1
+result=json.loads((u.RESULTS/'last-update.json').read_text())
+assert result['outcome']=='failed' and result['message'].startswith('injected ') and 'Other Person' in result['message'],result
+shutil.rmtree(directory)
+`));
+
 test('a failed transaction that could not roll back is reported as needing attention', () => python(jobFixture + String.raw`
-def broken():
+def broken(notes):
  (u.UPGRADES/'install.lock').mkdir();(u.UPGRADES/'install.lock'/'recovery-needed.txt').write_text('inspect')
  raise RuntimeError('injected')
 u.install=broken

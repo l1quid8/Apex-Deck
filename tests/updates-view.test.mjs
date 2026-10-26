@@ -24,6 +24,7 @@ test('the Settings line says plainly where updating stands', () => {
 test('after reopening, Deck says once how the update went', () => {
   assert.equal(resultNotice({ ...base, result: null }), null);
   assert.deepEqual(resultNotice({ ...base, result: { outcome: 'installed', version: '0.9.1' } }), { text: 'Updated to Apex Deck 0.9.1.', problem: false });
+  assert.deepEqual(resultNotice({ ...base, result: { outcome: 'installed', version: '0.9.1', message: 'Its service in another account didn\'t start again.' } }), { text: "Updated to Apex Deck 0.9.1. Its service in another account didn't start again.", problem: true });
   assert.deepEqual(resultNotice({ ...base, result: { outcome: 'failed', version: '0.9.1', message: 'offline' } }), { text: "The update to 0.9.1 didn't install, and nothing was changed: offline", problem: true });
   assert.equal(resultNotice({ ...base, result: { outcome: 'needs-attention', version: '0.9.1', message: 'x' } }).problem, true);
 });

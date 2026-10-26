@@ -66,7 +66,17 @@ Backups from administrator-run packages are never removed by it.
 ## When something goes wrong
 
 - Refused before installing (wrong team, not newer, checksum, Deck didn't close
-  within two minutes): nothing changes, Deck reopens and says why.
+  within two minutes, Deck still open in another signed-in account): nothing
+  changes, Deck reopens and says why. Another account's copy is not waited on,
+  since it isn't quitting for this update.
+- Other signed-in accounts with Deck closed: their background service is
+  stopped for the install like yours, then started again on whichever copy is
+  in place afterwards, since nobody there will reopen Deck to start it. Agents
+  left running in that account stop. Each account's service is started on its
+  own; one that won't start is named in the notice after reopening, which says
+  it stays off until Deck is opened in that account. A background service that
+  isn't one of these, such as a development build's, can't be stopped by the
+  update, so it refuses until that is quit.
 - Failed during the transaction: it rolls back as a `.pkg` would, Deck reopens
   and says so.
 - Rollback itself failed, or the Mac lost power mid-install:
