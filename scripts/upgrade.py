@@ -132,8 +132,25 @@ def wait_for_broker(previous_pid,previous_socket):
         time.sleep(1)
     raise RuntimeError('Protected broker did not become ready within 20 seconds (new live PID, running service, and fresh socket required)')
 
+def other_services(uid):
+    # With Fast User Switching every signed-in account runs its own background service, all from
+    # the one protected daemon being replaced. Their Deck is closed (checked first), so nobody there
+    # will start it again: the install stops each one and starts it again from the same plist.
+    found={}
+    for person in pwd.getpwall():
+        if person.pw_uid<500 or person.pw_uid==uid or person.pw_uid in found: continue
+        if run('/bin/launchctl','print','gui/'+str(person.pw_uid)+'/dev.apexdeck.daemon',required=False).returncode: continue
+        plist=Path(person.pw_dir)/'Library/LaunchAgents/dev.apexdeck.daemon.plist'
+        try: st=os.lstat(plist)
+        except FileNotFoundError: st=None
+        if st is None or not stat.S_ISREG(st.st_mode) or st.st_uid!=person.pw_uid:
+            raise RuntimeError('Apex Deck\'s background service in another account on this Mac isn\'t set up the usual way, so nothing was installed. Sign out of that account, then try the update again.')
+        found[person.pw_uid]=plist
+    return found
+
 def install():
     user,agent = preflight(payload=True)
+    others=other_services(user.pw_uid)
     domain='gui/'+str(user.pw_uid)
     agent_loaded=run('/bin/launchctl','print',domain+'/dev.apexdeck.daemon',required=False).returncode==0
     broker_state=run('/bin/launchctl','print','system/dev.apexdeck.provenance',required=False)
@@ -141,16 +158,20 @@ def install():
     previous_broker_pid=service_pid(broker_state.stdout)
     backup=UPGRADES/('backup-'+M['id'])
     backup.mkdir(mode=0o700)
-    steps=[]; stopped=False; config_changed=False; complete=False; records={}; broker_stopped=False; broker_started=False; recovery_ok=False
+    steps=[]; stopped=False; config_changed=False; complete=False; records={}; broker_stopped=False; broker_started=False; recovery_ok=False; others_stopped=[]
     lock=UPGRADES/'install.lock'; lock.mkdir(mode=0o700)
     agent_hash=digest(agent)
     try:
         if agent_loaded: run('/bin/launchctl','bootout',domain+'/dev.apexdeck.daemon')
         stopped=True
+        for uid,plist in others.items():
+            run('/bin/launchctl','bootout','gui/'+str(uid)+'/dev.apexdeck.daemon'); others_stopped.append((uid,plist))
         for _ in range(30):
             if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode!=0: break
             time.sleep(1)
-        if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode==0 or app_running(): raise RuntimeError('An Apex host or UI is still running; no files were replaced')
+        # Still running: a daemon no account's service runs, such as a development build's.
+        if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode==0: raise RuntimeError('An Apex Deck background service that the update couldn\'t stop is still running on this Mac, such as one from a development build, so nothing was installed. Quit it, then try the update again.')
+        if app_running(): raise RuntimeError('Apex Deck was opened again while the update was starting, so nothing was installed. Quit it, then try the update again.')
         if broker_loaded:
             run('/bin/launchctl','bootout','system/dev.apexdeck.provenance'); broker_stopped=True
         # Snapshot only after both writers have stopped. No user-store files are touched.
@@ -235,6 +256,11 @@ def install():
         if not complete and stopped and agent_loaded and recovery_ok and digest(agent)==agent_hash:
             result=run('/bin/launchctl','bootstrap',domain,agent,required=False)
             if result.returncode: print('Previous user service could not be restarted: '+result.stderr,file=sys.stderr)
+        # Other accounts' services come back either way, on whichever copy is now in place.
+        if complete or recovery_ok:
+            for uid,plist in others_stopped:
+                result=run('/bin/launchctl','bootstrap','gui/'+str(uid),plist,required=False)
+                if result.returncode: print('The background service for account '+str(uid)+' could not be restarted: '+result.stderr,file=sys.stderr)
 
 # ---------------------------------------------------------------- update job
 # "Restart to update": the broker, which runs nothing itself, only drops a
