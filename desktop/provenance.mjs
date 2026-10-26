@@ -60,7 +60,7 @@ export function issue(request,{publicKey:key,platform=process.platform,endpoint=
       client=net.createConnection(endpoint);
       client.setTimeout(Math.max(1,deadline-Date.now()),()=>finish(new Error('Protected provenance service timed out.')));
       client.on('error',error=>{
-        if(platform==='win32' && ['EBUSY','ENOENT'].includes(error.code) && Date.now()<deadline){client.removeAllListeners();client.destroy();timer=setTimeout(connect,10);return;}
+        if(platform==='win32' && error.code==='EBUSY' && Date.now()<deadline){client.removeAllListeners();client.destroy();timer=setTimeout(connect,10);return;}
         finish(new Error('Protected provenance service unavailable. Submission was not sent.'));
       });
       client.on('close',()=>{if(!done)finish(new Error('Protected provenance service closed without a receipt.'));});

@@ -492,7 +492,7 @@ pub fn exchange(request: &Value) -> Result<Value, String> {
                             .open(PIPE)
                         {
                             Ok(stream) => break stream,
-                            Err(error) if matches!(error.raw_os_error(), Some(code) if code == ERROR_PIPE_BUSY as i32 || code == ERROR_FILE_NOT_FOUND as i32) => {
+                            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
                                 tokio::time::sleep(Duration::from_millis(10)).await
                             }
                             Err(error) => return Err(error.to_string()),
