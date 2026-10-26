@@ -4200,6 +4200,44 @@ mod host_tests {
     }
 
     #[test]
+    fn a_cancelled_promote_stays_cancelled_after_many_more_and_a_restart() {
+        use serde_json::json;
+        let (first, runtime, data) = host("chat-promote-abandon-many");
+        let host = first;
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+        host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("denver");
+        std::fs::create_dir_all(&folder).unwrap();
+        let cwd = folder.to_string_lossy().into_owned();
+        let chat = || "11111111-1111-1111-1111-111111111111".to_string();
+        let full = || Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Full)]));
+
+        // The Full-access move is cancelled first, then 40 more Start overs follow it.
+        host.chat_promote_abandon(chat(), "move-full".into()).unwrap();
+        for n in 0..40 {
+            host.chat_promote_abandon(chat(), format!("move-{n}")).unwrap();
+        }
+        host.shutdown();
+        drop(host);
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        // Its delayed copy still lands nowhere.
+        let late = host.chat_promote(chat(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, full(), Some("move-full".into())).unwrap_err();
+        assert!(late.contains("cancelled"), "{late}");
+        assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());
+        // Once the chat really moves, the list is no longer needed: every other request is "Already moved".
+        host.chat_promote(chat(), "33333333-3333-3333-3333-333333333333".into(), cwd.clone(), None, None, Some("move-new".into())).unwrap();
+        assert!(host.store.chat_meta(&chat()).unwrap().unwrap().abandoned_promotes.is_empty());
+        let after = host.chat_promote(chat(), "44444444-4444-4444-4444-444444444444".into(), cwd, None, full(), Some("move-full".into())).unwrap_err();
+        assert!(after.contains("cancelled") || after.contains("Already moved"), "{after}");
+        assert!(host.store.room("44444444-4444-4444-4444-444444444444").unwrap().is_none());
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
     fn an_abandoned_promote_can_never_land_and_a_finished_one_is_reported() {
         use serde_json::json;
         let (host, _runtime, data) = host("chat-promote-abandon");

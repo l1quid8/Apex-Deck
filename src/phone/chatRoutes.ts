@@ -139,6 +139,14 @@ export function chatRights(machine: {
   return { list: machine.rooms, post: !postWhy, create: !why, why, postWhy, queue: !queueWhy, queueWhy };
 }
 
+/** Whether this phone may post to one room: not read-only, and the room is among the threads it may
+ *  use. Unknown access (before the first welcome) doesn't block; the machine checks again anyway. */
+export function mayPostIn(access: { tier: "read_only" | "chat" | "full"; threads: unknown } | null | undefined, room: string): boolean {
+  if (!access) return true;
+  if (access.tier === "read_only") return false;
+  return access.threads === "all" || (Array.isArray(access.threads) && access.threads.includes(room));
+}
+
 // ---- New chat's bots ---------------------------------------------------------------------------
 
 /** The bots New chat starts with once a machine's list is in: the group last picked there that can

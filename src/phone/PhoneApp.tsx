@@ -67,7 +67,7 @@ import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList } from "./ThreadList";
-import { chatOutboxRows, chatRights, chatRoute, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest, readPromoteTickets, threadKey, withoutTicket, writePromoteTickets, type ChatRights } from "./chatRoutes";
+import { chatOutboxRows, chatRights, chatRoute, mayPostIn, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest, readPromoteTickets, threadKey, withoutTicket, writePromoteTickets, type ChatRights } from "./chatRoutes";
 import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "./chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
@@ -447,6 +447,8 @@ export function PhoneApp() {
   const sendingRef = useRef(false);
   /** Each thread's messages waiting for a bot to finish, as on the desktop. They live on the phone while the app is open. */
   const queues = useRef(new Map<string, ParticipantQueues>());
+  /** Queues are kept by machine and thread: two machines can each have a thread with the same id. */
+  const queueKey = (hostId: string, paneId: string) => JSON.stringify([hostId, paneId]);
   const [queued, setQueued] = useState<Record<string, { items: ParticipantMessage[]; paused: string[]; lost: boolean }>>({});
   /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files and quotes.
    *  `inBox` while Send is still waiting on it: the box keeps it until the machine has it or it is queued. */
@@ -509,7 +511,7 @@ export function PhoneApp() {
       host.backend.onRoomEvent((id, event) => {
         if (event.type === "message_added") setSeen((all) => ({ ...all, [id]: Date.now() }));
         setBusy((all) => { const now = all[id] ?? []; const next = busyAfter(now, event); return next === now ? all : { ...all, [id]: next }; });
-        const queue = queues.current.get(id);
+        const queue = queues.current.get(queueKey(host.machine.id, id));
         if (queue) queueHears(queue, event);
         if (event.type === "approval_requested") setWaiting((all) => ({ ...all, [id]: [...(all[id] ?? []).filter((request) => request !== event.request), event.request] }));
         if (event.type === "approval_resolved") setWaiting((all) => ({ ...all, [id]: (all[id] ?? []).filter((request) => request !== event.request) }));
@@ -609,7 +611,7 @@ export function PhoneApp() {
         const settle = (active: readonly string[]) => {
           if (!live) return;
           setBusy((all) => ({ ...all, [pane.id]: active }));
-          const queue = queues.current.get(pane.id);
+          const queue = queues.current.get(queueKey(hostId, pane.id));
           if (queue) queueSync(queue, active);
         };
         host.backend.roomState(pane.id)
@@ -658,8 +660,9 @@ export function PhoneApp() {
     onChange: () => setDeliveryTick((n) => n + 1),
     onError: (error) => setNotice(words(error)),
     // Without chat_delivery_v1 a machine ignores the message id, so a message waits instead of being marked as maybe sent.
-    // A read-only phone keeps the message too: the machine would refuse it and leave it with no way to recover.
-    canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1") && host.access()?.tier !== "read_only"; },
+    // A phone that may not post there (read-only, or no longer allowed that thread) keeps the message too:
+    // the machine would refuse it and leave it with no way to recover.
+    canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1") && mayPostIn(host.access(), message.room); },
   });
   const delivery = deliveryRef.current.controller;
   /** The saved list with the delivery record laid over it, so a moved chat shows only where it lives now. */
@@ -1028,7 +1031,7 @@ export function PhoneApp() {
   }
   /** A thread's queue, made the first time it is needed. A thread never changes machines once it has started. */
   function queueFor(paneId: string, hostId: string): ParticipantQueues {
-    const made = queues.current.get(paneId);
+    const made = queues.current.get(queueKey(hostId, paneId));
     if (made) return made;
     const host = () => hostsRef.current.find((item) => item.machine.id === hostId) ?? null;
     const backend = () => {
@@ -1063,11 +1066,11 @@ export function PhoneApp() {
       (id) => backend().roomStop(paneId, id),
       (items) => setQueued((all) => ({ ...all, [paneId]: { items, paused: [...queue.paused], lost: queue.connectionPaused } })),
       (error) => setNotice(words(error)),
-      () => { const found = host(); return queues.current.get(paneId) === queue && found !== null && toLink(found.connection.get().status) === "online"; },
+      () => { const found = host(); return queues.current.get(queueKey(hostId, paneId)) === queue && found !== null && toLink(found.connection.get().status) === "online"; },
       false, // Phone restores the complete draft itself on dispatch failure.
     );
     for (const id of busyRef.current[paneId] ?? []) queue.started(id);
-    queues.current.set(paneId, queue);
+    queues.current.set(queueKey(hostId, paneId), queue);
     return queue;
   }
 
@@ -1180,7 +1183,7 @@ export function PhoneApp() {
       void stepsLoader.refresh();
       setWaiting((all) => ({ ...all, [key]: state.approvals.map((card) => card.request) }));
       setBusy((all) => ({ ...all, [key]: state.active }));
-      const queue = queues.current.get(openPane.id);
+      const queue = queues.current.get(queueKey(openHostId, openPane.id));
       if (queue) queueSync(queue, state.active);
       setCuts((all) => all[key] ? { ...all, [key]: resumeCut(all[key], state.active, state.snapshot.transcript) } : all);
       const configs = (rosterHeard ?? state.snapshot.participants).map(config => settingsHeard.get(config.id) ?? config);
@@ -1397,6 +1400,14 @@ export function PhoneApp() {
   /** Send a next step to the bot that suggested it. */
   async function sendStep(step: NextStep, by: string) {
     if (!openPane || !openLink) return;
+    if (openChat) {
+      const queued = enqueueChat(openChat, step.prompt, [by]);
+      if (!queued) return;
+      setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current);
+      stuckRef.current = true;
+      delivery.send(queued.chatId, queued.messageId).catch((error) => setNotice(words(error)));
+      return;
+    }
     const host = phoneHost(openLink.id);
     if (!host || openLink.status !== "online") return;
     setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current);
@@ -1410,19 +1421,21 @@ export function PhoneApp() {
     if (!openPane || !openLink) return;
     const host = phoneHost(openLink.id);
     if (!host || openLink.status !== "online") { setNotice(downLine(openLink)); return; }
+    // A chat has no Work queue: its waiting messages are in the outbox, so only the turn stops.
+    if (openChat) { await host.backend.roomStop(openPane.id, id).catch((error) => setNotice(words(error))); return; }
     await queueFor(openPane.id, openLink.id).halt(id);
   }
 
   /** Send a queued message now: its bots stop mid-turn, and it goes as soon as they have. */
   function steerNow(paneId: string, item: number) {
     setSteerAsk(null);
-    const queue = queues.current.get(paneId);
+    const queue = queues.current.get(queueKey(openHostId, paneId));
     if (queue) queue.steerQueued(item).catch((error) => setNotice(words(error)));
   }
 
   /** Take a queued message out of the queue and back into the box to change it. */
   function unqueue(paneId: string, item: number) {
-    const queue = queues.current.get(paneId);
+    const queue = queues.current.get(queueKey(openHostId, paneId));
     const found = queue?.items.find((entry) => entry.id === item);
     if (!queue || !found) return;
     queue.remove(item);
@@ -1648,9 +1661,9 @@ export function PhoneApp() {
         if (!host || toLink(host.connection.get().status) !== "online") throw new Error("Connect the project's machine before removing it.");
         if (!canStartOn(hostId)) throw new Error("Removing a project needs Full access on its machine.");
         await stopProjectPanes(current.panes.filter((pane) => pane.workspaceId === id), host.backend, (paneId) => {
-          const queue = queues.current.get(paneId);
+          const queue = queues.current.get(queueKey(hostId, paneId));
           if (queue) {
-            queues.current.delete(paneId);
+            queues.current.delete(queueKey(hostId, paneId));
             queue.availabilityChanged();
             for (const item of [...queue.items]) queue.remove(item.id);
           }
@@ -1730,10 +1743,11 @@ export function PhoneApp() {
 
   const nameIn = (id: string) => roomRef.current?.participants.find((p) => p.id === id)?.display_name ?? id;
 
-  /** Quote a message in the box, or the `part` of it picked for Add to chat. A TL;DR instruction rides on a sent message but never shows, so the quote leaves it out. */
-  function quoteMessage(paneId: string, message: Message, part?: string) {
+  /** Quote a message in the box, or the `part` of it picked for Add to chat. A TL;DR instruction rides on a sent message but never shows, so the quote leaves it out.
+   *  `key` is the open thread's box (`openKey`), which names a chat's machine as well as its id. */
+  function quoteMessage(key: string, message: Message, part?: string) {
     const next = part === undefined ? quoteFor({ ...message, text: splitTldr(message.text).text }, nameIn) : partQuote(message, part, nameIn);
-    setQuotes((all) => ({ ...all, [paneId]: withQuote(all[paneId] ?? [], next) }));
+    setQuotes((all) => ({ ...all, [key]: withQuote(all[key] ?? [], next) }));
   }
 
   /** More details: ask the bot that wrote a picked part to explain it, as on the desktop. It never sat in the box,
@@ -1741,9 +1755,19 @@ export function PhoneApp() {
   function explainPart(paneId: string, message: Message, part: string) {
     const shown = roomRef.current;
     if (!shown || shown.id !== paneId || shown.participants.length === 0 || !openLink) return;
-    if (openLink.status !== "online") { setNotice(downLine(openLink)); return; }
     const quote = partQuote(message, part, nameIn);
     const body = moreDetailsText(quote, shown.participants);
+    // A chat's message goes through its outbox to the machine it lives on now, never through a Work
+    // queue, so it waits on the phone like any other while that machine is away.
+    if (openChat) {
+      if (openChat.id !== paneId || shown.hostId !== openChat.hostId) return;
+      const queued = enqueueChat(openChat, body, []);
+      if (!queued) return;
+      stuckRef.current = true;
+      delivery.send(queued.chatId, queued.messageId).catch((error) => setNotice(words(error)));
+      return;
+    }
+    if (openLink.status !== "online") { setNotice(downLine(openLink)); return; }
     const key = `${paneId}\u0000${body}`;
     queuedDrafts.current.set(key, { draft: { text: MORE_DETAILS, files: [] }, quotes: [quote], inBox: false });
     stuckRef.current = true;
@@ -1946,6 +1970,7 @@ export function PhoneApp() {
     // a connected machine that can't take it says why now.
     if (chatOnline && openRights && !openRights.post) return { enabled: false, reason: openRights.postWhy };
     if (!chatOnline && openRights && !openRights.queue) return { enabled: false, reason: openRights.queueWhy };
+    if (!mayPostIn(phoneHost(openChat.hostId)?.access(), openChat.id)) return { enabled: false, reason: `This phone isn't allowed to use this chat on ${chatMachine(openChat.hostId).name} any more.` };
     if ((roomFor(openChat)?.participants.length ?? openChat.bots.length) === 0) return { enabled: false, reason: "This chat has no bots yet. Add one from Bots in the ⋯ menu." };
     return { enabled: draft.text.trim().length > 0, reason: "" };
   })();
@@ -1992,20 +2017,28 @@ export function PhoneApp() {
       delivery.sendAnyway(openChatId, id, { acknowledgeDuplicateRisk: true }).catch((error) => setNotice(words(error)));
     },
   } : undefined;
+  /** Every message a chat sends, typed or not, goes through the phone's outbox to the machine the chat
+   *  lives on now. Null when it can't be sent, with the reason shown. */
+  function enqueueChat(row: ChatEntry, body: string, targets: string[]): { chatId: string; messageId: string } | null {
+    // Everything except an empty box stops a send; the box is checked by Send itself.
+    if (chatGate.reason) { setNotice(chatGate.reason); return null; }
+    const route = chatRoute(delivery.snapshot(), row.hostId, row.id);
+    // The screen follows a move on the next render; until then nothing is sent from the old one.
+    if (route.moved) { setNotice(`This chat moved to ${chatMachine(route.hostId).name}. Send again there.`); return null; }
+    const chatId = route.chatId;
+    if (!delivery.snapshot().chats[chatId]) { setNotice(`Open this chat once while ${chatMachine(row.hostId).name} is connected, then send.`); return null; }
+    try { return { chatId, messageId: delivery.enqueue(chatId, body, targets) }; } catch (error) { setNotice(words(error)); return null; }
+  }
   /** Send from a chat: the message goes into the phone's outbox first, so the box can clear and nothing is lost. */
   function sendChat(row: ChatEntry) {
     const id = openKey;
     if (!id || !chatGate.enabled) { if (chatGate.reason) setNotice(chatGate.reason); return; }
-    const route = chatRoute(delivery.snapshot(), row.hostId, row.id);
-    // The screen follows a move on the next render; until then nothing is sent from the old one.
-    if (route.moved) { setNotice(`This chat moved to ${chatMachine(route.hostId).name}. Send again there.`); return; }
-    const chatId = route.chatId;
-    if (!delivery.snapshot().chats[chatId]) { setNotice(`Open this chat once while ${chatMachine(row.hostId).name} is connected, then send.`); return; }
     const sent = draftFor(id);
     const sentQuotes = quotes[id] ?? [];
     const body = withTldr(outgoingText(sent.text, sentQuotes, roomFor(row)?.participants ?? []), tldrOf(id));
-    let messageId: string;
-    try { messageId = delivery.enqueue(chatId, body, []); } catch (error) { setNotice(words(error)); return; }
+    const queued = enqueueChat(row, body, []);
+    if (!queued) return;
+    const { chatId, messageId } = queued;
     stuckRef.current = true;
     setDrafts((all) => ({ ...all, [id]: { text: (all[id]?.text ?? "") === sent.text ? "" : all[id]?.text ?? "", files: [] } }));
     if (sentQuotes.length) setQuotes((all) => ({ ...all, [id]: (all[id] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
@@ -2086,8 +2119,8 @@ export function PhoneApp() {
             onSteerAsk={setSteerAsk}
             onSteer={(item) => openPane && steerNow(openPane.id, item)}
             onUnqueue={(item) => openPane && unqueue(openPane.id, item)}
-            onRemoveQueued={(item) => openPane && queues.current.get(openPane.id)?.remove(item)}
-            onResume={() => openPane && queues.current.get(openPane.id)?.resume()}
+            onRemoveQueued={(item) => openPane && queues.current.get(queueKey(openHostId, openPane.id))?.remove(item)}
+            onResume={() => openPane && queues.current.get(queueKey(openHostId, openPane.id))?.resume()}
             draft={draft}
             gate={openChat ? chatGate : sendGate}
             sending={sending}
@@ -2107,7 +2140,7 @@ export function PhoneApp() {
             quotes={openKey ? quotes[openKey] ?? [] : []}
             onQuotes={(next) => { if (openKey) setQuotes((all) => ({ ...all, [openKey]: next })); }}
             actions={viewingPending || !openPane ? undefined : {
-              onQuote: (message, part) => quoteMessage(openPane.id, message, part),
+              onQuote: (message, part) => { if (openKey) quoteMessage(openKey, message, part); },
               onExplain: (message, part) => explainPart(openPane.id, message, part),
               onCopy: copyMessage,
               onPin: (message) => togglePin(openPane.id, message),

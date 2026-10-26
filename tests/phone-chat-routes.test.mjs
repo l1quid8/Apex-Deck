@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/phone/chatDelivery.ts';
 import { chatRows, emptyCatalog, findRoom, parseChatList, readCatalog, withHostRooms, withListedRooms, withoutHosts } from '../src/phone/chatCatalog.ts';
 import {
-  PROMOTES_KEY, chatOutboxRows, chatRights, chatRoute, freshChatId, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest,
+  PROMOTES_KEY, chatOutboxRows, chatRights, chatRoute, freshChatId, mayPostIn, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest,
   readPromoteTickets, startingBots, threadKey, withoutTicket, writePromoteTickets,
 } from '../src/phone/chatRoutes.ts';
 
@@ -310,4 +310,38 @@ test("Start over drops only its own move's ticket, and needs the machine's fence
   assert.equal(parseAbandon({ state: 'done', work: { id: 'pane-1' }, chat: null }).state, 'done');
   assert.throws(() => parseAbandon({}), /kept until it can be checked/);
   assert.throws(() => parseAbandon({ state: 'done' }), /kept until it can be checked/);
+});
+
+test("an older chat list that arrives late can't bring back a chat a newer list left out", async () => {
+  const h = phone();
+  await h.controller.move(h.chatId, B);
+  const base = withHostRooms(emptyCatalog(), A.id, A.name, listed(A.id, [chatRow('r1')]));
+  const after = withListedRooms(base, B.id, B.name, [], 150);
+  // The list asked for at 50 finishes last: it is older news and changes nothing.
+  const late = withListedRooms(after, B.id, B.name, [], 50);
+  assert.equal(late, after);
+  assert.equal(late.hosts[B.id].listedAt, 150);
+  assert.deepEqual(chatRows(projectChats(late, h.controller.snapshot(), paired), false).rows, []);
+  // A list asked for at the same time or later still replaces it.
+  assert.equal(withListedRooms(after, B.id, B.name, [], 150).hosts[B.id].listedAt, 150);
+  assert.equal(withListedRooms(after, B.id, B.name, [], 200).hosts[B.id].listedAt, 200);
+});
+
+test('a phone no longer allowed one thread keeps its waiting message unsent, so it can still be taken back', async () => {
+  // The rule the phone sends by: not read-only, and the thread is one it may use.
+  assert.equal(mayPostIn({ tier: 'chat', threads: 'all' }, 'r1'), true);
+  assert.equal(mayPostIn({ tier: 'chat', threads: ['r1'] }, 'r1'), true);
+  assert.equal(mayPostIn({ tier: 'chat', threads: ['other-room'] }, 'r1'), false);
+  assert.equal(mayPostIn({ tier: 'full', threads: [] }, 'r1'), false);
+  assert.equal(mayPostIn({ tier: 'read_only', threads: 'all' }, 'r1'), false);
+  assert.equal(mayPostIn(null, 'r1'), true);
+  // Queued while allowed, then the machine reconnects with that thread taken away.
+  const h = phone();
+  const access = { tier: 'chat', threads: ['other-room'] };
+  const held = new ChatDeliveryController({ storage: new JsonChatDeliveryStorage(h.local), rpc: h.rpc, id: () => 'scoped-1', canSend: (_chat, message) => mayPostIn(access, message.room) });
+  const id = held.enqueue(h.chatId, 'typed while allowed');
+  await held.send(h.chatId, id);
+  assert.equal(held.snapshot().chats[h.chatId].outbox.find((item) => item.id === id).state, 'unsent');
+  assert.deepEqual(h.calls.filter((call) => call[0] === 'post'), []);
+  assert.equal(held.takeBack(h.chatId, id), 'typed while allowed');
 });

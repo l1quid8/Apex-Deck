@@ -710,10 +710,10 @@ impl Store {
             return Ok(Some(to));
         }
         if !chat.abandoned_promotes.iter().any(|gone| gone == request_id) {
+            // Every one is kept until the chat moves: dropping an old one would let its delayed
+            // copy land later with whatever Access it asked for. Once the chat has moved, any
+            // other request is refused as "Already moved", so the list is cleared then.
             chat.abandoned_promotes.push(request_id.to_owned());
-            // Only the newest few matter: a phone keeps one unconfirmed move per chat.
-            let extra = chat.abandoned_promotes.len().saturating_sub(32);
-            chat.abandoned_promotes.drain(..extra);
         }
         metas.insert(source.to_owned(), chat);
         self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
@@ -767,6 +767,7 @@ impl Store {
             .unwrap_or(0);
         chat.promoted_to = Some(target.to_owned());
         chat.promote_request = request_id.map(str::to_owned);
+        chat.abandoned_promotes.clear();
         chat.updated_at = chat.updated_at.max(now);
         let work_meta = ChatRoomMeta {
             title: title.trim().to_owned(),

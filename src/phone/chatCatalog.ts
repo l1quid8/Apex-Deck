@@ -83,6 +83,10 @@ export function withHostRooms(catalog: ChatCatalog, hostId: string, name: string
 
 /** A machine's whole `chat_list` answer, for a request sent at `askedAt`. What it leaves out the phone may not see. */
 export function withListedRooms(catalog: ChatCatalog, hostId: string, name: string, rooms: ChatEntry[], askedAt: number): ChatCatalog {
+  // Answers can arrive out of order. One asked before the list the phone already has is older news,
+  // and taking it would bring back a chat the newer list left out.
+  const listedAt = catalog.hosts[hostId]?.listedAt;
+  if (listedAt !== undefined && askedAt < listedAt) return catalog;
   return { ...catalog, hosts: { ...catalog.hosts, [hostId]: { name, rooms, listedAt: askedAt } } };
 }
 
