@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PersonalAssistantsCollection } from '../src/usePersonalAssistants.ts';
+import { assistantsRunning } from '../src/closing.ts';
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const ref = (hostId, assistantId = 'asst-1') => ({ hostId, assistantId });
 const record = (hostId, id = 'asst-1', revision = 1) => ({ id, hostId, revision, name: `${hostId}/${id}`, timezone: 'UTC', profile: null, allowedFolders: [], messages: [], tasks: [], style: '', modes: {read:'ask',write:'ask',send:'ask',spend:'ask'},budget:{},privacy:{localOnly:false,allowedEndpoints:[]},contextBudgetChars:1000 });
@@ -33,6 +34,12 @@ test('the snapshot names this Mac, so a command an assistant elsewhere runs here
  f.lists.a=[{...record('alpha'),tasks:[{id:'t',goal:'List',status:'running',operation:{tool:'host.command',host:'mac',cwd:'/f',argv:['ls']}}]}];await f.collection.refresh();
  const snap=f.collection.snapshot();assert.equal(snap.localHostId,'mac');
  const alpha=snap.assistants.find(a=>a.ref.hostId==='alpha');assert.equal(alpha.onThisMac,false);assert.equal(alpha.personalTasks[0].operation.host,snap.localHostId);
+});
+test('a command an assistant elsewhere runs here still counts as running after its machine goes offline',async()=>{
+ const f=fixture();f.lists.a=[{...record('alpha'),tasks:[{id:'t',goal:'List',status:'running',operation:{tool:'host.command',host:'mac',cwd:'/f',argv:['ls']}}]}];await f.collection.refresh();
+ f.offline.add('a');await f.collection.refresh();
+ const snap=f.collection.snapshot();assert.equal(snap.assistants.find(a=>a.ref.hostId==='alpha').offline,true);
+ assert.deepEqual(assistantsRunning(snap.assistants,snap.localHostId),[{name:'alpha/asst-1',thread:'',workspace:'List',state:'working'}]);
 });
 test('offline records retain freshness and selection; successful absence removes them and selects an existing identity',async()=>{
  const f=fixture();await f.collection.refresh();f.collection.select(ref('beta'));const seen=f.collection.snapshot().assistants[3].lastSeen;

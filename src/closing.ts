@@ -285,14 +285,15 @@ export interface AssistantNow {
  * whose service is here, a reply it is writing and each task running now; for
  * one elsewhere, a command it is running on this Mac (`thisMac`, this Mac's
  * host id). Queued, waiting and held work is saved with the assistant and
- * carries on after the service is back. An assistant whose machine isn't
- * answering is left out: here, nothing is running; elsewhere, a command's
- * result couldn't reach it anyway.
+ * carries on after the service is back. An assistant here whose service isn't
+ * answering has nothing running. One elsewhere whose machine isn't answering
+ * still counts by its last-known tasks: a command it started here keeps
+ * running, and its result is delivered once that machine reconnects.
  */
 export function assistantsRunning(assistants: readonly AssistantNow[], thisMac: string | undefined): Running[] {
   const out: Running[] = [];
   for (const a of assistants) {
-    if (a.offline) continue;
+    if (a.onThisMac && a.offline) continue;
     if (a.onThisMac && a.events.some((e) => e.state === "received" || e.state === "processing")) out.push({ name: a.name, thread: "", workspace: "", state: "replying" });
     for (const t of a.personalTasks) {
       const here = a.onThisMac || (thisMac !== undefined && t.operation?.host === thisMac);

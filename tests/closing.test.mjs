@@ -303,6 +303,6 @@ test("an assistant elsewhere running a command on this Mac is still running; its
   assert.deepEqual(assistantsRunning([remote], "mac"), [{ name: "Ops", thread: "", workspace: "List the repo", state: "working" }]);
   // Until this Mac's own id is known, nothing can be matched to it.
   assert.deepEqual(assistantsRunning([remote], undefined), []);
-  // Its machine not answering: the result couldn't reach it anyway.
-  assert.deepEqual(assistantsRunning([{ ...remote, offline: true }], "mac"), []);
+  // Its machine not answering: the command here keeps running and reports back on reconnect.
+  assert.deepEqual(assistantsRunning([{ ...remote, offline: true }], "mac"), [{ name: "Ops", thread: "", workspace: "List the repo", state: "working" }]);
 });
