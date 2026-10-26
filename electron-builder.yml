@@ -83,6 +83,11 @@ nsis:
   shortcutName: Apex Deck
   # Same rule as the dmg: one fixed artifact name per build.
   artifactName: Apex-Deck-Setup.${ext}
+  # Stops the previous build's background service in .onInit, before any file is
+  # copied. Windows locks a running program's image, so without this a second
+  # build cannot replace apex-daemon.exe and the app keeps talking to the old
+  # one. See the comments in the file itself.
+  include: build/installer.nsh
 
 # These are flipped before signing. JS startup checks are only a second layer.
 electronFuses:

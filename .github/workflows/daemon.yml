@@ -72,6 +72,16 @@ jobs:
       - name: Install the app's Node dependencies
         if: ${{ !cancelled() }}
         run: npm ci
+      # `require('electron')` downloads and unzips dist/electron.exe on the first
+      # import; npm ci does not, because this repo's install-script allowlist
+      # skips electron's postinstall (the "Downloading Electron binary..." line
+      # in the readback is that first import). Two test files importing it at the
+      # same moment both ran the download, and whoever finished first got
+      # `spawn EBUSY` on an electron.exe the other was still writing. Extract it
+      # once, before any test file starts.
+      - name: Fetch the Electron binary once, so the tests cannot race for it
+        if: ${{ !cancelled() }}
+        run: node -e "import('electron').then((m) => console.log(m.default))"
       - name: Type-check the app
         if: ${{ !cancelled() }}
         run: npx tsc --noEmit
