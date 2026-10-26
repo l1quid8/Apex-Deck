@@ -6,10 +6,10 @@
 //! command names, and argument names are what the desktop UI passes to
 //! `invoke` (camelCase), so a remote backend sends exactly the same objects.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use apex_core::{AgentTool, AllowedRule, ParticipantConfig, ParticipantId, RoomOptions, RoomSnapshot};
+use apex_core::{Access, AgentTool, AllowedRule, ParticipantConfig, ParticipantId, RoomOptions, RoomSnapshot};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::Value;
@@ -164,7 +164,30 @@ pub enum Command {
     ChatImport { id: String, #[serde(alias = "move_id")] move_id: String, #[serde(default)] title: Option<String>, participants: Vec<crate::chat_bots::ChatBotRequest>, entries: Vec<apex_core::Message>, #[serde(default)] options: RoomOptions },
     ChatMessageClaim { id: String, #[serde(alias = "client_message_id")] client_message_id: String },
     ChatMergeHistory { id: String, entries: Vec<apex_core::Message> },
-    ChatPromote { source: String, target: String, cwd: String, #[serde(default)] upto: Option<usize> },
+    /// Turn a chat into a Work thread in one store write. The phone picks both
+    /// ids up front so a retried request lands on the same Work room instead of
+    /// making a second one.
+    ChatPromote {
+        /// The chat being promoted. Must be `Kind::Chat`.
+        source: String,
+        /// Id for the new Work room, chosen by the caller.
+        target: String,
+        /// Folder the Work room runs in: absolute, existing, owned by this
+        /// machine's user, and never inside the app's own data folder.
+        cwd: String,
+        /// Copy history through this message index (inclusive). All messages
+        /// when absent.
+        #[serde(default)]
+        upto: Option<usize>,
+        /// Bot id -> Access for the Work room. A bot left out gets `read`,
+        /// because a chat is talk-only and read is the smallest step up.
+        #[serde(default)]
+        access: Option<BTreeMap<String, Access>>,
+        /// Repeat the same request (app closed mid-move, retry) and get the
+        /// same Work room back instead of a second one.
+        #[serde(default)]
+        request_id: Option<String>,
+    },
     RoomState { id: String },
     RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     RoomTargets { id: String, text: String },
@@ -705,6 +728,21 @@ mod tests {
     fn handoff_preparation_command_deserializes_exact_payload() {
         let command = Command::from_json(json!({"cmd":"assistant_handoff_prepare","args":{"requestId":"child","batchId":"batch","owner":{"workspaceId":"w","cwd":"/p","hostId":"h","conversationId":"c"},"revision":2,"originalRequest":"Ask Null to fix login","brief":"Fix login","destination":{"threadId":"t","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[]}})).unwrap();
         assert!(matches!(command, Command::AssistantHandoffPrepare { input } if input.batch_id == "batch" && input.revision == 2));
+    }
+
+    #[test]
+    fn chat_promote_accepts_per_bot_access_and_a_request_id() {
+        let command = Command::from_json(json!({"cmd":"chat_promote","args":{"source":"chat-1","target":"work-1","cwd":"/srv/denver-trip","upto":42,"access":{"null":"full","jigga":"read"},"requestId":"move-1"}})).unwrap();
+        let Command::ChatPromote { source, target, cwd, upto, access, request_id } = command else { panic!("wrong command") };
+        assert_eq!((source.as_str(), target.as_str(), cwd.as_str(), upto, request_id.as_deref()), ("chat-1", "work-1", "/srv/denver-trip", Some(42), Some("move-1")));
+        let access = access.expect("access map");
+        assert_eq!(access.get("null"), Some(&Access::Full));
+        assert_eq!(access.get("jigga"), Some(&Access::Read));
+        // A phone that sends only the three required fields still parses.
+        let bare = Command::from_json(json!({"cmd":"chat_promote","args":{"source":"chat-1","target":"work-1","cwd":"/repo"}})).unwrap();
+        assert!(matches!(bare, Command::ChatPromote { upto: None, access: None, request_id: None, .. }));
+        // Access outside the four the room understands is refused at the wire.
+        assert!(Command::from_json(json!({"cmd":"chat_promote","args":{"source":"c","target":"w","cwd":"/repo","access":{"null":"root"}}})).is_err());
     }
 
     #[test]
