@@ -14,6 +14,7 @@ export interface UpdateStatus {
   disabledReason: string | null;
   available: { version: string; notes: string } | null;
   progress: { received: number; total: number } | null;
+  /** In the "error" state, the whole sentence Settings shows; otherwise a note beside the state. */
   error: string | null;
   checkedAt: number | null;
   /** "Later" was chosen for the ready update; it stays ready in Settings. */
@@ -81,9 +82,9 @@ export function updateNote(status: UpdateStatus | null, now: number): string {
       return `${version}. Downloading ${status.available?.version ?? "the update"}…${share}`;
     }
     case "verifying": return `${version}. Checking the download of ${status.available?.version ?? "the update"}…`;
-    case "ready": return `${version}. ${status.available?.version} is ready. Restarting installs it; Deck reopens by itself.${status.error ? ` Last try: ${status.error}` : ""}`;
+    case "ready": return `${version}. Version ${status.available?.version} is ready. Restarting installs it; Deck reopens by itself.${status.error ? ` Last try: ${status.error}` : ""}`;
     case "installing": return `${version}. Handing ${status.available?.version} to the installer…`;
-    case "error": return `${version}. Couldn't update: ${status.error}`;
+    case "error": return `${version}. ${status.error ?? "Couldn’t update."}`;
     case "up-to-date": return `${version}. Up to date${status.checkedAt ? `, checked ${ago(status.checkedAt, now)}` : ""}.${status.error ? ` ${status.error}` : ""}`;
     default: return `${version}.`;
   }

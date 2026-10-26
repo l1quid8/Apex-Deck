@@ -120,6 +120,24 @@ test('a package whose app fails the signature check is deleted, not offered', as
   assert.deepEqual(fs.readdirSync(path.join(updater.cacheDir, '0.9.1')), []);
 });
 
+test('when GitHub can’t be reached, Settings gets a plain sentence instead of Chromium’s error code', async (t) => {
+  // What Electron's net.fetch really rejects with: no network, and a connection dropped partway through a download.
+  const offline = 'Couldn’t reach GitHub. Check your internet connection; Deck will try again later.';
+  const feedDown = fixture(t, { fetchJson: async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED'); } });
+  const status = await feedDown.updater.check();
+  assert.equal(status.state, 'error');
+  assert.equal(status.error, offline);
+  let attempts = 0;
+  const dropped = fixture(t, { download: async () => { attempts += 1; throw new Error('net::ERR_CONTENT_LENGTH_MISMATCH'); } });
+  assert.equal((await dropped.updater.check()).error, offline);
+  assert.equal(attempts, 3, 'the download is still tried three times first');
+});
+
+test('other failures keep their own words after “Couldn’t update:”', async (t) => {
+  const { updater } = fixture(t, { fetchJson: async () => { throw new Error('The update feed answered 500.'); } });
+  assert.equal((await updater.check()).error, 'Couldn’t update: The update feed answered 500.');
+});
+
 test('checks asked for at once share one download, and a verified download is reused', async (t) => {
   const { updater, calls } = fixture(t);
   const [a, b] = await Promise.all([updater.check(), updater.check({ manual: true })]);

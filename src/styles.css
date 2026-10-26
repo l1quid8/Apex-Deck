@@ -4254,7 +4254,7 @@ button.mod-status:hover { color: var(--text); }
 .reset-tip-value { font-variant-numeric: tabular-nums; }
 .reset-tip-value + .reset-tip-key { margin-top: 4px; }
 
-/* Automatic updates: the ready and after-restart notices share the toast stack. */
-.toast.update-toast { gap: 8px; max-width: min(640px, calc(100vw - 48px)); }
-.toast.update-toast > span { margin-right: 6px; }
-.toast.update-toast.problem { border-color: var(--warn); }
+/* Automatic updates: the ready and after-restart notices are rows under the title bar, never over a composer. */
+.update-banner { flex-wrap: wrap; gap: 8px; }
+.update-banner > span { flex: 1 1 240px; min-width: 0; }
+.update-banner.problem { box-shadow: inset 3px 0 0 var(--warn); }
