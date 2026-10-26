@@ -1342,62 +1342,19 @@
 .ph-reset-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
 .ph-reset-actions button { min-height: 44px; border-radius: 12px; }
 
-/* Local chat session (src/phone/LocalChatSession.tsx): on-device transcript + stateless /v1 gateway turns. */
-.ph-lc-pill-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex: none; }
-.ph-lc-participants.ph-lc-participants {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  margin-bottom: 12px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  color: var(--text);
-  text-align: left;
-}
-.ph-lc-participants-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.ph-lc-participants-copy strong { font-size: 14px; font-weight: 600; }
-.ph-lc-participants-copy small { font-size: 11px; color: var(--muted); font-weight: 400; }
-.ph-lc-avatar {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 650;
-  border-radius: 7px;
-  flex: none;
-}
-.ph-lc-avatar.codex {
-  color: var(--mint);
-  background: color-mix(in srgb, var(--mint) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--mint) 25%, transparent);
-}
-.ph-lc-avatar.claude {
-  color: #e2ac86;
-  background: color-mix(in srgb, #e2ac86 12%, transparent);
-  border: 1px solid color-mix(in srgb, #e2ac86 25%, transparent);
-}
-.ph-lc-date {
-  font-size: 10px;
-  letter-spacing: 1.4px;
-  font-weight: 600;
-  text-align: center;
-  color: var(--muted);
-  margin: 8px 0 14px;
-}
-.ph-lc-model { font-size: 11px; color: var(--muted); font-weight: 400; }
-.ph-lc-stream { font-size: 11px; color: var(--mint); margin-left: auto; font-weight: 500; }
-.ph-lc-time { font-size: 11px; color: var(--muted); margin-left: auto; font-weight: 400; }
-.ph-lc-cursor {
-  display: inline-block;
-  width: 6px;
-  height: 15px;
-  background: var(--mint);
-  vertical-align: middle;
-  margin-left: 3px;
-}
-.ph-lc-at { font-size: 18px; font-weight: 650; line-height: 1; }
+
+/* Chats (src/phone/ChatSheets.tsx), as in mockups/local-chat-jigga.html: one flat list, each row naming its bots and machine. */
+.ph-chat-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.ph-chat-dot.ok { background: var(--mint); }
+.ph-chat-dot.wait { background: var(--amber); }
+.ph-chat-dot.off { background: var(--muted); }
+.ph-srow small .ph-chat-dot { vertical-align: 1px; }
+.ph-chat-stack { display: inline-flex; flex: none; margin-right: 2px; }
+.ph-chat-stack .identicon { width: 16px; height: 16px; box-shadow: 0 0 0 1.5px var(--bg); border-radius: 5px; }
+.ph-chat-stack .identicon + .identicon { margin-left: -5px; }
+.ph-tl-l2 > .ph-chat-host { flex: none; }
+.ph-app .ph-inline { min-height: 0; padding: 0; display: inline; font-size: inherit; }
+.ph-seg-sm { flex: 1; margin-bottom: 0 !important; }
+.ph-seg-sm button { min-height: 34px; font-size: 13px; padding: 0 4px; }
+.ph-bot-row:has(.ph-seg-sm) { min-height: 52px; }
+.ph-bot-row:has(.ph-seg-sm) .ph-bot-info { flex: 0 0 auto; min-width: 92px; }

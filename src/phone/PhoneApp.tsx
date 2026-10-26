@@ -18,7 +18,7 @@ import { assistantDisplayName } from "../assistantName.ts";
 import { ApexAgentAll } from "../ApexAgentAll";
 import { usePersonalAssistant, type PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
-import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "../assistantRegistry";
+import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState, type AssistantVisiblePane } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { SPEED_OPTIONS, speedHint } from "../speed";
 import { latestSaveQueue } from "../settingsSave";
@@ -67,7 +67,10 @@ import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList } from "./ThreadList";
-import { LocalChatThread, LocalChatSettings, loadLocalChatSessions, saveLocalChatSessions, loadGatewayConfig, saveGatewayConfig, type LocalChatSession } from "./LocalChatSession";
+import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withHostRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "./chatCatalog";
+import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
+import { createPhoneChatDelivery } from "./phoneChatDelivery";
+import { chatDeliveryStatus, type ChatDeliveryStatus } from "./chatDelivery";
 import { forkedPane, forkUpto } from "./messageFork";
 import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
 import { PickedText } from "./PickedText";
@@ -92,7 +95,7 @@ import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
 import { planKey, planOf } from "../plans";
-import type { AgentTool, ApiModel, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, ResetCredits, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
+import type { Access, AgentTool, ApiModel, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, ResetCredits, RoomEvent, RoomOptions, RoomSnapshot, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
   ArrowLeft, ArrowUp, Check, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Folder, Globe, Laptop, Lock, MessageSquare,
@@ -109,7 +112,7 @@ const FOLDS_KEY = "apex-deck.phone.folds.v1";
 const CREW_KEY = "apex-deck.phone.crew.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
-type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance" | "local-chat";
+type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
 type Draft = { text: string; files: ComposerAttachment[] };
 /** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
 type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
@@ -146,6 +149,13 @@ type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
   | { kind: "archived" } | { kind: "remove"; id: string };
+/** What a chat adds to the thread view: its banner and the messages its outbox still holds. */
+interface ChatThreadExtras {
+  banner: ReactNode;
+  outbox: { id: string; text: string; line: string; kind: ChatDeliveryStatus["kind"]; canRetry: boolean; canSendAnyway: boolean }[];
+  onRetry(id: string): void; onSendAnyway(id: string): void;
+}
+
 type Browse = {
   hostId: string;
   path: string | null;
@@ -165,6 +175,10 @@ const tabName = (tab: Tab) => tab[0].toUpperCase() + tab.slice(1);
 /** ageWords says "now" for under a minute, which takes no "ago". */
 const activeWords = (age: string) => age === "now" ? "Active now" : `Active ${age} ago`;
 const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+/** The stand-in project a machine's chats open under, and the one for a Work thread made from a chat. */
+const chatSpace = (hostId: string) => `chats:${hostId}`;
+const isChatSpace = (id: string) => id.startsWith("chats:");
+const workSpace = (hostId: string, cwd: string) => `chat-work:${hostId}:${cwd}`;
 
 function toLink(status: HostConnection["status"]): LinkStatus {
   const dot = dotState(status);
@@ -245,17 +259,18 @@ export function PhoneApp() {
     try { return loadPhoneAppearance(localStorage); } catch { return defaultAppearanceSettings(); }
   });
   const [appearanceSaveError, setAppearanceSaveError] = useState(false);
-  const [localSessions, setLocalSessions] = useState(loadLocalChatSessions);
-  const [gatewayConfig, setGatewayConfig] = useState(loadGatewayConfig);
-  const [localId, setLocalId] = useState<string | null>(null);
-  const localSession = localSessions.find(item => item.id === localId) ?? null;
-  useEffect(() => { saveLocalChatSessions(localSessions); }, [localSessions]);
-  const openLocal = (id: string) => { setOpenId(null); setLocalId(id); setTab("threads"); };
-  const newLocal = () => {
-    const next: LocalChatSession = { id: crypto.randomUUID(), title: "New local chat", bots: ["Codex", "Claude"], messages: [], updatedAt: "now" };
-    setLocalSessions(list => [next, ...list]);
-    openLocal(next.id);
-  };
+  // Chats: each machine lists its own, and this phone keeps the merged list so it shows with a machine off.
+  const [catalog, setCatalog] = useState<ChatCatalog>(() => { try { return readCatalog(localStorage.getItem(CHAT_CATALOG_KEY)); } catch { return readCatalog(null); } });
+  useEffect(() => { try { localStorage.setItem(CHAT_CATALOG_KEY, JSON.stringify(catalog)); } catch { /* the list still shows from memory */ } }, [catalog]);
+  const [chatsFolded, setChatsFolded] = useState(false);
+  const [chatsArchived, setChatsArchived] = useState(false);
+  /** The chat sheets over a chat or the list. */
+  const [chatSheet, setChatSheet] = useState<null | { kind: "new" | "new-chat" | "where" | "bots" | "move" | "menu" | "rename" | "legacy"; hostId?: string; id?: string; text?: string }>(null);
+  // Each machine's saved bots, asked for when a sheet needs them. Kept for this run only.
+  const chatProfiles = useRef(new Map<string, ChatProfile[]>());
+  // Messages from the retired Local chat screen that hold real replies. Kept until copied or discarded.
+  const [legacy, setLegacy] = useState<LegacyChat[]>(() => { try { return legacyChats(localStorage.getItem(LEGACY_HISTORY_KEY)); } catch { return []; } });
+  const legacyAsked = useRef(false);
   const settingsReturn = useRef<Tab>("threads");
   /** Machines opens from Threads (Pair) or from Settings; its back button returns there. */
   const machinesReturn = useRef<Tab>("threads");
@@ -619,10 +634,28 @@ export function PhoneApp() {
   const humanPanes = useMemo(() => (savedPanes ?? []).map((pane) => (seen[pane.id] ?? 0) > (pane.activeAt ?? 0) ? { ...pane, activeAt: seen[pane.id] } : pane), [savedPanes, seen]);
   const panes = useMemo(() => mergeAssistantPanes(humanPanes, visibleAssistantRegistry), [humanPanes, visibleAssistantRegistry]);
   const sections = useMemo(() => sidebarSections(panes, workspaces, "threads", new Set()), [panes, workspaces]);
-  const openPane = panes.find((pane) => pane.id === openId) ?? null;
+  // Chats, and the Work threads made from them, belong to their machine, not to the Mac's saved
+  // session. They open in the same thread view through these stand-in threads and projects.
+  const chatPlaces = useMemo(() => {
+    const places: { panes: AssistantVisiblePane[]; workspaces: Workspace[] } = { panes: [], workspaces: [] };
+    for (const [hostId, host] of Object.entries(catalog.hosts)) {
+      places.workspaces.push({ id: chatSpace(hostId), name: "Chat", path: "", hostId });
+      for (const row of host.rooms) {
+        if (row.kind === "chat") { places.panes.push({ id: row.id, workspaceId: chatSpace(hostId), kind: "chat", title: row.title, hostId, executionPath: "" }); continue; }
+        if (!row.cwd) continue;
+        const space = workSpace(hostId, row.cwd);
+        if (!places.workspaces.some((item) => item.id === space)) places.workspaces.push({ id: space, name: row.folderName ?? folderName(row.cwd), path: row.cwd, hostId });
+        places.panes.push({ id: row.id, workspaceId: space, kind: "chat", title: row.title, hostId, executionPath: row.cwd });
+      }
+    }
+    return places;
+  }, [catalog]);
+  const openPane = panes.find((pane) => pane.id === openId) ?? chatPlaces.panes.find((pane) => pane.id === openId) ?? null;
   const pendingWorkspace = workspaces.find((workspace) => workspace.id === pending?.workspaceId) ?? null;
   const viewingPending = pending !== null && openId === pending.id;
-  const openWorkspace = viewingPending ? pendingWorkspace : workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? null;
+  const openWorkspace = viewingPending ? pendingWorkspace : workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? chatPlaces.workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? null;
+  /** The open chat's row, when the open thread is a chat. Null for every Work thread. */
+  const openChat = openPane && isChatSpace(openPane.workspaceId) && openPane.hostId ? findRoom(catalog, openPane.hostId, openPane.id) : null;
   const hostOf = (workspace: Workspace | null) => links.find((link) => link.id === (workspace ? workspaceHost(workspace) : "")) ?? null;
   const openHostId = openPane?.hostId ?? (openWorkspace ? workspaceHost(openWorkspace) : "");
   const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
@@ -692,6 +725,184 @@ export function PhoneApp() {
   // The queue outlives renders, so it reads the machines and who is working as they are now.
   const hostsRef = useRef(hosts);
   hostsRef.current = hosts;
+
+  // ---- Chats ------------------------------------------------------------------------------------
+  // One controller for every chat. Its outbox and move journal are saved on this phone, so a
+  // message typed while a machine is away waits here and survives the app closing.
+  const [, setDeliveryTick] = useState(0);
+  const deliveryRef = useRef<ReturnType<typeof createPhoneChatDelivery> | null>(null);
+  if (!deliveryRef.current) deliveryRef.current = createPhoneChatDelivery({
+    storage: localStorage,
+    findHost: (id) => {
+      const host = hostsRef.current.find((item) => item.machine.id === id);
+      return host ? { machine: { id: host.machine.id, name: host.machine.name }, backend: { call: (cmd, args) => host.backend.call(cmd, args), supports: (capability) => host.supports(capability) }, connection: host.connection } : undefined;
+    },
+    onChange: () => setDeliveryTick((n) => n + 1),
+    onError: (error) => setNotice(words(error)),
+  });
+  const delivery = deliveryRef.current.controller;
+  useEffect(() => {
+    const watch = deliveryRef.current!.watch(hosts.filter((host) => host.supports("chat_delivery_v1")).map((host) => ({ machine: { id: host.machine.id }, backend: host.backend, connection: host.connection })));
+    return () => watch.stop();
+    // Capabilities arrive with each welcome, so the online set re-mounts the watch too.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hosts, onlineKey]);
+  const catalogRef = useRef(catalog);
+  catalogRef.current = catalog;
+  /** Which machines can hold chats from this phone, and why not when they can't. */
+  const chatMachines: ChatMachineView[] = hosts.map((host) => {
+    const link = linkOf(host.machine.id);
+    const access = host.access();
+    const why = !host.supports("chat_rooms") ? (link?.status === "online" ? `Update Deck on ${host.machine.name} to chat here.` : `Waiting for ${host.machine.name} to connect.`)
+      : access?.tier === "read_only" ? `This phone can only read on ${host.machine.name}.`
+      : access && access.threads !== "all" ? `This phone only sees some threads on ${host.machine.name}.` : "";
+    return { id: host.machine.id, name: host.machine.name, status: link?.status ?? "connecting", chats: !why, why };
+  });
+  const chatMachine = (hostId: string): ChatMachineView => chatMachines.find((item) => item.id === hostId) ?? { id: hostId, name: catalog.hosts[hostId]?.name ?? "Unpaired machine", status: "offline", chats: false, why: "This machine isn't paired with this phone any more." };
+  /** The chat the controller keeps for this room: the one it moved into here, else the room's own id. */
+  const chatIdFor = (hostId: string, room: string) => Object.values(delivery.snapshot().chats).find((chat) => chat.machine.id === hostId && chat.room === room)?.id ?? room;
+  async function refreshChats(hostId: string) {
+    const host = phoneHost(hostId);
+    if (!host || !host.supports("chat_rooms") || toLink(host.connection.get().status) !== "online") return;
+    const rows = parseChatList(hostId, await host.backend.call<unknown>("chat_list", {}));
+    setCatalog((current) => withHostRooms(current, hostId, host.machine.name, rows));
+  }
+  // Each machine is asked for its list when it comes online and whenever the person is back on the list.
+  const chatHostsKey = chatMachines.filter((item) => item.chats && item.status === "online").map((item) => item.id).join("\n");
+  useEffect(() => {
+    if (openId !== null) return;
+    for (const hostId of chatHostsKey ? chatHostsKey.split("\n") : []) refreshChats(hostId).catch(() => { /* the saved list keeps showing */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatHostsKey, openId === null]);
+  const machineIds = machines.map((machine) => machine.id).join("\n");
+  useEffect(() => { setCatalog((current) => withoutHosts(current, machineIds ? machineIds.split("\n") : [])); }, [machineIds]);
+  async function chatProfilesOn(hostId: string): Promise<ChatProfile[]> {
+    const host = phoneHost(hostId);
+    if (!host) throw new Error("That machine isn't paired with this phone.");
+    if (toLink(host.connection.get().status) !== "online") {
+      const saved = chatProfiles.current.get(hostId);
+      if (saved) return saved;
+      throw new Error(`${host.machine.name} isn't connected.`);
+    }
+    const list = parseChatProfiles(await host.backend.call<unknown>("chat_profiles", {}));
+    chatProfiles.current.set(hostId, list);
+    return list;
+  }
+  function openChatRow(row: Pick<ChatEntry, "hostId" | "id">) {
+    setChatSheet(null);
+    setTab("threads");
+    setOpenId(row.id);
+  }
+  async function startChat(hostId: string, profiles: string[]) {
+    const host = phoneHost(hostId);
+    if (!host) throw new Error("That machine isn't paired with this phone.");
+    const id = `chat-${crypto.randomUUID()}`;
+    const snapshot = await host.backend.call<RoomSnapshot>("chat_create", { id, title: "New chat", participants: profiles.map((profile) => ({ profile })), options: { policy: "everyone", max_bot_hops: 3 } });
+    const row = parseChatEntry(hostId, { id, kind: "chat", title: "New chat", participants: snapshot.participants, updatedAt: Date.now(), archived: false, profiles: Object.fromEntries(snapshot.participants.map((bot, index) => [bot.id, profiles[index] ?? bot.id])) });
+    setCatalog((current) => rememberLast(row ? withRoom(current, hostId, host.machine.name, row) : current, hostId, profiles));
+    delivery.cacheChat({ id, title: "New chat", machine: { id: hostId, name: host.machine.name }, room: id, profiles: row?.profiles ?? {}, snapshot: { ...snapshot, kind: "chat" } });
+    refreshChats(hostId).catch(() => {});
+    openChatRow({ hostId, id });
+  }
+  async function updateChatMeta(row: ChatEntry, change: { title?: string; archived?: boolean }) {
+    const host = phoneHost(row.hostId);
+    if (!host || toLink(host.connection.get().status) !== "online") throw new Error(`${chatMachine(row.hostId).name} isn't connected. Nothing changed.`);
+    const next = parseChatEntry(row.hostId, await host.backend.call<unknown>("chat_update_meta", { id: row.id, ...change }));
+    setCatalog((current) => withRoom(current, row.hostId, host.machine.name, next ?? { ...row, ...change }));
+  }
+  /** A chat's bot settings go through chat_update_participant: model, reasoning and Speed only. */
+  function saveChatTurn(row: ChatEntry, botId: string) {
+    const key = `chat:${row.hostId}:${row.id}:${botId}`;
+    let save = turnSaves.current.get(key);
+    if (!save) {
+      save = latestSaveQueue<{ change: TurnChange; reported: ModelChoice[]; apiModels: ApiModel[] }>(async ({ change, reported, apiModels }) => {
+        const host = phoneHost(row.hostId);
+        const link = linkOf(row.hostId);
+        if (!host || !link || link.status !== "online") throw new Error(link ? `${downLine(link)}. Nothing changed.` : "That machine isn't paired with this phone.");
+        const saved = roomRef.current?.id === row.id ? roomRef.current.configs.find((config) => config.id === botId) : undefined;
+        if (!saved) throw new Error("This bot is no longer in the chat.");
+        const next = withPhoneChange(saved, change, reported, apiModels);
+        const model = (config: ParticipantConfig) => config.backend.kind === "agent" || config.backend.kind === "open_ai_compatible" ? config.backend.model : null;
+        const patch: Record<string, unknown> = {};
+        if (model(next) !== model(saved)) patch.model = model(next);
+        if (next.effort !== saved.effort) patch.effort = next.effort;
+        if ((next.speed ?? null) !== (saved.speed ?? null)) patch.speed = next.speed ?? null;
+        if (Object.keys(patch).length === 0) return;
+        const actual = await host.backend.call<ParticipantConfig>("chat_update_participant", { id: row.id, participant: botId, patch });
+        setRoom((current) => current && current.id === row.id ? { ...current, configs: current.configs.map((config) => config.id === botId ? actual : config), participants: current.participants.map((person) => person.id === botId ? toPerson(actual) : person) } : current);
+      });
+      turnSaves.current.set(key, save);
+    }
+    return save;
+  }
+  async function changeChatBots(row: ChatEntry, change: { add: string } | { remove: string }) {
+    const host = phoneHost(row.hostId);
+    if (!host || toLink(host.connection.get().status) !== "online") throw new Error(`${chatMachine(row.hostId).name} isn't connected. Nothing changed.`);
+    if ("add" in change) await host.backend.call("chat_add_participant", { id: row.id, participant: { profile: change.add } });
+    else await host.backend.call("chat_remove_participant", { id: row.id, participant: change.remove });
+    await refreshChats(row.hostId);
+  }
+  /** Move the whole group to another machine. Bots it doesn't have stay behind, and the notice says which. */
+  async function moveChat(row: ChatEntry, toHostId: string, pending?: "wait" | "stop") {
+    const to = chatMachine(toHostId);
+    const chatId = chatIdFor(row.hostId, row.id);
+    if (!delivery.snapshot().chats[chatId]) throw new Error(`Open this chat once while ${chatMachine(row.hostId).name} is connected, then move it.`);
+    const moveId = await delivery.move(chatId, { id: to.id, name: to.name }, pending ? { pending } : {});
+    const journal = delivery.snapshot().moves[moveId];
+    const chat = delivery.snapshot().chats[chatId];
+    await Promise.allSettled([refreshChats(row.hostId), refreshChats(toHostId)]);
+    setChatSheet(null);
+    if (chat) openChatRow({ hostId: chat.machine.id, id: chat.room });
+    const left = journal?.skipped ?? [];
+    setNotice(left.length ? `Moved to ${to.name}. ${left.map((item) => `${row.bots.find((bot) => bot.id === item.participant)?.name ?? item.participant} stayed behind: ${item.reason}`).join(" ")}` : `Moved to ${to.name}.`);
+  }
+  /** A move to a Work thread, kept on the phone until the machine confirms, so a retry gets the same thread. */
+  const PROMOTES_KEY = "apex-deck.phone.chat-promotes.v1";
+  async function promoteChat(row: ChatEntry, cwd: string, access: Record<string, Access>) {
+    const host = phoneHost(row.hostId);
+    if (!host || toLink(host.connection.get().status) !== "online") throw new Error(`${chatMachine(row.hostId).name} isn't connected. Nothing moved.`);
+    const key = `${row.hostId}\u0000${row.id}`;
+    let saved: Record<string, { target: string; requestId: string; cwd: string }> = {};
+    try { saved = JSON.parse(localStorage.getItem(PROMOTES_KEY) ?? "{}") ?? {}; } catch { saved = {}; }
+    const ticket = saved[key]?.cwd === cwd ? saved[key] : { target: `pane-${crypto.randomUUID()}`, requestId: crypto.randomUUID(), cwd };
+    saved[key] = ticket;
+    try { localStorage.setItem(PROMOTES_KEY, JSON.stringify(saved)); } catch { /* without it a retry after a crash could make a second thread */ }
+    const reply = await host.backend.call<{ work?: unknown; chat?: unknown }>("chat_promote", { source: row.id, target: ticket.target, cwd, access, requestId: ticket.requestId });
+    const work = parseChatEntry(row.hostId, reply?.work);
+    const chat = parseChatEntry(row.hostId, reply?.chat);
+    if (!work) throw new Error(`${host.machine.name} didn't confirm the Work thread. Try again: the same move is reused.`);
+    delete saved[key];
+    try { localStorage.setItem(PROMOTES_KEY, JSON.stringify(saved)); } catch { /* the ticket is only reused for the same folder */ }
+    setCatalog((current) => withRoom(chat ? withRoom(current, row.hostId, host.machine.name, chat) : current, row.hostId, host.machine.name, work));
+    openChatRow({ hostId: row.hostId, id: work.id });
+  }
+  // The retired Local chat screen's history: offered once per launch, kept until copied or discarded.
+  const dropLegacy = () => {
+    try { localStorage.removeItem(LEGACY_HISTORY_KEY); localStorage.removeItem(LEGACY_GATEWAY_KEY); } catch { /* asked again next launch */ }
+    setLegacy([]);
+  };
+  useEffect(() => {
+    // History holding only canned previews is worth nothing, so it goes now.
+    if (legacy.length === 0) { try { if (localStorage.getItem(LEGACY_HISTORY_KEY) !== null || localStorage.getItem(LEGACY_GATEWAY_KEY) !== null) dropLegacy(); } catch { /* nothing to drop */ } return; }
+    if (legacyAsked.current || chatSheet || !chatMachines.some((item) => item.chats && item.status === "online")) return;
+    legacyAsked.current = true;
+    setChatSheet({ kind: "legacy" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [legacy.length, chatHostsKey]);
+  async function importLegacy(hostId: string) {
+    const host = phoneHost(hostId);
+    if (!host) throw new Error("That machine isn't paired with this phone.");
+    const profiles = (await chatProfilesOn(hostId)).filter((item) => item.ok);
+    for (const chat of legacy) {
+      const wanted = chat.bots.map((name) => profiles.find((item) => item.profile.display_name.toLowerCase() === name.toLowerCase() || item.profile.id === name.toLowerCase())).filter((item): item is ChatProfile => Boolean(item));
+      // The move id makes a repeat return the chat already made, so a retry never copies twice.
+      await host.backend.call("chat_import", { id: `chat-${crypto.randomUUID()}`, moveId: `legacy-${chat.id}`, title: chat.title, participants: wanted.map((item) => ({ profile: item.profile.id })), entries: legacyEntries(chat) });
+    }
+    dropLegacy();
+    setChatSheet(null);
+    await refreshChats(hostId).catch(() => {});
+    setNotice(`Copied into Chats on ${host.machine.name}.`);
+  }
   const voiceRoomsRef = useRef({ panes, workspaces });
   voiceRoomsRef.current = { panes, workspaces };
   const participantsRef = useRef(new Map<string, {id:string;display_name:string;media?:unknown}[]>());
@@ -838,6 +1049,8 @@ export function PhoneApp() {
     let live = true;
     let stop = () => {};
     const paneId = openPane.id;
+    // A chat lives on its machine: it is read, never created here, and the phone keeps a copy for its outbox.
+    const chatHost = isChatSpace(openPane.workspaceId) ? openHostId : null;
     loadedSteps.current.clear();
     const stepsLoader = createStepsIndexLoader(
       () => host.backend.roomSteps(paneId, null),
@@ -852,6 +1065,12 @@ export function PhoneApp() {
     let rosterHeard: ParticipantConfig[] | null = null;
     const applyState = (state: RoomState) => {
       if (!live) return;
+      if (chatHost) {
+        const row = findRoom(catalogRef.current, chatHost, paneId);
+        try {
+          delivery.cacheChat({ id: chatIdFor(chatHost, paneId), title: row?.title ?? "Chat", machine: { id: chatHost, name: host.machine.name }, room: paneId, profiles: row?.profiles ?? {}, snapshot: { ...state.snapshot, kind: "chat" } });
+        } catch (error) { setNotice(words(error)); }
+      }
       void stepsLoader.refresh();
       setWaiting((all) => ({ ...all, [openPane.id]: state.approvals.map((card) => card.request) }));
       setBusy((all) => ({ ...all, [openPane.id]: state.active }));
@@ -910,7 +1129,9 @@ export function PhoneApp() {
       });
     };
     const recovery = createRoomRecovery<RoomState, RoomEvent>({
-      load: () => loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openPath),
+      load: async () => chatHost
+        ? { ...await (host.backend.roomState ? host.backend.roomState(paneId) : host.backend.call<RoomState>("room_state", { id: paneId })), live: true }
+        : loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openPath),
       apply: applyState,
       event: applyEvent,
       represented: representedRoomEvent,
@@ -970,6 +1191,7 @@ export function PhoneApp() {
 
   async function send() {
     const id = openId;
+    if (openChat) { sendChat(openChat); return; }
     if (!id || !openWorkspace || !openLink || sendingRef.current) return;
     if (readingRef.current > 0) { setNotice("Wait for the file to finish attaching."); return; }
     const draft = draftFor(id);
@@ -1560,12 +1782,11 @@ export function PhoneApp() {
     ? <span className="ph-host-icon" title={linkOf(hostId)?.name}><Laptop size={size} /></span>
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
-  const inLocalChat = tab === "threads" && localSession !== null;
-  const inChat = tab === "threads" && !inLocalChat && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
-  const covered = composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
+  const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
+  const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const shownTab = tab === "machines" ? machinesReturn.current : tab;
-  const litTab = shownTab === "settings" || shownTab === "appearance" || shownTab === "local-chat" ? settingsReturn.current : shownTab;
+  const litTab = shownTab === "settings" || shownTab === "appearance" ? settingsReturn.current : shownTab;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -1575,13 +1796,107 @@ export function PhoneApp() {
 
   const callSlot = usePhoneCallSlot({ voice: phoneVoice, hostId: openHostId, roomId: openPane?.id ?? "" });
   const callWho: PhoneVoiceWho = (id) => (room && openPane && room.id === openPane.id ? room.participants : []).find((p) => p.id === id)?.look;
+
+  // ---- What the chat screens show ----------------------------------------------------------------
+  const chatState = delivery.snapshot();
+  const outboxOf = (row: ChatEntry) => chatState.chats[chatIdFor(row.hostId, row.id)]?.outbox ?? [];
+  const listedChats = chatRows(catalog, chatsArchived);
+  const showChats = listedChats.rows.length > 0 || listedChats.archivedCount > 0 || chatMachines.some((item) => item.chats);
+  const chatList = showChats ? <ChatRows rows={listedChats.rows} archivedCount={listedChats.archivedCount} showArchived={chatsArchived} folded={chatsFolded} now={Date.now()}
+    machines={chatMachines} machineIcon={machineIcon}
+    waiting={(row) => outboxOf(row).filter((item) => item.state !== "delivered").length} working={(row) => busy[row.id]?.length ?? 0}
+    onFold={() => setChatsFolded((now) => !now)} onOpen={openChatRow} onMenu={(row) => { setOpenId(null); setChatSheet({ kind: "menu", hostId: row.hostId, id: row.id }); }}
+    onArchived={() => setChatsArchived((now) => !now)} /> : null;
+  const fromChats = Object.entries(catalog.hosts).map(([hostId, host]) => ({
+    hostId, name: linkOf(hostId)?.name ?? host.name,
+    rows: promotedWork(catalog, hostId).map((row) => (
+      <button key={row.id} type="button" className="ph-tl-thread" onClick={() => openThread(row.id)}>
+        <span className="ph-tl-l1"><span className="ph-tl-name">{row.title}</span><span className="ph-tl-age">{row.updatedAt ? ageWords(Date.now() - row.updatedAt) : "New"}</span></span>
+        <span className="ph-tl-l2"><span className="ph-tl-where">From a chat · {row.folderName ?? row.cwd}</span></span>
+      </button>
+    )),
+  })).filter((item) => item.rows.length > 0);
+  /** The chat a sheet acts on: the one it was opened for from the list, else the open chat. */
+  const sheetChat = chatSheet?.hostId && chatSheet.id ? findRoom(catalog, chatSheet.hostId, chatSheet.id) : openChat;
+  const chatBots = (row: ChatEntry): ParticipantConfig[] => room && room.id === row.id ? room.configs
+    : row.bots.map((bot) => ({ id: bot.id, display_name: bot.name, backend: { kind: "scripted", lines: [] }, persona: "", access: "read", effort: null }));
+  const openChatId = openChat ? chatIdFor(openChat.hostId, openChat.id) : null;
+  const [anywayAsk, setAnywayAsk] = useState<string | null>(null);
+  const chatOnline = openChat ? linkOf(openChat.hostId)?.status === "online" : false;
+  const chatGate = (() => {
+    if (!openChat) return { enabled: false, reason: "" };
+    if (!linkOf(openChat.hostId)) return { enabled: false, reason: "This chat's machine isn't paired with this phone." };
+    if ((room && room.id === openChat.id ? room.participants.length : openChat.bots.length) === 0) return { enabled: false, reason: "This chat has no bots yet. Add one from Bots in the ⋯ menu." };
+    return { enabled: draft.text.trim().length > 0, reason: "" };
+  })();
+  const backupMachine = openChat && !chatOnline ? chatMachines.find((item) => item.id !== openChat.hostId && item.chats && item.status === "online") ?? null : null;
+  const chatExtras: ChatThreadExtras | undefined = openChat && openChatId ? {
+    banner: <>
+      {openChat.promotedTo && (
+        <div className="ph-banner" role="status">
+          <strong>Continued as a Work thread</strong>
+          <p>Same bots, now with a folder. This chat stays as it was.</p>
+          <div className="ph-banner-actions"><button type="button" onClick={() => openThread(openChat.promotedTo!)}>Open Work thread</button></div>
+        </div>
+      )}
+      {!chatOnline && openLink && (() => {
+        const waiting = (chatState.chats[openChatId]?.outbox ?? []).filter((item) => item.state === "unsent").length;
+        return (
+          <div className={`ph-banner warn${openLink.problem ? " bad" : ""}`} role="status">
+            <strong>{openLink.problem ? `${openLink.name} can't connect` : `${openLink.name} is reconnecting`}</strong>
+            {openLink.problem && <p>{openLink.problem}</p>}
+            <p>{waiting ? `${waiting} ${waiting === 1 ? "message" : "messages"} waiting on this phone. They send by themselves when it's back.` : "You can keep typing. Messages wait on this phone and send when it's back."}</p>
+            <div className="ph-banner-actions">
+              {!openLink.problem && <button type="button" onClick={() => phoneHost(openLink.id)?.connection.retryNow()}>Retry now</button>}
+              {backupMachine && <button type="button" onClick={() => { moveChat(openChat, backupMachine.id).catch((error) => setNotice(words(error))); }}>Send with {backupMachine.name} instead</button>}
+            </div>
+          </div>
+        );
+      })()}
+    </>,
+    outbox: (chatState.chats[openChatId]?.outbox ?? []).flatMap((item) => {
+      const status = chatDeliveryStatus(item, chatState.chats[openChatId]?.machine);
+      const here = item.machine.id === openChat.hostId && item.room === openChat.id;
+      const shown = room && room.id === openChat.id && room.messages.some((message) => message.clientMessageId === item.id);
+      // Once the machine has it, the message is in the chat itself; only trouble still shows here.
+      if (status.kind === "delivered" || (shown && status.kind !== "interrupted" && status.kind !== "fenced")) return [];
+      if (here && chatOnline && status.kind === "pending") return [];
+      const line = anywayAsk === item.id ? "Both machines may answer this. Tap Send here anyway again to send it." : here && chatOnline && status.kind === "uncertain" ? "Sending…" : status.line;
+      return [{ id: item.id, text: item.text, line, kind: status.kind, canRetry: status.canRetry, canSendAnyway: status.canSendAnyway }];
+    }),
+    onRetry: (id) => { delivery.retry(openChatId, id).catch((error) => setNotice(words(error))); },
+    onSendAnyway: (id) => {
+      if (anywayAsk !== id) { setAnywayAsk(id); return; }
+      setAnywayAsk(null);
+      delivery.sendAnyway(openChatId, id, { acknowledgeDuplicateRisk: true }).catch((error) => setNotice(words(error)));
+    },
+  } : undefined;
+  /** Send from a chat: the message goes into the phone's outbox first, so the box can clear and nothing is lost. */
+  function sendChat(row: ChatEntry) {
+    const id = openId;
+    if (!id || !chatGate.enabled) { if (chatGate.reason) setNotice(chatGate.reason); return; }
+    const chatId = chatIdFor(row.hostId, row.id);
+    if (!delivery.snapshot().chats[chatId]) { setNotice(`Open this chat once while ${chatMachine(row.hostId).name} is connected, then send.`); return; }
+    const sent = draftFor(id);
+    const sentQuotes = quotes[id] ?? [];
+    const body = withTldr(outgoingText(sent.text, sentQuotes, room && room.id === row.id ? room.participants : []), tldrOf(id));
+    let messageId: string;
+    try { messageId = delivery.enqueue(chatId, body, []); } catch (error) { setNotice(words(error)); return; }
+    stuckRef.current = true;
+    setDrafts((all) => ({ ...all, [id]: { text: (all[id]?.text ?? "") === sent.text ? "" : all[id]?.text ?? "", files: [] } }));
+    if (sentQuotes.length) setQuotes((all) => ({ ...all, [id]: (all[id] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
+    setNotice("");
+    // A new chat takes its name from its first message, as a Work thread does.
+    if (row.title === "New chat" && chatOnline) updateChatMeta(row, { title: chatTitle(sent.text) }).catch(() => {});
+    delivery.send(chatId, messageId).catch((error) => setNotice(words(error)));
+  }
   return (
     <div className="ph-app" data-rev={tick}>
       <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(_host,room)=>{setTab("threads");setOpenId(room);}} />
       <div className="phone-frame">
-        {!inChat && !inLocalChat && (
+        {!inChat && (
           <header className="ph-head" inert={covered}>
-            {tab === "appearance" || tab === "local-chat"
+            {tab === "appearance"
               ? <BackButton label="Settings" onClick={() => setTab("settings")} />
               : tab === "settings"
               ? <BackButton label={tabName(settingsReturn.current)} onClick={() => setTab(settingsReturn.current)} />
@@ -1591,25 +1906,21 @@ export function PhoneApp() {
               ? <BackButton label="Code" onClick={() => setTerminalHomeSignal((n) => n + 1)} />
               : <h1 className="ph-large"><img className="ph-mark" src="/branding/mark.svg" alt="" width="26" height="26" />{tabName(tab)}</h1>}
             <span className="ph-head-actions">
-              {tab === "threads" && newAllowed && <button type="button" className="ph-icon" aria-label="New thread" onClick={() => { setQuery(""); setMenu({ kind: "new" }); }}><Plus size={22} /></button>}
+              {tab === "threads" && (newAllowed || chatMachines.some((item) => item.chats)) && <button type="button" className="ph-icon" aria-label="New chat or thread" onClick={() => { setQuery(""); setChatSheet({ kind: "new" }); }}><Plus size={22} /></button>}
               {/* Machines is part of Settings, so it has no way back into Settings of its own. */}
-              {tab !== "settings" && tab !== "appearance" && tab !== "machines" && tab !== "local-chat" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
+              {tab !== "settings" && tab !== "appearance" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
         )}
-        {inLocalChat && localSession ? (
-          <LocalChatThread key={localSession.id} config={gatewayConfig} session={localSession}
-            onUpdateSession={updater => setLocalSessions(list => list.map(item => item.id === localSession.id ? (typeof updater === "function" ? updater(item) : updater) : item))}
-            onNewSession={newLocal} onOpenSettings={() => setTab("local-chat")} onBack={() => setLocalId(null)} />
-        ) : inChat && openWorkspace && openLink ? (
+        {inChat && openWorkspace && openLink ? (
           <ThreadView
-            call={openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
+            call={!openChat && openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
             callSlot={callSlot}
             callStrip={openPane ? <PhoneCallStrip voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
             callCapsule={openPane ? <PhoneCallCapsule voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
             title={openPane?.title ?? "New thread"}
             draftThread={viewingPending}
-            project={openWorkspace.name}
+            project={openChat ? "Chat" : openWorkspace.name}
             machine={openLink.name}
             path={openPath}
             kind={openLink.kind}
@@ -1654,7 +1965,7 @@ export function PhoneApp() {
             onRemoveQueued={(item) => openPane && queues.current.get(openPane.id)?.remove(item)}
             onResume={() => openPane && queues.current.get(openPane.id)?.resume()}
             draft={draft}
-            gate={sendGate}
+            gate={openChat ? chatGate : sendGate}
             sending={sending}
             attaching={reading > 0}
             fork={openPane?.fork}
@@ -1665,7 +1976,7 @@ export function PhoneApp() {
             onResized={(chat) => { if (stuckRef.current) chat.scrollTop = chat.scrollHeight; }}
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
-            onMenu={() => { if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
+            onMenu={() => { if (openChat) setChatSheet({ kind: "menu" }); else if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
             pins={room && openPane && room.id === openPane.id ? room.pins : []}
             pinning={pinning}
             onUnpin={(index) => { if (openPane) unpin(openPane.id, index); }}
@@ -1676,9 +1987,9 @@ export function PhoneApp() {
               onExplain: (message, part) => explainPart(openPane.id, message, part),
               onCopy: copyMessage,
               onPin: (message) => togglePin(openPane.id, message),
-              onGoBack: (message) => { void goBack(openPane.id, message); },
-              // A task's thread belongs to its assistant, so it has no Fork.
-              onFork: openPane.assistantTaskId ? undefined : (seq) => {
+              onGoBack: (message) => { if (openChat) setNotice("Retry and Revert aren't in chats yet."); else void goBack(openPane.id, message); },
+              // A task's thread belongs to its assistant, so it has no Fork; a chat has no folder to fork into.
+              onFork: openPane.assistantTaskId || openChat ? undefined : (seq) => {
                 const hostId = workspaceHost(openWorkspace);
                 if (!canStartOn(hostId)) { setNotice(needsFull("Forking", linkOf(hostId)?.name ?? "this machine")); return; }
                 void forkFrom(openPane, seq);
@@ -1708,12 +2019,14 @@ export function PhoneApp() {
               if (pane) openThread(pane.id);
               else setNotice("That machine has no thread to open.");
             }}
-            onSheet={openSheet}
+            onSheet={openChat ? (kind) => { if (kind === "where") setChatSheet({ kind: "where" }); } : openSheet}
             onOpenComposer={openComposer}
+            chat={chatExtras}
           />
         ) : tab === "threads" ? (
           <ThreadList
-            localSessions={localSessions} onOpenLocal={openLocal} onNewLocal={newLocal}
+            chats={chatList}
+            fromChats={fromChats}
             sections={sections}
             workspaces={workspaces}
             links={links}
@@ -1727,7 +2040,7 @@ export function PhoneApp() {
             now={Date.now()}
             machineIcon={machineIcon}
             onToggle={(key) => setFolded((all) => ({ ...all, [key]: !foldChoice(all, key, key.startsWith("project:") && Boolean(workspaces.find((workspace) => `project:${workspace.id}` === key)?.collapsed)) }))}
-            onOpen={id => { setLocalId(null); openThread(id); }}
+            onOpen={openThread}
             onNew={newAllowed ? startIn : undefined}
             onPick={newAllowed ? () => { setQuery(""); setMenu({ kind: "new" }); } : undefined}
             onThreadMenu={(id) => { if (!panes.find((pane) => pane.id === id)?.assistantTaskId) setMenu({ kind: "thread", id }); }}
@@ -1744,14 +2057,8 @@ export function PhoneApp() {
             <div className="ph-list">
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
               <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={15} /></button>
-              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("local-chat")}><span className="ph-grow"><strong>Local chat</strong><small>On-device history and host model connection</small></span><ChevronRight size={15} /></button>
             </div>
           </main>
-        ) : tab === "local-chat" ? (
-          <LocalChatSettings config={gatewayConfig} covered={covered} scan={scanner ? scanner.scan : null}
-            onSaveConfig={next => { saveGatewayConfig(next); setGatewayConfig(next); }}
-            onOpenSession={() => localSessions.length ? openLocal(localSessions[0].id) : newLocal()}
-            onNewSession={newLocal} onNotice={setNotice} />
         ) : tab === "appearance" ? (
           <main className="ph-content ph-appearance" inert={covered}>
             <h2>Appearance</h2>
@@ -1806,9 +2113,9 @@ export function PhoneApp() {
             host.backend.detectAgents().then((found) => setAgents(found.filter((agent) => agent.found).map((agent) => agent.label))).catch(() => setAgents([]));
           }} />
         )}
-        {!inChat && !inLocalChat && <nav className="ph-tabs" aria-label="Sections" inert={covered}>
+        {!inChat && <nav className="ph-tabs" aria-label="Sections" inert={covered}>
           {([[Command, "Agents", "agents"], [Terminal, "Code", "code"], [MessageSquare, "Threads", "threads"], [Folder, "Library", "library"]] as const).map(([Icon, label, item]) => (
-            <button key={item} type="button" className={litTab === item ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") { setOpenId(null); setLocalId(null); } }}>
+            <button key={item} type="button" className={litTab === item ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") { setOpenId(null); } }}>
               <Icon size={21} />{label}{item === "code" && terminalNeedsAnswer && <i className="ph-tabs-amber-dot" />}
             </button>
           ))}
@@ -1939,7 +2246,8 @@ export function PhoneApp() {
                 }} />;
               })()}
               offline={openLink.status !== "online" ? downLine(openLink) : ""}
-              onSave={(change) => saveTurn(room.id, openLink.id, who.id)({ change, reported, apiModels })}
+              onSave={(change) => openChat ? saveChatTurn(openChat, who.id)({ change, reported, apiModels }) : saveTurn(room.id, openLink.id, who.id)({ change, reported, apiModels })}
+              extra={openChat ? <TalkOnlyRow name={who.display_name} onMove={openChat.promotedTo ? undefined : () => { setBotSheet(null); setChatSheet({ kind: "move" }); }} /> : undefined}
               onMention={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who, room.participants) }); setBotSheet(null); }}
               onStop={() => { void stopBot(who.id); setBotSheet(null); }}
               onClose={() => setBotSheet(null)} />
@@ -2083,6 +2391,74 @@ export function PhoneApp() {
             </Sheet>
           );
         })()}
+        {chatSheet?.kind === "new" && (
+          <Sheet title="New" onClose={() => setChatSheet(null)}>
+            {(() => {
+              const start = newChatStart(catalog, chatMachines, (hostId) => chatProfiles.current.get(hostId));
+              const where = start ? chatMachine(start.hostId).name : null;
+              return <NewMenuBody chatLine={start ? `On ${where}. No folder; bots talk only.` : null} workLine={newAllowed ? "Pick a folder. Bots can read or edit files there." : null}
+                onChat={() => setChatSheet({ kind: "new-chat" })} onWork={() => { setChatSheet(null); setQuery(""); setMenu({ kind: "new" }); }} />;
+            })()}
+          </Sheet>
+        )}
+        {chatSheet?.kind === "new-chat" && (
+          <Sheet title="New chat" onClose={() => setChatSheet(null)}>
+            <NewChatBody machines={chatMachines} start={newChatStart(catalog, chatMachines, (hostId) => chatProfiles.current.get(hostId)) ?? (catalog.last ? { hostId: catalog.last.hostId, picked: catalog.last.profiles } : null)}
+              machineIcon={machineIcon} loadProfiles={chatProfilesOn} onStart={startChat} />
+          </Sheet>
+        )}
+        {chatSheet?.kind === "menu" && sheetChat && (
+          <Sheet title={sheetChat.title} onClose={() => setChatSheet(null)}>
+            <div className="ph-card">
+              <p><strong>Chat</strong> · {chatMachine(sheetChat.hostId).name}</p>
+              <p className="ph-meta">{botNames(sheetChat)} · Talk only</p>
+            </div>
+            <MenuRow label="Bots" detail={`${sheetChat.bots.length} in this chat`} onClick={() => setChatSheet({ kind: "bots", hostId: sheetChat.hostId, id: sheetChat.id })} />
+            <MenuRow label="Where this chat runs" detail={chatMachine(sheetChat.hostId).name} onClick={() => setChatSheet({ kind: "where", hostId: sheetChat.hostId, id: sheetChat.id })} />
+            {!sheetChat.promotedTo && <MenuRow label="Move to a Work thread…" onClick={() => setChatSheet({ kind: "move", hostId: sheetChat.hostId, id: sheetChat.id })} />}
+            <MenuRow label="Rename…" onClick={() => setChatSheet({ kind: "rename", hostId: sheetChat.hostId, id: sheetChat.id, text: sheetChat.title })} />
+            <MenuRow label={sheetChat.archived ? "Unarchive" : "Archive"} danger={!sheetChat.archived} onClick={() => {
+              const row = sheetChat;
+              updateChatMeta(row, { archived: !row.archived }).then(() => { setChatSheet(null); if (!row.archived && openId === row.id) setOpenId(null); }, (error) => setNotice(words(error)));
+            }} />
+          </Sheet>
+        )}
+        {chatSheet?.kind === "rename" && sheetChat && (
+          <Sheet title="Rename chat" onClose={() => setChatSheet(null)}>
+            <form onSubmit={(event) => { event.preventDefault(); const title = (chatSheet.text ?? "").trim(); if (!title) return; updateChatMeta(sheetChat, { title }).then(() => setChatSheet(null), (error) => setNotice(words(error))); }}>
+              <label className="ph-label">Chat title<input value={chatSheet.text ?? ""} autoFocus onChange={(event) => setChatSheet({ ...chatSheet, text: event.target.value })} /></label>
+              <button type="submit" className="primary ph-wide" disabled={!(chatSheet.text ?? "").trim()}>Save</button>
+              <button type="button" className="ph-plain ph-wide" onClick={() => setChatSheet(null)}>Cancel</button>
+            </form>
+          </Sheet>
+        )}
+        {chatSheet?.kind === "bots" && sheetChat && (
+          <Sheet title="Bots in this chat" onClose={() => setChatSheet(null)}>
+            <ChatBotsBody machine={chatMachine(sheetChat.hostId)} bots={chatBots(sheetChat)} working={[...(busy[sheetChat.id] ?? [])]} loadProfiles={chatProfilesOn}
+              onOpen={(botId) => { if (openId === sheetChat.id) { setChatSheet(null); setBotSheet(botId); } else openChatRow(sheetChat); }}
+              onAdd={(profile) => changeChatBots(sheetChat, { add: profile })} onRemove={(botId) => changeChatBots(sheetChat, { remove: botId })} />
+          </Sheet>
+        )}
+        {chatSheet?.kind === "where" && sheetChat && (
+          <Sheet title="Where this chat runs" onClose={() => setChatSheet(null)}>
+            <ChatWhereBody machines={chatMachines} current={sheetChat.hostId} machineIcon={machineIcon} onPick={(hostId, pendingAnswers) => moveChat(sheetChat, hostId, pendingAnswers)} />
+          </Sheet>
+        )}
+        {chatSheet?.kind === "move" && sheetChat && (
+          <Sheet title="Move to a Work thread" onClose={() => setChatSheet(null)}>
+            <MoveToWorkBody machine={chatMachine(sheetChat.hostId)} bots={chatBots(sheetChat)}
+              blocked={!canSeeNewThread(phoneHost(sheetChat.hostId)?.access()) || phoneHost(sheetChat.hostId)?.access()?.threads !== undefined && phoneHost(sheetChat.hostId)?.access()?.threads !== "all"
+                ? `A Work thread can change files, so it needs Full access to every thread on ${chatMachine(sheetChat.hostId).name}. Change it on that machine.` : ""}
+              listFolder={(path) => { const host = phoneHost(sheetChat.hostId); return host ? host.backend.listFolder(path) : Promise.reject(new Error("That machine isn't paired with this phone.")); }}
+              onMove={(cwd, access) => promoteChat(sheetChat, cwd, access)} />
+          </Sheet>
+        )}
+        {chatSheet?.kind === "legacy" && legacy.length > 0 && (
+          <Sheet title="Your old Local chat" onClose={() => setChatSheet(null)}>
+            <LegacyImportBody chats={legacy} machines={chatMachines} machineIcon={machineIcon} onCopy={importLegacy}
+              onLater={() => setChatSheet(null)} onDiscard={() => { dropLegacy(); setChatSheet(null); }} />
+          </Sheet>
+        )}
         {browse && (
           <Sheet title="Choose a folder" onClose={() => setBrowse(null)}>
             <p className="ph-sheet-text">{browse.projectName ? `For ${browse.projectName} on ${linkOf(browse.hostId)?.name ?? browse.hostId}.` : `New project on ${linkOf(browse.hostId)?.name ?? browse.hostId}.`}{browse.macCopy ? ` This is a separate copy from ${mac?.name ?? "your Mac"}'s. Nothing is copied over.` : ""}</p>
@@ -2140,6 +2516,8 @@ function BotSheet(props: {
   /** Why the bot's machine can't take changes right now; empty while it's online. */
   offline: string;
   onSave(change: TurnChange): Promise<void>; onMention(): void; onStop(): void; onClose(): void;
+  /** Shown above Mention: a chat's locked Access row. */
+  extra?: ReactNode;
 }) {
   const backend = props.config.backend;
   const tool = backend.kind === "agent" ? backend.tool : null;
@@ -2306,6 +2684,7 @@ function BotSheet(props: {
             : "Changes save as you pick them, for this thread only."}
         </p>
       </> : <p className="ph-sheet-text ph-quiet">This bot has no model or reasoning to change.</p>}
+      {props.extra}
       <button type="button" className="primary ph-wide" onClick={props.onMention}>Mention {name}</button>
       {props.working && !props.offline && <button type="button" className="ph-wide" onClick={props.onStop}>Stop {name}</button>}
       <p className="ph-sheet-text ph-quiet">Add or remove bots from Bots in the thread’s ⋯ menu.</p>
@@ -2378,6 +2757,8 @@ function ThreadView(props: {
   };
   /** The Retry or Revert question open under a message. */
   goingBack: GoingBack | null; onGoingBack(next: GoingBack | null): void; onAnswerGoBack(always: boolean): void;
+  /** Set for a talk-only chat: no folder, no files, and its own outbox that outlives the app. */
+  chat?: ChatThreadExtras;
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -2628,7 +3009,8 @@ function ThreadView(props: {
             <p>{props.link.mismatch}</p>
           </div>
         )}
-        {paused && (
+        {props.chat?.banner}
+        {paused && !props.chat && (
           <div className={`ph-banner${props.link.problem ? " bad" : ""}`} role="status">
             <strong>{props.link.problem ? `${props.machine} can't connect` : `${props.machine} ${props.link.status === "offline" ? "can’t be reached" : "is connecting"}`}</strong>
             <p>{downLine(props.link).replace(/\.$/, "")}. Nothing is queued, and your text stays here.</p>
@@ -2638,11 +3020,11 @@ function ThreadView(props: {
             </div>
           </div>
         )}
-        {props.messages.length === 0 && working.length === 0 && !paused && (
+        {props.messages.length === 0 && working.length === 0 && (!paused || props.chat) && (props.chat?.outbox.length ?? 0) === 0 && (
           <div className="ph-empty">
             <MessageSquare size={30} />
-            <h3>What are we working on?</h3>
-            <p>{props.project} · {props.machine}{props.path && <><br />{props.path}</>}</p>
+            <h3>{props.chat ? "Start the group chat" : "What are we working on?"}</h3>
+            <p>{props.chat ? `${props.participants.map((who) => who.display_name).join(" · ") || "No bots yet"} · ${props.machine}` : <>{props.project} · {props.machine}{props.path && <><br />{props.path}</>}</>}</p>
           </div>
         )}
         {/* Each message, then its actions under it: a bot's at the left, yours at the right, as on the desktop. */}
@@ -2749,6 +3131,19 @@ function ThreadView(props: {
             )}
           </section>
         ))}
+        {/* A chat's messages still on the phone, or not yet answered, with what is known about each. */}
+        {props.chat?.outbox.map((item) => (
+          <section key={`o-${item.id}`} className={`ph-queued${item.kind === "blocked" || item.kind === "interrupted" || item.kind === "fenced" ? " held" : ""}`} aria-label={`${item.line}: ${item.text}`}>
+            <div className="ph-msg human"><p>{splitTldr(item.text).text}</p></div>
+            <div className="ph-queued-meta">
+              <span className="ph-queued-line" role="status">{item.line}</span>
+              <span className="ph-queued-actions">
+                {item.canRetry && <button type="button" onClick={() => props.chat?.onRetry(item.id)}>Retry</button>}
+                {item.canSendAnyway && <button type="button" onClick={() => props.chat?.onSendAnyway(item.id)}>Send here anyway</button>}
+              </span>
+            </div>
+          </section>
+        ))}
         <div ref={props.endRef} />
       </main>
       {/* Text picked inside one message: the desktop's Add to chat and More details, clear of iPhone's own menu. */}
@@ -2823,10 +3218,11 @@ function ThreadView(props: {
         {props.callStrip}
         {/* One row, as in Messages: + for files and tools, then the message box. */}
         <div className="ph-compose-row">
-          <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
+          {/* A chat is talk-only: no files to attach and no tools to pick. */}
+          {!props.chat && <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
             <Plus size={22} />
             {props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}
-          </button>
+          </button>}
           <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
               placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.quotes.length ? "e.g. Check this against the tests and say what breaks" : props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
