@@ -974,6 +974,26 @@ mod tests {
     }
 
     #[test]
+    fn a_promoted_claude_bot_keeps_the_tools_a_chat_takes_away() {
+        let full: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({
+            "id": "c",
+            "display_name": "Claude",
+            "backend": { "kind": "agent", "tool": "claude_code", "model": "opus" },
+            "access": "full"
+        }))
+        .unwrap();
+        // What a Work thread builds for the same bot after a chat is promoted.
+        let (_, work, _) = super::CliParticipant::new(full.clone()).command_line().unwrap();
+        assert!(work.windows(2).any(|w| w == ["--permission-mode", "bypassPermissions"]), "a Work bot at Full keeps its access: {work:?}");
+        assert!(work.windows(2).any(|w| w == ["--settings", r#"{"permissions":{"allow":["TaskCreate","TaskUpdate"],"ask":["mcp__*"]}}"#]), "{work:?}");
+        // The chat build of the same bot has neither.
+        let (_, chat, _) = super::CliParticipant::new(full).with_tools_disabled().command_line().unwrap();
+        assert!(!chat.iter().any(|a| a == "--permission-mode"), "{chat:?}");
+        assert!(!chat.windows(2).any(|w| w == ["--settings", r#"{"permissions":{"allow":["TaskCreate","TaskUpdate"],"ask":["mcp__*"]}}"#]), "{chat:?}");
+        assert!(chat.windows(2).any(|w| w == ["--tools", ""]));
+    }
+
+    #[test]
     fn gateway_mcp_inventory_disables_every_named_server_and_rejects_bad_shapes() {
         let flags = super::codex_mcp_disable_flags(br#"[{"name":"hl_mcp"},{"name":"x-publisher_mcp"}]"#).unwrap();
         assert!(flags.contains(&"mcp_servers.hl_mcp.enabled=false".to_string()));

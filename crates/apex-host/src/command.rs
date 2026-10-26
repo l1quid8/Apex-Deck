@@ -543,7 +543,7 @@ impl Host {
             ChatImport { id, move_id, title, participants, entries, options } => reply(self.chat_import(id, move_id, title, participants, entries, options)?),
             ChatMessageClaim { id, client_message_id } => reply(self.chat_message_claim(id, client_message_id).await?),
             ChatMergeHistory { id, entries } => reply(self.chat_merge_history(id, entries).await?),
-            ChatPromote { .. } => Err("not built yet".into()),
+            ChatPromote { source, target, cwd, upto, access, request_id } => reply(self.chat_promote(source, target, cwd, upto, access, request_id)?),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers, client_message_id } => match client_message_id {
                 // Work sends retain task continuation, Revert snapshots, and

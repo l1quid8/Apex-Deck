@@ -1358,6 +1358,124 @@ impl Host {
         })?;
         Ok(serde_json::json!({"id":id,"room":saved.snapshot,"skipped":skipped,"profiles":meta.profiles}))
     }
+    /// Turn a talk-only chat into a Work thread in a folder, in one step: the
+    /// new thread is written and the chat is pointed at it together, and a
+    /// retry with the same `requestId` returns that thread instead of a second
+    /// one. The chat keeps its history; only its bots' tools come back, at the
+    /// Access chosen for each.
+    pub fn chat_promote(
+        &self,
+        source: String,
+        target: String,
+        cwd: String,
+        upto: Option<usize>,
+        access: Option<std::collections::BTreeMap<String, Access>>,
+        request_id: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        if target.trim().is_empty() || target.len() > 200 {
+            return Err("invalid Work thread id".into());
+        }
+        if source == target {
+            return Err("A chat can't be moved onto itself.".into());
+        }
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        let snapshot = match self.rooms.lock().unwrap().get(&source) {
+            Some(handle) => handle.checkpoint.lock().unwrap().snapshot.clone(),
+            None => self
+                .store
+                .room(&source)?
+                .ok_or_else(|| format!("no group chat with id {source}"))?
+                .snapshot,
+        };
+        if !snapshot.kind.is_chat() {
+            return Err("Only a chat can become a Work thread.".into());
+        }
+        let mut meta = self.store.chat_meta(&source)?.unwrap_or_default();
+        // One move per chat: a retry returns the thread it already made, and
+        // anything else is refused rather than making a second one.
+        if let Some(to) = meta.promoted_to.clone() {
+            let name = self
+                .store
+                .chat_meta(&to)?
+                .map(|meta| meta.title.trim().to_owned())
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| to.clone());
+            if to != target || meta.promote_request.as_deref() != request_id.as_deref() {
+                return Err(format!("Already moved to {name}"));
+            }
+            return self.promoted_reply(&source, &to);
+        }
+        let cwd = promote_cwd(&cwd, self.store.root())?;
+        // A bot the chat doesn't have is refused, so a typo can't quietly give
+        // a bot Read only.
+        let access = access.unwrap_or_default();
+        for bot in access.keys() {
+            if !snapshot.participants.iter().any(|participant| participant.id.as_str() == bot.as_str()) {
+                return Err(format!("This chat has no bot named `{bot}`, so its access can't be set."));
+            }
+        }
+        // Rebuild every bot from this machine's own saved profiles, at the
+        // Access chosen here: a Work thread gives tools back, so none of the
+        // chat's talk-only settings cross over.
+        let saved_profiles = self.chat_saved_profiles()?;
+        let mut participants: Vec<ParticipantConfig> = Vec::with_capacity(snapshot.participants.len());
+        for bot in &snapshot.participants {
+            let profile = meta
+                .profiles
+                .get(bot.id.as_str())
+                .cloned()
+                .unwrap_or_else(|| bot.id.as_str().to_owned());
+            let request = crate::chat_bots::ChatBotRequest {
+                profile,
+                id: Some(bot.id.clone()),
+                display_name: Some(bot.display_name.clone()),
+                model: bot_model(bot),
+                effort: bot.effort.clone(),
+                speed: bot.speed,
+            };
+            let mut rebuilt = crate::chat_bots::resolve(&saved_profiles, request)
+                .map_err(|why| format!("Can't put `{}` in the Work thread: {why}", bot.display_name))?;
+            rebuilt.access = access.get(bot.id.as_str()).copied().unwrap_or(Access::Read);
+            if participants.iter().any(|prior| prior.id == rebuilt.id) {
+                return Err(format!("Two bots in this chat are both named `{}`.", rebuilt.display_name));
+            }
+            if let Some(why) = apex_core::mention_clash(&rebuilt, &participants) {
+                return Err(why);
+            }
+            participants.push(rebuilt);
+        }
+        let upto = upto.unwrap_or(snapshot.transcript.len()).min(snapshot.transcript.len());
+        let mut work = snapshot.fork(upto);
+        work.kind = apex_core::RoomKind::Work;
+        work.participants = participants;
+        work.plan = false;
+        work.allowed = Vec::new();
+        work.import_move_id = None;
+        work.import_skipped = Vec::new();
+        work.import_profiles = meta.profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect();
+        let title = {
+            let trimmed = meta.title.trim();
+            if trimmed.is_empty() { "New work thread".to_string() } else { trimmed.to_string() }
+        };
+        let work = SavedRoom { cwd: Some(cwd), mounts: vec![], snapshot: work };
+        let already = self.store.promote_chat(&source, &target, &work, request_id.as_deref(), &title)?;
+        meta.promoted_to = Some(already.clone().unwrap_or_else(|| target.clone()));
+        self.promoted_reply(&source, meta.promoted_to.as_deref().unwrap_or(&target))
+    }
+
+    /// The new Work thread and the chat that now points at it.
+    fn promoted_reply(&self, chat: &str, work: &str) -> Result<serde_json::Value, String> {
+        let room = self
+            .store
+            .room(work)?
+            .ok_or_else(|| format!("the Work thread {work} wasn't saved"))?
+            .snapshot;
+        let entries = self.store.chat_list()?;
+        let work_row = entries.iter().find(|entry| entry.id == work).cloned();
+        let chat_row = entries.iter().find(|entry| entry.id == chat).cloned();
+        Ok(serde_json::json!({ "room": room, "work": work_row, "chat": chat_row }))
+    }
+
     pub(crate) fn room_voice_stop(&self, id: String, participant: ParticipantId, request_id: String) -> Result<String, String> {
         let handle = self.handle(&id)?;
         Ok(handle.runtime.stop_request(&participant, &request_id).into())
@@ -2855,6 +2973,38 @@ fn copy_folder_attachment(dir: &Path, source: &Path) -> Result<String, String> {
     Ok(format!("{}/", target.to_string_lossy()))
 }
 
+/// The folder a promoted Work thread runs in, checked here rather than trusted
+/// from the phone: a full path to a folder that already exists on this machine
+/// and isn't Deck's own data folder.
+fn promote_cwd(cwd: &str, data: &Path) -> Result<String, String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return Err("Choose the folder this Work thread runs in.".into());
+    }
+    let path = Path::new(cwd);
+    if !path.is_absolute() {
+        return Err("The folder must be a full path on this machine.".into());
+    }
+    let real = std::fs::canonicalize(path).map_err(|_| format!("There's no folder at {cwd} on this machine."))?;
+    if !real.is_dir() {
+        return Err(format!("{cwd} isn't a folder."));
+    }
+    let data_root = std::fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
+    if real.starts_with(&data_root) {
+        return Err("That folder belongs to Deck. Choose a project folder.".into());
+    }
+    Ok(real.to_string_lossy().into_owned())
+}
+
+/// The model a bot is set to, for rebuilding it as a Work thread's bot.
+fn bot_model(bot: &ParticipantConfig) -> Option<String> {
+    match &bot.backend {
+        apex_core::Backend::Agent { model, .. } => model.clone(),
+        apex_core::Backend::OpenAiCompatible { model, .. } => Some(model.clone()),
+        apex_core::Backend::Cli { .. } | apex_core::Backend::Scripted { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -3938,6 +4088,93 @@ mod host_tests {
         assert_eq!(host.session_load().unwrap(), Some(json!({ "version": 1, "section": "code" })));
         assert!(host.session_save(json!("not a session")).is_err());
         assert_eq!(seen.lock().unwrap().len(), 2, "a refused save tells no one");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn chat_promote_makes_one_work_thread_from_the_machines_own_bots() {
+        use serde_json::json;
+        let (host, _runtime, data) = host("chat-promote");
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.access = Access::Read;
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+        host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("denver");
+        std::fs::create_dir_all(&folder).unwrap();
+        let cwd = folder.to_string_lossy().into_owned();
+        let access = || std::collections::BTreeMap::from([("bot".to_string(), Access::Full)]);
+
+        let reply = host
+            .chat_promote(
+                "11111111-1111-1111-1111-111111111111".into(),
+                "22222222-2222-2222-2222-222222222222".into(),
+                cwd.clone(),
+                None,
+                Some(access()),
+                Some("move-1".into()),
+            )
+            .unwrap();
+        assert_eq!(reply["room"]["participants"][0]["access"], "full");
+        assert_eq!(reply["chat"]["promotedTo"], "22222222-2222-2222-2222-222222222222");
+        let real = std::fs::canonicalize(&folder).unwrap().to_string_lossy().into_owned();
+        assert_eq!(reply["work"]["cwd"], real.as_str());
+        assert_eq!(reply["work"]["folderName"], "denver");
+        assert_eq!(reply["work"]["kind"], "work");
+        let work = host.store.room("22222222-2222-2222-2222-222222222222").unwrap().unwrap();
+        assert_eq!(work.snapshot.kind, apex_core::RoomKind::Work);
+        assert_eq!(work.cwd.as_deref(), Some(real.as_str()));
+        // The Access chosen for the move comes back with the bot, and the Work
+        // build is what gives its tools back; the chat keeps Read.
+        assert_eq!(work.snapshot.participants[0].access, Access::Full);
+        assert!(!work.snapshot.plan);
+        let chat = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert_eq!(chat.snapshot.kind, apex_core::RoomKind::Chat);
+        assert_eq!(chat.snapshot.participants[0].access, Access::Read);
+        // A retry with the same request id returns the thread already made.
+        let again = host
+            .chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, None, Some("move-1".into()))
+            .unwrap();
+        assert_eq!(again["work"]["id"], "22222222-2222-2222-2222-222222222222");
+        // Any other move is refused, and makes nothing.
+        let refused = host
+            .chat_promote("11111111-1111-1111-1111-111111111111".into(), "33333333-3333-3333-3333-333333333333".into(), cwd.clone(), None, None, Some("move-2".into()))
+            .unwrap_err();
+        assert!(refused.contains("Already moved to Denver trip"), "{refused}");
+        assert!(host.store.room("33333333-3333-3333-3333-333333333333").unwrap().is_none());
+        // Only a chat can be moved.
+        let err = host.chat_promote("22222222-2222-2222-2222-222222222222".into(), "44444444-4444-4444-4444-444444444444".into(), cwd.clone(), None, None, None).unwrap_err();
+        assert!(err.contains("Only a chat"), "{err}");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn chat_promote_refuses_unknown_bots_and_folders_it_does_not_have() {
+        use serde_json::json;
+        let (host, _runtime, data) = host("chat-promote-refusals");
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+        host.chat_create("11111111-1111-1111-1111-111111111111".into(), None, vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("projects");
+        std::fs::create_dir_all(&folder).unwrap();
+        let cwd = folder.to_string_lossy().into_owned();
+        // A name the chat doesn't have is refused, not quietly given Read only.
+        let ghost = host
+            .chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, Some(std::collections::BTreeMap::from([("ghost".to_string(), Access::Full)])), None)
+            .unwrap_err();
+        assert!(ghost.contains("no bot named `ghost`"), "{ghost}");
+        // Deck's own data folder is not a project folder.
+        let inside_data = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), host.store.root().to_string_lossy().into_owned(), None, None, None).unwrap_err();
+        assert!(inside_data.contains("belongs to Deck"), "{inside_data}");
+        // A folder that isn't there.
+        let missing = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), "/no/such/folder".into(), None, None, None).unwrap_err();
+        assert!(missing.contains("There's no folder"), "{missing}");
+        // None of that made a Work thread or a link.
+        assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());
+        assert_eq!(host.store.chat_meta("11111111-1111-1111-1111-111111111111").unwrap().unwrap().promoted_to, None);
         let _ = std::fs::remove_dir_all(data);
     }
 

@@ -76,6 +76,10 @@ pub struct ChatRoomMeta {
     pub promoted_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_to: Option<ChatMovedTo>,
+    /// The `requestId` of the promote that made `promotedTo`, so a retried
+    /// move returns that Work thread and a different request is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promote_request: Option<String>,
     /// The saved profile each bot was made from, by bot id. A bot's id can be
     /// a copy's alias ("claude-2"), so moving a chat needs both.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -170,6 +174,12 @@ pub struct Store {
 impl Store {
     pub fn new(root: PathBuf) -> Self {
         Self { root, writes: Mutex::new(()) }
+    }
+
+    /// The folder Deck keeps its own files in, so a promotion can refuse it
+    /// as a project folder.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
     }
 
     fn room_path(&self, id: &str) -> PathBuf {
@@ -665,8 +675,87 @@ impl Store {
         sync_directory(parent).map_err(|e| e.to_string())
     }
 
-    pub fn delete_room(&self, id: &str) -> Result<(), String> {
+    /// Write a promoted Work room and point the chat at it under one write
+    /// lock: either the Work room exists and the chat links to it, or nothing
+    /// changed. Returns the Work room the chat already pointed at when this
+    /// replays a move already made with the same request.
+    pub(crate) fn promote_chat(
+        &self,
+        source: &str,
+        target: &str,
+        work: &SavedRoom,
+        request_id: Option<&str>,
+        title: &str,
+    ) -> Result<Option<String>, String> {
         let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        let mut chat = metas.remove(source).unwrap_or_default();
+        if let Some(to) = chat.promoted_to.clone() {
+            let name = metas
+                .get(&to)
+                .map(|meta| meta.title.trim().to_owned())
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| to.clone());
+            return if to == target && chat.promote_request.as_deref() == request_id {
+                Ok(Some(to))
+            } else {
+                Err(format!("Already moved to {name}"))
+            };
+        }
+        let path = self.room_path(target);
+        let parent = path.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+        if self.thread_paths(target).iter().any(|leftover| std::fs::symlink_metadata(leftover).is_ok()) {
+            return Err("a thread with that id already exists".into());
+        }
+        self.save_room_authority(target, work)?;
+        if let Err(why) = write_new(&path, work) {
+            let _ = self.forget_authority_held(target);
+            return Err(why);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        chat.promoted_to = Some(target.to_owned());
+        chat.promote_request = request_id.map(str::to_owned);
+        chat.updated_at = chat.updated_at.max(now);
+        let work_meta = ChatRoomMeta {
+            title: title.trim().to_owned(),
+            updated_at: now,
+            promoted_from: Some(source.to_owned()),
+            profiles: work.snapshot.import_profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect(),
+            ..Default::default()
+        };
+        metas.insert(source.to_owned(), chat);
+        metas.insert(target.to_owned(), work_meta);
+        if let Err(why) = self.write_held(&self.root.join("chat-meta-v1.json"), &metas) {
+            // The room is on disk but the chat doesn't link to it: undo it so a
+            // retry can create the same thread again.
+            for leftover in self.thread_paths(target) {
+                let _ = std::fs::remove_file(leftover);
+            }
+            let _ = self.forget_authority_held(target);
+            return Err(why);
+        }
+        sync_directory(&parent).map_err(|e| e.to_string())?;
+        Ok(None)
+    }
+
+    /// Drop one room's authority entry; the caller already holds the write lock.
+    fn forget_authority_held(&self, id: &str) -> Result<(), String> {
+        let mut authorities = self.room_authorities()?;
+        if authorities.remove(id).is_some() {
+            crate::authority_file::write(
+                &self.root.join("room-authority-v1.json"),
+                &serde_json::to_vec(&authorities).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_room(&self, id: &str) -> Result<(), String> {        let _guard = self.writes.lock().unwrap();
         let mut authorities=self.room_authorities()?;
         authorities.remove(id);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
