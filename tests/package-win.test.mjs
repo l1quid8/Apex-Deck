@@ -128,13 +128,17 @@ test('the installer stops the old service before it copies files', () => {
     'ending the task first lets the service shut down in order');
   assert.match(hook, /taskkill\.exe" \/F \/IM "\$\{APEX_DAEMON_IMAGE\}"/,
     'a daemon the app started as a child is not in the task, so it needs killing too');
-  assert.match(hook, /\/IM "\$\{APEX_DAEMON_IMAGE\}" \/FI "USERNAME eq \$USERNAME"/,
-    'without the user filter /IM also offers to end other users\' daemons');
-  // nsExec launches taskkill directly, so %USERNAME% would arrive as literal text
-  // and the filter would match nothing. (The file's own comments mention it, so
-  // this checks executable lines only.)
+  // Without the filter, /IM also offers to end other users' copies.
+  assert.match(hook, /ReadEnvStr \$R6 "USERNAME"/, 'the user name has to be read from the environment');
+  assert.match(hook, /StrCpy \$R8 '\/FI "USERNAME eq \$R6"'/, 'the filter keeps taskkill to this user');
+  assert.match(hook, /\/IM "\$\{APEX_DAEMON_IMAGE\}" \$R8/, 'and the filter has to reach the command');
+  // Neither spelling of the environment token works: nsExec starts taskkill
+  // directly, so nothing expands %USERNAME%, and NSIS has no $USERNAME at all --
+  // makensis only warns 6000 and drops it, which leaves a filter matching no
+  // process. Both are named in the comments, so check executable lines.
   const code = hook.split('\n').filter((line) => !line.trimStart().startsWith(';')).join('\n');
   assert.ok(!/%USERNAME%/.test(code), 'cmd.exe is not in the path here, so %USERNAME% never expands');
+  assert.ok(!/\$USERNAME\b/.test(code), 'NSIS has no $USERNAME: makensis warns 6000 and drops it');
   assert.match(hook, /!define APEX_DAEMON_IMAGE "apex-daemon\.exe"/);
 
   // After M3 the app registers the task itself; keep the two names from drifting
@@ -148,7 +152,7 @@ test('the installer stops the old service before it copies files', () => {
   if (registered) assert.equal(task, registered, 'the installer must end the task the app creates');
 
   // Bounded, so a daemon that refuses to die cannot hang the installer.
-  assert.match(hook, /\$R1 >= 20/, 'the wait must be bounded');
+  assert.match(hook, /\$R7 >= 20/, 'the wait must be bounded');
   assert.match(hook, /Sleep/, 'and must not spin');
   assert.match(hook, /\$\{IfNot\} \$\{Silent\}/, 'a silent upgrade reports through its exit code, not a dialog');
 });

@@ -23,30 +23,37 @@
 ; problem -- that is how you get "the service is still running" when nothing of
 ; ours is running at all.
 ;
-; It must be $USERNAME, not %USERNAME%: nsExec launches taskkill.exe directly, so
-; nothing turns %USERNAME% into a name. It would reach the filter as literal
-; text, match no process, and quietly skip the daemon we came to stop. (cmd.exe
-; is what expands %USERNAME%, and we do not run through it.)
+; The name comes from ReadEnvStr. Neither spelling of the environment token works
+; here: nsExec launches taskkill.exe directly, so no cmd.exe turns %USERNAME% into
+; a name, and NSIS has no $USERNAME variable at all -- makensis only warns 6000,
+; drops it, and the filter then matches no process. electron-builder treats that
+; warning as fatal, which is how this was caught rather than shipped.
 ;
 ; The loop repeats only while taskkill reports success, i.e. while it keeps
 ; finding a copy to end. Any other result -- no such process, or another user's
 ; process we may not touch -- means there is nothing left for us to do, so it
 ; stops instead of guessing which exit code means "not found". Bounded at 20 x
 ; 500ms so a service that keeps respawning cannot hold the installer open
-; forever. Leaves $R1 at the attempt count: 20 means it kept coming back.
+; forever. Leaves $R7 at the attempt count: 20 means it kept coming back.
 !macro StopDaemon
   nsExec::Exec '"$SYSDIR\schtasks.exe" /End /TN "${APEX_DAEMON_TASK}"'
   Pop $R0
 
-  StrCpy $R1 0
+  ReadEnvStr $R6 "USERNAME"
+  StrCpy $R8 ""
+  ${If} $R6 != ""
+    StrCpy $R8 '/FI "USERNAME eq $R6"'
+  ${EndIf}
+
+  StrCpy $R7 0
   ${Do}
-    nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_DAEMON_IMAGE}" /FI "USERNAME eq $USERNAME"'
+    nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_DAEMON_IMAGE}" $R8'
     Pop $R0
     ${If} $R0 != "0"
       ${ExitDo}
     ${EndIf}
-    IntOp $R1 $R1 + 1
-    ${If} $R1 >= 20
+    IntOp $R7 $R7 + 1
+    ${If} $R7 >= 20
       ${ExitDo}
     ${EndIf}
     Sleep 500
@@ -59,7 +66,7 @@
   ; Say what to do instead of failing later with a locked-file error nobody can
   ; read. Silent installs skip the box: an unattended upgrade should report the
   ; failure through its exit code, not wait on a dialog.
-  ${If} $R1 >= 20
+  ${If} $R7 >= 20
     ${IfNot} ${Silent}
       MessageBox MB_ICONSTOP|MB_OK "Apex Deck's background service keeps restarting, so this version cannot replace it.$\n$\nClose Apex Deck, end apex-daemon.exe on Task Manager's Details tab, then run this installer again."
       Quit
