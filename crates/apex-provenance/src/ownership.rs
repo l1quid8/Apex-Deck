@@ -1,5 +1,5 @@
 //! Stable broker-prepared flock inodes. Only live host-held descriptors admit IO.
-use crate::{io, verify, Signed, DOMAIN, ROOT};
+use crate::{io, verify, Signed, DOMAIN, ROOT, SOCKET};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -8,9 +8,13 @@ use std::{
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
+    time::Duration,
 };
 
 const MAX_LOCKS: usize = 4096;
+/// How long startup waits for an installed broker that hasn't opened its socket yet.
+const BROKER_WAIT: Duration = Duration::from_secs(120);
+const BROKER_POLL: Duration = Duration::from_millis(500);
 static OWNERS: OnceLock<Mutex<HashMap<PathBuf, Weak<ScopeGuard>>>> = OnceLock::new();
 
 #[derive(Debug)]
@@ -49,6 +53,22 @@ fn canonical_folder(path: &Path) -> Result<PathBuf, String> {
 impl HostOwnership {
     /// All or nothing: publish neither scope until both kernel locks are held.
     pub fn acquire(data_dir: &Path) -> Result<Self, HostOwnershipError> {
+        // After login the daemon can start before the broker listens: the broker checks its
+        // whole journal first. Ownership is only taken here, so a missed broker would leave
+        // the host without authority until restart; wait for an installed one instead.
+        let installed = Path::new(ROOT).join("apex-provenance").exists();
+        let waited = await_broker(
+            installed,
+            BROKER_WAIT,
+            || Path::new(SOCKET).exists(),
+            std::thread::sleep,
+        );
+        if !waited.is_zero() {
+            eprintln!(
+                "apex-provenance: waited {}s for the provenance broker to start",
+                waited.as_secs()
+            );
+        }
         std::fs::create_dir_all(data_dir.join("saved-chats-v1"))
             .map_err(|e| HostOwnershipError::Unavailable(e.to_string()))?;
         Self::acquire_with(data_dir, |folder| {
@@ -100,6 +120,23 @@ impl HostOwnership {
             _scopes: scopes.into_iter().map(|(_, guard)| guard).collect(),
         })
     }
+}
+
+/// How long it took for `listening`, polled every BROKER_POLL up to `limit`; zero
+/// at once when it already is or no broker is installed. Past `limit` the
+/// caller goes on and the broker's absence is reported as before.
+fn await_broker(
+    installed: bool,
+    limit: Duration,
+    mut listening: impl FnMut() -> bool,
+    mut pause: impl FnMut(Duration),
+) -> Duration {
+    let mut waited = Duration::ZERO;
+    while installed && waited < limit && !listening() {
+        pause(BROKER_POLL);
+        waited += BROKER_POLL;
+    }
+    waited
 }
 
 /// Caller retains this strong reference throughout the entire authority request.
@@ -292,6 +329,42 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn startup_waits_for_an_installed_broker_still_opening_its_socket() {
+        let (mut checks, mut paused) = (0, Duration::ZERO);
+        let waited = await_broker(
+            true,
+            BROKER_WAIT,
+            || {
+                checks += 1;
+                checks > 4
+            },
+            |d| paused += d,
+        );
+        assert_eq!(waited, BROKER_POLL * 4);
+        assert_eq!(paused, waited);
+    }
+
+    #[test]
+    fn startup_gives_up_on_the_broker_after_the_limit() {
+        let mut paused = Duration::ZERO;
+        let waited = await_broker(true, Duration::from_secs(2), || false, |d| paused += d);
+        assert_eq!(waited, Duration::from_secs(2));
+        assert_eq!(paused, waited);
+    }
+
+    #[test]
+    fn startup_never_waits_without_an_installed_broker_or_once_it_listens() {
+        assert_eq!(
+            await_broker(false, BROKER_WAIT, || false, |_| panic!("no wait")),
+            Duration::ZERO
+        );
+        assert_eq!(
+            await_broker(true, BROKER_WAIT, || true, |_| panic!("no wait")),
+            Duration::ZERO
+        );
+    }
     const NONCE: &str = "0123456789abcdef0123456789abcdef";
     struct Fixture {
         root: PathBuf,
