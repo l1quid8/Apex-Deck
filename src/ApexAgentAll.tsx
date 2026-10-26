@@ -27,6 +27,7 @@ import { ApexAgentMessageActions, ApexAgentReplyQuote } from './ApexAgentMessage
 import type { MessageQuote, MessageReaction } from './apexAgentModel.ts';
 import { messageStateKey, retryMessageText } from './apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from './apexAgentQuote.ts';
+import { assistantDisplayName } from './assistantName.ts';
 import { ApexAgentComposerTools, type ApexAgentComposerToolsHandle } from './ApexAgentComposerTools.tsx';
 import { LandingTexture } from './landing/LandingTexture';
 import type { LandingTextureSettings } from './settings';
@@ -129,7 +130,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     workspaceId: PERSONAL, project: personalTag, personal: item,
     message: { id: item.id, role: item.role === 'human' ? 'human' : 'assistant', text: item.text, at: item.at, evidence: [] as MonitorEvidence[], reactions: item.reactions },
   })), [assistant, personalTag, delegatedTasks]);
-  const conversationName = embedded && personal?.assistant ? personal.name : 'ApexAgent';
+  const conversationName = assistantDisplayName(personal?.name);
   const allEntries = useMemo(() => [...(embedded ? [] : mergeProjectConversations(monitors, names)), ...overviewEntries, ...personalEntries].sort((a, b) => a.message.at - b.message.at), [embedded, monitors, names, overviewEntries, personalEntries]);
   const entries = useMemo(() => allEntries.filter((entry) => entry.message.at > clearedAt && (!filterWorkspaceId || entry.workspaceId === filterWorkspaceId) && !('personal' in entry && entry.personal.kind === 'notice')), [allEntries, clearedAt, filterWorkspaceId]);
   // A teammate nobody has talked to yet: show the welcome, not an empty transcript.
@@ -300,7 +301,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const exportConversation = (format: 'markdown' | 'json') => {
     const payload = format === 'json'
       ? JSON.stringify(entries.map(({ workspaceId, project, message }) => ({ workspaceId, project, ...message })), null, 2)
-      : entries.map(({ project, message }) => `## ${project} · ${new Date(message.at).toLocaleString()}\n\n${message.role === 'human' ? '**You**' : '**ApexAgent**'}\n\n${message.text}`).join('\n\n---\n\n');
+      : entries.map(({ project, message }) => `## ${project} · ${new Date(message.at).toLocaleString()}\n\n${message.role === 'human' ? '**You**' : `**${conversationName}**`}\n\n${message.text}`).join('\n\n---\n\n');
     const blob = new Blob([payload], { type: format === 'json' ? 'application/json' : 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -316,7 +317,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     }
     if (command.name === 'export') { exportConversation(command.format); return; }
     if (onCommand) { void run(() => Promise.resolve(onCommand(command, lane))); return; }
-    setError(`/${command.name} is unavailable in this ApexAgent conversation.`);
+    setError(`/${command.name} is unavailable in this ${conversationName} conversation.`);
   };
   const send = (event: React.FormEvent) => {
     event.preventDefault();
@@ -507,7 +508,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         <button type="button" className="apex-agent-chip-filter" aria-pressed={!current} onClick={() => setPlaceFilter(null)}>All</button>
         {places.map((place) => <button type="button" key={place} className="apex-agent-chip-filter" aria-pressed={current === place} onClick={() => setPlaceFilter(place)}>{place}</button>)}
       </div>
-      {!shown.length && <p className="apex-agent-tasks-empty">{current ? `No tasks for ${current}` : 'No tasks yet. Ask ApexAgent to do something and it will show up here.'}</p>}
+      {!shown.length && <p className="apex-agent-tasks-empty">{current ? `No tasks for ${current}` : `No tasks yet. Ask ${conversationName} to do something and it will show up here.`}</p>}
       {groups.map(([group, heading]) => {
         const rows = shown.filter((row) => row.group === group).sort((a, b) => b.updatedAt - a.updatedAt);
         if (!rows.length) return null;
@@ -596,8 +597,8 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   return <TaskViewContext.Provider value={taskContextValue}><section className={`apex-agent ${embedded ? 'assistant-conversation thread-chat' : 'widget'} apex-agent-all`} role="region" aria-label={conversationName} onKeyDown={onEscape}>
     {!embedded && <header className="apex-agent-head">
       <div className="apex-agent-head-row">
-        <div className="apex-agent-brand"><h1>{embedded ? personal?.name ?? 'Assistant' : 'ApexAgent'}</h1></div>
-        <div className="apex-agent-head-actions">{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label="More ApexAgent options">⋯</summary><div role="menu">
+        <div className="apex-agent-brand"><h1>{conversationName}</h1></div>
+        <div className="apex-agent-head-actions">{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label={`More ${conversationName} options`}>⋯</summary><div role="menu">
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy} onClick={() => void run(async () => { await batch(active.filter((monitor) => monitor.paused === anyPaused), 'monitor_pause', { paused: !anyPaused }); })}>{anyPaused ? 'Resume project watching' : 'Pause project watching'}{anyPaused && <small>Start checking your project folders again.</small>}</button>}
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy || !active.some((monitor) => !monitor.paused)} onClick={() => void run(async () => { await batch(active.filter((monitor) => !monitor.paused), 'monitor_check_now', {}); })}>Check now</button>}
           {onClear && !!entries.length && <button type="button" role="menuitem" onClick={() => { if (window.confirm('Hide this conversation on this Mac? Tasks and notifications stay available.')) onClear(); }}>Clear conversation</button>}
@@ -607,10 +608,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           {onCustomize && <button type="button" role="menuitem" onClick={onCustomize}>Quiet hours</button>}
           {onHide && <button type="button" role="menuitem" onClick={onHide}>Hide</button>}
           {workspaces.map((workspace) => <button type="button" role="menuitem" key={workspace.id} onClick={() => onSetUp(workspace.id)}>{monitors.some((monitor) => monitor.workspaceId === workspace.id) ? `Sources · ${workspace.name}` : `Watch ${workspace.name}…`}</button>)}
-        </div></details>{onFullScreen && <button className="icon" onClick={onFullScreen} aria-pressed={fullScreen} aria-label={fullScreen ? 'Exit full screen' : 'Full screen'} title={fullScreen ? 'Exit full screen' : 'Full screen'}>{fullScreen ? '⤡' : '⤢'}</button>}<button className="icon" onClick={onClose} aria-label="Close ApexAgent">×</button></div>
+        </div></details>{onFullScreen && <button className="icon" onClick={onFullScreen} aria-pressed={fullScreen} aria-label={fullScreen ? 'Exit full screen' : 'Full screen'} title={fullScreen ? 'Exit full screen' : 'Full screen'}>{fullScreen ? '⤡' : '⤢'}</button>}<button className="icon" onClick={onClose} aria-label={`Close ${conversationName}`}>×</button></div>
       </div>
       <div className="apex-agent-head-row apex-agent-head-context"><p>{headline}{!filterWorkspaceId && assistant?.legacy && <LegacyBadge />}</p></div>
-      <div className="apex-agent-head-row apex-agent-views" role="tablist" aria-label="ApexAgent views">
+      <div className="apex-agent-head-row apex-agent-views" role="tablist" aria-label="Assistant views">
         <button type="button" role="tab" className="apex-agent-view-tab" aria-selected={view === 'chat'} onClick={() => switchView('chat')}>Chat</button>
         <button type="button" role="tab" className="apex-agent-view-tab" aria-selected={view === 'tasks'} onClick={() => switchView('tasks')}>Tasks{needsCount > 0 && <b className="apex-agent-tabs-count">{` · ${needsCount}`}</b>}</button>
         <button type="button" role="tab" className="apex-agent-view-tab" aria-selected={view === 'notifications'} onClick={() => switchView('notifications')}>Notifications{notificationCount > 0 && <b className="apex-agent-tabs-count">{` · ${notificationCount}`}</b>}</button>
@@ -749,7 +750,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         }
         const projectBubble = `assistant-chat-message ${message.role}`;
         const projectBody = <>
-          <small className="apex-agent-message-meta">{message.role === 'human' ? 'You' : 'ApexAgent'} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(workspaceId); setDraftFallback(workspaceId); }} title={`Reply about ${project}`}>{project}</button>{'kind' in message && message.kind === 'update' && <span className="apex-agent-helper-label">Project update</span>}</small>
+          <small className="apex-agent-message-meta">{message.role === 'human' ? 'You' : assistantDisplayName(personal?.name)} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(workspaceId); setDraftFallback(workspaceId); }} title={`Reply about ${project}`}>{project}</button>{'kind' in message && message.kind === 'update' && <span className="apex-agent-helper-label">Project update</span>}</small>
           {message.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
           {'citations' in entry && (entry.citations as { workspaceId: string; evidence: MonitorEvidence }[] | undefined)?.map((cite, index) => <div key={index}>{evidenceList([cite.evidence], onOpenEvidence && ((item) => void run(() => onOpenEvidence(cite.workspaceId, item))))}</div>)}
           {evidenceList(message.evidence ?? [], onOpenEvidence && ((item) => void run(() => onOpenEvidence(workspaceId, item))))}
@@ -793,7 +794,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       )}
       {!filterWorkspaceId && personal?.problem && <article className="assistant-chat-message assistant"><small>{personal.name} · {personal.hostName}</small><p>{personal.problem}</p></article>}
       {!filterWorkspaceId && personal?.setUp && !monitors.length && <div className="apex-agent-intro"><strong>Your assistant can live on {personal.hostName}.</strong><p>It keeps one conversation that stays there when this Mac is closed. Choose “Set up assistant on {personal.hostName}” from ⋯.</p></div>}
-      {!monitors.length && !assistant && !personal?.setUp && <div className="apex-agent-intro"><strong>Hi, I’m ApexAgent.</strong><p>I keep up with all your projects in one conversation. Pick a project to watch from ⋯ and tell me what to keep on track.</p></div>}
+      {!monitors.length && !assistant && !personal?.setUp && <div className="apex-agent-intro"><strong>Hi, I’m {conversationName}.</strong><p>I keep up with all your projects in one conversation. Pick a project to watch from ⋯ and tell me what to keep on track.</p></div>}
       {!!monitors.length && !!unwatched.length && entries.length === 0 && <p className="apex-agent-muted">Not watching yet: {unwatched.map((workspace) => workspace.name).join(', ')}.</p>}
       </> : view === 'tasks' ? tasksSlot : notificationsSlot}
       {shownTasks}
@@ -823,10 +824,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           disabledCommands={{
             ...(!onClear ? { clear: 'Clear is unavailable here.' } : {}),
             ...(!onCommand ? {
-              compact: 'The ApexAgent host does not expose conversation compaction.',
-              fork: 'ApexAgent does not expose thread forking.',
+              compact: 'The assistant host does not expose conversation compaction.',
+              fork: 'The assistant does not expose thread forking.',
               diff: 'Choose a project change action from its project controls.',
-              ...(!embedded?{plan: 'ApexAgent does not expose a host planning switch.'}:{}),
+              ...(!embedded?{plan: 'The assistant does not expose a host planning switch.'}:{}),
               image: 'Image generation is not connected to this conversation.',
             } : {}),
           }}

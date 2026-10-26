@@ -30,13 +30,13 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Part
         throw new Error("This host’s Apex Deck service does not advertise assistant workspace settings support. Update the service on the assistant machine, then reconnect.");
       if (cmd === "personal_workspace_configure" && args?.folderGrant != null && client.hasCapability?.("assistant_project_folder_grant_v1") !== true)
         throw new Error("Update the assistant machine’s service, then reconnect to allow this project folder.");
-      if (cmd.startsWith("assistant_")) client.requireCapability?.("assistant_delegation", "ApexAgent delegation");
-      if (cmd.startsWith("assistant_") && args?.mode === "isolated") client.requireCapability?.("assistant_isolation", "ApexAgent isolated worktrees");
+      if (cmd.startsWith("assistant_")) client.requireCapability?.("assistant_delegation", "assistant delegation");
+      if (cmd.startsWith("assistant_") && args?.mode === "isolated") client.requireCapability?.("assistant_isolation", "assistant isolated worktrees");
       const needsWorkspaceV3 = args?.mode === "read_only" || args?.spendLimitMicros != null
         || (Array.isArray(args?.workerProfiles) && args.workerProfiles.length > 0)
         || args?.action === "note" || args?.action === "set_budget" || args?.action === "resume_budget";
-      if (cmd.startsWith("assistant_") && needsWorkspaceV3) client.requireCapability?.("assistant_workspace_v3", "ApexAgent read-only tasks, routing and spend controls");
-      if (cmd === "monitor_profile_update") client.requireCapability?.("monitor_profile_update", "Changing the ApexAgent profile");
+      if (cmd.startsWith("assistant_") && needsWorkspaceV3) client.requireCapability?.("assistant_workspace_v3", "assistant read-only tasks, routing and spend controls");
+      if (cmd === "monitor_profile_update") client.requireCapability?.("monitor_profile_update", "Changing the assistant profile");
       return client.call(cmd, args);
     },
     listen: async (event, cb) => client.on(event, cb),

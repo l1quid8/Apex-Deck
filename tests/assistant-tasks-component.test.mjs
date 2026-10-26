@@ -5,6 +5,7 @@ import { transform } from 'sucrase';
 import * as model from '../src/assistantTaskModel.ts';
 import * as taskViewModule from '../src/apexAgentTaskView.ts';
 import { subscribeToImports } from '../src/legacyImportRefresh.ts';
+import { assistantDisplayName } from '../src/assistantName.ts';
 
 // A stand-in with its own identity, so "the marker is here" is an assertion about the
 // element rather than about a string that happens to be nearby.
@@ -33,7 +34,7 @@ const containsNode = (node, target) => node === target || !!(node && typeof node
 // Opens the first task card's details from the conversation.
 const openDetail = tree => find(tree, node => node.type === 'button' && /^(Open task|Review result)$/.test(textOf(node)))?.props.onClick();
 const button = (tree, label) => find(tree, node => node.type === 'button' && textOf(node) === label);
-const NO_CHAT_NOTE = "ApexAgent didn't pick a chat for this. Reply to it with which chat to use.";
+const NO_CHAT_NOTE = "Assistant didn't pick a chat for this. Reply to it with which chat to use.";
 function harness(backend, initial = {}, saved = new Map()) {
   const states = [], refs = [], effects = [], observers = []; let cursor = 0, mounted = true, props;
   const previousObserver = globalThis.IntersectionObserver;
@@ -47,7 +48,7 @@ function harness(backend, initial = {}, saved = new Map()) {
     // Stands in for <TaskViewContext.Provider value={initial.taskView}>; the Provider needs react-dom, which these tests do not load.
     useContext(context) { return context === taskViewExports.TaskViewContext ? (props.taskView ?? null) : null; },
   };
-  const component = new Function('React', ...Object.keys(hooks), ...Object.keys(model), ...Object.keys(taskViewExports), 'subscribeToImports', 'LegacyBadge', 'Markdown', 'window', `${compiled}; return ApexAgentTasks;`)(React, ...Object.values(hooks), ...Object.values(model), ...Object.values(taskViewExports), subscribeToImports, LegacyBadge, MarkdownStub, { crypto: { randomUUID: () => 'request-fixed' }, localStorage: { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) } });
+  const component = new Function('React', ...Object.keys(hooks), ...Object.keys(model), ...Object.keys(taskViewExports), 'subscribeToImports', 'LegacyBadge', 'Markdown', 'assistantDisplayName', 'window', `${compiled}; return ApexAgentTasks;`)(React, ...Object.values(hooks), ...Object.values(model), ...Object.values(taskViewExports), subscribeToImports, LegacyBadge, MarkdownStub, assistantDisplayName, { crypto: { randomUUID: () => 'request-fixed' }, localStorage: { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) } });
   props = { backend, owner, panes: [{ id: 'thread-a', title: 'Build room', kind: 'chat', workspaceId: owner.workspaceId }], profiles: [{ id: 'claude', display_name: 'Claude', backend: { kind: 'agent', tool: 'claude_code' }, media: null }], ...initial };
   const render = () => { cursor = 0; const tree = component(props); for (const effect of effects) if (effect?.changed) { effect.changed = false; effect.cleanup?.(); effect.cleanup = effect.fn(); } return tree; };
   return { render, storage: saved, setReviewVisible(visible = true) { observers.at(-1)?.trigger(visible); }, setProps(next) { props = { ...props, ...next }; }, unmount() { mounted = false; effects.forEach(effect => effect?.cleanup?.()); if (previousObserver) globalThis.IntersectionObserver = previousObserver; else delete globalThis.IntersectionObserver; } };

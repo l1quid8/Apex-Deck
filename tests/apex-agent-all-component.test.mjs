@@ -12,6 +12,7 @@ import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, re
 import { TaskViewContext, personalTaskGroup, personalTaskKey } from '../src/apexAgentTaskView.ts';
 import { messageStateKey, retryMessageText } from '../src/apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from '../src/apexAgentQuote.ts';
+import { assistantDisplayName } from '../src/assistantName.ts';
 import { findTrigger, menuItems } from '../src/composerMenu.ts';
 import { mentionFor } from '../src/slug.ts';
 import { parseComposer } from '../src/commands.ts';
@@ -60,7 +61,7 @@ function harness(props, { effects = false, voice = {} } = {}) {
     const settings = readVoiceSettings(input.settings);
     return { settings, candidates: [], slot: { live: false, look: settings.look }, hint: undefined, who: () => undefined, ...voice };
   };
-  const bindings = { taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
+  const bindings = { taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
   const component = new Function(...Object.keys(bindings), `${compiled}\nreturn ApexAgentAll;`)(...Object.values(bindings));
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
@@ -726,7 +727,7 @@ test('the place filter shows an honest empty state for a place with no tasks', (
   const h = harness({ workspaces: projects, monitors: [], personal: personalLane([], [pm('pm-1', 'assistant', 'chat', 1, 'Hi')]).lane });
   let tree = h.render();
   find(tree, node => node.type === 'button' && node.props.role === 'tab' && /Tasks/.test(textOf(node))).props.onClick();
-  assert.match(textOf(h.render()), /No tasks yet\. Ask ApexAgent/);
+  assert.match(textOf(h.render()), /No tasks yet\. Ask Assistant/);
 });
 
 test('Escape closes a detail to the list, then the list to the conversation, and stops there', () => {

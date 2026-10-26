@@ -51,7 +51,7 @@ const BINDINGS: Binding[] = [
   { code: "KeyT", key: "T", label: "New terminal", action: { kind: "new_terminal" } },
   { code: "KeyN", key: "N", label: "New thread", action: { kind: "new_thread" } },
   { code: "KeyJ", key: "J", label: "Next thing that needs you", action: { kind: "next_attention" } },
-  { code: "KeyK", key: "K", label: "Open ApexAgent", action: { kind: "assistant" } },
+  { code: "KeyK", key: "K", label: "Open Assistant", action: { kind: "assistant" } },
   { code: "BracketLeft", key: "[", label: "Previous pane", action: { kind: "cycle_pane", step: -1 } },
   { code: "BracketRight", key: "]", label: "Next pane", action: { kind: "cycle_pane", step: 1 } },
   { code: "Enter", key: "↩", label: "Maximize or restore pane", action: { kind: "maximize" }, macShift: true },

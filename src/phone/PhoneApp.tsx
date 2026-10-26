@@ -14,6 +14,7 @@ import { applyPhoneTheme, loadPhoneAppearance, savePhoneAppearance } from "./app
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ApexAgentSources } from "../ApexAgentSources";
+import { assistantDisplayName } from "../assistantName.ts";
 import { ApexAgentAll } from "../ApexAgentAll";
 import { usePersonalAssistant, type PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
@@ -66,6 +67,7 @@ import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList } from "./ThreadList";
+import { LocalChatThread, LocalChatSettings, loadLocalChatSessions, saveLocalChatSessions, loadGatewayConfig, saveGatewayConfig, type LocalChatSession } from "./LocalChatSession";
 import { forkedPane, forkUpto } from "./messageFork";
 import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
 import { PickedText } from "./PickedText";
@@ -107,7 +109,7 @@ const FOLDS_KEY = "apex-deck.phone.folds.v1";
 const CREW_KEY = "apex-deck.phone.crew.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
-type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
+type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance" | "local-chat";
 type Draft = { text: string; files: ComposerAttachment[] };
 /** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
 type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
@@ -243,6 +245,17 @@ export function PhoneApp() {
     try { return loadPhoneAppearance(localStorage); } catch { return defaultAppearanceSettings(); }
   });
   const [appearanceSaveError, setAppearanceSaveError] = useState(false);
+  const [localSessions, setLocalSessions] = useState(loadLocalChatSessions);
+  const [gatewayConfig, setGatewayConfig] = useState(loadGatewayConfig);
+  const [localId, setLocalId] = useState<string | null>(null);
+  const localSession = localSessions.find(item => item.id === localId) ?? null;
+  useEffect(() => { saveLocalChatSessions(localSessions); }, [localSessions]);
+  const openLocal = (id: string) => { setOpenId(null); setLocalId(id); setTab("threads"); };
+  const newLocal = () => {
+    const next: LocalChatSession = { id: crypto.randomUUID(), title: "New local chat", bots: ["Codex", "Claude"], messages: [], updatedAt: "now" };
+    setLocalSessions(list => [next, ...list]);
+    openLocal(next.id);
+  };
   const settingsReturn = useRef<Tab>("threads");
   /** Machines opens from Threads (Pair) or from Settings; its back button returns there. */
   const machinesReturn = useRef<Tab>("threads");
@@ -637,7 +650,7 @@ export function PhoneApp() {
         const monitor = await host.backend.call<ProjectMonitor | null>("monitor_get", { workspaceId: project.workspace.id });
         if (!live || versions.get(project.workspace.id) !== version) return;
         if (monitor && (monitor.workspaceId !== project.workspace.id || monitor.cwd !== project.workspace.path || monitor.hostId !== host.machine.id))
-          throw new Error("ApexAgent returned an assignment for a different project folder or machine.");
+          throw new Error("The assistant returned an assignment for a different project folder or machine.");
         if (!monitor) {
           setAssistantOwners((all) => {
             if (!(project.workspace.id in all)) return all;
@@ -1547,11 +1560,12 @@ export function PhoneApp() {
     ? <span className="ph-host-icon" title={linkOf(hostId)?.name}><Laptop size={size} /></span>
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
-  const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
+  const inLocalChat = tab === "threads" && localSession !== null;
+  const inChat = tab === "threads" && !inLocalChat && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
   const covered = composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const shownTab = tab === "machines" ? machinesReturn.current : tab;
-  const litTab = shownTab === "settings" || shownTab === "appearance" ? settingsReturn.current : shownTab;
+  const litTab = shownTab === "settings" || shownTab === "appearance" || shownTab === "local-chat" ? settingsReturn.current : shownTab;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -1565,9 +1579,9 @@ export function PhoneApp() {
     <div className="ph-app" data-rev={tick}>
       <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(_host,room)=>{setTab("threads");setOpenId(room);}} />
       <div className="phone-frame">
-        {!inChat && (
+        {!inChat && !inLocalChat && (
           <header className="ph-head" inert={covered}>
-            {tab === "appearance"
+            {tab === "appearance" || tab === "local-chat"
               ? <BackButton label="Settings" onClick={() => setTab("settings")} />
               : tab === "settings"
               ? <BackButton label={tabName(settingsReturn.current)} onClick={() => setTab(settingsReturn.current)} />
@@ -1579,11 +1593,15 @@ export function PhoneApp() {
             <span className="ph-head-actions">
               {tab === "threads" && newAllowed && <button type="button" className="ph-icon" aria-label="New thread" onClick={() => { setQuery(""); setMenu({ kind: "new" }); }}><Plus size={22} /></button>}
               {/* Machines is part of Settings, so it has no way back into Settings of its own. */}
-              {tab !== "settings" && tab !== "appearance" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
+              {tab !== "settings" && tab !== "appearance" && tab !== "machines" && tab !== "local-chat" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
         )}
-        {inChat && openWorkspace && openLink ? (
+        {inLocalChat && localSession ? (
+          <LocalChatThread key={localSession.id} config={gatewayConfig} session={localSession}
+            onUpdateSession={updater => setLocalSessions(list => list.map(item => item.id === localSession.id ? (typeof updater === "function" ? updater(item) : updater) : item))}
+            onNewSession={newLocal} onOpenSettings={() => setTab("local-chat")} onBack={() => setLocalId(null)} />
+        ) : inChat && openWorkspace && openLink ? (
           <ThreadView
             call={openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
             callSlot={callSlot}
@@ -1695,6 +1713,7 @@ export function PhoneApp() {
           />
         ) : tab === "threads" ? (
           <ThreadList
+            localSessions={localSessions} onOpenLocal={openLocal} onNewLocal={newLocal}
             sections={sections}
             workspaces={workspaces}
             links={links}
@@ -1708,7 +1727,7 @@ export function PhoneApp() {
             now={Date.now()}
             machineIcon={machineIcon}
             onToggle={(key) => setFolded((all) => ({ ...all, [key]: !foldChoice(all, key, key.startsWith("project:") && Boolean(workspaces.find((workspace) => `project:${workspace.id}` === key)?.collapsed)) }))}
-            onOpen={openThread}
+            onOpen={id => { setLocalId(null); openThread(id); }}
             onNew={newAllowed ? startIn : undefined}
             onPick={newAllowed ? () => { setQuery(""); setMenu({ kind: "new" }); } : undefined}
             onThreadMenu={(id) => { if (!panes.find((pane) => pane.id === id)?.assistantTaskId) setMenu({ kind: "thread", id }); }}
@@ -1725,8 +1744,14 @@ export function PhoneApp() {
             <div className="ph-list">
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
               <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={15} /></button>
+              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("local-chat")}><span className="ph-grow"><strong>Local chat</strong><small>On-device history and host model connection</small></span><ChevronRight size={15} /></button>
             </div>
           </main>
+        ) : tab === "local-chat" ? (
+          <LocalChatSettings config={gatewayConfig} covered={covered} scan={scanner ? scanner.scan : null}
+            onSaveConfig={next => { saveGatewayConfig(next); setGatewayConfig(next); }}
+            onOpenSession={() => localSessions.length ? openLocal(localSessions[0].id) : newLocal()}
+            onNewSession={newLocal} onNotice={setNotice} />
         ) : tab === "appearance" ? (
           <main className="ph-content ph-appearance" inert={covered}>
             <h2>Appearance</h2>
@@ -1781,9 +1806,9 @@ export function PhoneApp() {
             host.backend.detectAgents().then((found) => setAgents(found.filter((agent) => agent.found).map((agent) => agent.label))).catch(() => setAgents([]));
           }} />
         )}
-        {!inChat && <nav className="ph-tabs" aria-label="Sections" inert={covered}>
+        {!inChat && !inLocalChat && <nav className="ph-tabs" aria-label="Sections" inert={covered}>
           {([[Command, "Agents", "agents"], [Terminal, "Code", "code"], [MessageSquare, "Threads", "threads"], [Folder, "Library", "library"]] as const).map(([Icon, label, item]) => (
-            <button key={item} type="button" className={litTab === item ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") setOpenId(null); }}>
+            <button key={item} type="button" className={litTab === item ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") { setOpenId(null); setLocalId(null); } }}>
               <Icon size={21} />{label}{item === "code" && terminalNeedsAnswer && <i className="ph-tabs-amber-dot" />}
             </button>
           ))}
@@ -1801,7 +1826,7 @@ export function PhoneApp() {
           </div>
         )}
         {personalOpen && (personal?.assistant || personal?.problem) && <div className="apex-agent-backdrop">
-          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That ApexAgent lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
+          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That assistant lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
             if (laneId !== 'personal' || !personal?.assistant || personal.offline) throw new Error('The personal assistant host is unavailable.');
             return personal.saveAttachment(name, bytes);
           }} pickFolderUnavailableReason="Folder selection is unavailable on this phone." onSetUp={() => {}} onClose={() => setPersonalOpen(false)} />
@@ -1813,10 +1838,11 @@ export function PhoneApp() {
             backend={assistantWorkspaceHost.backend}
             profiles={session?.profiles ?? []}
             panes={panes}
+            assistantName={personal?.name}
             onBack={() => setAssistantWorkspaceId(null)}
             onClose={() => setAssistantWorkspaceId(null)}
           /></div>
-          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Phones.</p></section></div>)}
+          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`${assistantDisplayName(personal?.name)} for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label={`Close ${assistantDisplayName(personal?.name)}`}>×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Phones.</p></section></div>)}
         {pairing && plugin && (
           <Sheet title={`Pair ${pairing.name}`} onClose={() => endLink("cancelled")}>
             <PairSheet key={pairing.attempt} plugin={plugin} link={pairing.link} label="iPhone" ready={ready} onFailed={() => settle("failed", false)} onClose={(why) => endLink(why === "failed" ? "failed" : "cancelled")} onPaired={(paired) => {
@@ -3069,11 +3095,11 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
       {tab === "agents" && <>
         <div className="ph-section">Project assistants</div>
         {assistantProjects.length === 0
-          ? <p className="ph-list-note">No projects yet. Add one from Threads to set up ApexAgent.</p>
+          ? <p className="ph-list-note">No projects yet. Add one from Threads to set up the assistant.</p>
           : <div className="ph-list">{assistantProjects.map(({ workspace, link: projectLink, allowed }) => {
             const available = projectLink?.status === "online" && allowed;
             const error = assistantRegistryErrors[workspace.id];
-            const detail = error ? `ApexAgent unavailable: ${error}`
+            const detail = error ? `Assistant unavailable: ${error}`
               : !projectLink ? "Pair its machine to this phone"
               : projectLink.status !== "online" ? downLine(projectLink)
                 : !allowed ? "Needs Full access on its machine" : `${projectLink.name} · Open project assistant`;

@@ -46,22 +46,64 @@ pub(crate) fn split_cd(command: &str) -> (Option<&str>, &str) {
 /// "/bin/zsh -lc 'git status'" -> "git status"; same for bash/sh, -c/-lc,
 /// single or double quotes. Anything else is returned unchanged.
 pub(crate) fn unwrap_shell(command: &str) -> String {
-    let trimmed = command.trim();
-    let mut parts = trimmed.splitn(3, char::is_whitespace);
-    let (Some(shell), Some(flag), Some(body)) = (parts.next(), parts.next(), parts.next()) else {
-        return command.to_string();
-    };
-    let name = shell.rsplit('/').next().unwrap_or(shell);
-    if !matches!(name, "zsh" | "bash" | "sh") || !matches!(flag, "-c" | "-lc") {
-        return command.to_string();
+    fn word(text: &str) -> Option<(&str, &str)> {
+        let text = text.trim_start();
+        if text.is_empty() { return None; }
+        if let Some(quote @ ('\'' | '"')) = text.chars().next() {
+            let end = text[1..].find(quote)? + 1;
+            let after = &text[end + 1..];
+            if !after.is_empty() && !after.starts_with(char::is_whitespace) { return None; }
+            Some((&text[1..end], after.trim_start()))
+        } else {
+            let end = text.find(char::is_whitespace).unwrap_or(text.len());
+            Some((&text[..end], text[end..].trim_start()))
+        }
     }
-    let body = body.trim();
+    let Some((shell, mut rest)) = word(command.trim()) else { return command.to_string(); };
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell).to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    let windows = matches!(name, "powershell" | "pwsh" | "cmd");
+    if !windows && !matches!(name, "zsh" | "bash" | "sh") { return command.to_string(); }
+    let body = loop {
+        let Some((flag, after)) = word(rest) else { return command.to_string(); };
+        let flag = flag.to_ascii_lowercase();
+        let command_flag = match name {
+            "cmd" => flag == "/c",
+            "powershell" | "pwsh" => matches!(flag.as_str(), "-command" | "-c"),
+            _ => matches!(flag.as_str(), "-c" | "-lc"),
+        };
+        if command_flag { break after.trim(); }
+        let option = match name {
+            "cmd" => matches!(flag.as_str(), "/d" | "/s"),
+            "powershell" | "pwsh" => matches!(flag.as_str(), "-nologo" | "-noprofile" | "-noninteractive"),
+            _ => false,
+        };
+        if !option { return command.to_string(); }
+        rest = after;
+    };
+    if body.is_empty() { return command.to_string(); }
     for q in ['\'', '"'] {
         if body.len() >= 2 && body.starts_with(q) && body.ends_with(q) {
             return body[1..body.len() - 1].to_string();
         }
     }
-    command.to_string()
+    if windows { body.to_string() } else { command.to_string() }
+}
+
+#[cfg(test)]
+mod windows_wrapper_tests {
+    use super::*;
+
+    #[test]
+    fn windows_wrappers_keep_only_the_command_body() {
+        assert_eq!(unwrap_shell(r#"powershell -Command "Get-ChildItem""#), "Get-ChildItem");
+        assert_eq!(unwrap_shell(r#"pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "git status""#), "git status");
+        assert_eq!(unwrap_shell(r#""C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command 'git status'"#), "git status");
+        assert_eq!(unwrap_shell("CMD.EXE /d /s /C git status"), "git status");
+        assert_eq!(unwrap_shell(r#"C:\Windows\System32\cmd.exe /C "dir C:\work""#), r"dir C:\work");
+        assert_eq!(unwrap_shell("powershell -File script.ps1"), "powershell -File script.ps1");
+        assert_eq!(unwrap_shell("cmd /Cfoo"), "cmd /Cfoo");
+    }
 }
 
 /// The folder note: None when `dir` is the room folder; else its last path part.

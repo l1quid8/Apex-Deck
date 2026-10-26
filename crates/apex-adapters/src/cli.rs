@@ -199,7 +199,7 @@ impl CliParticipant {
         let mut command = if let Some(isolation) = &self.isolation {
             isolation.command(program, args, self.path.as_deref())?
         } else {
-            let mut command = Command::new(program);
+            let mut command = Command::new(crate::executable::program(program, self.path.as_deref()));
             command.args(args);
             command
         };

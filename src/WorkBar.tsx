@@ -28,6 +28,8 @@ export interface WorkContext {
   browseFile(): Promise<string | null>;
   /** Bumped by ⌥⇧⌘O to open the picker. */
   pickerRequest?: number;
+  /** The assistant's own name, for hints that point at it. */
+  assistantName?: string;
 }
 
 export interface WorkTool { token: string; label: string; bot: string }
@@ -169,7 +171,7 @@ export function WorkBar({ work, attachedCount, files, tools, toolsWhere, canCopy
         matches={(f, q) => findFiles([f], q).length > 0} none={files.length ? "No files match." : "Files you drop on a thread or browse to show up here."}
         onPick={(f) => { close(); onAttach(f.path); }}
         row={(f, lit) => (
-          <button className={`pk-row ${lit ? "hl" : ""}`} role="option" aria-selected={false} title={`${f.path} · Drag onto ApexAgent to watch`}
+          <button className={`pk-row ${lit ? "hl" : ""}`} role="option" aria-selected={false} title={`${f.path} · Drag onto ${work.assistantName ?? 'Assistant'} to watch`}
             draggable={!!project.path && (f.path.startsWith(`${project.path}/`) || !f.path.startsWith("/"))}
             onDragStart={(event) => {
               const relative = f.path.startsWith(`${project.path}/`) ? f.path.slice(project.path.length + 1) : f.path;

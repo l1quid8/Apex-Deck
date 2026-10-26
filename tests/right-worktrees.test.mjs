@@ -13,7 +13,7 @@ const row = (overrides = {}) => ({ path: '/repo', head: '12345678abcdef', branch
 
 test('worktree rows show branch, full path title, and state labels', () => {
   const html = render(React.createElement(WorktreeRow, { item: row({ branch: null, main: true, changes: 3, locked: true, task: true }), busy: false, confirm: false, onOpen() {}, onRemove() {}, onCancel() {} }));
-  for (const text of ['detached · 12345678', 'Main', 'Changes · 3', 'Locked', 'ApexAgent task']) assert.ok(html.includes(text), text);
+  for (const text of ['detached · 12345678', 'Main', 'Changes · 3', 'Locked', 'Assistant task']) assert.ok(html.includes(text), text);
   assert.match(html, /title="\/repo"/);
   assert.doesNotMatch(html, />Remove</);
 });

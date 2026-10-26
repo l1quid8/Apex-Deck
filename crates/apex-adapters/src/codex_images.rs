@@ -148,7 +148,7 @@ async fn run(
     path: Option<&str>,
     limit: Duration,
 ) -> Result<Vec<u8>, String> {
-    let mut command = tokio::process::Command::new("codex");
+    let mut command = tokio::process::Command::new(crate::executable::program("codex", path));
     command
         .args(args)
         .stdin(Stdio::piped())

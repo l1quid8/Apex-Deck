@@ -30,7 +30,7 @@ function finding(id, status = 'open', extra = {}) {
 test('host-style open findings with a future snooze stay quiet until the deadline', () => {
   const m = monitor('p', 'local', [finding('snoozed', 'open', { snoozedUntil: 200 })]);
   assert.equal(monitorAttentionSignal(m, 199), null);
-  assert.equal(monitorAttentionSignal(m, 200).note, 'ApexAgent has 1 active blocker');
+  assert.equal(monitorAttentionSignal(m, 200).note, 'Assistant has 1 active blocker');
   assert.equal(m.findings[0].status, 'open', 'notification snooze never settles the finding');
 });
 
@@ -49,9 +49,9 @@ test('signals only unresolved active blockers and remain stable across monitor l
     finding('open'), finding('resolved', 'resolved'), finding('dismissed', 'dismissed'),
     finding('snoozed', 'snoozed', { snoozedUntil: 200 }),
   ], { paused: true, completed: true });
-  assert.equal(monitorAttentionSignal(m, 199).note, 'ApexAgent has 1 active blocker');
+  assert.equal(monitorAttentionSignal(m, 199).note, 'Assistant has 1 active blocker');
   assert.deepEqual(monitorAttentionSignal(m, 200), {
-    kind: 'needs_input', note: 'ApexAgent has 2 active blockers', at: 10, blocking: true,
+    kind: 'needs_input', note: 'Assistant has 2 active blockers', at: 10, blocking: true,
   });
   assert.equal(monitorAttentionSignal(monitor('p', 'local', [finding('old', 'open', { firstSeenAt: 0, lastSeenAt: 42 })]), 100).at, 42);
   assert.equal(monitorAttentionSignal(monitor('p', 'local', [finding('snoozed', 'snoozed', { snoozedUntil: 99 })]), 100).at, 10);
@@ -189,7 +189,7 @@ test('task attention filters orphaned monitor owners and flags needs-you, failur
   });
   assert.equal(assistantTaskAttentionSignal([task('old', 'needs_you', 'old-monitor')], owner), null);
   assert.deepEqual(assistantTaskAttentionSignal([task('ask', 'needs_you')], owner), {
-    kind: 'needs_input', note: '1 ApexAgent task need you', at: 20, blocking: true,
+    kind: 'needs_input', note: '1 assistant task need you', at: 20, blocking: true,
   });
   assert.equal(assistantTaskAttentionSignal([task('bad', 'failed')], owner).kind, 'failed');
   assert.equal(assistantTaskAttentionSignal([task('review', 'ready_for_review')], owner).kind, 'done');

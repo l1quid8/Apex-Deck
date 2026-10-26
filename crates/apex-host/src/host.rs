@@ -2736,14 +2736,11 @@ mod host_tests {
         std::fs::create_dir_all(&entry).unwrap();
         let started = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         assert!(entry.is_dir());
-        #[cfg(unix)]
-        {
-            let host = started.expect("an orphaned registry entry must not stop the daemon from starting");
-            host.shutdown();
-            drop(host);
-        }
-        #[cfg(windows)]
-        assert!(matches!(started, Err(why) if why.contains("process-tree recovery is unsupported") && why.contains("manual cleanup")));
+        // Windows keeps no process records of its own (a worker's Job dies
+        // with the host), so there too a stray entry is kept and startup goes on.
+        let host = started.expect("an orphaned registry entry must not stop the daemon from starting");
+        host.shutdown();
+        drop(host);
         let _ = std::fs::remove_dir_all(data);
     }
 

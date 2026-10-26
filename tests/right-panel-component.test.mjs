@@ -18,7 +18,8 @@ const renderMenu = (state) => {
   return html.slice(html.indexOf('role="menu"'));
 };
 
-const render = (state, bodies = {}) => renderToStaticMarkup(React.createElement(RightPanel, { state, onChange() {}, onClose() {}, bodies }));
+const render = (state, bodies = {}, extra = {}) => renderToStaticMarkup(React.createElement(RightPanel, { state, onChange() {}, onClose() {}, bodies, ...extra }));
+const tabClassOf = (html, id) => new RegExp(`data-tab-id="${id}"[^>]*class="([^"]*)"`).exec(html)?.[1] ?? '';
 
 test('tab strip lists every tab with only ⋯ and × beside it, and no per-tab close buttons', () => {
   const html = render({ ...model.defaultPanel(), open: true });
@@ -60,6 +61,19 @@ test('only the active tab body is shown, others stay mounted but hidden', () => 
   const html = render(s, { dashboard: (_t, v) => `dash:${v}`, tasks: (_t, v) => `tasks:${v}` });
   assert.match(html, /dash:false/);
   assert.match(html, /tasks:true/);
+});
+
+test('the Tasks flag shows while tasks wait, whether or not Tasks is in front', () => {
+  const attention = { count: 2, details: 'Null needs an answer in 2 threads' };
+  const behind = render({ ...model.defaultPanel(), open: true, active: 'details' }, {}, { taskAttention: attention });
+  assert.ok(tabClassOf(behind, 'tasks').includes('has-attention'), 'Tasks is flagged while Details is in front');
+  assert.equal(tabClassOf(behind, 'tasks').includes('active'), false);
+  assert.equal(tabClassOf(behind, 'details').includes('has-attention'), false, 'only Tasks carries the flag');
+  const front = render({ ...model.defaultPanel(), open: true, active: 'tasks' }, {}, { taskAttention: attention });
+  assert.ok(tabClassOf(front, 'tasks').includes('has-attention'), 'and stays flagged in front');
+  assert.ok(tabClassOf(front, 'tasks').includes('active'));
+  const quiet = render({ ...model.defaultPanel(), open: true, active: 'details' }, {}, { taskAttention: { count: 0, details: '' } });
+  assert.equal(tabClassOf(quiet, 'tasks').includes('has-attention'), false, 'no flag when nothing waits');
 });
 
 test('details tab without a thread says so', () => {

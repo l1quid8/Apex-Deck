@@ -152,6 +152,8 @@ impl<'a> Turn<'a> {
              Tool results are only shown to you, so tell the person what you found. Commands run with no terminal, so nothing can prompt for input, \
              and every process you start stops when your reply ends.\n",
         );
+        #[cfg(windows)]
+        out.push_str(&format!("Shell commands use {}. Write commands for that shell.\n", self.tools.env.shell_description()));
         out.push_str(if self.plan {
             "Plan mode is on: read and investigate, change nothing, then present your plan with exit_plan_mode.\n"
         } else {
@@ -943,13 +945,13 @@ mod tests {
         let quiet = |_: Progress<'_>| {};
         let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &NoApprover, &quiet)
             .with_cwd(Some(dir_request.clone()));
-        // Use the selected shell's built-in command, not a PATH-provided pwd
-        // that can print an MSYS path when the shell is Windows cmd.
-        let command = if cfg!(unix) { "pwd -P" } else { "cd" };
+        // Redirection works in Bash and PowerShell; inspect the actual file
+        // instead of comparing native paths with MSYS's /c/... display paths.
+        let command = "echo apex-cwd > .apex-cwd-check";
         let call = ToolCall { id: "1".into(), name: "run_command".into(), arguments: json!({"command": command}).to_string(), extra: None };
         let output = turn.run(&call).await;
         assert!(
-            output.lines().any(|line| std::path::Path::new(line.trim()).canonicalize().is_ok_and(|cwd| cwd == dir_request)),
+            dir_request.join(".apex-cwd-check").is_file() && !dir_context.join(".apex-cwd-check").exists(),
             "expected {dir_request:?}, got {output}"
         );
         let _ = std::fs::remove_dir_all(dir_context);

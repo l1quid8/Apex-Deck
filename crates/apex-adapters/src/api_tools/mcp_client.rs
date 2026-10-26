@@ -232,7 +232,9 @@ impl Connection {
         let link = match &spec.transport {
             Transport::Unsupported(why) => return Err(format!("The MCP server `{}` can't be used: {why}.", spec.name)),
             Transport::Stdio { command, args, env } => {
-                let mut cmd = Command::new(command);
+                let executable_path = env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                    .map(|(_, value)| value.as_str()).or(path);
+                let mut cmd = Command::new(crate::executable::program(command, executable_path));
                 cmd.args(args);
                 if let Some(path) = path {
                     cmd.env("PATH", path);

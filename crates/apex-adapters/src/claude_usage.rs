@@ -64,7 +64,7 @@ async fn user_agent() -> String {
 /// native installer's versions folder.
 async fn installed_version() -> Option<String> {
     let first_word = |text: &str| text.split_whitespace().next().filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit())).map(str::to_string);
-    if let Ok(out) = tokio::process::Command::new("claude").arg("--version").output().await {
+    if let Ok(out) = tokio::process::Command::new(crate::executable::program("claude", None)).arg("--version").output().await {
         if let Some(version) = String::from_utf8(out.stdout).ok().as_deref().and_then(first_word) {
             return Some(version);
         }

@@ -5,6 +5,7 @@ import type { Backend } from './backend.ts';
 import { TaskViewContext, projectTaskGroup, projectTaskKey, type TaskSummary } from './apexAgentTaskView.ts';
 import type { Pane, ParticipantConfig, Question } from './types.ts';
 import type { ProjectMonitor } from './apexAgentModel.ts';
+import { assistantDisplayName } from './assistantName.ts';
 import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, taskBelongsToAssistant, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, shouldSuggestArchive, taskDisplayStatus, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
 import { LegacyBadge } from './LegacyImportScreen';
 import { Markdown } from './Markdown';
@@ -79,7 +80,7 @@ const modeLabel = (mode: AssistantTask['mode']): string => mode === 'read_only' 
 
 export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, focused, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery, assistantIdentity, view = 'conversation' }: Props) {
   const namedOwner = (task:AssistantTask) => assistantIdentity && taskBelongsToAssistant(task,assistantIdentity.ref) ? assistantIdentity : undefined;
-  const taskAssistantName = (task:AssistantTask) => namedOwner(task)?.name ?? 'ApexAgent';
+  const taskAssistantName = (task:AssistantTask) => assistantDisplayName(namedOwner(task)?.name);
   const noChatNote = (task:AssistantTask) => `${taskAssistantName(task)} didn't pick a chat for this. Reply to it with which chat to use.`;
   const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
@@ -134,7 +135,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     const listVersion = ++listRequestVersion.current;
     try {
       const unsure = loadPendingRequest(window.localStorage, captured);
-      const snapshot = await backend.call<AssistantTaskSnapshot & { request?: { requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'legacy'; taskId?: string | null } | null }>('assistant_tasks_list', unsure ? { owner: captured, requestId: unsure.requestId } : { owner: captured });
+      const snapshot = await backend.call<AssistantTaskSnapshot & { request?: { requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'legacy'; taskId?: string | null } | null }>('assistant_tasks_list', unsure ? { owner: captured, requestId: unsure.requestId, includeDiffs: true } : { owner: captured, includeDiffs: true });
       const visible = assistantTasksForOwner(snapshot, captured);
       // Reconcile an unconfirmed message with what the service actually did, so Retry never stands beside work it already received.
       if (unsure && currentOwner(captured, version) && listRequestVersion.current === listVersion) {
@@ -190,8 +191,8 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     try {
       const result = await backend.call<{ message: unknown; task?: AssistantTask | null; monitor: ProjectMonitor }>('assistant_message', assistantMessageArgs(captured, pending, chatThreads.map((pane) => ({ id: pane.id, label: pane.title }))));
       if (!currentOwner(captured, version)) return;
-      if (!result.monitor || result.monitor.workspaceId !== captured.workspaceId || result.monitor.cwd !== captured.cwd || result.monitor.hostId !== captured.hostId || result.monitor.conversationId !== captured.conversationId) throw new Error('ApexAgent returned a different project assignment.');
-      if (result.task && !isTaskOwnedBy(result.task, captured)) throw new Error('ApexAgent returned a task for a different assignment.');
+      if (!result.monitor || result.monitor.workspaceId !== captured.workspaceId || result.monitor.cwd !== captured.cwd || result.monitor.hostId !== captured.hostId || result.monitor.conversationId !== captured.conversationId) throw new Error('The assistant returned a different project assignment.');
+      if (result.task && !isTaskOwnedBy(result.task, captured)) throw new Error('The assistant returned a task for a different assignment.');
       onMonitorUpdate?.(result.monitor);
       if (result.task) { listRequestVersion.current++; setTasks((current) => [result.task!, ...current.filter((task) => task.id !== result.task!.id)]); }
       requestRef.current = null; setPendingRequest(null); setError(''); clearPendingRequest(window.localStorage, captured);
@@ -238,7 +239,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     try {
       const result = await backend.call<AssistantTask>('assistant_task_action', assistantTaskActionArgs(task, action, payload));
       if (!currentOwner(captured, version)) return false;
-      if (!isTaskOwnedBy(result, captured)) throw new Error('ApexAgent returned a task for a different assignment.');
+      if (!isTaskOwnedBy(result, captured)) throw new Error('The assistant returned a task for a different assignment.');
       listRequestVersion.current++;
       setTasks((current) => [result, ...current.filter((item) => item.id !== result.id)]);
       if (action === 'archive') setArchivedExecutions((current) => new Set([...current, task.id]));

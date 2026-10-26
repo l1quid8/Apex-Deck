@@ -109,8 +109,10 @@ impl WorkerTools {
 
 /// Kills the command's whole process group unless it finished by itself, so
 /// a timeout or a cancel also ends anything the command started.
+#[cfg(unix)]
 struct GroupKill(Option<u32>);
 
+#[cfg(unix)]
 impl Drop for GroupKill {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -138,7 +140,7 @@ async fn run_operation(spec: OperationSpec, started: Started) -> Result<ToolRun,
 pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result<ToolRun, String> {
     let limit = timeout_of(&spec);
     let (program, args) = spec.argv.split_first().ok_or("The command is empty.")?;
-    let mut command = tokio::process::Command::new(program);
+    let mut command = tokio::process::Command::new(apex_adapters::executable_program(program, None));
     if program == "git" && gateway::classify(&spec, &[]).0 == ToolClass::Read {
         // Read approval must not authorize executable helpers from ambient Git
         // configuration. Apply overrides to this process only; approved writes
@@ -156,7 +158,12 @@ pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result
     // Its own process group, so its children can be stopped with it.
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(windows)]
+    let mut child = apex_adapters::OwnedProcessRegistry::default().spawn(&mut command)
+        .map_err(|e| format!("Could not start {program}: {e}"))?;
+    #[cfg(not(windows))]
     let mut child = command.spawn().map_err(|e| format!("Could not start {program}: {e}"))?;
+    #[cfg(unix)]
     let mut group = GroupKill(child.id());
     if let Some(mark) = child.id().and_then(process::mark) {
         started(mark);
@@ -178,7 +185,10 @@ pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result
         .await
         .map_err(|_| format!("The command took longer than {} seconds and was stopped.", limit.as_secs()))?;
     let status = status.map_err(|e| format!("The command failed: {e}"))?;
-    group.0 = None;
+    #[cfg(unix)]
+    { group.0 = None; }
+    #[cfg(windows)]
+    child.terminate_tree().await?;
     bytes.extend_from_slice(&stderr);
     bytes.truncate(MAX_OUTPUT_BYTES);
     Ok(ToolRun { exit_code: status.code().unwrap_or(-1), output: String::from_utf8_lossy(&bytes).into_owned() })

@@ -4,6 +4,7 @@ import type { Backend } from './backend';
 import type { Pane, ParticipantConfig, Workspace } from './types';
 import { workspaceHost } from './hostSession.ts';
 import { compatibleMonitorProfiles, defaultMonitorProfileId, parseProjectFiles, type ProjectMonitor } from './apexAgentModel.ts';
+import { assistantDisplayName } from './assistantName.ts';
 import './apex-agent-sources.css';
 
 /** A save reply may name chats deleted since the last save; the host drops them from the sources and reports them. */
@@ -18,8 +19,10 @@ function messageOf(cause: unknown): string {
 }
 
 /** Per-project sources: which chats and files ApexAgent watches, and the AI profile it uses. Replaces the old per-project chat window. */
-export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, onClose, onMonitorChange }: {
+export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, onClose, onMonitorChange, assistantName }: {
   workspace: Workspace;
+  /** The name the human gave this assistant, for labels that name it. */
+  assistantName?: string;
   backend: Backend;
   profiles: ParticipantConfig[];
   panes: Pane[];
@@ -27,6 +30,7 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
   onClose: () => void;
   onMonitorChange?: (workspaceId: string, hostId: string, monitor: ProjectMonitor | null) => void;
 }) {
+  const who = assistantDisplayName(assistantName);
   const [monitor, setMonitor] = useState<ProjectMonitor | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -129,13 +133,13 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
     mutationsPending.current = 0;
     setMonitor(null); setError(''); setLoadError(''); setLoading(true); setBusy(false);
     if (backend.demo) {
-      setLoadError('ApexAgent needs the desktop app and an online project machine. Browser preview cannot run checks.');
+      setLoadError('The assistant needs the desktop app and an online project machine. Browser preview cannot run checks.');
       setLoading(false);
       return () => { alive = false; };
     }
     const status = requestOwner.connectionStatus as { kind?: string } | undefined;
     if (status && status.kind !== 'connected' && status.kind !== 'resync') {
-      setLoadError('ApexAgent needs the project machine to be online.');
+      setLoadError('The assistant needs the project machine to be online.');
       setLoading(false);
       return () => { alive = false; };
     }
@@ -144,7 +148,7 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
       const version = ++requestVersion.current;
       try {
         const result = await backend.call<ProjectMonitor | null>('monitor_get', { workspaceId: id });
-        if (!validSnapshot(result, requestOwner)) throw new Error('ApexAgent received a monitor for a different project folder or machine.');
+        if (!validSnapshot(result, requestOwner)) throw new Error('The assistant received a monitor for a different project folder or machine.');
         if (alive && componentAlive.current && ownsCurrentRequest(requestOwner) && requestVersion.current === version) {
           if (isOlderSnapshot(result)) return;
           latestSnapshot.current = result;
@@ -175,7 +179,7 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
     setBusy(true); setError(''); setNotice('');
     try {
       const result = await backend.call<SourcesReply>(command, { workspaceId, ...args, ...boundOwner });
-      if (!validSnapshot(result, requestOwner)) throw new Error('ApexAgent received a monitor for a different project folder or machine.');
+      if (!validSnapshot(result, requestOwner)) throw new Error('The assistant received a monitor for a different project folder or machine.');
       if (componentAlive.current && requestEpoch.current === epoch && ownsCurrentRequest(requestOwner) && requestVersion.current === version) {
         if (isOlderSnapshot(result)) return;
         latestSnapshot.current = result;
@@ -229,7 +233,7 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
     const text = responsibility.trim();
     const profile = profilesAvailable.find((item) => item.id === profileId);
     if (!text || !profile) return;
-    if (recentThreadIds.length && !window.confirm(`Include ${recentThreadIds.length} recent project chat${recentThreadIds.length === 1 ? '' : 's'} in ApexAgent checks?`)) return;
+    if (recentThreadIds.length && !window.confirm(`Include ${recentThreadIds.length} recent project chat${recentThreadIds.length === 1 ? '' : 's'} in assistant checks?`)) return;
     window.localStorage?.setItem('apex-agent-profile', profile.id);
     // The project's machine may not have this Mac's saved profiles, so send it.
     void mutate('monitor_assign', {
@@ -290,14 +294,14 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
   </div>;
 
   const startForm = <form className="apex-agent-sources-start" onSubmit={start}>
-    <p className="apex-agent-muted">ApexAgent isn’t watching {workspace.name} yet.</p>
+    <p className="apex-agent-muted">{who} isn’t watching {workspace.name} yet.</p>
     {profilesAvailable.length === 0 && <p className="apex-agent-muted">Add an OpenAI-compatible HTTP or Claude Code profile in Agents before watching this project.</p>}
     {profilesAvailable.length > 0 && <label className="apex-agent-sources-field">AI profile
       <select value={profileId} onChange={(event) => { setProfileId(event.target.value); window.localStorage?.setItem('apex-agent-profile', event.target.value); }}>
         {profilesAvailable.map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name}</option>)}
       </select>
     </label>}
-    <label className="apex-agent-sources-field">What should ApexAgent keep on track in {workspace.name}?
+    <label className="apex-agent-sources-field">What should {who} keep on track in {workspace.name}?
       <textarea value={responsibility} onChange={(event) => setResponsibility(event.target.value)} rows={3} required />
     </label>
     <div className="apex-agent-sources-actions"><button className="primary" type="submit" disabled={busy || !responsibility.trim() || !profileId}>Start watching</button></div>
@@ -310,7 +314,7 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
   return <section className="apex-agent-sources" role="region" aria-label={`Sources for ${workspace.name}`} onKeyDown={(event) => { if (event.key === 'Escape') onBack(); }}>
     <header className="apex-agent-sources-head">
       <button type="button" className="apex-agent-sources-back" onClick={onBack}>‹ Back to conversation</button>
-      <button type="button" className="icon" onClick={onClose} aria-label="Close ApexAgent">×</button>
+      <button type="button" className="icon" onClick={onClose} aria-label={`Close ${who}`}>×</button>
     </header>
     <h2 className="apex-agent-sources-title">{`Sources · ${workspace.name}`}</h2>
     {(error || loadError) && <div className="apex-agent-error" role="alert">{error || loadError}</div>}

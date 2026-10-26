@@ -29,6 +29,11 @@ pub fn run() {
         Action::PairHelp => println!("{}", pair_cli::USAGE),
         Action::Version => println!("{}", crate::build_info::version_line()),
         Action::DataDir => exit(crate::paths::host_paths(cli.data_dir).map(|paths| println!("{}", paths.data.display()))),
+        Action::Endpoint => exit(crate::paths::host_paths(cli.data_dir).and_then(|paths| {
+            crate::ipc::endpoint(&paths.data)
+                .map(|address| println!("{}", address.display()))
+                .map_err(|error| format!("could not resolve the local endpoint: {error}"))
+        })),
         Action::Stdio { attach } => exit(stdio::run(cli.data_dir, attach)),
         Action::Serve(options) => exit(serve::run(cli.data_dir, options)),
         Action::Devices(action) => exit(devices_cli::run(cli.data_dir, action)),

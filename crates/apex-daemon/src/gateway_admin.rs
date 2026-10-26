@@ -245,9 +245,24 @@ mod tests {
             .contains("Could not start"));
         assert!(failed["baseUrl"].is_null());
         drop(conflict);
+        // The conflicting listener can also be inherited by another test's
+        // fork before exec. Wait for that handle to close, as after stop above.
+        let restart_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let restarted = loop {
+            let status = start(&daemon, None, config.bind).await.unwrap();
+            if status["enabled"] == true
+                || !status["error"]
+                    .as_str()
+                    .is_some_and(|error| error.starts_with("Could not start model gateway:"))
+                || std::time::Instant::now() >= restart_deadline
+            {
+                break status;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        };
         assert_eq!(
-            start(&daemon, None, config.bind).await.unwrap()["enabled"],
-            true
+            restarted["enabled"], true,
+            "gateway restart failed: {restarted}"
         );
         assert!(tokio::net::TcpStream::connect((config.bind, port))
             .await

@@ -86,6 +86,11 @@ pub(crate) fn resolve_gemini_program(path: Option<&str>) -> &'static str {
     let check_path = |p_str: &str| -> Option<&'static str> {
         for dir in std::env::split_paths(p_str) {
             for candidate in ["agy", "gemini", "antigravity"] {
+                #[cfg(windows)]
+                if crate::executable::on_path(candidate, &std::env::join_paths([&dir]).ok()?.to_string_lossy()) {
+                    return Some(candidate);
+                }
+                #[cfg(not(windows))]
                 let p = dir.join(candidate);
                 #[cfg(unix)]
                 {
@@ -96,7 +101,7 @@ pub(crate) fn resolve_gemini_program(path: Option<&str>) -> &'static str {
                         }
                     }
                 }
-                #[cfg(not(unix))]
+                #[cfg(not(any(unix, windows)))]
                 {
                     if p.is_file() {
                         return Some(candidate);
@@ -118,6 +123,20 @@ pub(crate) fn resolve_gemini_program(path: Option<&str>) -> &'static str {
         }
     }
     "gemini"
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_gemini_discovery_recognizes_npm_shims() {
+    let root = std::env::temp_dir().join(format!("apx-gemini-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("agy.cmd"), "").unwrap();
+    std::fs::write(root.join("gemini.cmd"), "").unwrap();
+    let path = std::env::join_paths([&root]).unwrap().to_string_lossy().into_owned();
+    assert_eq!(resolve_gemini_program(Some(&path)), "agy");
+    std::fs::remove_file(root.join("agy.cmd")).unwrap();
+    assert_eq!(resolve_gemini_program(Some(&path)), "gemini");
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 pub fn agent_command(

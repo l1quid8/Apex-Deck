@@ -2,6 +2,7 @@ import type { Signal } from './attention.ts';
 import type { ProjectMonitor } from './apexAgentModel.ts';
 import type { Workspace } from './types.ts';
 import type { AssistantTask, AssistantTaskOwner } from './assistantTaskModel.ts';
+import { ASSISTANT_FALLBACK_NAME } from './assistantName.ts';
 
 /** Durable monitor attention, indexed by its host route, workspace, and folder. */
 export type MonitorAttentionState = Record<string, {
@@ -42,7 +43,7 @@ export function monitorAttentionSignal(monitor: ProjectMonitor | null, now: numb
   const count = active.length;
   return {
     kind: 'needs_input',
-    note: `ApexAgent has ${count} active blocker${count === 1 ? '' : 's'}`,
+    note: `${ASSISTANT_FALLBACK_NAME} has ${count} active blocker${count === 1 ? '' : 's'}`,
     at,
     blocking: true,
   };
@@ -59,17 +60,17 @@ export function assistantTaskAttentionSignal(tasks: AssistantTask[], owner: Assi
   const current = tasks.filter((task) => task.owner.conversationId === owner.conversationId);
   const needsYou = current.filter((task) => task.status === 'needs_you' || task.status === 'needs_clarification' || task.status === 'proposed');
   if (needsYou.length) return {
-    kind: 'needs_input', note: `${needsYou.length} ApexAgent task${needsYou.length === 1 ? '' : 's'} need you`,
+    kind: 'needs_input', note: `${needsYou.length} assistant task${needsYou.length === 1 ? '' : 's'} need you`,
     at: Math.min(...needsYou.map((task) => task.updatedAtMs || task.createdAtMs)), blocking: true,
   };
   const failed = current.filter((task) => task.status === 'failed' || task.status === 'interrupted');
   if (failed.length) return {
-    kind: 'failed', note: `${failed.length} ApexAgent task${failed.length === 1 ? '' : 's'} failed or stopped`,
+    kind: 'failed', note: `${failed.length} assistant task${failed.length === 1 ? '' : 's'} failed or stopped`,
     at: Math.min(...failed.map((task) => task.updatedAtMs || task.createdAtMs)),
   };
   const reviews = current.filter((task) => task.status === 'ready_for_review');
   if (reviews.length) return {
-    kind: 'done', note: `${reviews.length} ApexAgent task${reviews.length === 1 ? '' : 's'} ready for review`,
+    kind: 'done', note: `${reviews.length} assistant task${reviews.length === 1 ? '' : 's'} ready for review`,
     at: Math.min(...reviews.map((task) => task.updatedAtMs || task.createdAtMs)),
   };
   return null;

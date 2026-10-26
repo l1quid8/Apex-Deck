@@ -12,7 +12,9 @@
 .right-panel-tab.dragging { opacity: .55; }
 .right-panel-tab.active > button[role="tab"] { color: var(--text, inherit); }
 .right-panel-tab.has-attention { position: relative; }
-.right-panel-tab.has-attention::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -5px; height: 3px; border-radius: 3px; background: var(--warn, #e0a030); pointer-events: none; }
+/* The strip clips, so the flag sits inside the tab, just above the 2px active underline.
+   It keeps that spot when the tab is behind another, so switching tabs doesn't move it. */
+.right-panel-tab.has-attention::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: 2px; height: 2px; border-radius: 2px; background: var(--warn, #e0a030); pointer-events: none; }
 /* Stages: a name shows in full or its tab becomes an icon, never "…". */
 .right-panel[data-fit="mid"] .right-panel-tab:not(.active) .right-panel-tab-label,
 .right-panel[data-fit="icons"] .right-panel-tab .right-panel-tab-label { display: none; }
