@@ -136,9 +136,16 @@ def other_services(uid):
     # With Fast User Switching every signed-in account runs its own background service, all from
     # the one protected daemon being replaced. Their Deck is closed (checked first), so nobody there
     # will start it again: the install stops each one and starts it again from the same plist.
+    # Directory (network or mobile) accounts can be missing from getpwall, so a running daemon's owner is looked up too.
+    people={person.pw_uid:person for person in pwd.getpwall()}
+    for line in run('/bin/ps','-axo','uid=,comm=',required=False).stdout.splitlines():
+        owner,_,command=line.strip().partition(' ')
+        if Path(command.strip()).name!='apex-daemon' or not owner.isdigit() or int(owner) in people: continue
+        try: people[int(owner)]=pwd.getpwuid(int(owner))
+        except KeyError: raise RuntimeError('Apex Deck\'s background service is running in an account this Mac can\'t look up, so nothing was installed. Sign out of that account, then try the update again.')
     found={}
-    for person in pwd.getpwall():
-        if person.pw_uid<500 or person.pw_uid==uid or person.pw_uid in found: continue
+    for person in people.values():
+        if person.pw_uid<500 or person.pw_uid==uid: continue
         if run('/bin/launchctl','print','gui/'+str(person.pw_uid)+'/dev.apexdeck.daemon',required=False).returncode: continue
         plist=Path(person.pw_dir)/'Library/LaunchAgents/dev.apexdeck.daemon.plist'
         try: st=os.lstat(plist)
@@ -173,13 +180,18 @@ def install(notes=None):
         if agent_loaded: run('/bin/launchctl','bootout',domain+'/dev.apexdeck.daemon')
         stopped=True
         for uid,(name,plist) in others.items():
-            run('/bin/launchctl','bootout','gui/'+str(uid)+'/dev.apexdeck.daemon'); others_stopped.append((uid,name,plist))
+            target='gui/'+str(uid)+'/dev.apexdeck.daemon'
+            if run('/bin/launchctl','bootout',target,required=False).returncode==0: others_stopped.append((uid,name,plist))
+            # One gone since it was found, such as that account signing out, has nothing to stop or start again.
+            elif run('/bin/launchctl','print',target,required=False).returncode==0:
+                raise RuntimeError('Apex Deck\'s background service in the account "'+name+'" couldn\'t be stopped, so nothing was installed. Sign out of that account, then try the update again.')
         for _ in range(30):
             if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode!=0: break
             time.sleep(1)
         # Still running: a daemon no account's service runs, such as a development build's.
         if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode==0: raise RuntimeError('An Apex Deck background service that the update couldn\'t stop is still running on this Mac, such as one from a development build, so nothing was installed. Quit it, then try the update again.')
-        if app_running(): raise RuntimeError('Apex Deck was opened again while the update was starting, so nothing was installed. Quit it, then try the update again.')
+        if app_running(user.pw_uid): raise RuntimeError('Apex Deck was opened again while the update was starting, so nothing was installed. Quit it, then try the update again.')
+        if app_running(): raise RuntimeError('Apex Deck was opened in another account on this Mac while the update was starting, so nothing was installed. Quit it there, then try the update again.')
         if broker_loaded:
             run('/bin/launchctl','bootout','system/dev.apexdeck.provenance'); broker_stopped=True
         # Snapshot only after both writers have stopped. No user-store files are touched.
@@ -275,6 +287,10 @@ def install(notes=None):
                 if not problem: continue
                 print('The background service for account '+str(uid)+' could not be restarted: '+problem,file=sys.stderr)
                 notes.append('Apex Deck\'s background service in the account "'+name+'" didn\'t start again, so agents and phone connections there stay off until Apex Deck is opened in that account.')
+        else:
+            # Not started on a copy that needs checking; say whose service is off and stays off.
+            for uid,name,plist in others_stopped:
+                notes.append('Apex Deck\'s background service in the account "'+name+'" was stopped for the update and stays off until this is sorted out.')
 
 # ---------------------------------------------------------------- update job
 # "Restart to update": the broker, which runs nothing itself, only drops a

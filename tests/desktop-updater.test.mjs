@@ -130,6 +130,8 @@ test('when GitHub can’t be reached, Settings gets a plain sentence instead of 
   const dropped = fixture(t, { download: async () => { attempts += 1; throw new Error('net::ERR_CONTENT_LENGTH_MISMATCH'); } });
   assert.equal((await dropped.updater.check()).error, offline);
   assert.equal(attempts, 3, 'the download is still tried three times first');
+  const wrapped = fixture(t, { fetchJson: async () => { throw new Error('Download failed: net::ERR_CONNECTION_RESET'); } });
+  assert.equal((await wrapped.updater.check()).error, offline, 'a network error inside another message too');
 });
 
 test('other failures keep their own words after “Couldn’t update:”', async (t) => {

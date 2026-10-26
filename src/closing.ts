@@ -10,6 +10,7 @@ import { leafIds, removeLeaf, validate } from "./layout.ts";
 import { normalizeAddress } from "./previewAddress.ts";
 import { discardQuestion } from "./unsavedEdits.ts";
 import type { Pane, PaneStatus, ThreadStatus } from "./types";
+import type { Ask } from "./ConfirmDialog";
 
 /** How long a deleted thread can still be brought back. */
 export const UNDO_MS = 8000;
@@ -331,8 +332,6 @@ export function quitQuestion(busy: Running[], stopsWork = true): { title: string
     action: "Quit and end them",
   };
 }
-
-type Ask = { title: string; body: string; rows?: string[]; action: string };
 
 /**
  * What quitting asks, one after another; empty to quit at once. First unsaved

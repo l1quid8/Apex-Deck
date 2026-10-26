@@ -81,7 +81,7 @@ import { assistantStatus, assistantWorkItems, delegatedTasksForAssistant, type W
 import { personalTaskKey, projectTaskKey } from "./apexAgentTaskView";
 import { prefillAssistantComposer } from "./assistantComposerDrafts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
-import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { ConfirmDialog, type Ask, type Question } from "./ConfirmDialog";
 import { discardQuestion, unsavedEditName } from "./unsavedEdits";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
@@ -2368,7 +2368,7 @@ export function App() {
   };
 
   /** Asks each question in turn, then runs `go`; cancelling any one stops there. */
-  const askInTurn = ([next, ...later]: Omit<Question, "onConfirm">[], go: () => void) => {
+  const askInTurn = ([next, ...later]: Ask[], go: () => void) => {
     if (next) setQuestion({ ...next, onConfirm: () => askInTurn(later, go) });
     else go();
   };

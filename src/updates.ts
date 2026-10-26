@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { quitQuestion, type Running } from "./closing.ts";
 import { discardQuestion } from "./unsavedEdits.ts";
+import type { Ask } from "./ConfirmDialog";
 
 export type UpdateState = "disabled" | "idle" | "checking" | "up-to-date" | "downloading" | "verifying" | "ready" | "installing" | "error";
 
@@ -115,8 +116,6 @@ export function restartQuestion(busy: Running[]): { title: string; body: string;
     action: "Restart and end them",
   };
 }
-
-type Ask = { title: string; body: string; rows?: string[]; action: string };
 
 /**
  * What "Restart to update" asks, one after another; empty to go ahead at once.

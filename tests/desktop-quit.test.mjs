@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { QuitGate, ANSWER_TIME, editsElsewhere } from '../desktop/quit.mjs';
+import { QuitGate, ANSWER_TIME, editsElsewhere, unsavedFile } from '../desktop/quit.mjs';
 
 test('the direct exit path awaits voice shutdown without relying on will-quit', async () => {
   // Execute the production quit function without starting Electron or a window.
@@ -82,6 +82,9 @@ function quitting({ windows, popoutWindows, tail = '', ...rest }) {
   runInNewContext(`${source.slice(start, end)}\n${tail}`, {
     QuitGate,
     editsElsewhere,
+    unsavedFile,
+    LOCAL: 'local',
+    BrowserWindow: { getFocusedWindow: () => null },
     windows,
     popoutWindows,
     handle: (channel, run) => handlers.set(channel, run),
@@ -147,4 +150,80 @@ test('once confirmed nothing is held or asked again', () => {
   assert.equal(g.request(), null);
   timers.advance(5000);
   assert.deepEqual(through, []);
+});
+
+/** A Deck window that records the quit requests it is sent. */
+function deckWindow(id, sent = []) {
+  return { host: 'local', win: { id, isDestroyed: () => false, webContents: { send: (...args) => sent.push([id, ...args]) } } };
+}
+
+test('Quit asks the window holding unsaved edits, so it can ask about them itself', async () => {
+  const sent = [];
+  const first = deckWindow(1, sent), editing = deckWindow(2, sent);
+  const exposed = {};
+  const { handlers } = quitting({ windows: new Map([[1, first], [2, editing]]), popoutWindows: new Map(), exposed, tail: 'exposed.askToQuit = askToQuit;' });
+  await handlers.get('updates:unsavedEdit')(editing, 'notes.md');
+  assert.equal(exposed.askToQuit(), true);
+  assert.deepEqual(sent, [[2, 'quit-requested', 1]]);
+  await handlers.get('shell:quitHeard')(editing, 1);
+});
+
+test('edits the asked window can’t ask about stop Quit before any question', async () => {
+  const sent = [], warned = [];
+  const deck = deckWindow(1, sent);
+  const popout = { win: { id: 2 }, role: 'popout' };
+  const exposed = {};
+  const { handlers } = quitting({
+    windows: new Map([[1, deck]]), popoutWindows: new Map([[2, popout]]), exposed,
+    dialog: { showMessageBox: async (win, options) => { warned.push([win.id, options.detail]); } },
+    tail: 'exposed.askToQuit = askToQuit; exposed.gate = gate;',
+  });
+  await handlers.get('updates:unsavedEdit')(popout, 'plan.md');
+  assert.equal(exposed.askToQuit(), true, 'Deck stays open');
+  assert.deepEqual(sent, [], 'no window is asked about agents first');
+  assert.deepEqual(warned, [[1, 'plan.md has unsaved changes in another Deck window. Save or discard them there first.']]);
+  assert.equal(exposed.gate.asked, 0, 'nothing is waiting for an answer');
+});
+
+test('a window that never answers doesn’t lose unsaved edits without asking', async () => {
+  const answers = [1, 0], asked = [];
+  const deck = deckWindow(1);
+  const popout = { win: { id: 2 }, role: 'popout' };
+  const exposed = {};
+  const { handlers, exits } = quitting({
+    windows: new Map([[1, deck]]), popoutWindows: new Map([[2, popout]]), exposed,
+    dialog: { showMessageBoxSync: (options) => { asked.push(options.detail); return answers.shift(); } },
+    tail: 'exposed.gate = gate;',
+  });
+  await handlers.get('updates:unsavedEdit')(popout, 'plan.md');
+  assert.equal(exposed.gate.letThrough(), false, 'Cancel keeps Deck open');
+  assert.equal(exposed.gate.confirmed, false, 'the next quit asks again');
+  exposed.gate.letThrough();
+  await new Promise((done) => setImmediate(done));
+  assert.deepEqual(asked, ["plan.md has changes that haven't been saved.", "plan.md has changes that haven't been saved."]);
+  assert.deepEqual(exits, [0], 'Quit goes ahead');
+});
+
+test('the never-answered fallback quits at once when nothing is unsaved', async () => {
+  const { exits } = quitting({
+    windows: new Map([[1, deckWindow(1)]]), popoutWindows: new Map(), exposed: {},
+    dialog: { showMessageBoxSync: () => assert.fail('nothing to ask about') },
+    tail: 'gate.letThrough();',
+  });
+  await new Promise((done) => setImmediate(done));
+  assert.deepEqual(exits, [0]);
+});
+
+test('a never-answered quit the fallback keeps open isn’t confirmed', () => {
+  const timers = fakeTimers();
+  const g = new QuitGate({ timers, letThrough: () => false });
+  g.request();
+  timers.advance(2000);
+  assert.equal(g.confirmed, false);
+  assert.equal(g.request(), 2, 'the next quit is held and asked again');
+});
+
+test('the first open window’s unsaved file, or null', () => {
+  assert.equal(unsavedFile(new Map([[1, 'a.md'], [2, 'b.md']]), (id) => id === 2), 'b.md');
+  assert.equal(unsavedFile(new Map([[1, 'a.md']]), () => false), null);
 });

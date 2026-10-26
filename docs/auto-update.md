@@ -76,12 +76,15 @@ Backups from administrator-run packages are never removed by it.
   own; one that won't start is named in the notice after reopening, which says
   it stays off until Deck is opened in that account. A background service that
   isn't one of these, such as a development build's, can't be stopped by the
-  update, so it refuses until that is quit.
+  update, so it refuses until that is quit. An account that signs out while
+  the update starts is skipped; one whose service won't stop refuses the
+  update and is named.
 - Failed during the transaction: it rolls back as a `.pkg` would, Deck reopens
   and says so.
 - Rollback itself failed, or the Mac lost power mid-install:
   `install.lock` stays, Deck says the update "needs checking", and no further
   update installs until the retained evidence in `backup-<id>` is inspected.
+  Other accounts' background services stay off too, and the notice names them.
 
 ## Turning it on: the one manual install
 

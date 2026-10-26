@@ -13,6 +13,9 @@ export interface Question {
   onConfirm: () => void;
 }
 
+/** A question before what answering it runs, such as each one asked in turn. */
+export type Ask = Omit<Question, "onConfirm">;
+
 /** Asks once before something that can't be taken back. Cancel has focus, so Enter is safe. */
 export function ConfirmDialog({ question, onCancel }: { question: Question; onCancel: () => void }) {
   const cancel = useRef<HTMLButtonElement>(null);
