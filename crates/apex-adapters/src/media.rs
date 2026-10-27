@@ -622,7 +622,7 @@ mod tests {
     }
 
     fn human(text: &str) -> Message {
-        Message { servers: vec![], seq: 0, speaker: Speaker::Human, text: text.into(), at: None }
+        Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, servers: vec![], seq: 0, speaker: Speaker::Human, text: text.into(), at: None }
     }
 
     fn turn(unseen: Vec<Message>, turns: Vec<ViewTurn>) -> TurnRequest {
@@ -905,7 +905,7 @@ mod tests {
         let (address, seen) = fake_venice(vec![("/video/quote", vec![json_answer(json!({ "quote": 2.91 }))])]).await;
         let dir = scratch("unnamed");
         let earlier = ViewTurn { role: Role::Assistant, content: "Made with Seedance 2.5\n\nPrompt: a city at night\n\nAttached video: /x.mp4".into() };
-        let bot_said = Message { servers: vec![], seq: 1, speaker: Speaker::Bot(ParticipantId::new("jigga")), text: "a stray @allison would spend money".into(), at: None };
+        let bot_said = Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, servers: vec![], seq: 1, speaker: Speaker::Bot(ParticipantId::new("jigga")), text: "a stray @allison would spend money".into(), at: None };
         for (why, unseen) in [
             ("names nobody", vec![human("here's the usage table")]),
             ("names the room", vec![human("@all thoughts?")]),

@@ -107,6 +107,13 @@ textarea {
 .muted {
   color: var(--muted);
 }
+
+.late-reply-label {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .spacer {
   flex: 1;
 }

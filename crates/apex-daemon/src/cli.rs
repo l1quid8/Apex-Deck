@@ -10,6 +10,7 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
        apex-daemon endpoint [--data-dir PATH]
        apex-daemon devices list|add|tier|threads|revoke … [--data-dir PATH]
        apex-daemon keys list|issue|revoke … [--data-dir PATH]
+       apex-daemon allow-root <folder>|list|remove … [--data-dir PATH]
        apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID] [--data-dir PATH]
        apex-daemon remote info|advertise … [--data-dir PATH]
 
@@ -36,6 +37,8 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
   keys             list, issue or revoke model gateway API keys (`apx_sk_…`); only
                    from this machine, and the raw key is shown once
                    `apex-daemon keys` alone explains each
+  allow-root       allow a folder (and the folders inside it) for a phone's
+                   \"Move to a Work thread\"; `apex-daemon allow-root` alone explains
   pair             pair a phone: shows a QR code, then asks you to approve the phone
                    (needs the daemon running with --remote); `apex-daemon pair --help`
   remote           remote access: `remote info`, or `remote advertise host:port…|--clear`
@@ -54,6 +57,8 @@ pub enum Action {
     Devices(crate::devices_cli::DevicesAction),
     /// `keys list|issue|revoke`: the model gateway's API keys (local only).
     Keys(crate::gateway_cli::KeysAction),
+    /// `allow-root <folder>|list|remove`: folders a phone may promote a chat into.
+    AllowRoot(crate::promote_cli::AllowRootAction),
     Pair(crate::pair_cli::PairOptions),
     Remote(crate::pair_cli::RemoteAction),
     /// `pair --help` / `remote --help`.
@@ -119,6 +124,9 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     }
     if rest.first().map(String::as_str) == Some("keys") {
         return Ok(Cli { action: Action::Keys(crate::gateway_cli::parse(&rest[1..])?), data_dir });
+    }
+    if rest.first().map(String::as_str) == Some("allow-root") {
+        return Ok(Cli { action: Action::AllowRoot(crate::promote_cli::parse(&rest[1..])?), data_dir });
     }
     if matches!(rest.first().map(String::as_str), Some("pair" | "remote")) {
         let action = if rest[1..].iter().any(|a| a == "-h" || a == "--help") {

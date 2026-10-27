@@ -93,7 +93,7 @@ impl Journal {
             | "room_remove_participant"
             | "room_set_options"
             | "room_forget_allowed" => (2, command["args"]["id"].as_str()),
-            "room_create" | "room_import" | "room_fork" => (2, None),
+            "room_create" | "room_import" | "room_fork" | "chat_promote" => (2, None),
             _ if crate::protected(name)
                 && (name.starts_with("personal_")
                     || name.starts_with("assistant_")
