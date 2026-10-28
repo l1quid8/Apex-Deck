@@ -8,11 +8,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Backend } from "./backend";
 import type { HostConnectionStore } from "./hostConnections";
-import type { Pane, ParticipantConfig, RoomEvent, RoomSnapshot, Speed, Workspace } from "./types";
+import type { Access, Pane, ParticipantConfig, RoomEvent, RoomSnapshot, Speed, Workspace } from "./types";
 import { workspaceHost } from "./hostSession.ts";
 import { addFolders, setHidden } from "./workspaces.ts";
 import { ChatDeliveryController, JsonChatDeliveryStorage, type ChatDeliverySnapshot } from "./chatDelivery.ts";
 import { chatRows, chatTitle, emptyCatalog, findRoom, parseChatEntry, parseChatList, parseChatProfiles, withListedRooms, withRoom, withoutHosts, type ChatCatalog, type ChatEntry, type ChatProfile } from "./chatCatalog.ts";
+import { DESKTOP_PROMOTES_KEY, parseAbandon, promoteKey, promoteRequest, readPromoteTickets, withoutTicket, writePromoteTickets, type PromoteTicket } from "./chatPromote.ts";
 import { createChatDeliveryRpc } from "./phone/phoneChatDelivery.ts";
 import { watchChatDelivery } from "./phone/chatDeliveryWatch.ts";
 
@@ -70,6 +71,40 @@ export function workThreadPlace(workspaces: Workspace[], panes: Pane[], hostId: 
   return { workspaces: list, pane: { id: work.id, workspaceId: ids[0], kind: "chat", title: work.title }, added: true, restored: hiddenId(ids[0]) };
 }
 
+type Call = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
+type Tickets = Pick<Storage, "getItem" | "setItem">;
+
+/** Drop one move's ticket, only if it is still that move: a late answer to an older one leaves its replacement alone. */
+function forgetPromote(storage: Tickets, row: ChatPlace, requestId: string): void {
+  const rest = withoutTicket(readPromoteTickets(storage, DESKTOP_PROMOTES_KEY), promoteKey(row.hostId, row.room), requestId);
+  if (!rest) return;
+  try { writePromoteTickets(storage, rest, DESKTOP_PROMOTES_KEY, "Deck"); } catch { /* kept: finishing it again is harmless */ }
+}
+
+/** Send a move to a Work thread. The ticket is saved first and kept until the machine confirms, so a
+ *  retry after a lost answer is the same move; nothing is sent if it can't be saved. */
+export async function sendPromote(storage: Tickets, call: Call, row: ChatEntry, cwd: string, access: Record<string, Access>, fresh: () => { target: string; requestId: string }, machine: string): Promise<{ work: ChatEntry; chat: ChatEntry | null }> {
+  const key = promoteKey(row.hostId, row.id);
+  const saved = readPromoteTickets(storage, DESKTOP_PROMOTES_KEY);
+  const { ticket, fresh: isNew } = promoteRequest(saved[key], cwd, access, fresh);
+  if (isNew) writePromoteTickets(storage, { ...saved, [key]: ticket }, DESKTOP_PROMOTES_KEY, "Deck");
+  const reply = await call<{ work?: unknown; chat?: unknown }>("chat_promote", { source: row.id, target: ticket.target, cwd: ticket.cwd, access: ticket.access, requestId: ticket.requestId });
+  const work = parseChatEntry(row.hostId, reply?.work);
+  if (!work) throw new Error(`${machine} didn't confirm the Work thread. Try again: the same move is reused.`);
+  forgetPromote(storage, { hostId: row.hostId, room: row.id }, ticket.requestId);
+  return { work, chat: parseChatEntry(row.hostId, reply?.chat) };
+}
+
+/** Start an unconfirmed move over, only once the machine has fenced it off, so the old access can't land
+ *  later. If it had already happened, the Work thread it made. */
+export async function abandonPromote(storage: Tickets, call: Call, row: ChatEntry): Promise<{ work: ChatEntry | null; chat: ChatEntry | null } | null> {
+  const saved = readPromoteTickets(storage, DESKTOP_PROMOTES_KEY)[promoteKey(row.hostId, row.id)];
+  if (!saved) return null;
+  const outcome = parseAbandon(await call<unknown>("chat_promote_abandon", { source: row.id, requestId: saved.requestId }));
+  forgetPromote(storage, { hostId: row.hostId, room: row.id }, saved.requestId);
+  return outcome.state === "done" ? { work: parseChatEntry(row.hostId, outcome.work), chat: parseChatEntry(row.hostId, outcome.chat) } : null;
+}
+
 /** The patch a bot edit sends: only what changed, and never a whole config. */
 export function botPatch(saved: ParticipantConfig, change: ChatBotPatch): ChatBotPatch {
   const model = saved.backend.kind === "agent" || saved.backend.kind === "open_ai_compatible" ? saved.backend.model : null;
@@ -117,13 +152,22 @@ export interface DesktopChats {
   remember(row: ChatEntry, snapshot: RoomSnapshot): void;
   send(row: ChatEntry, text: string): void;
   retry(row: ChatEntry, messageId: string): void;
+  /** A folder on the chat's machine, from the same picker Add project uses. */
+  pickFolder(hostId: string): Promise<string | null>;
+  /** A move to a Work thread sent earlier whose answer never came back. */
+  promoteTicket(row: ChatEntry): PromoteTicket | undefined;
+  /** Move the chat to a Work thread in `cwd`. Saved before it is sent, so a retry is the same move. */
+  promote(row: ChatEntry, cwd: string, access: Record<string, Access>): Promise<ChatEntry>;
+  /** Drop an unconfirmed move once the machine has fenced it off; the Work thread if it had already happened. */
+  promoteOver(row: ChatEntry): Promise<ChatEntry | null>;
 }
 
-export function useDesktopChats({ machines, backendOf, connectionOf, onError }: {
+export function useDesktopChats({ machines, backendOf, connectionOf, onError, storage = localStorage }: {
   machines: ChatMachine[];
   backendOf(hostId: string): Backend | null;
   connectionOf(hostId: string): HostConnectionStore | null;
   onError(message: string): void;
+  storage?: Pick<Storage, "getItem" | "setItem">;
 }): DesktopChats {
   const [catalog, setCatalog] = useState<ChatCatalog>(emptyCatalog);
   const [rooms, setRooms] = useState<Record<string, boolean | undefined>>({});
@@ -292,6 +336,30 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError }: 
     retry(row, messageId) {
       if (!delivery) return;
       delivery.retry(deliveryId({ hostId: row.hostId, room: row.id }), messageId).catch((error) => live.current.onError(words(error)));
+    },
+    pickFolder: (hostId) => need(hostId).pickFolder(),
+    promoteTicket: (row) => readPromoteTickets(storage, DESKTOP_PROMOTES_KEY)[promoteKey(row.hostId, row.id)],
+    async promote(row, cwd, access) {
+      const backend = need(row.hostId);
+      const fresh = () => ({ target: `pane-${crypto.randomUUID()}`, requestId: crypto.randomUUID() });
+      try {
+        const { work, chat } = await sendPromote(storage, (command, args) => backend.call(command, args), row, cwd, access, fresh, machineName(row.hostId));
+        const name = machineName(row.hostId);
+        setCatalog((current) => withRoom(withRoom(current, row.hostId, name, chat ?? { ...row, promotedTo: work.id }), row.hostId, name, work));
+        void refresh(row.hostId);
+        return work;
+      } finally { setTick((n) => n + 1); }
+    },
+    async promoteOver(row) {
+      const backend = need(row.hostId);
+      try {
+        const done = await abandonPromote(storage, (command, args) => backend.call(command, args), row);
+        if (!done) return null;
+        const name = machineName(row.hostId);
+        setCatalog((current) => [done.chat, done.work].reduce((next, item) => item ? withRoom(next, row.hostId, name, item) : next, current));
+        void refresh(row.hostId);
+        return done.work;
+      } finally { setTick((n) => n + 1); }
     },
   };
 

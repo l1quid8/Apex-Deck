@@ -10,7 +10,7 @@ Branch `feat/local-chat-desktop`, off `verify/local-chat-main` (b8cbe3f). Owner:
 - Two kinds of "moved", handled differently (they are different fields in `chat_list`):
   - `promotedTo` (Move to a Work thread): the source chat **stays listed**, marked moved, read-only, with a link that opens the Work thread.
   - `movedTo` (the phone carried the chat to another machine): this copy is **hidden**; the chat shows once, from the machine it now lives on.
-- **Move to a Work thread** from the chat's menu: pick a folder on the same machine and an access level per bot, then `chat_promote`. Second slice; the list and talking come first.
+- **Move to a Work thread** from the chat's header: pick a folder on the same machine (the picker Add project uses) and an access level per bot, then `chat_promote`. The request is saved under the desktop's own key (`apex-deck.desktop.chat-promotes.v1`) before it is sent and kept until the machine confirms. A move whose answer never came back can only be finished as it was, or started over after `chat_promote_abandon` fences it off. The saved-request code (`src/chatPromote.ts`) is shared with the phone. On success the Work thread opens.
 
 ## Design
 

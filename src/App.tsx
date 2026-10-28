@@ -1926,8 +1926,9 @@ export function App() {
   const openChatRow = openChat ? findRoom(chats.catalog, openChat.hostId, openChat.room) : null;
   // Unsent text per chat (machine + room), kept here so switching chats doesn't drop it.
   const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({});
-  const openWorkThread = (row: ChatEntry, workId: string) => {
-    const place = workThreadPlace(workspaces, panes, row.hostId, findRoom(chats.catalog, row.hostId, workId), () => newId("ws"), folderName);
+  /** `work` is the machine's own answer to a move, which the list may not hold yet. */
+  const openWorkThread = (row: ChatEntry, workId: string, work?: ChatEntry) => {
+    const place = workThreadPlace(workspaces, panes, row.hostId, work ?? findRoom(chats.catalog, row.hostId, workId), () => newId("ws"), folderName);
     if (place === "unlisted") { toast(`${chats.machineName(row.hostId)} hasn't listed that Work thread yet. Try again once it's connected.`); return; }
     if (place === "clash") { toast("A thread with the same id from another machine is open. Close it to open this one."); return; }
     if (place.added || place.restored) setWorkspaces(place.workspaces);

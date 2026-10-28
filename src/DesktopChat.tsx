@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import type { HostConnectionStore } from "./hostConnections";
-import type { Message, ParticipantConfig, RoomEvent, RoomSnapshot, RoomState, Speed } from "./types";
+import type { Access, Message, ParticipantConfig, RoomEvent, RoomSnapshot, RoomState, Speed } from "./types";
 import { botNames, type ChatEntry, type ChatProfile } from "./chatCatalog.ts";
 import { chatDeliveryStatus, type ChatOutboxMessage } from "./chatDelivery.ts";
 import { deliveryId, sendBlock, type DesktopChats } from "./desktopChats.ts";
@@ -129,6 +129,72 @@ export function NewChatDialog({ chats, onClose, onStarted }: { chats: DesktopCha
   );
 }
 
+// ---- Move to a Work thread -------------------------------------------------------------------
+
+const ACCESS: { id: Access; text: string }[] = [{ id: "ask", text: "Ask first" }, { id: "read", text: "Read only" }, { id: "full", text: "Full" }];
+const folderTail = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/** Pick a folder on the chat's machine and what each bot may do there. A move sent earlier and never
+ *  confirmed can only be finished as it was, or started over once the machine has fenced it off. */
+export function MoveToWorkDialog({ row, bots, chats, onClose, onMoved }: { row: ChatEntry; bots: ParticipantConfig[]; chats: DesktopChats; onClose(): void; onMoved(work: ChatEntry): void }) {
+  const dot = useDot(chats.connectionOf(row.hostId), row.hostId === "local");
+  const online = dot === "on";
+  const name = chats.machineName(row.hostId);
+  const left = chats.promoteTicket(row);
+  const [folder, setFolder] = useState("");
+  const [access, setAccess] = useState<Record<string, Access>>({});
+  const [state, setState] = useState<{ busy: boolean; error: string }>({ busy: false, error: "" });
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape" && !state.busy) { event.preventDefault(); onClose(); } };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [onClose, state.busy]);
+  const run = (work: () => Promise<ChatEntry | null>) => {
+    setState({ busy: true, error: "" });
+    work().then((done) => { setState({ busy: false, error: "" }); if (done) onMoved(done); }, (error) => setState({ busy: false, error: words(error) }));
+  };
+  const choose = () => chats.pickFolder(row.hostId).then((path) => { if (path) setFolder(path); }, (error) => setState({ busy: false, error: words(error) }));
+  const level = (bot: ParticipantConfig) => left ? left.access[bot.id] ?? "read" : access[bot.id] ?? "ask";
+  return createPortal(
+    <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !state.busy) onClose(); }}>
+      <div className="confirm move-to-work" role="dialog" aria-modal="true" aria-labelledby="move-to-work-title">
+        <strong id="move-to-work-title">Move to a Work thread</strong>
+        {left
+          ? <p className="muted">A move to <b>{folderTail(left.cwd)}</b> on {name} was sent, but {name} never confirmed it. Finish it with the same choices, so it can't make a second thread or change what the bots may do.</p>
+          : <p className="muted">Pick a folder on <b>{name}</b>. The Work thread starts with this chat's messages and the same bots. This chat stays listed, read-only, with a link to it.</p>}
+        <div className="move-to-work-folder">
+          {left ? <code title={left.cwd}>{left.cwd}</code> : <>
+            <code title={folder || undefined}>{folder || "No folder picked"}</code>
+            <button type="button" disabled={!online || state.busy} onClick={() => void choose()}>{folder ? "Change…" : "Choose folder…"}</button>
+          </>}
+        </div>
+        <fieldset className="move-to-work-bots">
+          <legend>What each bot may do in the folder</legend>
+          {bots.map((bot) => <div key={bot.id} className="move-to-work-bot">
+            <span>{bot.display_name}</span>
+            {left ? <span className="muted">{ACCESS.find((choice) => choice.id === level(bot))?.text ?? level(bot)}</span>
+              : <span className="segmented" role="radiogroup" aria-label={`${bot.display_name} access`}>{ACCESS.map((choice) => (
+                <button key={choice.id} type="button" role="radio" aria-checked={level(bot) === choice.id} className={level(bot) === choice.id ? "seg on" : "seg"} disabled={state.busy}
+                  onClick={() => setAccess((now) => ({ ...now, [bot.id]: choice.id }))}>{choice.text}</button>
+              ))}</span>}
+          </div>)}
+        </fieldset>
+        {!online && <p className="chat-problem" role="status">{name} isn't connected. {left ? "Finish the move" : "Pick a folder"} once it's back.</p>}
+        {state.error && <p className="chat-problem" role="alert">{state.error}</p>}
+        <div className="confirm-actions">
+          <button disabled={state.busy} onClick={onClose}>Cancel</button>
+          {left && <button disabled={state.busy || !online} onClick={() => run(() => chats.promoteOver(row))}>Start over</button>}
+          {left
+            ? <button className="primary" disabled={state.busy || !online} onClick={() => run(() => chats.promote(row, left.cwd, left.access))}>{state.busy ? "Moving…" : "Finish the move"}</button>
+            // Every bot is named, so a bot left on the default still gets the access shown beside it.
+            : <button className="primary" disabled={state.busy || !online || !folder} onClick={() => run(() => chats.promote(row, folder, Object.fromEntries(bots.map((bot) => [bot.id, level(bot)]))))}>{state.busy ? "Moving…" : folder ? `Move to ${folderTail(folder)}` : "Pick a folder"}</button>}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // ---- One bot's settings -----------------------------------------------------------------------
 
 function BotControls({ bot, disabled, onChange, onRemove }: { bot: ParticipantConfig; disabled: boolean; onChange(change: { model?: string | null; effort?: string | null; speed?: Speed | null }): void; onRemove(): void }) {
@@ -162,7 +228,7 @@ function BotControls({ bot, disabled, onChange, onRemove }: { bot: ParticipantCo
 
 interface Live { participants: ParticipantConfig[]; transcript: Message[]; working: Record<string, string> }
 
-export function ChatView({ row, chats, draft, onDraft, onOpenWork, onClose }: { row: ChatEntry; chats: DesktopChats; draft: string; onDraft(text: string): void; onOpenWork(row: ChatEntry, workId: string): void; onClose(): void }) {
+export function ChatView({ row, chats, draft, onDraft, onOpenWork, onClose }: { row: ChatEntry; chats: DesktopChats; draft: string; onDraft(text: string): void; onOpenWork(row: ChatEntry, workId: string, work?: ChatEntry): void; onClose(): void }) {
   const key = deliveryId({ hostId: row.hostId, room: row.id });
   const backend = chats.backendOf(row.hostId);
   const dot = useDot(chats.connectionOf(row.hostId), row.hostId === "local");
@@ -171,6 +237,7 @@ export function ChatView({ row, chats, draft, onDraft, onOpenWork, onClose }: { 
   const [room, setRoom] = useState<Live | null>(null);
   const [problem, setProblem] = useState("");
   const [adding, setAdding] = useState<ChatProfile[] | null>(null);
+  const [moving, setMoving] = useState(false);
   const rowRef = useRef(row);
   rowRef.current = row;
   const endRef = useRef<HTMLDivElement>(null);
@@ -270,10 +337,14 @@ export function ChatView({ row, chats, draft, onDraft, onOpenWork, onClose }: { 
       <ThreadName className="desktop-chat-title" title={row.title} label="Chat name" onRename={(title) => void act(chats.updateMeta(row, { title }))} />
       <span className="desktop-chat-machine"><span className={`hdot ${dot}`} role="img" aria-label={DOT_WORDS[dot]} />Chat · {machine.name}</span>
       <span className="desktop-chat-acts">
+        {!row.promotedTo && <button type="button" className="ghost" disabled={!online || !shown} title="Give the bots a project folder" onClick={() => setMoving(true)}>Move to a Work thread</button>}
         {!row.promotedTo && <button type="button" className="ghost" disabled={!online} onClick={() => void act(chats.updateMeta(row, { archived: !row.archived }))}>{row.archived ? "Unarchive" : "Archive"}</button>}
         <button type="button" className="icon" aria-label="Close chat" title="Close" onClick={onClose}>×</button>
       </span>
     </header>
+    {moving && shown && <MoveToWorkDialog row={row} bots={shown.participants} chats={chats} onClose={() => setMoving(false)}
+      onMoved={(work) => { setMoving(false); onOpenWork(row, work.id, work); }} />}
+    {!row.promotedTo && chats.promoteTicket(row) && <p className="desktop-chat-banner">A move to a Work thread wasn't confirmed. <button type="button" className="ghost" onClick={() => setMoving(true)}>Finish or start over</button></p>}
     {row.promotedTo && <p className="desktop-chat-banner">Moved to a Work thread. This chat is kept as it was. <button type="button" className="ghost" onClick={() => onOpenWork(row, row.promotedTo!)}>Open the Work thread</button></p>}
     {!online && <p className="desktop-chat-banner">{machine.name} isn't connected. Messages wait here and go when it's back.</p>}
     {shown && <div className="desktop-chat-bots">

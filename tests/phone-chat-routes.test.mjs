@@ -2,10 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/chatDelivery.ts';
 import { chatRows, emptyCatalog, findRoom, parseChatList, readCatalog, withHostRooms, withListedRooms, withoutHosts } from '../src/chatCatalog.ts';
-import {
-  PROMOTES_KEY, chatOutboxRows, chatRights, chatRoute, freshChatId, mayPostIn, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest,
-  readPromoteTickets, startingBots, threadKey, withoutTicket, writePromoteTickets,
-} from '../src/phone/chatRoutes.ts';
+import { chatOutboxRows, chatRights, chatRoute, freshChatId, mayPostIn, pickOpenPane, projectChats, startingBots, threadKey } from '../src/phone/chatRoutes.ts';
+import { PROMOTES_KEY, parseAbandon, promoteKey, promoteRequest, readPromoteTickets, withoutTicket, writePromoteTickets } from '../src/chatPromote.ts';
 
 const A = { id: 'studio', name: 'Studio MacBook' };
 const B = { id: 'server', name: 'Apex-Terminal' };

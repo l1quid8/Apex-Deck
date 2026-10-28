@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { botPatch, chatKey, deliveryId, readOpenChat, restoredChat, saveOpenChat, sendBlock, workThreadPlace, DESKTOP_CHAT_DELIVERY_KEY } from '../src/desktopChats.ts';
+import { abandonPromote, botPatch, chatKey, deliveryId, readOpenChat, restoredChat, saveOpenChat, sendBlock, sendPromote, workThreadPlace, DESKTOP_CHAT_DELIVERY_KEY } from '../src/desktopChats.ts';
+import { DESKTOP_PROMOTES_KEY, PROMOTES_KEY, promoteKey, readPromoteTickets } from '../src/chatPromote.ts';
 import { chatRows, emptyCatalog, findRoom, parseChatList, withListedRooms } from '../src/chatCatalog.ts';
 import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/chatDelivery.ts';
 
@@ -143,4 +144,60 @@ test('Open Work thread finds the pane on the chat\'s machine, or adds the projec
   // Not listed yet, or not a Work thread.
   assert.equal(workThreadPlace([], [], 'vps', null, makeId, nameOf), 'unlisted');
   assert.equal(workThreadPlace([], [], 'vps', findRoom(catalog, 'vps', 'c1'), makeId, nameOf), 'unlisted');
+});
+
+test('Move to a Work thread is saved before it is sent, resent unchanged after a lost answer, and forgotten once confirmed', async () => {
+  const disk = memory();
+  const row = chatRows(listed(emptyCatalog(), 'vps', [chat('c1')]), false).rows[0];
+  const sent = [];
+  let lose = true;
+  let ids = 0;
+  const fresh = () => ({ target: `pane-${++ids}`, requestId: `req-${ids}` });
+  const call = async (command, args) => {
+    sent.push({ command, args, saved: readPromoteTickets(disk, DESKTOP_PROMOTES_KEY)[promoteKey('vps', 'c1')] });
+    if (lose) throw new Error('connection dropped');
+    return { work: { id: args.target, kind: 'work', title: 'c1', participants: [], cwd: args.cwd, promotedFrom: 'c1' }, chat: { ...chat('c1'), promotedTo: args.target } };
+  };
+  await assert.rejects(sendPromote(disk, call, row, '/srv/denver', { jigga: 'full' }, fresh, 'Apex-Terminal'), /connection dropped/);
+  assert.equal(sent[0].saved.requestId, 'req-1', 'saved before it was sent');
+  assert.equal(disk.getItem(PROMOTES_KEY), null, 'never in the phone\'s store');
+  // Other choices are refused until the first move is finished or started over.
+  await assert.rejects(sendPromote(disk, call, row, '/srv/denver', { jigga: 'read' }, fresh, 'Apex-Terminal'), /started and not confirmed/);
+  assert.equal(sent.length, 1);
+  lose = false;
+  const { work, chat: source } = await sendPromote(disk, call, row, '/srv/denver', { jigga: 'full' }, fresh, 'Apex-Terminal');
+  assert.deepEqual(sent[1].args, { source: 'c1', target: 'pane-1', cwd: '/srv/denver', access: { jigga: 'full' }, requestId: 'req-1' });
+  assert.equal(work.id, 'pane-1');
+  assert.equal(work.hostId, 'vps');
+  assert.equal(source.promotedTo, 'pane-1');
+  assert.deepEqual(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY), {});
+});
+
+test('a move the machine never confirms keeps its ticket; one that can\'t be saved sends nothing', async () => {
+  const row = chatRows(listed(emptyCatalog(), 'local', [chat('c1')]), false).rows[0];
+  const disk = memory();
+  await assert.rejects(sendPromote(disk, async () => ({}), row, '/repo', { jigga: 'ask' }, () => ({ target: 't', requestId: 'r' }), 'This Mac'), /didn't confirm the Work thread/);
+  assert.equal(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY)[promoteKey('local', 'c1')].requestId, 'r');
+  const full = { ...memory(), setItem: () => { throw new Error('quota'); } };
+  let called = false;
+  await assert.rejects(sendPromote(full, async () => { called = true; return {}; }, row, '/repo', { jigga: 'ask' }, () => ({ target: 't', requestId: 'r' }), 'This Mac'), /Deck couldn't save the move, so nothing was sent/);
+  assert.equal(called, false);
+});
+
+test('Start over drops an unconfirmed move only after the machine fences it, or opens the thread it already made', async () => {
+  const row = chatRows(listed(emptyCatalog(), 'local', [chat('c1')]), false).rows[0];
+  const seed = () => { const disk = memory(); disk.setItem(DESKTOP_PROMOTES_KEY, JSON.stringify({ [promoteKey('local', 'c1')]: { target: 'pane-1', requestId: 'req-1', cwd: '/repo', access: { jigga: 'full' } } })); return disk; };
+  let disk = seed();
+  const asked = [];
+  assert.equal(await abandonPromote(disk, async (command, args) => { asked.push([command, args]); return { state: 'abandoned' }; }, row), null);
+  assert.deepEqual(asked, [['chat_promote_abandon', { source: 'c1', requestId: 'req-1' }]]);
+  assert.deepEqual(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY), {});
+  disk = seed();
+  const done = await abandonPromote(disk, async () => ({ state: 'done', work: { id: 'pane-1', kind: 'work', title: 'c1', participants: [], cwd: '/repo' }, chat: { ...chat('c1'), promotedTo: 'pane-1' } }), row);
+  assert.equal(done.work.id, 'pane-1');
+  assert.equal(done.chat.promotedTo, 'pane-1');
+  disk = seed();
+  await assert.rejects(abandonPromote(disk, async () => ({}), row), /kept until it can be checked/);
+  assert.equal(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY)[promoteKey('local', 'c1')].requestId, 'req-1');
+  assert.equal(await abandonPromote(memory(), async () => { throw new Error('not asked'); }, row), null);
 });

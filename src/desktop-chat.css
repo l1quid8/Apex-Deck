@@ -35,3 +35,10 @@
 .new-chat-field { display: grid; gap: 4px; margin: 10px 0; font-size: 12px; }
 .new-chat-bots { display: grid; gap: 6px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); font-size: 13px; }
 .new-chat-bots label { display: flex; align-items: center; gap: 8px; }
+.move-to-work { min-width: 420px; max-width: 520px; }
+.move-to-work-folder { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.move-to-work-folder code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.move-to-work-bots { display: grid; gap: 6px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); font-size: 13px; }
+.move-to-work-bot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.move-to-work-bot .segmented .seg { padding: 4px 10px; font-size: 12px; }
+.move-to-work .confirm-actions button { white-space: nowrap; }
