@@ -13,7 +13,7 @@ import { workspaceHost } from "./hostSession.ts";
 import { addFolders, setHidden } from "./workspaces.ts";
 import { ChatDeliveryController, JsonChatDeliveryStorage, type ChatDeliverySnapshot } from "./chatDelivery.ts";
 import { chatRows, chatTitle, emptyCatalog, findRoom, parseChatEntry, parseChatList, parseChatProfiles, withListedRooms, withRoom, withoutHosts, type ChatCatalog, type ChatEntry, type ChatProfile } from "./chatCatalog.ts";
-import { DESKTOP_PROMOTES_KEY, parseAbandon, promoteKey, promoteRequest, readPromoteTickets, withoutTicket, writePromoteTickets, type PromoteTicket } from "./chatPromote.ts";
+import { DESKTOP_PROMOTES_KEY, parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTickets, settleForPromote, withoutTicket, writePromoteTickets, type PromoteTicket } from "./chatPromote.ts";
 import { createChatDeliveryRpc } from "./phone/phoneChatDelivery.ts";
 import { watchChatDelivery } from "./phone/chatDeliveryWatch.ts";
 
@@ -117,8 +117,9 @@ export function botPatch(saved: ParticipantConfig, change: ChatBotPatch): ChatBo
 
 /** Why a chat can't take a message right now, or null when it can. */
 /** Offline is not a block: the message waits in the outbox and goes when the machine is back. */
-export function sendBlock(row: ChatEntry, machine: ChatMachine, rooms: boolean | undefined): string | null {
+export function sendBlock(row: ChatEntry, machine: ChatMachine, rooms: boolean | undefined, moving = false): string | null {
   if (row.promotedTo) return "This chat moved to a Work thread. Carry on there.";
+  if (moving) return "This chat is moving to a Work thread. Finish the move or start over, then send.";
   if (rooms === false) return `Update Deck on ${machine.name} to chat here.`;
   return null;
 }
@@ -174,8 +175,8 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
   const [problems, setProblems] = useState<Record<string, string>>({});
   const [tick, setTick] = useState(0);
   const [statusTick, setStatusTick] = useState(0);
-  const live = useRef({ machines, backendOf, connectionOf, onError });
-  live.current = { machines, backendOf, connectionOf, onError };
+  const live = useRef({ machines, backendOf, connectionOf, onError, storage });
+  live.current = { machines, backendOf, connectionOf, onError, storage };
   const catalogRef = useRef(catalog);
   catalogRef.current = catalog;
 
@@ -183,6 +184,7 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
     const kind = live.current.connectionOf(hostId)?.get().status.kind;
     return kind === undefined ? hostId === "local" : kind === "connected";
   }, []);
+  const held = useCallback((hostId: string, room: string) => promoteHolds(readPromoteTickets(live.current.storage, DESKTOP_PROMOTES_KEY), hostId, room, findRoom(catalogRef.current, hostId, room)?.promotedTo), []);
   const machineName = useCallback((hostId: string) => hostId === "local" ? "This Mac" : live.current.machines.find((m) => m.id === hostId)?.name ?? catalogRef.current.hosts[hostId]?.name ?? hostId, []);
 
   // One outbox for the window. A store that can't be read pauses sending instead of losing messages.
@@ -196,7 +198,7 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
           return backend && connection ? { machine: { id, name: machineName(id) }, backend, connection } : undefined;
         }),
         onChange: () => setTick((n) => n + 1),
-        canSend: (_chat, message) => online(message.machine.id),
+        canSend: (_chat, message) => online(message.machine.id) && !held(message.machine.id, message.room),
       });
       deliveryRef.current = { controller, problem: null };
     } catch (error) { deliveryRef.current = { controller: null, problem: words(error) }; }
@@ -328,6 +330,7 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
       if (!delivery) throw new Error(deliveryRef.current?.problem ?? "Sending is paused.");
       const id = deliveryId({ hostId: row.hostId, room: row.id });
       if (!delivery.snapshot().chats[id]) throw new Error(`Open this chat once while ${machineName(row.hostId)} is connected, then send.`);
+      if (held(row.hostId, row.id)) throw new Error(sendBlock(row, { id: row.hostId, name: machineName(row.hostId) }, true, true) ?? "This chat moved to a Work thread.");
       const messageId = delivery.enqueue(id, text, []);
       // A new chat takes its name from its first message, as a Work thread does.
       if (row.title === "New chat" && online(row.hostId)) api.updateMeta(row, { title: chatTitle(text) }).catch(() => {});
@@ -341,6 +344,10 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
     promoteTicket: (row) => readPromoteTickets(storage, DESKTOP_PROMOTES_KEY)[promoteKey(row.hostId, row.id)],
     async promote(row, cwd, access) {
       const backend = need(row.hostId);
+      if (!delivery) throw new Error(`${deliveryRef.current?.problem ?? "Saved messages can't be read."} The chat can't move until they can.`);
+      // Queued messages go and uncertain ones are checked first, so the Work thread copies them.
+      await settleForPromote(delivery, deliveryId({ hostId: row.hostId, room: row.id }), row.hostId, row.id, machineName(row.hostId));
+      // No await between that check and sendPromote saving the ticket, which holds sends from here on.
       const fresh = () => ({ target: `pane-${crypto.randomUUID()}`, requestId: crypto.randomUUID() });
       try {
         const { work, chat } = await sendPromote(storage, (command, args) => backend.call(command, args), row, cwd, access, fresh, machineName(row.hostId));

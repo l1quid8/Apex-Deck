@@ -68,7 +68,7 @@ import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList } from "./ThreadList";
 import { chatOutboxRows, chatRights, chatRoute, machineThreadKey, mayPostIn, pickOpenPane, projectChats, threadKey, type ChatRights } from "./chatRoutes";
-import { parseAbandon, promoteKey, promoteRequest, readPromoteTickets, withoutTicket, writePromoteTickets } from "../chatPromote.ts";
+import { parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTickets, settleForPromote, withoutTicket, writePromoteTickets } from "../chatPromote.ts";
 import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
@@ -668,7 +668,8 @@ export function PhoneApp() {
     // Without chat_delivery_v1 a machine ignores the message id, so a message waits instead of being marked as maybe sent.
     // A phone that may not post there (read-only, or no longer allowed that thread) keeps the message too:
     // the machine would refuse it and leave it with no way to recover.
-    canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1") && mayPostIn(host.access(), message.room); },
+    // A chat being moved to a Work thread, or already moved, keeps it too: it would land after the copy.
+    canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1") && mayPostIn(host.access(), message.room) && !promoteHolds(readPromoteTickets(localStorage), message.machine.id, message.room, findRoom(catalogRef.current, message.machine.id, message.room)?.promotedTo); },
   });
   const delivery = deliveryRef.current.controller;
   /** The saved list with the delivery record laid over it, so a moved chat shows only where it lives now. */
@@ -947,6 +948,9 @@ export function PhoneApp() {
   async function promoteChat(row: ChatEntry, cwd: string, access: Record<string, Access>) {
     const host = phoneHost(row.hostId);
     if (!host || toLink(host.connection.get().status) !== "online") throw new Error(`${chatMachine(row.hostId).name} isn't connected. Nothing moved.`);
+    // Queued messages go and uncertain ones are checked first, so the Work thread copies them. No await
+    // between the check and saving the ticket, which holds sends to this chat from then on.
+    await settleForPromote(delivery, chatIdFor(row.hostId, row.id), row.hostId, row.id, host.machine.name);
     const saved = readPromoteTickets(localStorage);
     const key = promoteKey(row.hostId, row.id);
     const { ticket, fresh } = promoteRequest(saved[key], cwd, access, () => ({ target: `pane-${crypto.randomUUID()}`, requestId: crypto.randomUUID() }));
@@ -2056,6 +2060,7 @@ export function PhoneApp() {
     if (route.moved) { setNotice(`This chat moved to ${chatMachine(route.hostId).name}. Send again there.`); return null; }
     const chatId = route.chatId;
     if (!delivery.snapshot().chats[chatId]) { setNotice(`Open this chat once while ${chatMachine(row.hostId).name} is connected, then send.`); return null; }
+    if (promoteHolds(readPromoteTickets(localStorage), row.hostId, row.id, row.promotedTo)) { setNotice(row.promotedTo ? "This chat moved to a Work thread. Carry on there." : "This chat is moving to a Work thread. Finish the move or start over, then send."); return null; }
     try { return { chatId, messageId: delivery.enqueue(chatId, body, targets) }; } catch (error) { setNotice(words(error)); return null; }
   }
   /** Send from a chat: the message goes into the phone's outbox first, so the box can clear and nothing is lost. */

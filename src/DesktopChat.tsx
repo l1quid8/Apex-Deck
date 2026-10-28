@@ -301,7 +301,7 @@ export function ChatView({ row, chats, draft, onDraft, onOpenWork, onClose }: { 
   useEffect(() => { if (stuck.current) endRef.current?.scrollIntoView({ block: "end" }); }, [shown?.transcript.length, waiting.length, streamed, key]);
   useEffect(() => { stuck.current = true; }, [key]);
 
-  const block = sendBlock(row, machine, chats.rooms[row.hostId]) ?? chats.deliveryProblem;
+  const block = sendBlock(row, machine, chats.rooms[row.hostId], !!chats.promoteTicket(row)) ?? chats.deliveryProblem;
   const send = () => {
     const text = draft.trim();
     if (!text || block) return;

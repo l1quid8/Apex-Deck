@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { abandonPromote, botPatch, chatKey, deliveryId, readOpenChat, restoredChat, saveOpenChat, sendBlock, sendPromote, workThreadPlace, DESKTOP_CHAT_DELIVERY_KEY } from '../src/desktopChats.ts';
-import { DESKTOP_PROMOTES_KEY, PROMOTES_KEY, promoteKey, readPromoteTickets } from '../src/chatPromote.ts';
+import { DESKTOP_PROMOTES_KEY, PROMOTES_KEY, promoteHolds, promoteKey, readPromoteTickets, settleForPromote } from '../src/chatPromote.ts';
 import { chatRows, emptyCatalog, findRoom, parseChatList, withListedRooms } from '../src/chatCatalog.ts';
 import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/chatDelivery.ts';
 
@@ -200,4 +200,81 @@ test('Start over drops an unconfirmed move only after the machine fences it, or 
   await assert.rejects(abandonPromote(disk, async () => ({}), row), /kept until it can be checked/);
   assert.equal(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY)[promoteKey('local', 'c1')].requestId, 'req-1');
   assert.equal(await abandonPromote(memory(), async () => { throw new Error('not asked'); }, row), null);
+});
+
+test('a move waits for queued and uncertain messages, and holds every send after its ticket is saved, across a relaunch', async () => {
+  const disk = memory();
+  const log = [];
+  let online = false, promotedTo = null, postFails = false, claimed = 'done';
+  const rpc = {
+    async post(machine, room, message) {
+      log.push(['post', room, message.text]);
+      if (postFails) { postFails = false; throw new Error('link dropped'); }
+      return { state: 'done', replySeqs: [], clientMessageId: message.clientMessageId };
+    },
+    async claim(_m, _r, id) { log.push(['claim', id]); return { state: claimed, replySeqs: [], clientMessageId: id }; },
+    async exportRoom() { if (!online) throw new Error('offline'); return { kind: 'chat', participants: [], options: { policy: 'everyone', max_bot_hops: 3 }, transcript: [] }; },
+  };
+  // The desktop's rule: online, and not held by a move.
+  const make = () => new ChatDeliveryController({ storage: new JsonChatDeliveryStorage(disk, { key: DESKTOP_CHAT_DELIVERY_KEY }), rpc,
+    canSend: (_chat, message) => online && !promoteHolds(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY), message.machine.id, message.room, promotedTo) });
+  const id = deliveryId({ hostId: 'local', room: 'c1' });
+  const row = parseChatList('local', { rooms: [chat('c1')] })[0];
+  const call = async (command) => { log.push([command]); return { work: { id: 'w1', kind: 'work', title: 'c1', participants: [], cwd: '/repo' }, chat: { ...chat('c1'), promotedTo: 'w1' } }; };
+  const fresh = () => ({ target: 'w1', requestId: 'r1' });
+
+  // Null's case: queued offline, back online, moved. The message lands in c1 before the move copies it.
+  let outbox = make();
+  outbox.cacheChat({ id, title: 'c1', machine: { id: 'local', name: 'This Mac' }, room: 'c1', profiles: {}, snapshot: { kind: 'chat', participants: [], options: { policy: 'everyone', max_bot_hops: 3 }, transcript: [] } });
+  const queued = outbox.enqueue(id, 'queued offline', []);
+  await outbox.send(id, queued);
+  assert.equal(log.length, 0, 'offline: nothing sent');
+  // Still offline at move time: refused, nothing moved.
+  await assert.rejects(settleForPromote(outbox, id, 'local', 'c1', 'This Mac'), /A message hasn't reached This Mac yet/);
+  online = true;
+  await settleForPromote(outbox, id, 'local', 'c1', 'This Mac');
+  await sendPromote(disk, call, row, '/repo', {}, fresh, 'This Mac');
+  assert.deepEqual(log.map((entry) => entry[0]), ['post', 'chat_promote'], 'the queued message went to c1 first, then the move');
+  promotedTo = 'w1';
+
+  // After the move, a stray message for c1 never goes, now or after a relaunch.
+  const stray = outbox.enqueue(id, 'too late', []);
+  await outbox.flush(id);
+  outbox = make();
+  await outbox.resume();
+  assert.equal(log.filter((entry) => entry[0] === 'post').length, 1, 'nothing posted to c1 after the move');
+  assert.equal(outbox.snapshot().chats[id].outbox.find((item) => item.id === stray).state, 'unsent');
+});
+
+test('while a move is unconfirmed, sends wait through a relaunch; an uncertain message is checked first and a running answer blocks the move', async () => {
+  const disk = memory();
+  const posts = [];
+  let postFails = true, claimed = 'running';
+  const rpc = {
+    async post(_m, room, message) { posts.push([room, message.text]); if (postFails) { postFails = false; throw new Error('link dropped'); } return { state: 'done', replySeqs: [], clientMessageId: message.clientMessageId }; },
+    async claim(_m, _r, id) { return { state: claimed, replySeqs: [], clientMessageId: id }; },
+    async exportRoom() { return { kind: 'chat', participants: [], options: { policy: 'everyone', max_bot_hops: 3 }, transcript: [] }; },
+  };
+  const make = () => new ChatDeliveryController({ storage: new JsonChatDeliveryStorage(disk, { key: DESKTOP_CHAT_DELIVERY_KEY }), rpc,
+    canSend: (_chat, message) => !promoteHolds(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY), message.machine.id, message.room, null) });
+  const id = deliveryId({ hostId: 'vps', room: 'c1' });
+  const row = parseChatList('vps', { rooms: [chat('c1')] })[0];
+  let outbox = make();
+  outbox.cacheChat({ id, title: 'c1', machine: { id: 'vps', name: 'Apex-Terminal' }, room: 'c1', profiles: {}, snapshot: { kind: 'chat', participants: [], options: { policy: 'everyone', max_bot_hops: 3 }, transcript: [] } });
+  const first = outbox.enqueue(id, 'hello', []);
+  await assert.rejects(outbox.send(id, first), /link dropped/);
+  assert.equal(outbox.snapshot().chats[id].outbox[0].state, 'uncertain');
+  // It reached the machine and a bot is still answering: the reply would stay behind, so no move yet.
+  await assert.rejects(settleForPromote(outbox, id, 'vps', 'c1', 'Apex-Terminal'), /still answering/);
+  assert.equal(posts.length, 1, 'checked by id, not posted again');
+  claimed = 'done';
+  await settleForPromote(outbox, id, 'vps', 'c1', 'Apex-Terminal');
+  // The move's answer is lost: its ticket stays, and so does the hold.
+  await assert.rejects(sendPromote(disk, async () => { throw new Error('connection dropped'); }, row, '/srv', {}, () => ({ target: 'w1', requestId: 'r1' }), 'Apex-Terminal'), /connection dropped/);
+  const held = outbox.enqueue(id, 'during the move', []);
+  await outbox.send(id, held);
+  outbox = make();
+  await outbox.resume();
+  assert.equal(posts.length, 1, 'held while the move is unconfirmed, before and after a relaunch');
+  assert.equal(outbox.snapshot().chats[id].outbox.find((item) => item.id === held).state, 'unsent');
 });

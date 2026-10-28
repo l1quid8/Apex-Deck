@@ -13,6 +13,7 @@ test('a Next button drawn for one machine\'s chat sends nothing once another mac
   const {createRoomRecovery,representedRoomEvent}=await import(new URL('../src/roomRecovery.ts', import.meta.url).href);
   const {createStepsIndexLoader}=await import(new URL('../src/workSteps.ts', import.meta.url).href);
   const {formView}=await import(new URL('../src/questions.ts', import.meta.url).href);
+  const {promoteHolds,readPromoteTickets}=await import(new URL('../src/chatPromote.ts', import.meta.url).href);
   const source=fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url),'utf8');
   const slice=(s,e)=>{const at=source.indexOf(s),end=source.indexOf(e,at);assert.ok(at>=0&&end>at,s);return source.slice(at,end)};
   const effect=slice('  useEffect(() => {\n    if (!openPane || !openWorkspace)', '\n  // Who the message as typed');
@@ -39,6 +40,7 @@ test('a Next button drawn for one machine\'s chat sends nothing once another mac
   setSavedSteps:()=>{},setWaiting:()=>{},setBusy:()=>{},setCuts:()=>{},queues:{current:new Map()},stuckRef:{current:false},
   chatOnline:true,openRights:{post:true},linkOf:()=>({id:'B',status:'online'}),roomFor:row=>env.room&&env.room.id===row.id&&env.room.hostId===row.hostId?env.room:null,draft:{text:'',files:[]},mayPostIn,
   chatRoute,chatMachine:id=>({name:'Machine '+id}),queueFor:()=>{throw Error('Work queue must not run')},findRoom:()=>null,
+  promoteHolds,readPromoteTickets,localStorage:{getItem:()=>null},
   };
   const h=new Function('env',`with(env){${compiled};return {sendStep}}`)(env);
   await new Promise(r=>setTimeout(r,0));
