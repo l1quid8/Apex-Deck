@@ -115,6 +115,8 @@ function appHarness() {
     ...assistantWorkspaceModel,
     assistantIdentityKey,rosterMessage,assistantSidebarPanes,assistantThreadKey,
     usePersonalAssistants:()=>assistantCollection,
+    useDesktopChats:()=>({catalog:{version:1,hosts:{},last:null},rows:[],archived:[],machines:[],rooms:{},problems:{},machineName:id=>id}),
+    readOpenChat:()=>null,restoredChat:()=>'unknown',
 
     subscribeToImports,
     chatFolder, useWorktreeMount,
@@ -158,7 +160,7 @@ function appHarness() {
     layoutKey: () => '',
     pickerRows: () => [], workInRows: () => [],
   };
-  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','AssistantWorkspace','AssistantEditor','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','ConfirmDialog','PathPrompt','SidebarHandle','RightPanel']);
+  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','AssistantWorkspace','AssistantEditor','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','ConfirmDialog','PathPrompt','SidebarHandle','RightPanel','ChatRail','ChatView','NewChatDialog']);
   const globalValues = {
     localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
     crypto: { randomUUID: () => `request-${++requestSequence}` },

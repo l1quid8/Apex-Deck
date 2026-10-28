@@ -108,6 +108,9 @@ import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, Parti
 import { restartQuestions, updateActions, useUpdates } from "./updates.ts";
 import { UpdateNotices } from "./UpdateNotices.tsx";
 import { ipcWords } from "./electronShell";
+import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, type ChatPlace } from "./desktopChats.ts";
+import { ChatRail, ChatView, NewChatDialog } from "./DesktopChat.tsx";
+import { findRoom } from "./chatCatalog.ts";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A terminal counts as working if it produced output this recently. */
@@ -1905,6 +1908,22 @@ export function App() {
   const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
   const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
+  // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
+  // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
+  const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
+  const chats = useDesktopChats({
+    machines: chatMachines,
+    backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
+    connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
+    onError: (text) => toast(text),
+  });
+  const [openChat, setOpenChatState] = useState<ChatPlace | null>(() => readOpenChat(localStorage));
+  const setOpenChat = (place: ChatPlace | null) => { setOpenChatState(place); saveOpenChat(localStorage, place); };
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  // A restored chat its machine no longer lists (deleted, or moved by the phone) is dropped, not shown empty.
+  useEffect(() => { if (openChat && restoredChat(chats.catalog, openChat) === "drop") setOpenChat(null); }, [openChat, chats.catalog]);
+  const chatShown = !!openChat && mainView.kind === "workspace" && !creatingAssistant;
+  const openChatRow = openChat ? findRoom(chats.catalog, openChat.hostId, openChat.room) : null;
   const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
   const taskRouteStatus = (id: string) => { try { return hostBackend(id).host?.connection.get().status; } catch { return undefined; } };
   const workspaceTaskProblems = Object.entries(assistantTaskErrors).filter(([id]) => workspaces.some(workspace => workspace.id === id && !workspace.hidden)).map(([id, error]) => `${workspaces.find(workspace => workspace.id === id)?.name ?? id}: ${error}`);
@@ -2532,7 +2551,7 @@ export function App() {
         </button>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         </div>
-        <SectionNavigation section={mainView.kind==='workspace'&&!creatingAssistant?section:null} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
+        <SectionNavigation section={mainView.kind==='workspace'&&!creatingAssistant?section:null} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setOpenChat(null); setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
         <LayoutPicker value={layoutPreset} disabled={section === "agents" || visiblePanes.length < 2} onSelect={arrange} />
         {section === "agents" && <button className="primary titlebar-new" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
@@ -2556,6 +2575,7 @@ export function App() {
       {monitorPollers.map(({ hostId, backend: hostRoute, version }) => <HostMonitors key={hostId} hostId={hostId} backend={hostRoute} getVersion={monitorHostVersion} onMonitors={acceptHostMonitors(version)} />)}
       {migrationNotice && <div className="connection-banner" role="status">{migrationNotice}<button onClick={() => setMigrationNotice("")}>Dismiss</button></div>}
       <UpdateNotices updates={updates} onRestart={restartToUpdate} />
+      {newChatOpen && <NewChatDialog chats={chats} onClose={() => setNewChatOpen(false)} onStarted={(row) => { setNewChatOpen(false); setMainView({kind:"workspace"}); setCreatingAssistant(false); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       <div className={`body${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
@@ -2566,8 +2586,9 @@ export function App() {
             assistantBackend={ref=>{const host=assistants.hosts.find(host=>host.hostId===ref.hostId);if(!host)return undefined;try{return hostBackend(host.routeHostId);}catch{return undefined;}}}
             selectedAssistant={mainView.kind==='assistant'?mainView.assistant:null}
             rosterProblem={rosterMessage(assistants.assistants,assistants.hosts)}
-            onOpenAssistant={openAssistant}
-            onCreateAssistant={()=>{setCreatingAssistant(true);setMainView({kind:'workspace'});}}
+            onOpenAssistant={ref=>{setOpenChat(null);openAssistant(ref);}}
+            onCreateAssistant={()=>{setOpenChat(null);setCreatingAssistant(true);setMainView({kind:'workspace'});}}
+            chats={<ChatRail chats={chats} openKey={openChat ? chatKey(openChat) : null} onNew={() => setNewChatOpen(true)} onOpen={(row) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
             section={section}
             panes={assistantSidebarPanes(viewPanes,currentAssistantRegistry,keptAssistantThreads)}
             workspaces={workspaces}
@@ -2584,11 +2605,12 @@ export function App() {
             workspaceRename={renameRequests}
             paneMenu={(pane) => paneMenuEntries(pane, "rail")}
             projectMenu={projectMenuEntries}
-            onOpenPane={pane=>{setMainView({kind:"workspace"});focusPane(pane);}}
+            onOpenPane={pane=>{setOpenChat(null);setMainView({kind:"workspace"});focusPane(pane);}}
             onTogglePin={(pane) => { if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId) runPaneMenu(pane, "pin", "rail"); }}
             onRenamePane={(id, title) => { if (viewPanes.find((pane) => pane.id === id && (pane as Pane & { assistantTaskId?: string }).assistantTaskId)) setTaskPaneTitle(id, title); else renamePane(id, title); }}
             onRenameWorkspace={(id, name) => setWorkspaces((list) => renameWorkspace(list, id, name))}
             onProjectClick={(workspace) => {
+              setOpenChat(null);
               setMainView({kind:"workspace"});
               setActiveWorkspace(workspace.id);
               setWorkspaces((list) => setCollapsed(list, workspace.id, !workspace.collapsed));
@@ -2617,7 +2639,11 @@ export function App() {
         )}
 
         <main ref={canvasRef} className={`canvas section-${section}`} inert={sidePanelFull ? true : undefined} aria-hidden={sidePanelFull ? true : undefined}>
-          <div className="workspace-canvas-content" style={{display:mainView.kind==='workspace'&&!creatingAssistant?'contents':'none'}} inert={mainView.kind!=='workspace'||creatingAssistant?true:undefined}>
+          {chatShown && (openChatRow
+            ? <ChatView key={chatKey(openChat!)} row={openChatRow} chats={chats} onClose={() => setOpenChat(null)}
+                onOpenWork={(row, workId) => { const pane = viewPanes.find((p) => p.id === workId); if (pane) { setOpenChat(null); focusPane(pane); } else toast(`The Work thread shows under its project on ${chats.machineName(row.hostId)} once that project is open in Deck.`); }} />
+            : <div className="picker"><p role="status">Opening the chat…</p><button onClick={() => setOpenChat(null)}>Close</button></div>)}
+          <div className="workspace-canvas-content" style={{display:mainView.kind==='workspace'&&!creatingAssistant&&!chatShown?'contents':'none'}} inert={mainView.kind!=='workspace'||creatingAssistant||chatShown?true:undefined}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} voiceSettings={settings.voice} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
