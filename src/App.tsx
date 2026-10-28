@@ -108,9 +108,9 @@ import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, Parti
 import { restartQuestions, updateActions, useUpdates } from "./updates.ts";
 import { UpdateNotices } from "./UpdateNotices.tsx";
 import { ipcWords } from "./electronShell";
-import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, type ChatPlace } from "./desktopChats.ts";
+import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, workThreadPlace, type ChatPlace } from "./desktopChats.ts";
 import { ChatRail, ChatView, NewChatDialog } from "./DesktopChat.tsx";
-import { findRoom } from "./chatCatalog.ts";
+import { findRoom, type ChatEntry } from "./chatCatalog.ts";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A terminal counts as working if it produced output this recently. */
@@ -1924,6 +1924,19 @@ export function App() {
   useEffect(() => { if (openChat && restoredChat(chats.catalog, openChat) === "drop") setOpenChat(null); }, [openChat, chats.catalog]);
   const chatShown = !!openChat && mainView.kind === "workspace" && !creatingAssistant;
   const openChatRow = openChat ? findRoom(chats.catalog, openChat.hostId, openChat.room) : null;
+  // Unsent text per chat (machine + room), kept here so switching chats doesn't drop it.
+  const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({});
+  const openWorkThread = (row: ChatEntry, workId: string) => {
+    const place = workThreadPlace(workspaces, panes, row.hostId, findRoom(chats.catalog, row.hostId, workId), () => newId("ws"), folderName);
+    if (place === "unlisted") { toast(`${chats.machineName(row.hostId)} hasn't listed that Work thread yet. Try again once it's connected.`); return; }
+    if (place === "clash") { toast("A thread with the same id from another machine is open. Close it to open this one."); return; }
+    if (place.added) {
+      setWorkspaces(place.workspaces);
+      setPanes((list) => list.some((p) => p.id === place.pane.id) ? list : [...list, place.pane]);
+    }
+    setOpenChat(null);
+    focusPane(place.pane);
+  };
   const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
   const taskRouteStatus = (id: string) => { try { return hostBackend(id).host?.connection.get().status; } catch { return undefined; } };
   const workspaceTaskProblems = Object.entries(assistantTaskErrors).filter(([id]) => workspaces.some(workspace => workspace.id === id && !workspace.hidden)).map(([id, error]) => `${workspaces.find(workspace => workspace.id === id)?.name ?? id}: ${error}`);
@@ -2641,7 +2654,8 @@ export function App() {
         <main ref={canvasRef} className={`canvas section-${section}`} inert={sidePanelFull ? true : undefined} aria-hidden={sidePanelFull ? true : undefined}>
           {chatShown && (openChatRow
             ? <ChatView key={chatKey(openChat!)} row={openChatRow} chats={chats} onClose={() => setOpenChat(null)}
-                onOpenWork={(row, workId) => { const pane = viewPanes.find((p) => p.id === workId); if (pane) { setOpenChat(null); focusPane(pane); } else toast(`The Work thread shows under its project on ${chats.machineName(row.hostId)} once that project is open in Deck.`); }} />
+                draft={chatDrafts[chatKey(openChat!)] ?? ""} onDraft={(text) => { const key = chatKey(openChat!); setChatDrafts((all) => ({ ...all, [key]: text })); }}
+                onOpenWork={openWorkThread} />
             : <div className="picker"><p role="status">Opening the chat…</p><button onClick={() => setOpenChat(null)}>Close</button></div>)}
           <div className="workspace-canvas-content" style={{display:mainView.kind==='workspace'&&!creatingAssistant&&!chatShown?'contents':'none'}} inert={mainView.kind!=='workspace'||creatingAssistant||chatShown?true:undefined}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} voiceSettings={settings.voice} />}

@@ -162,7 +162,7 @@ function BotControls({ bot, disabled, onChange, onRemove }: { bot: ParticipantCo
 
 interface Live { participants: ParticipantConfig[]; transcript: Message[]; working: Record<string, string> }
 
-export function ChatView({ row, chats, onOpenWork, onClose }: { row: ChatEntry; chats: DesktopChats; onOpenWork(row: ChatEntry, workId: string): void; onClose(): void }) {
+export function ChatView({ row, chats, draft, onDraft, onOpenWork, onClose }: { row: ChatEntry; chats: DesktopChats; draft: string; onDraft(text: string): void; onOpenWork(row: ChatEntry, workId: string): void; onClose(): void }) {
   const key = deliveryId({ hostId: row.hostId, room: row.id });
   const backend = chats.backendOf(row.hostId);
   const dot = useDot(chats.connectionOf(row.hostId), row.hostId === "local");
@@ -170,14 +170,12 @@ export function ChatView({ row, chats, onOpenWork, onClose }: { row: ChatEntry; 
   const machine = { id: row.hostId, name: chats.machineName(row.hostId) };
   const [room, setRoom] = useState<Live | null>(null);
   const [problem, setProblem] = useState("");
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [adding, setAdding] = useState<ChatProfile[] | null>(null);
   const rowRef = useRef(row);
   rowRef.current = row;
   const endRef = useRef<HTMLDivElement>(null);
   const stuck = useRef(true);
   const nameRef = useRef((id: string) => id);
-  const draft = drafts[key] ?? "";
 
   // The room's state, then its live events. Reloaded when the chat or its machine's connection changes.
   useEffect(() => {
@@ -240,7 +238,7 @@ export function ChatView({ row, chats, onOpenWork, onClose }: { row: ChatEntry; 
   const send = () => {
     const text = draft.trim();
     if (!text || block) return;
-    try { chats.send(row, text); setDrafts((all) => ({ ...all, [key]: "" })); setProblem(""); stuck.current = true; }
+    try { chats.send(row, text); onDraft(""); setProblem(""); stuck.current = true; }
     catch (error) { setProblem(words(error)); }
   };
   const act = (work: Promise<unknown>) => work.catch((error) => setProblem(words(error)));
@@ -305,7 +303,7 @@ export function ChatView({ row, chats, onOpenWork, onClose }: { row: ChatEntry; 
     <footer className="desktop-chat-composer">
       <textarea aria-label="Message" rows={3} value={draft} disabled={!!row.promotedTo}
         placeholder={block ?? (online ? `Message ${shown ? botNames({ bots: shown.participants.map((p) => ({ id: p.id, name: p.display_name })) }) : "the bots"}` : `Waits for ${machine.name}`)}
-        onChange={(event) => { const text = event.target.value; setDrafts((all) => ({ ...all, [key]: text })); }}
+        onChange={(event) => onDraft(event.target.value)}
         onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); } }} />
       <button type="button" className="primary" disabled={!draft.trim() || !!block} onClick={send}>Send</button>
     </footer>

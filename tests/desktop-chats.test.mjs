@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { botPatch, chatKey, deliveryId, readOpenChat, restoredChat, saveOpenChat, sendBlock, DESKTOP_CHAT_DELIVERY_KEY } from '../src/desktopChats.ts';
-import { chatRows, emptyCatalog, parseChatList, withListedRooms } from '../src/chatCatalog.ts';
+import { botPatch, chatKey, deliveryId, readOpenChat, restoredChat, saveOpenChat, sendBlock, workThreadPlace, DESKTOP_CHAT_DELIVERY_KEY } from '../src/desktopChats.ts';
+import { chatRows, emptyCatalog, findRoom, parseChatList, withListedRooms } from '../src/chatCatalog.ts';
 import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/chatDelivery.ts';
 
 const memory = () => { const data = new Map(); return { getItem: k => data.has(k) ? data.get(k) : null, setItem: (k, v) => data.set(k, String(v)), removeItem: k => data.delete(k), data }; };
@@ -90,4 +90,44 @@ test('the desktop outbox saves a message before sending, and after a relaunch as
   assert.equal(posts.length, 1);
   assert.equal(second.snapshot().chats[id].outbox[0].id, messageId);
   assert.equal(second.snapshot().chats[id].outbox[0].state, 'delivered');
+});
+
+test('a draft belongs to its machine and room, so switching chats keeps each one', () => {
+  const drafts = {};
+  drafts[chatKey({ hostId: 'local', room: 'a' })] = 'half a thought';
+  drafts[chatKey({ hostId: 'vps', room: 'a' })] = 'other machine';
+  assert.equal(drafts[chatKey({ hostId: 'local', room: 'a' })], 'half a thought');
+  assert.equal(drafts[chatKey({ hostId: 'vps', room: 'a' })], 'other machine');
+});
+
+test('Open Work thread finds the pane on the chat\'s machine, or adds the project and thread a phone made', () => {
+  let catalog = listed(emptyCatalog(), 'vps', [chat('c1', { promotedTo: 'w1' }), { id: 'w1', kind: 'work', title: 'Trip plan', cwd: '/srv/trip', folderName: 'trip', participants: [], updatedAt: 2 }]);
+  const work = findRoom(catalog, 'vps', 'w1');
+  let n = 0; const makeId = () => `ws${++n}`; const nameOf = p => p.split('/').at(-1);
+
+  const added = workThreadPlace([], [], 'vps', work, makeId, nameOf);
+  assert.equal(added.added, true);
+  assert.deepEqual(added.workspaces, [{ id: 'ws1', name: 'trip', path: '/srv/trip', hostId: 'vps', family: added.workspaces[0].family }]);
+  assert.deepEqual(added.pane, { id: 'w1', workspaceId: 'ws1', kind: 'chat', title: 'Trip plan' });
+
+  // Already open on that machine: focus it, add nothing.
+  const again = workThreadPlace(added.workspaces, [added.pane], 'vps', work, makeId, nameOf);
+  assert.equal(again.added, false);
+  assert.equal(again.pane, added.pane);
+
+  // The project is open but not the thread: reuse the project.
+  const reuse = workThreadPlace(added.workspaces, [], 'vps', work, makeId, nameOf);
+  assert.equal(reuse.pane.workspaceId, 'ws1');
+  assert.equal(reuse.workspaces.length, 1);
+
+  // The same folder path on This Mac is a different project.
+  const local = [{ id: 'mine', name: 'trip', path: '/srv/trip' }];
+  const other = workThreadPlace(local, [], 'vps', work, makeId, nameOf);
+  assert.notEqual(other.pane.workspaceId, 'mine');
+
+  // The same room id open from another machine can't show beside it.
+  assert.equal(workThreadPlace(local, [{ id: 'w1', workspaceId: 'mine', kind: 'chat', title: 'x' }], 'vps', work, makeId, nameOf), 'clash');
+  // Not listed yet, or not a Work thread.
+  assert.equal(workThreadPlace([], [], 'vps', null, makeId, nameOf), 'unlisted');
+  assert.equal(workThreadPlace([], [], 'vps', findRoom(catalog, 'vps', 'c1'), makeId, nameOf), 'unlisted');
 });
