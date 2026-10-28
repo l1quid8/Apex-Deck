@@ -681,7 +681,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 176);
+        assert_eq!(names.len(), 177);
+        assert!(names.contains(&"model_metrics".to_string()));
         for name in ["phone_devices", "phone_control"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"bot_copies_set_check".to_string()));
         for name in ["personal_task_lifecycle", "personal_reply_cancel", "personal_archive"] { assert!(names.contains(&name.to_owned())); }
