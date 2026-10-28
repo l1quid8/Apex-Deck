@@ -484,12 +484,13 @@ def auto(request_path):
         wait_for_exit(request['uid'])
         install(notes)
         result['outcome']='installed'
-        if notes: result['message']=' '.join(notes)
     except BaseException as error:
         attention=(UPGRADES/'install.lock'/'recovery-needed.txt').exists()
         result['outcome']='needs-attention' if attention else 'failed'
-        result['message']=' '.join([str(error) or error.__class__.__name__,*notes])
-        print('Apex Deck update stopped: '+result['message'],file=sys.stderr,flush=True)
+        result['message']=str(error) or error.__class__.__name__
+        print('Apex Deck update stopped: '+' '.join([result['message'],*notes]),file=sys.stderr,flush=True)
+    # Kept apart from `message`, which Deck may shorten: every account's note, and what brings it back, is shown whole.
+    if notes: result['notes']=notes
     result['finishedAt']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
     def clear():
         # The staged copy and the download are copies; the backup keeps what was replaced.

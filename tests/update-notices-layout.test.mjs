@@ -23,10 +23,19 @@ function measure() {
     coversComposer: overlaps(rect(el), composer),
     coversSend: overlaps(rect(el), send),
     words: { clientWidth: el.querySelector('span').clientWidth, scrollWidth: el.querySelector('span').scrollWidth },
+    scroller: el.querySelector('.update-notice-words') && (() => {
+      const box = el.querySelector('.update-notice-words');
+      const notes = [...box.querySelectorAll('li')];
+      box.scrollTop = box.scrollHeight;
+      const shown = rect(box);
+      const last = notes.length ? rect(notes[notes.length - 1]) : null;
+      return { rect: shown, scrolls: box.scrollHeight > box.clientHeight, notes: notes.length, lastInView: !last || (last.top >= shown.top - 0.5 && last.bottom <= shown.bottom + 0.5) };
+    })(),
     buttons: [...el.querySelectorAll('button')].map((b) => ({ name: b.textContent, rect: rect(b) })),
   }));
   return {
     innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
     pageWidth: document.documentElement.scrollWidth,
     titlebar: rect(document.querySelector('.titlebar')),
     body: rect(document.querySelector('.body')),
@@ -44,7 +53,9 @@ test('update notices sit under the title bar and never cover a chat box', { time
     const h=React.createElement;
     const ready={current:'0.9.0',state:'ready',disabledReason:null,available:{version:'0.9.1',notes:''},progress:null,error:null,checkedAt:null,dismissed:false,result:null};
     const failed={outcome:'failed',version:'0.9.1',message:'Apex Deck is still open in another account on this Mac. Quit it there, then try the update again.'};
-    const states={ready,failed:{...ready,state:'up-to-date',available:null,result:failed},both:{...ready,result:failed}};
+    const note=(name)=>"Apex Deck's background service in the account \\""+name+"\\" didn't start again, so agents and phone connections there stay off until Apex Deck is opened in that account.";
+    const long={outcome:'failed',version:'0.9.1',message:'launchctl bootstrap failed: '+'Bootstrap failed: 5: Input/output error. '.repeat(11),notes:Array.from({length:25},(_,i)=>note('account-'+(i+1)))};
+    const states={ready,failed:{...ready,state:'up-to-date',available:null,result:failed},both:{...ready,result:failed},long:{...ready,result:long}};
     window.restarts=0;
     const root=createRoot(document.getElementById('root'));
     window.show=(name)=>root.render(h('div',{className:'app'},
@@ -91,6 +102,18 @@ test('update notices sit under the title bar and never cover a chat box', { time
             }
           }
         }
+        // The smallest main window: 25 account notes after a long error scroll inside the notice, so OK and the panes stay on screen.
+        win.setContentSize(900,600);
+        await run('window.show("long")');await frame();
+        const s=await run('('+${JSON.stringify(measure.toString())}+')()');
+        const seen='900x600 long: '+JSON.stringify(s);
+        const notice=s.notices[1];
+        assert.equal(notice.scroller.notes,25,'every account note is listed: '+seen);
+        assert.equal(notice.scroller.scrolls,true,'the notes scroll inside the notice: '+seen);
+        assert.equal(notice.scroller.lastInView,true,'the last account note can be scrolled into view: '+seen);
+        assert.ok(notice.scroller.rect.bottom<=s.innerHeight,'the notice ends inside the window: '+seen);
+        for(const n of s.notices) for(const b of n.buttons) assert.ok(b.rect.bottom<=s.innerHeight&&b.rect.top>=0,b.name+' stays on screen: '+seen);
+        assert.ok(s.composer.bottom<=s.innerHeight+0.5&&s.composer.top>=s.body.top,'the chat box stays on screen: '+seen);
         await run('window.show("ready")');await frame();
         await run('[...document.querySelectorAll("button")].find(b=>b.textContent==="Restart to update").click()');
         assert.equal(await run('window.restarts'),1,'Restart to update asks App to restart');

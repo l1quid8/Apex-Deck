@@ -226,19 +226,32 @@ note='Apex Deck\'s background service in the account "Other Person" didn\'t star
 u.install=lambda notes:notes.append(note)
 assert u.auto(job/'request.json')==0
 result=json.loads((u.RESULTS/'last-update.json').read_text())
-assert result['outcome']=='installed' and result['message']==note,result
+assert result['outcome']=='installed' and result['notes']==[note] and 'message' not in result,result
 assert events[-1]==('reopen',501)
 shutil.rmtree(directory)
 `));
 
-test('a rolled-back update adds the other account’s service note to its reason', () => python(jobFixture + String.raw`
+test('a rolled-back update lists the other account’s service note apart from its reason', () => python(jobFixture + String.raw`
 def rolled_back(notes):
  notes.append('Apex Deck\'s background service in the account "Other Person" didn\'t start again.')
  raise RuntimeError('injected')
 u.install=rolled_back
 assert u.auto(job/'request.json')==1
 result=json.loads((u.RESULTS/'last-update.json').read_text())
-assert result['outcome']=='failed' and result['message'].startswith('injected ') and 'Other Person' in result['message'],result
+assert result['outcome']=='failed' and result['message']=='injected' and len(result['notes'])==1 and 'Other Person' in result['notes'][0],result
+shutil.rmtree(directory)
+`));
+
+test('25 accounts’ notes after a long command error are all written, none folded into the reason', () => python(jobFixture + String.raw`
+notes=['Apex Deck\'s background service in the account "account-'+str(i)+'" didn\'t start again, so agents and phone connections there stay off until Apex Deck is opened in that account.' for i in range(25)]
+error='launchctl bootstrap failed: '+'Bootstrap failed: 5: Input/output error. '*40
+def rolled_back(found):
+ found.extend(notes)
+ raise RuntimeError(error)
+u.install=rolled_back
+assert u.auto(job/'request.json')==1
+result=json.loads((u.RESULTS/'last-update.json').read_text())
+assert result['message']==error and result['notes']==notes,result
 shutil.rmtree(directory)
 `));
 
