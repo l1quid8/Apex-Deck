@@ -278,3 +278,50 @@ test('while a move is unconfirmed, sends wait through a relaunch; an uncertain m
   assert.equal(posts.length, 1, 'held while the move is unconfirmed, before and after a relaunch');
   assert.equal(outbox.snapshot().chats[id].outbox.find((item) => item.id === held).state, 'unsent');
 });
+
+test('a fenced send blocks promotion across relaunch until its retry reaches the transcript', async () => {
+  const disk = memory();
+  const transcript = [];
+  const workCopies = [];
+  let losePost = true;
+  const rpc = {
+    async post(_machine, _room, message) {
+      if (losePost) throw new Error('link dropped before acceptance');
+      transcript.push({ seq: transcript.length + 1, role: 'human', text: message.text, clientMessageId: message.clientMessageId });
+      return { state: 'done', replySeqs: [], clientMessageId: message.clientMessageId };
+    },
+    async claim(_machine, _room, id) { return { state: 'fenced', replySeqs: [], clientMessageId: id }; },
+    async exportRoom() { return { kind: 'chat', participants: [], options: { policy: 'everyone', max_bot_hops: 3 }, transcript: structuredClone(transcript) }; },
+  };
+  const make = () => new ChatDeliveryController({ storage: new JsonChatDeliveryStorage(disk, { key: DESKTOP_CHAT_DELIVERY_KEY }), rpc });
+  const id = deliveryId({ hostId: 'local', room: 'c1' });
+  let outbox = make();
+  outbox.cacheChat({ id, title: 'c1', machine: { id: 'local', name: 'This Mac' }, room: 'c1', profiles: {}, snapshot: await rpc.exportRoom() });
+  const message = outbox.enqueue(id, 'must come with me', []);
+  await assert.rejects(outbox.send(id, message), /link dropped/);
+  const move = async () => {
+    await settleForPromote(outbox, id, 'local', 'c1', 'This Mac');
+    await sendPromote(disk, async () => { workCopies.push(structuredClone(transcript)); return { work: { id: 'w1', kind: 'work', title: 'c1', participants: [], cwd: '/repo' } }; },
+      parseChatList('local', { rooms: [chat('c1')] })[0], '/repo', {}, () => ({ target: 'w1', requestId: 'r1' }), 'This Mac');
+  };
+  await assert.rejects(move(), /not sent.*Retry/i);
+  assert.equal(outbox.snapshot().chats[id].outbox[0].accepted, 'fenced');
+  assert.equal(transcript.length, 0);
+  assert.equal(workCopies.length, 0, 'no promotion copied an empty transcript');
+  assert.equal(promoteHolds(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY), 'local', 'c1', null), false, 'blocked move leaves Retry available');
+  outbox = make();
+  await assert.rejects(move(), /not sent.*Retry/i);
+  // A retry can itself be fenced. It must not count as resolving the original message.
+  await assert.rejects(outbox.retry(id, message), /link dropped/);
+  await assert.rejects(move(), /not sent.*Retry/i);
+  const failedRetry = outbox.snapshot().chats[id].outbox[1].id;
+  outbox = make();
+  await assert.rejects(move(), /not sent.*Retry/i);
+  losePost = false;
+  await outbox.retry(id, failedRetry);
+  outbox = make();
+  await move();
+  assert.deepEqual(transcript.map(item => item.text), ['must come with me']);
+  assert.deepEqual(workCopies.map(copy => copy.map(item => item.text)), [['must come with me']]);
+  assert.deepEqual(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY), {}, 'confirmed move clears its ticket');
+});

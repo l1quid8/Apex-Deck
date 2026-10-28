@@ -71,10 +71,27 @@ export function promoteRequest(saved: PromoteTicket | undefined, cwd: string, ac
  *  so a message still on its way, or one a bot is still answering, would be left behind in the old chat.
  *  Run it after the outbox has had its chance to send and check, right before the ticket is saved:
  *  from then on sends to the chat are held. */
-export function promoteWait(outbox: readonly { machine: { id: string }; room: string; state: string; accepted?: string }[] | undefined, machine: string, room: string, name: string): string | null {
+export function promoteWait(outbox: readonly { machine: { id: string }; room: string; state: string; accepted?: string; id?: string; retryOf?: string }[] | undefined, machine: string, room: string, name: string): string | null {
   const here = (outbox ?? []).filter((item) => item.machine.id === machine && item.room === room);
   const waiting = here.filter((item) => item.state !== "delivered").length;
   if (waiting) return `${waiting === 1 ? "A message hasn't" : `${waiting} messages haven't`} reached ${name} yet. Move the chat once ${waiting === 1 ? "it has" : "they have"} gone, so the Work thread gets ${waiting === 1 ? "it" : "them"}.`;
+  // A fence confirms that this ID never posted; "delivered" only means its receipt is known.
+  // A successful retry resolves its fenced ancestors, including retries that were also fenced.
+  const resolved = new Set<string>();
+  const byId = new Map(here.filter((item) => item.id).map((item) => [item.id!, item]));
+  for (const item of here) {
+    if (item.state !== "delivered" || (item.accepted !== "done" && item.accepted !== "interrupted")) continue;
+    const seen = new Set<string>();
+    let ancestor = item.retryOf;
+    while (ancestor && !seen.has(ancestor)) {
+      seen.add(ancestor);
+      resolved.add(ancestor);
+      ancestor = byId.get(ancestor)?.retryOf;
+    }
+  }
+  if (here.some((item) => item.accepted === "fenced" && (!item.id || !resolved.has(item.id)))) {
+    return "A message was not sent. Retry it successfully before moving the chat, so the Work thread gets it.";
+  }
   if (here.some((item) => item.accepted === "running")) return "A bot is still answering. Move the chat once it has finished, so the reply goes with it.";
   return null;
 }
