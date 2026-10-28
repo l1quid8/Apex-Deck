@@ -4476,8 +4476,8 @@ mod tests {
         ] {
             for kind in ["post", "post_to", "turn"] {
                 let command = match kind {
-                    "post" => crate::Command::RoomPost { id: child.clone(), text: "Continue with a calculator".into(), interactive_answers: answers },
-                    "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], interactive_answers: answers, client_turn_id: None, max_bot_hops: None },
+                    "post" => crate::Command::RoomPost { id: child.clone(), text: "Continue with a calculator".into(), interactive_answers: answers, client_message_id: None },
+                    "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], interactive_answers: answers, client_turn_id: None, max_bot_hops: None, client_message_id: None },
                     _ => crate::Command::RoomTurn { id: child.clone(), participants: vec![ParticipantId::new("null")], hops: Some(0), interactive_answers: answers },
                 };
                 f.runtime.block_on(f.host.call_with_client_capability_assuming_verified_ui_for_test(command, capability)).unwrap();

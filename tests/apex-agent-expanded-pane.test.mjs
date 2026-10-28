@@ -15,7 +15,7 @@ test('assistant routing keeps the human pane tree mounted inside a hidden worksp
 test('global Agents leaves the assistant view and manages only reusable worker profiles', () => {
  const navigation=app.match(/<SectionNavigation\b[^\n]*?\/>/)?.[0];assert.ok(navigation);
  const React={createElement:(type,props)=>({type,props})},SectionNavigation=Symbol('SectionNavigation');
- const changes=[];const scope={React,SectionNavigation,mainView:{kind:'assistant'},creatingAssistant:false,section:'agents',sectionFlags:{},openAttention(){},setAttention(){},clearReady(){},decideApproval(){},setMainView:value=>changes.push(['mainView',value]),setCreatingAssistant:value=>changes.push(['creating',value]),setSettingsOpen(){},setSection:value=>changes.push(['section',value]),setPicking(){},setMaximized(){}};
+ const changes=[];const scope={React,SectionNavigation,mainView:{kind:'assistant'},creatingAssistant:false,section:'agents',sectionFlags:{},openAttention(){},setAttention(){},clearReady(){},decideApproval(){},setMainView:value=>changes.push(['mainView',value]),setCreatingAssistant:value=>changes.push(['creating',value]),setSettingsOpen(){},setSection:value=>changes.push(['section',value]),setPicking(){},setMaximized(){},setOpenChat(){}};
  const code=transform(`return (${navigation});`,{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
  const render=()=>new Function(...Object.keys(scope),code)(...Object.values(scope));
  let nav=render();assert.equal(nav.props.section,null,'an assistant clears the global selection');nav.props.onChange('agents');

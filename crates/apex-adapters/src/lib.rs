@@ -45,9 +45,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use apex_core::testing::ScriptedParticipant;
-use apex_core::{AgentTool, Backend, Participant, ParticipantConfig, PlanUsage};
+use apex_core::{Access, AgentTool, Backend, Participant, ParticipantConfig, PlanUsage, RoomKind};
 
 pub use catalog::{codex_models_from_cache, installed_models};
+pub use gateway_sandbox::isolation_available;
 pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_ARG as CODEX_HOOK_ARG};
 
 pub use api_info::{balance as api_balance, model as api_model, ApiModel, MediaSpec, ModelKind};
@@ -137,6 +138,64 @@ pub fn build_without_tools(config: ParticipantConfig, context: &BuildContext) ->
             Arc::new(CliParticipant::new(config).with_context(context))
         }
         Backend::Scripted { .. } => Arc::new(ScriptedParticipant::from_config(config)),
+    }
+}
+
+/// Whether `tool` can run in a talk-only chat room on this host.
+pub fn chat_tool_ok(tool: AgentTool, path: Option<&str>) -> Result<(), String> {
+    match tool {
+        AgentTool::ClaudeCode => Ok(()),
+        AgentTool::Codex | AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse => {
+            gateway_sandbox::isolation_available(path)
+        }
+    }
+}
+
+/// Whether `config` is allowed in a talk-only `RoomKind::Chat` room on this host.
+pub fn chat_profile_ok(config: &ParticipantConfig, path: Option<&str>) -> Result<(), String> {
+    if config.media.is_some() {
+        return Err("Talk-only chat rooms do not support media-generating profiles.".into());
+    }
+    match &config.backend {
+        Backend::OpenAiCompatible { .. } | Backend::Scripted { .. } => Ok(()),
+        Backend::Agent { tool, .. } => chat_tool_ok(*tool, path),
+        Backend::Cli { .. } => Err("Custom CLI commands cannot run in talk-only chat rooms because they have no verified tool-free mode.".into()),
+    }
+}
+
+/// Single room-participant builder: `Work` rooms get full tools and workspace context;
+/// `Chat` rooms are built with tools disabled, no `cwd`, no `media_dir`, no attachment roots, and `Access::Read`.
+pub fn participant_for_room(
+    kind: RoomKind,
+    mut config: ParticipantConfig,
+    context: &BuildContext,
+) -> Arc<dyn Participant> {
+    match kind {
+        RoomKind::Work => build(config, context),
+        RoomKind::Chat => {
+            config.access = Access::Read;
+            config.media = None;
+            let chat_context = BuildContext {
+                codex_hook: None,
+                cwd: None,
+                path: context.path.clone(),
+                temp: context.temp.clone(),
+                process_registry: context.process_registry.clone(),
+                cargo_target_dir: None,
+                media_dir: None,
+                attachment_roots: Vec::new(),
+                phone: None,
+            };
+            match &config.backend {
+                Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config)),
+                Backend::Cli { .. } | Backend::Agent { .. } => Arc::new(
+                    CliParticipant::new(config)
+                        .with_context(&chat_context)
+                        .with_tools_disabled(),
+                ),
+                Backend::Scripted { .. } => Arc::new(ScriptedParticipant::from_config(config)),
+            }
+        }
     }
 }
 
