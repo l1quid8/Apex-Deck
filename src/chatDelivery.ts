@@ -1,4 +1,4 @@
-import type { ChatBotRequest, Message, RoomOptions, RoomSnapshot } from '../types.ts';
+import type { ChatBotRequest, Message, RoomOptions, RoomSnapshot } from './types.ts';
 
 export interface ChatMachine { id: string; name: string }
 export type ChatAcceptedState = 'running' | 'done' | 'interrupted' | 'fenced';

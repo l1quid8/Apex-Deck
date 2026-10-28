@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ChatDeliveryController, JsonChatDeliveryStorage, ChatPendingAnswersError, chatDeliveryStatus } from '../src/phone/chatDelivery.ts';
+import { ChatDeliveryController, JsonChatDeliveryStorage, ChatPendingAnswersError, chatDeliveryStatus } from '../src/chatDelivery.ts';
 
 const A = { id: 'studio', name: 'Studio MacBook' };
 const B = { id: 'server', name: 'Hetzner' };

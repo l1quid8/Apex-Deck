@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/phone/chatDelivery.ts';
-import { chatRows, emptyCatalog, findRoom, parseChatList, readCatalog, withHostRooms, withListedRooms, withoutHosts } from '../src/phone/chatCatalog.ts';
+import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/chatDelivery.ts';
+import { chatRows, emptyCatalog, findRoom, parseChatList, readCatalog, withHostRooms, withListedRooms, withoutHosts } from '../src/chatCatalog.ts';
 import {
   PROMOTES_KEY, chatOutboxRows, chatRights, chatRoute, freshChatId, mayPostIn, parseAbandon, pickOpenPane, projectChats, promoteKey, promoteRequest,
   readPromoteTickets, startingBots, threadKey, withoutTicket, writePromoteTickets,

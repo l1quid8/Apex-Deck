@@ -1,7 +1,7 @@
 import type { Backend } from "../backend.ts";
 import type { HostConnectionStore } from "../hostConnections.ts";
 import type { ChatBotRequest } from "../types.ts";
-import { ChatDeliveryController, JsonChatDeliveryStorage, chatProfileMapping, type CachedChat, type ChatOutboxMessage, type ChatDeliveryRpc, type ChatDeliverySnapshot } from "./chatDelivery.ts";
+import { ChatDeliveryController, JsonChatDeliveryStorage, chatProfileMapping, type CachedChat, type ChatOutboxMessage, type ChatDeliveryRpc, type ChatDeliverySnapshot } from "../chatDelivery.ts";
 import { watchChatDelivery, type ChatDeliveryWatchHost } from "./chatDeliveryWatch.ts";
 
 export interface ChatDeliveryHost {

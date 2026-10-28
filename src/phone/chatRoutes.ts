@@ -3,8 +3,8 @@
 // the screen can never name one machine while a message goes to another.
 
 import type { Access } from "../types.ts";
-import type { ChatCatalog, ChatEntry, ChatProfile } from "./chatCatalog.ts";
-import { chatDeliveryStatus, type CachedChat, type ChatDeliveryState, type ChatDeliveryStatus, type ChatOutboxMessage } from "./chatDelivery.ts";
+import type { ChatCatalog, ChatEntry, ChatProfile } from "../chatCatalog.ts";
+import { chatDeliveryStatus, type CachedChat, type ChatDeliveryState, type ChatDeliveryStatus, type ChatOutboxMessage } from "../chatDelivery.ts";
 
 /** The delivery id for a chat the phone hasn't kept yet. Machine and room together, so two machines
  *  that both have a room called `shared` never share one outbox. */

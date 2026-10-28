@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   botNames, chatRows, chatTitle, emptyCatalog, findRoom, legacyChats, legacyEntries, newChatStart, parseChatList,
   parseChatProfiles, promotedWork, readCatalog, rememberLast, withHostRooms, withoutHosts, withRoom,
-} from '../src/phone/chatCatalog.ts';
+} from '../src/chatCatalog.ts';
 
 const bot = (id, name = id) => ({ id, display_name: name, backend: { kind: 'agent', tool: 'claude_code', model: null }, persona: '', access: 'read', effort: null });
 const room = (id, extra = {}) => ({ id, kind: 'chat', title: id, participants: [bot('jigga', 'Jigga'), bot('null', 'Null')], updatedAt: 10, archived: false, cwd: null, folderName: null, promotedFrom: null, promotedTo: null, movedTo: null, profiles: { jigga: 'claude' }, ...extra });

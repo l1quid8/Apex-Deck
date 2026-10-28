@@ -1,7 +1,7 @@
 import type { Backend } from "../backend.ts";
 import type { HostConnectionStore } from "../hostConnections.ts";
 import type { RoomEvent } from "../types.ts";
-import type { ChatDeliveryController } from "./chatDelivery.ts";
+import type { ChatDeliveryController } from "../chatDelivery.ts";
 
 export interface ChatDeliveryWatchHost {
   machine: { id: string };

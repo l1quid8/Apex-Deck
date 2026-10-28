@@ -8,7 +8,7 @@ import { legacyAppearance } from "../identicon";
 import { ageWords } from "../sidebarModel";
 import type { LinkView } from "../phoneRules";
 import type { Access, FolderListing, ParticipantConfig } from "../types";
-import { botNames, type ChatEntry, type ChatProfile, type LegacyChat } from "./chatCatalog";
+import { botNames, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
 import { startingBots } from "./chatRoutes";
 import { ArrowLeft, Check, ChevronRight, Folder, Lock, MessageSquare, Plus } from "./icons";
 

@@ -2,7 +2,7 @@
 // with only a headless Linux box still has them. The phone merges those lists and keeps the
 // merged copy, so chats and the Work threads made from them still show while a machine is off.
 
-import type { Message, ParticipantConfig } from "../types.ts";
+import type { Message, ParticipantConfig } from "./types.ts";
 
 export interface ChatBot { id: string; name: string }
 export interface ChatEntry {
