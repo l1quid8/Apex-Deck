@@ -181,6 +181,7 @@ pub enum Command {
     ApiModels { base_url: String, api_key_env: Option<String> },
     ApiBalance { base_url: String, api_key_env: Option<String> },
     ApiQuote { base_url: String, api_key_env: Option<String>, model: String, #[serde(default)] media: Option<apex_core::MediaSettings> },
+    ModelMetrics { model: String, efforts: Vec<String>, #[serde(default)] current: Option<String>, local: bool },
     AgentModels { tool: AgentTool },
     RoomBotModels { room: String, participant: ParticipantId },
     RoomBotBalance { room: String, participant: ParticipantId },
@@ -531,6 +532,7 @@ impl Host {
             ApiModels { base_url, api_key_env } => reply(self.api_models(base_url, api_key_env).await?),
             ApiBalance { base_url, api_key_env } => reply(self.api_balance(base_url, api_key_env).await?),
             ApiQuote { base_url, api_key_env, model, media } => reply(self.api_quote(base_url, api_key_env, model, media).await?),
+            ModelMetrics { model, efforts, current, local } => reply(self.model_metrics(model, efforts, current, local).await?),
             AgentModels { tool } => reply(self.agent_models(tool)),
             RoomBotModels { room, participant } => reply(self.room_bot_models(&room, &participant).await?),
             RoomBotBalance { room, participant } => reply(self.room_bot_balance(&room, &participant).await?),
@@ -630,6 +632,8 @@ mod tests {
         assert!(matches!(command, Command::ApiQuote { model, media: Some(media), .. } if model == "m" && media.duration.as_deref() == Some("5s")));
         let command = Command::from_json(json!({ "cmd": "api_balance", "args": { "baseUrl": "http://x", "apiKeyEnv": "KEY" } })).unwrap();
         assert!(matches!(command, Command::ApiBalance { base_url, api_key_env: Some(key) } if base_url == "http://x" && key == "KEY"));
+        let command = Command::from_json(json!({ "cmd": "model_metrics", "args": { "model": "gpt-6.1-sol", "efforts": ["low", "high"], "current": "high", "local": false } })).unwrap();
+        assert!(matches!(command, Command::ModelMetrics { model, efforts, current: Some(current), local: false } if model == "gpt-6.1-sol" && efforts == ["low", "high"] && current == "high"));
         let command = Command::from_json(json!({ "cmd": "export_thread", "args": { "fileName": "a.md", "contents": "x" } })).unwrap();
         assert!(matches!(command, Command::ExportThread { file_name, .. } if file_name == "a.md"));
         let command = Command::from_json(json!({ "cmd": "room_post_to", "args": { "id": "r", "text": "hi", "targets": ["null"] } })).unwrap();
@@ -787,6 +791,18 @@ mod tests {
         assert!(listed["folders"].as_array().unwrap().contains(&json!("saved-chats-v1")), "{listed}");
         assert_eq!(listed["truncated"], json!(false));
         assert_eq!(call(json!({ "cmd": "folder_list", "args": { "path": saved_chats } })).unwrap()["path"], json!(saved_chats));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn local_model_metrics_never_download() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-host-model-metrics-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let args = json!({ "cmd": "model_metrics", "args": { "model": "gpt-6.1-sol", "efforts": [], "current": null, "local": true } });
+        assert_eq!(runtime.block_on(host.call(Command::from_json(args).unwrap())), Ok(Value::Null));
+        assert!(!data.join("model-metrics.json").exists(), "a local model with no override must not start a download");
         let _ = std::fs::remove_dir_all(data);
     }
 

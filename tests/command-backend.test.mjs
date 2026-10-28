@@ -205,6 +205,17 @@ test('apiBalance returns a finite number or null', async () => {
   }
 });
 
+test('modelMetrics asks by model and levels and passes the result or null through', async () => {
+  const metrics = { name: 'GPT-6.1 Sol', rows: [], current: 'medium', pills: {}, best: {}, eci: 168.37, price: [2, 10], local_note: false, fetched_at: 1, last_error: null };
+  const transport = recording();
+  transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return metrics; };
+  assert.deepEqual(await commandBackend(transport, stubShell()).modelMetrics('gpt-6.1-sol', ['low', 'medium'], 'medium', false), metrics);
+  assert.deepEqual(transport.calls, [{ cmd: 'model_metrics', args: { model: 'gpt-6.1-sol', efforts: ['low', 'medium'], current: 'medium', local: false } }]);
+  for (const reply of [null, 'x', 3]) {
+    assert.equal(await commandBackend({ ...transport, call: async () => reply }, stubShell()).modelMetrics('x', [], null, true), null);
+  }
+});
+
 test('a bot\'s models and balance are asked for by thread and bot, never by address', async () => {
   const transport = recording();
   transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return cmd === 'room_bot_models' ? ['deepseek-flash', { nope: 1 }] : 9.87; };
@@ -245,7 +256,7 @@ test('phone methods send the phone commands', async () => {
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'modelMetrics', 'roomBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });
 

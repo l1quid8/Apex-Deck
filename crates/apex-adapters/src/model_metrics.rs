@@ -309,6 +309,25 @@ fn normalize(model: &str) -> String {
     }
 }
 
+/// Whether `model` could match at all, checked before any download: a
+/// local model matches only through a local [`OVERRIDES`] entry.
+pub fn may_match(model: &str, local: bool) -> bool {
+    !local || local_override(&normalize(model)).is_some()
+}
+
+fn local_override(id: &str) -> Option<&'static (&'static str, &'static str, bool)> {
+    OVERRIDES.iter().find(|(deck, _, local_ok)| *local_ok && (id == *deck || id.starts_with(&format!("{deck}-"))))
+}
+
+/// What the UI gets for one bot: its metrics, `None` when Epoch has
+/// nothing for the model, or an error when there is no data to look in.
+pub fn answer(model: &str, efforts: &[String], current: Option<&str>, local: bool, cache: &MetricsCache) -> Result<Option<ModelMetrics>, String> {
+    if cache.scores.is_empty() {
+        return Err(cache.last_error.clone().unwrap_or_else(|| "Benchmarks haven't been downloaded yet".into()));
+    }
+    Ok(match_model(model, efforts, current, local, cache))
+}
+
 /// OpenRouter writes `claude-opus-5.5` where Deck and Epoch write `claude-opus-5-5`.
 fn same_id(a: &str, b: &str) -> bool {
     a.replace('.', "-").eq_ignore_ascii_case(&b.replace('.', "-"))
@@ -318,8 +337,7 @@ fn same_id(a: &str, b: &str) -> bool {
 /// means Epoch has nothing for this model.
 pub fn match_model(model: &str, efforts: &[String], current: Option<&str>, local: bool, cache: &MetricsCache) -> Option<ModelMetrics> {
     let id = normalize(model);
-    let entry = OVERRIDES.iter().find(|(deck, _, local_ok)| id == *deck || (*local_ok && id.starts_with(&format!("{deck}-"))));
-    let base = match entry {
+    let base = match local_override(&id).or_else(|| OVERRIDES.iter().find(|(deck, ..)| id == *deck)) {
         Some((_, base, local_ok)) if *local_ok || !local => base.to_string(),
         _ if local => return None,
         _ => id,
@@ -770,6 +788,22 @@ Claude Opus 5.5,Claude Opus 5.5,168.83,165.25,173.95,2026-09-22,Anthropic,United
     #[test]
     fn override_table_wins() {
         assert_eq!(match_model("deepseek-flash", &[], None, false, &matched_cache()).map(|m| m.name), Some("DeepSeek V4.1 Flash".into()));
+    }
+
+    #[test]
+    fn local_unlisted_model_may_not_match() {
+        assert!(!may_match("gpt-6.1-sol", true));
+        assert!(may_match("/Users/someone/models/Qwen3.5-9B-MLX-4bit", true));
+        assert!(may_match("anything-at-all", false));
+    }
+
+    #[test]
+    fn no_download_yet_is_an_error() {
+        let offline = MetricsCache { last_error: Some("offline".into()), ..Default::default() };
+        assert_eq!(answer("gpt-6.1-sol", &[], None, false, &offline), Err("offline".into()));
+        assert_eq!(answer("gpt-6.1-sol", &[], None, false, &MetricsCache::default()), Err("Benchmarks haven't been downloaded yet".into()));
+        assert_eq!(answer("made-up-1", &[], None, false, &matched_cache()), Ok(None));
+        assert!(answer("gpt-6.1-sol", &levels(ALL), Some("high"), false, &matched_cache()).unwrap().is_some());
     }
 
     #[test]

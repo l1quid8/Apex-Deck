@@ -128,6 +128,41 @@ export interface ApiModel {
   media?: MediaSpec | null;
 }
 
+/** Public benchmark scores for one bot's model, from the daemon's daily Epoch AI download. */
+export interface ModelMetrics {
+  /** Epoch's name for the model, such as "Claude Opus 5.5". */
+  name: string;
+  /** One row per reasoning level the bot offers, or a single "default" row. */
+  rows: LevelRow[];
+  current: string | null;
+  /** Test id → the score on its pill. */
+  pills: Record<string, PillValue>;
+  /** Test id → top score across levels; only for tests run at two or more levels. */
+  best: Record<string, number>;
+  /** Epoch Capabilities Index, one per model. */
+  eci: number | null;
+  /** US dollars per million tokens, input and output. */
+  price: [number, number] | null;
+  /** The scores are for the public model; this bot runs a local copy. */
+  local_note: boolean;
+  /** Unix seconds; 0 = never downloaded. */
+  fetched_at: number;
+  last_error: string | null;
+}
+
+export interface LevelRow {
+  effort: string;
+  state: "measured" | "not_measured";
+  /** Test id → score from 0 to 100, only for tests run at this level. */
+  scores: Record<string, number>;
+}
+
+/** A pill's score and the level it was measured at, which can differ from the bot's own. */
+export interface PillValue {
+  value: number;
+  from_level: string;
+}
+
 export type TurnPolicy = "mention" | "everyone" | "round_robin";
 
 export interface RoomOptions {

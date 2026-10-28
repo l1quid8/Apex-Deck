@@ -5,7 +5,7 @@ import type { AnswerSaveResult } from "./interactiveAnswers/contract.ts";
 
 import type { Backend, KeyState, LibraryItem } from "./backend";
 import { apiModelList } from "./models.ts";
-import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListing, ModelChoice, PersonaDraftResult, PhoneStatus, PhoneView, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
+import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListing, ModelChoice, ModelMetrics, PersonaDraftResult, PhoneStatus, PhoneView, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
@@ -76,6 +76,10 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     apiBalance: async (baseUrl, apiKeyEnv) => {
       const amount = await call<unknown>("api_balance", { baseUrl, apiKeyEnv });
       return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
+    },
+    modelMetrics: async (model, efforts, current, local) => {
+      const metrics = await call<unknown>("model_metrics", { model, efforts, current, local });
+      return metrics && typeof metrics === "object" ? metrics as ModelMetrics : null;
     },
     apiQuote: async (baseUrl, apiKeyEnv, model, media) => {
       const amount = await call<unknown>("api_quote", { baseUrl, apiKeyEnv, model, media });
