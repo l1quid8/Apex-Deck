@@ -127,6 +127,19 @@ test('Open Work thread finds the pane on the chat\'s machine, or adds the projec
 
   // The same room id open from another machine can't show beside it.
   assert.equal(workThreadPlace(local, [{ id: 'w1', workspaceId: 'mine', kind: 'chat', title: 'x' }], 'vps', work, makeId, nameOf), 'clash');
+  // A project inside its Remove/Undo window comes back, whether its thread pane is still kept or not.
+  const removed = added.workspaces.map(w => ({ ...w, hidden: true }));
+  const kept = workThreadPlace(removed, [{ ...added.pane, closed: true }], 'vps', work, makeId, nameOf);
+  assert.equal(kept.added, false);
+  assert.equal(kept.restored, 'ws1');
+  assert.equal(kept.workspaces[0].hidden, false);
+  const readded = workThreadPlace(removed, [], 'vps', work, makeId, nameOf);
+  assert.equal(readded.restored, 'ws1');
+  assert.equal(readded.pane.workspaceId, 'ws1');
+  assert.equal(readded.workspaces[0].hidden, false);
+  assert.equal(again.restored, null);
+  assert.equal(other.restored, null);
+
   // Not listed yet, or not a Work thread.
   assert.equal(workThreadPlace([], [], 'vps', null, makeId, nameOf), 'unlisted');
   assert.equal(workThreadPlace([], [], 'vps', findRoom(catalog, 'vps', 'c1'), makeId, nameOf), 'unlisted');

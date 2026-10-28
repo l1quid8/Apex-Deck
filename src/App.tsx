@@ -1930,9 +1930,13 @@ export function App() {
     const place = workThreadPlace(workspaces, panes, row.hostId, findRoom(chats.catalog, row.hostId, workId), () => newId("ws"), folderName);
     if (place === "unlisted") { toast(`${chats.machineName(row.hostId)} hasn't listed that Work thread yet. Try again once it's connected.`); return; }
     if (place === "clash") { toast("A thread with the same id from another machine is open. Close it to open this one."); return; }
-    if (place.added) {
-      setWorkspaces(place.workspaces);
-      setPanes((list) => list.some((p) => p.id === place.pane.id) ? list : [...list, place.pane]);
+    if (place.added || place.restored) setWorkspaces(place.workspaces);
+    if (place.added) setPanes((list) => list.some((p) => p.id === place.pane.id) ? list : [...list, place.pane]);
+    // Opening a thread of a project still in its Undo window counts as Undo: the project and its threads come back.
+    if (place.restored && undoableRemove?.id === place.restored) {
+      clearTimeout(removeTimer.current);
+      setPanes((list) => reopenThreads(list, undoableRemove.reopen));
+      setUndoableRemove(null);
     }
     setOpenChat(null);
     focusPane(place.pane);

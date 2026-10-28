@@ -10,7 +10,7 @@ import type { Backend } from "./backend";
 import type { HostConnectionStore } from "./hostConnections";
 import type { Pane, ParticipantConfig, RoomEvent, RoomSnapshot, Speed, Workspace } from "./types";
 import { workspaceHost } from "./hostSession.ts";
-import { addFolders } from "./workspaces.ts";
+import { addFolders, setHidden } from "./workspaces.ts";
 import { ChatDeliveryController, JsonChatDeliveryStorage, type ChatDeliverySnapshot } from "./chatDelivery.ts";
 import { chatRows, chatTitle, emptyCatalog, findRoom, parseChatEntry, parseChatList, parseChatProfiles, withListedRooms, withRoom, withoutHosts, type ChatCatalog, type ChatEntry, type ChatProfile } from "./chatCatalog.ts";
 import { createChatDeliveryRpc } from "./phone/phoneChatDelivery.ts";
@@ -52,17 +52,22 @@ export function restoredChat(catalog: ChatCatalog, place: ChatPlace): "keep" | "
 
 /** Where a chat's Work thread opens: its pane on the chat's own machine, adding the project
  *  and the thread when this Deck doesn't show them yet (a phone made the move). The room
- *  already exists on that machine, so opening the pane only reads it. Null while that
- *  machine hasn't listed the Work thread yet, or a clash when that id is open from another machine. */
-export function workThreadPlace(workspaces: Workspace[], panes: Pane[], hostId: string, work: ChatEntry | null, makeId: () => string, nameOf: (path: string) => string): { workspaces: Workspace[]; pane: Pane; added: boolean } | "unlisted" | "clash" {
+ *  already exists on that machine, so opening the pane only reads it. A project inside its
+ *  Remove/Undo window comes back (`restored`). Null while that machine hasn't listed the
+ *  Work thread yet, or a clash when that id is open from another machine. */
+export function workThreadPlace(workspaces: Workspace[], panes: Pane[], hostId: string, work: ChatEntry | null, makeId: () => string, nameOf: (path: string) => string): { workspaces: Workspace[]; pane: Pane; added: boolean; restored: string | null } | "unlisted" | "clash" {
   if (!work || work.kind !== "work" || !work.cwd) return "unlisted";
   const hostOf = (pane: Pane) => (pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspaces.find((w) => w.id === pane.workspaceId) ?? { id: "", name: "", path: "" });
+  const hiddenId = (id: string) => workspaces.some((w) => w.id === id && w.hidden) ? id : null;
   const open = panes.find((pane) => pane.id === work.id && pane.kind === "chat" && hostOf(pane) === hostId);
-  if (open) return { workspaces, pane: open, added: false };
+  if (open) {
+    const restored = hiddenId(open.workspaceId);
+    return { workspaces: restored ? setHidden(workspaces, restored, false) : workspaces, pane: open, added: false, restored };
+  }
   // Deck keys a thread's pane by room id alone, so the same id open from another machine can't show beside it.
   if (panes.some((pane) => pane.id === work.id)) return "clash";
   const { list, ids } = addFolders(workspaces, [work.cwd], makeId, (path) => work.folderName ?? nameOf(path), hostId);
-  return { workspaces: list, pane: { id: work.id, workspaceId: ids[0], kind: "chat", title: work.title }, added: true };
+  return { workspaces: list, pane: { id: work.id, workspaceId: ids[0], kind: "chat", title: work.title }, added: true, restored: hiddenId(ids[0]) };
 }
 
 /** The patch a bot edit sends: only what changed, and never a whole config. */
