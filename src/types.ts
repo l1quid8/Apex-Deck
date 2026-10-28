@@ -139,6 +139,8 @@ export interface ModelMetrics {
   pills: Record<string, PillValue>;
   /** Test id → top score across levels; only for tests run at two or more levels. */
   best: Record<string, number>;
+  /** Test id, or "eci", → the best score today across every model Epoch lists. */
+  top: Record<string, { value: number; model: string }>;
   /** Epoch Capabilities Index, one per model. */
   eci: number | null;
   /** US dollars per million tokens, input and output. */
@@ -150,9 +152,11 @@ export interface ModelMetrics {
   last_error: string | null;
 }
 
+export type LevelState = "measured" | "not_measured";
+
 export interface LevelRow {
   effort: string;
-  state: "measured" | "not_measured";
+  state: LevelState;
   /** Test id → score from 0 to 100, only for tests run at this level. */
   scores: Record<string, number>;
 }

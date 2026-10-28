@@ -279,6 +279,15 @@ pub struct PillValue {
     pub from_level: String,
 }
 
+/// The best score on a test across every model Epoch lists, for the
+/// coloured dot on each pill.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Top {
+    pub value: f64,
+    /// Such as "GPT-6.1 Sol max".
+    pub model: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelMetrics {
     /// Epoch's name for the model, such as "Claude Opus 5.5".
@@ -290,6 +299,8 @@ pub struct ModelMetrics {
     /// Test id → top score across levels, for the ★; only when the test
     /// ran at two or more of the bot's levels.
     pub best: HashMap<String, f64>,
+    /// Test id, or "eci", → the top score today across all models.
+    pub top: HashMap<String, Top>,
     pub eci: Option<f64>,
     /// US dollars per million tokens, input and output.
     pub price: Option<(f64, f64)>,
@@ -406,12 +417,30 @@ pub fn match_model(model: &str, efforts: &[String], current: Option<&str>, local
         current,
         pills,
         best,
+        top: top_scores(cache),
         eci: group.and_then(|g| cache.eci.get(&g).copied()),
         price,
         local_note: local,
         fetched_at: cache.fetched_at,
         last_error: cache.last_error.clone(),
     })
+}
+
+fn top_scores(cache: &MetricsCache) -> HashMap<String, Top> {
+    let mut top: HashMap<String, Top> = HashMap::new();
+    for score in &cache.scores {
+        if top.get(&score.test).is_none_or(|t| score.value > t.value) {
+            let model = match (cache.groups.get(&score.model_version), score.model_version.rsplit_once('_')) {
+                (Some(group), Some((_, level))) => format!("{group} {level}"),
+                _ => score.model_version.clone(),
+            };
+            top.insert(score.test.clone(), Top { value: score.value, model });
+        }
+    }
+    if let Some((group, value)) = cache.eci.iter().max_by(|a, b| a.1.total_cmp(b.1)) {
+        top.insert("eci".into(), Top { value: *value, model: group.clone() });
+    }
+    top
 }
 
 /// OpenRouter's public price list, keyed by its model id.
@@ -688,7 +717,9 @@ Claude Opus 5.5,Claude Opus 5.5,168.83,165.25,173.95,2026-09-22,Anthropic,United
         ];
         let groups = [
             ("gpt-6.1-sol_medium", "GPT-6.1 Sol"),
+            ("gpt-6.1-sol_max", "GPT-6.1 Sol"),
             ("claude-opus-5-5_high", "Claude Opus 5.5"),
+            ("claude-opus-5-5_medium", "Claude Opus 5.5"),
             ("deepseek-v4.1-flash_max", "DeepSeek V4.1 Flash"),
             ("deepseek-v4.1-flash-1017_max", "DeepSeek V4.1 Flash 1017"),
             ("qwen3.5-9B_none", "Qwen3.5-9B"),
@@ -753,6 +784,15 @@ Claude Opus 5.5,Claude Opus 5.5,168.83,165.25,173.95,2026-09-22,Anthropic,United
         let m = match_model("gpt-6.1-sol", &levels(ALL), Some("medium"), false, &matched_cache()).unwrap();
         assert_eq!(m.best.get("arc"), Some(&94.17));
         assert_eq!(m.best.get("code"), None, "one tested level has nothing to compare");
+    }
+
+    #[test]
+    fn top_scores_span_every_model() {
+        let m = match_model("deepseek-flash", &levels(&["low", "medium", "high", "max"]), Some("medium"), false, &matched_cache()).unwrap();
+        assert_eq!(m.top["arc"], Top { value: 94.17, model: "GPT-6.1 Sol max".into() });
+        assert_eq!(m.top["code"], Top { value: 54.64, model: "Claude Opus 5.5 medium".into() });
+        assert_eq!(m.top["eci"], Top { value: 168.83, model: "Claude Opus 5.5".into() });
+        assert!(!m.top.contains_key("deepswe"), "no DeepSWE scores in this cache");
     }
 
     #[test]
