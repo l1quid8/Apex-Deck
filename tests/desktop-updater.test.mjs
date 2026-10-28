@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Writable } from 'node:stream';
 import {
-  FEED_URL, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
+  FEED_URL, RESULT_MESSAGE_LIMIT, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
   packageFor, packageVerifier, parseManifest, teamFrom,
 } from '../desktop/updater.mjs';
 
@@ -202,6 +202,28 @@ test('after relaunch Deck says once how the requested update went', (t) => {
     assert.deepEqual(updater.status().result, expected, JSON.stringify(written));
     assert.equal('requested' in JSON.parse(fs.readFileSync(updater.stateFile, 'utf8')), expected === null);
   }
+});
+
+test('every account whose service didn’t restart, and how to bring it back, survives into the notice', (t) => {
+  const id = '12345678-1234-4234-8234-123456789abc';
+  // Worded as scripts/upgrade.py words them, one note per account.
+  const notes = ['alex', 'sam-studio', 'family', 'guest-account'].map((name) => `Apex Deck's background service in the account "${name}" didn't start again, so agents and phone connections there stay off until Apex Deck is opened in that account.`);
+  for (const [outcome, current, message] of [
+    ['installed', '0.9.1', notes.join(' ')],
+    ['failed', '0.9.0', ['The package failed its signature check.', ...notes].join(' ')],
+  ]) {
+    const { updater } = fixture(t, { current });
+    fs.writeFileSync(updater.stateFile, JSON.stringify({ requested: { id, version: '0.9.1', from: '0.9.0', at: Date.now() } }));
+    fs.writeFileSync(updater.resultFile, JSON.stringify({ id, outcome, message }));
+    updater.reconcile();
+    assert.equal(updater.status().result.message, message, outcome);
+  }
+  // Still bounded: a runaway message can't flood the notice.
+  const { updater } = fixture(t, { current: '0.9.0' });
+  fs.writeFileSync(updater.stateFile, JSON.stringify({ requested: { id, version: '0.9.1', from: '0.9.0', at: Date.now() } }));
+  fs.writeFileSync(updater.resultFile, JSON.stringify({ id, outcome: 'failed', message: 'x'.repeat(100_000) }));
+  updater.reconcile();
+  assert.equal(updater.status().result.message.length, RESULT_MESSAGE_LIMIT);
 });
 
 test('a disabled updater never checks', async (t) => {

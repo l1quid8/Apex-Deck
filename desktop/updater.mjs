@@ -28,6 +28,8 @@ export const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 export const RETRY_DELAYS_MS = [5_000, 30_000];
 /** A request with no result after this long did not run. */
 export const RESULT_WAIT_MS = 15 * 60 * 1000;
+/** Room for one restart note per account (about 200 characters each) on top of the error itself. */
+export const RESULT_MESSAGE_LIMIT = 4000;
 const PACKAGE_LIMIT = 4 * 1024 ** 3;
 const MANIFEST_LIMIT = 64 * 1024;
 const VERSION = /^\d+(?:\.\d+){1,3}$/;
@@ -270,8 +272,8 @@ export class Updater {
     if (found?.id === asked.id) {
       // An install can succeed and still have something to say, such as another account's service that didn't start again.
       result = found.outcome === 'installed' && this.current === asked.version
-        ? { outcome: 'installed', version: asked.version, ...(found.message ? { message: String(found.message).slice(0, 500) } : {}) }
-        : { outcome: found.outcome === 'needs-attention' ? 'needs-attention' : 'failed', version: asked.version, message: String(found.message ?? 'The update did not install.').slice(0, 500) };
+        ? { outcome: 'installed', version: asked.version, ...(found.message ? { message: String(found.message).slice(0, RESULT_MESSAGE_LIMIT) } : {}) }
+        : { outcome: found.outcome === 'needs-attention' ? 'needs-attention' : 'failed', version: asked.version, message: String(found.message ?? 'The update did not install.').slice(0, RESULT_MESSAGE_LIMIT) };
     } else if (this.current === asked.version) {
       result = { outcome: 'installed', version: asked.version };
     } else if (this.now() - Number(asked.at) > RESULT_WAIT_MS) {
