@@ -19,7 +19,11 @@ export function UpdateNotices({ updates, onRestart }: { updates: UpdateStatus | 
       )}
       {notice && (
         <div className={`connection-banner update-banner${notice.problem ? " problem" : ""}`} role={notice.problem ? "alert" : "status"}>
-          <span>{notice.text}</span>
+          {/* Its own scroll area: one note per account can outgrow a 600-pixel window, and OK must stay in reach. */}
+          <div className="update-notice-words" tabIndex={0} aria-label="Update details">
+            <span>{notice.text}</span>
+            {notice.notes.length > 0 && <ul>{notice.notes.map((note, i) => <li key={i}>{note}</li>)}</ul>}
+          </div>
           <button onClick={() => void updateActions.dismissResult()}>OK</button>
         </div>
       )}

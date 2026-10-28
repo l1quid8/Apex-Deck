@@ -28,6 +28,15 @@ export const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 export const RETRY_DELAYS_MS = [5_000, 30_000];
 /** A request with no result after this long did not run. */
 export const RESULT_WAIT_MS = 15 * 60 * 1000;
+/** What went wrong, which may be a long command error; account notes travel apart and are never cut by it. */
+export const RESULT_MESSAGE_LIMIT = 500;
+/** One account's note is about 200 characters; this only stops an absurd account name. */
+export const RESULT_NOTE_LIMIT = 1000;
+/**
+ * The account notes 0.9.1's installer folded into its message. That installer
+ * runs the first update away from it, so its notes are found again here.
+ */
+const FOLDED_NOTE = /Apex Deck's background service in the account "[\s\S]*?" (?:didn't start again, so agents and phone connections there stay off until Apex Deck is opened in that account\.|was stopped for the update and stays off until this is sorted out\.)/g;
 const PACKAGE_LIMIT = 4 * 1024 ** 3;
 const MANIFEST_LIMIT = 64 * 1024;
 const VERSION = /^\d+(?:\.\d+){1,3}$/;
@@ -183,6 +192,18 @@ export function packageVerifier({ run, team, scratch, files = fs }) {
   };
 }
 
+/** The installer's result as a short reason plus every account note, whole. */
+export function resultParts(found) {
+  let message = found.message == null ? '' : String(found.message);
+  let notes;
+  if (Array.isArray(found.notes)) notes = found.notes.filter((note) => typeof note === 'string' && note);
+  else {
+    notes = message.match(FOLDED_NOTE) ?? [];
+    message = message.replace(FOLDED_NOTE, '').replace(/\s+/g, ' ').trim();
+  }
+  return { message: message.slice(0, RESULT_MESSAGE_LIMIT), notes: notes.map((note) => note.slice(0, RESULT_NOTE_LIMIT)) };
+}
+
 const message = (error) => (error instanceof Error ? error.message : String(error)) || 'Something went wrong.';
 
 /**
@@ -269,9 +290,11 @@ export class Updater {
     let result = null;
     if (found?.id === asked.id) {
       // An install can succeed and still have something to say, such as another account's service that didn't start again.
+      const { message, notes } = resultParts(found);
+      const told = { ...(message ? { message } : {}), ...(notes.length ? { notes } : {}) };
       result = found.outcome === 'installed' && this.current === asked.version
-        ? { outcome: 'installed', version: asked.version, ...(found.message ? { message: String(found.message).slice(0, 500) } : {}) }
-        : { outcome: found.outcome === 'needs-attention' ? 'needs-attention' : 'failed', version: asked.version, message: String(found.message ?? 'The update did not install.').slice(0, 500) };
+        ? { outcome: 'installed', version: asked.version, ...told }
+        : { outcome: found.outcome === 'needs-attention' ? 'needs-attention' : 'failed', version: asked.version, message: 'The update did not install.', ...told };
     } else if (this.current === asked.version) {
       result = { outcome: 'installed', version: asked.version };
     } else if (this.now() - Number(asked.at) > RESULT_WAIT_MS) {

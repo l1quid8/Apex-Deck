@@ -21,7 +21,7 @@ export interface UpdateStatus {
   /** "Later" was chosen for the ready update; it stays ready in Settings. */
   dismissed: boolean;
   /** How the last "Restart to update" went, shown once after reopening. */
-  result: { outcome: "installed" | "failed" | "needs-attention"; version: string; message?: string } | null;
+  result: { outcome: "installed" | "failed" | "needs-attention"; version: string; message?: string; notes?: string[] } | null;
 }
 
 /** What desktop/preload.cjs puts on `window.apexDeck.updates`. */
@@ -91,15 +91,21 @@ export function updateNote(status: UpdateStatus | null, now: number): string {
   }
 }
 
-/** The one-off notice after reopening, or null. */
-export function resultNotice(status: UpdateStatus | null): { text: string; problem: boolean } | null {
+/**
+ * The one-off notice after reopening, or null. `notes` are the other accounts
+ * whose background service is off, each with what brings it back; there is one
+ * per account, so they are listed apart from the reason and never shortened.
+ */
+export function resultNotice(status: UpdateStatus | null): { text: string; notes: string[]; problem: boolean } | null {
   const result = status?.result;
   if (!result) return null;
-  if (result.outcome === "installed") return result.message
-    ? { text: `Updated to Apex Deck ${result.version}. ${result.message}`, problem: true }
-    : { text: `Updated to Apex Deck ${result.version}.`, problem: false };
-  if (result.outcome === "needs-attention") return { text: `The update to ${result.version} stopped partway and needs checking before another can install: ${result.message ?? ""}`.trim(), problem: true };
-  return { text: `The update to ${result.version} didn't install, and nothing was changed: ${result.message ?? ""}`.trim(), problem: true };
+  const notes = result.notes ?? [];
+  if (result.outcome === "installed") {
+    const text = [`Updated to Apex Deck ${result.version}.`, result.message].filter(Boolean).join(" ");
+    return { text, notes, problem: Boolean(result.message) || notes.length > 0 };
+  }
+  if (result.outcome === "needs-attention") return { text: `The update to ${result.version} stopped partway and needs checking before another can install: ${result.message ?? ""}`.trim(), notes, problem: true };
+  return { text: `The update to ${result.version} didn't install, and nothing was changed: ${result.message ?? ""}`.trim(), notes, problem: true };
 }
 
 /**

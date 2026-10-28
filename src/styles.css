@@ -4258,3 +4258,6 @@ button.mod-status:hover { color: var(--text); }
 .update-banner { flex-wrap: wrap; gap: 8px; }
 .update-banner > span { flex: 1 1 240px; min-width: 0; }
 .update-banner.problem { box-shadow: inset 3px 0 0 var(--warn); }
+.update-notice-words { flex: 1 1 240px; min-width: 0; max-height: 35vh; overflow-y: auto; overflow-wrap: anywhere; }
+.update-notice-words ul { margin: 6px 0 0; padding-left: 18px; }
+.update-notice-words li + li { margin-top: 4px; }

@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Writable } from 'node:stream';
 import {
-  FEED_URL, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
+  FEED_URL, RESULT_MESSAGE_LIMIT, RESULT_NOTE_LIMIT, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
   packageFor, packageVerifier, parseManifest, teamFrom,
 } from '../desktop/updater.mjs';
 
@@ -202,6 +202,44 @@ test('after relaunch Deck says once how the requested update went', (t) => {
     assert.deepEqual(updater.status().result, expected, JSON.stringify(written));
     assert.equal('requested' in JSON.parse(fs.readFileSync(updater.stateFile, 'utf8')), expected === null);
   }
+});
+
+// Worded as scripts/upgrade.py words them, one note per account.
+const restartNote = (name) => `Apex Deck's background service in the account "${name}" didn't start again, so agents and phone connections there stay off until Apex Deck is opened in that account.`;
+const longCommandError = `launchctl bootstrap failed: ${'Bootstrap failed: 5: Input/output error. '.repeat(40)}`;
+
+function reconciled(t, current, written) {
+  const id = '12345678-1234-4234-8234-123456789abc';
+  const { updater } = fixture(t, { current });
+  fs.writeFileSync(updater.stateFile, JSON.stringify({ requested: { id, version: '0.9.1', from: '0.9.0', at: Date.now() } }));
+  fs.writeFileSync(updater.resultFile, JSON.stringify({ id, ...written }));
+  updater.reconcile();
+  return updater.status().result;
+}
+
+test('25 accounts whose service didn’t restart all reach the notice whole, beside a shortened reason', (t) => {
+  const notes = Array.from({ length: 25 }, (_, i) => restartNote(`account-${i + 1}`));
+  assert.deepEqual(reconciled(t, '0.9.1', { outcome: 'installed', notes }), { outcome: 'installed', version: '0.9.1', notes });
+  const failed = reconciled(t, '0.9.0', { outcome: 'failed', message: longCommandError, notes });
+  assert.deepEqual(failed.notes, notes);
+  assert.equal(failed.message, longCommandError.slice(0, RESULT_MESSAGE_LIMIT));
+});
+
+test('four failed restarts after a long command error keep every account and how to bring it back', (t) => {
+  const notes = ['alex', 'sam-studio', 'family', 'guest-account'].map(restartNote);
+  const expected = { outcome: 'failed', version: '0.9.1', message: longCommandError.slice(0, RESULT_MESSAGE_LIMIT), notes };
+  assert.deepEqual(reconciled(t, '0.9.0', { outcome: 'failed', message: longCommandError, notes }), expected);
+  // 0.9.1's installer, which runs the first update away from it, folds the notes into its message.
+  assert.deepEqual(reconciled(t, '0.9.0', { outcome: 'failed', message: [longCommandError, ...notes].join(' ') }), expected);
+  const stopped = 'Apex Deck\'s background service in the account "Pat "the admin"" was stopped for the update and stays off until this is sorted out.';
+  assert.deepEqual(reconciled(t, '0.9.0', { outcome: 'needs-attention', message: `injected ${stopped}` }), { outcome: 'needs-attention', version: '0.9.1', message: 'injected', notes: [stopped] });
+  assert.deepEqual(reconciled(t, '0.9.1', { outcome: 'installed', message: notes.join(' ') }), { outcome: 'installed', version: '0.9.1', notes });
+});
+
+test('a runaway result stays bounded', (t) => {
+  const result = reconciled(t, '0.9.0', { outcome: 'failed', message: 'x'.repeat(100_000), notes: ['y'.repeat(100_000), 42, ''] });
+  assert.equal(result.message.length, RESULT_MESSAGE_LIMIT);
+  assert.deepEqual(result.notes.map((note) => note.length), [RESULT_NOTE_LIMIT]);
 });
 
 test('a disabled updater never checks', async (t) => {
