@@ -192,7 +192,8 @@ where
             None
         }
         Ok(_) => None,
-        Err(e) => Some(format!("Couldn't refresh prices: {e}")),
+        // The app adds "Couldn't refresh:" in front.
+        Err(e) => Some(format!("prices ({e})")),
     };
     cache.last_error = zip_error.or(price_error);
     let _ = save(data, &cache);
@@ -408,7 +409,12 @@ pub fn match_model(model: &str, efforts: &[String], current: Option<&str>, local
     }
 
     let price = (!local)
-        .then(|| cache.prices.iter().find(|(id, _)| !id.contains(':') && id.rsplit_once('/').is_some_and(|(_, name)| same_id(name, &base))))
+        // Lowest id wins so two vendors listing the same name can't swap prices between runs.
+        .then(|| {
+            cache.prices.iter()
+                .filter(|(id, _)| !id.contains(':') && id.rsplit_once('/').is_some_and(|(_, name)| same_id(name, &base)))
+                .min_by(|a, b| a.0.cmp(b.0))
+        })
         .flatten()
         .map(|(_, price)| *price);
     Some(ModelMetrics {
@@ -648,7 +654,7 @@ Claude Opus 5.5,Claude Opus 5.5,168.83,165.25,173.95,2026-09-22,Anthropic,United
         assert_eq!(got.scores, old.scores);
         assert_eq!(got.fetched_at, now);
         assert_eq!(got.prices, old.prices);
-        assert_eq!(got.last_error.as_deref(), Some("Couldn't refresh prices: prices down"));
+        assert_eq!(got.last_error.as_deref(), Some("prices (prices down)"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -844,6 +850,18 @@ Claude Opus 5.5,Claude Opus 5.5,168.83,165.25,173.95,2026-09-22,Anthropic,United
         assert_eq!(answer("gpt-6.1-sol", &[], None, false, &MetricsCache::default()), Err("Benchmarks haven't been downloaded yet".into()));
         assert_eq!(answer("made-up-1", &[], None, false, &matched_cache()), Ok(None));
         assert!(answer("gpt-6.1-sol", &levels(ALL), Some("high"), false, &matched_cache()).unwrap().is_some());
+    }
+
+    #[test]
+    fn same_name_from_two_vendors_picks_one_price_every_time() {
+        let mut cache = matched_cache();
+        cache.prices.insert("zz-mirror/gpt-6.1-sol".into(), (9.0, 90.0));
+        for _ in 0..20 {
+            let mut copy = cache.clone();
+            copy.prices = copy.prices.into_iter().collect();
+            let m = match_model("gpt-6.1-sol", &levels(ALL), Some("medium"), false, &copy).expect("Sol matches");
+            assert_eq!(m.price, Some((2.0, 10.0)), "the lowest id wins");
+        }
     }
 
     #[test]
