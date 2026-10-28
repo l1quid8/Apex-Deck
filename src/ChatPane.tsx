@@ -104,7 +104,7 @@ import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, r
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
 import { ModelMetricPills } from "./ModelMetricPills";
-import { metricsRequest } from "./modelMetrics.ts";
+import { METRICS_CAPABILITY, metricsRequest } from "./modelMetrics.ts";
 import { botGroups, reasoningLevels } from "./phoneRules";
 import { AttachedImages, AttachedVideos } from "./AttachedImages";
 import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
@@ -2728,7 +2728,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     const model = "model" in b ? b.model ?? "" : "";
     const efforts = reasoningLevels(p, botGroups(p, b.kind === "agent" ? reported[b.tool] ?? [] : [], listed), model);
     const fallback = listed.find(m => m.id === model)?.default_effort ?? (efforts.length ? defaultEffortFor(efforts) : null);
-    return metricsRequest(p, efforts, fallback);
+    return metricsRequest(p, efforts, fallback, backend.supports?.(METRICS_CAPABILITY) === true);
   };
   /** Stopping only stops Deck waiting: a picture or video the provider already started may still be billed. */
   const chargeWarning = (ids: string[]) => {

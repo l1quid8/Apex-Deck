@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ageText, borrowedNote, columns, credits, isLocalServer, metricsRequest, money, pillParts, refreshNote, rowText, tier } from '../src/modelMetrics.ts';
+import { METRICS_CAPABILITY, ageText, borrowedNote, columns, credits, isLocalServer, metricsRequest, money, pillParts, refreshNote, rowText, tier } from '../src/modelMetrics.ts';
 
 /** GPT-6.1 Sol as the daemon sends it, trimmed. */
 const sol = {
@@ -102,12 +102,19 @@ test('local servers are this Mac or its network', () => {
 test('the card asks by model, offered levels and the level the bot runs at', () => {
   const bot = (backend, effort = null) => ({ id: 'b', display_name: 'B', backend, effort });
   const levels = ['low', 'medium', 'high'];
-  assert.deepEqual(metricsRequest(bot({ kind: 'agent', tool: 'claude_code', model: 'claude-opus-5-5' }, 'high'), levels, 'medium'),
+  assert.deepEqual(metricsRequest(bot({ kind: 'agent', tool: 'claude_code', model: 'claude-opus-5-5' }, 'high'), levels, 'medium', true),
     { model: 'claude-opus-5-5', efforts: levels, current: 'high', local: false });
-  assert.equal(metricsRequest(bot({ kind: 'agent', tool: 'claude_code', model: 'claude-opus-5-5' }), levels, 'medium').current, 'medium', 'an unset level is the default one');
-  assert.deepEqual(metricsRequest(bot({ kind: 'open_ai_compatible', base_url: 'http://127.0.0.1:8765/v1', model: '/models/Qwen3.5-9B-MLX-4bit', api_key_env: null }), [], null),
+  assert.equal(metricsRequest(bot({ kind: 'agent', tool: 'claude_code', model: 'claude-opus-5-5' }), levels, 'medium', true).current, 'medium', 'an unset level is the default one');
+  assert.deepEqual(metricsRequest(bot({ kind: 'open_ai_compatible', base_url: 'http://127.0.0.1:8765/v1', model: '/models/Qwen3.5-9B-MLX-4bit', api_key_env: null }), [], null, true),
     { model: '/models/Qwen3.5-9B-MLX-4bit', efforts: [], current: null, local: true });
-  assert.equal(metricsRequest(bot({ kind: 'open_ai_compatible', base_url: 'https://api.deepseek.com/', model: 'deepseek-flash', api_key_env: 'K' }), levels, 'high').local, false);
-  assert.equal(metricsRequest(bot({ kind: 'agent', tool: 'codex', model: null }), levels, 'medium'), null, 'no model picked, nothing to look up');
-  assert.equal(metricsRequest(bot({ kind: 'cli', program: 'x', args: [] }), [], null), null);
+  assert.equal(metricsRequest(bot({ kind: 'open_ai_compatible', base_url: 'https://api.deepseek.com/', model: 'deepseek-flash', api_key_env: 'K' }), levels, 'high', true).local, false);
+  assert.equal(metricsRequest(bot({ kind: 'agent', tool: 'codex', model: null }), levels, 'medium', true), null, 'no model picked, nothing to look up');
+  assert.equal(metricsRequest(bot({ kind: 'cli', program: 'x', args: [] }), [], null, true), null);
+});
+
+test('a service too old for benchmarks gets no request', () => {
+  const opus = { id: 'b', display_name: 'B', backend: { kind: 'agent', tool: 'claude_code', model: 'claude-opus-5-5' }, effort: 'high' };
+  assert.equal(METRICS_CAPABILITY, 'model_metrics_v1', 'the name apex-daemon lists in its welcome');
+  assert.equal(metricsRequest(opus, ['high'], null, false), null);
+  assert.equal(metricsRequest(opus, ['high'], null, true).model, 'claude-opus-5-5');
 });

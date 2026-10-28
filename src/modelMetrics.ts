@@ -24,6 +24,9 @@ export const WHAT: Record<MetricKey, [string, string]> = {
   price: ["Price per 1M tokens", "Input / output, from OpenRouter. Same at every level, but higher levels write more tokens."],
 };
 
+/** Listed in apex-daemon's welcome when it can answer `model_metrics`. */
+export const METRICS_CAPABILITY = "model_metrics_v1";
+
 /** A model with no reasoning setting has one row under this name. */
 const NO_LEVELS = "default";
 
@@ -107,9 +110,11 @@ export function isLocalServer(baseUrl: string): boolean {
 /**
  * What an agent card asks the daemon for: the bot's model, the levels it
  * offers, and the one it runs at, which is `fallbackEffort` while unset.
- * Null for bots with no model to look up.
+ * Null for bots with no model to look up, and when the daemon is too old
+ * to answer (`supported` false).
  */
-export function metricsRequest(config: ParticipantConfig, efforts: string[], fallbackEffort: string | null): { model: string; efforts: string[]; current: string | null; local: boolean } | null {
+export function metricsRequest(config: ParticipantConfig, efforts: string[], fallbackEffort: string | null, supported: boolean): { model: string; efforts: string[]; current: string | null; local: boolean } | null {
+  if (!supported) return null;
   const backend = config.backend;
   if (backend.kind !== "agent" && backend.kind !== "open_ai_compatible") return null;
   if (!backend.model) return null;
