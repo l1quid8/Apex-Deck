@@ -245,6 +245,157 @@ async fn fetch_zip(etag: Option<String>) -> Result<Fetched, String> {
     Ok(Fetched::Body(body, etag))
 }
 
+/// Deck model ids that Epoch spells differently: (Deck id, Epoch base id,
+/// also matches a local copy). DeepSeek's own API calls V4.1 Flash
+/// `deepseek-flash`. A local model only ever matches through this table,
+/// because a name on someone's own server proves nothing, and a local
+/// entry also matches quantised copies such as `qwen3.5-9b-mlx-4bit`.
+const OVERRIDES: &[(&str, &str, bool)] = &[("qwen3.5-9b", "qwen3.5-9b", true), ("deepseek-flash", "deepseek-v4.1-flash", false)];
+
+/// The row for a model with no reasoning setting.
+const NO_LEVELS: &str = "default";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelState {
+    Measured,
+    NotMeasured,
+}
+
+/// One reasoning level the bot offers, with each test's score there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LevelRow {
+    pub effort: String,
+    pub state: LevelState,
+    /// Test id → score, only for tests that ran at this level.
+    pub scores: HashMap<String, f64>,
+}
+
+/// A pill's number and the level it was measured at, which can differ
+/// from the bot's own level when that one was never tested.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PillValue {
+    pub value: f64,
+    pub from_level: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelMetrics {
+    /// Epoch's name for the model, such as "Claude Opus 5.5".
+    pub name: String,
+    pub rows: Vec<LevelRow>,
+    pub current: Option<String>,
+    /// Test id → the score shown on the pill.
+    pub pills: HashMap<String, PillValue>,
+    /// Test id → top score across levels, for the ★; only when the test
+    /// ran at two or more of the bot's levels.
+    pub best: HashMap<String, f64>,
+    pub eci: Option<f64>,
+    /// US dollars per million tokens, input and output.
+    pub price: Option<(f64, f64)>,
+    /// Scores are for the public model, run here from a local copy.
+    pub local_note: bool,
+    pub fetched_at: u64,
+    pub last_error: Option<String>,
+}
+
+/// Lowercase, keep only the file name of a local model path, and drop a
+/// dated `-YYYYMMDD` suffix.
+fn normalize(model: &str) -> String {
+    let name = model.trim_end_matches('/').rsplit('/').next().unwrap_or(model).to_lowercase();
+    match name.rsplit_once('-') {
+        Some((base, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => base.to_string(),
+        _ => name,
+    }
+}
+
+/// OpenRouter writes `claude-opus-5.5` where Deck and Epoch write `claude-opus-5-5`.
+fn same_id(a: &str, b: &str) -> bool {
+    a.replace('.', "-").eq_ignore_ascii_case(&b.replace('.', "-"))
+}
+
+/// Match a bot's model and reasoning levels to the cached scores. `None`
+/// means Epoch has nothing for this model.
+pub fn match_model(model: &str, efforts: &[String], current: Option<&str>, local: bool, cache: &MetricsCache) -> Option<ModelMetrics> {
+    let id = normalize(model);
+    let entry = OVERRIDES.iter().find(|(deck, _, local_ok)| id == *deck || (*local_ok && id.starts_with(&format!("{deck}-"))));
+    let base = match entry {
+        Some((_, base, local_ok)) if *local_ok || !local => base.to_string(),
+        _ if local => return None,
+        _ => id,
+    };
+    // `<base>_<level>` exactly, so a dated re-run `<base>-1017_<level>`
+    // never stands in for the model itself.
+    let level_of = |version: &str| -> Option<String> {
+        let version = version.to_lowercase();
+        match version.rsplit_once('_') {
+            Some((b, level)) if b == base => Some(level.to_string()),
+            None if version == base => Some(String::new()),
+            _ => None,
+        }
+    };
+    let group = cache.groups.iter().find(|(version, _)| level_of(version).is_some()).map(|(_, group)| group.clone());
+    let mut by_level: HashMap<String, HashMap<String, f64>> = HashMap::new();
+    for score in &cache.scores {
+        if let Some(level) = level_of(&score.model_version) {
+            by_level.entry(level).or_default().insert(score.test.clone(), score.value);
+        }
+    }
+    if group.is_none() && by_level.is_empty() {
+        return None;
+    }
+
+    // A model with no levels gets one row from its `_none` or bare entry.
+    let (offered, current): (Vec<String>, Option<String>) = if efforts.is_empty() {
+        let scores = by_level.remove("none").or_else(|| by_level.remove("")).unwrap_or_default();
+        by_level = HashMap::from([(NO_LEVELS.to_string(), scores)]);
+        (vec![NO_LEVELS.to_string()], Some(NO_LEVELS.to_string()))
+    } else {
+        (efforts.to_vec(), current.map(str::to_string))
+    };
+    let rows: Vec<LevelRow> = offered
+        .iter()
+        .map(|effort| {
+            let scores = by_level.get(effort).cloned().unwrap_or_default();
+            let state = if scores.is_empty() { LevelState::NotMeasured } else { LevelState::Measured };
+            LevelRow { effort: effort.clone(), state, scores }
+        })
+        .collect();
+
+    let (mut pills, mut best) = (HashMap::new(), HashMap::new());
+    let at = current.as_deref().and_then(|c| offered.iter().position(|e| e == c));
+    for test in TESTS {
+        let measured: Vec<(usize, f64)> = rows.iter().enumerate().filter_map(|(i, row)| Some((i, *row.scores.get(test.id)?))).collect();
+        if measured.len() >= 2 {
+            best.insert(test.id.to_string(), measured.iter().map(|(_, v)| *v).fold(f64::MIN, f64::max));
+        }
+        // The nearest tested level; on a tie the lower one, so a pill
+        // never overstates the bot's own level.
+        if let Some(at) = at {
+            if let Some((i, value)) = measured.iter().min_by_key(|(i, _)| (i.abs_diff(at), *i)) {
+                pills.insert(test.id.to_string(), PillValue { value: *value, from_level: rows[*i].effort.clone() });
+            }
+        }
+    }
+
+    let price = (!local)
+        .then(|| cache.prices.iter().find(|(id, _)| !id.contains(':') && id.rsplit_once('/').is_some_and(|(_, name)| same_id(name, &base))))
+        .flatten()
+        .map(|(_, price)| *price);
+    Some(ModelMetrics {
+        name: group.clone().unwrap_or_else(|| base.clone()),
+        rows,
+        current,
+        pills,
+        best,
+        eci: group.and_then(|g| cache.eci.get(&g).copied()),
+        price,
+        local_note: local,
+        fetched_at: cache.fetched_at,
+        last_error: cache.last_error.clone(),
+    })
+}
+
 /// OpenRouter's public price list, keyed by its model id.
 async fn fetch_prices() -> Result<HashMap<String, (f64, f64)>, String> {
     let models = crate::api_info::models(OPENROUTER, None).await?;
@@ -482,5 +633,147 @@ Claude Opus 5.5,Claude Opus 5.5,168.83,165.25,173.95,2026-09-22,Anthropic,United
         assert!(eci.contains_key("Claude Opus 5.5"));
         let prices = fetch_prices().await.expect("OpenRouter prices");
         assert!(!prices.is_empty());
+        let cache = MetricsCache { scores, groups, eci, prices, ..Default::default() };
+        let all: Vec<String> = ["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec();
+        let no_xhigh: Vec<String> = ["low", "medium", "high", "max"].map(String::from).to_vec();
+        let deepgeek = match_model("deepseek-flash", &no_xhigh, Some("medium"), false, &cache).expect("deepgeek");
+        assert_eq!(deepgeek.name, "DeepSeek V4.1 Flash");
+        assert_eq!(deepgeek.pills["arc"].from_level, "low");
+        assert!(deepgeek.price.is_some());
+        let opus = match_model("claude-opus-5-5", &all, Some("high"), false, &cache).expect("Opus");
+        assert_eq!(opus.pills["code"].from_level, "medium");
+        assert!(opus.price.is_some() && opus.eci.is_some());
+        let gwen = match_model("/models/Qwen3.5-9B-MLX-4bit", &[], None, true, &cache).expect("Gwen");
+        assert!(gwen.local_note && gwen.eci.is_some());
+    }
+
+    /// Real scores from Epoch's 2026-10-28 download, trimmed.
+    fn matched_cache() -> MetricsCache {
+        let rows: &[(&str, &str, f64)] = &[
+            ("arc", "gpt-6.1-sol_low", 76.67),
+            ("arc", "gpt-6.1-sol_medium", 86.67),
+            ("arc", "gpt-6.1-sol_high", 91.67),
+            ("arc", "gpt-6.1-sol_xhigh", 91.67),
+            ("arc", "gpt-6.1-sol_max", 94.17),
+            ("code", "gpt-6.1-sol_medium", 50.23),
+            ("arc", "claude-opus-5-5_medium", 87.5),
+            ("arc", "claude-opus-5-5_high", 93.33),
+            ("code", "claude-opus-5-5_medium", 54.64),
+            ("cursor", "claude-opus-5-5_high", 56.0),
+            ("arc", "deepseek-v4.1-flash_none", 1.25),
+            ("arc", "deepseek-v4.1-flash_low", 60.56),
+            ("arc", "deepseek-v4.1-flash_high", 67.5),
+            ("arc", "deepseek-v4.1-flash_max", 72.92),
+            ("arc", "deepseek-v4.1-flash-1017_max", 80.0),
+            ("code", "deepseek-v4.1-flash_high", 43.87),
+            ("arc", "qwen3.5-9B_none", 2.5),
+        ];
+        let groups = [
+            ("gpt-6.1-sol_medium", "GPT-6.1 Sol"),
+            ("claude-opus-5-5_high", "Claude Opus 5.5"),
+            ("deepseek-v4.1-flash_max", "DeepSeek V4.1 Flash"),
+            ("deepseek-v4.1-flash-1017_max", "DeepSeek V4.1 Flash 1017"),
+            ("qwen3.5-9B_none", "Qwen3.5-9B"),
+        ];
+        MetricsCache {
+            fetched_at: 1_000,
+            scores: rows.iter().map(|(test, model, value)| Score { test: (*test).into(), model_version: (*model).into(), value: *value }).collect(),
+            groups: groups.iter().map(|(v, g)| ((*v).into(), (*g).into())).collect(),
+            eci: HashMap::from([("GPT-6.1 Sol".into(), 168.37), ("Claude Opus 5.5".into(), 168.83), ("DeepSeek V4.1 Flash".into(), 155.93), ("Qwen3.5-9B".into(), 139.32)]),
+            prices: HashMap::from([
+                ("openai/gpt-6.1-sol".into(), (2.0, 10.0)),
+                ("openai/gpt-6.1-sol:batch".into(), (1.0, 5.0)),
+                ("anthropic/claude-opus-5.5".into(), (4.0, 20.0)),
+                ("deepseek/deepseek-v4.1-flash".into(), (0.14, 0.42)),
+                ("deepseek/deepseek-v4.1-flash-1017".into(), (0.15, 0.6)),
+                ("qwen/qwen3.5-9b".into(), (0.17, 0.25)),
+            ]),
+            ..Default::default()
+        }
+    }
+
+    fn levels(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    const ALL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+    #[test]
+    fn per_level_rows() {
+        let m = match_model("gpt-6.1-sol", &levels(ALL), Some("medium"), false, &matched_cache()).expect("Sol matches");
+        assert_eq!(m.name, "GPT-6.1 Sol");
+        assert_eq!(m.rows.iter().map(|r| r.effort.as_str()).collect::<Vec<_>>(), ALL);
+        assert!(m.rows.iter().all(|r| r.state == LevelState::Measured), "{:?}", m.rows);
+        assert!((m.rows[1].scores["arc"] - 86.7).abs() < 0.05);
+        assert_eq!(m.pills["arc"], PillValue { value: 86.67, from_level: "medium".into() });
+        assert_eq!(m.eci, Some(168.37));
+        assert_eq!(m.price, Some((2.0, 10.0)), "the :batch price is never used");
+        assert!(!m.local_note);
+    }
+
+    #[test]
+    fn nearest_measured_is_tagged() {
+        let m = match_model("deepseek-flash", &levels(&["low", "medium", "high", "max"]), Some("medium"), false, &matched_cache()).expect("deepgeek matches");
+        // Low and high are equally near; the lower one never overstates.
+        assert_eq!(m.pills["arc"].from_level, "low");
+        assert_eq!(m.rows[1].effort, "medium");
+        assert_eq!(m.rows[1].state, LevelState::NotMeasured);
+        assert!(m.rows[1].scores.is_empty());
+        assert!(!m.rows.iter().any(|r| r.effort == "none"), "levels the bot doesn't offer get no row");
+    }
+
+    #[test]
+    fn per_test_borrowing() {
+        let m = match_model("claude-opus-5-5", &levels(ALL), Some("high"), false, &matched_cache()).expect("Opus matches");
+        assert_eq!(m.pills["code"], PillValue { value: 54.64, from_level: "medium".into() });
+        assert_eq!(m.pills["arc"].from_level, "high");
+        assert_eq!(m.price, Some((4.0, 20.0)), "OpenRouter writes 5.5 where Deck writes 5-5");
+    }
+
+    #[test]
+    fn best_needs_two_measured_levels() {
+        let m = match_model("gpt-6.1-sol", &levels(ALL), Some("medium"), false, &matched_cache()).unwrap();
+        assert_eq!(m.best.get("arc"), Some(&94.17));
+        assert_eq!(m.best.get("code"), None, "one tested level has nothing to compare");
+    }
+
+    #[test]
+    fn dated_rerun_does_not_replace_base() {
+        let m = match_model("deepseek-flash", &levels(&["low", "medium", "high", "max"]), Some("max"), false, &matched_cache()).unwrap();
+        assert_eq!(m.rows[3].scores["arc"], 72.92);
+        assert_eq!(m.name, "DeepSeek V4.1 Flash");
+        assert_eq!(m.price, Some((0.14, 0.42)));
+    }
+
+    #[test]
+    fn case_insensitive_match() {
+        let m = match_model("Qwen3.5-9b", &[], None, false, &matched_cache()).expect("qwen3.5-9B_none matches");
+        assert_eq!(m.rows.len(), 1);
+        assert_eq!(m.rows[0].effort, "default");
+        assert_eq!(m.rows[0].scores["arc"], 2.5);
+        assert_eq!(m.pills["arc"].from_level, "default");
+        assert_eq!(m.eci, Some(139.32));
+        let dated = match_model("claude-opus-5-5-20260922", &levels(ALL), Some("high"), false, &matched_cache());
+        assert_eq!(dated.map(|m| m.name), Some("Claude Opus 5.5".into()), "a -YYYYMMDD suffix is dropped");
+    }
+
+    #[test]
+    fn local_model_matches_only_through_override() {
+        let gwen = "/Users/someone/models/Qwen3.5-9B-MLX-4bit";
+        let m = match_model(gwen, &[], None, true, &matched_cache()).expect("Gwen's local Qwen matches");
+        assert!(m.local_note);
+        assert_eq!(m.eci, Some(139.32));
+        assert_eq!(m.price, None, "a local model costs nothing to run");
+        assert!(match_model("gpt-6.1-sol", &levels(ALL), Some("medium"), true, &matched_cache()).is_none(), "a local server's model name proves nothing");
+    }
+
+    #[test]
+    fn override_table_wins() {
+        assert_eq!(match_model("deepseek-flash", &[], None, false, &matched_cache()).map(|m| m.name), Some("DeepSeek V4.1 Flash".into()));
+    }
+
+    #[test]
+    fn unknown_model_is_none() {
+        assert!(match_model("made-up-1", &levels(ALL), Some("high"), false, &matched_cache()).is_none());
     }
 }
