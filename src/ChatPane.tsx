@@ -103,6 +103,9 @@ import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
+import { ModelMetricPills } from "./ModelMetricPills";
+import { METRICS_CAPABILITY, metricsRequest } from "./modelMetrics.ts";
+import { botGroups, reasoningLevels } from "./phoneRules";
 import { AttachedImages, AttachedVideos } from "./AttachedImages";
 import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
@@ -2717,6 +2720,16 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     return b?.kind === "open_ai_compatible" ? mediaKind(providerModels[sourceKey(b.base_url, b.api_key_env)]?.find((m) => m.id === b.model)) : null;
   };
   const makesMedia = (p: ParticipantConfig | undefined) => Boolean(mediaOf(p));
+  // What an agent card's benchmark pills ask for: the bot's model, the levels it offers and the one it runs at.
+  const metricsAsk = (p: ParticipantConfig) => {
+    if (makesMedia(p)) return null;
+    const b = p.backend;
+    const listed = b.kind === "open_ai_compatible" ? providerModels[sourceKey(b.base_url, b.api_key_env)] ?? [] : [];
+    const model = "model" in b ? b.model ?? "" : "";
+    const efforts = reasoningLevels(p, botGroups(p, b.kind === "agent" ? reported[b.tool] ?? [] : [], listed), model);
+    const fallback = listed.find(m => m.id === model)?.default_effort ?? (efforts.length ? defaultEffortFor(efforts) : null);
+    return metricsRequest(p, efforts, fallback, backend.supports?.(METRICS_CAPABILITY) === true);
+  };
   /** Stopping only stops Deck waiting: a picture or video the provider already started may still be billed. */
   const chargeWarning = (ids: string[]) => {
     const kinds = new Set(ids.map((id) => mediaOf(configOf(id))).filter(Boolean));
@@ -3527,7 +3540,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         </div>}
         {participants.map((p) => <article className="agent-card" key={p.id}>
           <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="lg" />
-          <div className="agent-card-copy"><h2>{p.display_name}</h2><p className="muted">{chipDescription(p, ALL_PARTS)}</p><p>{p.persona || "No brief added yet."}</p><span className="hint">@{mentionFor(p)} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
+          <div className="agent-card-copy"><h2>{p.display_name}</h2><div className="agent-model-line"><span className="muted">{chipDescription(p, ALL_PARTS)}</span>{(() => { const ask = metricsAsk(p); return ask && <ModelMetricPills backend={backend} {...ask} open={url => openTarget(url)} />; })()}</div><p>{p.persona || "No brief added yet."}</p><span className="hint">@{mentionFor(p)} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
           <div className="agent-card-actions"><button onClick={() => startEditing(p)}>Edit</button><button className="ghost" onClick={() => removeParticipant(p.id)} aria-label={`Delete agent ${p.display_name}`}>Delete</button></div>
         </article>)}
       </div>}

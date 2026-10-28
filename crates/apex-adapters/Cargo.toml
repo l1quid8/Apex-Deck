@@ -18,6 +18,9 @@ base64 = "0.22"
 ignore = "0.4"
 globset = "0.4"
 regex = "1"
+# Benchmark pills: Epoch AI publishes its scores as a zip of CSV files.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+csv = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

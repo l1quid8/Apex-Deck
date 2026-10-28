@@ -74,6 +74,8 @@ pub fn command_needs(command: &Command) -> Need {
         RoomSteps { room, .. } => read(thread(room)),
         AgentsDetect {} => read(GlobalRead),
         AgentModels { .. } => read(GlobalRead),
+        // Public benchmark scores; the only fetches are two fixed addresses.
+        ModelMetrics { .. } => read(GlobalRead),
         // Only the bot's own saved address and key, so nothing leaves for elsewhere.
         RoomBotModels { room, .. } => read(thread(room)),
         RoomBotBalance { room, .. } => read(thread(room)),
@@ -349,6 +351,7 @@ mod tests {
             ("voice_capabilities", Some((ReadOnly, "global_read")), json!({})),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
             ("agent_models", Some((ReadOnly, "global_read")), json!({ "tool": "codex" })),
+            ("model_metrics", Some((ReadOnly, "global_read")), json!({ "model": "m", "efforts": [], "current": null, "local": false })),
             ("room_post", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),
             ("room_post_to", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi", "targets": [] })),
             ("room_targets", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),

@@ -29,6 +29,7 @@ mod grok_usage;
 pub mod keys;
 mod mcp;
 pub mod media;
+pub mod model_metrics;
 mod muse_server;
 mod openai;
 mod owned_process;

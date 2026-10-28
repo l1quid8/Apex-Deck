@@ -95,6 +95,8 @@ export interface Backend {
   apiBalance(baseUrl: string, apiKeyEnv: string | null): Promise<number | null>;
   /** What one video from `model` costs with these choices, in US dollars, from the provider's own quote. Null when it gives none. */
   apiQuote(baseUrl: string, apiKeyEnv: string | null, model: string, media: import("./types").MediaSettings | null): Promise<number | null>;
+  /** Public benchmark scores for `model` at each of `efforts`. Null when none are published; `local` = served from this Mac or its network. */
+  modelMetrics(model: string, efforts: string[], current: string | null, local: boolean): Promise<import("./types").ModelMetrics | null>;
   /** Models offered to API bot `participant` in thread `room`, asked for with the bot's own saved address and key. */
   roomBotModels?(room: string, participant: string): Promise<ApiModel[]>;
   /** What is left on API bot `participant`'s account, in US dollars. Null when the provider has no balance check. */
@@ -766,6 +768,7 @@ function demoBackend(): Backend {
     },
     apiBalance: async () => null,
     apiQuote: async () => null,
+    modelMetrics: async () => null,
     agentModels: async () => [],
     roomPlanReset: async (room, tool, credit) => {
       await new Promise((resolve) => setTimeout(resolve, 500));

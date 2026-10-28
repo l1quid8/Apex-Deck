@@ -42,6 +42,7 @@ pub mod personal_worker;
 mod personal_task_lifecycle;
 mod personal_archive;
 mod personal_voice;
+mod model_metrics;
 pub mod events;
 pub mod quit;
 pub mod host;
