@@ -1141,7 +1141,20 @@ impl Host {
         }
     }
 
+    /// A chat that has moved to a Work thread, or is moving now, takes no new
+    /// messages: they would land in the old chat, never in the Work thread.
+    fn refuse_moved_chat(&self, id: &str) -> Result<(), String> {
+        let Some(meta) = self.store.chat_meta(id)? else { return Ok(()) };
+        if meta.promoting.is_some() { return Err("This chat is moving to a Work thread. Send once the move finishes.".into()); }
+        if let Some(to) = meta.promoted_to {
+            let name = self.store.chat_meta(&to)?.map(|meta| meta.title.trim().to_owned()).filter(|title| !title.is_empty()).unwrap_or(to);
+            return Err(format!("This chat moved to {name}. Send it there."));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>) -> Result<TurnBatch, String> {
+        self.refuse_moved_chat(id)?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         {
             let room = handle.room.lock().await;
@@ -1262,6 +1275,9 @@ impl Host {
         if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
+        // A resend of a message the chat already took still gets its record.
+        let known = handle.checkpoint.lock().unwrap().snapshot.client_messages.contains_key(&request_id);
+        if !known { self.refuse_moved_chat(&id)?; }
         // Acceptance already committed this event. Publishing it must not do
         // a second fallible save and abandon an accepted batch before launch.
         let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot), &|event| {
@@ -4145,7 +4161,7 @@ mod host_tests {
     #[test]
     fn chat_promote_makes_one_work_thread_from_the_machines_own_bots() {
         use serde_json::json;
-        let (host, _runtime, data) = host("chat-promote");
+        let (host, runtime, data) = host("chat-promote");
         let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
         bot.access = Access::Read;
         bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
@@ -4194,6 +4210,13 @@ mod host_tests {
             .unwrap_err();
         assert!(refused.contains("Already moved to Denver trip"), "{refused}");
         assert!(host.store.room("33333333-3333-3333-3333-333333333333").unwrap().is_none());
+        // The moved chat takes no new messages; they belong in the Work thread.
+        let late = runtime.block_on(host.room_client_post("11111111-1111-1111-1111-111111111111".into(), "one more".into(), None, "late-1".into(), false, false, Some(0), None, apex_core::GeneratedUiCapability::Unsupported)).unwrap_err();
+        assert!(late.contains("moved to Denver trip"), "{late}");
+        let legacy = runtime.block_on(host.room_post("11111111-1111-1111-1111-111111111111".into(), "one more".into())).unwrap_err();
+        assert!(legacy.contains("moved to Denver trip"), "{legacy}");
+        let chat = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert!(!chat.snapshot.transcript.iter().any(|m| m.text == "one more"));
         // Only a chat can be moved.
         let err = host.chat_promote("22222222-2222-2222-2222-222222222222".into(), "44444444-4444-4444-4444-444444444444".into(), cwd.clone(), None, None, None).unwrap_err();
         assert!(err.contains("Only a chat"), "{err}");
