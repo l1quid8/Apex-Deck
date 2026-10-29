@@ -253,6 +253,7 @@ export interface RoomState {
   next_steps?: { id: string; steps: NextStep[]; pending: boolean } | null;
   plan?: boolean;
   live?: boolean;
+  runner?: import("./runner/types.ts").RunnerSnapshot | null;
 }
 
 export interface AppSession {

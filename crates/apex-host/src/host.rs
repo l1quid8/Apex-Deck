@@ -154,6 +154,7 @@ pub struct Host {
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
     pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
+    pub(crate) runner_service: Arc<Mutex<crate::runner::service::RunnerService>>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -252,6 +253,7 @@ impl Host {
         apex_adapters::keys::use_folder(&paths.data);
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
         let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
+        let runner_service = Arc::new(Mutex::new(crate::runner::service::RunnerService::new(paths.data.clone())));
         let host = Arc::new(Host {
             paths,
             _ownership: ownership,
@@ -281,6 +283,7 @@ impl Host {
             steps: Default::default(),
             phone,
             fold_queue,
+            runner_service,
         });
 
         let host_for_reconcile = Arc::downgrade(&host);
@@ -636,18 +639,20 @@ impl Host {
         *self.startup.lock().unwrap() = Some(folders);
     }
 
+    /// Passive menu inventory only. Provider discovery can spawn MCP servers
+    /// and open OAuth browsers, so it must never run on a UI lifecycle read.
+    /// Actual turns populate this cache through RoomEvent::ToolServers.
     pub async fn list_tool_servers(&self, room: String, agent: String) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
-        let key = format!("{room}:{agent}");
-        if let Some(names) = self.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned() { return Ok(names); }
         let handle = self.handle(&room)?;
         let config = handle.room.lock().await.configs().into_iter().find(|p| p.id.as_str() == agent).ok_or("Unknown participant")?;
-        let names = match config.backend {
-            apex_core::Backend::Agent { tool: AgentTool::Codex, .. } => tokio::time::timeout(std::time::Duration::from_secs(30), apex_adapters::codex_tool_servers(handle.context.cwd.clone().map(|p| p.to_string_lossy().into_owned()), handle.context.path.clone())).await.map_err(|_| "Couldn't list tool servers: timed out")??,
-            apex_core::Backend::Agent { tool: AgentTool::ClaudeCode, .. } => tokio::time::timeout(std::time::Duration::from_secs(60), apex_adapters::claude_tool_servers(handle.context.cwd.clone().map(|p| p.to_string_lossy().into_owned()), handle.context.path.clone())).await.map_err(|_| "Couldn't list tool servers: timed out")??,
-            _ => Vec::new(),
-        };
-        if !names.is_empty() { self.tool_servers.lock().unwrap().insert(key, names.clone()); }
-        Ok(names)
+        if let Some(names) = self.tool_servers.lock().unwrap().get(&format!("{room}:{agent}")).cloned() { return Ok(names); }
+        match config.backend {
+            // Unknown is different from a confirmed empty catalog: clients
+            // must still let an explicit !server request reach the provider.
+            apex_core::Backend::Agent { tool: AgentTool::Codex | AgentTool::ClaudeCode, .. } =>
+                Err("Tool inventory is not loaded yet. Send a message to load tools; use the provider CLI to authenticate explicitly.".into()),
+            _ => Ok(Vec::new()),
+        }
     }
 
     // ------------------------------------------------------------ terminals
@@ -863,7 +868,26 @@ impl Host {
         let snapshot = saved.snapshot;
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
-        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone()}))
+        let runner = self.runner_service.lock().unwrap().state(&id).ok().flatten();
+        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner}))
+
+    }
+
+    pub fn room_runner_state(self: &Arc<Self>, id: String) -> Result<Option<serde_json::Value>, String> {
+        let runner = self.runner_service.lock().unwrap().state(&id)?;
+        Ok(runner.map(|s| serde_json::to_value(s).map_err(|e| e.to_string())).transpose()?)
+    }
+
+    pub async fn room_runner_start(self: &Arc<Self>, input: crate::runner::service::RunnerStartInput) -> Result<serde_json::Value, String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let res = self.runner_service.lock().unwrap().start(input, now_ms)?;
+        Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
+    }
+
+    pub async fn room_runner_action(self: &Arc<Self>, input: crate::runner::service::RunnerActionInput) -> Result<serde_json::Value, String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let res = self.runner_service.lock().unwrap().action(input, now_ms)?;
+        Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -2321,6 +2345,58 @@ fn copy_folder_attachment(dir: &Path, source: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn automatic_tool_inventory_never_starts_providers_and_keeps_turn_inventory() {
+        use apex_core::Participant;
+        use std::os::unix::fs::PermissionsExt;
+        let (mut handle, _, path) = checkpoint_fixture("passive-inventory");
+        let bin = path.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // A discovery attempt would run these sentinels instead of a real
+        // provider, so this regression test cannot open an OAuth browser.
+        for name in ["claude", "codex"] {
+            let cli = bin.join(name);
+            std::fs::write(&cli, format!("#!/bin/sh\nprintf started > '{}'\nexit 9\n", path.join("provider-started").display())).unwrap();
+            std::fs::set_permissions(cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        handle.context.path = Some(bin.to_string_lossy().into_owned());
+        let participants = [("claude", AgentTool::ClaudeCode), ("codex", AgentTool::Codex)].into_iter().map(|(id, tool)| {
+            let mut config = apex_core::testing::ScriptedParticipant::new(id, &[]).config().clone();
+            config.backend = apex_core::Backend::Agent { tool, model: None };
+            apex_adapters::build(config, &handle.context)
+        }).collect();
+        handle.runtime = ConcurrentRoom::new(Room::new(participants, RoomOptions::default()));
+        handle.room = handle.runtime.room();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, runtime.handle().clone());
+        host.rooms.lock().unwrap().insert("chat".into(), handle);
+        runtime.block_on(async {
+            for agent in ["claude", "codex"] {
+                for _ in 0..2 {
+                    let result = host.list_tool_servers("chat".into(), agent.into()).await;
+                    assert!(!path.join("provider-started").exists(), "automatic discovery must never execute either provider");
+                    assert!(result.unwrap_err().contains("Tool inventory is not loaded yet"));
+                }
+            }
+            let handle = host.handle("chat").unwrap();
+            let error = Mutex::new(None);
+            let sink = host.turn_sink("chat", &handle, &error);
+            let servers = vec!["x-mcp".to_owned().into()];
+            sink(RoomEvent::ToolServers { id: ParticipantId::new("claude"), servers: servers.clone() });
+            assert!(error.lock().unwrap().is_none());
+            assert_eq!(host.list_tool_servers("chat".into(), "claude".into()).await, Ok(servers));
+            sink(RoomEvent::ToolServers { id: ParticipantId::new("claude"), servers: vec![] });
+            assert_eq!(host.list_tool_servers("chat".into(), "claude".into()).await, Ok(vec![]));
+            assert!(host.list_tool_servers("chat".into(), "missing".into()).await.is_err());
+            assert!(host.list_tool_servers("missing".into(), "claude".into()).await.is_err());
+        });
+        assert!(!path.join("provider-started").exists(), "automatic discovery must never execute either provider");
+        host.shutdown();
+        drop(host);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn direct_host_construction_secures_the_parent_of_saved_rooms_and_checkpoints() {
