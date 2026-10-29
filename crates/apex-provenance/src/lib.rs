@@ -540,6 +540,7 @@ pub fn protected(name: &str) -> bool {
             | "room_create"
             | "room_import"
             | "room_fork"
+            | "chat_promote"
             | "room_update_participant"
             | "room_add_participant"
             | "room_remove_participant"

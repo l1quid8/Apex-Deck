@@ -43,11 +43,119 @@ pub struct SavedRoom {
 /// Permission-bearing snapshot fields live separately from editable transcript data.
 #[derive(Clone,Serialize,Deserialize)]
 struct RoomAuthority {
+    #[serde(default, skip_serializing_if = "apex_core::RoomKind::is_work")]
+    kind: apex_core::RoomKind,
     cwd:Option<String>,participants:Vec<apex_core::ParticipantConfig>,options:apex_core::RoomOptions,
     allowed:Vec<apex_core::AllowedRule>,plan:bool,
     #[serde(default)] mounts:Vec<MountBoundary>,
     /// Set when this manifest was created from a pre-provenance room file. Never verified.
     #[serde(default, skip_serializing_if = "Option::is_none")] legacy:Option<crate::legacy_import::LegacyMarker>,
+}
+
+/// Destination when a chat room is moved to another paired machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMovedTo {
+    pub host: String,
+    pub room: String,
+}
+
+/// Machine-owned catalog metadata for a chat room or promoted work room.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRoomMeta {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub updated_at: u64,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<ChatMovedTo>,
+    /// The `requestId` of the promote that made `promotedTo`, so a retried
+    /// move returns that Work thread and a different request is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promote_request: Option<String>,
+    /// Promote requests the phone gave up on with `chat_promote_abandon`. A
+    /// delayed copy of one of these is refused, so it can't land after the
+    /// person started a different move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub abandoned_promotes: Vec<String>,
+    /// A move to a Work thread that started but hasn't been linked yet. It is
+    /// saved before the Work room's files, so a crash in between is finished
+    /// (the room was written) or undone (it wasn't) when the store next opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoting: Option<PromoteIntent>,
+    /// The saved profile each bot was made from, by bot id. A bot's id can be
+    /// a copy's alias ("claude-2"), so moving a chat needs both.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub profiles: std::collections::BTreeMap<String, String>,
+}
+
+/// The Work room a chat is being moved into, saved before that room exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromoteIntent {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    pub title: String,
+}
+
+/// Where a test stops `promote_chat` as if the machine crashed there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromoteCrash { AfterIntent, AfterAuthority, AfterRoom }
+#[cfg(test)]
+thread_local! { pub(crate) static PROMOTE_CRASH: std::cell::Cell<Option<PromoteCrash>> = const { std::cell::Cell::new(None) }; }
+#[cfg(test)]
+fn crash_here(at: PromoteCrash) -> Result<(), String> {
+    if PROMOTE_CRASH.with(|crash| crash.get()) == Some(at) { return Err(format!("test crash {at:?}")); }
+    Ok(())
+}
+#[cfg(not(test))]
+#[inline(always)]
+fn crash_here(_: PromoteCrash) -> Result<(), String> { Ok(()) }
+
+/// One row returned by `chat_list`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatListEntry {
+    pub id: String,
+    pub kind: apex_core::RoomKind,
+    pub title: String,
+    pub participants: Vec<apex_core::ParticipantConfig>,
+    pub updated_at: u64,
+    pub archived: bool,
+    pub cwd: Option<String>,
+    pub folder_name: Option<String>,
+    pub promoted_from: Option<String>,
+    pub promoted_to: Option<String>,
+    pub moved_to: Option<ChatMovedTo>,
+    /// Bot id to saved profile id, as in `ChatRoomMeta::profiles`.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, String>,
+}
+
+/// The folders a paired phone may turn a chat into a Work thread inside. Only
+/// `apex-daemon allow-root`, run by the machine's own user, writes this file;
+/// the daemon only ever reads it, so a new folder works without a restart.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PromoteRoots {
+    pub version: u32,
+    pub roots: Vec<PromoteRoot>,
+}
+
+/// One allowed folder, stored canonical, with when it was allowed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromoteRoot {
+    pub path: String,
+    pub added_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +226,12 @@ pub struct Store {
 impl Store {
     pub fn new(root: PathBuf) -> Self {
         Self { root, writes: Mutex::new(()) }
+    }
+
+    /// The folder Deck keeps its own files in, so a promotion can refuse it
+    /// as a project folder.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
     }
 
     fn room_path(&self, id: &str) -> PathBuf {
@@ -248,6 +362,7 @@ impl Store {
         // manifest existed keeps its own settings there, as it did before.
         if crate::authority_file::plain(&self.root)&&!authority.contains_key(id){return Ok(Some(room));}
         let trusted:RoomAuthority=serde_json::from_value(authority.get(id).cloned().ok_or("This legacy room has no verified authority manifest. It requires explicit reauthorization; its original file was preserved.")?).map_err(|e|e.to_string())?;
+        room.snapshot.kind=trusted.kind;
         room.cwd=trusted.cwd;
         room.snapshot.participants=trusted.participants;
         room.snapshot.options=trusted.options;
@@ -255,6 +370,47 @@ impl Store {
         room.snapshot.plan=trusted.plan;
         room.mounts=trusted.mounts;
         Ok(Some(room))
+    }
+
+    pub(crate) fn room_ids(&self) -> Result<Vec<String>, String> {
+        let entries = match std::fs::read_dir(self.root.join("rooms")) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(format!("Could not enumerate saved chats: {error}")),
+        };
+        let mut ids = vec![];
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if let Some(id) = entry.file_name().to_str().and_then(room_id_from_file) { ids.push(id); }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Provider processes never resume. Finish recovery durably before the
+    /// host starts any worker or accepts a command, including unopened rooms.
+    pub(crate) fn interrupt_client_messages(&self) -> Result<(), String> {
+        for id in self.room_ids()? {
+            let Some(raw): Option<SavedRoom> = self.read(&self.room_path(&id))? else { continue; };
+            if !raw.snapshot.client_messages.values().any(|record| record.state == apex_core::ClientMessageState::Running) { continue; }
+            let mut saved = self.room(&id)?.ok_or("Saved chat disappeared during recovery")?;
+            for record in saved.snapshot.client_messages.values_mut() {
+                if record.state == apex_core::ClientMessageState::Running { record.state = apex_core::ClientMessageState::Interrupted; }
+            }
+            self.save_room(&id, &saved)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn imported_chat(&self, move_id: &str) -> Result<Option<(String, SavedRoom)>, String> {
+        for id in self.room_ids()? {
+            let Some(raw): Option<SavedRoom> = self.read(&self.room_path(&id))? else { continue; };
+            if raw.snapshot.import_move_id.as_deref() != Some(move_id) { continue; }
+            let saved = self.room(&id)?.ok_or("Imported chat disappeared")?;
+            if !saved.snapshot.kind.is_chat() { return Err("This move does not belong to a chat room".into()); }
+            return Ok(Some((id, saved)));
+        }
+        Ok(None)
     }
     fn room_authorities(&self)->Result<serde_json::Map<String,serde_json::Value>,String>{
         let path=self.root.join("room-authority-v1.json");
@@ -266,9 +422,15 @@ impl Store {
     }
     fn save_room_authority(&self,id:&str,room:&SavedRoom)->Result<(),String>{
         let mut authorities=self.room_authorities()?;
+        if let Some(existing) = authorities.get(id) {
+            let previous_kind: apex_core::RoomKind = existing.get("kind").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            if previous_kind.is_chat() && !room.snapshot.kind.is_chat() {
+                return Err("A talk-only chat room cannot be converted into a Work thread in place.".into());
+            }
+        }
         // A room restored from legacy data keeps saying so after later saves.
         let legacy=authorities.get(id).and_then(|entry|entry.get("legacy")).and_then(|marker|serde_json::from_value(marker.clone()).ok());
-        let manifest=RoomAuthority{cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone(),legacy};
+        let manifest=RoomAuthority{kind:room.snapshot.kind,cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone(),legacy};
         authorities.insert(id.into(),serde_json::to_value(manifest).map_err(|e|e.to_string())?);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
     }
@@ -565,11 +727,241 @@ impl Store {
         sync_directory(parent).map_err(|e| e.to_string())
     }
 
+    /// Give up on one promote request for good. Under the same write lock as
+    /// `promote_chat`, so either the move already happened (its Work room id
+    /// is returned) or it never will: the request id is saved as abandoned and
+    /// any copy still on its way is refused.
+    pub(crate) fn abandon_promote(&self, source: &str, request_id: &str) -> Result<Option<String>, String> {
+        let _guard = self.writes.lock().unwrap();
+        // A move cut off by a crash is finished or undone first, so Start over
+        // never calls a move cancelled while its Work room is on disk.
+        let mut metas = self.chat_metas_held()?;
+        self.settle_promote_held(&mut metas, source)?;
+        let mut chat = metas.remove(source).unwrap_or_default();
+        if let Some(to) = chat.promoted_to.clone() {
+            return Ok(Some(to));
+        }
+        if !chat.abandoned_promotes.iter().any(|gone| gone == request_id) {
+            // Every one is kept until the chat moves: dropping an old one would let its delayed
+            // copy land later with whatever Access it asked for. Once the chat has moved, any
+            // other request is refused as "Already moved", so the list is cleared then.
+            chat.abandoned_promotes.push(request_id.to_owned());
+        }
+        metas.insert(source.to_owned(), chat);
+        self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
+        Ok(None)
+    }
+
+    /// Write a promoted Work room and point the chat at it under one write
+    /// lock: either the Work room exists and the chat links to it, or nothing
+    /// changed. Returns the Work room the chat already pointed at when this
+    /// replays a move already made with the same request.
+    ///
+    /// The steps survive a crash between any two of them: the chat first saves
+    /// which room it is moving into (`promoting`), then the room's authority
+    /// and file are written, then the link replaces the note. Whatever a crash
+    /// leaves is settled by `settle_promote_held` before anything reads it.
+    pub(crate) fn promote_chat(
+        &self,
+        source: &str,
+        target: &str,
+        work: &SavedRoom,
+        request_id: Option<&str>,
+        title: &str,
+    ) -> Result<Option<String>, String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        self.settle_promote_held(&mut metas, source)?;
+        let mut chat = metas.remove(source).unwrap_or_default();
+        if request_id.is_some_and(|id| chat.abandoned_promotes.iter().any(|gone| gone == id)) {
+            return Err("This move was cancelled on the phone. Start it again.".into());
+        }
+        if let Some(to) = chat.promoted_to.clone() {
+            let name = metas
+                .get(&to)
+                .map(|meta| meta.title.trim().to_owned())
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| to.clone());
+            return if to == target && chat.promote_request.as_deref() == request_id {
+                Ok(Some(to))
+            } else {
+                Err(format!("Already moved to {name}"))
+            };
+        }
+        let path = self.room_path(target);
+        let parent = path.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+        if self.thread_paths(target).iter().any(|leftover| std::fs::symlink_metadata(leftover).is_ok())
+            || self.room_authorities()?.contains_key(target)
+        {
+            return Err("a thread with that id already exists".into());
+        }
+        // 1. The note: from here on, files under `target` are this move's.
+        chat.promoting = Some(PromoteIntent { target: target.to_owned(), request: request_id.map(str::to_owned), title: title.trim().to_owned() });
+        metas.insert(source.to_owned(), chat);
+        self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
+        crash_here(PromoteCrash::AfterIntent)?;
+        // 2. The room. A failure here undoes it; the note stays if the undo
+        //    fails too, and the next settle finishes the job.
+        let written = (|| {
+            self.save_room_authority(target, work)?;
+            crash_here(PromoteCrash::AfterAuthority)?;
+            write_new(&path, work)?;
+            sync_directory(&parent).map_err(|e| e.to_string())
+        })();
+        #[cfg(test)]
+        if written.as_ref().is_err_and(|why| why.starts_with("test crash")) { return written.map(|_| None); }
+        if let Err(why) = written {
+            self.undo_promote_held(&mut metas, source, target)?;
+            return Err(why);
+        }
+        crash_here(PromoteCrash::AfterRoom)?;
+        // 3. The link, in one write with the Work room's own catalog entry.
+        self.link_promote_held(&mut metas, source)?;
+        Ok(None)
+    }
+
+    /// Finish or undo a move a crash cut off, for one chat. The caller holds
+    /// the write lock. A Work room file on disk means the move got that far,
+    /// so it is linked; anything less is removed so the move can run again.
+    fn settle_promote_held(&self, metas: &mut std::collections::BTreeMap<String, ChatRoomMeta>, source: &str) -> Result<(), String> {
+        let Some(intent) = metas.get(source).and_then(|chat| chat.promoting.clone()) else { return Ok(()) };
+        // The authority entry is written first and the room file last, so the file alone says it's whole.
+        if self.read::<SavedRoom>(&self.room_path(&intent.target))?.is_some() && self.room_authorities()?.contains_key(&intent.target) {
+            self.link_promote_held(metas, source)
+        } else {
+            self.undo_promote_held(metas, source, &intent.target)
+        }
+    }
+
+    /// Settle every move a crash cut off. Runs when the host opens, before any command.
+    pub(crate) fn settle_promotes(&self) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        let cut_off: Vec<String> = metas.iter().filter(|(_, chat)| chat.promoting.is_some()).map(|(id, _)| id.clone()).collect();
+        for source in cut_off {
+            self.settle_promote_held(&mut metas, &source)?;
+        }
+        Ok(())
+    }
+
+    /// Replace a chat's `promoting` note with the link and the Work room's catalog entry.
+    fn link_promote_held(&self, metas: &mut std::collections::BTreeMap<String, ChatRoomMeta>, source: &str) -> Result<(), String> {
+        let mut chat = metas.remove(source).unwrap_or_default();
+        let Some(intent) = chat.promoting.take() else { metas.insert(source.to_owned(), chat); return Ok(()) };
+        let profiles = self
+            .read::<SavedRoom>(&self.room_path(&intent.target))?
+            .map(|room| room.snapshot.import_profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect())
+            .unwrap_or_default();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        chat.promoted_to = Some(intent.target.clone());
+        chat.promote_request = intent.request.clone();
+        chat.abandoned_promotes.clear();
+        chat.updated_at = chat.updated_at.max(now);
+        let work_meta = ChatRoomMeta {
+            title: intent.title.clone(),
+            updated_at: now,
+            promoted_from: Some(source.to_owned()),
+            profiles,
+            ..Default::default()
+        };
+        metas.insert(source.to_owned(), chat);
+        metas.insert(intent.target.clone(), work_meta);
+        self.write_held(&self.root.join("chat-meta-v1.json"), metas)
+    }
+
+    /// Remove what a move wrote under `target` and drop its note, so the same
+    /// move, or a different one after Start over, can run again.
+    fn undo_promote_held(&self, metas: &mut std::collections::BTreeMap<String, ChatRoomMeta>, source: &str, target: &str) -> Result<(), String> {
+        for leftover in self.thread_paths(target) {
+            match std::fs::remove_file(&leftover) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("Could not undo an unfinished move: {e}")),
+            }
+        }
+        self.forget_authority_held(target)?;
+        if let Some(chat) = metas.get_mut(source) { chat.promoting = None; }
+        self.write_held(&self.root.join("chat-meta-v1.json"), metas)
+    }
+
+    /// Drop one room's authority entry; the caller already holds the write lock.
+    fn forget_authority_held(&self, id: &str) -> Result<(), String> {
+        let mut authorities = self.room_authorities()?;
+        if authorities.remove(id).is_some() {
+            crate::authority_file::write(
+                &self.root.join("room-authority-v1.json"),
+                &serde_json::to_vec(&authorities).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn promote_roots_path(&self) -> PathBuf {
+        self.root.join("promote-roots-v1.json")
+    }
+
+    /// The folders this machine allows a phone to turn a chat into a Work
+    /// thread inside. Empty when nothing was allowed, or the file is missing.
+    pub fn promote_roots(&self) -> Result<PromoteRoots, String> {
+        Ok(self.read::<PromoteRoots>(&self.promote_roots_path())?.unwrap_or_default())
+    }
+
+    /// Allow one folder, and the folders inside it, for phone promotions.
+    /// Adding a folder that is already allowed returns the existing entry.
+    pub fn allow_promote_root(&self, folder: &Path) -> Result<PromoteRoot, String> {
+        let real = canonical_folder(folder)?;
+        let ours = std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+        if real.starts_with(&ours) {
+            return Err("That folder belongs to Deck. Choose a project folder.".into());
+        }
+        let _guard = self.writes.lock().unwrap();
+        let mut roots = self.read::<PromoteRoots>(&self.promote_roots_path())?.unwrap_or_default();
+        if let Some(existing) = roots.roots.iter().find(|root| Path::new(&root.path) == real) {
+            return Ok(existing.clone());
+        }
+        let added = PromoteRoot { path: real.to_string_lossy().into_owned(), added_at: now_ms() };
+        roots.roots.push(added.clone());
+        roots.version = 1;
+        self.write_held(&self.promote_roots_path(), &roots)?;
+        Ok(added)
+    }
+
+    /// Stop allowing one folder. Returns whether it was on the list.
+    pub fn remove_promote_root(&self, folder: &Path) -> Result<bool, String> {
+        let real = canonical_folder(folder)?;
+        let _guard = self.writes.lock().unwrap();
+        let mut roots = self.read::<PromoteRoots>(&self.promote_roots_path())?.unwrap_or_default();
+        let before = roots.roots.len();
+        roots.roots.retain(|root| Path::new(&root.path) != real);
+        if roots.roots.len() == before {
+            return Ok(false);
+        }
+        self.write_held(&self.promote_roots_path(), &roots)?;
+        Ok(true)
+    }
+
+    /// The allowed folder that contains `folder`, if any. This is the whole
+    /// authorization behind a phone's "Move to a Work thread": the phone can
+    /// pick a folder, but only inside one the machine's own user listed.
+    pub fn promote_root_covering(&self, folder: &Path) -> Result<Option<PromoteRoot>, String> {
+        let real = canonical_folder(folder)?;
+        Ok(self.promote_roots()?.roots.into_iter().find(|root| real.starts_with(Path::new(&root.path))))
+    }
+
     pub fn delete_room(&self, id: &str) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         let mut authorities=self.room_authorities()?;
         authorities.remove(id);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let mut metas = self.chat_metas_held()?;
+        if metas.remove(id).is_some() {
+            self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
+        }
         for path in self.thread_paths(id) {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
@@ -578,6 +970,121 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    fn chat_metas_held(&self) -> Result< std::collections::BTreeMap<String, ChatRoomMeta>, String> {
+        Ok(self.read(&self.root.join("chat-meta-v1.json"))?.unwrap_or_default())
+    }
+
+    pub fn chat_meta(&self, id: &str) -> Result<Option<ChatRoomMeta>, String> {
+        Ok(self.chat_metas_held()?.remove(id))
+    }
+
+    pub fn save_chat_meta(&self, id: &str, meta: &ChatRoomMeta) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        metas.insert(id.into(), meta.clone());
+        self.write_held(&self.root.join("chat-meta-v1.json"), &metas)
+    }
+
+    pub fn update_chat_meta(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut ChatRoomMeta),
+    ) -> Result<ChatRoomMeta, String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut metas = self.chat_metas_held()?;
+        let mut meta = metas.remove(id).unwrap_or_default();
+        f(&mut meta);
+        metas.insert(id.into(), meta.clone());
+        self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
+        Ok(meta)
+    }
+
+    /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
+    pub fn chat_list(&self) -> Result<Vec<ChatListEntry>, String> {
+        let metas = self.chat_metas_held()?;
+        let authorities = self.room_authorities()?;
+        let mut candidate_ids: std::collections::BTreeSet<String> = metas.keys().cloned().collect();
+        for (id, entry) in &authorities {
+            let kind: apex_core::RoomKind = entry
+                .get("kind")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            if kind.is_chat() {
+                candidate_ids.insert(id.clone());
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(self.root.join("rooms")) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if let Some(id) = room_id_from_file(name) {
+                        candidate_ids.insert(id);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for id in candidate_ids {
+            let meta = metas.get(&id).cloned();
+            let saved = match self.room(&id) {
+                Ok(Some(saved)) => saved,
+                Ok(None) | Err(_) => continue,
+            };
+            if !saved.snapshot.kind.is_chat() && meta.is_none() {
+                continue;
+            }
+            let meta = meta.unwrap_or_default();
+            let last_msg_at = saved
+                .snapshot
+                .transcript
+                .iter()
+                .filter_map(|m| m.at)
+                .max()
+                .unwrap_or(0);
+            let updated_at = meta.updated_at.max(last_msg_at);
+            let title = if meta.title.trim().is_empty() {
+                "New chat".to_string()
+            } else {
+                meta.title
+            };
+            let folder_name = saved
+                .cwd
+                .as_deref()
+                .and_then(|p| Path::new(p).file_name())
+                .and_then(|n| n.to_str())
+                .map(str::to_owned);
+            let mut profiles = meta.profiles;
+            profiles.extend(saved.snapshot.import_profiles);
+            profiles.retain(|alias, _| saved.snapshot.participants.iter().any(|bot| bot.id.as_str() == alias));
+            let participants = saved
+                .snapshot
+                .participants
+                .into_iter()
+                .map(|mut p| {
+                    if let apex_core::Backend::OpenAiCompatible { ref mut api_key_env, .. } = p.backend {
+                        *api_key_env = None;
+                    }
+                    p
+                })
+                .collect();
+            out.push(ChatListEntry {
+                id,
+                kind: saved.snapshot.kind,
+                title,
+                participants,
+                updated_at,
+                archived: meta.archived,
+                cwd: saved.cwd,
+                folder_name,
+                promoted_from: meta.promoted_from,
+                promoted_to: meta.promoted_to,
+                moved_to: meta.moved_to,
+                profiles,
+            });
+        }
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id)));
+        Ok(out)
     }
 }
 
@@ -634,7 +1141,7 @@ pub(crate) fn plan_legacy_room(id: &str, bytes: &[u8]) -> Result<(LegacyRoom, us
         }
         true
     });
-    let authority = RoomAuthority { cwd: saved.cwd, participants: saved.snapshot.participants, options: saved.snapshot.options, allowed: vec![], plan: saved.snapshot.plan, mounts, legacy: None };
+    let authority = RoomAuthority { kind: apex_core::RoomKind::Work, cwd: saved.cwd, participants: saved.snapshot.participants, options: saved.snapshot.options, allowed: vec![], plan: saved.snapshot.plan, mounts, legacy: None };
     Ok((LegacyRoom { id: id.into(), authority, omitted_commands }, allowed, dropped))
 }
 
@@ -661,9 +1168,31 @@ pub(crate) fn prepare_private_root(root: &Path) -> Result<(), String> {
     crate::private_data::prepare(root).map_err(|e| format!("Could not prepare private data folder: {e}"))
 }
 
-/// Write a room file that must not exist yet, private to this user, flushed to disk.
+/// A folder the way the machine sees it: a full path, resolved, and really a
+/// folder. Both `allow-root` and the promotion check use this, so a grant and
+/// a request can never disagree about `..`, `.` or a symlink.
+fn canonical_folder(folder: &Path) -> Result<PathBuf, String> {
+    if !folder.is_absolute() {
+        return Err(format!("{} isn't a full path.", folder.display()));
+    }
+    let real = std::fs::canonicalize(folder).map_err(|_| format!("There's no folder at {}.", folder.display()))?;
+    if !real.is_dir() {
+        return Err(format!("{} isn't a folder.", folder.display()));
+    }
+    Ok(real)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Publish a complete, flushed room without replacing an existing thread.
+/// A killed writer can leave a staging file, never a partial room JSON. Hard
+/// linking within this directory provides atomic no-clobber publication on
+/// Unix and Windows; unsupported filesystems fail without publishing a room.
 fn write_new(path: &Path, saved: &SavedRoom) -> Result<(), String> {
     use std::io::Write;
+    static NEXT_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let bytes = serde_json::to_vec_pretty(saved).map_err(|e| e.to_string())?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -671,12 +1200,26 @@ fn write_new(path: &Path, saved: &SavedRoom) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { e.to_string() })?;
-    if let Err(e) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
-        let _ = std::fs::remove_file(path);
-        return Err(format!("Could not save: {e}"));
-    }
-    Ok(())
+    let (stage, mut file) = loop {
+        let nonce = NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let stage = path.with_extension(format!("new-{}-{nonce}.tmp", std::process::id()));
+        match options.open(&stage) {
+            Ok(file) => break (stage, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Could not save: {error}")),
+        }
+    };
+    let result = (|| -> std::io::Result<()> {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::hard_link(&stage, path)?;
+        sync_directory(path.parent().unwrap())
+    })();
+    // On publication or sync failure, never unlink the destination: another
+    // writer may own it, or our complete room may already be durable there.
+    let _ = std::fs::remove_file(&stage);
+    result.map_err(|error| if error.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { format!("Could not save: {error}") })
 }
 
 #[cfg(test)]
@@ -690,6 +1233,92 @@ mod tests {
         std::env::temp_dir().join(format!("apex-deck-storage-{}-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
+
+    #[test]
+    fn promote_roots_are_stored_canonical_and_only_cover_their_own_tree() {
+        let root = temp();
+        let store = Store::new(root.join("saved-chats-v1"));
+        let projects = root.join("projects");
+        std::fs::create_dir_all(projects.join("denver")).unwrap();
+        let allowed = store.allow_promote_root(&projects).unwrap();
+        assert_eq!(allowed.path, std::fs::canonicalize(&projects).unwrap().to_string_lossy());
+        // Allowing the same folder twice is still one grant.
+        store.allow_promote_root(&projects).unwrap();
+        assert_eq!(store.promote_roots().unwrap().roots.len(), 1);
+        // A folder inside is covered; a sibling is not.
+        assert!(store.promote_root_covering(&projects.join("denver")).unwrap().is_some());
+        let sibling = root.join("somewhere-else");
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert!(store.promote_root_covering(&sibling).unwrap().is_none());
+        // A folder that isn't there can be neither granted nor matched.
+        assert!(store.allow_promote_root(&root.join("missing")).is_err());
+        assert!(store.promote_root_covering(&root.join("missing")).is_err());
+        // Removing it takes the grant away from everything inside.
+        assert!(store.remove_promote_root(&projects).unwrap());
+        assert!(!store.remove_promote_root(&projects).unwrap());
+        assert!(store.promote_root_covering(&projects.join("denver")).unwrap().is_none());
+        assert!(store.promote_roots().unwrap().roots.is_empty());
+        // Deck's own folder is never a project folder.
+        assert!(store.allow_promote_root(&root.join("saved-chats-v1")).is_err());
+    }
+
+    /// Run only in the crash-test child: the kernel terminates the writer in
+    /// the middle of the real room-file write, without unwinding its cleanup.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_import_crash_writer_child() {
+        let Some(root) = std::env::var_os("APEX_ATOMIC_IMPORT_CRASH_ROOT") else { return; };
+        let store = Store::new(PathBuf::from(root).join("saved-chats-v1"));
+        let mut snapshot = Room::new(vec![], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat).snapshot();
+        snapshot.import_move_id = Some("atomic-move".into());
+        snapshot.import_skipped = vec![serde_json::json!({"participant":"test","reason":"x".repeat(16_384)})];
+        let saved = SavedRoom { cwd: None, mounts: vec![], snapshot };
+        std::fs::create_dir_all(store.root.join("rooms")).unwrap();
+        store.save_room_authority("destination", &saved).unwrap();
+        let limit = libc::rlimit { rlim_cur: 128, rlim_max: 128 };
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limit) }, 0);
+        unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_DFL); }
+        let _ = write_new(&store.room_path("destination"), &saved);
+        panic!("the kernel should terminate the oversized room write");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn killed_import_writer_never_publishes_partial_room_and_retry_is_idempotent() {
+        let root = temp();
+        std::fs::create_dir_all(&root).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "storage::tests::atomic_import_crash_writer_child", "--nocapture"])
+            .env("APEX_ATOMIC_IMPORT_CRASH_ROOT", &root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGXFSZ));
+        let store = Store::new(root.join("saved-chats-v1"));
+        assert!(!store.room_path("destination").exists(), "a killed writer must leave no partially published room");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let host = crate::Host::try_new(crate::HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone()).expect("partial staging files never block startup");
+        let import = serde_json::json!({"cmd":"chat_import","args":{"id":"destination","moveId":"atomic-move","participants":[],"entries":[],"title":"Recovered"}});
+        let imported = runtime.block_on(host.call_assuming_verified_ui_for_test(serde_json::from_value(import.clone()).unwrap())).unwrap();
+        assert_eq!(imported["id"], "destination");
+        drop(host);
+        let host = crate::Host::try_new(crate::HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone()).unwrap();
+        let mut repeat = import;
+        repeat["args"]["id"] = "other-destination".into();
+        let imported = runtime.block_on(host.call_assuming_verified_ui_for_test(serde_json::from_value(repeat).unwrap())).unwrap();
+        assert_eq!(imported["id"], "destination");
+        assert!(store.room("other-destination").unwrap().is_none());
+        let bytes = std::fs::read(store.room_path("destination")).unwrap();
+        let saved = store.room("destination").unwrap().unwrap();
+        assert!(store.import_room("destination", &saved).unwrap_err().contains("already exists"));
+        let mut different = saved.clone();
+        different.snapshot.import_move_id = Some("must-not-replace".into());
+        assert!(write_new(&store.room_path("destination"), &different).unwrap_err().contains("already exists"));
+        assert_eq!(std::fs::read(store.room_path("destination")).unwrap(), bytes);
+        drop(host);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -160,7 +160,8 @@ impl CliParticipant {
                     // Never attach Antigravity's existing background service.
                     program = "gemini".into();
                     args = vec!["-p".into(), "Read the conversation from stdin and answer the final user message.".into()];
-                    if let Some(model) = model { args.extend(["--model".into(), model.clone()]); }
+                    if let Some(model) = clean_model(model.as_deref()) { args.extend(["--model".to_owned(), model.to_owned()]); }
+                    if let Some(effort) = clean_effort(self.config.effort.as_deref()) { args.extend(["--effort".to_owned(), effort]); }
                 }
                 if self.mcp_disabled && *tool == AgentTool::Muse {
                     args.extend(["-c".into(), "plugins.enabled=false".into()]);
@@ -171,13 +172,36 @@ impl CliParticipant {
                 if *tool == AgentTool::Codex {
                     args.splice(1..1, phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
                 }
-                if self.tools_disabled && *tool == AgentTool::Grok { args.push("--disable-web-search".into()); }
+                if self.tools_disabled && *tool == AgentTool::Grok {
+                    let mut safe = Vec::with_capacity(args.len() + 1);
+                    let mut i = 0;
+                    while i < args.len() {
+                        if args[i] == "--allow" {
+                            i += 2;
+                        } else if args[i] == "--yolo" {
+                            i += 1;
+                        } else {
+                            safe.push(args[i].clone());
+                            i += 1;
+                        }
+                    }
+                    safe.push("--disable-web-search".into());
+                    args = safe;
+                }
                 if self.tools_disabled && *tool == AgentTool::Muse { args.splice(1..1, ["--preset".into(), "empty".into()]); }
                 if self.tools_disabled && *tool == AgentTool::ClaudeCode {
                     let mut safe = Vec::with_capacity(args.len());
                     let mut i = 0;
                     while i < args.len() {
-                        if args[i] == "--settings" { i += 2; } else { safe.push(args[i].clone()); i += 1; }
+                        if matches!(args[i].as_str(), "--settings" | "--permission-mode" | "--add-dir" | "--allowedTools") {
+                            i += 2;
+                        } else {
+                            safe.push(args[i].clone());
+                            i += 1;
+                        }
+                    }
+                    if self.config.speed == Some(apex_core::Speed::Fast) {
+                        safe.extend(["--settings".to_owned(), r#"{"fastMode":true}"#.to_owned()]);
                     }
                     safe.extend(["--safe-mode", "--restricted", "--tools", "", "--strict-mcp-config", "--setting-sources", ""].into_iter().map(str::to_owned));
                     args = safe;
@@ -727,8 +751,9 @@ impl Participant for CliParticipant {
         }
         if self.mcp_disabled && self.isolation.is_none() && (self.tools_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) || !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })) {
             let backend = self.config.backend.clone();
+            let path = self.path.clone();
             // Credential lookup may wait on Keychain; keep it off the async worker.
-            let isolation = tokio::task::spawn_blocking(move || crate::gateway_sandbox::Isolation::new(&backend))
+            let isolation = tokio::task::spawn_blocking(move || crate::gateway_sandbox::Isolation::new_with_path(&backend, path.as_deref()))
                 .await.map_err(|_| ParticipantError::Failed("Gateway isolation setup failed".into()))??;
             let isolation = std::sync::Arc::new(isolation);
             let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None };
@@ -898,6 +923,74 @@ mod tests {
                 AgentTool::Muse => assert!(args.windows(2).any(|a| a == ["--preset", "empty"])),
             }
         }
+    }
+
+    #[test]
+    fn tools_disabled_preserves_claude_fast_mode_and_gemini_effort_without_permissions() {
+        let claude_fast: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({
+            "id": "c",
+            "display_name": "Claude",
+            "backend": { "kind": "agent", "tool": "claude_code", "model": "opus" },
+            "speed": "fast",
+            "effort": "high",
+            "access": "full"
+        }))
+        .unwrap();
+        let participant = super::CliParticipant::new(claude_fast).with_tools_disabled();
+        let (_, args, _) = participant.command_line().unwrap();
+        assert!(args.windows(2).any(|w| w == ["--tools", ""]));
+        assert!(args.windows(2).any(|w| w == ["--settings", r#"{"fastMode":true}"#]));
+        assert!(!args.iter().any(|a| a.contains("permissions")));
+        assert!(!args.iter().any(|a| a == "--permission-mode" || a == "--add-dir" || a == "--allowedTools"));
+
+        let claude_normal: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({
+            "id": "c",
+            "display_name": "Claude",
+            "backend": { "kind": "agent", "tool": "claude_code", "model": "opus" },
+            "access": "full"
+        }))
+        .unwrap();
+        let participant = super::CliParticipant::new(claude_normal).with_tools_disabled();
+        let (_, args, _) = participant.command_line().unwrap();
+        assert!(!args.iter().any(|a| a == "--settings"));
+
+        #[cfg(target_os = "macos")]
+        {
+            let gemini: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({
+                "id": "g",
+                "display_name": "Gemini",
+                "backend": { "kind": "agent", "tool": "gemini", "model": "gemini-2.5-pro" },
+                "effort": "high"
+            }))
+            .unwrap();
+            let mut participant = super::CliParticipant::new(gemini).with_tools_disabled();
+            participant.isolation = Some(std::sync::Arc::new(
+                crate::gateway_sandbox::Isolation::new(&apex_core::Backend::Scripted { lines: vec![] }).unwrap(),
+            ));
+            let (program, args, _) = participant.command_line().unwrap();
+            assert_eq!(program, "gemini");
+            assert!(args.windows(2).any(|w| w == ["--effort", "high"]));
+        }
+    }
+
+    #[test]
+    fn a_promoted_claude_bot_keeps_the_tools_a_chat_takes_away() {
+        let full: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({
+            "id": "c",
+            "display_name": "Claude",
+            "backend": { "kind": "agent", "tool": "claude_code", "model": "opus" },
+            "access": "full"
+        }))
+        .unwrap();
+        // What a Work thread builds for the same bot after a chat is promoted.
+        let (_, work, _) = super::CliParticipant::new(full.clone()).command_line().unwrap();
+        assert!(work.windows(2).any(|w| w == ["--permission-mode", "bypassPermissions"]), "a Work bot at Full keeps its access: {work:?}");
+        assert!(work.windows(2).any(|w| w == ["--settings", r#"{"permissions":{"allow":["TaskCreate","TaskUpdate"],"ask":["mcp__*"]}}"#]), "{work:?}");
+        // The chat build of the same bot has neither.
+        let (_, chat, _) = super::CliParticipant::new(full).with_tools_disabled().command_line().unwrap();
+        assert!(!chat.iter().any(|a| a == "--permission-mode"), "{chat:?}");
+        assert!(!chat.windows(2).any(|w| w == ["--settings", r#"{"permissions":{"allow":["TaskCreate","TaskUpdate"],"ask":["mcp__*"]}}"#]), "{chat:?}");
+        assert!(chat.windows(2).any(|w| w == ["--tools", ""]));
     }
 
     #[test]

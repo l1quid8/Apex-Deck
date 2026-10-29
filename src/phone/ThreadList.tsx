@@ -6,8 +6,8 @@ import { workspaceHost } from "../hostSession";
 import { ageWords, type ProjectBlock, type SidebarSections } from "../sidebarModel";
 import type { LinkView } from "../phoneRules";
 import type { Pane, Workspace } from "../types";
-import type { LocalChatSession } from "./LocalChatSession";
 import { ChevronRight, Pin, Plus } from "./icons";
+import { machineThreadKey } from "./chatRoutes";
 import { archivedLine, foldChoice, DOT_WORDS, machineGroups, machineNote, recentFirst, strongestDot, threadState, type MachineNote, type ThreadState } from "./threadListRules";
 
 export interface ThreadListProps {
@@ -40,10 +40,10 @@ export interface ThreadListProps {
   archived: number;
   /** Opens the Archived sheet. */
   onArchived?(): void;
-  /** On-device Local chat sessions backed by stateless /v1 gateway turns. */
-  localSessions?: LocalChatSession[];
-  onOpenLocal?(id: string): void;
-  onNewLocal?(): void;
+  /** The flat Chats list, above Projects. */
+  chats?: ReactNode;
+  /** Work threads made from chats, by the machine they run on. They aren't in the Mac's saved projects. */
+  fromChats?: { hostId: string; name: string; rows: ReactNode }[];
 }
 
 /** Tap, or hold for a menu as on iOS. `held` stops the tap that ends a hold from also opening the row. */
@@ -69,16 +69,19 @@ function Dot({ state, said }: { state: ThreadState["dot"]; said: boolean }) {
   return said ? <i className={`ph-tl-dot ${state}`} aria-hidden="true" /> : <i className={`ph-tl-dot ${state}`} role="img" aria-label={DOT_WORDS[state]} />;
 }
 
-export function ThreadList({ sections, workspaces, links, folded, draft, waiting, busy, nameOf, loaded, covered, now, machineIcon, onToggle, onOpen, onNew, onPick, onThreadMenu, onProjectMenu, onMachines, onRetry, archived, onArchived, localSessions = [], onOpenLocal, onNewLocal }: ThreadListProps) {
+export function ThreadList({ sections, workspaces, links, folded, draft, waiting, busy, nameOf, loaded, covered, now, machineIcon, onToggle, onOpen, onNew, onPick, onThreadMenu, onProjectMenu, onMachines, onRetry, archived, onArchived, chats, fromChats = [] }: ThreadListProps) {
   const press = useLongPress();
   const workspaceOf = (pane: Pane) => workspaces.find((item) => item.id === pane.workspaceId);
   const linkOf = (hostId: string) => links.find((link) => link.id === hostId) ?? null;
-  const stateOf = (pane: Pane): ThreadState => {
+  const stateOf = (pane: Pane & { hostId?: string }): ThreadState => {
     const workspace = workspaceOf(pane);
+    const hostId = pane.hostId ?? (workspace ? workspaceHost(workspace) : null);
+    // Live state is kept by machine and thread, so a same-id thread on another machine never lights this row.
+    const at = hostId === null ? null : machineThreadKey(hostId, pane.id);
     return threadState({
-      down: machineNote(workspace ? linkOf(workspaceHost(workspace)) : null).down,
-      waiting: (waiting[pane.id]?.length ?? 0) > 0,
-      working: (busy[pane.id] ?? []).map(nameOf),
+      down: machineNote(hostId === null ? null : linkOf(hostId)).down,
+      waiting: at !== null && (waiting[at]?.length ?? 0) > 0,
+      working: (at === null ? [] : busy[at] ?? []).map(nameOf),
       unread: Boolean(pane.unread),
     });
   };
@@ -156,21 +159,14 @@ export function ThreadList({ sections, workspaces, links, folded, draft, waiting
     );
   };
 
-  const localSection = onNewLocal ? <section aria-label="Local chat" className="ph-tl-machine">
-    <div className="ph-tl-heading"><span className="ph-tl-pname">Local chat</span><button type="button" className="ph-tl-add" aria-label="New local chat session" onClick={onNewLocal}><Plus size={20} /></button></div>
-    {localSessions.map(item => <button type="button" className="ph-tl-thread" key={item.id} onClick={() => onOpenLocal?.(item.id)}><span className="ph-tl-l1"><span className="ph-tl-name">{item.title}</span><span className="ph-tl-age">{item.updatedAt}</span></span><span className="ph-tl-l2">Stored on this iPhone · {item.bots.join(", ")}</span></button>)}
-    {localSessions.length === 0 && <p className="ph-tl-none">Start a Local chat session to keep its history on this iPhone.</p>}
-  </section> : null;
-
   if (links.length === 0) {
     return (
       <main className="ph-content ph-tl" inert={covered}>
-      {localSection}
         <div className="ph-tl-empty">
           <img src="/branding/mark.svg" alt="" width="88" height="88" />
-          <strong>Pair this phone with your Mac</strong>
-          <p>Then pair each server on its own, so a sleeping Mac doesn't cut them off.</p>
-          <button type="button" className="primary ph-wide" onClick={onMachines}>Open Machines</button>
+          <strong>Group chats with the models on your computer</strong>
+          <p>Pair a Mac, Windows or Linux machine once. Headless servers work too. No address or key to type.</p>
+          <button type="button" className="primary ph-wide" onClick={onMachines}>Pair a machine</button>
         </div>
       </main>
     );
@@ -179,14 +175,14 @@ export function ThreadList({ sections, workspaces, links, folded, draft, waiting
   const groups = machineGroups(sections.projects, (block) => workspaceHost(block.workspace), links);
   const unpinned = sections.projects.flatMap((block) => block.panes.filter((pane) => pane.kind === "chat"));
   const recent = recentFirst(unpinned, stateOf, (pane) => pane.activeAt ?? 0);
-  const none = loaded && sections.pinned.length === 0 && unpinned.length === 0 && !draft;
+  const none = loaded && sections.pinned.length === 0 && unpinned.length === 0 && !draft && fromChats.length === 0;
   // Plain text, not a box: it sits at the bottom of both the list and "No threads yet", so every thread stays reachable.
   const archivedLink = archived > 0 && onArchived ? <button type="button" className="ph-tl-archived" onClick={onArchived}>{archivedLine(archived)}</button> : null;
 
 
   return (
     <main className="ph-content ph-tl" inert={covered}>
-      {localSection}
+      {chats}
       {none && <div className="ph-tl-empty"><strong>No threads yet</strong><p>{onPick ? "Pick a project to start one." : "Threads started on your Mac show up here."}</p>{onPick && <button type="button" className="primary ph-wide" onClick={onPick}>New thread</button>}</div>}
       {sections.pinned.length > 0 && <>{sectionHeading("section:pinned", "Pinned", sections.pinned)}{!foldChoice(folded, "section:pinned") && sections.pinned.map((pane) => threadRow(pane, false))}</>}
       {recent.length > 0 && <>{sectionHeading("section:recent", "Recent", recent)}{!foldChoice(folded, "section:recent") && recent.map((pane) => threadRow(pane, false))}</>}
@@ -196,6 +192,16 @@ export function ThreadList({ sections, workspaces, links, folded, draft, waiting
           <section key={group.hostId} className={`ph-tl-machine${note.down ? " down" : ""}`} aria-label={group.name}>
             {sectionHeading(`machine:${group.hostId}`, group.name, [...sections.pinned.filter((pane) => { const workspace = workspaceOf(pane); return workspace && workspaceHost(workspace) === group.hostId; }), ...group.projects.flatMap((block) => block.panes.filter((pane) => pane.kind === "chat"))], machineIcon(group.hostId, 14), note, group.hostId)}
             {!foldChoice(folded, `machine:${group.hostId}`) && group.projects.map((block) => projectBlock(block, note))}
+            {!foldChoice(folded, `machine:${group.hostId}`) && fromChats.find((item) => item.hostId === group.hostId)?.rows}
+          </section>
+        );
+      })}
+      {fromChats.filter((item) => !groups.some((group) => group.hostId === item.hostId)).map((item) => {
+        const note = machineNote(linkOf(item.hostId));
+        return (
+          <section key={`chat-work:${item.hostId}`} className={`ph-tl-machine${note.down ? " down" : ""}`} aria-label={item.name}>
+            {sectionHeading(`machine:${item.hostId}`, item.name, [], machineIcon(item.hostId, 14), note, item.hostId)}
+            {!foldChoice(folded, `machine:${item.hostId}`) && item.rows}
           </section>
         );
       })}
