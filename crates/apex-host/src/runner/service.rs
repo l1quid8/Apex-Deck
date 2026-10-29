@@ -446,6 +446,47 @@ pub fn limit_reached(s: &RunnerSnapshot, now: u64) -> bool {
 mod regression_tests {
     use super::*;
     #[test]
+    fn runner_polling_uses_admitted_state_and_failed_writes_do_not_publish() {
+        let root = std::env::temp_dir().join(format!("runner-polling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let service = RunnerService::new(root.clone());
+        service.start(RunnerStartInput {
+            id: "r".into(), request_id: "start".into(), expected_room_revision: None,
+            runner: RunnerStartPayload {
+                schema_version: 1, kind: RunnerKind::Loop, objective: None,
+                prompt: Some("Check result".into()), interval_seconds: Some(60),
+                workers: vec!["w".into()], checker: None,
+                limits: RunnerLimits::default_limits(), checks: vec![],
+            },
+        }, 1000).unwrap();
+        let original = service.state("r").unwrap().unwrap();
+        let ledger = crate::authority_file::fixture_path(&root.join("room-runners-v1.json"));
+        let saved = std::fs::read(&ledger).unwrap();
+        // An unavailable broker must not be consulted by read-only countdown
+        // polls. Mutations still have to persist before they become visible.
+        std::fs::remove_file(&ledger).unwrap();
+        std::fs::create_dir(&ledger).unwrap();
+        for _ in 0..100 {
+            assert_eq!(service.state("r").unwrap().unwrap().revision, original.revision);
+        }
+        assert!(service.pause_reason("r", RunnerReason::Human, 1100).is_err());
+        assert!(service.state("r").is_err(), "Uncertain writes must re-admit protected state before serving it");
+        std::fs::remove_dir(&ledger).unwrap();
+        std::fs::write(&ledger, saved).unwrap();
+        assert_eq!(service.state("r").unwrap().unwrap().phase, RunnerPhase::Scheduled);
+        assert_eq!(service.state("r").unwrap().unwrap().revision, original.revision);
+        service.pause_reason("r", RunnerReason::Human, 1200).unwrap();
+        let restarted = RunnerService::new(root.clone());
+        restarted.recover_paused(1300).unwrap();
+        let recovered = restarted.state("r").unwrap().unwrap();
+        assert_eq!(recovered.phase, RunnerPhase::Paused);
+        assert_eq!(recovered.reason, RunnerReason::Recovery);
+        assert!(recovered.revision > original.revision);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn invalidating_a_reserved_attempt_releases_it_and_rejects_its_reply() {
         let root=std::env::temp_dir().join(format!("runner-invalidate-{}",std::process::id()));
         let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
