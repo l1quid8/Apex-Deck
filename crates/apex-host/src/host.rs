@@ -607,6 +607,14 @@ impl Host {
         self.rooms.lock().unwrap().get(id).cloned().ok_or_else(|| format!("no group chat with id {id}"))
     }
 
+    /// Whether `id` is a talk-only chat. An open room answers from memory, so a
+    /// saved file that can't be read (Windows reports a missing parent folder as
+    /// "not found") never sends a chat's message down the Work post path.
+    pub(crate) fn room_is_chat(&self, id: &str) -> Result<bool, String> {
+        if let Ok(handle) = self.handle(id) { return Ok(handle.checkpoint.lock().unwrap().snapshot.kind.is_chat()); }
+        Ok(self.store.room(id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()))
+    }
+
     fn require_idle(&self, id: &str) -> Result<(), String> {
         if self.handle(id)?.runtime.busy() { Err("wait for the models to finish first".into()) } else { Ok(()) }
     }

@@ -562,7 +562,7 @@ impl Host {
             RoomPost { id, text, interactive_answers, client_message_id } => match client_message_id {
                 // Work sends retain task continuation, Revert snapshots, and
                 // requested-server validation in the existing post handlers.
-                Some(request_id) if self.store().room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
+                Some(request_id) if self.room_is_chat(&id)? => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
                 _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
@@ -573,7 +573,7 @@ impl Host {
                     reply(self.room_client_post(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability).await?)
                 } else {
                     match client_message_id {
-                        Some(request_id) if self.store().room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
+                        Some(request_id) if self.room_is_chat(&id)? => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
                         _ => reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?),
                     }
                 }
