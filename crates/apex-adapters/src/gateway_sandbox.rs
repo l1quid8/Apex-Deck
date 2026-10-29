@@ -744,7 +744,9 @@ printf BOUNDARY_OK
             !strings.iter().any(|s| s == "/home/operator/.local/bin" || s == "/home/operator"),
             "bwrap must never mount the binary's parent directory or operator home"
         );
-        assert!(strings.windows(2).any(|w| w == ["--chdir", "/tmp/apex-staged-123/work"]));
+        assert!(strings.windows(2).any(|w| {
+            w[0] == "--chdir" && Path::new(&w[1]) == Path::new("/tmp/apex-staged-123/work")
+        }));
         let sep = strings.iter().position(|s| s == "--").unwrap();
         assert_eq!(&strings[sep + 1..], ["/home/operator/.local/bin/codex", "exec", "--json"]);
     }

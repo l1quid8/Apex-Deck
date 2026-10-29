@@ -77,18 +77,56 @@ pub async fn run_check(check:&ConfiguredCheck,cwd:&std::path::Path,process_dir:&
 mod tests {
     use super::*;
 
+    // Reuse this native test executable so the real process checks need no shell
+    // or platform-specific utilities. --exact keeps the child out of this test.
+    fn fixture_argv(name: &str) -> Vec<String> {
+        vec![
+            std::env::current_exe().unwrap().to_str().unwrap().into(),
+            "--ignored".into(), "--exact".into(), "--nocapture".into(),
+            format!("runner::checks::tests::{name}"),
+        ]
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn check_pass_fixture() {
+        use std::io::Write;
+        std::io::stdout().write_all(b"result").unwrap();
+        std::io::stdout().flush().unwrap();
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn check_fail_fixture() {
+        std::process::exit(7);
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn check_output_fixture() {
+        use std::io::Write;
+        std::io::stdout().write_all(&vec![b'x'; 100_000]).unwrap();
+        std::io::stderr().write_all(&vec![b'y'; 100_000]).unwrap();
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn check_timeout_fixture() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+
     #[tokio::test]
     async fn configured_argv_check_runs_and_bounds_output_and_timeout() {
         let root = std::env::temp_dir().join(format!("runner-check-{}",std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let processes=root.join("processes");
-        let pass = ConfiguredCheck { id:"pass".into(),argv:vec!["/bin/sh".into(),"-c".into(),"printf result".into()],timeout_ms:Some(1000) };
+        let pass = ConfiguredCheck { id:"pass".into(),argv:fixture_argv("check_pass_fixture"),timeout_ms:Some(10_000) };
         assert!(matches!(run_check(&pass,&root,&processes,std::future::pending()).await.unwrap(), VerificationResult::Passed{output} if output.contains("result")));
-        let fail = ConfiguredCheck { argv:vec!["/bin/sh".into(),"-c".into(),"exit 7".into()],..pass.clone() };
+        let fail = ConfiguredCheck { argv:fixture_argv("check_fail_fixture"),..pass.clone() };
         assert!(matches!(run_check(&fail,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Failed{exit:7,..}));
-        let long = ConfiguredCheck { argv:vec!["/bin/sh".into(),"-c".into(),"yes output | head -c 100000".into()],..pass.clone() };
-        assert!(matches!(run_check(&long,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Passed{output} if output.len() <= 16384));
-        let timeout = ConfiguredCheck { argv:vec!["/bin/sleep".into(),"30".into()],timeout_ms:Some(20),..pass };
+        let long = ConfiguredCheck { argv:fixture_argv("check_output_fixture"),..pass.clone() };
+        assert!(matches!(run_check(&long,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Passed{output} if output.len() == 8192 && output.contains(&"x".repeat(100))));
+        let timeout = ConfiguredCheck { argv:fixture_argv("check_timeout_fixture"),timeout_ms:Some(20),..pass };
         assert_eq!(run_check(&timeout,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Timeout);
         std::fs::remove_dir_all(root).unwrap();
     }
