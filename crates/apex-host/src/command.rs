@@ -258,7 +258,13 @@ impl Host {
         if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,capability).await;}
         use Command::*;
         let needs_receipt = |command:&Command| -> Result<bool,String> {
-            if command.requires_provenance() {return Ok(true);}
+            // Runner commands are host-owned; they do not require a provenance receipt.
+            if matches!(command, Command::RoomRunnerStart{..} | Command::RoomRunnerAction{..} | Command::RoomRunnerState{..}) {
+                return Ok(false);
+            }
+            if command.requires_provenance() {
+                return Ok(true);
+            }
             match command {
                 RoomPost{id,..}|RoomPostTo{id,..}|RoomTurn{id,..} => Ok(self.assistant_tasks.execution(id).map_err(|e|e.to_string())?.is_some()),
                 _ => Ok(false),
@@ -687,7 +693,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 177);
+        assert_eq!(names.len(), 180);
         assert!(names.contains(&"model_metrics".to_string()));
         for name in ["phone_devices", "phone_control"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"bot_copies_set_check".to_string()));

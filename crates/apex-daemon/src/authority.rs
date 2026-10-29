@@ -456,6 +456,9 @@ mod tests {
             ("legacy_import_preview", None, json!({})),
             ("legacy_import_apply", None, json!({ "snapshot": "20261022-101501", "sources": {} })),
             ("legacy_import_history", None, json!({ "snapshot": "20261022-101501", "requestId": "r" })),
+            ("room_runner_start", Some((Chat, "thread")), json!({ "id": "mine", "requestId": "r1", "runner": { "schemaVersion": 1, "kind": "goal", "objective": "obj", "workers": ["w1"], "limits": { "schemaVersion": 1, "lifetimeMs": 7200000 } } })),
+            ("room_runner_action", Some((Chat, "thread")), json!({ "id": "mine", "runnerId": "r1", "expectedRevision": 1, "requestId": "r2", "action": { "action": "pause" } })),
+            ("room_runner_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
         ]
     }
 
