@@ -295,7 +295,7 @@ impl Isolation {
             command
         };
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let mut command = return Err(failed("unsupported platform"));
+        let mut command: Command = return Err(failed("unsupported platform"));
 
         command
             .env_clear()
