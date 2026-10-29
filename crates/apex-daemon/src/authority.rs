@@ -76,12 +76,22 @@ pub fn command_needs(command: &Command) -> Need {
         AgentModels { .. } => read(GlobalRead),
         // Public benchmark scores; the only fetches are two fixed addresses.
         ModelMetrics { .. } => read(GlobalRead),
+        ChatProfiles {} => read(GlobalRead),
+        ChatList {} => read(GlobalRead),
         // Only the bot's own saved address and key, so nothing leaves for elsewhere.
         RoomBotModels { room, .. } => read(thread(room)),
         RoomBotBalance { room, .. } => read(thread(room)),
 
         // Chat and approvals: posting wakes the thread's bots, which run with
         // the thread's own folder and permission mode.
+        ChatCreate { .. } => chat(Global),
+        ChatImport { .. } => chat(Global),
+        ChatUpdateMeta { id, .. } => chat(thread(id)),
+        ChatAddParticipant { id, .. } => chat(thread(id)),
+        ChatUpdateParticipant { id, .. } => chat(thread(id)),
+        ChatRemoveParticipant { id, .. } => chat(thread(id)),
+        ChatMessageClaim { id, .. } => chat(thread(id)),
+        ChatMergeHistory { id, .. } => chat(thread(id)),
         RoomPost { id, .. } => chat(thread(id)),
         RoomPostTo { id, .. } => chat(thread(id)),
         RoomTargets { id, .. } => chat(thread(id)),
@@ -129,6 +139,8 @@ pub fn command_needs(command: &Command) -> Need {
         PersonaDraft { .. } => full(Global),
         RoomImport { .. } => full(Global),
         RoomFork { .. } => full(Global),
+        ChatPromote { .. } => full(Global),
+        ChatPromoteAbandon { .. } => full(Global),
         SessionSave { .. } => full(Global),
         // ApexAgent reads whole project folders and any chat in them.
         MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
@@ -241,6 +253,38 @@ pub fn filter_session(threads: &Threads, session: Value) -> Value {
     session.remove("layouts");
     session.remove("importedHostSessions");
     Value::Object(session)
+}
+
+/// The chat catalog as a device limited to `threads` may see it: only its
+/// allowed threads, with cross-thread promotion references redacted when outside scope.
+pub fn filter_chat_list(threads: &Threads, list: Value) -> Value {
+    let Threads::Only(allowed) = threads else { return list };
+    fn filter_array(allowed: &[String], items: Vec<Value>) -> Vec<Value> {
+        items
+            .into_iter()
+            .filter(|item| item["id"].as_str().is_some_and(|id| allowed.iter().any(|a| a == id)))
+            .map(|mut item| {
+                if let Value::Object(ref mut obj) = item {
+                    for field in ["promotedFrom", "promotedTo"] {
+                        if obj.get(field).and_then(Value::as_str).is_some_and(|other| !allowed.iter().any(|a| a == other)) {
+                            obj.insert(field.into(), Value::Null);
+                        }
+                    }
+                }
+                item
+            })
+            .collect()
+    }
+    match list {
+        Value::Array(items) => Value::Array(filter_array(allowed, items)),
+        Value::Object(mut obj) => {
+            if let Some(Value::Array(items)) = obj.remove("rooms") {
+                obj.insert("rooms".into(), Value::Array(filter_array(allowed, items)));
+            }
+            Value::Object(obj)
+        }
+        other => other,
+    }
 }
 
 /// Access required for daemon-owned voice commands.
@@ -356,6 +400,18 @@ mod tests {
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
             ("agent_models", Some((ReadOnly, "global_read")), json!({ "tool": "codex" })),
             ("model_metrics", Some((ReadOnly, "global_read")), json!({ "model": "m", "efforts": [], "current": null, "local": false })),
+            ("chat_profiles", Some((ReadOnly, "global_read")), json!({})),
+            ("chat_list", Some((ReadOnly, "global_read")), json!({})),
+            ("chat_create", Some((Chat, "global")), json!({ "id": "mine", "participants": [], "options": options })),
+            ("chat_import", Some((Chat, "global")), json!({ "id": "mine", "moveId": "move-1", "participants": [], "entries": [], "options": options })),
+            ("chat_update_meta", Some((Chat, "thread")), json!({ "id": "mine", "title": "Hi" })),
+            ("chat_add_participant", Some((Chat, "thread")), json!({ "id": "mine", "participant": { "profile": "null" } })),
+            ("chat_update_participant", Some((Chat, "thread")), json!({ "id": "mine", "participant": "null", "patch": { "model": "m" } })),
+            ("chat_remove_participant", Some((Chat, "thread")), json!({ "id": "mine", "participant": "null" })),
+            ("chat_message_claim", Some((Chat, "thread")), json!({ "id": "mine", "clientMessageId": "m-1" })),
+            ("chat_merge_history", Some((Chat, "thread")), json!({ "id": "mine", "entries": [] })),
+            ("chat_promote", Some((Full, "global")), json!({ "source": "mine", "target": "mine2", "cwd": "/repo" })),
+            ("chat_promote_abandon", Some((Full, "global")), json!({ "source": "mine", "requestId": "move-1" })),
             ("room_post", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),
             ("room_post_to", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi", "targets": [] })),
             ("room_targets", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),
@@ -577,5 +633,41 @@ mod tests {
         }
         assert_eq!(filter_session(&Threads::ALL, session.clone()), session);
         assert_eq!(filter_session(&Threads::Only(vec![]), Value::Null), Value::Null);
+    }
+
+    #[test]
+    fn a_limited_device_sees_only_its_threads_in_chat_list() {
+        let list = json!([
+            {
+                "id": "mine",
+                "kind": "chat",
+                "title": "My chat",
+                "promotedFrom": "secret-source",
+                "promotedTo": "also-mine"
+            },
+            {
+                "id": "theirs",
+                "kind": "chat",
+                "title": "Secret chat",
+                "promotedFrom": null,
+                "promotedTo": null
+            }
+        ]);
+        let filtered = filter_chat_list(&Threads::Only(vec!["mine".into(), "also-mine".into()]), list.clone());
+        assert_eq!(filtered, json!([
+            {
+                "id": "mine",
+                "kind": "chat",
+                "title": "My chat",
+                "promotedFrom": null,
+                "promotedTo": "also-mine"
+            }
+        ]));
+        assert_eq!(filter_chat_list(&Threads::ALL, list.clone()), list);
+        let wrapped = json!({ "rooms": list });
+        assert_eq!(
+            filter_chat_list(&Threads::Only(vec!["mine".into(), "also-mine".into()]), wrapped),
+            json!({ "rooms": filtered })
+        );
     }
 }

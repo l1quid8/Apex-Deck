@@ -1,7 +1,7 @@
 //! The command line shared by the `apex-daemon` binary and (in test builds only)
 //! the `apex-daemon-fixture` binary.
 use crate::cli::{self, Action};
-use crate::{devices_cli, gateway_cli, pair_cli, serve, stdio};
+use crate::{devices_cli, gateway_cli, pair_cli, promote_cli, serve, stdio};
 
 pub fn run() {
     // Codex runs this executable before each MCP call; see the adapters'
@@ -38,6 +38,7 @@ pub fn run() {
         Action::Serve(options) => exit(serve::run(cli.data_dir, options)),
         Action::Devices(action) => exit(devices_cli::run(cli.data_dir, action)),
         Action::Keys(action) => exit(gateway_cli::run(cli.data_dir, action)),
+        Action::AllowRoot(action) => exit(promote_cli::run(cli.data_dir, action)),
         Action::Pair(options) => exit(pair_cli::run(cli.data_dir, options)),
         Action::Remote(action) => exit(pair_cli::run_remote(cli.data_dir, action)),
     }

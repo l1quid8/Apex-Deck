@@ -54,7 +54,7 @@ mod tests {
     }
 
     fn reply(by: &str, seq: usize) -> RoomEvent {
-        RoomEvent::MessageAdded { message: Message { servers: vec![], seq, speaker: Speaker::Bot(ParticipantId::new(by)), text: "reply".into(), at: None } }
+        RoomEvent::MessageAdded { message: Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, servers: vec![], seq, speaker: Speaker::Bot(ParticipantId::new(by)), text: "reply".into(), at: None } }
     }
 
     fn work(by: &str, step: WorkStep) -> RoomEvent {

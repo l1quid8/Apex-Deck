@@ -6,10 +6,10 @@
 //! command names, and argument names are what the desktop UI passes to
 //! `invoke` (camelCase), so a remote backend sends exactly the same objects.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use apex_core::{AgentTool, AllowedRule, ParticipantConfig, ParticipantId, RoomOptions, RoomSnapshot};
+use apex_core::{Access, AgentTool, AllowedRule, ParticipantConfig, ParticipantId, RoomOptions, RoomSnapshot};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::Value;
@@ -154,10 +154,48 @@ pub enum Command {
     LibraryRename { file: String, name: String },
     RoomMount { id: String, cwd: String },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
+    ChatProfiles {},
+    ChatList {},
+    ChatCreate { id: String, participants: Vec<crate::chat_bots::ChatBotRequest>, options: RoomOptions, #[serde(default)] title: Option<String> },
+    ChatUpdateMeta { id: String, #[serde(default)] title: Option<String>, #[serde(default)] archived: Option<bool>, #[serde(default)] moved_to: Option<Option<crate::storage::ChatMovedTo>> },
+    ChatAddParticipant { id: String, participant: crate::chat_bots::ChatBotRequest },
+    ChatUpdateParticipant { id: String, participant: ParticipantId, patch: crate::chat_bots::ChatBotPatch },
+    ChatRemoveParticipant { id: String, participant: ParticipantId },
+    ChatImport { id: String, #[serde(alias = "move_id")] move_id: String, #[serde(default)] title: Option<String>, participants: Vec<crate::chat_bots::ChatBotRequest>, entries: Vec<apex_core::Message>, #[serde(default)] options: RoomOptions },
+    ChatMessageClaim { id: String, #[serde(alias = "client_message_id")] client_message_id: String },
+    ChatMergeHistory { id: String, entries: Vec<apex_core::Message> },
+    /// Turn a chat into a Work thread in one store write. The phone picks both
+    /// ids up front so a retried request lands on the same Work room instead of
+    /// making a second one.
+    ChatPromote {
+        /// The chat being promoted. Must be `Kind::Chat`.
+        source: String,
+        /// Id for the new Work room, chosen by the caller.
+        target: String,
+        /// Folder the Work room runs in: absolute, existing, owned by this
+        /// machine's user, and never inside the app's own data folder.
+        cwd: String,
+        /// Copy history through this message index (inclusive). All messages
+        /// when absent.
+        #[serde(default)]
+        upto: Option<usize>,
+        /// Bot id -> Access for the Work room. A bot left out gets `read`,
+        /// because a chat is talk-only and read is the smallest step up.
+        #[serde(default)]
+        access: Option<BTreeMap<String, Access>>,
+        /// Repeat the same request (app closed mid-move, retry) and get the
+        /// same Work room back instead of a second one.
+        #[serde(default)]
+        request_id: Option<String>,
+    },
+    /// Fence off an unconfirmed `chat_promote` so the phone can start a
+    /// different one: the reply says the move already happened, or that this
+    /// request id will now be refused.
+    ChatPromoteAbandon { source: String, #[serde(alias = "request_id")] request_id: String },
     RoomState { id: String },
-    RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
+    RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     RoomTargets { id: String, text: String },
-    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize> },
+    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     VoiceCapabilities {},
     RoomStopRequest { id: String, participant: ParticipantId, #[serde(alias = "client_turn_id")] client_turn_id: String },
     RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
@@ -221,7 +259,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -296,7 +334,15 @@ impl Host {
         if matches!(command, Command::ProvenanceExecute { .. }) { return Err("A paired phone cannot execute desktop receipts".into()); }
         // Linux has no signed Mac broker. Preserve its existing public command
         // gate: ordinary reads/chat work, protected commands still need a receipt.
-        if cfg!(target_os = "linux") { return self.call_with_client_capability(command, capability).await; }
+        if cfg!(target_os = "linux") {
+            // The one exception: a chat becoming a Work thread. There is no
+            // receipt to check here, so the machine's own folder list is the
+            // authorization — see `apex-daemon allow-root`.
+            if self.device_folder_command(&command)? {
+                return self.dispatch_command(command, capability).await;
+            }
+            return self.call_with_client_capability(command, capability).await;
+        }
         #[cfg(feature="test-support")]
         if crate::test_support::isolated(self.data_dir()) { return self.dispatch_command(command, capability).await; }
         let assistant_room = match intent["args"]["id"].as_str() {
@@ -505,14 +551,37 @@ impl Host {
             LibraryRename { file, name } => reply(self.library_rename(file, name)?),
             RoomMount { id, cwd } => reply(self.room_mount(id, cwd)?),
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
+            ChatProfiles {} => reply(self.chat_profiles()?),
+            ChatList {} => reply(self.chat_list()?),
+            ChatCreate { id, title, participants, options } => reply(self.chat_create(id, title, participants, options)?),
+            ChatUpdateMeta { id, title, archived, moved_to } => reply(self.chat_update_meta(id, title, archived, moved_to)?),
+            ChatAddParticipant { id, participant } => reply(self.chat_add_participant(id, participant).await?),
+            ChatUpdateParticipant { id, participant, patch } => reply(self.chat_update_participant(id, participant, patch).await?),
+            ChatRemoveParticipant { id, participant } => reply(self.chat_remove_participant(id, participant).await?),
+            ChatImport { id, move_id, title, participants, entries, options } => reply(self.chat_import(id, move_id, title, participants, entries, options)?),
+            ChatMessageClaim { id, client_message_id } => reply(self.chat_message_claim(id, client_message_id).await?),
+            ChatMergeHistory { id, entries } => reply(self.chat_merge_history(id, entries).await?),
+            ChatPromote { source, target, cwd, upto, access, request_id } => reply(self.chat_promote(source, target, cwd, upto, access, request_id)?),
+            ChatPromoteAbandon { source, request_id } => reply(self.chat_promote_abandon(source, request_id)?),
             RoomState { id } => reply(self.room_state(id)?),
-            RoomPost { id, text, interactive_answers } => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
+            RoomPost { id, text, interactive_answers, client_message_id } => match client_message_id {
+                // Work sends retain task continuation, Revert snapshots, and
+                // requested-server validation in the existing post handlers.
+                Some(request_id) if self.store().room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
+                _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
+            },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
-            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops } => {
+            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id } => {
                 if let Some(request_id) = client_turn_id {
                     if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
-                    reply(self.room_voice_post(id, text, targets[0].clone(), request_id).await?)
-                } else { reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?) }
+                    if client_message_id.as_ref().is_some_and(|id| id != &request_id) { return Err("voice and client message IDs must match".into()); }
+                    reply(self.room_client_post(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability).await?)
+                } else {
+                    match client_message_id {
+                        Some(request_id) if self.store().room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
+                        _ => reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?),
+                    }
+                }
             },
             VoiceCapabilities {} => reply(serde_json::json!({"voice_turn_correlation_v1": true})),
             RoomStopRequest { id, participant, client_turn_id } => reply(self.room_voice_stop(id, participant, client_turn_id)?),
@@ -695,9 +764,40 @@ mod tests {
     }
 
     #[test]
+    fn chat_promote_accepts_per_bot_access_and_a_request_id() {
+        let command = Command::from_json(json!({"cmd":"chat_promote","args":{"source":"chat-1","target":"work-1","cwd":"/srv/denver-trip","upto":42,"access":{"null":"full","jigga":"read"},"requestId":"move-1"}})).unwrap();
+        let Command::ChatPromote { source, target, cwd, upto, access, request_id } = command else { panic!("wrong command") };
+        assert_eq!((source.as_str(), target.as_str(), cwd.as_str(), upto, request_id.as_deref()), ("chat-1", "work-1", "/srv/denver-trip", Some(42), Some("move-1")));
+        let access = access.expect("access map");
+        assert_eq!(access.get("null"), Some(&Access::Full));
+        assert_eq!(access.get("jigga"), Some(&Access::Read));
+        // A phone that sends only the three required fields still parses.
+        let bare = Command::from_json(json!({"cmd":"chat_promote","args":{"source":"chat-1","target":"work-1","cwd":"/repo"}})).unwrap();
+        assert!(matches!(bare, Command::ChatPromote { upto: None, access: None, request_id: None, .. }));
+        // Access outside the four the room understands is refused at the wire.
+        assert!(Command::from_json(json!({"cmd":"chat_promote","args":{"source":"c","target":"w","cwd":"/repo","access":{"null":"root"}}})).is_err());
+    }
+
+    #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 180);
+        assert_eq!(names.len(), 192);
+        for name in [
+            "chat_profiles",
+            "chat_list",
+            "chat_create",
+            "chat_update_meta",
+            "chat_add_participant",
+            "chat_update_participant",
+            "chat_remove_participant",
+            "chat_import",
+            "chat_message_claim",
+            "chat_merge_history",
+            "chat_promote",
+            "chat_promote_abandon",
+        ] {
+            assert!(names.contains(&name.to_owned()), "{name}");
+        }
         assert!(names.contains(&"model_metrics".to_string()));
         for name in ["phone_devices", "phone_control"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"bot_copies_set_check".to_string()));
