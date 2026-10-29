@@ -1,138 +1,78 @@
+// Real daemon and provider dispatch. Only the fixture binary admits these
+// temporary-directory UI actions without installed desktop receipts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { DaemonClient } from '../../src/daemon/client.ts';
 import { socketLink } from './link.mjs';
+const BIN=process.env.APEX_DAEMON_BIN??path.resolve('target/debug/apex-daemon-fixture');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function until(what,fn,ms=10000){const end=Date.now()+ms;for(;;){const value=await fn();if(value)return value;if(Date.now()>end)throw Error(`Timed out: ${what}`);await sleep(25);}}
+const limits={schemaVersion:1,maxTurns:30,maxInvocations:120,lifetimeMs:7200000,maxCostMicros:5000000};
+function report(disposition='done',done='Verified result',evidence=['Observed fixture result']){return `Result: ${done}\n\`\`\`apex-runner\n${JSON.stringify({version:1,disposition,done,next:disposition==='working'?'Continue':'',blocker:disposition==='blocked'?'Need human input':null,criteria:[{id:'result',status:disposition==='done'?'done':'pending',evidence}]})}\n\`\`\``;}
+const bot=(id,lines)=>({id,display_name:id,access:'read',backend:{kind:'scripted',lines}});
+async function serve(data){fs.rmSync(path.join(data,'daemon.json'),{force:true});const child=spawn(BIN,['serve','--exit-on-stdin-close','--data-dir',data],{stdio:['pipe','ignore','pipe']});let errors='';child.stderr.on('data',d=>errors+=d);await until('daemon ready',()=>{if(child.exitCode!==null)throw Error(errors);return fs.existsSync(path.join(data,'daemon.json'));});return {kill:()=>new Promise(r=>{child.once('exit',r);child.kill('SIGKILL');}),stop:()=>new Promise(r=>{child.once('exit',r);child.stdin.end();})};}
+async function setup(t){const data=fs.mkdtempSync('/tmp/runner-e2e-');let daemon=await serve(data);let client=new DaemonClient(()=>socketLink(path.join(data,'daemon.sock')));await client.start();t.after(async()=>{client.close();await daemon.stop();fs.rmSync(data,{recursive:true,force:true});});return {data,get client(){return client;},async restart(kill=false){client.close();if(kill)await daemon.kill();else await daemon.stop();daemon=await serve(data);client=new DaemonClient(()=>socketLink(path.join(data,'daemon.sock')));await client.start();}};}
+async function room(client,id,participants,cwd=null){await client.call('room_create',{id,participants,cwd,options:{policy:'mention',max_bot_hops:3}});}
+const state=(c,id)=>c.call('room_runner_state',{id});
+async function start(c,id,kind='goal',extra={}){return (await c.call('room_runner_start',{id,requestId:crypto.randomUUID(),runner:{schemaVersion:1,kind,objective:kind==='goal'?'Verify the fixture result':undefined,prompt:kind==='loop'?'Check fixture':undefined,intervalSeconds:kind==='loop'?60:undefined,workers:['w'],limits,...extra}})).applied;}
+async function action(c,id,tag,extra={}){for(let i=0;i<10;i++){const s=await state(c,id);const r=await c.call('room_runner_action',{id,runnerId:s.id,expectedRevision:s.revision,requestId:crypto.randomUUID(),action:{action:tag,...extra}});if(r.applied)return r.applied;}throw Error('Action kept conflicting');}
+async function phase(c,id,want,ms){return until(`${id}: ${want}`,async()=>{const s=await state(c,id);return s.phase===want?s:null;},ms);}
 
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const BIN = process.env.APEX_DAEMON_BIN ?? path.join(repo, 'target/debug/apex-daemon');
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-async function until(what, testFn, ms = 20000) {
-  const start = Date.now();
-  for (;;) {
-    const v = await testFn();
-    if (v) return v;
-    if (Date.now() - start > ms) throw new Error(`timed out waiting for ${what}`);
-    await sleep(25);
-  }
-}
-
-async function serve(data) {
-  fs.rmSync(path.join(data, 'daemon.json'), { force: true });
-  const child = spawn(BIN, ['serve', '--exit-on-stdin-close', '--data-dir', data], { stdio: ['pipe', 'ignore', 'pipe'] });
-  let stderr = '';
-  child.stderr.on('data', d => { stderr += d; console.error('[daemon]', d.toString()); });
-  let exited = null;
-  child.on('exit', c => { exited = c; });
-  await until('daemon.json', () => {
-    if (exited !== null) throw new Error(`daemon exited (${exited}):\n${stderr}`);
-    return fs.existsSync(path.join(data, 'daemon.json'));
-  });
-  return { child, getStderr: () => stderr, stop: () => new Promise(res => { child.once('exit', res); child.stdin.end(); }) };
-}
-
-const options = { policy: 'mention', max_bot_hops: 0 };
-
-test('runner lifecycle via daemon: start, pause, resume, end, new start after finished', { timeout: 60000 }, async (t) => {
-  const data = fs.mkdtempSync('/tmp/runner-e2e-');
-  const daemon = await serve(data);
-  const client = new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
-  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
-  await client.start();
-
-  const roomId = 'room-runner-test';
-  try {
-    await client.call('room_create', { id: roomId, options, cwd: null, participants: [] });
-  } catch (e) {
-    console.error('room_create failed', e);
-    throw e;
-  }
-
-  // Initially no runner
-  let state;
-  try {
-    state = await client.call('room_runner_state', { id: roomId });
-  } catch (e) {
-    console.error('room_runner_state failed', e);
-    throw e;
-  }
-  assert.equal(state, null);
-
-  const limits = { schemaVersion: 1, maxTurns: 30, maxInvocations: 120, lifetimeMs: 7200000, maxCostMicros: 5000000 };
-
-  // Start goal
-  let startRes;
-  try {
-    startRes = await client.call('room_runner_start', { id: roomId, requestId: 'req1', runner: { schemaVersion: 1, kind: 'goal', objective: 'fix login', workers: ['w1'], limits } });
-  } catch (e) {
-    console.error('room_runner_start failed', e);
-    throw e;
-  }
-  assert.ok(startRes.applied);
-  assert.equal(startRes.applied.phase, 'running');
-  const runnerId = startRes.applied.id;
-  const rev1 = startRes.applied.revision;
-
-  // Duplicate request idempotent
-  const dup = await client.call('room_runner_start', { id: roomId, requestId: 'req1', runner: { schemaVersion: 1, kind: 'goal', objective: 'fix login', workers: ['w1'], limits } });
-  assert.deepEqual(dup, startRes);
-
-  // Pause
-  const paused = await client.call('room_runner_action', { id: roomId, runnerId, expectedRevision: rev1, requestId: 'req-pause', action: { action: 'pause' } });
-  assert.equal(paused.applied.phase, 'paused');
-  const rev2 = paused.applied.revision;
-
-  // Resume
-  const resumed = await client.call('room_runner_action', { id: roomId, runnerId, expectedRevision: rev2, requestId: 'req-resume', action: { action: 'resume' } });
-  assert.equal(resumed.applied.phase, 'running');
-  const rev3 = resumed.applied.revision;
-
-  // End
-  const ended = await client.call('room_runner_action', { id: roomId, runnerId, expectedRevision: rev3, requestId: 'req-end', action: { action: 'end' } });
-  assert.equal(ended.applied.phase, 'ended');
-
-  // New start after finished should be allowed
-  const start2 = await client.call('room_runner_start', { id: roomId, requestId: 'req2', runner: { schemaVersion: 1, kind: 'goal', objective: 'new objective', workers: ['w1'], limits } });
-  assert.ok(start2.applied);
-  assert.notEqual(start2.applied.id, runnerId);
-
-  // Loop with interval
-  await client.call('room_runner_action', { id: roomId, runnerId: start2.applied.id, expectedRevision: start2.applied.revision, requestId: 'req-end2', action: { action: 'end' } });
-
-  const loopLimits = { schemaVersion: 1, maxTurns: 10, maxInvocations: 20, lifetimeMs: 7200000, maxCostMicros: 5000000 };
-  const loopStart = await client.call('room_runner_start', { id: roomId, requestId: 'req-loop', runner: { schemaVersion: 1, kind: 'loop', prompt: 'check build', intervalSeconds: 600, workers: ['w1'], limits: loopLimits } });
-  assert.ok(loopStart.applied);
-  assert.equal(loopStart.applied.kind, 'loop');
-  assert.equal(loopStart.applied.intervalSeconds, 600);
-  assert.ok(loopStart.applied.nextRunAt);
+test('runner dispatch: completion, blocked, stuck, limits, stale End, restart, exclusive ownership and checks',{timeout:45000},async t=>{
+ const f=await setup(t);let c=f.client;
+ await room(c,'done',[bot('w',[report()]),bot('other',[report()])]);
+ let turns=0,other=0;c.on('room-event',p=>{if(p.room==='done'&&p.event.type==='turn_started'){if(p.event.id==='w')turns++;else other++;}});
+ const started=await start(c,'done');const completed=await phase(c,'done','completed');
+ assert.equal(turns,1);assert.equal(other,0);assert.equal(completed.usage.turns,1);assert.equal(completed.usage.invocations,1);assert.equal(completed.usage.costMicros,null);assert.equal(completed.usage.unknownCostTurns,1);
+ await assert.rejects(c.call('room_runner_action',{id:'done',runnerId:started.id,expectedRevision:completed.revision,requestId:'old-resume',action:{action:'resume'}}));
+ await room(c,'blocked',[bot('w',[report('blocked')])]);await start(c,'blocked');assert.equal((await phase(c,'blocked','paused')).reason,'blocked');
+ await room(c,'stuck',[bot('w',Array(5).fill(report('working','Same checkpoint',[])))]);await start(c,'stuck');const stuck=await phase(c,'stuck','paused');assert.equal(stuck.reason,'stuck');assert.equal(stuck.usage.invocations,3);
+ await room(c,'cap',[bot('w',[report('working'),report()])]);await start(c,'cap','goal',{limits:{...limits,maxTurns:1}});const capped=await phase(c,'cap','paused');assert.equal(capped.reason,'limit');assert.equal(capped.usage.invocations,1);
+ await assert.rejects(action(c,'cap','resume'),/limit/i);await action(c,'cap','update_limits',{limits:{...limits,maxTurns:3}});await action(c,'cap','resume');assert.equal((await phase(c,'cap','completed')).usage.invocations,2);
+ await room(c,'end',[bot('w',[report('working')])]);await start(c,'end','loop');await phase(c,'end','scheduled');const ended=await action(c,'end','end');await assert.rejects(c.call('room_decide',{id:'end',request:'stale-request',approve:true}));await sleep(250);assert.equal((await state(c,'end')).generation,ended.generation);assert.equal((await state(c,'end')).phase,'ended');
+ await room(c,'restart',[bot('w',[report('done')])]);await start(c,'restart','loop');await until('first run settles',async()=>{const s=await state(c,'restart');return s.phase==='scheduled'&&s.usage.turns===1;});await f.restart();c=f.client;const recovered=await state(c,'restart');assert.equal(recovered.phase,'paused');assert.equal(recovered.inFlight,null);assert.equal(recovered.reason,'recovery');await sleep(250);assert.equal((await state(c,'restart')).usage.invocations,1);
+ // Checks execute under the selected worker's Full access in a temporary cwd.
+ const folder=path.join(f.data,'checks');fs.mkdirSync(folder);
+ const full={...bot('w',[report()]),access:'full'};
+ await room(c,'check-fail',[full],folder);await start(c,'check-fail','goal',{checks:[{id:'fails',argv:['/bin/sh','-c','echo CHECK_FAILED; exit 7'],timeoutMs:1000}]});const failed=await phase(c,'check-fail','paused');assert.equal(failed.reason,'blocked');assert.match(failed.checkpoint.blocker,/exit 7/);
+ await room(c,'checker',[bot('w',[report()]),bot('checker',[report('blocked')])]);await start(c,'checker','goal',{checker:'checker'});const checked=await phase(c,'checker','paused');assert.equal(checked.usage.invocations,2);assert.equal(checked.reason,'blocked');
 });
 
-test('runner stale revision conflicts and human message pauses', { timeout: 30000 }, async (t) => {
-  const data = fs.mkdtempSync('/tmp/runner-stale-');
-  const daemon = await serve(data);
-  const client = new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
-  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
-  await client.start();
+test('one-minute loop really fires twice, never overlaps; Stop during countdown prevents more calls',{timeout:85000},async t=>{
+ const {client:c}=await setup(t);await room(c,'loop',[bot('w',[report(),report(),report()])]);let active=0,peak=0,count=0;const times=[];
+ c.on('room-event',p=>{if(p.room!=='loop')return;if(p.event.type==='turn_started'){active++;peak=Math.max(peak,active);count++;times.push(Date.now());}if(p.event.type==='participant_idle')active=Math.max(0,active-1);});
+ await start(c,'loop','loop');await until('two scheduled runs',()=>count===2,75000);const s=await until('second run settles',async()=>{const s=await state(c,'loop');return s.phase==='scheduled'&&s.usage.turns===2?s:null;});
+ assert.equal(peak,1);assert.ok(times[1]-times[0]>=60000);assert.equal(s.usage.invocations,2);
+ await c.call('room_stop',{id:'loop'});assert.equal((await state(c,'loop')).phase,'paused');await sleep(350);assert.equal(count,2);
+});
 
-  const roomId = 'room-stale';
-  await client.call('room_create', { id: roomId, options, cwd: null, participants: [] });
-  const limits = { schemaVersion: 1, maxTurns: 30, maxInvocations: 120, lifetimeMs: 7200000, maxCostMicros: 5000000 };
-  const started = await client.call('room_runner_start', { id: roomId, requestId: 'r1', runner: { schemaVersion: 1, kind: 'goal', objective: 'obj', workers: ['w1'], limits } });
-  const runnerId = started.applied.id;
+test('human interruption yields the room and automation continues without Resume',{timeout:20000},async t=>{
+ const {client:c,data}=await setup(t);const count=path.join(data,'turn-count');const script=`n=0; test ! -f '${count}' || n=$(cat '${count}'); n=$((n+1)); echo "$n" > '${count}'; if [ "$n" -eq 1 ]; then sleep 2; fi; printf '%s' '${report().replaceAll("'","'\\''")}'`;
+ await room(c,'human',[{id:'w',display_name:'w',access:'read',backend:{kind:'cli',program:'/bin/sh',args:['-c',script]}}]);await start(c,'human');await until('worker began',()=>fs.existsSync(count));
+ await c.call('room_post_to',{id:'human',text:'Human steering message',targets:['w']});const done=await phase(c,'human','completed');assert.ok(done.usage.invocations>=2);assert.ok(Number(fs.readFileSync(count,'utf8'))>=3);
+});
 
-  // Stale revision
-  const stale = await client.call('room_runner_action', { id: roomId, runnerId, expectedRevision: 999, requestId: 'bad', action: { action: 'pause' } });
-  assert.ok(stale.conflict);
 
-  // Human message pauses (simulate via room_post, which triggers human precedence hook)
-  await client.call('room_post', { id: roomId, text: 'hello human' });
-  // Give time for host to process human message pause
-  await sleep(200);
-  const afterHuman = await client.call('room_runner_state', { id: roomId });
-  // Should be paused with human reason (or at least paused)
-  assert.equal(afterHuman.phase, 'paused');
+test('review regressions: configuration cancel, old End replay, limit lowering, and crashed-check cleanup',{timeout:25000},async t=>{
+ const f=await setup(t);let c=f.client;
+ const counter=path.join(f.data,'config-count');
+ const shell={id:'w',display_name:'w',access:'read',backend:{kind:'cli',program:'/bin/sh',args:['-c',`echo invocation >> '${counter}'; sleep 1; printf '%s' '${report().replaceAll("'","'\\''")}'`]}};
+ await room(c,'config',[shell]);await start(c,'config');await until('config worker accepted',()=>fs.existsSync(counter));
+ await c.call('room_update_participant',{id:'config',participant:{...shell,display_name:'Renamed'}});
+ const paused=await state(c,'config');assert.equal(paused.phase,'paused');assert.equal(paused.inFlight,null);assert.equal(paused.usage.unknownCostTurns,1);
+ await action(c,'config','resume');assert.equal((await phase(c,'config','completed')).usage.invocations,2);
+ await room(c,'replay',[shell]);let old=await start(c,'replay');const oldEnd={id:'replay',runnerId:old.id,expectedRevision:old.revision,requestId:'old-end-receipt',action:{action:'end'}};
+ await c.call('room_runner_action',oldEnd);const fresh=await start(c,'replay');await until('replacement attempt accepted',async()=>Boolean((await state(c,'replay')).inFlight));
+ await c.call('room_runner_action',oldEnd);assert.equal((await phase(c,'replay','completed')).id,fresh.id);
+ await room(c,'lower',[shell]);await start(c,'lower');await until('lower worker accepted',async()=>Boolean((await state(c,'lower')).inFlight));
+ const lowered=await action(c,'lower','update_limits',{limits:{...limits,maxInvocations:1}});assert.equal(lowered.phase,'paused');assert.equal(lowered.reason,'limit');assert.equal(lowered.inFlight,null);
+ await sleep(100);assert.equal((await state(c,'lower')).phase,'paused');
+ const cwd=path.join(f.data,'crash-check');fs.mkdirSync(cwd);const started=path.join(cwd,'started'),after=path.join(cwd,'after');
+ await room(c,'crash-check',[{...bot('w',[report()]),access:'full'}],cwd);
+ await start(c,'crash-check','goal',{checks:[{id:'sleeping',argv:['/bin/sh','-c',`touch '${started}'; sleep 3; touch '${after}'`],timeoutMs:10000}]});
+ await until('check process began',()=>fs.existsSync(started));await f.restart(true);c=f.client;
+ assert.equal((await state(c,'crash-check')).phase,'paused');await sleep(3300);assert.equal(fs.existsSync(after),false,'recovery must terminate the orphan check group');
 });
