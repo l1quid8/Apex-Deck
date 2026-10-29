@@ -1,4 +1,6 @@
 import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
+import { RunnerDrawer } from './runner/RunnerDrawer.tsx';
+import './runner/runner.css';
 import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
@@ -573,6 +575,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const [legacy, setLegacy] = useState<import("./types").RoomState["legacy"]>();
+  const [runner, setRunner] = useState<import("./runner/types.ts").RunnerSnapshot | null>(null);
   const [pins, setPins] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<AllowedRule[]>([]);
   /** "Removed. Null asks again next time.", shown for a moment after Remove. */
@@ -1207,6 +1210,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         if (!alive) return;
         const saved = state.snapshot;
         setLegacy(state.legacy);
+        setRunner(state.runner ?? null);
         setMountHistory(state.mounts ?? []);
         if (state.cwd && state.cwd !== cwd) folderChanged.current?.(state.cwd);
         closeGitCard();
@@ -3837,6 +3841,33 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
         <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />
         <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock"} ref={field}>
+          {runner && (
+            <RunnerDrawer
+              snapshot={runner}
+              hostNowOffsetMs={0}
+              composerRef={input as any}
+              platform="desktop"
+              onAction={(action) => {
+                const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                if (action === 'dismiss') {
+                  backend.roomRunnerAction?.(pane.id, runner.id, runner.revision, requestId, { action: 'dismiss' } as any)?.then((res: any) => {
+                    const snap = res?.applied ?? res?.conflict;
+                    if (snap) setRunner(snap);
+                  });
+                } else if (action === 'pause' || action === 'resume' || action === 'end') {
+                  const act = action === 'end' ? 'end' : action;
+                  backend.roomRunnerAction?.(pane.id, runner.id, runner.revision, requestId, { action: act } as any)?.then((res: any) => {
+                    const snap = res?.applied ?? res?.conflict;
+                    if (snap) setRunner(snap);
+                  });
+                }
+              }}
+              onReviewChanges={() => {
+                // For now open diff view
+                void backend.roomDiff?.(pane.id).then(() => {}).catch(() => {});
+              }}
+            />
+          )}
           {quickAdd === "dock" && quickAddMenu}
           <ComposerMenu ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();

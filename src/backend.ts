@@ -162,6 +162,9 @@ export interface Backend {
   roomClear(id: string): Promise<void>;
   /** Delete every message from `upto` on; only while no bot is working. */
   roomRewind(id: string, upto: number): Promise<void>;
+  roomRunnerState?(id: string): Promise<import("./runner/types.ts").RunnerSnapshot | null>;
+  roomRunnerStart?(id: string, runnerId: string, revision: number, requestId: string, payload: import("./runner/types.ts").RunnerStart): Promise<any>;
+  roomRunnerAction?(roomId: string, runnerId: string, revision: number, requestId: string, action: any): Promise<any>;
   /** What going back to message `at` would put back. `bot` is set for a Retry on that bot's reply. */
   roomRevertPlan(id: string, at: number, bot: string | null): Promise<RevertPlan>;
   /** Put `files` back as they were at message `at`; with `chat`, delete from `at` on. Resolves with files it couldn't put back. */
