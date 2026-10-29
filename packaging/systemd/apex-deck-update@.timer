@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for published Apex Deck releases every 30 minutes for %i
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=30min
+RandomizedDelaySec=2min
+Persistent=true
+Unit=apex-deck-update@%i.service
+
+[Install]
+WantedBy=timers.target
