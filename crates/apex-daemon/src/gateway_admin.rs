@@ -245,10 +245,16 @@ mod tests {
             .contains("Could not start"));
         assert!(failed["baseUrl"].is_null());
         drop(conflict);
-        assert_eq!(
-            start(&daemon, None, config.bind).await.unwrap()["enabled"],
-            true
-        );
+        // The same inherited-socket window applies to the dropped conflict listener.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let restarted = loop {
+            let status = start(&daemon, None, config.bind).await.unwrap();
+            if status["enabled"] == true || std::time::Instant::now() >= deadline {
+                break status;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        assert_eq!(restarted["enabled"], true, "{restarted}");
         assert!(tokio::net::TcpStream::connect((config.bind, port))
             .await
             .is_ok());
