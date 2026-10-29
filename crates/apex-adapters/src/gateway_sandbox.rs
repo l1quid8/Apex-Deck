@@ -180,6 +180,17 @@ impl Isolation {
         Ok(())
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    pub fn command(
+        &self,
+        _program: &str,
+        _args: &[String],
+        _path: Option<&str>,
+    ) -> Result<Command, ParticipantError> {
+        Err(failed("unsupported platform"))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn command(
         &self,
         program: &str,
@@ -294,9 +305,6 @@ impl Isolation {
             command.args(bwrap_args(|p| p.exists(), &root, &binary, program, args)?);
             command
         };
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let mut command = return Err(failed("unsupported platform"));
-
         command
             .env_clear()
             .env("PATH", search)
@@ -686,17 +694,25 @@ mod tests {
             } else {
                 "true"
             };
+            // Bubblewrap recreates the launcher's parent in its private root.
+            // A write there can succeed without touching the host; assert the
+            // host output remains absent below. Seatbelt must reject the write.
+            let write_check = if cfg!(target_os = "macos") {
+                format!("if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi", output.display())
+            } else {
+                format!("/usr/bin/touch '{}' 2>/dev/null || true", output.display())
+            };
             std::fs::write(&script,format!(r#"#!/bin/sh
 if /bin/cat '{}' >/dev/null 2>&1; then exit 20; fi
-if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi
+{write_check}
 [ ! -e "$HOME/.codex/config.toml" ] || exit 22
 {ssl_check}
 printf BOUNDARY_OK
-"#,input.display(),output.display())).unwrap();
+"#,input.display())).unwrap();
             std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
             let isolation=Isolation::new(&Backend::Scripted{lines:vec![]}).unwrap();
             let result=isolation.command(program,&[],operator.dir.to_str()).unwrap().output().await.unwrap();
-            assert!(result.status.success(),"{program}: {}",String::from_utf8_lossy(&result.stderr));
+            assert!(result.status.success(),"{program}: status={}, stderr={}",result.status,String::from_utf8_lossy(&result.stderr));
             assert_eq!(result.stdout,b"BOUNDARY_OK");assert!(!output.exists());
         }
     }
@@ -728,7 +744,9 @@ printf BOUNDARY_OK
             !strings.iter().any(|s| s == "/home/operator/.local/bin" || s == "/home/operator"),
             "bwrap must never mount the binary's parent directory or operator home"
         );
-        assert!(strings.windows(2).any(|w| w == ["--chdir", "/tmp/apex-staged-123/work"]));
+        assert!(strings.windows(2).any(|w| {
+            w[0] == "--chdir" && Path::new(&w[1]) == Path::new("/tmp/apex-staged-123/work")
+        }));
         let sep = strings.iter().position(|s| s == "--").unwrap();
         assert_eq!(&strings[sep + 1..], ["/home/operator/.local/bin/codex", "exec", "--json"]);
     }

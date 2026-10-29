@@ -245,10 +245,21 @@ mod tests {
             .contains("Could not start"));
         assert!(failed["baseUrl"].is_null());
         drop(conflict);
-        assert_eq!(
-            start(&daemon, None, config.bind).await.unwrap()["enabled"],
-            true
-        );
+        // Like the stopped gateway above, the conflict socket can remain in a
+        // concurrent fork until exec. Wait for recovery instead of assuming
+        // dropping our copy makes the port immediately available.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            let recovered = start(&daemon, None, config.bind).await.unwrap();
+            if recovered["enabled"] == true {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "gateway did not recover after releasing the conflict socket: {recovered}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
         assert!(tokio::net::TcpStream::connect((config.bind, port))
             .await
             .is_ok());

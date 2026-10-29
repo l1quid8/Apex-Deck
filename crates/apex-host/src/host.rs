@@ -3748,14 +3748,9 @@ mod host_tests {
         std::fs::create_dir_all(&entry).unwrap();
         let started = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         assert!(entry.is_dir());
-        #[cfg(unix)]
-        {
-            let host = started.expect("an orphaned registry entry must not stop the daemon from starting");
-            host.shutdown();
-            drop(host);
-        }
-        #[cfg(windows)]
-        assert!(matches!(started, Err(why) if why.contains("process-tree recovery is unsupported") && why.contains("manual cleanup")));
+        let host = started.expect("an empty orphaned registry entry must not stop the daemon from starting");
+        host.shutdown();
+        drop(host);
         let _ = std::fs::remove_dir_all(data);
     }
 
@@ -4680,7 +4675,8 @@ mod host_tests {
         let inside_data = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), host.store.root().to_string_lossy().into_owned(), None, None, None).unwrap_err();
         assert!(inside_data.contains("belongs to Deck"), "{inside_data}");
         // A folder that isn't there.
-        let missing = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), "/no/such/folder".into(), None, None, None).unwrap_err();
+        let missing_folder = data.join("missing-project");
+        let missing = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), missing_folder.to_string_lossy().into_owned(), None, None, None).unwrap_err();
         assert!(missing.contains("There's no folder"), "{missing}");
         // None of that made a Work thread or a link.
         assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());

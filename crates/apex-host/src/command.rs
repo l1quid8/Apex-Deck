@@ -565,9 +565,11 @@ impl Host {
             ChatPromoteAbandon { source, request_id } => reply(self.chat_promote_abandon(source, request_id)?),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers, client_message_id } => match client_message_id {
+                // A missing saved room must fail before routing: treating it as
+                // Work would bypass durable chat acceptance and mutate memory.
                 // Work sends retain task continuation, Revert snapshots, and
                 // requested-server validation in the existing post handlers.
-                Some(request_id) if self.store().room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
+                Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
                 _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
@@ -578,7 +580,7 @@ impl Host {
                     reply(self.room_client_post(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability).await?)
                 } else {
                     match client_message_id {
-                        Some(request_id) if self.store().room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
+                        Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
                         _ => reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?),
                     }
                 }
