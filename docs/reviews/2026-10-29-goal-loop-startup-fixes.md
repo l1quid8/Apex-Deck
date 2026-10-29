@@ -26,6 +26,11 @@ tagged, published, or merged into `main` during this repair.
 - `548f710`: set the npm and Rust workspace versions, root lockfiles and phone
   bridge lockfile to `0.9.5`. Local main still said `0.9.3`; merging alone would
   not have prevented a downgrade from the installed `0.9.4`.
+- During final read-back, main advanced to `10f47ca` (the `0.9.4` release
+  metadata and iPhone build 25). That metadata-only commit was also merged;
+  candidate manifests/lockfiles retain `0.9.5` and the iPhone now retains build
+  25. No application logic changed after the passing suites. TypeScript was
+  checked again after this merge.
 
 ## Real-helper startup acceptance
 
