@@ -694,17 +694,25 @@ mod tests {
             } else {
                 "true"
             };
+            // Bubblewrap recreates the launcher's parent in its private root.
+            // A write there can succeed without touching the host; assert the
+            // host output remains absent below. Seatbelt must reject the write.
+            let write_check = if cfg!(target_os = "macos") {
+                format!("if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi", output.display())
+            } else {
+                format!("/usr/bin/touch '{}' 2>/dev/null || true", output.display())
+            };
             std::fs::write(&script,format!(r#"#!/bin/sh
 if /bin/cat '{}' >/dev/null 2>&1; then exit 20; fi
-if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi
+{write_check}
 [ ! -e "$HOME/.codex/config.toml" ] || exit 22
 {ssl_check}
 printf BOUNDARY_OK
-"#,input.display(),output.display())).unwrap();
+"#,input.display())).unwrap();
             std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
             let isolation=Isolation::new(&Backend::Scripted{lines:vec![]}).unwrap();
             let result=isolation.command(program,&[],operator.dir.to_str()).unwrap().output().await.unwrap();
-            assert!(result.status.success(),"{program}: {}",String::from_utf8_lossy(&result.stderr));
+            assert!(result.status.success(),"{program}: status={}, stderr={}",result.status,String::from_utf8_lossy(&result.stderr));
             assert_eq!(result.stdout,b"BOUNDARY_OK");assert!(!output.exists());
         }
     }
