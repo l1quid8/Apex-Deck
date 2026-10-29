@@ -686,9 +686,17 @@ mod tests {
             } else {
                 "true"
             };
+            // bwrap recreates the launcher's folder on its own private root, so a write there
+            // succeeds inside and never reaches the operator; the host check below covers Linux.
+            let write_check = if cfg!(target_os = "macos") {
+                format!("if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi", output.display())
+            } else {
+                "true".to_owned()
+            };
             std::fs::write(&script,format!(r#"#!/bin/sh
 if /bin/cat '{}' >/dev/null 2>&1; then exit 20; fi
-if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi
+/usr/bin/touch '{}' 2>/dev/null || true
+{write_check}
 [ ! -e "$HOME/.codex/config.toml" ] || exit 22
 {ssl_check}
 printf BOUNDARY_OK
