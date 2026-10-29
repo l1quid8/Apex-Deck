@@ -157,6 +157,9 @@ pub fn command_needs(command: &Command) -> Need {
         // Legacy migration reads every old ledger and transcript on this Mac, and
         // its apply is a UI-attested intent issued only for this Mac.
         LegacyImportPreview {} | LegacyImportApply { .. } | LegacyImportHistory { .. } => Need::Never,
+        RoomRunnerStart { input } => chat(thread(&input.id)),
+        RoomRunnerAction { input } => chat(thread(&input.id)),
+        RoomRunnerState { id } => read(thread(id)),
     }
 }
 
