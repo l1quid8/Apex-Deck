@@ -90,17 +90,18 @@ impl RunnerStore {
     }
 
     // For recovery: restore paused with recovery reason
-    pub fn recover_paused(&self, now_ms: u64) -> Result<Vec<RunnerSnapshot>, String> {
+    pub fn recover_paused(&self, _now_ms: u64) -> Result<Vec<RunnerSnapshot>, String> {
         let mut doc = self.read_doc()?;
         let mut recovered = Vec::new();
         let mut changed = false;
         for snap in doc.runners.values_mut() {
             if !snap.is_terminal() {
                 // Recovery path: if running/scheduled/waiting, set paused recovery
-                if !matches!(snap.phase, crate::runner::model::RunnerPhase::Paused | crate::runner::model::RunnerPhase::Completed | crate::runner::model::RunnerPhase::Ended) {
+                if snap.reason != crate::runner::model::RunnerReason::Recovery {
                     snap.phase = crate::runner::model::RunnerPhase::Paused;
                     snap.reason = crate::runner::model::RunnerReason::Recovery;
                     snap.revision += 1;
+                    snap.generation += 1; snap.in_flight = None;
                     recovered.push(snap.clone());
                     changed = true;
                 }

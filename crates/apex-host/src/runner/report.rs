@@ -39,34 +39,32 @@ pub enum ReportError {
 }
 
 fn find_final_fence(reply: &str) -> Option<String> {
-    // Find final top-level fenced block ```apex-runner ... ``` or ```json with apex?
-    // Spec says fenced `apex-runner` JSON object. We look for ```apex-runner\n{...}\n```
-    // Only final top-level fence of captured participant's final reply.
-    // For simplicity, find all occurrences of ```apex-runner and take last.
-    let mut last: Option<String> = None;
-    let mut search_from = 0;
-    while let Some(start) = reply[search_from..].find("```apex-runner") {
-        let abs_start = search_from + start;
-        // Find content after first newline
-        if let Some(content_start) = reply[abs_start..].find('\n') {
-            let content_start = abs_start + content_start + 1;
-            if let Some(end) = reply[content_start..].find("\n```") {
-                let end = content_start + end;
-                let fence_content = reply[content_start..end].trim().to_string();
-                last = Some(fence_content);
-                search_from = end + 3;
-                continue;
+    let mut enclosing: Option<(char, usize)> = None;
+    let mut candidate = None;
+    let mut collecting = false;
+    let mut body = String::new();
+    for line in reply.lines() {
+        let bytes = line.as_bytes();
+        let is_fence = bytes.first().is_some_and(|c| *c == b'`' || *c == b'~');
+        let count = if is_fence { bytes.iter().take_while(|c| **c == bytes[0]).count() } else { 0 };
+        if count >= 3 {
+            let marker = bytes[0] as char;
+            if let Some((outer, length)) = enclosing {
+                if marker == outer && count >= length && line[count..].trim().is_empty() {
+                    if collecting { candidate = Some(body.clone()); }
+                    enclosing = None; collecting = false;
+                    continue;
+                }
+            } else {
+                enclosing = Some((marker, count));
+                collecting = marker == '`' && count == 3 && line[count..].trim() == "apex-runner";
+                candidate = None; body.clear(); continue;
             }
         }
-        break;
+        if collecting { body.push_str(line); body.push('\n'); }
+        else if enclosing.is_none() && !line.trim().is_empty() { candidate = None; }
     }
-    last
-}
-
-fn is_prose_done(reply: &str) -> bool {
-    // If reply contains "done" in prose outside fence, we still require structured fence.
-    // This function is not used to infer completion, only to detect false claims.
-    false
+    if enclosing.is_some() { None } else { candidate }
 }
 
 pub fn parse_report(reply: &str) -> Result<RunnerReportV1, ReportError> {
@@ -109,7 +107,7 @@ pub fn parse_report(reply: &str) -> Result<RunnerReportV1, ReportError> {
             Some(s)
         }
     } else {
-        None
+        return Err(ReportError::MissingField("blocker".into()));
     };
 
     let criteria_val = report.get("criteria").and_then(|v| v.as_array()).ok_or(ReportError::MissingField("criteria".into()))?;
@@ -124,13 +122,11 @@ pub fn parse_report(reply: &str) -> Result<RunnerReportV1, ReportError> {
         if !seen.insert(id.clone()) {
             return Err(ReportError::DuplicateId(id));
         }
-        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("pending").to_string();
+        let status = item.get("status").and_then(|v| v.as_str()).ok_or(ReportError::MissingField("criteria.status".into()))?.to_string();
         if !["pending", "done", "failed"].contains(&status.as_str()) {
             return Err(ReportError::InvalidEnum(format!("criteria status {}", status)));
         }
-        let evidence = item.get("evidence").and_then(|v| v.as_array()).map(|arr| {
-            arr.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect()
-        }).unwrap_or_default();
+        let evidence = item.get("evidence").and_then(|v| v.as_array()).ok_or(ReportError::MissingField("criteria.evidence".into()))?.iter().map(|v| v.as_str().filter(|s| !s.trim().is_empty()).map(str::to_string).ok_or(ReportError::InvalidEnum("evidence must contain nonblank strings".into()))).collect::<Result<Vec<_>,_>>()?;
 
         criteria.push(ReportCriterion { id, status, evidence });
     }

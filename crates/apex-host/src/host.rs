@@ -118,6 +118,9 @@ pub struct HostPaths {
     pub downloads: Option<PathBuf>,
 }
 
+#[path = "runner/runtime.rs"]
+mod runner_runtime;
+
 pub struct Host {
     paths: HostPaths,
     /// Protected primary and saved-chat ownership lasts as long as this host.
@@ -154,6 +157,8 @@ pub struct Host {
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
     pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
+    runner_workers: Mutex<std::collections::HashSet<String>>,
+    runner_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) runner_service: Arc<Mutex<crate::runner::service::RunnerService>>,
 }
 
@@ -283,7 +288,7 @@ impl Host {
             steps: Default::default(),
             phone,
             fold_queue,
-            runner_service,
+            runner_service, runner_workers: Mutex::default(), runner_gates: Mutex::default(),
         });
 
         let host_for_reconcile = Arc::downgrade(&host);
@@ -404,7 +409,9 @@ impl Host {
             host.redispatch_recovered_queued()?;
             // Runner recovery: unfinished runners become paused with reason recovery, no auto-replay
             let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-            let _ = host.runner_service.lock().unwrap().recover_paused(now_ms);
+            host.runner_service.lock().unwrap().recover_paused(now_ms)?;
+            let processes=host.paths.data.join("runner-processes");
+            if processes.exists() {apex_adapters::recover_owned_processes(&processes.canonicalize().map_err(|e|e.to_string())?).map_err(|e|format!("Runner check cleanup failed: {e}"))?;}
         }
         Ok(host)
     }
@@ -642,20 +649,18 @@ impl Host {
         *self.startup.lock().unwrap() = Some(folders);
     }
 
-    /// Passive menu inventory only. Provider discovery can spawn MCP servers
-    /// and open OAuth browsers, so it must never run on a UI lifecycle read.
-    /// Actual turns populate this cache through RoomEvent::ToolServers.
     pub async fn list_tool_servers(&self, room: String, agent: String) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+        let key = format!("{room}:{agent}");
+        if let Some(names) = self.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned() { return Ok(names); }
         let handle = self.handle(&room)?;
         let config = handle.room.lock().await.configs().into_iter().find(|p| p.id.as_str() == agent).ok_or("Unknown participant")?;
-        if let Some(names) = self.tool_servers.lock().unwrap().get(&format!("{room}:{agent}")).cloned() { return Ok(names); }
-        match config.backend {
-            // Unknown is different from a confirmed empty catalog: clients
-            // must still let an explicit !server request reach the provider.
-            apex_core::Backend::Agent { tool: AgentTool::Codex | AgentTool::ClaudeCode, .. } =>
-                Err("Tool inventory is not loaded yet. Send a message to load tools; use the provider CLI to authenticate explicitly.".into()),
-            _ => Ok(Vec::new()),
-        }
+        let names = match config.backend {
+            apex_core::Backend::Agent { tool: AgentTool::Codex, .. } => tokio::time::timeout(std::time::Duration::from_secs(30), apex_adapters::codex_tool_servers(handle.context.cwd.clone().map(|p| p.to_string_lossy().into_owned()), handle.context.path.clone())).await.map_err(|_| "Couldn't list tool servers: timed out")??,
+            apex_core::Backend::Agent { tool: AgentTool::ClaudeCode, .. } => tokio::time::timeout(std::time::Duration::from_secs(60), apex_adapters::claude_tool_servers(handle.context.cwd.clone().map(|p| p.to_string_lossy().into_owned()), handle.context.path.clone())).await.map_err(|_| "Couldn't list tool servers: timed out")??,
+            _ => Vec::new(),
+        };
+        if !names.is_empty() { self.tool_servers.lock().unwrap().insert(key, names.clone()); }
+        Ok(names)
     }
 
     // ------------------------------------------------------------ terminals
@@ -872,18 +877,37 @@ impl Host {
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
         let runner = self.runner_service.lock().unwrap().state(&id).ok().flatten();
-        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner}))
+        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
 
     }
 
     pub fn room_runner_state(self: &Arc<Self>, id: String) -> Result<Option<serde_json::Value>, String> {
         let runner = self.runner_service.lock().unwrap().state(&id)?;
-        Ok(runner.map(|s| serde_json::to_value(s).map_err(|e| e.to_string())).transpose()?)
+        runner.map(|s| {let mut value=serde_json::to_value(s).map_err(|e|e.to_string())?;value["hostNow"]=serde_json::json!(runner_runtime::now());Ok(value)}).transpose()
     }
 
     pub async fn room_runner_start(self: &Arc<Self>, input: crate::runner::service::RunnerStartInput) -> Result<serde_json::Value, String> {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let gate = self.runner_gate(&input.id);
+        let _guard = gate.lock().await;
+        if let Some(receipt)=self.runner_service.lock().unwrap().replay(&input.request_id,&input.id)? {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Applied(receipt)).map_err(|e|e.to_string());
+        }
+        let handle = self.handle(&input.id)?;
+        if input.expected_room_revision.is_some_and(|revision|revision!=handle.observation_revision.load(Ordering::SeqCst)) {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Conflict(self.runner_service.lock().unwrap().state(&input.id)?)).map_err(|e|e.to_string());
+        }
+        if handle.plan.load(Ordering::SeqCst) { return Err("Turn off Plan before starting a goal or loop".into()); }
+        let configs = handle.room.lock().await.configs();
+        if input.runner.workers.iter().chain(input.runner.checker.iter()).any(|id| !configs.iter().any(|p| p.id.as_str() == id)) { return Err("Runner participant is not in this room".into()); }
         let res = self.runner_service.lock().unwrap().start(input.clone(), now_ms)?;
+        if let crate::runner::service::RunnerMutation::Applied(snapshot)=&res {
+            let note=format!("{} started: {}\nWorking: {} · {} turns/runs · {} calls · {} minutes lifetime. Measurable spend cap: ${:.2}, best effort; unavailable costs remain unknown. [Runner {}]",if snapshot.kind==crate::runner::RunnerKind::Goal{"Goal"}else{"Loop"},snapshot.objective.as_deref().or(snapshot.prompt.as_deref()).unwrap_or(""),snapshot.workers.join(", "),snapshot.limits.max_turns.unwrap_or(30),snapshot.limits.max_invocations.unwrap_or(120),snapshot.limits.lifetime_ms/60000,snapshot.limits.max_cost_micros.unwrap_or(0) as f64/1e6,snapshot.id);
+            self.runner_note(&input.id,&handle,&note).await?;
+        }
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.runner_changed(&input.id);
+        self.ensure_runner(input.id.clone());
         // Cancel/suppress any in-flight next-step suggestion when starting a runner
         if let Ok(handle) = self.handle(&input.id) {
             self.room_event(&input.id, RoomEvent::NextSteps { id: ParticipantId::new("runner"), steps: vec![], pending: false });
@@ -895,7 +919,27 @@ impl Host {
 
     pub async fn room_runner_action(self: &Arc<Self>, input: crate::runner::service::RunnerActionInput) -> Result<serde_json::Value, String> {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let room = input.id.clone();
+        let action = input.action.action.clone();
+        let gate = self.runner_gate(&room);
+        let _guard = gate.lock().await;
+        if let Some(receipt)=self.runner_service.lock().unwrap().replay(&input.request_id,&input.id)? {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Applied(receipt)).map_err(|e|e.to_string());
+        }
         let res = self.runner_service.lock().unwrap().action(input, now_ms)?;
+        if matches!(res, crate::runner::service::RunnerMutation::Applied(_)) {
+            if matches!(action.as_str(), "pause" | "end") || matches!(&res,crate::runner::service::RunnerMutation::Applied(s) if s.phase==crate::runner::RunnerPhase::Paused) {
+                if let Ok(handle) = self.handle(&room) { handle.runtime.stop(None); if action == "end" { handle.approvals.reject_all(); } }
+            }
+            if action=="end" {
+                if let crate::runner::service::RunnerMutation::Applied(snapshot)=&res {
+                    let handle=self.handle(&room)?;
+                    self.runner_note(&room,&handle,&format!("{} ended. {} turns/runs · {} calls. Progress and history retained. [Runner {} ended]",if snapshot.kind==crate::runner::RunnerKind::Goal{"Goal"}else{"Loop"},snapshot.usage.turns,snapshot.usage.invocations,snapshot.id)).await?;
+                }
+            }
+            self.runner_changed(&room);
+            self.ensure_runner(room);
+        }
         Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
     }
 
@@ -1008,11 +1052,14 @@ impl Host {
 
     pub(crate) async fn room_post_with_answer_guidance(self: &Arc<Self>, id: String, text: String, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), vec![], None, answers, capability).await? { return Ok(()); }
-        // Human message takes priority: pause runner before new turn
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.runner_service.lock().unwrap().notify_human_message(&id, now_ms);
+        let gate = self.runner_gate(&id);
+        let guard = gate.lock().await;
         let handle = self.handle(&id)?;
+        let interrupted = self.runner_service.lock().unwrap().yield_to_human(&id)?;
+        if interrupted { handle.runtime.stop(None); handle.approvals.reject_all(); }
+        self.runner_changed(&id);
         let batch = self.prepare_post(&id, &handle, &text, None).await?.with_answer_guidance(answers, capability);
+        drop(guard);
         self.run_batch(&id, &handle, batch).await
     }
 
@@ -1027,21 +1074,28 @@ impl Host {
 
     pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None, answers, capability).await? { return Ok(()); }
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.runner_service.lock().unwrap().notify_human_message(&id, now_ms);
+        let gate = self.runner_gate(&id);
+        let guard = gate.lock().await;
         let handle = self.handle(&id)?;
+        let interrupted = self.runner_service.lock().unwrap().yield_to_human(&id)?;
+        if interrupted { handle.runtime.stop(None); handle.approvals.reject_all(); }
+        self.runner_changed(&id);
         let batch = self.prepare_post(&id, &handle, &text, Some(targets)).await?.with_answer_guidance(answers, capability);
+        drop(guard);
         self.run_batch_in_background(id, handle, batch);
         Ok(())
     }
 
     pub(crate) async fn room_voice_post(self: &Arc<Self>, id: String, text: String, participant: ParticipantId, request_id: String) -> Result<(), String> {
         if self.assistant_tasks.execution(&id).ok().flatten().is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
+        let gate=self.runner_gate(&id);let guard=gate.lock().await;
         let handle = self.handle(&id)?;
+        if self.runner_service.lock().unwrap().yield_to_human(&id)? {handle.runtime.stop(None);handle.approvals.reject_all();}
         let error = Mutex::new(None);
         let batch = handle.runtime.begin_voice_post(&text, participant, request_id, &self.turn_sink(&id, &handle, &error)).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         checkpoint_room(&handle, &self.store, &id).await?;
+        drop(guard);
         if let Some(batch) = batch {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             self.run_batch_in_background(id, handle, batch);
@@ -1071,6 +1125,10 @@ impl Host {
     }
 
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
+        // Runner: Stop during countdown also pauses
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().pause_reason(&id, crate::runner::RunnerReason::Human, now_ms);
+        self.runner_changed(&id);
         if let Some(entry) = self.assistant_tasks.execution(&id).ok().flatten() {
             if let Some(run) = self.assistant_runs.lock().unwrap().get(&entry.task_id) { run.stop.store(true, Ordering::SeqCst); }
         }
@@ -1083,9 +1141,7 @@ impl Host {
                 handle.approvals.reject_all();
             }
         }
-        // Runner: Stop during countdown also pauses
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.runner_service.lock().unwrap().notify_stop(&id, now_ms);
+
     }
 
     /// Turn the thread's Plan switch on or off. Saved at once; every client
@@ -1094,6 +1150,7 @@ impl Host {
     pub fn room_set_plan(&self, id: String, on: bool) -> Result<(), String> {
         let handle = self.handle(&id)?;
         if self.store_plan(&id, &handle, on)? {
+            self.invalidate_room_runner(&id)?;
             self.room_event(&id, RoomEvent::PlanChanged { on });
         }
         Ok(())
@@ -1210,6 +1267,7 @@ impl Host {
                 return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
             }
         } else { room.replace_participant(replacement); }
+        self.invalidate_room_runner(&id)?;
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
         // Save and broadcast under the same room lock as the merge so concurrent
         // devices cannot emit older settings after newer ones.
@@ -1220,8 +1278,7 @@ impl Host {
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
         // Worker removal pauses runner
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1236,8 +1293,7 @@ impl Host {
 
     /// Empty a chat's transcript, keeping its participants and settings.
     pub async fn room_clear(&self, id: String) -> Result<(), String> {
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1256,8 +1312,7 @@ impl Host {
 
     /// Retry: delete every message from `upto` on. The caller then runs a turn.
     pub async fn room_rewind(&self, id: String, upto: usize) -> Result<(), String> {
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1285,8 +1340,7 @@ impl Host {
     /// ones that didn't exist), and with `chat`, delete message `at` and
     /// everything after it. Returns the files it couldn't put back.
     pub async fn room_revert(&self, id: String, at: usize, bot: Option<ParticipantId>, chat: bool, files: Vec<String>) -> Result<Vec<String>, String> {
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1667,20 +1721,8 @@ impl Host {
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
-        // Also remove runner record entirely on delete
-        let _ = self.runner_service.lock().unwrap().load_all().map(|_| ()); // ensure store loaded
-        // Best effort remove
-        {
-            let store_path = self.paths.data.join("room-runners-v1.json");
-            // removal via service would go through store; we use invalidate + remove through store if needed
-            // For now invalidate pauses; actual removal is via store.remove inside service if we implement
-            // We'll attempt to remove directly
-            let data_dir = self.paths.data.clone();
-            let runner_store = crate::runner::store::RunnerStore::new(data_dir);
-            let _ = runner_store.remove(&id);
-        }
+        self.invalidate_room_runner(&id)?;
+        self.runner_service.lock().unwrap().remove(&id)?;
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let handle = self.handle(&id).ok();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
@@ -2000,6 +2042,7 @@ impl Host {
         handle.runtime.stop(None);
         handle.approvals.reject_all();
         self.tool_servers.lock().unwrap().retain(|key, _| !key.starts_with(&format!("{id}:")));
+        self.invalidate_room_runner(&id)?;
         // Complete removal before the new room takes any checkpoints.
         self.snapshots.delete(&id);
         Ok(serde_json::json!({"cwd":target,"mounts":mounts}))
@@ -2026,6 +2069,7 @@ impl Host {
             }
             return self.store.import_room(&id, &saved);
         }
+        self.invalidate_room_runner(&id)?;
         match self.handle(&id) {
             // Under the checkpoint lock no event of the old room saves over the
             // new copy, and once it is written none ever will.
@@ -2385,55 +2429,69 @@ fn copy_folder_attachment(dir: &Path, source: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    #[test]
-    fn automatic_tool_inventory_never_starts_providers_and_keeps_turn_inventory() {
-        use apex_core::Participant;
-        use std::os::unix::fs::PermissionsExt;
-        let (mut handle, _, path) = checkpoint_fixture("passive-inventory");
-        let bin = path.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        // A discovery attempt would run these sentinels instead of a real
-        // provider, so this regression test cannot open an OAuth browser.
-        for name in ["claude", "codex"] {
-            let cli = bin.join(name);
-            std::fs::write(&cli, format!("#!/bin/sh\nprintf started > '{}'\nexit 9\n", path.join("provider-started").display())).unwrap();
-            std::fs::set_permissions(cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+    struct RunnerApprovalBot { config:ParticipantConfig, calls:AtomicUsize, acted:AtomicUsize }
+    #[async_trait::async_trait]
+    impl apex_core::Participant for RunnerApprovalBot {
+        fn config(&self)->&ParticipantConfig{&self.config}
+        async fn respond(&self,_:apex_core::TurnRequest,_:apex_core::DeltaSink<'_>)->Result<apex_core::Reply,apex_core::ParticipantError>{unreachable!()}
+        async fn respond_with_approvals(&self,_:apex_core::TurnRequest,_:apex_core::ProgressSink<'_>,approver:&dyn apex_core::Approver)->Result<apex_core::Reply,apex_core::ParticipantError>{
+            self.calls.fetch_add(1,Ordering::SeqCst);
+            let approved=approver.decide(apex_core::ProposedAction{kind:apex_core::ActionKind::Command,title:"Fixture action".into(),detail:"fixture-only action".into(),expires_at:None,risky:false}).await.approved();
+            if approved{self.acted.fetch_add(1,Ordering::SeqCst);}
+            Ok(apex_core::Reply::text("Fixture was cancelled"))
         }
-        handle.context.path = Some(bin.to_string_lossy().into_owned());
-        let participants = [("claude", AgentTool::ClaudeCode), ("codex", AgentTool::Codex)].into_iter().map(|(id, tool)| {
-            let mut config = apex_core::testing::ScriptedParticipant::new(id, &[]).config().clone();
-            config.backend = apex_core::Backend::Agent { tool, model: None };
-            apex_adapters::build(config, &handle.context)
-        }).collect();
-        handle.runtime = ConcurrentRoom::new(Room::new(participants, RoomOptions::default()));
+    }
+
+    #[tokio::test]
+    async fn runner_pause_resume_reasks_and_end_retires_real_approval() {
+        use apex_core::Participant;
+        use crate::runner::{model::*,service::*};
+        let (mut handle,_,path)=checkpoint_fixture("runner-approval");
+        let mut config=apex_core::testing::ScriptedParticipant::new("w",&[]).config().clone();config.access=apex_core::Access::Ask;
+        let bot=Arc::new(RunnerApprovalBot{config,calls:AtomicUsize::new(0),acted:AtomicUsize::new(0)});
+        handle.runtime=ConcurrentRoom::new(Room::new(vec![bot.clone()],RoomOptions::default()));handle.room=handle.runtime.room();handle.approvals=handle.room.lock().await.approvals_handle();
+        let host=Host::new(HostPaths{data:path.join("data"),downloads:None},tokio::runtime::Handle::current());host.rooms.lock().unwrap().insert("r".into(),handle.clone());
+        host.room_runner_start(RunnerStartInput{id:"r".into(),request_id:"start".into(),expected_room_revision:None,runner:RunnerStartPayload{schema_version:1,kind:RunnerKind::Goal,objective:Some("Fixture approval".into()),prompt:None,interval_seconds:None,workers:vec!["w".into()],checker:None,limits:RunnerLimits::default_limits(),checks:vec![]}}).await.unwrap();
+        async fn pending(host:&Host,old:Option<&str>)->String{
+            tokio::time::timeout(std::time::Duration::from_secs(4),async{loop{let s=host.runner_service.lock().unwrap().state("r").unwrap().unwrap();if s.phase==RunnerPhase::Waiting{if let Some(id)=s.pending_request_id{if Some(id.as_str())!=old{return id;}}}tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}).await.unwrap()
+        }
+        async fn act(host:&Arc<Host>,action:&str){let s=host.runner_service.lock().unwrap().state("r").unwrap().unwrap();host.room_runner_action(RunnerActionInput{id:"r".into(),runner_id:s.id,expected_revision:s.revision,request_id:format!("action-{action}"),action:RunnerActionPayload{action:action.into(),limits:None}}).await.unwrap();}
+        let first=pending(&host,None).await;act(&host,"pause").await;
+        assert_eq!(host.runner_service.lock().unwrap().state("r").unwrap().unwrap().pending_request_id.as_deref(),Some(first.as_str()));
+        act(&host,"resume").await;let second=pending(&host,Some(&first)).await;
+        assert_eq!(bot.acted.load(Ordering::SeqCst),0);act(&host,"end").await;
+        assert!(host.room_decide("r".into(),first,true,None).is_err());assert!(host.room_decide("r".into(),second,true,None).is_err());
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(bot.calls.load(Ordering::SeqCst),2);assert_eq!(bot.acted.load(Ordering::SeqCst),0);assert_eq!(host.runner_service.lock().unwrap().state("r").unwrap().unwrap().phase,RunnerPhase::Ended);
+        host.shutdown();std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_host_dispatches_goal_and_completes_from_actual_reply() {
+        use crate::runner::{model::*, service::*};
+        let (mut handle, _, path) = checkpoint_fixture("runner-live");
+        let reply = "Work complete.\n```apex-runner\n{\"version\":1,\"disposition\":\"done\",\"done\":\"Checked the result\",\"next\":\"\",\"blocker\":null,\"criteria\":[{\"id\":\"result\",\"status\":\"done\",\"evidence\":[\"Observed result in this reply\"]}]}\n```";
+        let bot = Arc::new(apex_core::testing::ScriptedParticipant::new("null", &[reply]));
+        handle.runtime = ConcurrentRoom::new(Room::new(vec![bot.clone()], RoomOptions::default()));
         handle.room = handle.runtime.room();
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, runtime.handle().clone());
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, tokio::runtime::Handle::current());
         host.rooms.lock().unwrap().insert("chat".into(), handle);
-        runtime.block_on(async {
-            for agent in ["claude", "codex"] {
-                for _ in 0..2 {
-                    let result = host.list_tool_servers("chat".into(), agent.into()).await;
-                    assert!(!path.join("provider-started").exists(), "automatic discovery must never execute either provider");
-                    assert!(result.unwrap_err().contains("Tool inventory is not loaded yet"));
-                }
+        host.room_runner_start(RunnerStartInput { id: "chat".into(), request_id: "start".into(), expected_room_revision: None, runner: RunnerStartPayload {
+            schema_version: 1, kind: RunnerKind::Goal, objective: Some("Check the result".into()), prompt: None, interval_seconds: None, workers: vec!["null".into()], checker: None, limits: RunnerLimits::default_limits(), checks: vec![],
+        }}).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if host.runner_service.lock().unwrap().state("chat").unwrap().unwrap().phase == RunnerPhase::Completed { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            let handle = host.handle("chat").unwrap();
-            let error = Mutex::new(None);
-            let sink = host.turn_sink("chat", &handle, &error);
-            let servers = vec!["x-mcp".to_owned().into()];
-            sink(RoomEvent::ToolServers { id: ParticipantId::new("claude"), servers: servers.clone() });
-            assert!(error.lock().unwrap().is_none());
-            assert_eq!(host.list_tool_servers("chat".into(), "claude".into()).await, Ok(servers));
-            sink(RoomEvent::ToolServers { id: ParticipantId::new("claude"), servers: vec![] });
-            assert_eq!(host.list_tool_servers("chat".into(), "claude".into()).await, Ok(vec![]));
-            assert!(host.list_tool_servers("chat".into(), "missing".into()).await.is_err());
-            assert!(host.list_tool_servers("missing".into(), "claude".into()).await.is_err());
-        });
-        assert!(!path.join("provider-started").exists(), "automatic discovery must never execute either provider");
+        }).await.expect("host must actually dispatch and finish the goal");
+        let requests = bot.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].system.contains("apex-runner"));
+        let snapshot = host.runner_service.lock().unwrap().state("chat").unwrap().unwrap();
+        assert_eq!(snapshot.usage.invocations, 1);
+        assert_eq!(snapshot.usage.turns, 1);
         host.shutdown();
-        drop(host);
         std::fs::remove_dir_all(path).unwrap();
     }
 

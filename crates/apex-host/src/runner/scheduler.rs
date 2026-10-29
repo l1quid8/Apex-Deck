@@ -303,7 +303,6 @@ pub struct EvalResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::model::*;
 
     fn base_goal(phase: RunnerPhase) -> RunnerSnapshot {
         RunnerSnapshot {
@@ -328,7 +327,7 @@ mod tests {
             next_run_at: None,
             pending_request_id: None,
             dismissed: false,
-            consecutive_unchanged: 0,
+            consecutive_unchanged: 0, in_flight: None, worker_index: 0, reply_seqs: vec![], checks: vec![], changed_paths: vec![], accounted: vec![], check_results: vec![], made_change: false,
         }
     }
 
@@ -355,7 +354,7 @@ mod tests {
             next_run_at: next_run,
             pending_request_id: None,
             dismissed: false,
-            consecutive_unchanged: 0,
+            consecutive_unchanged: 0, in_flight: None, worker_index: 0, reply_seqs: vec![], checks: vec![], changed_paths: vec![], accounted: vec![], check_results: vec![], made_change: false,
         }
     }
 
@@ -462,7 +461,6 @@ mod tests {
     fn invocation_reservation_and_partial_accounting() {
         let snap = base_loop(RunnerPhase::Running, None);
         // Simulate completion with workers = 2, checker = 1, should account accordingly via reduce
-        let checkpoint = RunnerCheckpoint { done: "d".into(), next: "n".into(), blocker: None, criteria: vec![] };
         let res = eval_dispatch(&snap, &RunnerWake::LoopRunCompleted { room_id: "room1".into(), attempt_id: "a1".into(), generation: 1, cost_micros: Some(100) }, 5000).unwrap();
         // usage should still be counted via reduce path – our eval after reduce calls reduce which increments
         // For loop, reduce increments invocations by workers+checker; but our base has 1 worker, so 1

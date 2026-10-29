@@ -23,6 +23,8 @@ pub struct RunnerStartPayload {
     pub workers: Vec<String>,
     pub checker: Option<String>,
     pub limits: RunnerLimits,
+    #[serde(default)]
+    pub checks: Vec<super::checks::ConfiguredCheck>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +67,12 @@ impl RunnerService {
         self.store.load(room_id)
     }
 
+    pub fn replay(&self,request:&str,room:&str)->Result<Option<RunnerSnapshot>,String>{
+        let receipt=self.store.receipt(request)?;
+        if receipt.as_ref().is_some_and(|s|s.room_id!=room){return Err("request ID belongs to another room".into());}
+        Ok(receipt)
+    }
+
     pub fn start(&self, input: RunnerStartInput, now_ms: u64) -> Result<RunnerMutation, String> {
         if input.runner.schema_version != SCHEMA_VERSION {
             return Err(format!("unsupported schemaVersion {}", input.runner.schema_version));
@@ -88,10 +96,7 @@ impl RunnerService {
 
         let expected = existing.as_ref().map(|s| s.revision).unwrap_or(0);
 
-        // If caller provided expected_room_revision, we ignore for now; plan says use room revision compare-and-set
-        // but we implement runner revision CAS only.
-
-        let id = format!("runner-{}-{}", input.id, now_ms);
+        let id = format!("runner-{}-{}-{}", input.id, now_ms, expected+1);
         let deadline = now_ms + input.runner.limits.lifetime_ms;
         let is_loop = input.runner.kind == RunnerKind::Loop;
         let next_run = if is_loop {
@@ -120,7 +125,7 @@ impl RunnerService {
             next_run_at: next_run,
             pending_request_id: None,
             dismissed: false,
-            consecutive_unchanged: 0,
+            consecutive_unchanged: 0, in_flight: None, worker_index: 0, reply_seqs: vec![], checks: input.runner.checks, changed_paths: vec![], accounted: vec![], check_results: vec![], made_change: false,
         };
 
         validate_start(&snapshot).map_err(|e| e)?;
@@ -133,6 +138,10 @@ impl RunnerService {
     }
 
     pub fn action(&self, input: RunnerActionInput, now_ms: u64) -> Result<RunnerMutation, String> {
+        if let Some(receipt) = self.store.receipt(&input.request_id)? {
+            if receipt.room_id == input.id { return Ok(RunnerMutation::Applied(receipt)); }
+            return Err("request ID belongs to another room".into());
+        }
         let existing = self.store.load(&input.id)?.ok_or("no runner".to_string())?;
         if existing.id != input.runner_id {
             return Ok(RunnerMutation::Conflict(Some(existing)));
@@ -153,7 +162,7 @@ impl RunnerService {
             "resume" => RunnerEvent::Resume,
             "end" => RunnerEvent::End { reason: RunnerReason::Human },
             "dismiss" => {
-                // dismiss clears presentation but keeps terminal; if not terminal, treat as end?
+                if !existing.is_terminal() { return Err("End the runner before dismissing".into()); }
                 let mut snap = existing.clone();
                 snap.dismissed = true;
                 snap.revision += 1;
@@ -168,13 +177,11 @@ impl RunnerService {
                 new_limits.validate()?;
                 let mut snap = existing.clone();
                 snap.limits = new_limits;
+                snap.deadline_at = snap.started_at.saturating_add(snap.limits.lifetime_ms);
                 snap.revision += 1;
-                // if lowering below usage, pause
-                if let Some(max_turns) = snap.limits.max_turns {
-                    if snap.usage.turns >= max_turns {
-                        snap.phase = RunnerPhase::Paused;
-                        snap.reason = RunnerReason::Limit;
-                    }
+                if limit_reached(&snap,now_ms) {
+                    snap.phase=RunnerPhase::Paused;snap.reason=RunnerReason::Limit;
+                    snap.generation+=1;snap.in_flight=None;snap.next_run_at=None;
                 }
                 match self.store.commit(snap.clone(), Some(input.expected_revision), Some(input.request_id))? {
                     CommitResult::Applied(s) => return Ok(RunnerMutation::Applied(s)),
@@ -185,7 +192,16 @@ impl RunnerService {
             _ => return Err(format!("unknown action {}", input.action.action)),
         };
 
-        let transition = reduce(existing.clone(), event, now_ms).map_err(|e| format!("{:?}", e))?;
+        if input.action.action == "resume" && limit_reached(&existing, now_ms) { return Err("Increase the exhausted limit before resuming".into()); }
+        let mut transition = reduce(existing.clone(), event, now_ms).map_err(|e| format!("{:?}", e))?;
+        transition.snapshot.revision = existing.revision + 1;
+        if matches!(input.action.action.as_str(), "pause" | "end") {
+            transition.snapshot.generation = existing.generation + 1;
+            transition.snapshot.in_flight = None;
+        }
+        if input.action.action == "resume" && transition.snapshot.phase == RunnerPhase::Scheduled {
+            transition.snapshot.next_run_at = Some(now_ms.saturating_add(existing.interval_seconds.unwrap_or(600) * 1000));
+        }
         match self.store.commit(transition.snapshot, Some(input.expected_revision), Some(input.request_id))? {
             CommitResult::Applied(s) => Ok(RunnerMutation::Applied(s)),
             CommitResult::Conflict(cur) => Ok(RunnerMutation::Conflict(Some(cur))),
@@ -214,7 +230,7 @@ impl RunnerService {
         if eval.snapshot.revision != snapshot.revision || eval.snapshot.phase != snapshot.phase || eval.snapshot.reason != snapshot.reason || eval.snapshot.next_run_at != snapshot.next_run_at || eval.snapshot.pending_request_id != snapshot.pending_request_id {
             // Commit with expected revision = previous
             match self.store.commit(eval.snapshot.clone(), Some(snapshot.revision), None)? {
-                CommitResult::Applied(s) => {
+                CommitResult::Applied(_s) => {
                     // Return dispatch based on new snapshot, but need to ensure we use updated snapshot for dispatch eligibility
                     // If eval already produced dispatch, we keep it; else re-eval with new snapshot? For simplicity, return eval dispatch
                     return Ok(eval.dispatch);
@@ -236,110 +252,153 @@ impl RunnerService {
     /// Reservation before dispatch: increments invocation count and persists.
     /// Called just before provider call, with lock held only for file write (no await).
     pub fn reserve_dispatch(&self, dispatch: &crate::runner::scheduler::Dispatch, now_ms: u64) -> Result<RunnerSnapshot, String> {
-        let existing = self.store.load(&dispatch.room_id)?.ok_or("no runner")?;
-        if existing.generation != dispatch.key.generation || existing.id != dispatch.key.runner_id {
-            return Err("stale generation".into());
+        let mut next = self.store.load(&dispatch.room_id)?.ok_or("no runner")?;
+        if next.generation != dispatch.key.generation || next.id != dispatch.key.runner_id || next.is_terminal() || !matches!(next.phase, RunnerPhase::Running | RunnerPhase::Scheduled) || next.in_flight.is_some() {
+            return Err("stale or ineligible dispatch".into());
         }
-        // Reserve
-        let mut next = existing.clone();
+        if limit_reached(&next, now_ms) { self.pause_reason(&dispatch.room_id, RunnerReason::Limit, now_ms)?; return Err("runner limit reached".into()); }
+        let previous = next.revision;
+        next.in_flight = Some(dispatch.key.attempt_id.clone());
+        next.made_change=false;
+        next.phase = RunnerPhase::Running;
+        next.next_run_at = None;
         next.usage.invocations += 1;
-        next.usage.elapsed_ms = now_ms.saturating_sub(next.started_at);
+        next.usage.unknown_cost_turns += 1;
+        if next.kind == RunnerKind::Goal || next.worker_index == 0 { next.usage.turns += 1; }
+        next.usage.elapsed_ms = now_ms.saturating_sub(next.started_at).max(next.usage.elapsed_ms);
         next.revision += 1;
-        // For goal, also count as turn attempt? Plan says reserve invocation/turn before dispatch
-        if next.kind == RunnerKind::Goal {
-            // Reserve turn? We count turns on completion, but also reserve invocations.
-        }
-        match self.store.commit(next.clone(), Some(existing.revision), None)? {
-            CommitResult::Applied(s) => Ok(s),
-            CommitResult::Conflict(cur) => Err(format!("conflict on reserve: expected {} got {}", existing.revision, cur.revision)),
-            CommitResult::ConflictMissing => Err("runner missing on reserve".into()),
+        self.save(next, previous)
+    }
+
+    fn save(&self, snapshot: RunnerSnapshot, expected: u64) -> Result<RunnerSnapshot, String> {
+        match self.store.commit(snapshot, Some(expected), None)? {
+            CommitResult::Applied(s) => Ok(s), _ => Err("runner revision changed".into()),
         }
     }
 
-    /// Apply completion result from provider turn
-    pub fn complete_turn(&self, room_id: &str, attempt: crate::runner::scheduler::RunnerAttemptKey, checkpoint: RunnerCheckpoint, cost_micros: Option<u64>, now_ms: u64) -> Result<Option<crate::runner::scheduler::Dispatch>, String> {
-        let wake = crate::runner::scheduler::RunnerWake::TurnCompleted {
-            room_id: room_id.to_string(),
-            attempt_id: attempt.attempt_id,
-            generation: attempt.generation,
-            cost_micros,
-            checkpoint,
-        };
-        self.reconcile(room_id, wake, now_ms)
+    pub fn record_check(&self,room:&str,key:&super::scheduler::RunnerAttemptKey,id:&str,passed:bool,output:&str)->Result<(),String>{
+        let Some(mut s)=self.store.load(room)? else{return Ok(());};
+        if s.id!=key.runner_id||s.generation!=key.generation||s.in_flight.as_deref()!=Some(key.attempt_id.as_str()){return Ok(());}
+        let previous=s.revision;
+        s.check_results.push(RunnerCheckResult{id:id.into(),attempt_id:key.attempt_id.clone(),passed,output:output.chars().take(4000).collect()});
+        if s.check_results.len()>50{s.check_results.drain(..s.check_results.len()-50);}
+        s.revision+=1;self.save(s,previous)?;Ok(())
     }
 
-    pub fn complete_turn_from_report(&self, room_id: &str, attempt: crate::runner::scheduler::RunnerAttemptKey, reply_text: &str, cost_micros: Option<u64>, now_ms: u64) -> Result<(Option<crate::runner::scheduler::Dispatch>, Option<String>), String> {
-        // Parse strict report
-        match crate::runner::report::parse_report(reply_text) {
-            Ok(report) => {
-                let checkpoint = RunnerCheckpoint {
-                    done: report.done.clone(),
-                    next: report.next.clone(),
-                    blocker: report.blocker.clone(),
-                    criteria: report.criteria.iter().map(|c| RunnerCriteria { id: c.id.clone(), status: c.status.clone(), evidence: c.evidence.clone() }).collect(),
-                };
-                // Handle disposition
-                if report.disposition == "blocked" {
-                    // Pause as blocked
-                    let existing = self.store.load(room_id)?.ok_or("no runner")?;
-                    let next = crate::runner::model::reduce(existing.clone(), RunnerEvent::Failed { reason: RunnerReason::Blocked }, now_ms).map_err(|e| format!("{:?}", e))?.snapshot;
-                    self.store.commit(next.clone(), Some(existing.revision), None)?;
-                    return Ok((None, Some("blocked".into())));
-                }
-                if report.disposition == "done" {
-                    // Verification: for now, if any criteria failed, pause
-                    if report.criteria.iter().any(|c| c.status == "failed") {
-                        let existing = self.store.load(room_id)?.ok_or("no runner")?;
-                        let mut next = existing.clone();
-                        next.phase = RunnerPhase::Paused;
-                        next.reason = RunnerReason::Blocked;
-                        next.revision += 1;
-                        next.checkpoint = Some(checkpoint.clone());
-                        self.store.commit(next, Some(existing.revision), None)?;
-                        return Ok((None, Some("criteria failed".into())));
-                    }
-                    // If done and criteria all done, mark completed after storing checkpoint
-                    let dispatch = self.complete_turn(room_id, attempt.clone(), checkpoint, cost_micros, now_ms)?;
-                    // Then also complete
-                    if let Some(snap) = self.store.load(room_id)? {
-                        if snap.phase == RunnerPhase::Running {
-                            let trans = crate::runner::model::reduce(snap.clone(), RunnerEvent::Completed, now_ms).map_err(|e| format!("{:?}", e))?;
-                            self.store.commit(trans.snapshot, Some(snap.revision), None)?;
-                        }
-                    }
-                    return Ok((dispatch, Some("completed".into())));
-                }
-                // working
-                let dispatch = self.complete_turn(room_id, attempt, checkpoint, cost_micros, now_ms)?;
-                Ok((dispatch, Some("working".into())))
-            }
-            Err(e) => {
-                // Missing/malformed structured report pauses as provider_error
-                let existing = self.store.load(room_id)?.ok_or("no runner")?;
-                let mut next = existing.clone();
-                next.phase = RunnerPhase::Paused;
-                next.reason = RunnerReason::ProviderError;
-                next.revision += 1;
-                self.store.commit(next, Some(existing.revision), None)?;
-                Ok((None, Some(format!("report error: {:?}", e))))
-            }
+    pub fn record_usage(&self,room:&str,key:&super::scheduler::RunnerAttemptKey,worker:&str,cost:Option<u64>)->Result<(),String>{
+        let Some(mut s)=self.store.load(room)? else{return Ok(());};
+        let id=format!("{}:{}",key.attempt_id,worker);
+        if s.id!=key.runner_id||s.generation!=key.generation||s.in_flight.as_deref()!=Some(key.attempt_id.as_str())||s.accounted.contains(&id){return Ok(());}
+        let previous=s.revision;
+        if let Some(cost)=cost{s.usage.cost_micros=Some(s.usage.cost_micros.unwrap_or(0).saturating_add(cost));s.usage.unknown_cost_turns=s.usage.unknown_cost_turns.saturating_sub(1);}
+        s.accounted.push(id);s.revision+=1;self.save(s,previous)?;Ok(())
+    }
+
+    pub fn reissue_pending(&self,room:&str)->Result<(),String>{
+        let Some(mut s)=self.store.load(room)? else{return Ok(());};
+        if s.phase!=RunnerPhase::Waiting||s.in_flight.is_some(){return Ok(());}
+        let previous=s.revision;
+        s.phase=RunnerPhase::Running;s.reason=RunnerReason::None;s.pending_request_id=None;s.revision+=1;
+        let cp=s.checkpoint.get_or_insert(RunnerCheckpoint{done:String::new(),next:String::new(),blocker:None,criteria:vec![]});
+        cp.next="The previous approval or question was cancelled by Pause. It was NOT approved or answered. Re-present any unresolved need before taking the dependent action.".into();
+        self.save(s,previous)?;Ok(())
+    }
+
+    pub fn note_change(&self,room:&str,key:&super::scheduler::RunnerAttemptKey,path:&str)->Result<(),String>{
+        let Some(mut s)=self.store.load(room)? else{return Ok(());};
+        if s.id!=key.runner_id||s.generation!=key.generation||s.in_flight.as_deref()!=Some(key.attempt_id.as_str()){return Ok(());}
+        let previous=s.revision;if !s.changed_paths.iter().any(|p|p==path){s.changed_paths.push(path.into());}s.made_change=true;s.revision+=1;self.save(s,previous)?;Ok(())
+    }
+
+    pub fn reserve_checker(&self,room:&str,key:&super::scheduler::RunnerAttemptKey,time:u64)->Result<bool,String>{
+        let Some(mut s)=self.store.load(room)? else{return Ok(false);};
+        if s.id!=key.runner_id||s.generation!=key.generation||s.in_flight.as_deref()!=Some(key.attempt_id.as_str())||s.is_terminal()||time>=s.deadline_at||s.limits.max_cost_micros.zip(s.usage.cost_micros).is_some_and(|(cap,used)|used>=cap)||s.limits.max_invocations.is_some_and(|c|s.usage.invocations>=c){return Ok(false);}
+        let previous=s.revision;s.usage.invocations+=1;s.usage.unknown_cost_turns+=1;s.revision+=1;self.save(s,previous)?;Ok(true)
+    }
+
+    pub fn remove(&self, room: &str) -> Result<(), String> { self.store.remove(room) }
+
+    pub fn pause_reason(&self, room: &str, reason: RunnerReason, now_ms: u64) -> Result<(), String> {
+        if let Some(mut s) = self.store.load(room)? {
+            if s.is_terminal() { return Ok(()); }
+            let previous = s.revision;
+            s.phase = RunnerPhase::Paused; s.reason = reason; s.generation += 1; s.in_flight = None; s.next_run_at = None;
+            s.usage.elapsed_ms = now_ms.saturating_sub(s.started_at).max(s.usage.elapsed_ms); s.revision += 1;
+            self.save(s, previous)?;
         }
-    }
-
-    pub fn complete_loop_run(&self, room_id: &str, attempt: crate::runner::scheduler::RunnerAttemptKey, cost_micros: Option<u64>, now_ms: u64) -> Result<Option<crate::runner::scheduler::Dispatch>, String> {
-        let wake = crate::runner::scheduler::RunnerWake::LoopRunCompleted {
-            room_id: room_id.to_string(),
-            attempt_id: attempt.attempt_id,
-            generation: attempt.generation,
-            cost_micros,
-        };
-        self.reconcile(room_id, wake, now_ms)
-    }
-
-    pub fn notify_human_message(&self, room_id: &str, now_ms: u64) -> Result<(), String> {
-        let wake = crate::runner::scheduler::RunnerWake::HumanMessage { room_id: room_id.to_string() };
-        self.reconcile(room_id, wake, now_ms)?;
         Ok(())
+    }
+
+    /// Yield without a manual pause. Busy room reservations keep automation out
+    /// until the human's accepted chain finishes.
+    pub fn yield_to_human(&self, room: &str) -> Result<bool, String> {
+        let Some(mut s) = self.store.load(room)? else { return Ok(false); };
+        if !matches!(s.phase, RunnerPhase::Running | RunnerPhase::Scheduled | RunnerPhase::Waiting) { return Ok(false); }
+        let previous = s.revision;
+        let interrupted = s.in_flight.take().is_some();
+        s.generation += 1; s.revision += 1;
+        if interrupted { s.worker_index = 0; s.phase = RunnerPhase::Running; s.pending_request_id = None; s.reason = RunnerReason::None; }
+        self.save(s, previous)?;
+        Ok(interrupted)
+    }
+
+    pub fn waiting(&self, room: &str, key:&super::scheduler::RunnerAttemptKey, request: Option<(String, RunnerReason)>) -> Result<(), String> {
+        let Some(mut s) = self.store.load(room)? else { return Ok(()); };
+        if s.is_terminal() || s.id!=key.runner_id || s.generation!=key.generation || s.in_flight.as_deref()!=Some(key.attempt_id.as_str()) { return Ok(()); }
+        let previous = s.revision;
+        if let Some((id, reason)) = request {
+            s.pending_request_id = Some(id);
+            if s.phase != RunnerPhase::Paused { s.phase = RunnerPhase::Waiting; s.reason = reason; }
+        } else {
+            s.pending_request_id = None;
+            if s.phase == RunnerPhase::Waiting { s.phase = RunnerPhase::Running; s.reason = RunnerReason::None; }
+        }
+        s.revision += 1;
+        self.save(s, previous)?;
+        Ok(())
+    }
+
+    pub fn finish_attempt(&self, room: &str, key: &crate::runner::scheduler::RunnerAttemptKey, reply: &str, seq: Option<usize>, cost: Option<u64>, now: u64) -> Result<bool, String> {
+        let Some(mut s) = self.store.load(room)? else { return Ok(false); };
+        if s.is_terminal() || s.id != key.runner_id || s.generation != key.generation || s.in_flight.as_deref() != Some(key.attempt_id.as_str()) { return Ok(false); }
+        let previous = s.revision;
+        s.in_flight = None; s.pending_request_id = None; s.usage.elapsed_ms = now.saturating_sub(s.started_at).max(s.usage.elapsed_ms);
+        let accounting_key=format!("{}:{}",key.attempt_id,s.workers[s.worker_index%s.workers.len()]);
+        if !s.accounted.contains(&accounting_key) {
+            if let Some(c) = cost { s.usage.cost_micros = Some(s.usage.cost_micros.unwrap_or(0).saturating_add(c));s.usage.unknown_cost_turns=s.usage.unknown_cost_turns.saturating_sub(1); }
+            s.accounted.push(accounting_key);
+        }
+        if let Some(seq) = seq { s.reply_seqs.push(seq); }
+        match super::report::parse_report(reply) {
+            Err(_) => {
+                s.phase=RunnerPhase::Paused;
+                let lower=reply.to_lowercase();
+                s.reason=if lower.contains("usage limit")||lower.contains("rate limit")||lower.contains("quota")||lower.contains("out of usage") {RunnerReason::ProviderUsage}else{RunnerReason::ProviderError};
+                s.checkpoint.get_or_insert(RunnerCheckpoint{done:String::new(),next:String::new(),blocker:None,criteria:vec![]}).blocker=Some(format!("Provider error or invalid runner report: {}",reply).chars().take(2000).collect());
+            }
+            Ok(report) => {
+                let cp = RunnerCheckpoint { done: report.done, next: report.next, blocker: report.blocker, criteria: report.criteria.into_iter().map(|c| RunnerCriteria { id: c.id, status: c.status, evidence: c.evidence }).collect() };
+                let same = s.checkpoint.as_ref() == Some(&cp) && !s.made_change;
+                s.consecutive_unchanged = if same { s.consecutive_unchanged + 1 } else { 0 };
+                let satisfied = !cp.criteria.is_empty() && cp.criteria.iter().all(|c| c.status == "done" && !c.evidence.is_empty());
+                s.checkpoint = Some(cp);
+                if report.disposition == "blocked" { s.phase = RunnerPhase::Paused; s.reason = RunnerReason::Blocked; }
+                else if report.disposition == "done" && !satisfied { s.phase = RunnerPhase::Paused; s.reason = RunnerReason::Blocked; }
+                else if s.kind == RunnerKind::Goal && report.disposition == "done" {
+                    // Checks and read-only checker run before this method receives
+                    // an accepted candidate from the host.
+                    s.phase = RunnerPhase::Completed; s.reason = RunnerReason::Completed; s.generation += 1;
+                } else if s.kind == RunnerKind::Goal && s.consecutive_unchanged >= 2 { s.phase = RunnerPhase::Paused; s.reason = RunnerReason::Stuck; }
+                else {
+                    s.worker_index = (s.worker_index + 1) % s.workers.len();
+                    if s.kind == RunnerKind::Loop && s.worker_index == 0 {
+                        s.phase = RunnerPhase::Scheduled; s.next_run_at = Some(now.saturating_add(s.interval_seconds.unwrap_or(600)*1000));
+                    } else { s.phase = RunnerPhase::Running; }
+                }
+            }
+        }
+        s.revision += 1; self.save(s, previous)?;
+        Ok(true)
     }
 
     pub fn notify_stop(&self, room_id: &str, now_ms: u64) -> Result<(), String> {
@@ -363,9 +422,34 @@ impl RunnerService {
         next.reason = RunnerReason::Configuration;
         next.revision += 1;
         next.pending_request_id = None;
+        next.in_flight = None;
         next.next_run_at = None;
         next.usage.elapsed_ms = now_ms.saturating_sub(next.started_at);
         let _ = self.store.commit(next, Some(existing.revision), None)?;
         Ok(())
+    }
+}
+
+pub fn limit_reached(s: &RunnerSnapshot, now: u64) -> bool {
+    now >= s.deadline_at || s.usage.elapsed_ms >= s.limits.lifetime_ms
+        || s.limits.max_invocations.is_some_and(|cap| s.usage.invocations >= cap)
+        || (s.kind == RunnerKind::Goal || s.worker_index == 0) && s.limits.max_turns.is_some_and(|cap| s.usage.turns >= cap)
+        || s.limits.max_cost_micros.zip(s.usage.cost_micros).is_some_and(|(cap, used)| used >= cap)
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    #[test]
+    fn invalidating_a_reserved_attempt_releases_it_and_rejects_its_reply() {
+        let root=std::env::temp_dir().join(format!("runner-invalidate-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let service=RunnerService::new(root.clone());
+        service.start(RunnerStartInput{id:"r".into(),request_id:"start".into(),expected_room_revision:None,runner:RunnerStartPayload{schema_version:1,kind:RunnerKind::Goal,objective:Some("result".into()),prompt:None,interval_seconds:None,workers:vec!["w".into()],checker:None,limits:RunnerLimits::default_limits(),checks:vec![]}},1000).unwrap();
+        let dispatch=service.reconcile("r",super::super::scheduler::RunnerWake::Timer,1000).unwrap().unwrap();
+        service.reserve_dispatch(&dispatch,1000).unwrap();service.invalidate("r",1100).unwrap();
+        let s=service.state("r").unwrap().unwrap();assert!(s.in_flight.is_none(),"configuration pause must release retired reservation");
+        assert!(!service.finish_attempt("r",&dispatch.key,"old reply",None,None,1200).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

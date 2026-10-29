@@ -63,6 +63,7 @@ pub struct TurnBatch {
     retain_write_lease: Arc<AtomicBool>,
     answers: bool,
     generated_ui: GeneratedUiCapability,
+    runner_context: Option<(String, bool)>,
 }
 impl TurnBatch {
     /// A client capability belongs to this chain, including queued turns and
@@ -70,6 +71,13 @@ impl TurnBatch {
     pub fn with_answer_guidance(mut self, answers: Option<bool>, generated_ui: GeneratedUiCapability) -> Self {
         self.answers = answers.unwrap_or(true);
         self.generated_ui = generated_ui;
+        self
+    }
+    /// Private host-supplied continuation context, bound to this batch only.
+    pub fn with_runner_context(mut self, context: String, read_only: bool) -> Self {
+        self.runner_context = Some((context, read_only));
+        self.limit = Some(0);
+        self.sequential = true;
         self
     }
     /// Whether this chain asked for interactive-answer guidance.
@@ -357,6 +365,7 @@ impl ConcurrentRoom {
             retain_write_lease: Arc::default(),
             answers,
             generated_ui: GeneratedUiCapability::Unsupported,
+            runner_context: None,
         }
     }
     pub fn stop(&self, id: Option<&ParticipantId>) {
@@ -380,7 +389,7 @@ impl ConcurrentRoom {
             if batch.sequential {
                 for ticket in tickets {
                     let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, None).await;
-                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
+                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref()).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -412,14 +421,14 @@ impl ConcurrentRoom {
                         let mut ids = Vec::new();
                         for (index, (ticket, prepared)) in writers {
                             let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, prepared).await;
-                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await));
+                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref()).await));
                         }
                         ids
                     };
                     let read_turns = futures::future::join_all(readers.into_iter().map(|(index, (ticket, prepared))| {
                         let batch = &batch;
                         async move {
-                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await)
+                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref()).await)
                         }
                     }));
                     let (mut results, readers) = futures::join!(write_turns, read_turns);
@@ -432,7 +441,7 @@ impl ConcurrentRoom {
                         tickets
                             .into_iter()
                             .zip(prepared)
-                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui)),
+                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref())),
                     )
                     .await
                     {
@@ -527,6 +536,7 @@ impl ConcurrentRoom {
         durable_owner: bool,
         answers: bool,
         generated_ui: GeneratedUiCapability,
+        runner_context: Option<&(String, bool)>,
     ) -> Vec<ParticipantId> {
         let request_stop = ticket.origin.as_ref().map(|(_, stop)| stop.clone()).unwrap_or_else(|| ticket.slot.stop.clone());
         let tagged = |event: RoomEvent| {
@@ -580,6 +590,11 @@ impl ConcurrentRoom {
                 room.approvals_handle(),
             )
         };
+        if let Some((context, read_only)) = runner_context {
+            request.system.push_str("\n\n");
+            request.system.push_str(context);
+            if *read_only { request.access = Some(Access::Read); request.plan = true; }
+        }
         let existing_active_copy = if !request.plan && request.access != Some(Access::Read) {
             if let Some(provider) = &self.copies {
                 provider.active_copy(&ticket.id).await

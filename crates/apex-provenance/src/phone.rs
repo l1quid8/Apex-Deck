@@ -86,7 +86,7 @@ impl Journal {
         // device administration back to a paired device.
         let (tier, room) = match name {
             "room_post" | "room_post_to" | "room_turn" | "room_decide" | "room_answer"
-            | "room_set_plan" => (1, command["args"]["id"].as_str()),
+            | "room_runner_start" | "room_runner_action" | "room_set_plan" => (1, command["args"]["id"].as_str()),
             "room_mount"
             | "room_update_participant"
             | "room_add_participant"

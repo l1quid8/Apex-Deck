@@ -103,7 +103,7 @@ impl RunnerLimits {
             return Err("lifetime 1m..24h".into());
         }
         if let Some(c) = self.max_cost_micros {
-            if c < 10_000 || c > 1_000_000_000_000 {
+            if c < 10_000 || c > 1_000_000_000 {
                 return Err("cost $0.01..$1000".into());
             }
         }
@@ -149,6 +149,10 @@ pub struct RunnerCheckpoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct RunnerCheckResult {pub id:String,pub attempt_id:String,pub passed:bool,pub output:String}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerSnapshot {
     pub schema_version: u32,
@@ -183,6 +187,22 @@ pub struct RunnerSnapshot {
     pub dismissed: bool,
     #[serde(default)]
     pub consecutive_unchanged: u32,
+    #[serde(default)]
+    pub in_flight: Option<String>,
+    #[serde(default)]
+    pub worker_index: usize,
+    #[serde(default)]
+    pub reply_seqs: Vec<usize>,
+    #[serde(default)]
+    pub checks: Vec<super::checks::ConfiguredCheck>,
+    #[serde(default)]
+    pub changed_paths: Vec<String>,
+    #[serde(default)]
+    pub accounted: Vec<String>,
+    #[serde(default)]
+    pub check_results: Vec<RunnerCheckResult>,
+    #[serde(default)]
+    pub made_change: bool,
 }
 
 impl RunnerSnapshot {
@@ -227,6 +247,7 @@ pub enum RunnerError {
 pub fn parse_interval_seconds(raw: &str) -> Result<u64, String> {
     let raw = raw.trim();
     if raw.is_empty() { return Err("Interval required, e.g. 10m".into()); }
+    if !raw.is_ascii() { return Err("Interval must use a number and s, m or h".into()); }
     let bytes = raw.as_bytes();
     if bytes.is_empty() { return Err("Invalid interval".into()); }
     let unit = bytes[bytes.len()-1] as char;
@@ -242,8 +263,8 @@ pub fn parse_interval_seconds(raw: &str) -> Result<u64, String> {
     if n == 0 { return Err(format!("Invalid interval \"{raw}\": must be >0")); }
     let seconds = match unit.to_ascii_lowercase() {
         's' => n,
-        'm' => n * 60,
-        'h' => n * 3600,
+        'm' => n.checked_mul(60).ok_or("interval overflow")?,
+        'h' => n.checked_mul(3600).ok_or("interval overflow")?,
         _ => unreachable!(),
     };
     if seconds < MIN_INTERVAL_S { return Err(format!("Interval \"{raw}\" too short: minimum 10s")); }
@@ -420,6 +441,13 @@ pub fn can_start_new(existing: Option<&RunnerSnapshot>) -> bool {
 
 pub fn validate_start(snapshot: &RunnerSnapshot) -> Result<(), String> {
     snapshot.limits.validate()?;
+    if snapshot.workers.is_empty() { return Err("at least one worker required".into()); }
+    let unique: std::collections::HashSet<_> = snapshot.workers.iter().collect();
+    if unique.len() != snapshot.workers.len() { return Err("duplicate worker".into()); }
+    if snapshot.checker.as_ref().is_some_and(|c| unique.contains(c)) { return Err("checker must differ from workers".into()); }
+    if snapshot.kind == RunnerKind::Loop && !snapshot.interval_seconds.is_some_and(|s| (10..=86400).contains(&s)) { return Err("interval must be 10s..24h".into()); }
+    if snapshot.checks.len()>10{return Err("At most 10 configured checks".into());}
+    for check in &snapshot.checks { check.validate()?; }
     let total_needed = snapshot.workers.len() + if snapshot.checker.is_some() { 1 } else { 0 };
     if total_needed == 0 { return Err("at least one worker required".into()); }
     if let Some(max_inv) = snapshot.limits.max_invocations {
@@ -466,7 +494,7 @@ mod tests {
             next_run_at: None,
             pending_request_id: None,
             dismissed: false,
-            consecutive_unchanged: 0,
+            consecutive_unchanged: 0, in_flight: None, worker_index: 0, reply_seqs: vec![], checks: vec![], changed_paths: vec![], accounted: vec![], check_results: vec![], made_change: false,
         }
     }
 

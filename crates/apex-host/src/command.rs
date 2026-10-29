@@ -221,7 +221,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -258,10 +258,6 @@ impl Host {
         if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,capability).await;}
         use Command::*;
         let needs_receipt = |command:&Command| -> Result<bool,String> {
-            // Runner commands are host-owned; they do not require a provenance receipt.
-            if matches!(command, Command::RoomRunnerStart{..} | Command::RoomRunnerAction{..} | Command::RoomRunnerState{..}) {
-                return Ok(false);
-            }
             if command.requires_provenance() {
                 return Ok(true);
             }
@@ -605,6 +601,14 @@ mod tests {
         let delegation = Command::from_json(json!({"cmd":"personal_project_delegate_ui","args":{"assistantId":"nonexistent","project":{"hostId":"host","workspaceId":"workspace","cwd":"/repo"},"sourceEventId":"","delegationId":"ui-task","brief":"Inspect login","destination":{"threadId":"thread","workers":["worker"],"newThread":false},"mode":"read_only","expectedRevision":1}})).unwrap();
         let error = runtime.block_on(host.call(delegation)).unwrap_err();
         assert!(error.contains("protected provenance receipt"), "{error}");
+        for value in [
+            json!({"cmd":"room_runner_start","args":{"id":"r","requestId":"forged","runner":{"schemaVersion":1,"kind":"goal","objective":"unauthorized","workers":["w"],"limits":{"schemaVersion":1,"maxTurns":1,"maxInvocations":1,"lifetimeMs":60000}}}}),
+            json!({"cmd":"room_runner_action","args":{"id":"r","runnerId":"r","expectedRevision":1,"requestId":"forged-action","action":{"action":"resume"}}}),
+        ] {
+            let error=runtime.block_on(host.call(Command::from_json(value).unwrap())).unwrap_err();
+            assert!(error.contains("protected provenance receipt"),"{error}");
+        }
+        assert!(!data.join("room-runners-v1.json").exists());
         assert!(!data.join("assistant-conversations-v1.json").exists());
         assert!(!crate::authority_file::fixture_path(&data.join("assistant-conversations-v1.json")).exists());
         let _ = std::fs::remove_dir_all(data);

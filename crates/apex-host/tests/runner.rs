@@ -1,7 +1,6 @@
-use apex_host::runner::service::{RunnerStartInput, RunnerStartPayload, RunnerActionInput, RunnerActionPayload};
-use apex_host::runner::model::{RunnerKind, RunnerLimits, SCHEMA_VERSION, RunnerPhase, RunnerReason};
+use apex_host::runner::model::{RunnerLimits, SCHEMA_VERSION};
 use apex_host::{Host, HostPaths, Command};
-use std::path::{PathBuf, Path};
+use std::path::Path;
 use std::sync::Arc;
 use serde_json::json;
 
@@ -17,6 +16,9 @@ impl Running {
             HostPaths { data: data.to_path_buf(), downloads: None },
             runtime.handle().clone(),
         );
+        use apex_core::Participant;
+        let config=apex_core::testing::ScriptedParticipant::new("w1", &[]).config().clone();
+        for id in ["room1","r"] { host.room_create(id.into(),vec![config.clone()],apex_core::RoomOptions::default(),None).unwrap(); }
         Self { host, runtime }
     }
     fn call(&self, cmd: serde_json::Value) -> Result<serde_json::Value, String> {

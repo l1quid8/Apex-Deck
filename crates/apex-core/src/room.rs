@@ -208,6 +208,11 @@ fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
     RoomEvent::plan_for(plan, None)
 }
 
+/// Apply the same approval rules to host-owned work as provider tool calls.
+pub async fn decide_room_action(desk: &ApprovalDesk, id: &ParticipantId, on_event: EventSink<'_>, action: ProposedAction) -> Decision {
+    RoomApprover { desk, id, on_event }.decide(action).await
+}
+
 /// Puts a participant's proposal in front of the person and waits for
 /// their answer.
 pub(crate) struct RoomApprover<'a> {

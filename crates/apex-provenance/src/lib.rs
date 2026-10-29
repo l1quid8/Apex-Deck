@@ -545,7 +545,7 @@ pub fn protected(name: &str) -> bool {
             | "room_remove_participant"
             | "room_set_options"
             | "room_forget_allowed"
-            | "room_set_plan"
+            | "room_runner_start" | "room_runner_action" | "room_set_plan"
             | "room_mount"
             | "personal_memory_add"
             | "personal_memory_correct"

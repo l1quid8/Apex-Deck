@@ -168,6 +168,7 @@ pub fn event_needs(event: &HostEvent) -> Need {
     match event {
         HostEvent::AssistantTasksChanged { .. } => read(Scope::Global),
         HostEvent::PersonalChanged { .. } => full(Scope::Global),
+        HostEvent::RoomRunnerChanged { room, .. } => read(thread(room)),
         HostEvent::Room { room, .. } => read(thread(room)),
         HostEvent::PtyData { .. } | HostEvent::PtyExit { .. } | HostEvent::PtyRenamed { .. } => full(Scope::Global),
         // Names other threads; limited devices reload with session_load instead.
