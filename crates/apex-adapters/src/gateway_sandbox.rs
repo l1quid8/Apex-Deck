@@ -180,6 +180,17 @@ impl Isolation {
         Ok(())
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    pub fn command(
+        &self,
+        _program: &str,
+        _args: &[String],
+        _path: Option<&str>,
+    ) -> Result<Command, ParticipantError> {
+        Err(failed("unsupported platform"))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn command(
         &self,
         program: &str,
@@ -294,9 +305,6 @@ impl Isolation {
             command.args(bwrap_args(|p| p.exists(), &root, &binary, program, args)?);
             command
         };
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let mut command = return Err(failed("unsupported platform"));
-
         command
             .env_clear()
             .env("PATH", search)
