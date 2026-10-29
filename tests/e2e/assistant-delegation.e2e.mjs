@@ -37,7 +37,10 @@ const worker = (id, script) => ({ id, display_name: id, access: 'edits', backend
 test('two assistant owners coordinate three canonical isolated projects with reviewed memory and independent controls across restart', { timeout: 90_000 }, async t => {
   const f = await workspaceFixture(t, 'adw-work');
   fs.writeFileSync(path.join(f.tools, 'claude'), `#!/bin/sh
-case "$*" in *--help*) echo 'The workspace trust dialog is skipped when stdout is not a TTY.'; exit 0;; esac
+case "$*" in
+  *--help*) echo 'The workspace trust dialog is skipped when stdout is not a TTY.'; exit 0;;
+  *--version*) echo '0.0.0 (Claude Code fixture)'; exit 0;;
+esac
 case "$*" in *bypassPermissions*) exit 22;; esac
 IFS= read -r prompt
 case "$prompt" in *TASK_0*) task=0;; *TASK_1*) task=1;; *TASK_2*) task=2;; *) echo unknown-assignment >&2; exit 23;; esac
@@ -159,10 +162,15 @@ cat >/dev/null
     const replay = await p.host.client.call('personal_project_delegate', { ...p.input, expectedRevision: 1 });
     assert.equal(replay.taskId, ready.id); assert.equal((await p.read()).attempts.length, p.index ? 1 : 2);
     assert.equal(fs.readFileSync(path.join(f.root, `runs-${p.index}`), 'utf8'), 'run\n');
-    const assistant = await eventually('attributable once-only result', async () => { const a = await readAssistant(p.host); return a.messages.some(message => message.kind === 'result' && message.eventId === p.input.sourceEventId && message.text.includes(ready.id)) ? a : false; });
-    const resultMessages = assistant.messages.filter(message => message.kind === 'result' && message.eventId === p.input.sourceEventId && message.text.includes(ready.id));
-    assert.equal(resultMessages.length, p.index ? 1 : 2, 'each finished attempt delivers once to original assistant/event');
-    assert.equal(assistant.messages.some(message => message.kind === 'result' && projects.filter(other => other.host !== p.host).some(other => message.text.includes(other.receipt.taskId) && message.text.includes(other.workspaceId))), false);
+    const expectedResults = p.index ? 1 : 2;
+    const belongsToAttempt = message => message.kind === 'result' && message.eventId === p.input.sourceEventId && message.taskId === ready.id;
+    const assistant = await eventually('attributable once-only result', async () => { const a = await readAssistant(p.host); return a.messages.filter(belongsToAttempt).length === expectedResults ? a : false; });
+    const resultMessages = assistant.messages.filter(belongsToAttempt);
+    assert.equal(resultMessages.length, expectedResults, 'each finished attempt delivers once to original assistant/event');
+    assert.ok(resultMessages.every(message => message.text.includes(`TASK_${p.index}`)), 'the owner receives its own project brief');
+    // Task and event IDs are host-local. Unique briefs detect foreign content
+    // even when the other daemon has the same local task/event identifiers.
+    assert.equal(assistant.messages.some(message => message.kind === 'result' && projects.filter(other => other.host !== p.host).some(other => message.text.includes(`TASK_${other.index}`))), false);
   }
 });
 
@@ -434,9 +442,12 @@ for (const hostCount of [1, 2]) {
     const hosts = [], projects = [];
     const tools = path.join(base, 'tools'); fs.mkdirSync(tools);
     fs.writeFileSync(path.join(tools, 'claude'), `#!/bin/sh
-case "$*" in *--help*) echo 'The workspace trust dialog is skipped when stdout is not a TTY.'; exit 0;; esac
+case "$*" in
+  *--help*) echo 'The workspace trust dialog is skipped when stdout is not a TTY.'; exit 0;;
+  *--version*) echo '0.0.0 (Claude Code fixture)'; exit 0;;
+esac
 IFS= read -r prompt
-case "$prompt" in *'project 0'*) number=0;; *) number=1;; esac
+case "$prompt" in *'project 0'*) number=0;; *'project 1'*) number=1;; *) echo unknown-assignment >&2; exit 23;; esac
 echo run >> '${base}/executions-'"$number"
 echo '{"type":"system","subtype":"init"}'
 sleep 0.3
