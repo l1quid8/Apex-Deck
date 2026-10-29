@@ -16,6 +16,7 @@ impl Host {
 
     pub(crate) fn invalidate_room_runner(&self,room:&str)->Result<(),String>{
         let service=self.runner_service.lock().unwrap();
+        if !service.is_available() { return Ok(()); }
         let current=service.state(room)?;
         let running=current.as_ref().is_some_and(|s|!s.is_terminal()&&s.in_flight.is_some());
         service.invalidate(room,now())?;

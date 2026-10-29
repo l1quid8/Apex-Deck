@@ -13,14 +13,24 @@ struct RunnerDocument {
 
 pub struct RunnerStore {
     path: PathBuf,
+    unavailable: Option<String>,
 }
 
 impl RunnerStore {
     pub fn new(data_dir: PathBuf) -> Self {
-        Self { path: data_dir.join("room-runners-v1.json") }
+        Self { path: data_dir.join("room-runners-v1.json"), unavailable: None }
+    }
+
+    pub fn disable(&mut self, reason: String) {
+        self.unavailable = Some(format!("Goals and loops unavailable until host restart: {reason}"));
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.unavailable.is_none()
     }
 
     fn read_doc(&self) -> Result<RunnerDocument, String> {
+        if let Some(reason) = &self.unavailable { return Err(reason.clone()); }
         match crate::authority_file::read(&self.path) {
             Ok(bytes) => {
                 serde_json::from_slice(&bytes).map_err(|e| e.to_string())

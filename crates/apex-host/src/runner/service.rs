@@ -63,6 +63,10 @@ impl RunnerService {
         Self { store: RunnerStore::new(data_dir) }
     }
 
+    pub fn disable(&mut self, reason: String) { self.store.disable(reason); }
+
+    pub fn is_available(&self) -> bool { self.store.is_available() }
+
     pub fn state(&self, room_id: &str) -> Result<Option<RunnerSnapshot>, String> {
         self.store.load(room_id)
     }
@@ -332,6 +336,7 @@ impl RunnerService {
     /// Yield without a manual pause. Busy room reservations keep automation out
     /// until the human's accepted chain finishes.
     pub fn yield_to_human(&self, room: &str) -> Result<bool, String> {
+        if !self.is_available() { return Ok(false); }
         let Some(mut s) = self.store.load(room)? else { return Ok(false); };
         if !matches!(s.phase, RunnerPhase::Running | RunnerPhase::Scheduled | RunnerPhase::Waiting) { return Ok(false); }
         let previous = s.revision;

@@ -409,7 +409,15 @@ impl Host {
             host.redispatch_recovered_queued()?;
             // Runner recovery: unfinished runners become paused with reason recovery, no auto-replay
             let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-            host.runner_service.lock().unwrap().recover_paused(now_ms)?;
+            let mut runners = host.runner_service.lock().unwrap();
+            if let Err(error) = runners.recover_paused(now_ms) {
+                // Runner storage is optional for ordinary chat. Never replace
+                // unreadable state with an empty writable ledger or dispatch
+                // anything that did not complete restart recovery.
+                eprintln!("[apex-deck] goals and loops unavailable: runner recovery failed ({error}); saved state retained. Repair the protected runner ledger and restart the host.");
+                runners.disable(error);
+            }
+            drop(runners);
             let processes=host.paths.data.join("runner-processes");
             if processes.exists() {apex_adapters::recover_owned_processes(&processes.canonicalize().map_err(|e|e.to_string())?).map_err(|e|format!("Runner check cleanup failed: {e}"))?;}
         }
@@ -3595,6 +3603,36 @@ mod host_tests {
 #[cfg(test)]
 mod protected_host_ownership_tests {
     use super::*;
+    #[test]
+    fn unreadable_runner_ledger_does_not_stop_host_or_allow_runner_writes() {
+        let root = std::env::temp_dir().join(format!("apex-runner-startup-error-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let ledger = crate::authority_file::fixture_path(&root.join("room-runners-v1.json"));
+        std::fs::write(&ledger, b"{broken").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let host = Host::try_new(HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone())
+            .unwrap_or_else(|e| panic!("Runner recovery must not take down the host: {e}"));
+        assert!(host.settings_load().is_ok(), "Unrelated host commands must remain available");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        runtime.block_on(host.room_post("r".into(), "Ordinary chat still works".into())).unwrap();
+        host.invalidate_room_runner("r").unwrap();
+        let error = host.room_runner_state("r".into()).unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
+        assert_eq!(std::fs::read(&ledger).unwrap(), b"{broken");
+        // Even if storage becomes readable, this host must not dispatch an
+        // unrecovered runner. Only a new startup may reopen the service.
+        std::fs::write(&ledger, br#"{"runners":{},"receipts":{}}"#).unwrap();
+        assert!(host.room_runner_state("r".into()).is_err());
+        assert!(host.runner_service.lock().unwrap().remove("r").is_err());
+        host.shutdown();
+        drop(host);
+        let restarted = Host::try_new(HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone()).unwrap();
+        assert_eq!(restarted.room_runner_state("r".into()).unwrap(), None);
+        restarted.shutdown();
+        drop(restarted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn held_kernel_ownership_is_fatal_instead_of_empty_ledger_fallback() {
         let result = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Held("canonical scope".into()))));
