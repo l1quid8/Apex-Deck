@@ -1283,7 +1283,10 @@ impl Host {
         let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot), &|event| {
             if let RoomEvent::MessageAdded { message } = &event { update_chat_message_meta(&self.store, &id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message); }
             self.room_event(&id, event);
-        }).await?;
+        }).await
+            // A move to a Work thread closes this handle between the check
+            // above and acceptance; say where the chat went, not "reopen".
+            .map_err(|why| if known { why } else { self.refuse_moved_chat(&id).err().unwrap_or(why) })?;
         if let Some(batch) = batch {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             let batch = batch.with_answer_guidance(if voice { Some(false) } else { answers }, capability);
@@ -1396,7 +1399,8 @@ impl Host {
             return Err("A chat can't be moved onto itself.".into());
         }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
-        let snapshot = match self.rooms.lock().unwrap().get(&source) {
+        let open = self.rooms.lock().unwrap().get(&source).cloned();
+        let saved = match &open {
             Some(handle) => handle.checkpoint.lock().unwrap().snapshot.clone(),
             None => self
                 .store
@@ -1404,7 +1408,7 @@ impl Host {
                 .ok_or_else(|| format!("no group chat with id {source}"))?
                 .snapshot,
         };
-        if !snapshot.kind.is_chat() {
+        if !saved.kind.is_chat() {
             return Err("Only a chat can become a Work thread.".into());
         }
         let mut meta = self.store.chat_meta(&source)?.unwrap_or_default();
@@ -1423,59 +1427,89 @@ impl Host {
             return self.promoted_reply(&source, &to);
         }
         let cwd = promote_cwd(&cwd, self.store.root())?;
-        // A bot the chat doesn't have is refused, so a typo can't quietly give
-        // a bot Read only.
         let access = access.unwrap_or_default();
-        for bot in access.keys() {
-            if !snapshot.participants.iter().any(|participant| participant.id.as_str() == bot.as_str()) {
-                return Err(format!("This chat has no bot named `{bot}`, so its access can't be set."));
-            }
-        }
-        // Rebuild every bot from this machine's own saved profiles, at the
-        // Access chosen here: a Work thread gives tools back, so none of the
-        // chat's talk-only settings cross over.
         let saved_profiles = self.chat_saved_profiles()?;
-        let mut participants: Vec<ParticipantConfig> = Vec::with_capacity(snapshot.participants.len());
-        for bot in &snapshot.participants {
-            let profile = meta
-                .profiles
-                .get(bot.id.as_str())
-                .cloned()
-                .unwrap_or_else(|| bot.id.as_str().to_owned());
-            let request = crate::chat_bots::ChatBotRequest {
-                profile,
-                id: Some(bot.id.clone()),
-                display_name: Some(bot.display_name.clone()),
-                model: bot_model(bot),
-                effort: bot.effort.clone(),
-                speed: bot.speed,
+        let copy = |snapshot: &RoomSnapshot| -> Result<Option<String>, String> {
+            // A bot the chat doesn't have is refused, so a typo can't quietly
+            // give a bot Read only.
+            for bot in access.keys() {
+                if !snapshot.participants.iter().any(|participant| participant.id.as_str() == bot.as_str()) {
+                    return Err(format!("This chat has no bot named `{bot}`, so its access can't be set."));
+                }
+            }
+            // Rebuild every bot from this machine's own saved profiles, at the
+            // Access chosen here: a Work thread gives tools back, so none of
+            // the chat's talk-only settings cross over.
+            let mut participants: Vec<ParticipantConfig> = Vec::with_capacity(snapshot.participants.len());
+            for bot in &snapshot.participants {
+                let profile = meta
+                    .profiles
+                    .get(bot.id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| bot.id.as_str().to_owned());
+                let request = crate::chat_bots::ChatBotRequest {
+                    profile,
+                    id: Some(bot.id.clone()),
+                    display_name: Some(bot.display_name.clone()),
+                    model: bot_model(bot),
+                    effort: bot.effort.clone(),
+                    speed: bot.speed,
+                };
+                let mut rebuilt = crate::chat_bots::resolve(&saved_profiles, request)
+                    .map_err(|why| format!("Can't put `{}` in the Work thread: {why}", bot.display_name))?;
+                rebuilt.access = access.get(bot.id.as_str()).copied().unwrap_or(Access::Read);
+                if participants.iter().any(|prior| prior.id == rebuilt.id) {
+                    return Err(format!("Two bots in this chat are both named `{}`.", rebuilt.display_name));
+                }
+                if let Some(why) = apex_core::mention_clash(&rebuilt, &participants) {
+                    return Err(why);
+                }
+                participants.push(rebuilt);
+            }
+            let upto = upto.unwrap_or(snapshot.transcript.len()).min(snapshot.transcript.len());
+            let mut work = snapshot.fork(upto);
+            work.kind = apex_core::RoomKind::Work;
+            work.participants = participants;
+            work.plan = false;
+            work.allowed = Vec::new();
+            work.import_move_id = None;
+            work.import_skipped = Vec::new();
+            work.import_profiles = meta.profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect();
+            let title = {
+                let trimmed = meta.title.trim();
+                if trimmed.is_empty() { "New work thread".to_string() } else { trimmed.to_string() }
             };
-            let mut rebuilt = crate::chat_bots::resolve(&saved_profiles, request)
-                .map_err(|why| format!("Can't put `{}` in the Work thread: {why}", bot.display_name))?;
-            rebuilt.access = access.get(bot.id.as_str()).copied().unwrap_or(Access::Read);
-            if participants.iter().any(|prior| prior.id == rebuilt.id) {
-                return Err(format!("Two bots in this chat are both named `{}`.", rebuilt.display_name));
-            }
-            if let Some(why) = apex_core::mention_clash(&rebuilt, &participants) {
-                return Err(why);
-            }
-            participants.push(rebuilt);
-        }
-        let upto = upto.unwrap_or(snapshot.transcript.len()).min(snapshot.transcript.len());
-        let mut work = snapshot.fork(upto);
-        work.kind = apex_core::RoomKind::Work;
-        work.participants = participants;
-        work.plan = false;
-        work.allowed = Vec::new();
-        work.import_move_id = None;
-        work.import_skipped = Vec::new();
-        work.import_profiles = meta.profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect();
-        let title = {
-            let trimmed = meta.title.trim();
-            if trimmed.is_empty() { "New work thread".to_string() } else { trimmed.to_string() }
+            let work = SavedRoom { cwd: Some(cwd.clone()), mounts: vec![], snapshot: work };
+            self.store.promote_chat(&source, &target, &work, request_id.as_deref(), &title)
         };
-        let work = SavedRoom { cwd: Some(cwd), mounts: vec![], snapshot: work };
-        let already = self.store.promote_chat(&source, &target, &work, request_id.as_deref(), &title)?;
+        let already = match open {
+            // Nothing can post to a chat that isn't open without opening it,
+            // and opening waits for the lifecycle lock held here.
+            None => copy(&saved)?,
+            // Copy and close the chat under the lock that accepts messages, as
+            // room_close does: a message either lands before the copy and goes
+            // with it, or finds this handle closed and the chat moved. Never
+            // mid-reply, or the reply would land in the old chat.
+            Some(handle) => {
+                const ANSWERING: &str = "A bot is still answering. Move the chat once it has finished.";
+                if handle.busy() { return Err(ANSWERING.into()); }
+                let already = handle
+                    .runtime
+                    .retire_if_idle(|room| {
+                        let snapshot = room.snapshot();
+                        if snapshot.client_messages.values().any(|record| record.state == apex_core::ClientMessageState::Running) {
+                            return Err(ANSWERING.into());
+                        }
+                        self.commit_client_snapshot(&source, &handle, &snapshot)?;
+                        let already = copy(&snapshot)?;
+                        handle.deleted.store(true, Ordering::SeqCst);
+                        Ok(already)
+                    })
+                    .map_err(|why| if why.starts_with("room-busy") { ANSWERING.into() } else { why })?;
+                self.rooms.lock().unwrap().remove(&source);
+                already
+            }
+        };
         meta.promoted_to = Some(already.clone().unwrap_or_else(|| target.clone()));
         self.promoted_reply(&source, meta.promoted_to.as_deref().unwrap_or(&target))
     }
@@ -1558,6 +1592,7 @@ impl Host {
 
     pub(crate) async fn room_turn_with_answer_guidance(self: &Arc<Self>, id: String, participants: Vec<ParticipantId>, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, None, participants.clone(), hops, answers, capability).await? { return Ok(()); }
+        self.refuse_moved_chat(&id)?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(&id)?;
         let batch = handle.runtime.begin_turn(participants, hops).await?.with_answer_guidance(answers, capability);
@@ -4155,6 +4190,45 @@ mod host_tests {
         assert_eq!(host.session_load().unwrap(), Some(json!({ "version": 1, "section": "code" })));
         assert!(host.session_save(json!("not a session")).is_err());
         assert_eq!(seen.lock().unwrap().len(), 2, "a refused save tells no one");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn chat_promote_waits_for_a_send_already_being_accepted() {
+        use serde_json::json;
+        let (host, runtime, data) = host("promote-race");
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({"version":1,"profiles":[serde_json::to_value(&bot).unwrap()]})).unwrap();
+        let ask = serde_json::from_value(json!({"profile":"bot"})).unwrap();
+        let source = "11111111-1111-1111-1111-111111111111";
+        let target = "22222222-2222-2222-2222-222222222222";
+        host.chat_create(source.into(), Some("race".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("project");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = folder.to_string_lossy().into_owned();
+        let handle = host.handle(source).unwrap();
+        runtime.block_on(async {
+            // Pause acceptance at its transcript lock, after the moved check.
+            let room = handle.room.lock().await;
+            let send = host.room_client_post(source.into(), "must survive the move".into(), Some(vec![]), "race-send".into(), false, false, Some(0), None, apex_core::GeneratedUiCapability::Unsupported);
+            futures::pin_mut!(send);
+            assert!(futures::poll!(&mut send).is_pending());
+            // The move can't overtake it: it's refused, and nothing is copied.
+            let refused = host.chat_promote(source.into(), target.into(), folder.clone(), None, None, Some("race-move".into())).unwrap_err();
+            assert!(refused.contains("still answering"), "{refused}");
+            assert!(host.store.room(target).unwrap().is_none());
+            drop(room);
+            send.await.unwrap();
+        });
+        // Pressing Finish the move again sends the same request, which now
+        // carries the message across.
+        host.chat_promote(source.into(), target.into(), folder, None, None, Some("race-move".into())).unwrap();
+        let work = host.store.room(target).unwrap().unwrap();
+        assert!(work.snapshot.transcript.iter().any(|m| m.text == "must survive the move"));
+        // Later sends find the chat moved and are refused.
+        let late = runtime.block_on(host.room_client_post(source.into(), "too late".into(), Some(vec![]), "late-send".into(), false, false, Some(0), None, apex_core::GeneratedUiCapability::Unsupported)).unwrap_err();
+        assert!(!host.store.room(source).unwrap().unwrap().snapshot.transcript.iter().any(|m| m.text == "too late"), "{late}");
         let _ = std::fs::remove_dir_all(data);
     }
 
