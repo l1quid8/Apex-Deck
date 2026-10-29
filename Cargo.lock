@@ -69,7 +69,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "apex-adapters"
-version = "0.9.3"
+version = "0.9.5"
 dependencies = [
  "apex-core",
  "async-trait",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "apex-core"
-version = "0.9.3"
+version = "0.9.5"
 dependencies = [
  "async-trait",
  "futures",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "apex-daemon"
-version = "0.9.3"
+version = "0.9.5"
 dependencies = [
  "apex-adapters",
  "apex-core",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "apex-host"
-version = "0.9.3"
+version = "0.9.5"
 dependencies = [
  "apex-adapters",
  "apex-core",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "apex-host-production-check"
-version = "0.9.3"
+version = "0.9.5"
 dependencies = [
  "apex-core",
  "apex-daemon",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "apex-ipc-check"
-version = "0.9.3"
+version = "0.9.5"
 dependencies = [
  "libc",
  "sha2 0.10.9",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "apex-pairing"
-version = "0.9.3"
+version = "0.9.5"
 dependencies = [
  "base64 0.22.1",
  "hmac",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "apex-provenance"
-version = "0.9.3"
+version = "0.9.5"
 dependencies = [
  "base64 0.22.1",
  "cc",
