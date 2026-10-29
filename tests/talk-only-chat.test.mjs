@@ -56,6 +56,18 @@ test('a move hold guards every posting path even when the sender itself is permi
   assert.deepEqual(sent,[]);
 });
 
+test('Stop stays available during a move but never sends while offline',async()=>{
+  const calls=[];
+  let online=true;
+  const adapted=chatThreadBackend({roomStop:async(...args)=>calls.push(args)}, {room:'r',online:()=>online,blocked:()=> 'Finish the move first',cached:()=>null,remember(){},send(){},profile(){}});
+  await adapted.roomStop('r','null');
+  await adapted.roomStop('r');
+  assert.deepEqual(calls,[['r','null'],['r',undefined]]);
+  online=false;
+  await assert.rejects(()=>adapted.roomStop('r'),/reconnecting/);
+  assert.equal(calls.length,2);
+});
+
 test('chat reasoning and Speed edits stay in the allowed patch',async()=>{
   const f=routeFixture();
   await f.adapted.roomUpdateParticipant('same-id',{...bot,effort:'low',speed:'fast'});

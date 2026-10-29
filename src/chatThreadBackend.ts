@@ -14,10 +14,13 @@ export interface ChatThreadRoute {
 
 /** Adapt only the chat-specific operations; the shared thread retains its existing reads/actions. */
 export function chatThreadBackend(backend: Backend, route: ChatThreadRoute): Backend {
+  const connected = () => {
+    if (!route.online()) throw new Error('The machine is reconnecting. Try again when it is connected.');
+  };
   const writable = () => {
     const reason = route.blocked();
     if (reason) throw new Error(reason);
-    if (!route.online()) throw new Error('The machine is reconnecting. Try again when it is connected.');
+    connected();
   };
   const state = async (): Promise<RoomState> => {
     if (!route.online() && backend.host?.connection.get().status.kind !== "resync") {
@@ -68,10 +71,15 @@ export function chatThreadBackend(backend: Backend, route: ChatThreadRoute): Bac
     },
     roomPost: post,
     roomPostTo: post,
+    // A move waits for active replies to finish; stopping them must remain possible.
+    roomStop: async (room, participant) => {
+      connected();
+      return backend.roomStop(room, participant);
+    },
     roomRevertPlan: async () => ({ available:false, note:'Only chat history goes back; this chat has no files.', files:[], skipped:[], effects:[] }),
   };
   const history = new Set(['roomClear','roomRevert','roomCompact']);
-  const mutations = new Set(['answerSave','roomClear','roomCompact','roomSetOptions','roomPin','roomUnpin','roomRevert','roomTurn','roomStop','roomSetEditor']);
+  const mutations = new Set(['answerSave','roomClear','roomCompact','roomSetOptions','roomPin','roomUnpin','roomRevert','roomTurn','roomSetEditor']);
   const guarded = new Map<PropertyKey, unknown>();
   return new Proxy(backend, {
     get(target, key) {
