@@ -47,11 +47,14 @@ pub mod events;
 pub mod quit;
 pub mod host;
 pub mod command;
+#[cfg(test)]
+mod work_post_routing_tests;
 pub mod documents;
 pub mod folders;
 pub mod project_files;
 pub mod worktrees;
 pub mod bot_copies;
+pub mod chat_bots;
 pub mod project_check;
 pub mod phone;
 pub mod lock;
