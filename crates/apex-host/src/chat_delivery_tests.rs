@@ -409,6 +409,7 @@ fn claim_and_history_merge_refuse_work_rooms() {
         assert!(saved.client_messages.is_empty());
     });
     drop(host);
+    drop(runtime);
     std::fs::remove_dir_all(path).unwrap();
 }
 
