@@ -25,7 +25,7 @@ test('items filter by kind and prefix', () => {
   assert.deepEqual(menuItems(findTrigger('@j', 2), people).map(i => i.label), ['@jigga']);
   assert.deepEqual(menuItems(findTrigger('@a', 2), people).map(i => i.label), ['@all']);
   const all = menuItems(null, people).map(i => i.label);
-  assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', 'Plan', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan']);
+  assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', 'Plan', 'Goal', 'Loop', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan']);
 });
 
 test('a renamed bot is offered and inserted by its new name only', () => {
@@ -82,7 +82,7 @@ test('mod commands show up after the built-in ones and are inserted, not run', (
   const hl = menuItems(findTrigger('/h', 2), people, [], mods);
   assert.deepEqual(hl.map(i => [i.label, i.detail, i.command]), [['/hl', 'Hyperliquid positions', null]]);
   const all = menuItems(findTrigger('/', 1), people, [], mods).map(i => i.label);
-  assert.deepEqual(all, ['/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan', '/hl']);
+  assert.deepEqual(all, ['/goal', '/loop', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan', '/hl']);
   assert.deepEqual(findTrigger('/my-mod2', 8), { kind: 'command', query: 'my-mod2', start: 0, end: 8 });
 });
 

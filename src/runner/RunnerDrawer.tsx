@@ -1,170 +1,71 @@
-import React, { useEffect, useState, useRef } from 'react';
-import type { RunnerSnapshot } from './types.ts';
+import { useEffect, useId, useState, type RefObject } from 'react';
+import type { RunnerSnapshot, RunnerLimits, RunnerActionTag } from './types.ts';
+import { validateLimits } from './types.ts';
 import { runnerView } from './viewModel.ts';
+import './runner.css';
 
 export interface RunnerDrawerProps {
   snapshot: RunnerSnapshot | null;
-  hostNowOffsetMs: number; // host now - client now
-  onAction: (action: 'pause' | 'resume' | 'end' | 'dismiss' | 'update_limits', limits?: any) => void;
-  onReviewChanges: () => void;
-  composerRef: React.RefObject<HTMLTextAreaElement | null>;
+  hostNowOffsetMs: number;
+  onAction(action: RunnerActionTag, limits?: RunnerLimits): void;
+  onReviewChanges(): void;
+  composerRef: RefObject<HTMLTextAreaElement | null>;
   platform: 'desktop' | 'phone';
+  endRequest?: number;
+  showRequest?: number;
+  onEndCancel?():void;
 }
-
-export function RunnerDrawer({ snapshot, hostNowOffsetMs, onAction, onReviewChanges, composerRef, platform }: RunnerDrawerProps) {
-  const [open, setOpen] = useState(false);
-  const [nowMs, setNowMs] = useState(() => Date.now() + hostNowOffsetMs);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Countdown tick every second when scheduled with nextRunAt
-  useEffect(() => {
-    if (!snapshot?.nextRunAt) return;
-    const id = setInterval(() => setNowMs(Date.now() + hostNowOffsetMs), 1000);
-    return () => clearInterval(id);
-  }, [snapshot?.nextRunAt, hostNowOffsetMs]);
-
-  // Also update nowMs when snapshot changes
-  useEffect(() => {
-    setNowMs(Date.now() + hostNowOffsetMs);
-  }, [snapshot, hostNowOffsetMs]);
-
-  // Collapse on composer typing
-  useEffect(() => {
-    const el = composerRef.current;
-    if (!el) return;
-    const onInput = () => {
-      if (open) setOpen(false);
-    };
-    el.addEventListener('input', onInput);
-    return () => el.removeEventListener('input', onInput);
-  }, [open, composerRef]);
-
-  // Escape closes
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && open) {
-        setOpen(false);
-        e.stopPropagation();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
-
-  const view = runnerView(snapshot, nowMs);
-  if (!snapshot || !view) return null;
-
-  const isFinished = snapshot.phase === 'completed' || snapshot.phase === 'ended';
-  const needsYou = view.needsYou;
-  const limitHit = view.limitHit;
-
-  // Slim line content
-  const statusDotClass = needsYou ? 'runner-dot needs' : limitHit ? 'runner-dot limit' : view.running ? 'runner-dot running' : 'runner-dot paused';
-  const typeLabel = snapshot.kind === 'goal' ? 'Goal' : 'Loop';
-  const objectiveShort = snapshot.objective ?? snapshot.prompt ?? '';
-  const truncated = objectiveShort.length > 80 ? objectiveShort.slice(0, 80) + '…' : objectiveShort;
-
-  return (
-    <div ref={containerRef} className={`runner-drawer-container ${platform} ${open ? 'open' : 'closed'} ${needsYou ? 'needs-you' : ''}`}>
-      {/* Slim line inside top border of composer */}
-      <div
-        className="runner-strip"
-        role="button"
-        tabIndex={0}
-        aria-expanded={open}
-        aria-controls="runner-details"
-        onClick={() => setOpen(o => !o)}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(o => !o); } }}
-        data-testid="runner-strip"
-      >
-        <span className={statusDotClass} aria-hidden>●</span>
-        <span className="runner-type">{typeLabel}</span>
-        <span className="runner-metric" data-testid="runner-metric">{view.metric || view.stateLabel}</span>
-        <span className="runner-objective-short" title={objectiveShort}>{truncated}</span>
-        <span className="runner-spacer" />
-        {isFinished ? (
-          <>
-            <button className="runner-action secondary" onClick={e => { e.stopPropagation(); onReviewChanges(); }} style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>Review changes</button>
-            <button className="runner-action secondary" onClick={e => { e.stopPropagation(); onAction('dismiss'); }} aria-label="Dismiss" style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>×</button>
-          </>
-        ) : (
-          <>
-            {view.paused || needsYou ? (
-              <button className="runner-action primary" onClick={e => { e.stopPropagation(); onAction('resume'); }} style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>Resume</button>
-            ) : (
-              <button className="runner-action primary" onClick={e => { e.stopPropagation(); onAction('pause'); }} style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>Pause</button>
-            )}
-            <button className="runner-action danger" onClick={e => { e.stopPropagation(); onAction('end'); }} style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>End</button>
-          </>
-        )}
-        <span className="runner-chevron" aria-hidden>{open ? '▾' : '▴'}</span>
-      </div>
-
-      {open && (
-        <div id="runner-details" className="runner-details" role="region" aria-live="polite">
-          <div className="runner-details-section">
-            <h4 className="runner-details-title">Objective</h4>
-            <p className="runner-full-objective">{snapshot.objective ?? snapshot.prompt}</p>
-          </div>
-
-          {snapshot.checkpoint?.criteria && snapshot.checkpoint.criteria.length > 0 && (
-            <div className="runner-details-section">
-              <h4>Checklist</h4>
-              <ul className="runner-criteria">
-                {snapshot.checkpoint.criteria.map(c => (
-                  <li key={c.id} className={`criteria-${c.status}`}>{c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '○'} {c.id}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {snapshot.kind === 'loop' && (
-            <div className="runner-details-section">
-              <h4>Loop</h4>
-              <p>Every {snapshot.intervalSeconds ? `${Math.floor(snapshot.intervalSeconds/60)}m` : '?'} · Next: {view.countdown ?? '—'} · {snapshot.usage.turns}/{snapshot.limits.maxTurns ?? 30} runs</p>
-            </div>
-          )}
-
-          <div className="runner-details-section">
-            <h4>Progress</h4>
-            <p>{snapshot.checkpoint?.done ?? ''}</p>
-            {snapshot.checkpoint?.next && <p><em>Next:</em> {snapshot.checkpoint.next}</p>}
-            {snapshot.checkpoint?.blocker && <p className="runner-blocker"><em>Blocked:</em> {snapshot.checkpoint.blocker}</p>}
-          </div>
-
-          <div className="runner-details-section">
-            <h4>Workers</h4>
-            <p>Working: {snapshot.workers.join(', ')} {snapshot.checker ? `· Checker: ${snapshot.checker}` : ''}</p>
-          </div>
-
-          <div className="runner-details-section">
-            <h4>Limits & usage</h4>
-            <p>{snapshot.usage.turns}/{snapshot.limits.maxTurns ?? 30} turns · {snapshot.usage.invocations}/{snapshot.limits.maxInvocations ?? 120} invocations · {snapshot.limits.maxCostMicros ? `$${(snapshot.usage.costMicros ?? 0)/1e6}/${snapshot.limits.maxCostMicros ? snapshot.limits.maxCostMicros/1e6 : ''}` : 'Cost unavailable'} · {Math.floor((nowMs - snapshot.startedAt)/60000)}m elapsed</p>
-          </div>
-
-          <div className="runner-details-actions">
-            {isFinished ? (
-              <>
-                <button onClick={() => onReviewChanges()} style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>Review changes</button>
-                <button onClick={() => onAction('dismiss')} style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>Dismiss</button>
-              </>
-            ) : (
-              <>
-                {view.paused ? (
-                  <button onClick={() => onAction('resume')} style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>Resume</button>
-                ) : (
-                  <button onClick={() => onAction('pause')} style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>Pause</button>
-                )}
-                <button onClick={() => onAction('end')} className="danger" style={{ minHeight: platform === 'phone' ? '44px' : '24px' }}>End {typeLabel}</button>
-              </>
-            )}
-          </div>
-
-          <div className="runner-live-region" aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
-            {view.stateLabel} {view.metric}
-          </div>
-        </div>
-      )}
+export function RunnerDrawer({snapshot, hostNowOffsetMs, onAction, onReviewChanges, composerRef, platform, endRequest=0, showRequest=0, onEndCancel}: RunnerDrawerProps) {
+  const [open,setOpen]=useState(false);
+  const [confirm,setConfirm]=useState(false);
+  const [now,setNow]=useState(Date.now());
+  const id=useId();
+  useEffect(()=>{setConfirm(false);setOpen(false);},[snapshot?.id]);
+  useEffect(()=>{if(showRequest)setOpen(true);},[showRequest]);
+  useEffect(()=>{if(endRequest){setConfirm(true);setOpen(true);}},[endRequest]);
+  useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[]);
+  useEffect(()=>{
+    const input=composerRef.current;
+    const close=()=>{setOpen(false);setConfirm(false);onEndCancel?.();};
+    const key=(event:KeyboardEvent)=>{if(event.key==='Escape'&&(open||confirm)){event.preventDefault();event.stopImmediatePropagation();close();composerRef.current?.focus({preventScroll:true});}};
+    input?.addEventListener('input',close);
+    document.addEventListener('keydown',key,true);
+    return()=>{input?.removeEventListener('input',close);document.removeEventListener('keydown',key,true);};
+  },[open,confirm,composerRef]);
+  const view=runnerView(snapshot,now+hostNowOffsetMs);
+  if(!snapshot||!view)return null;
+  const terminal=['completed','ended'].includes(snapshot.phase);
+  const label=snapshot.kind==='goal'?'Goal':'Loop';
+  const action=(tag:RunnerActionTag)=>{if(tag==='end'){setConfirm(true);setOpen(true);}else onAction(tag);};
+  const controls=terminal?<><button type="button" onClick={onReviewChanges}>Review changes</button><button type="button" onClick={()=>onAction('dismiss')} aria-label="Dismiss runner summary">×</button></>:<>
+    {view.limitHit?<button type="button" onClick={()=>setOpen(true)}>Edit limits</button>:<button type="button" onClick={()=>action(view.paused?'resume':'pause')}>{view.paused?'Resume':'Pause'}</button>}
+  </>;
+  return <div className={`runner-drawer-container ${platform}${open?' open':''}${view.needsYou||view.limitHit?' needs-you':''}`}>
+    <div className="runner-strip">
+      <button type="button" className="runner-disclosure" aria-expanded={open} aria-controls={id} onClick={()=>setOpen(v=>!v)}>
+        <span className={`runner-dot ${view.running?'running':'paused'}`} aria-hidden>●</span><strong>{label}</strong><span className="runner-metric">{view.metric||view.stateLabel}</span><span className="runner-objective-short">{view.objective}</span><span aria-hidden>{open?'▾':'▴'}</span>
+      </button>{controls}
     </div>
-  );
+    <span className="runner-live-region" role="status">{label}: {view.stateLabel}</span>
+    {open&&<section id={id} className="runner-details" aria-label={`${label} details`}>
+      <h4>{label}</h4><p className="runner-full-objective">{view.objective}</p>
+      {snapshot.kind==='loop'&&<p>Every {snapshot.intervalSeconds}s · {view.metric}</p>}
+      {snapshot.checkpoint?.criteria.length ? <ul className="runner-criteria">{snapshot.checkpoint.criteria.map(c=><li key={c.id}>{c.status==='done'?'✓':c.status==='failed'?'✗':'○'} {c.id}<small>{c.evidence.join(' · ')}</small></li>)}</ul>:null}
+      <p>{snapshot.checkpoint?.done||'Preparing the first step.'}</p>
+      {snapshot.checkpoint?.next&&<p>Next: {snapshot.checkpoint.next}</p>}
+      {snapshot.checkpoint?.blocker&&<p>Blocked: {snapshot.checkpoint.blocker}</p>}
+      {snapshot.checkResults?.map(c=><details key={`${c.attemptId}:${c.id}`}><summary>{c.passed?'✓':'✗'} Check: {c.id}</summary><pre>{c.output}</pre></details>)}
+      <p>Working: {snapshot.workers.join(', ')}{snapshot.checker?` · Checker: ${snapshot.checker}`:''}</p>
+      <p>{snapshot.usage.turns}/{snapshot.limits.maxTurns??30} {snapshot.kind==='loop'?'runs':'turns'} · {snapshot.usage.invocations}/{snapshot.limits.maxInvocations??120} calls · {snapshot.usage.costMicros==null||snapshot.usage.unknownCostTurns>0?'Cost unavailable':`$${(snapshot.usage.costMicros/1e6).toFixed(2)} / $${(snapshot.limits.maxCostMicros??0)/1e6}`} · {Math.max(0,Math.floor((now+hostNowOffsetMs-snapshot.startedAt)/60000))}m / {snapshot.limits.lifetimeMs/60000}m</p>
+      <p className="runner-note">{snapshot.reason!=='none'?`Reason: ${snapshot.reason.replaceAll('_',' ')}. `:''}{snapshot.phase==='completed'?'Completion reported by workers; see evidence and checks.':''}{snapshot.pendingRequestId?'Answer the pending request in chat. Resume keeps unresolved requests waiting.':''}</p>
+      {!terminal&&<RunnerLimitEditor key={`${snapshot.id}:${snapshot.limits.lifetimeMs}:${snapshot.limits.maxTurns}:${snapshot.limits.maxCostMicros}`} limits={snapshot.limits} applyLabel={view.limitHit?'Apply and resume':'Apply limits'} onApply={limits=>onAction('update_limits',limits)}/>}
+      <div className="runner-details-actions">{confirm?<><span>End this {snapshot.kind}?</span><button type="button" onClick={()=>{setConfirm(false);onAction('end');}}>End {label.toLowerCase()}</button><button type="button" onClick={()=>{setConfirm(false);onEndCancel?.();}}>Cancel</button></>:<>{controls}{!terminal&&<button type="button" onClick={()=>action('end')}>End {label.toLowerCase()}</button>}</>}</div>
+    </section>}
+  </div>;
+}
+export function RunnerLimitEditor({limits,onApply,applyLabel='Apply limits'}:{limits:RunnerLimits;onApply(limits:RunnerLimits):void;applyLabel?:string}){
+  const [next,setNext]=useState(limits);const [error,setError]=useState('');const id=useId();
+  return <div className="runner-limits"><div className="runner-limit-fields">{([
+    ['maxTurns','Turns / runs',next.maxTurns??30,1,1000],['maxInvocations','Total calls',next.maxInvocations??120,1,1000],['lifetimeMs','Lifetime (minutes)',next.lifetimeMs/60000,1,1440],['maxCostMicros','Spend cap ($, best effort)',(next.maxCostMicros??5000000)/1e6,.01,1000],
+  ] as const).map(([key,label,value,min,max])=><label key={key} htmlFor={`${id}-${key}`}>{label}<input id={`${id}-${key}`} type="number" min={min} max={max} step={key==='maxCostMicros'?'.01':'1'} value={Number.isFinite(value)?value:''} onChange={e=>{const n=e.currentTarget.valueAsNumber;setNext(v=>({...v,[key]:key==='lifetimeMs'?n*60000:key==='maxCostMicros'?Math.round(n*1e6):n}));}}/></label>)}</div><button type="button" onClick={()=>{try{validateLimits(next);setError('');onApply(next);}catch(e){setError(String(e));}}}>{applyLabel}</button>{error&&<p role="alert">{error}</p>}</div>;
 }

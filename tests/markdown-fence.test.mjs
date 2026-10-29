@@ -1,3 +1,4 @@
+import { stripRunnerReport } from "../src/runner/report.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -7,8 +8,8 @@ import { parseBlocks, parseInline, pathLike } from "../src/markdownText.ts";
 const React = { Fragment: "Fragment", createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
 const code = fs.readFileSync(new URL("../src/Markdown.tsx", import.meta.url), "utf8");
 const compiled = transform(code.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), { transforms: ["typescript", "jsx"], jsxRuntime: "classic" }).code;
-const { Markdown, BlockView, CodeBlock } = new Function("React", "useEffect", "useMemo", "useState", "parseBlocks", "parseInline", "pathLike", "RichText", `${compiled}\nreturn { Markdown, BlockView, CodeBlock };`)(
-  React, () => {}, (make) => make(), (start) => [start, () => {}], parseBlocks, parseInline, pathLike, "RichText",
+const { Markdown, BlockView, CodeBlock } = new Function("React", "useEffect", "useMemo", "useState", "parseBlocks", "parseInline", "pathLike", "RichText", "stripRunnerReport", `${compiled}\nreturn { Markdown, BlockView, CodeBlock };`)(
+  React, () => {}, (make) => make(), (start) => [start, () => {}], parseBlocks, parseInline, pathLike, "RichText", stripRunnerReport,
 );
 const inline = (source) => source;
 

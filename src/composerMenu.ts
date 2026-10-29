@@ -24,6 +24,8 @@ export interface Trigger {
 /** A null command means the item needs an argument, so it is inserted
  *  for you to finish instead of running. */
 export const COMMANDS: Extract<MenuItem, { kind: "command" }>[] = [
+  {kind:'command',key:'goal',label:'/goal',detail:'Keep working toward an outcome',command:null},
+  {kind:'command',key:'loop',label:'/loop',detail:'Repeat a prompt: /loop 10m check build',command:null},
   { kind: "command", key: "compact", label: "/compact", detail: "Summarize earlier turns and free up context", command: { name: "compact" } },
   { kind: "command", key: "clear", label: "/clear", detail: "Empty the chat; keep the models", command: { name: "clear" } },
   { kind: "command", key: "diff", label: "/diff", detail: "Show what changed in the folder", command: { name: "diff" } },
@@ -71,7 +73,7 @@ export function menuItems(trigger: Trigger | null, people: readonly MenuPerson[]
     ? { kind: "command", key: "plan", label: "Stop planning", detail: "Let the bots change things again", command: { name: "plan" } }
     : { kind: "command", key: "plan", label: "Plan", detail: "Bots plan and ask; nothing gets changed", command: { name: "plan" } };
   // Tools types the ! that opens the list of servers, apps and plugins.
-  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, { kind: "tools", label: "Tools", detail: "Pick a server, app or plugin to use" }, plan, ...mentions, ...commands];
+  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, { kind: "tools", label: "Tools", detail: "Pick a server, app or plugin to use" }, plan, ...commands.filter(c=>c.key==='goal'||c.key==='loop').map(c=>({...c,label:c.key==='goal'?'Goal':'Loop'})), ...mentions, ...commands.filter(c=>c.key!=='goal'&&c.key!=='loop')];
   const q = trigger.query;
   if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
   if (trigger.kind === "command") return commands.filter((c) => c.key.startsWith(q));

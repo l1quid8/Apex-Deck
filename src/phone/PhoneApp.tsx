@@ -1,3 +1,10 @@
+import { RunnerWork } from "../runner/RunnerWork.tsx";
+import { useRunner } from '../runner/useRunner.ts';
+import { runnerCommand, runnerAction } from '../runner/client.ts';
+import { RunnerDrawer } from '../runner/RunnerDrawer.tsx';
+import { RunnerSetup } from '../runner/RunnerSetup.tsx';
+import { defaultLimits, type RunnerKind, type RunnerSnapshot, type RunnerActionTag, type RunnerLimits, type RunnerConfig } from '../runner/types.ts';
+import { parseComposer, postable } from '../commands.ts';
 import { createPhoneVoice, type PhoneVoice } from './phoneVoice.ts';
 import { postFromPhone } from './phonePost.ts';
 import { keepAwake } from './callScreen.ts';
@@ -627,6 +634,32 @@ export function PhoneApp() {
   const openHostId = openPane?.hostId ?? (openWorkspace ? workspaceHost(openWorkspace) : "");
   const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
   const openLink = linkOf(openHostId) ?? hostOf(openWorkspace);
+  const runnerBackend=phoneHost(openHostId)?.backend;
+  const [runner,setRunner,runnerHostOffset]=useRunner(runnerBackend,openPane?.id??null);
+  const [runnerMode,setRunnerMode]=useState<RunnerKind|null>(null);
+  const [runnerInterval,setRunnerInterval]=useState('10m');
+  const [runnerLimits,setRunnerLimits]=useState(defaultLimits);
+  const [runnerConfig,setRunnerConfig]=useState<RunnerConfig>({});
+  const [runnerEndRequest,setRunnerEndRequest]=useState(0);
+  const [runnerShowRequest,setRunnerShowRequest]=useState(0);
+  const runnerClear=useRef(false);
+  const [runnerDiff,setRunnerDiff]=useState<import('../types.ts').ThreadDiff|null>(null);
+  useEffect(()=>{setRunnerMode(null);setRunnerDiff(null);},[openPane?.id]);
+  const runnerUnfinished=!!runner&&!['completed','ended'].includes(runner.phase);
+  const onRunnerAction=(action:RunnerActionTag,limits?:RunnerLimits)=>{
+    if(!runnerBackend||!openPane||!runner)return;
+    void runnerAction(runnerBackend,openPane.id,runner,action,limits,runnerClear.current).then(next=>{runnerClear.current=false;setRunner(next);}).catch(e=>setNotice(words(e)));
+  };
+  const armRunner=(kind:RunnerKind)=>{
+    if(runnerUnfinished){setNotice(`A ${runner!.kind} is unfinished here. End it first.`);return;}
+    if(room?.plan){setNotice('Turn off Plan before selecting Goal or Loop.');return;}
+    setRunnerMode(kind);setComposerOpen(false);
+  };
+  const reviewRunnerChanges=()=>{
+    if(!runnerBackend||!openPane)return;
+    void runnerBackend.roomDiff(openPane.id).then(diff=>setRunnerDiff({...diff,files:diff.files.filter(file=>runner?.changedPaths?.some(path=>path===file.path||path.endsWith(`/${file.path}`))),note:"Files reported changed during this runner. Patches can include concurrent edits; review before restoring anything."})).catch(e=>setNotice(words(e)));
+  };
+
   const assistantWorkspace = workspaces.find((workspace) => workspace.id === assistantWorkspaceId) ?? null;
   // One collection discovers all paired machines; notifications select their exact durable owner.
   const personal = usePersonalAssistant({
@@ -1017,12 +1050,23 @@ export function PhoneApp() {
       if (!pane) return;
       const sentPane = pane;
       if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add one from Bots in the thread’s ⋯ menu."); return; }
+      const parsed=parseComposer(draft.text.trim());
+      if ('command' in parsed || runnerMode) {
+        const command='command' in parsed?parsed.command:{name:runnerMode!,arg:runnerMode==='loop'?`${runnerInterval} ${draft.text.trim()}`:`start ${draft.text.trim()}`};
+        if(command.name==='goal'||command.name==='loop') {
+          const workers=await host.backend.roomTargets(sentPane.id,'arg' in command?command.arg:'');
+          const result=await runnerCommand(host.backend,sentPane.id,command.name,command.arg,workers,runnerLimits,runnerConfig);
+          setRunner(result.snapshot??null);if(result.confirmEnd){runnerClear.current=true;setRunnerEndRequest(v=>v+1);}if(result.show)setRunnerShowRequest(v=>v+1);if(result.message)setNotice(result.message);
+          setDraft(sentPane.id,{...draft,text:''});setRunnerMode(null);return;
+        }
+        throw Error('Use /goal or /loop controls here. Other slash commands are available on desktop. Start with // to send literal text.');
+      }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
       // Quotes go under the text, led by the bot they're handed to, as on the desktop.
       const sentQuotes = quotes[id] ?? [];
       // TL;DR asks every bot for a short answer; the line rides on the message but never shows in the chat.
-      const body = withTldr(withAttachments(outgoingText(draft.text, sentQuotes, participants), paths), tldrOf(id));
+      const body = withTldr(withAttachments(outgoingText(postable(draft.text), sentQuotes, participants), paths), tldrOf(id));
       // The room picks who answers, as on the desktop: whoever is @named, or whoever was named last.
       // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
       // This resolves once the machine has it, or once it is queued; until then the box keeps it.
@@ -1196,6 +1240,7 @@ export function PhoneApp() {
   }
 
   async function changeComposerPlan(on: boolean) {
+    if(on&&runnerMode){setRunnerMode(null);setNotice("Goal/Loop start mode cleared; Plan selected.");}
     if (pending && openId === pending.id) {
       if (sendingRef.current) return;
       setPendingDraftPlans((all) => ({ ...all, [pending.id]: on }));
@@ -1699,6 +1744,9 @@ export function PhoneApp() {
             tldr={tldrOf(openId)}
             onTldr={() => openId && setTldr(openId, !tldrOf(openId))}
             onStopPlanning={() => { void stopPlanning(); }}
+            runner={runner} runnerHostOffset={runnerHostOffset} runnerEndRequest={runnerEndRequest} onRunnerAction={onRunnerAction} runnerShowRequest={runnerShowRequest} onRunnerEndCancel={()=>{runnerClear.current=false;}} onRunnerReview={reviewRunnerChanges}
+            runnerSetup={runnerMode&&!runnerUnfinished?<RunnerSetup config={runnerConfig} onConfig={setRunnerConfig} participants={(room?.configs??[]).map(p=>({id:p.id,name:p.display_name}))} kind={runnerMode} interval={runnerInterval} onInterval={setRunnerInterval} limits={runnerLimits} onLimits={setRunnerLimits} onCancel={()=>setRunnerMode(null)}/>:null}
+
             onRetry={() => phoneHost(openLink.id)?.connection.retryNow()}
             onOpenOther={(hostId) => {
               const pane = panes.find((item) => {
@@ -1852,6 +1900,7 @@ export function PhoneApp() {
             }} />
           </Sheet>
         )}
+        {runnerDiff&&<div className="ph-runner-review-backdrop"><section className="ph-runner-review" role="dialog" aria-label="Review runner changes"><button type="button" onClick={()=>setRunnerDiff(null)}>Close changes</button><p>{runnerDiff.note||'Changes in this thread folder. Review attribution before applying or reverting anything.'}</p>{runnerDiff.files.map(file=><details key={file.path}><summary>{file.path} (+{file.added} −{file.removed})</summary><pre>{file.patch}</pre></details>)}</section></div>}
         {composerOpen && openWorkspace && openLink && <ComposerPanel
           onClose={() => setComposerOpen(false)}
           onPickerStart={startPicker}
@@ -1866,6 +1915,9 @@ export function PhoneApp() {
           planPending={(composerPlan.pending && composerPlan.roomId === openPane?.id) || sending}
           planDisabledReason={composerPlanDisabledReason({ pendingDraft: Boolean(pending && openId === pending.id), sending, online: openLink.status === "online", readOnly: phoneHost(openLink.id)?.access()?.tier === "read_only", offlineReason: downLine(openLink) })}
           onPlanChange={(on) => { void changeComposerPlan(on); }}
+          runnerDisabledReason={runnerBackend?.supports?.('room_runner_v1')===false?'Update this host to use goals and loops.':runnerUnfinished?`A ${runner!.kind} is unfinished here. End it first.`:viewingPending?'Send the first message before starting a runner.':null}
+          onRunner={armRunner}
+
           planError={composerPlan.roomId === openPane?.id ? composerPlan.error : null}
         />}
         {ask && openPane && askTarget && (
@@ -2358,6 +2410,8 @@ function ThreadView(props: {
   onUnqueue(id: number): void; onRemoveQueued(id: number): void; onResume(): void;
   /** The question or next steps, above the composer. */
   form: ReactNode; plan: boolean; onStopPlanning(): void;
+  runner: RunnerSnapshot|null; runnerHostOffset:number; runnerEndRequest:number; runnerShowRequest:number; onRunnerEndCancel():void; onRunnerAction(action:RunnerActionTag,limits?:RunnerLimits):void; onRunnerReview():void; runnerSetup:ReactNode;
+
   /** TL;DR mode: every bot is asked for a short answer. */
   tldr: boolean; onTldr(): void;
   /** Pinned for every model in the thread; a pinned message's pin jumps to it. */
@@ -2646,7 +2700,8 @@ function ThreadView(props: {
           </div>
         )}
         {/* Each message, then its actions under it: a bot's at the left, yours at the right, as on the desktop. */}
-        {props.messages.map((message) => message.speaker.kind === "human" ? (
+        {props.messages.flatMap((message,index)=>{
+          const renderMessage=(message:Message)=>message.speaker.kind === "human" ? (
           <section key={message.seq} className="ph-said mine" data-seq={message.seq}>
             <div className="ph-msg human"><p>{splitTldr(message.text).text}</p></div>
             {actionsFor(message, splitTldr(message.text).text)}
@@ -2665,7 +2720,15 @@ function ThreadView(props: {
             </div>
             {actionsFor(message, message.text)}
           </section>
-        ))}
+        );
+          if(props.runner?.replySeqs?.includes(message.seq)){
+            const previous=props.messages[index-1];
+            if(previous&&props.runner.replySeqs.includes(previous.seq))return [];
+            const group=[];for(let n=index;n<props.messages.length;n++){const row=props.messages[n];if(!props.runner.replySeqs.includes(row.seq))break;group.push(row);}
+            return [<RunnerWork key={`runner-${message.seq}`} snapshot={props.runner} count={group.length}>{group.map(renderMessage)}</RunnerWork>];
+          }
+          return [renderMessage(message)];
+        })}
         {/* Cut off mid-reply: what it had written stays, dimmed, until its reply lands, even after a reload. */}
         {cut.map(([id, part]) => (
           <section key={`c-${id}`} className="ph-msg ph-was">
@@ -2803,6 +2866,8 @@ function ThreadView(props: {
           </div>
         )}
         {props.form}
+        <RunnerDrawer snapshot={props.runner} hostNowOffsetMs={props.runnerHostOffset} composerRef={inputRef} platform="phone" endRequest={props.runnerEndRequest} showRequest={props.runnerShowRequest} onEndCancel={props.onRunnerEndCancel} onAction={props.onRunnerAction} onReviewChanges={props.onRunnerReview}/>
+        {props.runnerSetup}
         {props.plan && <button type="button" className="plan-chip ph-plan" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
         {picking && picking.picks.length > 0 && (
           <div className="ph-mentions" role="listbox" aria-label="Mention a bot">

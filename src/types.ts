@@ -241,6 +241,8 @@ export interface Compaction {
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  roomRevision?: number;
+  hostNow?: number;
   /** From the protected room manifest; editable transcript files cannot set this. */
   legacy?: import("./legacyImport").LegacyMarker | null;
   cwd?: string | null;

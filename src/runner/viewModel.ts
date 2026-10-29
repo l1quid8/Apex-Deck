@@ -27,8 +27,8 @@ function formatCountdown(nextRunAt: number | null | undefined, nowMs: number): s
 }
 
 export function runnerView(snapshot: RunnerSnapshot | null, nowMs: number): RunnerViewModel | null {
-  if (!snapshot) return null;
-  const needsYou = snapshot.phase === 'waiting' && (snapshot.reason === 'approval' || snapshot.reason === 'question' || snapshot.reason === 'blocked');
+  if (!snapshot || snapshot.dismissed) return null;
+  const needsYou = snapshot.phase === 'waiting' || ['blocked','stuck','provider_error','provider_usage','configuration'].includes(snapshot.reason);
   const limitHit = snapshot.reason === 'limit' || snapshot.reason === 'provider_usage';
   const obj = snapshot.objective ?? snapshot.prompt ?? '';
   const checklist = snapshot.checkpoint?.criteria;
@@ -38,13 +38,13 @@ export function runnerView(snapshot: RunnerSnapshot | null, nowMs: number): Runn
     metric = `✓ ${done}/${checklist.length}`;
   } else if (snapshot.kind === 'loop') {
     if (snapshot.phase === 'running') metric = 'Running';
-    else if (snapshot.nextRunAt) metric = `Next in ${formatCountdown(snapshot.nextRunAt, nowMs)}`;
+    else if (snapshot.phase === 'scheduled' && snapshot.nextRunAt) metric = `Next in ${formatCountdown(snapshot.nextRunAt, nowMs)}`;
     else metric = `${snapshot.usage.turns}/${snapshot.limits.maxTurns ?? 30} runs`;
   }
 
   let stateLabel: string = snapshot.phase;
   if (snapshot.phase === 'waiting') stateLabel = 'Needs you';
-  else if (snapshot.phase === 'paused') stateLabel = 'Paused';
+  else if (snapshot.phase === 'paused') stateLabel = limitHit ? 'Limit hit' : needsYou ? 'Needs you' : 'Paused';
   else if (snapshot.phase === 'running') stateLabel = 'Running';
   else if (snapshot.phase === 'scheduled') stateLabel = 'Scheduled';
   else if (snapshot.phase === 'completed') stateLabel = 'Finished';
@@ -56,7 +56,7 @@ export function runnerView(snapshot: RunnerSnapshot | null, nowMs: number): Runn
     phase: snapshot.phase,
     label: stateLabel,
     objective: obj,
-    metric,
+    metric: needsYou || limitHit || snapshot.phase === 'paused' || snapshot.phase === 'completed' || snapshot.phase === 'ended' ? stateLabel : metric,
     stateLabel,
     needsYou,
     limitHit,

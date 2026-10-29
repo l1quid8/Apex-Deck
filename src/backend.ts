@@ -162,6 +162,7 @@ export interface Backend {
   roomClear(id: string): Promise<void>;
   /** Delete every message from `upto` on; only while no bot is working. */
   roomRewind(id: string, upto: number): Promise<void>;
+  onRoomRunnerChanged?(cb: (room: string, snapshot: import("./runner/types.ts").RunnerSnapshot | null) => void): Promise<Unlisten>;
   roomRunnerState?(id: string): Promise<import("./runner/types.ts").RunnerSnapshot | null>;
   roomRunnerStart?(id: string, runnerId: string, revision: number, requestId: string, payload: import("./runner/types.ts").RunnerStart): Promise<any>;
   roomRunnerAction?(roomId: string, runnerId: string, revision: number, requestId: string, action: any): Promise<any>;

@@ -42,6 +42,7 @@ export interface RunnerCheckpoint {
 
 export interface RunnerSnapshot {
   schemaVersion: number;
+  hostNow?: number;
   id: string;
   roomId: string;
   revision: number;
@@ -62,6 +63,9 @@ export interface RunnerSnapshot {
   nextRunAt?: number | null;
   pendingRequestId?: string | null;
   dismissed?: boolean;
+  changedPaths?: string[];
+  replySeqs?: number[];
+  checkResults?: {id:string;attemptId:string;passed:boolean;output:string}[];
 }
 
 export interface RunnerStart {
@@ -73,6 +77,7 @@ export interface RunnerStart {
   workers: string[];
   checker?: string | null;
   limits: RunnerLimits;
+  checks?: RunnerCheck[];
 }
 
 export type RunnerActionTag = 'pause' | 'resume' | 'end' | 'update_limits' | 'dismiss';
@@ -128,8 +133,11 @@ export function validateLimits(l: RunnerLimits): void {
   if (l.maxInvocations !== undefined) {
     if (!Number.isInteger(l.maxInvocations) || l.maxInvocations < 1 || l.maxInvocations > 1000) throw new Error('maxInvocations 1..1000');
   }
-  if (l.lifetimeMs < 60_000 || l.lifetimeMs > 24 * 3600 * 1000) throw new Error('lifetime 1m..24h');
+  if (!Number.isFinite(l.lifetimeMs) || l.lifetimeMs < 60_000 || l.lifetimeMs > 24 * 3600 * 1000) throw new Error('lifetime 1m..24h');
   if (l.maxCostMicros != null) {
-    if (l.maxCostMicros < 10_000 || l.maxCostMicros > 1_000_000_000_000) throw new Error('cost $0.01..$1000');
+    if (!Number.isSafeInteger(l.maxCostMicros) || l.maxCostMicros < 10_000 || l.maxCostMicros > 1_000_000_000) throw new Error('cost $0.01..$1000');
   }
 }
+
+export interface RunnerCheck { id: string; argv: string[]; timeoutMs?: number }
+export interface RunnerConfig { workers?: string[]; checker?: string; checks?: RunnerCheck[] }
