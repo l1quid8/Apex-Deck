@@ -29,6 +29,7 @@ interface Props {
   avatar?: ReactNode;
   /** Context and plan bars, shown under the name. */
   meters?: ReactNode;
+  talkOnly?: boolean;
   accessPending?: boolean;
   /** The provider's usage resets, shown under Access. */
   resets?: ReactNode;
@@ -43,7 +44,7 @@ interface Props {
   /** Owning-host text choices for a scoped assistant; no generic fallback models. */
   offeredModels?: ModelChoice[];
 }
-export function BotSettings({ config, roomId, anchor = null, inline = false, backend, save, close, avatar, meters, accessPending = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
+export function BotSettings({ config, roomId, anchor = null, inline = false, backend, save, close, avatar, meters, accessPending = false, talkOnly = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const api = config.backend.kind === 'open_ai_compatible' ? config.backend : null;
@@ -331,7 +332,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       </div>
       {!mediaType && <ReasoningSlider efforts={efforts} value={supportedEffort} defaultLabel={apiModel?.default_effort ?? undefined} onCommit={commitEffort} />}
       {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
-      {(tool || api) && <>
+      {talkOnly ? <div className="bot-access"><span className="model-select-label">Access</span><span>Talk only</span></div> : (tool || api) && <>
         <div className="bot-access"><span className="model-select-label">Access</span><Segmented label="Access" name="quick-bot-access" options={accessOptions} value={access} onChange={access => { void apply({ access }); }} /></div>
         {accessPending && <p className="muted bot-access-note" role="status">Applies after this reply.</p>}
       </>}

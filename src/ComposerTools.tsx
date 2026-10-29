@@ -14,6 +14,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   /** The thread's Plan switch, so the menu offers Plan or Stop planning. */
   planOn?: boolean;
   /** Hide attachment choices when this destination has no verified file route. */
+  talkOnly?: boolean;
   canAttach?: boolean;
   canAttachFolder?: boolean;
   canUseTools?: boolean;
@@ -24,7 +25,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   /** Command key to reason when this surface cannot run it. */
   disabledCommands?: Record<string, string>;
   disabled?: boolean;
-}>(({ participants, servers, serverStatus, mods = [], trigger, choose, planOn = false, canAttach = true, canAttachFolder = true, canUseTools = true, includeAll = true, allMentionDetail, folderUnavailableReason, filesUnavailableReason, disabledCommands = {}, disabled = false }, ref) => {
+}>(({ participants, servers, serverStatus, mods = [], trigger, choose, planOn = false, talkOnly = false, canAttach = true, canAttachFolder = true, canUseTools = true, includeAll = true, allMentionDetail, folderUnavailableReason, filesUnavailableReason, disabledCommands = {}, disabled = false }, ref) => {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -35,7 +36,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   const typing = !!trigger && signature !== dismissed && !open;
   const visible = open || typing;
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
-  const entries = availableMenuItems(menuItems(open ? null : trigger, participants, servers, mods, planOn, includeAll, allMentionDetail), { attach: canAttach || !!filesUnavailableReason, folder: canAttachFolder || !!folderUnavailableReason, tools: canUseTools })
+  const entries = availableMenuItems(menuItems(open ? null : trigger, participants, servers, mods, planOn, includeAll, allMentionDetail), { talkOnly, attach: canAttach || !!filesUnavailableReason, folder: canAttachFolder || !!folderUnavailableReason, tools: canUseTools })
     .filter(item => !open || `${item.label} ${item.detail}`.toLowerCase().includes(query.toLowerCase()));
   const close = () => { setOpen(false); setDismissed(signature); };
   const pick = (item: MenuItem) => {

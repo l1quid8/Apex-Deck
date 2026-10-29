@@ -256,7 +256,7 @@ export function ChatWhereBody(props: {
 
 // ---- Move to a Work thread ---------------------------------------------------------------------
 
-const ACCESS: { id: Access; text: string }[] = [{ id: "ask", text: "Ask first" }, { id: "read", text: "Read only" }, { id: "full", text: "Full" }];
+const ACCESS: { id: Access; text: string }[] = [{ id: "read", text: "Read-only" }, { id: "ask", text: "Ask" }, { id: "edits", text: "Edit" }, { id: "full", text: "Full" }];
 
 export function MoveToWorkBody(props: {
   machine: ChatMachineView; bots: ParticipantConfig[];
