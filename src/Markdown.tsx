@@ -1,3 +1,4 @@
+import { stripRunnerReport } from "./runner/report.ts";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { parseBlocks, parseInline, pathLike, type Block, type Inline } from "./markdownText";
@@ -27,7 +28,7 @@ interface Props {
 export interface CodeInfo { language: string; text: string; index: number }
 
 export function Markdown({ text, onOpen, codeAction, codeBelow, pathExists, fence }: Props) {
-  const blocks = useMemo(() => parseBlocks(text), [text]);
+  const blocks = useMemo(() => parseBlocks(stripRunnerReport(text)), [text]);
   const inline = (source: string) => <InlineText source={source} onOpen={onOpen} pathExists={pathExists} />;
   return (
     <div className="md">

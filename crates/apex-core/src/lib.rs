@@ -26,7 +26,7 @@ pub use mention::{mention_clash, mention_for, mentioned_words, mentions_handle, 
 pub use participant::{
     DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
 };
-pub use room::{ChangeRecord, ClientMessageRecord, ClientMessageRequest, ClientMessageState, Compaction, Room, RoomEvent, RoomKind, RoomOptions, RoomSnapshot, TurnPolicy};
+pub use room::{decide_room_action, ChangeRecord, ClientMessageRecord, ClientMessageRequest, ClientMessageState, Compaction, Room, RoomEvent, RoomKind, RoomOptions, RoomSnapshot, TurnPolicy};
 pub use write_gate::{CheckoutWriteGate, WriteLease, WriteWaitError};
 pub use types::{
     Access, AgentTool, Backend, ContextUse, MediaSettings, Message, MessageOrigin, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage, Speed,

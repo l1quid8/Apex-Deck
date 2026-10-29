@@ -13,6 +13,8 @@ export type ComposerPanelProps = {
   project: string;
   machine: string;
   onLocation(): void;
+  onRunner?(kind: 'goal' | 'loop'):void;
+  runnerDisabledReason?:string|null;
   plan: boolean;
   planPending: boolean;
   planDisabledReason: string | null;
@@ -114,6 +116,7 @@ export function ComposerPanel(props: ComposerPanelProps) {
           <button type="button" className="ph-composer-row ph-composer-destination" onClick={props.onLocation}><span className="ph-composer-icon"><Folder size={20} /></span><span className="ph-composer-copy"><strong>Project</strong><small>{props.project} · {props.machine}</small></span><ChevronRight size={18} /></button>
           <div className="ph-composer-row ph-composer-plan-row"><span className="ph-composer-icon"><Plan size={20} /></span><span className="ph-composer-copy"><strong>Plan mode</strong>{props.planError && <small className="ph-composer-error" role="alert">{props.planError}</small>}{props.planDisabledReason && <small>{props.planDisabledReason}</small>}</span><button type="button" role="switch" aria-checked={props.plan} aria-label="Plan mode" disabled={props.planPending || Boolean(props.planDisabledReason)} onClick={() => props.onPlanChange(!props.plan)} className={`ph-composer-switch${props.plan ? " on" : ""}`}><span /></button></div>
         </div>
+        {props.onRunner&&<div className="ph-composer-group">{(['goal','loop'] as const).map(kind=><button type="button" className="ph-composer-row" disabled={!!props.runnerDisabledReason||props.plan} key={kind} onClick={()=>props.onRunner?.(kind)}><span className="ph-composer-icon">{kind==='goal'?'◎':'↻'}</span><span className="ph-composer-copy"><strong>{kind==='goal'?'Goal':'Loop'}</strong><small>{props.runnerDisabledReason||(props.plan?'Turn off Plan first':kind==='goal'?'Work toward an outcome':'Repeat a prompt on an interval')}</small></span><ChevronRight size={18}/></button>)}</div>}
         {props.files.length > 0 && <div className="ph-composer-attachments" aria-label="Attached files">
           {props.files.map((file) => <div className="ph-composer-attachment" key={file.id}><Files size={17} /><strong title={file.name}>{file.name}</strong><button type="button" aria-label={`Remove ${file.name}`} onClick={() => props.onRemoveFile(file.id)}>×</button></div>)}
           <p>Sends with your next message</p>

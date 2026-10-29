@@ -1,0 +1,707 @@
+diff --git a/crates/apex-core/src/concurrent.rs b/crates/apex-core/src/concurrent.rs
+--- a/crates/apex-core/src/concurrent.rs
++++ b/crates/apex-core/src/concurrent.rs
+@@ -156,6 +156,7 @@
+     pub fn busy(&self) -> bool {
+         self.pending.load(Ordering::SeqCst) != 0
+     }
++    pub fn has_cleanup_holds(&self) -> bool { !self.cleanup_holds.lock().unwrap().is_empty() }
+     /// Retire only between turns, with persistence under the admission lock.
+     /// A stale handle cannot admit another post after this succeeds.
+     pub fn retire_if_idle<T>(&self, persist: impl FnOnce(&Room) -> Result<T, String>) -> Result<T, String> {
+diff --git a/crates/apex-daemon/src/gateway_admin.rs b/crates/apex-daemon/src/gateway_admin.rs
+--- a/crates/apex-daemon/src/gateway_admin.rs
++++ b/crates/apex-daemon/src/gateway_admin.rs
+@@ -32,6 +32,9 @@
+     address: Option<SocketAddr>,
+     task: Option<JoinHandle<()>>,
+     error: Option<String>,
++}
++impl Runtime {
++    pub(crate) fn maintenance_busy(&self) -> bool { self.task.as_ref().is_some_and(|task| !task.is_finished()) }
+ }
+ impl Drop for Runtime {
+     fn drop(&mut self) {
+diff --git a/crates/apex-daemon/src/lib.rs b/crates/apex-daemon/src/lib.rs
+--- a/crates/apex-daemon/src/lib.rs
++++ b/crates/apex-daemon/src/lib.rs
+@@ -16,6 +16,7 @@
+ pub mod identity;
+ pub mod ipc;
+ pub mod local_call;
++pub mod maintenance;
+ pub mod log_time;
+ pub mod pair_cli;
+ pub mod pair_commands;
+diff --git a/crates/apex-daemon/src/maintenance.rs b/crates/apex-daemon/src/maintenance.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/apex-daemon/src/maintenance.rs
+@@ -0,0 +1,141 @@
++//! Root-authorized, local-only idle barrier. The nonce is an authorization
++//! marker, not a secret: only root can create the short-lived request file.
++use std::sync::Arc;
++use serde::Deserialize;
++use serde_json::{json, Value};
++use crate::protocol::Daemon;
++
++#[derive(Deserialize)]
++#[serde(tag = "cmd", content = "args", rename_all = "snake_case", deny_unknown_fields)]
++pub enum Request {
++    MaintenanceBegin { nonce: String },
++    MaintenanceCancel { lease: String },
++}
++
++#[cfg(any(target_os = "linux", test))]
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Authorization { nonce: String, boot_id: String, expires_at_ms: u64 }
++
++#[cfg(any(target_os = "linux", test))]
++fn authorization(bytes: &[u8], nonce: &str, boot_id: &str, now: u64) -> Result<u64, String> {
++    let request: Authorization = serde_json::from_slice(bytes).map_err(|_| "maintenance: invalid root request")?;
++    if nonce.len() != 64 || !nonce.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) || request.nonce != nonce {
++        return Err("maintenance: root request nonce does not match".into());
++    }
++    if request.boot_id != boot_id { return Err("maintenance: root request belongs to another daemon boot".into()); }
++    if request.expires_at_ms <= now || request.expires_at_ms.saturating_sub(now) > 300_000 {
++        return Err("maintenance: root request must expire within five minutes".into());
++    }
++    Ok(request.expires_at_ms)
++}
++
++#[cfg(any(target_os = "linux", test))]
++fn trusted_metadata(uid: u32, mode: u32, directory: bool, expected_directory: bool) -> bool {
++    uid == 0 && mode & 0o022 == 0 && directory == expected_directory
++}
++
++#[cfg(any(target_os = "linux", all(unix, test)))]
++fn read_root_request(path: &std::path::Path) -> Result<Vec<u8>, String> {
++    use std::io::Read;
++    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
++    let mut file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
++        .map_err(|_| "maintenance: no regular root authorization request")?;
++    let meta = file.metadata().map_err(|_| "maintenance: could not inspect root request")?;
++    if !meta.is_file() || !trusted_metadata(meta.uid(), meta.mode(), false, false) || meta.len() > 1024 {
++        return Err("maintenance: request must be a small regular file owned and writable only by root".into());
++    }
++    let mut bytes = Vec::new();
++    file.by_ref().take(1025).read_to_end(&mut bytes).map_err(|_| "maintenance: could not read root request")?;
++    if bytes.len() > 1024 { return Err("maintenance: root request grew while read".into()); }
++    Ok(bytes)
++}
++
++#[cfg(any(target_os = "linux", all(unix, test)))]
++fn trusted_parent(parent: &std::path::Path) -> Result<(), String> {
++    use std::os::unix::fs::MetadataExt;
++    let meta = std::fs::symlink_metadata(parent).map_err(|_| "maintenance: no root authorization directory")?;
++    if meta.file_type().is_symlink() || !trusted_metadata(meta.uid(), meta.mode(), meta.is_dir(), true) {
++        return Err("maintenance: authorization directory must be owned and writable only by root".into());
++    }
++    Ok(())
++}
++
++#[cfg(target_os = "linux")]
++fn authorize(nonce: &str, boot_id: &str, now: u64) -> Result<u64, String> {
++    let parent = std::path::Path::new("/run/apex-deck-update");
++    trusted_parent(parent)?;
++    let path = parent.join(format!("{}.request", unsafe { libc::geteuid() }));
++    authorization(&read_root_request(&path)?, nonce, boot_id, now)
++}
++
++#[cfg(not(target_os = "linux"))]
++fn authorize(_: &str, _: &str, _: u64) -> Result<u64, String> { Err("maintenance: VPS maintenance is supported only on Linux".into()) }
++
++pub fn run(daemon: &Arc<Daemon>, request: Request) -> Result<Value, String> {
++    match request {
++        Request::MaintenanceCancel { lease } => { daemon.host.maintenance.cancel(&lease)?; Ok(json!({"cancelled":true})) }
++        Request::MaintenanceBegin { nonce } => {
++            let now = apex_host::maintenance::now_ms();
++            let expires_at_ms = authorize(&nonce, &daemon.boot_id, now)?;
++            let lease = crate::identity::random_hex(32);
++            let result = daemon.host.maintenance.try_begin(lease.clone(), expires_at_ms, now, || {
++                daemon.host.maintenance_blockers()?;
++                let voice = daemon.voice.status();
++                if voice.busy || voice.installing.is_some() { return Err("busy: voice is in use or being installed".into()); }
++                let gateway = daemon.gateway.try_lock().map_err(|_| "busy: model gateway is changing")?;
++                if gateway.maintenance_busy() { return Err("busy: model gateway is enabled".into()); }
++                Ok(())
++            });
++            match result {
++                Ok(()) => Ok(json!({"ready":true,"lease":lease,"boot_id":daemon.boot_id,"expires_at_ms":expires_at_ms})),
++                Err(reason) if reason.starts_with("busy:") => Ok(json!({"ready":false,"reasons":[reason]})),
++                Err(error) => Err(error),
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn root_authorization_is_bound_to_nonce_boot_and_short_expiry() {
++        let nonce = "a".repeat(64);
++        let request = json!({"nonce":nonce,"boot_id":"boot","expires_at_ms":2000}).to_string();
++        assert_eq!(authorization(request.as_bytes(), &nonce, "boot", 1000), Ok(2000));
++        assert!(authorization(request.as_bytes(), &"b".repeat(64), "boot", 1000).is_err());
++        assert!(authorization(request.as_bytes(), &nonce, "old-boot", 1000).is_err());
++        assert!(authorization(request.as_bytes(), &nonce, "boot", 2000).is_err());
++        let future = json!({"nonce":nonce,"boot_id":"boot","expires_at_ms":400000}).to_string();
++        assert!(authorization(future.as_bytes(), &nonce, "boot", 1000).is_err());
++    }
++    #[test]
++    fn writable_or_non_root_authority_is_rejected() {
++        assert!(trusted_metadata(0, 0o755, true, true));
++        assert!(trusted_metadata(0, 0o644, false, false));
++        assert!(!trusted_metadata(501, 0o644, false, false));
++        assert!(!trusted_metadata(0, 0o666, false, false));
++        assert!(!trusted_metadata(0, 0o775, true, true));
++        assert!(!trusted_metadata(0, 0o755, false, true));
++    }
++    #[cfg(unix)]
++    #[test]
++    fn request_links_and_user_owned_or_writable_authority_are_rejected() {
++        use std::os::unix::fs::{symlink, PermissionsExt};
++        let root = std::env::temp_dir().join(format!("apex-maintenance-auth-{}-{}",std::process::id(),crate::identity::random_hex(8)));
++        std::fs::create_dir(&root).unwrap();
++        let request = root.join("request");
++        std::fs::write(&request, b"{}").unwrap();
++        std::fs::set_permissions(&request, std::fs::Permissions::from_mode(0o666)).unwrap();
++        assert!(read_root_request(&request).is_err());
++        let link = root.join("link"); symlink(&request, &link).unwrap();
++        assert!(read_root_request(&link).is_err());
++        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
++        assert!(trusted_parent(&root).is_err());
++        let parent_link = root.with_extension("link"); symlink(&root,&parent_link).unwrap();
++        assert!(trusted_parent(&parent_link).is_err());
++        std::fs::remove_file(parent_link).unwrap(); std::fs::remove_dir_all(root).unwrap();
++    }
++
++}
+diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protocol.rs
+--- a/crates/apex-daemon/src/protocol.rs
++++ b/crates/apex-daemon/src/protocol.rs
+@@ -360,6 +360,7 @@
+         // The exact build, so a UI can tell two builds of the same version apart.
+         "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
+     } });
++    welcome["ok"]["capabilities"].as_array_mut().unwrap().push(json!("maintenance_v1"));
+     if daemon.voice.status().supported { welcome["ok"]["capabilities"].as_array_mut().unwrap().push(json!("voice_server_v1")); }
+     // A device also learns what it may do now (so the phone can hide what
+     // it can't use; the host still checks everything) and the addresses
+@@ -421,7 +422,27 @@
+     while reading || in_flight > 0 || !waiting.is_empty() {
+         tokio::select! {
+             frame = input.next(), if reading => match frame {
+-                Some(Ok(text)) => match read_request(&text) {
++                Some(Ok(text)) => {
++                    let request = read_request(&text);
++                    // Host requests transfer a permit to their worker in run().
++                    // Maintenance itself must remain callable while sealed.
++                    let request_admission = match &request {
++                        Ok((_, Request::Maintenance(_) | Request::InputClosed | Request::Host(_))) | Err(_) => None,
++                        Ok((id, _)) => match daemon.host.maintenance.enter() {
++                            Ok(permit) => Some(permit),
++                            Err(why) => {
++                                if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await { return stop.into(); }
++                                continue;
++                            }
++                        },
++                    };
++                    match request {
++                    Ok((id, Request::Maintenance(request))) => {
++                        let result = if trust == Trust::Local { crate::maintenance::run(&daemon, request) }
++                            else { Err("not allowed from a remote connection".into()) };
++                        let frame = match result { Ok(value) => json!({"id":id,"ok":value}), Err(why) => json!({"id":id,"err":why}) };
++                        if let Err(stop) = send(&mut output, &mut guard, frame.to_string()).await { return stop.into(); }
++                    }
+                     Ok((id, Request::InputClosed)) => {
+                         if trust != Trust::Local {
+                             if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), "not allowed from a remote connection")).await {
+@@ -488,6 +509,7 @@
+                                 let tx = voice_tx.clone();
+                                 in_flight += 1;
+                                 tokio::spawn(async move {
++                                    let _maintenance = request_admission;
+                                     let result = if open {
+                                         match server.acquire(owner).await {
+                                             Ok(lease) => crate::voice::relay::Relay::connect(lease.running())
+@@ -523,6 +545,7 @@
+                             in_flight += 1;
+                             let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
+                             tokio::spawn(async move {
++                                let _maintenance = request_admission;
+                                 let frame = match run_management_receipt(daemon, receipt).await {
+                                     Ok(value) => json!({"id":id,"ok":value}),
+                                     Err(refusal) => refusal.frame(id),
+@@ -578,6 +601,7 @@
+                             in_flight += 1;
+                             let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
+                             tokio::spawn(async move {
++                                let _maintenance = request_admission;
+                                 let frame = match crate::pair_commands::run(daemon, request).await {
+                                     Ok(value) => json!({ "id": id, "ok": value }),
+                                     Err(refusal) => refusal.frame(id),
+@@ -623,6 +647,7 @@
+                             return stop.into();
+                         }
+                     }
++                }
+                 },
+                 Some(Err(why)) => {
+                     let _ = send(&mut output, &mut guard, refusal(Value::Null, format!("closing the connection: a frame was too long or unreadable ({why})"))).await;
+@@ -744,9 +769,11 @@
+ fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>) {
+     let session = matches!(command, Command::SessionLoad {});
+     let chat_list = matches!(command, Command::ChatList {});
++    let admission = host.maintenance.enter();
+     let task = {
+         let host = Arc::clone(&host);
+         tokio::spawn(async move {
++            let _maintenance = admission?;
+             match device_intent {
+                 Some((endpoint, session, intent)) => host.call_from_device(intent, endpoint, session, id, client_capability).await,
+                 None => host.call_with_client_capability(command, client_capability).await,
+@@ -834,6 +861,7 @@
+ }
+ 
+ enum Request {
++    Maintenance(crate::maintenance::Request),
+     InputClosed,
+     Voice(crate::voice::session::VoiceRequest),
+     VoiceFrame(Value),
+@@ -879,6 +907,10 @@
+         return serde_json::from_value(value)
+             .map(|r| (id, Request::Voice(r)))
+             .map_err(|e| refusal(json!(id), e.to_string()));
++    }
++    if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("maintenance_")) {
++        return serde_json::from_value(value).map(|request| (id, Request::Maintenance(request)))
++            .map_err(|error| refusal(json!(id), error.to_string()));
+     }
+     if value["cmd"] == "hello" {
+         return Err(refusal(json!(id), "already said hello"));
+@@ -1028,6 +1060,35 @@
+         let mut client = connect_to(&daemon, trust);
+         client._data = Some(data);
+         client
++    }
++
++    #[tokio::test]
++    async fn maintenance_blocks_new_commands_and_only_local_connections_can_cancel() {
++        let (daemon, _data) = daemon();
++        let mut local = connect_to(&daemon, Trust::Local); local.hello().await;
++        tokio::time::timeout(Duration::from_secs(2), async {
++            loop {
++                let now = apex_host::maintenance::now_ms();
++                if daemon.host.maintenance.try_begin("lease".into(), now+60_000, now, || daemon.host.maintenance_blockers()).is_ok() { break; }
++                tokio::time::sleep(Duration::from_millis(1)).await;
++            }
++        }).await.unwrap();
++        local.send(json!({"id":1,"cmd":"session_save","args":{"session":{"version":1,"workspaces":[],"panes":[],"profiles":[]}}})).await;
++        assert!(local.until_reply(1).await.last().unwrap()["err"].as_str().unwrap().starts_with("maintenance:"));
++        assert!(daemon.host.session_load().unwrap().is_none());
++        let mut token = connect_to(&daemon, Trust::Token);
++        token.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret"}})).await;
++        assert!(token.next().await.unwrap().get("ok").is_some());
++        token.send(json!({"id":2,"cmd":"maintenance_cancel","args":{"lease":"lease"}})).await;
++        assert_eq!(token.until_reply(2).await.last().unwrap()["err"], "not allowed from a remote connection");
++        token.send(json!({"id":3,"cmd":"maintenance_begin","args":{"nonce":"a".repeat(64)}})).await;
++        assert_eq!(token.until_reply(3).await.last().unwrap()["err"], "not allowed from a remote connection");
++        local.send(json!({"id":4,"cmd":"maintenance_cancel","args":{"lease":"wrong"}})).await;
++        assert!(local.until_reply(4).await.last().unwrap().get("err").is_some());
++        local.send(json!({"id":5,"cmd":"maintenance_cancel","args":{"lease":"lease"}})).await;
++        assert_eq!(local.until_reply(5).await.last().unwrap()["ok"]["cancelled"], true);
++        local.send(json!({"id":6,"cmd":"session_load"})).await;
++        assert_eq!(local.until_reply(6).await.last().unwrap()["ok"], Value::Null);
+     }
+ 
+     #[tokio::test]
+@@ -1165,6 +1226,7 @@
+     /// What a welcome lists; phone voice calls only where this daemon can run the helper.
+     fn hello_capabilities() -> Value {
+         let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1"]);
++        caps.as_array_mut().unwrap().push(json!("maintenance_v1"));
+         if crate::voice::platform_support().is_ok() {
+             caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
+         }
+diff --git a/crates/apex-host/src/assistant_avatar.rs b/crates/apex-host/src/assistant_avatar.rs
+--- a/crates/apex-host/src/assistant_avatar.rs
++++ b/crates/apex-host/src/assistant_avatar.rs
+@@ -385,6 +385,7 @@
+         self: &Arc<Self>,
+         input: Generate,
+     ) -> Result<Job, String> {
++        let maintenance = self.maintenance.enter()?;
+         self.avatar_owner(&input.owner)?;
+         if !valid(&input.generation_id)
+             || !valid(&input.editor_token)
+@@ -442,6 +443,7 @@
+             if dispatch {
+                 let host = Arc::clone(self);
+                 tokio::spawn(async move {
++                    let _maintenance = maintenance;
+                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                     let result = adapter
+                         .generate(&input.owner, &input.generation_id, &input.prompt)
+@@ -466,6 +468,7 @@
+             if dispatch {
+                 let host = Arc::clone(self);
+                 tokio::spawn(async move {
++                    let _maintenance = maintenance;
+                     // This generated directory contains no user project or conversation context.
+                     let workdir = host.data_dir().join("assistant-avatars/codex").join(digest(&serde_json::to_vec(&(&input.owner, &input.generation_id)).unwrap()));
+                     let prepare = (|| -> Result<(), String> {
+@@ -530,6 +533,7 @@
+         let base_url = base_url.clone();
+         let key_env = api_key_env.clone();
+         tokio::spawn(async move {
++            let _maintenance = maintenance;
+             let result = apex_adapters::media::generate_image_bytes(
+                 &base_url,
+                 key_env.as_deref(),
+diff --git a/crates/apex-host/src/assistant_service.rs b/crates/apex-host/src/assistant_service.rs
+--- a/crates/apex-host/src/assistant_service.rs
++++ b/crates/apex-host/src/assistant_service.rs
+@@ -660,6 +660,7 @@
+         if self.assistant_runs.lock().unwrap().contains_key(&task.id) {
+             return child_id;
+         }
++        let Ok(maintenance) = self.maintenance.enter() else { return child_id; };
+         let run = Arc::new(AssistantRun::new());
+         {
+             use std::collections::hash_map::Entry;
+@@ -676,6 +677,7 @@
+         let owner = owner.clone();
+         let child = child_id.clone();
+         self.runtime().spawn(async move {
++            let _maintenance = maintenance;
+             if let Err(error) = host
+                 .dispatch_task(
+                     task.clone(),
+@@ -2543,7 +2545,9 @@
+     isolated_permit: Option<crate::assistant_isolation::IsolatedPermit>,
+ ) {
+     let host_for_task = Arc::clone(&host);
++    let maintenance = host.maintenance.enter().expect("dispatch operation owns admission");
+     host.runtime().spawn(async move {
++        let _maintenance = maintenance;
+         let _isolated_permit = isolated_permit;
+         let run_result = host_for_task.run_batch(&execution_id, &handle, batch).await;
+         let task_before = host_for_task.assistant_tasks.get(&task_id).ok().flatten();
+diff --git a/crates/apex-host/src/bot_copies.rs b/crates/apex-host/src/bot_copies.rs
+--- a/crates/apex-host/src/bot_copies.rs
++++ b/crates/apex-host/src/bot_copies.rs
+@@ -967,6 +967,10 @@
+ }
+ 
+ impl FoldQueue {
++    pub(crate) fn maintenance_busy(&self) -> bool {
++        let working = !self.workers.lock().unwrap().is_empty();
++        working || self.queues.lock().unwrap().values().any(|queue| !queue.is_empty())
++    }
+     pub fn new(data: PathBuf) -> Self {
+         Self {
+             queues: Mutex::default(),
+diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
+--- a/crates/apex-host/src/host.rs
++++ b/crates/apex-host/src/host.rs
+@@ -123,6 +123,7 @@
+ }
+ 
+ pub struct Host {
++    pub maintenance: Arc<crate::maintenance::MaintenanceGate>,
+     paths: HostPaths,
+     /// Protected primary and saved-chat ownership lasts as long as this host.
+     _ownership: Option<apex_provenance::HostOwnership>,
+@@ -252,13 +253,16 @@
+         store.interrupt_client_messages()?;
+         store.settle_promotes()?;
+         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
++        let maintenance = Arc::new(crate::maintenance::MaintenanceGate::default());
++        let compact_maintenance = maintenance.enter()?;
+         let compacting = Arc::clone(&snapshots);
+-        std::thread::spawn(move || compacting.compact());
++        std::thread::spawn(move || { let _maintenance = compact_maintenance; compacting.compact(); });
+         apex_adapters::allow_reading(&paths.data.join("attachments"));
+         apex_adapters::keys::use_folder(&paths.data);
+         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
+         let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
+         let host = Arc::new(Host {
++            maintenance,
+             paths,
+             _ownership: ownership,
+             runtime,
+@@ -294,6 +298,7 @@
+             let host_weak = host_for_reconcile.clone();
+             Box::pin(async move {
+                 let Some(host) = host_weak.upgrade() else { return Err("host shut down".into()); };
++                let _maintenance = host.maintenance.enter()?;
+                 let handle = host.handle(&thread_id)?;
+                 let error = Mutex::new(None);
+                 let batch = handle.runtime.begin_post_with_speaker(
+@@ -733,8 +738,10 @@
+             }
+         }
+         for (tool, model) in reads {
++            let Ok(maintenance) = self.maintenance.enter() else { return; };
+             let (host, room, context) = (Arc::clone(self), room.to_string(), context.clone());
+             self.runtime.spawn(async move {
++                let _maintenance = maintenance;
+                 if let Some(plan) = apex_adapters::plan_usage(tool, model.as_deref(), &context).await {
+                     // The model rides along so a chat with two models of one
+                     // provider shows each its own group.
+@@ -1040,7 +1047,8 @@
+             // changed while the thread was closed isn't this thread's work.
+             let (snapshots, thread, seq) = (Arc::clone(&self.snapshots), id.clone(), snapshot.transcript.len());
+             let retired = Arc::clone(&deleted);
+-            std::thread::spawn(move || { let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
++            let maintenance = self.maintenance.enter()?;
++            std::thread::spawn(move || { let _maintenance = maintenance; let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
+         }
+         self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
+         let stop = room.stop_handle();
+@@ -1184,6 +1192,7 @@
+     }
+ 
+     pub(crate) async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
++        let _maintenance = self.maintenance.enter()?;
+         let _chain = Chain::start(&self.chains);
+         let client_message_id = batch.client_message_id().map(str::to_owned);
+         let error = Mutex::new(None);
+@@ -2323,7 +2332,8 @@
+     /// it never holds `room_lifecycle` or a daemon worker meanwhile.
+     fn forget_snapshots(&self, id: &str) {
+         let (snapshots, thread) = (Arc::clone(&self.snapshots), id.to_string());
+-        std::thread::spawn(move || snapshots.delete(&thread));
++        let Ok(maintenance) = self.maintenance.enter() else { return; };
++        std::thread::spawn(move || { let _maintenance = maintenance; snapshots.delete(&thread); });
+     }
+ 
+     pub fn room_delete(&self, id: String) -> Result<(), String> {
+@@ -2729,6 +2739,22 @@
+     /// Quitting is decided; nothing holds it from now on. The shell exits.
+     pub fn quit_confirm(&self) {
+         self.quit.confirm();
++    }
++
++    /// Called only after maintenance has sealed admission. Runtime reservations
++    /// include accepted turns that have not emitted TurnStarted yet.
++    pub fn maintenance_blockers(&self) -> Result<(), String> {
++        if self.chains.load(Ordering::SeqCst) != 0 { return Err("busy: reply chains are still saving".into()); }
++        for handle in self.rooms.lock().unwrap().values() {
++            if handle.busy() || handle.has_pending_human_waits() || handle.runtime.has_cleanup_holds() { return Err("busy: a room has unfinished work".into()); }
++        }
++        if self.assistant_runs.lock().unwrap().values().any(|run| !run.finished.load(Ordering::SeqCst)) {
++            return Err("busy: an assistant task is unfinished".into());
++        }
++        if !self.personal_stops.lock().unwrap().is_empty() { return Err("busy: a personal operation is unfinished".into()); }
++        if self.fold_queue.maintenance_busy() { return Err("busy: bot changes are being folded".into()); }
++        if self.ptys.list(None).iter().any(|pty| pty.state != "exited") { return Err("busy: a terminal is still running".into()); }
++        Ok(())
+     }
+ 
+     /// End every terminal. Called on the way out.
+diff --git a/crates/apex-host/src/lib.rs b/crates/apex-host/src/lib.rs
+--- a/crates/apex-host/src/lib.rs
++++ b/crates/apex-host/src/lib.rs
+@@ -45,6 +45,7 @@
+ mod model_metrics;
+ pub mod events;
+ pub mod quit;
++pub mod maintenance;
+ pub mod host;
+ pub mod command;
+ #[cfg(test)]
+diff --git a/crates/apex-host/src/maintenance.rs b/crates/apex-host/src/maintenance.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/apex-host/src/maintenance.rs
+@@ -0,0 +1,116 @@
++//! Admission barrier used by the Linux updater. A permit covers work until its
++//! persistence and child-process cleanup have completed.
++
++use std::sync::{Arc, Mutex};
++use std::time::{Duration, Instant};
++
++#[derive(Default)]
++pub struct MaintenanceGate { state: Mutex<State> }
++#[derive(Default)]
++struct State { active: usize, lease: Option<Lease> }
++struct Lease { id: String, deadline: Instant }
++
++pub struct Permit { gate: Arc<MaintenanceGate> }
++impl Drop for Permit {
++    fn drop(&mut self) { self.gate.state.lock().unwrap().active -= 1; }
++}
++
++pub fn now_ms() -> u64 {
++    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
++}
++
++impl MaintenanceGate {
++    pub fn enter(self: &Arc<Self>) -> Result<Permit, String> { self.enter_at(Instant::now()) }
++    fn enter_at(self: &Arc<Self>, now: Instant) -> Result<Permit, String> {
++        let mut state = self.state.lock().unwrap();
++        if state.lease.as_ref().is_some_and(|lease| lease.deadline <= now) { state.lease = None; }
++        if state.lease.is_some() { return Err("maintenance: This server is preparing an idle update. Try again shortly.".into()); }
++        state.active += 1;
++        Ok(Permit { gate: self.clone() })
++    }
++
++    /// Seal admission and verify old runtime state while the same admission
++    /// lock excludes every new permit. A busy refusal leaves admission open.
++    pub fn try_begin(&self, lease: String, expires_at_ms: u64, now: u64, verify: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
++        self.try_begin_at(lease, expires_at_ms, now, Instant::now(), verify)
++    }
++
++    fn try_begin_at(&self, lease: String, expires_at_ms: u64, now: u64, instant: Instant, verify: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
++        let mut state = self.state.lock().unwrap();
++        if state.lease.as_ref().is_some_and(|lease| lease.deadline <= instant) { state.lease = None; }
++        if state.lease.is_some() { return Err("busy: another update holds maintenance".into()); }
++        if state.active != 0 { return Err(format!("busy: {} operations still admitted", state.active)); }
++        if expires_at_ms <= now { return Err("maintenance: expired request".into()); }
++        verify()?;
++        state.lease = Some(Lease { id: lease, deadline: instant + Duration::from_millis(expires_at_ms - now) });
++        Ok(())
++    }
++
++    pub fn cancel(&self, lease: &str) -> Result<(), String> {
++        let mut state = self.state.lock().unwrap();
++        if !state.lease.as_ref().is_some_and(|held| held.id == lease) { return Err("maintenance: unknown lease".into()); }
++        state.lease = None;
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::sync::{Arc, Barrier};
++
++    #[test]
++    fn admitted_work_prevents_maintenance_and_drop_releases_it() {
++        let gate = Arc::new(MaintenanceGate::default());
++        let origin = Instant::now();
++        let at = |ms| origin + Duration::from_millis(ms);
++        let permit = gate.enter_at(at(10)).unwrap();
++        assert!(gate.try_begin_at("lease".into(), 100, 10, at(10), || Ok(())).unwrap_err().starts_with("busy:"));
++        drop(permit);
++        gate.try_begin_at("lease".into(), 100, 10, at(10), || Ok(())).unwrap();
++        assert!(gate.enter_at(at(11)).is_err());
++        assert!(gate.cancel("wrong").is_err());
++        gate.cancel("lease").unwrap();
++        assert!(gate.enter_at(at(12)).is_ok());
++    }
++
++    #[test]
++    fn failed_idle_verification_reopens_admission() {
++        let gate = Arc::new(MaintenanceGate::default());
++        let origin = Instant::now();
++        let at = |ms| origin + Duration::from_millis(ms);
++        assert_eq!(gate.try_begin_at("lease".into(), 100, 10, at(10), || Err("busy: terminal".into())), Err("busy: terminal".into()));
++        assert!(gate.enter_at(at(11)).is_ok());
++    }
++
++    #[test]
++    fn expired_lease_reopens_admission_and_cannot_be_used_to_cancel_another() {
++        let gate = Arc::new(MaintenanceGate::default());
++        let origin = Instant::now();
++        let at = |ms| origin + Duration::from_millis(ms);
++        gate.try_begin_at("old".into(), 20, 10, at(10), || Ok(())).unwrap();
++        assert!(gate.enter_at(at(19)).is_err());
++        assert!(gate.enter_at(at(20)).is_ok());
++        gate.try_begin_at("new".into(), 40, 21, at(21), || Ok(())).unwrap();
++        assert!(gate.cancel("old").is_err());
++        assert!(gate.enter_at(at(22)).is_err());
++    }
++
++    #[test]
++    fn racing_admission_and_seal_cannot_both_succeed() {
++        for _ in 0..500 {
++            let gate = Arc::new(MaintenanceGate::default());
++        let origin = Instant::now();
++        let at = |ms| origin + Duration::from_millis(ms);
++            let barrier = Arc::new(Barrier::new(3));
++            std::thread::scope(|scope| {
++                let g = gate.clone(); let b = barrier.clone();
++                let entered = scope.spawn(move || { b.wait(); let permit = g.enter_at(at(10)); b.wait(); permit.is_ok() });
++                let g = gate.clone(); let b = barrier.clone();
++                let sealed = scope.spawn(move || { b.wait(); let result = g.try_begin_at("lease".into(), 100, 10, at(10), || Ok(())); b.wait(); result.is_ok() });
++                barrier.wait(); barrier.wait();
++                assert!(!(entered.join().unwrap() && sealed.join().unwrap()));
++            });
++        }
++    }
++}
+diff --git a/crates/apex-host/src/monitor_check.rs b/crates/apex-host/src/monitor_check.rs
+--- a/crates/apex-host/src/monitor_check.rs
++++ b/crates/apex-host/src/monitor_check.rs
+@@ -237,6 +237,7 @@
+         F: FnOnce(ParticipantConfig, TurnRequest) -> Fut,
+         Fut: Future<Output = Result<String, String>>,
+     {
++        let _maintenance = self.maintenance.enter()?;
+         let claimed = self.change_monitors(|monitors| {
+             let m = monitors
+                 .iter_mut()
+diff --git a/crates/apex-host/src/next_steps.rs b/crates/apex-host/src/next_steps.rs
+--- a/crates/apex-host/src/next_steps.rs
++++ b/crates/apex-host/src/next_steps.rs
+@@ -18,8 +18,10 @@
+ /// message or another turn since then means there is nothing to suggest.
+ /// `answers` is the finished chain's interactive-answers preference.
+ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
++    let Ok(maintenance) = host.maintenance.enter() else { return; };
+     let runtime = host.runtime().clone();
+     runtime.spawn(async move {
++        let _maintenance = maintenance;
+         if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
+         let prepared = {
+             let current = handle.room.lock().await;
+diff --git a/crates/apex-host/src/personal_worker.rs b/crates/apex-host/src/personal_worker.rs
+--- a/crates/apex-host/src/personal_worker.rs
++++ b/crates/apex-host/src/personal_worker.rs
+@@ -501,6 +501,11 @@
+             let mut held: HashMap<tokio::task::Id, Vec<String>> = HashMap::new();
+             loop {
+                 let Some(host) = owner.upgrade() else { break };
++                let Ok(maintenance) = host.maintenance.enter() else {
++                    drop(host);
++                    tokio::time::sleep(Duration::from_millis(250)).await;
++                    continue;
++                };
+                 let mut delay = Duration::from_secs(60);
+                 match host.personal_tick(now()) {
+                     Ok(tick) => {
+@@ -509,7 +514,8 @@
+                         }
+                         if !tick.pushes.is_empty() {
+                             let host = host.clone();
+-                            tokio::spawn(async move { host.personal_push(tick.pushes).await });
++                            let push_maintenance = host.maintenance.enter().expect("scheduler owns admission");
++                            tokio::spawn(async move { let _maintenance = push_maintenance; host.personal_push(tick.pushes).await });
+                         }
+                     }
+                     Err(error) => eprintln!("Personal assistant clock: {error}"),
+@@ -520,7 +526,11 @@
+                     Ok(claimed) => {
+                         for (keys, work) in claimed {
+                             let (host, tools) = (host.clone(), tools.clone());
++                            // The scheduler's permit keeps admission open until
++                            // every claimed job owns its own permit.
++                            let job_maintenance = host.maintenance.enter().expect("scheduler owns admission");
+                             let job = jobs.spawn(async move {
++                                let _maintenance = job_maintenance;
+                                 if let Err(error) = host.personal_do(&tools, work).await {
+                                     eprintln!("Personal assistant: {error}");
+                                 }
+@@ -533,6 +543,7 @@
+                         delay = delay.min(Duration::from_secs(5));
+                     }
+                 }
++                drop(maintenance);
+                 drop(host);
+                 tokio::select! {
+                     Some(done) = jobs.join_next_with_id(), if !jobs.is_empty() => {

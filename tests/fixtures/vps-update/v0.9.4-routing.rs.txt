@@ -1,0 +1,60 @@
+// Exact bounded routing excerpts from 10f47ca9e5044cba0f4e2e33ec8dc26cdb8a382d. Not a compilable crate.
+impl Command {
+    /// Read a command from `{ "cmd", "args" }`.
+}
+impl Host {
+    pub async fn call_with_client_capability(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+        #[cfg(feature="test-support")]
+        if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,capability).await;}
+        use Command::*;
+        let needs_receipt = |command:&Command| -> Result<bool,String> {
+            if command.requires_provenance() {return Ok(true);}
+            match command {
+                RoomPost{id,..}|RoomPostTo{id,..}|RoomTurn{id,..} => Ok(self.assistant_tasks.execution(id).map_err(|e|e.to_string())?.is_some()),
+                _ => Ok(false),
+            }
+        };
+        let mut source_key=None;
+        let command = match command {
+            ProvenanceExecute { receipt } => {
+                let data_dir = self.data_dir().to_path_buf();
+                let original = blocking(move || apex_provenance::io::consume(&receipt, &data_dir)).await?;
+                source_key=Some(original.key);
+                let command = Command::from_json(original.command)?;
+                if !(command.requires_provenance() || matches!(command,RoomPost{..}|RoomPostTo{..}|RoomTurn{..})) { return Err("Attested command is outside the protected submission surface".into()); }
+                command
+            }
+            command if needs_receipt(&command)? => return Err("A protected provenance receipt from the installed Apex UI is required; local socket and CLI access do not establish human origin.".into()),
+            command => command,
+        };
+        let result=self.dispatch_command(command,capability).await;
+        if let Some(key)=source_key {
+            let folder=self.data_dir().to_path_buf();
+            let reason=result.as_ref().err().cloned();
+            blocking(move||apex_provenance::io::finish(&folder,&key,reason.as_deref())).await
+                .map_err(|e|format!("The command may have completed, but its protected outcome could not be recorded. Do not retry automatically: {e}"))?;
+        }
+        result
+    }
+
+    /// Called only with the peer ID
+    pub async fn call_from_device(self: &Arc<Self>, intent: Value, endpoint: String, session: String, request_id: u64, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+        let command = Command::from_json(intent.clone())?;
+        if matches!(command, Command::ProvenanceExecute { .. }) { return Err("A paired phone cannot execute desktop receipts".into()); }
+        // Linux has no signed Mac broker. Preserve its existing public command
+        // gate: ordinary reads/chat work, protected commands still need a receipt.
+        if cfg!(target_os = "linux") {
+            // The one exception: a chat becoming a Work thread. There is no
+            // receipt to check here, so the machine's own folder list is the
+            // authorization — see `apex-daemon allow-root`.
+            if self.device_folder_command(&command)? {
+                return self.dispatch_command(command, capability).await;
+            }
+            return self.call_with_client_capability(command, capability).await;
+        }
+        #[cfg(feature="test-support")]
+    }
+}
+#[cfg(test)]
+mod tests {
+}

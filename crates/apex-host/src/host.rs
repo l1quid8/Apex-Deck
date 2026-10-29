@@ -122,6 +122,9 @@ pub struct HostPaths {
     pub downloads: Option<PathBuf>,
 }
 
+#[path = "runner/runtime.rs"]
+mod runner_runtime;
+
 pub struct Host {
     paths: HostPaths,
     /// Protected primary and saved-chat ownership lasts as long as this host.
@@ -158,6 +161,9 @@ pub struct Host {
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
     pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
+    runner_workers: Mutex<std::collections::HashSet<String>>,
+    runner_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(crate) runner_service: Arc<Mutex<crate::runner::service::RunnerService>>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -258,6 +264,7 @@ impl Host {
         apex_adapters::keys::use_folder(&paths.data);
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
         let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
+        let runner_service = Arc::new(Mutex::new(crate::runner::service::RunnerService::new(paths.data.clone())));
         let host = Arc::new(Host {
             paths,
             _ownership: ownership,
@@ -287,6 +294,7 @@ impl Host {
             steps: Default::default(),
             phone,
             fold_queue,
+            runner_service, runner_workers: Mutex::default(), runner_gates: Mutex::default(),
         });
 
         let host_for_reconcile = Arc::downgrade(&host);
@@ -405,6 +413,19 @@ impl Host {
         // reads protected state and must wait for an admitted host restart.
         if protected_ledgers_available {
             host.redispatch_recovered_queued()?;
+            // Runner recovery: unfinished runners become paused with reason recovery, no auto-replay
+            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let mut runners = host.runner_service.lock().unwrap();
+            if let Err(error) = runners.recover_paused(now_ms) {
+                // Runner storage is optional for ordinary chat. Never replace
+                // unreadable state with an empty writable ledger or dispatch
+                // anything that did not complete restart recovery.
+                eprintln!("[apex-deck] goals and loops unavailable: runner recovery failed ({error}); saved state retained. Repair the protected runner ledger and restart the host.");
+                runners.disable(error);
+            }
+            drop(runners);
+            let processes=host.paths.data.join("runner-processes");
+            if processes.exists() {apex_adapters::recover_owned_processes(&processes.canonicalize().map_err(|e|e.to_string())?).map_err(|e|format!("Runner check cleanup failed: {e}"))?;}
         }
         Ok(host)
     }
@@ -1101,7 +1122,71 @@ impl Host {
         let snapshot = saved.snapshot;
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
-        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone()}))
+        let runner = self.runner_service.lock().unwrap().state(&id).ok().flatten();
+        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
+
+    }
+
+    pub fn room_runner_state(self: &Arc<Self>, id: String) -> Result<Option<serde_json::Value>, String> {
+        let runner = self.runner_service.lock().unwrap().state(&id)?;
+        runner.map(|s| {let mut value=serde_json::to_value(s).map_err(|e|e.to_string())?;value["hostNow"]=serde_json::json!(runner_runtime::now());Ok(value)}).transpose()
+    }
+
+    pub async fn room_runner_start(self: &Arc<Self>, input: crate::runner::service::RunnerStartInput) -> Result<serde_json::Value, String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let gate = self.runner_gate(&input.id);
+        let _guard = gate.lock().await;
+        if let Some(receipt)=self.runner_service.lock().unwrap().replay(&input.request_id,&input.id)? {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Applied(receipt)).map_err(|e|e.to_string());
+        }
+        let handle = self.handle(&input.id)?;
+        if input.expected_room_revision.is_some_and(|revision|revision!=handle.observation_revision.load(Ordering::SeqCst)) {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Conflict(self.runner_service.lock().unwrap().state(&input.id)?)).map_err(|e|e.to_string());
+        }
+        if handle.plan.load(Ordering::SeqCst) { return Err("Turn off Plan before starting a goal or loop".into()); }
+        let configs = handle.room.lock().await.configs();
+        if input.runner.workers.iter().chain(input.runner.checker.iter()).any(|id| !configs.iter().any(|p| p.id.as_str() == id)) { return Err("Runner participant is not in this room".into()); }
+        let res = self.runner_service.lock().unwrap().start(input.clone(), now_ms)?;
+        if let crate::runner::service::RunnerMutation::Applied(snapshot)=&res {
+            let note=format!("{} started: {}\nWorking: {} · {} turns/runs · {} calls · {} minutes lifetime. Measurable spend cap: ${:.2}, best effort; unavailable costs remain unknown. [Runner {}]",if snapshot.kind==crate::runner::RunnerKind::Goal{"Goal"}else{"Loop"},snapshot.objective.as_deref().or(snapshot.prompt.as_deref()).unwrap_or(""),snapshot.workers.join(", "),snapshot.limits.max_turns.unwrap_or(30),snapshot.limits.max_invocations.unwrap_or(120),snapshot.limits.lifetime_ms/60000,snapshot.limits.max_cost_micros.unwrap_or(0) as f64/1e6,snapshot.id);
+            self.runner_note(&input.id,&handle,&note).await?;
+        }
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.runner_changed(&input.id);
+        self.ensure_runner(input.id.clone());
+        // Cancel/suppress any in-flight next-step suggestion when starting a runner
+        if let Ok(handle) = self.handle(&input.id) {
+            self.room_event(&input.id, RoomEvent::NextSteps { id: ParticipantId::new("runner"), steps: vec![], pending: false });
+            // Also clear live next_steps cache
+            handle.live.lock().unwrap().next_steps = None;
+        }
+        Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
+    }
+
+    pub async fn room_runner_action(self: &Arc<Self>, input: crate::runner::service::RunnerActionInput) -> Result<serde_json::Value, String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let room = input.id.clone();
+        let action = input.action.action.clone();
+        let gate = self.runner_gate(&room);
+        let _guard = gate.lock().await;
+        if let Some(receipt)=self.runner_service.lock().unwrap().replay(&input.request_id,&input.id)? {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Applied(receipt)).map_err(|e|e.to_string());
+        }
+        let res = self.runner_service.lock().unwrap().action(input, now_ms)?;
+        if matches!(res, crate::runner::service::RunnerMutation::Applied(_)) {
+            if matches!(action.as_str(), "pause" | "end") || matches!(&res,crate::runner::service::RunnerMutation::Applied(s) if s.phase==crate::runner::RunnerPhase::Paused) {
+                if let Ok(handle) = self.handle(&room) { handle.runtime.stop(None); if action == "end" { handle.approvals.reject_all(); } }
+            }
+            if action=="end" {
+                if let crate::runner::service::RunnerMutation::Applied(snapshot)=&res {
+                    let handle=self.handle(&room)?;
+                    self.runner_note(&room,&handle,&format!("{} ended. {} turns/runs · {} calls. Progress and history retained. [Runner {} ended]",if snapshot.kind==crate::runner::RunnerKind::Goal{"Goal"}else{"Loop"},snapshot.usage.turns,snapshot.usage.invocations,snapshot.id)).await?;
+                }
+            }
+            self.runner_changed(&room);
+            self.ensure_runner(room);
+        }
+        Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -1234,8 +1319,14 @@ impl Host {
 
     pub(crate) async fn room_post_with_answer_guidance(self: &Arc<Self>, id: String, text: String, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), vec![], None, answers, capability).await? { return Ok(()); }
+        let gate = self.runner_gate(&id);
+        let guard = gate.lock().await;
         let handle = self.handle(&id)?;
+        let interrupted = self.runner_service.lock().unwrap().yield_to_human(&id)?;
+        if interrupted { handle.runtime.stop(None); handle.approvals.reject_all(); }
+        self.runner_changed(&id);
         let batch = self.prepare_post(&id, &handle, &text, None).await?.with_answer_guidance(answers, capability);
+        drop(guard);
         self.run_batch(&id, &handle, batch).await
     }
 
@@ -1250,8 +1341,14 @@ impl Host {
 
     pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None, answers, capability).await? { return Ok(()); }
+        let gate = self.runner_gate(&id);
+        let guard = gate.lock().await;
         let handle = self.handle(&id)?;
+        let interrupted = self.runner_service.lock().unwrap().yield_to_human(&id)?;
+        if interrupted { handle.runtime.stop(None); handle.approvals.reject_all(); }
+        self.runner_changed(&id);
         let batch = self.prepare_post(&id, &handle, &text, Some(targets)).await?.with_answer_guidance(answers, capability);
+        drop(guard);
         self.run_batch_in_background(id, handle, batch);
         Ok(())
     }
@@ -1273,11 +1370,20 @@ impl Host {
     pub(crate) async fn room_client_post(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<serde_json::Value, String> {
         if self.assistant_tasks.execution(&id).map_err(|error| error.to_string())?.is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
         if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
+        let runner_gate = self.runner_gate(&id);
+        let runner_guard = runner_gate.lock().await;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         // A resend of a message the chat already took still gets its record.
         let known = handle.checkpoint.lock().unwrap().snapshot.client_messages.contains_key(&request_id);
-        if !known { self.refuse_moved_chat(&id)?; }
+        if !known {
+            self.refuse_moved_chat(&id)?;
+            if self.runner_service.lock().unwrap().yield_to_human(&id)? {
+                handle.runtime.stop(None);
+                handle.approvals.reject_all();
+            }
+            self.runner_changed(&id);
+        }
         // Acceptance already committed this event. Publishing it must not do
         // a second fallible save and abandon an accepted batch before launch.
         let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot), &|event| {
@@ -1287,6 +1393,7 @@ impl Host {
             // A move to a Work thread closes this handle between the check
             // above and acceptance; say where the chat went, not "reopen".
             .map_err(|why| if known { why } else { self.refuse_moved_chat(&id).err().unwrap_or(why) })?;
+        drop(runner_guard);
         if let Some(batch) = batch {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             let batch = batch.with_answer_guidance(if voice { Some(false) } else { answers }, capability);
@@ -1601,6 +1708,10 @@ impl Host {
     }
 
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
+        // Runner: Stop during countdown also pauses
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().pause_reason(&id, crate::runner::RunnerReason::Human, now_ms);
+        self.runner_changed(&id);
         if let Some(entry) = self.assistant_tasks.execution(&id).ok().flatten() {
             if let Some(run) = self.assistant_runs.lock().unwrap().get(&entry.task_id) { run.stop.store(true, Ordering::SeqCst); }
         }
@@ -1613,6 +1724,7 @@ impl Host {
                 handle.approvals.reject_all();
             }
         }
+
     }
 
     /// Turn the thread's Plan switch on or off. Saved at once; every client
@@ -1624,6 +1736,7 @@ impl Host {
             return Err("Talk-only chat rooms do not use Plan mode.".into());
         }
         if self.store_plan(&id, &handle, on)? {
+            self.invalidate_room_runner(&id)?;
             self.room_event(&id, RoomEvent::PlanChanged { on });
         }
         Ok(())
@@ -1790,6 +1903,7 @@ impl Host {
                 return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
             }
         } else { room.replace_participant(replacement); }
+        self.invalidate_room_runner(&id)?;
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
         // Save and broadcast under the same room lock as the merge so concurrent
         // devices cannot emit older settings after newer ones.
@@ -1836,6 +1950,8 @@ impl Host {
     }
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
+        // Worker removal pauses runner
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
             return Err("Use chat_remove_participant for talk-only chat rooms.".into());
@@ -1882,6 +1998,7 @@ impl Host {
 
     /// Empty a chat's transcript, keeping its participants and settings.
     pub async fn room_clear(&self, id: String) -> Result<(), String> {
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1900,6 +2017,7 @@ impl Host {
 
     /// Retry: delete every message from `upto` on. The caller then runs a turn.
     pub async fn room_rewind(&self, id: String, upto: usize) -> Result<(), String> {
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1927,6 +2045,7 @@ impl Host {
     /// ones that didn't exist), and with `chat`, delete message `at` and
     /// everything after it. Returns the files it couldn't put back.
     pub async fn room_revert(&self, id: String, at: usize, bot: Option<ParticipantId>, chat: bool, files: Vec<String>) -> Result<Vec<String>, String> {
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -2327,6 +2446,8 @@ impl Host {
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
+        self.invalidate_room_runner(&id)?;
+        self.runner_service.lock().unwrap().remove(&id)?;
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let handle = self.handle(&id).ok();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
@@ -2649,6 +2770,7 @@ impl Host {
         handle.runtime.stop(None);
         handle.approvals.reject_all();
         self.tool_servers.lock().unwrap().retain(|key, _| !key.starts_with(&format!("{id}:")));
+        self.invalidate_room_runner(&id)?;
         // Complete removal before the new room takes any checkpoints.
         self.snapshots.delete(&id);
         Ok(serde_json::json!({"cwd":target,"mounts":mounts}))
@@ -2681,6 +2803,7 @@ impl Host {
             }
             return self.store.import_room(&id, &saved);
         }
+        self.invalidate_room_runner(&id)?;
         match self.handle(&id) {
             // Under the checkpoint lock no event of the old room saves over the
             // new copy, and once it is written none ever will.
@@ -3109,6 +3232,107 @@ fn bot_model(bot: &ParticipantConfig) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    struct RunnerApprovalBot { config:ParticipantConfig, calls:AtomicUsize, acted:AtomicUsize }
+    #[async_trait::async_trait]
+    impl apex_core::Participant for RunnerApprovalBot {
+        fn config(&self)->&ParticipantConfig{&self.config}
+        async fn respond(&self,_:apex_core::TurnRequest,_:apex_core::DeltaSink<'_>)->Result<apex_core::Reply,apex_core::ParticipantError>{unreachable!()}
+        async fn respond_with_approvals(&self,_:apex_core::TurnRequest,_:apex_core::ProgressSink<'_>,approver:&dyn apex_core::Approver)->Result<apex_core::Reply,apex_core::ParticipantError>{
+            self.calls.fetch_add(1,Ordering::SeqCst);
+            let approved=approver.decide(apex_core::ProposedAction{kind:apex_core::ActionKind::Command,title:"Fixture action".into(),detail:"fixture-only action".into(),expires_at:None,risky:false}).await.approved();
+            if approved{self.acted.fetch_add(1,Ordering::SeqCst);}
+            Ok(apex_core::Reply::text("Fixture was cancelled"))
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_pause_resume_reasks_and_end_retires_real_approval() {
+        use apex_core::Participant;
+        use crate::runner::{model::*,service::*};
+        let (mut handle,_,path)=checkpoint_fixture("runner-approval");
+        let mut config=apex_core::testing::ScriptedParticipant::new("w",&[]).config().clone();config.access=apex_core::Access::Ask;
+        let bot=Arc::new(RunnerApprovalBot{config,calls:AtomicUsize::new(0),acted:AtomicUsize::new(0)});
+        handle.runtime=ConcurrentRoom::new(Room::new(vec![bot.clone()],RoomOptions::default()));handle.room=handle.runtime.room();handle.approvals=handle.room.lock().await.approvals_handle();
+        let host=Host::new(HostPaths{data:path.join("data"),downloads:None},tokio::runtime::Handle::current());host.rooms.lock().unwrap().insert("r".into(),handle.clone());
+        host.room_runner_start(RunnerStartInput{id:"r".into(),request_id:"start".into(),expected_room_revision:None,runner:RunnerStartPayload{schema_version:1,kind:RunnerKind::Goal,objective:Some("Fixture approval".into()),prompt:None,interval_seconds:None,workers:vec!["w".into()],checker:None,limits:RunnerLimits::default_limits(),checks:vec![]}}).await.unwrap();
+        async fn pending(host:&Host,old:Option<&str>)->String{
+            tokio::time::timeout(std::time::Duration::from_secs(4),async{loop{let s=host.runner_service.lock().unwrap().state("r").unwrap().unwrap();if s.phase==RunnerPhase::Waiting{if let Some(id)=s.pending_request_id{if Some(id.as_str())!=old{return id;}}}tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}).await.unwrap()
+        }
+        async fn act(host:&Arc<Host>,action:&str){let s=host.runner_service.lock().unwrap().state("r").unwrap().unwrap();host.room_runner_action(RunnerActionInput{id:"r".into(),runner_id:s.id,expected_revision:s.revision,request_id:format!("action-{action}"),action:RunnerActionPayload{action:action.into(),limits:None}}).await.unwrap();}
+        let first=pending(&host,None).await;act(&host,"pause").await;
+        assert_eq!(host.runner_service.lock().unwrap().state("r").unwrap().unwrap().pending_request_id.as_deref(),Some(first.as_str()));
+        act(&host,"resume").await;let second=pending(&host,Some(&first)).await;
+        assert_eq!(bot.acted.load(Ordering::SeqCst),0);act(&host,"end").await;
+        assert!(host.room_decide("r".into(),first,true,None).is_err());assert!(host.room_decide("r".into(),second,true,None).is_err());
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(bot.calls.load(Ordering::SeqCst),2);assert_eq!(bot.acted.load(Ordering::SeqCst),0);assert_eq!(host.runner_service.lock().unwrap().state("r").unwrap().unwrap().phase,RunnerPhase::Ended);
+        host.shutdown();std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_yields_to_client_delivery_once_without_replaying_on_retry() {
+        use crate::runner::{model::*, service::*, scheduler::*};
+        let (_, _, path) = checkpoint_fixture("runner-client-delivery");
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, tokio::runtime::Handle::current());
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        let reserve = |service: &RunnerService, time| {
+            let dispatch = service.reconcile("r", RunnerWake::Timer, time).unwrap().unwrap();
+            service.reserve_dispatch(&dispatch, time).unwrap()
+        };
+        let first = {
+            let service = host.runner_service.lock().unwrap();
+            service.start(RunnerStartInput { id: "r".into(), request_id: "start".into(), expected_room_revision: None, runner: RunnerStartPayload {
+                schema_version: 1, kind: RunnerKind::Goal, objective: Some("Check the result".into()), prompt: None, interval_seconds: None, workers: vec!["w".into()], checker: None, limits: RunnerLimits::default_limits(), checks: vec![],
+            }}, 1000).unwrap();
+            reserve(&service, 1000)
+        };
+        let send = || host.room_client_post("r".into(), "Human steering".into(), Some(vec![]), "human-1".into(), false, false, Some(0), None, apex_core::GeneratedUiCapability::Unsupported);
+        send().await.unwrap();
+        let next = {
+            let service = host.runner_service.lock().unwrap();
+            let yielded = service.state("r").unwrap().unwrap();
+            assert!(yielded.generation > first.generation, "New client messages must invalidate an active runner attempt");
+            assert!(yielded.in_flight.is_none());
+            assert_eq!(yielded.phase, RunnerPhase::Running, "Human delivery must not permanently pause the runner");
+            reserve(&service, 1100)
+        };
+        send().await.unwrap();
+        let after_retry = host.runner_service.lock().unwrap().state("r").unwrap().unwrap();
+        assert_eq!(after_retry.generation, next.generation, "Retry must not interrupt replacement work");
+        assert_eq!(after_retry.in_flight, next.in_flight);
+        host.shutdown();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_host_dispatches_goal_and_completes_from_actual_reply() {
+        use crate::runner::{model::*, service::*};
+        let (mut handle, _, path) = checkpoint_fixture("runner-live");
+        let reply = "Work complete.\n```apex-runner\n{\"version\":1,\"disposition\":\"done\",\"done\":\"Checked the result\",\"next\":\"\",\"blocker\":null,\"criteria\":[{\"id\":\"result\",\"status\":\"done\",\"evidence\":[\"Observed result in this reply\"]}]}\n```";
+        let bot = Arc::new(apex_core::testing::ScriptedParticipant::new("null", &[reply]));
+        handle.runtime = ConcurrentRoom::new(Room::new(vec![bot.clone()], RoomOptions::default()));
+        handle.room = handle.runtime.room();
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, tokio::runtime::Handle::current());
+        host.rooms.lock().unwrap().insert("chat".into(), handle);
+        host.room_runner_start(RunnerStartInput { id: "chat".into(), request_id: "start".into(), expected_room_revision: None, runner: RunnerStartPayload {
+            schema_version: 1, kind: RunnerKind::Goal, objective: Some("Check the result".into()), prompt: None, interval_seconds: None, workers: vec!["null".into()], checker: None, limits: RunnerLimits::default_limits(), checks: vec![],
+        }}).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if host.runner_service.lock().unwrap().state("chat").unwrap().unwrap().phase == RunnerPhase::Completed { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("host must actually dispatch and finish the goal");
+        let requests = bot.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].system.contains("apex-runner"));
+        let snapshot = host.runner_service.lock().unwrap().state("chat").unwrap().unwrap();
+        assert_eq!(snapshot.usage.invocations, 1);
+        assert_eq!(snapshot.usage.turns, 1);
+        host.shutdown();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn direct_host_construction_secures_the_parent_of_saved_rooms_and_checkpoints() {
@@ -4794,6 +5018,36 @@ done
 #[cfg(test)]
 mod protected_host_ownership_tests {
     use super::*;
+    #[test]
+    fn unreadable_runner_ledger_does_not_stop_host_or_allow_runner_writes() {
+        let root = std::env::temp_dir().join(format!("apex-runner-startup-error-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let ledger = crate::authority_file::fixture_path(&root.join("room-runners-v1.json"));
+        std::fs::write(&ledger, b"{broken").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let host = Host::try_new(HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone())
+            .unwrap_or_else(|e| panic!("Runner recovery must not take down the host: {e}"));
+        assert!(host.settings_load().is_ok(), "Unrelated host commands must remain available");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        runtime.block_on(host.room_post("r".into(), "Ordinary chat still works".into())).unwrap();
+        host.invalidate_room_runner("r").unwrap();
+        let error = host.room_runner_state("r".into()).unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
+        assert_eq!(std::fs::read(&ledger).unwrap(), b"{broken");
+        // Even if storage becomes readable, this host must not dispatch an
+        // unrecovered runner. Only a new startup may reopen the service.
+        std::fs::write(&ledger, br#"{"runners":{},"receipts":{}}"#).unwrap();
+        assert!(host.room_runner_state("r".into()).is_err());
+        assert!(host.runner_service.lock().unwrap().remove("r").is_err());
+        host.shutdown();
+        drop(host);
+        let restarted = Host::try_new(HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone()).unwrap();
+        assert_eq!(restarted.room_runner_state("r".into()).unwrap(), None);
+        restarted.shutdown();
+        drop(restarted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn held_kernel_ownership_is_fatal_instead_of_empty_ledger_fallback() {
         let result = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Held("canonical scope".into()))));

@@ -169,6 +169,9 @@ pub fn command_needs(command: &Command) -> Need {
         // Legacy migration reads every old ledger and transcript on this Mac, and
         // its apply is a UI-attested intent issued only for this Mac.
         LegacyImportPreview {} | LegacyImportApply { .. } | LegacyImportHistory { .. } => Need::Never,
+        RoomRunnerStart { input } => chat(thread(&input.id)),
+        RoomRunnerAction { input } => chat(thread(&input.id)),
+        RoomRunnerState { id } => read(thread(id)),
     }
 }
 
@@ -177,6 +180,7 @@ pub fn event_needs(event: &HostEvent) -> Need {
     match event {
         HostEvent::AssistantTasksChanged { .. } => read(Scope::Global),
         HostEvent::PersonalChanged { .. } => full(Scope::Global),
+        HostEvent::RoomRunnerChanged { room, .. } => read(thread(room)),
         HostEvent::Room { room, .. } => read(thread(room)),
         HostEvent::PtyData { .. } | HostEvent::PtyExit { .. } | HostEvent::PtyRenamed { .. } => full(Scope::Global),
         // Names other threads; limited devices reload with session_load instead.
@@ -509,6 +513,9 @@ mod tests {
             ("legacy_import_preview", None, json!({})),
             ("legacy_import_apply", None, json!({ "snapshot": "20261022-101501", "sources": {} })),
             ("legacy_import_history", None, json!({ "snapshot": "20261022-101501", "requestId": "r" })),
+            ("room_runner_start", Some((Chat, "thread")), json!({ "id": "mine", "requestId": "r1", "runner": { "schemaVersion": 1, "kind": "goal", "objective": "obj", "workers": ["w1"], "limits": { "schemaVersion": 1, "lifetimeMs": 7200000 } } })),
+            ("room_runner_action", Some((Chat, "thread")), json!({ "id": "mine", "runnerId": "r1", "expectedRevision": 1, "requestId": "r2", "action": { "action": "pause" } })),
+            ("room_runner_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
         ]
     }
 

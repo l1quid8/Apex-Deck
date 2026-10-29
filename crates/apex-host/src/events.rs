@@ -30,6 +30,8 @@ pub enum HostEvent {
     /// A personal assistant's record changed. Clients reload it with `personal_get`.
     #[serde(rename = "personal-changed")]
     PersonalChanged { #[serde(rename = "assistantId")] assistant_id: String, revision: u64 },
+    #[serde(rename = "room-runner-changed")]
+    RoomRunnerChanged { room: String, snapshot: Option<crate::runner::RunnerSnapshot> },
     /// Something happened in a group chat.
     #[serde(rename = "room-event")]
     Room { room: String, event: RoomEvent, #[serde(skip_serializing_if = "Option::is_none")] recovery_seq: Option<u64> },
@@ -59,6 +61,7 @@ impl HostEvent {
         match self {
             HostEvent::AssistantTasksChanged { .. } => "assistant-tasks-changed",
             HostEvent::PersonalChanged { .. } => "personal-changed",
+            HostEvent::RoomRunnerChanged { .. } => "room-runner-changed",
             HostEvent::Room { .. } => "room-event",
             HostEvent::PtyData { .. } => "pty-data",
             HostEvent::PtyExit { .. } => "pty-exit",

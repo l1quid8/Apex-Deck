@@ -144,6 +144,10 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomCompact: (id) => call("room_compact", { id }),
     roomClose: (id) => call("room_close", { id }),
     roomDelete: (id) => call("room_delete", { id }),
+    onRoomRunnerChanged: (cb) => transport.listen<{room: string; snapshot: import("./runner/types.ts").RunnerSnapshot | null}>("room-runner-changed", p => cb(p.room,p.snapshot)),
+    roomRunnerState: (id) => call("room_runner_state", { id }),
+    roomRunnerStart: (roomId, _runnerId, revision, requestId, payload) => call("room_runner_start", { id: roomId, requestId, expectedRoomRevision:revision, runner: payload } as any),
+    roomRunnerAction: (roomId, runnerId, revision, requestId, action) => call("room_runner_action", { id: roomId, runnerId, expectedRevision: revision, requestId, action } as any),
     onRoomEvent: (cb) => transport.listen<{ room: string; event: RoomEvent; recovery_seq?: number }>("room-event", (p) => cb(p.room, p.recovery_seq == null ? p.event : { ...p.event, recovery_seq: p.recovery_seq })),
   };
 }

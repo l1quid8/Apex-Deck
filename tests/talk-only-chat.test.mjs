@@ -92,3 +92,23 @@ test('promoted chats refuse interactive-card saves including already queued save
   await assert.rejects(()=>adapted.answerSave('r','card','fingerprint',{},0),/moved to a Work thread/);
   assert.equal(saves,0);
 });
+
+test('runner mutations respect chat move and reconnect fences', async () => {
+  const calls = [];
+  let online = true, blocked = 'This chat moved to a Work thread.';
+  const adapted = chatThreadBackend({
+    roomRunnerStart: async () => { calls.push('start'); },
+    roomRunnerAction: async () => { calls.push('action'); },
+  }, { room:'r', online:()=>online, blocked:()=>blocked, cached:()=>null, remember(){}, send(){}, profile(){} });
+  for (const method of ['roomRunnerStart', 'roomRunnerAction']) {
+    await assert.rejects(() => adapted[method]('r'), /moved to a Work thread/);
+    blocked = null; online = false;
+    await assert.rejects(() => adapted[method]('r'), /reconnecting/);
+    online = true; blocked = 'This chat moved to a Work thread.';
+  }
+  assert.deepEqual(calls, []);
+  blocked = null;
+  await adapted.roomRunnerStart('r');
+  await adapted.roomRunnerAction('r');
+  assert.deepEqual(calls, ['start', 'action']);
+});

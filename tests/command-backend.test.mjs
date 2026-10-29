@@ -132,6 +132,9 @@ const COMMANDS = [
   ['roomImport', ['f', { transcript: [] }, '/srv/x'], 'room_import', { id: 'f', snapshot: { transcript: [] }, cwd: '/srv/x', replace: false }],
   ['roomImport', ['f', { transcript: [] }, '', true], 'room_import', { id: 'f', snapshot: { transcript: [] }, cwd: null, replace: true }],
   ['roomCompact', ['t'], 'room_compact', { id: 't' }],
+  ['roomRunnerState', ['t'], 'room_runner_state', {id:'t'}],
+  ['roomRunnerStart', ['t','',0,'req',{schemaVersion:1}], 'room_runner_start', {id:'t',requestId:'req',expectedRoomRevision:0,runner:{schemaVersion:1}}],
+  ['roomRunnerAction', ['t','runner',3,'req',{action:'pause'}], 'room_runner_action', {id:'t',runnerId:'runner',expectedRevision:3,requestId:'req',action:{action:'pause'}}],
   ['roomClose', ['t'], 'room_close', { id: 't' }],
   ['roomDelete', ['t'], 'room_delete', { id: 't' }],
 ];
@@ -255,7 +258,7 @@ test('phone methods send the phone commands', async () => {
 
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
-  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
+  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onRoomRunnerChanged', 'onSessionChanged', 'onAssistantTasksChanged',
     'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'modelMetrics', 'roomBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });
@@ -272,4 +275,11 @@ test('simulator catalog, controls and gesture geometry use the shared phone API'
     { cmd: 'phone_control', args: { control: { kind: 'fold', folded: true } } },
     { cmd: 'phone_human', args: { input: { kind: 'tap', x: 1, y: 2 }, geometry } },
   ]);
+});
+
+test('runner events preserve room ownership and authoritative snapshots',async()=>{
+ const transport=recording();const backend=commandBackend(transport,stubShell());const heard=[];
+ await backend.onRoomRunnerChanged((room,snapshot)=>heard.push({room,snapshot}));
+ transport.listens[0].cb({room:'t',snapshot:{id:'r',revision:4}});
+ assert.equal(transport.listens[0].event,'room-runner-changed');assert.deepEqual(heard,[{room:'t',snapshot:{id:'r',revision:4}}]);
 });

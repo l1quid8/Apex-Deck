@@ -9,16 +9,10 @@ on Ubuntu 22.04 or 24.04 (no desktop needed) and start it at boot.
 Check the server's CPU first: `uname -m` prints `x86_64` (most VPSs) or
 `aarch64` (ARM: Hetzner CAX, Oracle Ampere).
 
-- **From a release:** each release from 0.5.0 on has `apex-daemon-linux-x86_64`
-  and `apex-daemon-linux-arm64` on its
-  [releases page](https://github.com/l1quid8/Apex-Deck/releases). On the
-  server, for the latest release (for another, put `download/v0.5.0` in
-  place of `latest/download`):
-  ```sh
-  curl -fLo /tmp/apex-daemon https://github.com/l1quid8/Apex-Deck/releases/latest/download/apex-daemon-linux-$(uname -m | sed s/aarch64/arm64/)
-  sudo install -m 0755 /tmp/apex-daemon /usr/local/bin/apex-daemon && rm /tmp/apex-daemon
-  ```
-  Then skip to step 3.
+- **From a release:** check its actual assets on the
+  [releases page](https://github.com/l1quid8/Apex-Deck/releases). Published
+  v0.9.4 has Mac installers only; Linux binaries are currently CI artifacts.
+  The automatic updater below builds the exact published source tag instead.
 - **From CI:** open the repository's Actions tab, pick the latest `daemon`
   run, and download `apex-daemon-linux-x86_64` or `apex-daemon-linux-arm64`.
 - **Built on your Mac with Docker:**
@@ -131,6 +125,93 @@ under 100 bytes.
 - Don't use `--insecure-bind` on a public server.
 
 ## Updating
+
+### Automatic published-release updates
+
+The VPS updater checks every 30 minutes (plus up to two minutes of jitter),
+builds only newer stable published release tags, and waits for maintenance
+admission before restarting. Git, Cargo and binary probes run as the daemon
+account; configuration, candidates, backups and the transaction journal belong
+to root. HTTPS GitHub release metadata and Git fetch identify the release; this
+is a source-build updater, not a signed Linux binary download mechanism.
+
+It preserves the currently deployed Linux room-action workaround and runs a
+real new-thread/Allow/Always-allow regression test before installation. Unknown
+command-admission changes or a maintenance patch that no longer applies refuse
+the release. This deliberately keeps a working older build until its update
+compatibility is reviewed. It does not repair the workaround's existing trust
+boundary between a human and other processes under the same account.
+
+The daemon must support `maintenance_v1`. The root updater creates a short-lived,
+boot-bound request under `/run/apex-deck-update/`; the local-only maintenance API
+atomically seals admission only after work is idle. Active turns, schedulers,
+assistant work, cleanup holds, terminals, voice, or an enabled model gateway
+defer updates. Unknown remaining service child processes also defer. The seal
+has a monotonic expiry so a crashed updater cannot block work permanently.
+
+Installation keeps the prior executable, replaces atomically, then checks the
+live protocol version/commit/boot, systemd PID, executable SHA-256, session and
+chat-list readability. Failed health checks reacquire idle admission before
+rollback. If the candidate has already accepted work, rollback waits too.
+The updater checks a monotonic lease deadline again after identity/process
+probes; recovery of a stopped unit also requires an empty service cgroup.
+An interrupted install is recovered from its journal before another update;
+unrelated manual deployments are never overwritten by recovery. The highest
+successfully installed numeric version is retained across rollbacks.
+
+Install these files from the reviewed checkout as root:
+
+```sh
+sudo install -d -m 0755 /usr/local/lib/apex-deck-update /etc/apex-deck-update
+sudo install -m 0644 scripts/vps_update.py scripts/vps_update_compat.py \
+  scripts/vps-update-allow-test.rs scripts/vps-update-maintenance.patch \
+  /usr/local/lib/apex-deck-update/
+sudo install -m 0644 packaging/systemd/apex-deck-update@.service \
+  packaging/systemd/apex-deck-update@.timer /etc/systemd/system/
+# Use the actual service account and absolute daemon data directory.
+printf '%s\n' '{"user":"l1quid8","data_dir":"/home/l1quid8/.local/share/dev.apexdeck.app"}' \
+  | sudo tee /etc/apex-deck-update/l1quid8.json >/dev/null
+sudo chmod 0644 /etc/apex-deck-update/l1quid8.json
+sudo systemctl daemon-reload
+sudo systemctl enable --now apex-deck-update@l1quid8.timer
+sudo systemctl start apex-deck-update@l1quid8.service
+```
+
+The service user needs Git, Python 3.10+, and Cargo on `~/.cargo/bin` or the
+system PATH. Builds use a separate `~/.cache/apex-deck-update/` checkout and
+target directory. The published source tag and carry patches are recorded in
+the candidate receipt; patched binaries truthfully report `-dirty`.
+
+Configuration may include `"unit":"apex-daemon-managed@l1quid8.service"` when
+the daemon runs under a different Apex daemon template for the same account.
+The default is `apex-daemon@<user>.service`; unrelated service names and other
+accounts are rejected. All process, maintenance, restart and rollback checks
+use the configured unit.
+Use that same unit for manual service commands and troubleshooting. The
+[2026-10-29 VPS deployment record](reviews/2026-10-29-vps-auto-update.md)
+records the existing VPS's replacement unit and retained rollback build.
+
+For an old daemon without `maintenance_v1`, `--prepare-only` builds/tests without
+restarting it. The first retrofit requires an operator-controlled idle restart;
+there is no automatic heuristic fallback that can interrupt bots. The deployed
+VPS retrofit records its observed idle state separately from subsequent atomic
+maintenance admission.
+
+```sh
+systemctl list-timers apex-deck-update@l1quid8.timer
+journalctl -u apex-deck-update@l1quid8.service -n 30
+cat /var/lib/apex-deck-update/l1quid8/status.json
+sudo systemctl disable --now apex-deck-update@l1quid8.timer  # disable checks
+```
+
+`/var/lib/apex-deck-update/<user>/` holds `state.json` (version floor and latest
+backup), `status.json`, root-owned `candidates/` with test/build logs, retained
+`backups/`, and `transaction.json` while an install needs recovery. Never delete
+a pending journal or backup without inspecting it. A failed release is
+quarantined until a newer release appears or an operator clears it after fixing
+the cause. Existing manually saved `apex-daemon.bak-*` files are untouched.
+
+### Manual update
 
 ```sh
 scp target/linux-amd64/apex-daemon vps:/tmp/

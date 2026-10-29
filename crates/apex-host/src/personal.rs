@@ -995,7 +995,16 @@ impl crate::Host {
 
     pub fn personal_list(&self) -> Result<Vec<PersonalAssistant>, String> {
         let mut assistants = self.store().personal()?.unwrap_or_default().assistants;
-        let tasks = self.assistant_tasks.list(None).map_err(|error|error.to_string())?;
+        let mut tasks = self.assistant_tasks.list(None).map_err(|error|error.to_string())?;
+        // This polled lifecycle list carries the same summary data as
+        // assistant_tasks_list without include_diffs. Keep patches in the
+        // authoritative task ledger for explicit review and restoration.
+        for task in &mut tasks {
+            if let Some(data) = task.result_data.as_mut().and_then(serde_json::Value::as_object_mut) {
+                data.remove("diff");
+                data.remove("reviewDiff");
+            }
+        }
         for assistant in &mut assistants {
             let deleted: Vec<_> = tasks.iter().filter(|task|task.lineage.as_ref().is_some_and(|lineage|lineage.assistant.assistant_id==assistant.id && lineage.assistant.host_id==assistant.host_id) && task.result_data.as_ref().is_some_and(|data|data["deletedAtMs"].is_number())).collect();
             // Derived from the authoritative ledger, including projects no longer
@@ -1155,6 +1164,52 @@ impl crate::Host {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn personal_list_keeps_deleted_task_review_diffs_off_the_phone() {
+        use crate::assistant_tasks::{AssistantLineage, HandoffPreparation, TaskDestination, TaskMode, TaskOwner, TaskStatus};
+        use serde_json::json;
+
+        let root = std::env::temp_dir().join(format!("assistant-deleted-diffs-{}-{}", std::process::id(), now()));
+        let host = crate::Host::new(crate::HostPaths { data: root.join("data"), downloads: None }, tokio::runtime::Handle::current());
+        let assistant: PersonalAssistant = serde_json::from_value(json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        host.store().save_personal(&PersonalDocument { version: 1, assistants: vec![assistant], extra: Default::default() }).unwrap();
+        let owner = TaskOwner { workspace_id: "w".into(), cwd: "/repo".into(), host_id: "h".into(), conversation_id: "parent".into() };
+        let lineage = AssistantLineage {
+            assistant: crate::personal_workspace::AssistantRef { host_id: "h".into(), assistant_id: "a".into() },
+            project: crate::personal_workspace::ProjectRef { host_id: "h".into(), workspace_id: "w".into(), cwd: "/repo".into() },
+            source_event_id: "source".into(), delegation_id: "delegation".into(),
+        };
+        let task = host.assistant_tasks.prepare_handoff(HandoffPreparation {
+            request_id: "large-deleted-diff".into(), batch_id: "batch".into(), owner: owner.clone(), revision: 1,
+            original_request: "Inspect changes".into(), brief: "Inspect changes".into(),
+            destination: TaskDestination { thread_id: Some("parent".into()), workers: vec!["worker".into()], new_thread: false },
+            mode: TaskMode::ReadOnly, review_criteria: vec![], lineage: Some(lineage.clone()), context: None,
+        }).unwrap();
+        let task = host.assistant_tasks.transition(&task.id, task.revision, &owner, TaskStatus::Cancelled, None).unwrap();
+        let diff = "+x\n".repeat(1 << 20);
+        let task = host.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(json!({"diff":diff,"reviewDiff":diff,"checks":["ok"]}))).unwrap();
+        let deleted = host.assistant_tasks.lifecycle(&task.id, task.revision, &owner, false).unwrap();
+
+        let listed = serde_json::to_value(host.personal_list().unwrap()).unwrap();
+        let row = &listed[0]["deletedDelegatedTasks"][0];
+        assert!(row["resultData"]["diff"].is_null() && row["resultData"]["reviewDiff"].is_null(), "assistant polling must not send review patches");
+        assert_eq!(row["id"], json!(deleted.id));
+        assert_eq!(row["revision"], json!(deleted.revision));
+        assert_eq!(row["lineage"], json!(lineage));
+        assert_eq!(row["resultData"]["deletedAtMs"], deleted.result_data.as_ref().unwrap()["deletedAtMs"]);
+        assert_eq!(row["resultData"]["checks"], json!(["ok"]));
+        assert!(serde_json::to_vec(&listed).unwrap().len() < 64 * 1024, "the phone can read the deleted-task list");
+        assert_eq!(host.personal_get("a").unwrap().extra["deletedDelegatedTasks"], listed[0]["deletedDelegatedTasks"]);
+        let stored = host.assistant_tasks.get(&deleted.id).unwrap().unwrap();
+        assert_eq!(stored, deleted, "listing preserves the durable task and its lifecycle authority");
+        assert_eq!(stored.result_data.as_ref().unwrap()["reviewDiff"], json!(diff));
+        let restored = host.assistant_tasks.lifecycle(&stored.id, stored.revision, &owner, true).unwrap();
+        assert_eq!(restored.status, TaskStatus::Cancelled);
+        assert_eq!(restored.result_data.as_ref().unwrap()["reviewDiff"], json!(diff), "restoration retains review evidence");
+        drop(host);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[tokio::test]
     async fn assistant_creation_accepts_shared_text_providers_without_relaxing_monitor_profiles() {
