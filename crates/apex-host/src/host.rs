@@ -4453,7 +4453,8 @@ mod host_tests {
         let inside_data = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), host.store.root().to_string_lossy().into_owned(), None, None, None).unwrap_err();
         assert!(inside_data.contains("belongs to Deck"), "{inside_data}");
         // A folder that isn't there.
-        let missing = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), "/no/such/folder".into(), None, None, None).unwrap_err();
+        let gone = data.join("no-such-folder").to_string_lossy().into_owned();
+        let missing = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), gone, None, None, None).unwrap_err();
         assert!(missing.contains("There's no folder"), "{missing}");
         // None of that made a Work thread or a link.
         assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());

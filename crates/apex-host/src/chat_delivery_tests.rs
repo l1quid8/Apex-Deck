@@ -203,9 +203,11 @@ fn failed_claim_write_leaves_no_human_message_and_can_be_retried_once() {
     std::fs::rename(&rooms, &backup).unwrap();
     std::fs::write(&rooms, "block writes").unwrap();
     runtime.block_on(async {
-        assert!(call(&host, json!({"command":"room_post","id":"r","text":"hello","clientMessageId":"m"})).await.is_err());
+        let refused = call(&host, json!({"command":"room_post","id":"r","text":"hello","clientMessageId":"m"})).await;
+        assert!(refused.is_err(), "{refused:?}");
         let snapshot = host.handle("r").unwrap().room.lock().await.snapshot();
-        assert!(snapshot.transcript.is_empty());
+        let said: Vec<_> = snapshot.transcript.iter().map(|message| (&message.speaker, &message.text)).collect();
+        assert!(snapshot.transcript.is_empty(), "refused with {refused:?} but the chat kept {said:?}");
         assert!(snapshot.client_messages.is_empty());
     });
     std::fs::remove_file(&rooms).unwrap();

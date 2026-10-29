@@ -709,6 +709,8 @@ printf BOUNDARY_OK
         }
     }
 
+    // The expected arguments are Unix paths; Windows would join them with a backslash.
+    #[cfg(unix)]
     #[test]
     fn bwrap_args_mounts_private_root_and_single_binary_without_new_session_or_parent_dir() {
         let root = Path::new("/tmp/apex-staged-123");
