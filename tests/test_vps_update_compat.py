@@ -1,6 +1,9 @@
 """Exercise the staging-only Linux compatibility carry against released source."""
 
 import importlib.util
+import subprocess
+import tarfile
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +35,15 @@ class SourceCompatibilityTests(unittest.TestCase):
 
     def stage(self, commit=RELEASE):
         self.command.write_text(historical_source(commit))
+
+    def test_current_release_accepts_maintenance_patch_and_allow_routing(self):
+        archive = subprocess.check_output(["git", "archive", "HEAD", "crates"], cwd=ROOT)
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
+            tree.extractall(self.source, filter="data")
+        self.compat.prepare_source(self.source)
+        result = subprocess.run(["git", "apply", "--check", str(ROOT / "scripts/vps-update-maintenance.patch")],
+                                cwd=self.source, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_release_carries_fix_and_preserves_phone_folder_exception(self):
         self.stage()

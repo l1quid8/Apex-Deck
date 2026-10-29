@@ -1,7 +1,8 @@
 diff --git a/crates/apex-core/src/concurrent.rs b/crates/apex-core/src/concurrent.rs
+index 88017c27..9950a367 100644
 --- a/crates/apex-core/src/concurrent.rs
 +++ b/crates/apex-core/src/concurrent.rs
-@@ -156,6 +156,7 @@
+@@ -164,6 +164,7 @@ impl ConcurrentRoom {
      pub fn busy(&self) -> bool {
          self.pending.load(Ordering::SeqCst) != 0
      }
@@ -10,22 +11,24 @@ diff --git a/crates/apex-core/src/concurrent.rs b/crates/apex-core/src/concurren
      /// A stale handle cannot admit another post after this succeeds.
      pub fn retire_if_idle<T>(&self, persist: impl FnOnce(&Room) -> Result<T, String>) -> Result<T, String> {
 diff --git a/crates/apex-daemon/src/gateway_admin.rs b/crates/apex-daemon/src/gateway_admin.rs
+index 918e898f..769b259e 100644
 --- a/crates/apex-daemon/src/gateway_admin.rs
 +++ b/crates/apex-daemon/src/gateway_admin.rs
-@@ -32,6 +32,9 @@
-     address: Option<SocketAddr>,
+@@ -33,6 +33,9 @@ pub struct Runtime {
      task: Option<JoinHandle<()>>,
      error: Option<String>,
-+}
+ }
 +impl Runtime {
 +    pub(crate) fn maintenance_busy(&self) -> bool { self.task.as_ref().is_some_and(|task| !task.is_finished()) }
- }
++}
  impl Drop for Runtime {
      fn drop(&mut self) {
+         if let Some(task) = self.task.take() {
 diff --git a/crates/apex-daemon/src/lib.rs b/crates/apex-daemon/src/lib.rs
+index f2e02fa6..e173170a 100644
 --- a/crates/apex-daemon/src/lib.rs
 +++ b/crates/apex-daemon/src/lib.rs
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,7 @@ pub mod gateway_keys;
  pub mod identity;
  pub mod ipc;
  pub mod local_call;
@@ -35,6 +38,7 @@ diff --git a/crates/apex-daemon/src/lib.rs b/crates/apex-daemon/src/lib.rs
  pub mod pair_commands;
 diff --git a/crates/apex-daemon/src/maintenance.rs b/crates/apex-daemon/src/maintenance.rs
 new file mode 100644
+index 00000000..a3f64d6f
 --- /dev/null
 +++ b/crates/apex-daemon/src/maintenance.rs
 @@ -0,0 +1,141 @@
@@ -180,9 +184,10 @@ new file mode 100644
 +
 +}
 diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protocol.rs
+index aed43635..bd2d0894 100644
 --- a/crates/apex-daemon/src/protocol.rs
 +++ b/crates/apex-daemon/src/protocol.rs
-@@ -360,6 +360,7 @@
+@@ -360,6 +360,7 @@ where
          // The exact build, so a UI can tell two builds of the same version apart.
          "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
      } });
@@ -190,7 +195,7 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
      if daemon.voice.status().supported { welcome["ok"]["capabilities"].as_array_mut().unwrap().push(json!("voice_server_v1")); }
      // A device also learns what it may do now (so the phone can hide what
      // it can't use; the host still checks everything) and the addresses
-@@ -421,7 +422,27 @@
+@@ -421,7 +422,27 @@ where
      while reading || in_flight > 0 || !waiting.is_empty() {
          tokio::select! {
              frame = input.next(), if reading => match frame {
@@ -219,7 +224,7 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
                      Ok((id, Request::InputClosed)) => {
                          if trust != Trust::Local {
                              if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), "not allowed from a remote connection")).await {
-@@ -488,6 +509,7 @@
+@@ -488,6 +509,7 @@ where
                                  let tx = voice_tx.clone();
                                  in_flight += 1;
                                  tokio::spawn(async move {
@@ -227,7 +232,7 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
                                      let result = if open {
                                          match server.acquire(owner).await {
                                              Ok(lease) => crate::voice::relay::Relay::connect(lease.running())
-@@ -523,6 +545,7 @@
+@@ -523,6 +545,7 @@ where
                              in_flight += 1;
                              let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
                              tokio::spawn(async move {
@@ -235,7 +240,7 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
                                  let frame = match run_management_receipt(daemon, receipt).await {
                                      Ok(value) => json!({"id":id,"ok":value}),
                                      Err(refusal) => refusal.frame(id),
-@@ -578,6 +601,7 @@
+@@ -578,6 +601,7 @@ where
                              in_flight += 1;
                              let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
                              tokio::spawn(async move {
@@ -243,7 +248,7 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
                                  let frame = match crate::pair_commands::run(daemon, request).await {
                                      Ok(value) => json!({ "id": id, "ok": value }),
                                      Err(refusal) => refusal.frame(id),
-@@ -623,6 +647,7 @@
+@@ -623,6 +647,7 @@ where
                              return stop.into();
                          }
                      }
@@ -251,7 +256,7 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
                  },
                  Some(Err(why)) => {
                      let _ = send(&mut output, &mut guard, refusal(Value::Null, format!("closing the connection: a frame was too long or unreadable ({why})"))).await;
-@@ -744,9 +769,11 @@
+@@ -744,9 +769,11 @@ where
  fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>) {
      let session = matches!(command, Command::SessionLoad {});
      let chat_list = matches!(command, Command::ChatList {});
@@ -263,7 +268,7 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
              match device_intent {
                  Some((endpoint, session, intent)) => host.call_from_device(intent, endpoint, session, id, client_capability).await,
                  None => host.call_with_client_capability(command, client_capability).await,
-@@ -834,6 +861,7 @@
+@@ -834,6 +861,7 @@ fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
  }
  
  enum Request {
@@ -271,23 +276,21 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
      InputClosed,
      Voice(crate::voice::session::VoiceRequest),
      VoiceFrame(Value),
-@@ -879,6 +907,10 @@
-         return serde_json::from_value(value)
+@@ -880,6 +908,10 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
              .map(|r| (id, Request::Voice(r)))
              .map_err(|e| refusal(json!(id), e.to_string()));
-+    }
+     }
 +    if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("maintenance_")) {
 +        return serde_json::from_value(value).map(|request| (id, Request::Maintenance(request)))
 +            .map_err(|error| refusal(json!(id), error.to_string()));
-     }
++    }
      if value["cmd"] == "hello" {
          return Err(refusal(json!(id), "already said hello"));
-@@ -1028,6 +1060,35 @@
-         let mut client = connect_to(&daemon, trust);
-         client._data = Some(data);
+     }
+@@ -1030,6 +1062,35 @@ mod tests {
          client
-+    }
-+
+     }
+ 
 +    #[tokio::test]
 +    async fn maintenance_blocks_new_commands_and_only_local_connections_can_cancel() {
 +        let (daemon, _data) = daemon();
@@ -315,21 +318,24 @@ diff --git a/crates/apex-daemon/src/protocol.rs b/crates/apex-daemon/src/protoco
 +        assert_eq!(local.until_reply(5).await.last().unwrap()["ok"]["cancelled"], true);
 +        local.send(json!({"id":6,"cmd":"session_load"})).await;
 +        assert_eq!(local.until_reply(6).await.last().unwrap()["ok"], Value::Null);
-     }
- 
++    }
++
      #[tokio::test]
-@@ -1165,6 +1226,7 @@
+     async fn client_capabilities_never_enable_unreviewed_runtime_or_authorize_commands() {
+         let (daemon, _data) = daemon();
+@@ -1165,6 +1226,7 @@ mod tests {
      /// What a welcome lists; phone voice calls only where this daemon can run the helper.
      fn hello_capabilities() -> Value {
-         let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1"]);
+         let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"]);
 +        caps.as_array_mut().unwrap().push(json!("maintenance_v1"));
          if crate::voice::platform_support().is_ok() {
              caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
          }
 diff --git a/crates/apex-host/src/assistant_avatar.rs b/crates/apex-host/src/assistant_avatar.rs
+index 9fb0868a..f6bf611b 100644
 --- a/crates/apex-host/src/assistant_avatar.rs
 +++ b/crates/apex-host/src/assistant_avatar.rs
-@@ -385,6 +385,7 @@
+@@ -385,6 +385,7 @@ impl Host {
          self: &Arc<Self>,
          input: Generate,
      ) -> Result<Job, String> {
@@ -337,7 +343,7 @@ diff --git a/crates/apex-host/src/assistant_avatar.rs b/crates/apex-host/src/ass
          self.avatar_owner(&input.owner)?;
          if !valid(&input.generation_id)
              || !valid(&input.editor_token)
-@@ -442,6 +443,7 @@
+@@ -442,6 +443,7 @@ impl Host {
              if dispatch {
                  let host = Arc::clone(self);
                  tokio::spawn(async move {
@@ -345,7 +351,7 @@ diff --git a/crates/apex-host/src/assistant_avatar.rs b/crates/apex-host/src/ass
                      tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                      let result = adapter
                          .generate(&input.owner, &input.generation_id, &input.prompt)
-@@ -466,6 +468,7 @@
+@@ -466,6 +468,7 @@ impl Host {
              if dispatch {
                  let host = Arc::clone(self);
                  tokio::spawn(async move {
@@ -353,7 +359,7 @@ diff --git a/crates/apex-host/src/assistant_avatar.rs b/crates/apex-host/src/ass
                      // This generated directory contains no user project or conversation context.
                      let workdir = host.data_dir().join("assistant-avatars/codex").join(digest(&serde_json::to_vec(&(&input.owner, &input.generation_id)).unwrap()));
                      let prepare = (|| -> Result<(), String> {
-@@ -530,6 +533,7 @@
+@@ -530,6 +533,7 @@ impl Host {
          let base_url = base_url.clone();
          let key_env = api_key_env.clone();
          tokio::spawn(async move {
@@ -362,9 +368,10 @@ diff --git a/crates/apex-host/src/assistant_avatar.rs b/crates/apex-host/src/ass
                  &base_url,
                  key_env.as_deref(),
 diff --git a/crates/apex-host/src/assistant_service.rs b/crates/apex-host/src/assistant_service.rs
+index d683c7b4..d03a3009 100644
 --- a/crates/apex-host/src/assistant_service.rs
 +++ b/crates/apex-host/src/assistant_service.rs
-@@ -660,6 +660,7 @@
+@@ -660,6 +660,7 @@ impl Host {
          if self.assistant_runs.lock().unwrap().contains_key(&task.id) {
              return child_id;
          }
@@ -372,7 +379,7 @@ diff --git a/crates/apex-host/src/assistant_service.rs b/crates/apex-host/src/as
          let run = Arc::new(AssistantRun::new());
          {
              use std::collections::hash_map::Entry;
-@@ -676,6 +677,7 @@
+@@ -676,6 +677,7 @@ impl Host {
          let owner = owner.clone();
          let child = child_id.clone();
          self.runtime().spawn(async move {
@@ -380,7 +387,7 @@ diff --git a/crates/apex-host/src/assistant_service.rs b/crates/apex-host/src/as
              if let Err(error) = host
                  .dispatch_task(
                      task.clone(),
-@@ -2543,7 +2545,9 @@
+@@ -2543,7 +2545,9 @@ fn spawn_task_attempt(
      isolated_permit: Option<crate::assistant_isolation::IsolatedPermit>,
  ) {
      let host_for_task = Arc::clone(&host);
@@ -391,9 +398,10 @@ diff --git a/crates/apex-host/src/assistant_service.rs b/crates/apex-host/src/as
          let run_result = host_for_task.run_batch(&execution_id, &handle, batch).await;
          let task_before = host_for_task.assistant_tasks.get(&task_id).ok().flatten();
 diff --git a/crates/apex-host/src/bot_copies.rs b/crates/apex-host/src/bot_copies.rs
+index 9347b32c..27b0865f 100644
 --- a/crates/apex-host/src/bot_copies.rs
 +++ b/crates/apex-host/src/bot_copies.rs
-@@ -967,6 +967,10 @@
+@@ -967,6 +967,10 @@ impl Default for FoldQueue {
  }
  
  impl FoldQueue {
@@ -405,17 +413,18 @@ diff --git a/crates/apex-host/src/bot_copies.rs b/crates/apex-host/src/bot_copie
          Self {
              queues: Mutex::default(),
 diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
+index 3ba9d261..e6e4ada3 100644
 --- a/crates/apex-host/src/host.rs
 +++ b/crates/apex-host/src/host.rs
-@@ -123,6 +123,7 @@
- }
+@@ -126,6 +126,7 @@ pub struct HostPaths {
+ mod runner_runtime;
  
  pub struct Host {
 +    pub maintenance: Arc<crate::maintenance::MaintenanceGate>,
      paths: HostPaths,
      /// Protected primary and saved-chat ownership lasts as long as this host.
      _ownership: Option<apex_provenance::HostOwnership>,
-@@ -252,13 +253,16 @@
+@@ -258,14 +259,17 @@ impl Host {
          store.interrupt_client_messages()?;
          store.settle_promotes()?;
          let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
@@ -428,12 +437,13 @@ diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
          apex_adapters::keys::use_folder(&paths.data);
          let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
          let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
+         let runner_service = Arc::new(Mutex::new(crate::runner::service::RunnerService::new(paths.data.clone())));
          let host = Arc::new(Host {
 +            maintenance,
              paths,
              _ownership: ownership,
              runtime,
-@@ -294,6 +298,7 @@
+@@ -302,6 +306,7 @@ impl Host {
              let host_weak = host_for_reconcile.clone();
              Box::pin(async move {
                  let Some(host) = host_weak.upgrade() else { return Err("host shut down".into()); };
@@ -441,7 +451,7 @@ diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
                  let handle = host.handle(&thread_id)?;
                  let error = Mutex::new(None);
                  let batch = handle.runtime.begin_post_with_speaker(
-@@ -733,8 +738,10 @@
+@@ -754,8 +759,10 @@ impl Host {
              }
          }
          for (tool, model) in reads {
@@ -452,7 +462,7 @@ diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
                  if let Some(plan) = apex_adapters::plan_usage(tool, model.as_deref(), &context).await {
                      // The model rides along so a chat with two models of one
                      // provider shows each its own group.
-@@ -1040,7 +1047,8 @@
+@@ -1061,7 +1068,8 @@ impl Host {
              // changed while the thread was closed isn't this thread's work.
              let (snapshots, thread, seq) = (Arc::clone(&self.snapshots), id.clone(), snapshot.transcript.len());
              let retired = Arc::clone(&deleted);
@@ -462,7 +472,7 @@ diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
          }
          self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
          let stop = room.stop_handle();
-@@ -1184,6 +1192,7 @@
+@@ -1269,6 +1277,7 @@ impl Host {
      }
  
      pub(crate) async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
@@ -470,7 +480,7 @@ diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
          let _chain = Chain::start(&self.chains);
          let client_message_id = batch.client_message_id().map(str::to_owned);
          let error = Mutex::new(None);
-@@ -2323,7 +2332,8 @@
+@@ -2442,7 +2451,8 @@ impl Host {
      /// it never holds `room_lifecycle` or a daemon worker meanwhile.
      fn forget_snapshots(&self, id: &str) {
          let (snapshots, thread) = (Arc::clone(&self.snapshots), id.to_string());
@@ -480,15 +490,14 @@ diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
      }
  
      pub fn room_delete(&self, id: String) -> Result<(), String> {
-@@ -2729,6 +2739,22 @@
-     /// Quitting is decided; nothing holds it from now on. The shell exits.
-     pub fn quit_confirm(&self) {
+@@ -2854,6 +2864,23 @@ impl Host {
          self.quit.confirm();
-+    }
-+
+     }
+ 
 +    /// Called only after maintenance has sealed admission. Runtime reservations
 +    /// include accepted turns that have not emitted TurnStarted yet.
 +    pub fn maintenance_blockers(&self) -> Result<(), String> {
++        if !self.runner_workers.lock().unwrap().is_empty() { return Err("busy: a goal or loop worker is still active".into()); }
 +        if self.chains.load(Ordering::SeqCst) != 0 { return Err("busy: reply chains are still saving".into()); }
 +        for handle in self.rooms.lock().unwrap().values() {
 +            if handle.busy() || handle.has_pending_human_waits() || handle.runtime.has_cleanup_holds() { return Err("busy: a room has unfinished work".into()); }
@@ -500,13 +509,16 @@ diff --git a/crates/apex-host/src/host.rs b/crates/apex-host/src/host.rs
 +        if self.fold_queue.maintenance_busy() { return Err("busy: bot changes are being folded".into()); }
 +        if self.ptys.list(None).iter().any(|pty| pty.state != "exited") { return Err("busy: a terminal is still running".into()); }
 +        Ok(())
-     }
- 
++    }
++
      /// End every terminal. Called on the way out.
+     pub fn shutdown(&self) {
+         if let Some(clock) = self.monitor_clock.lock().unwrap().take() { clock.abort(); }
 diff --git a/crates/apex-host/src/lib.rs b/crates/apex-host/src/lib.rs
+index 629719d0..6a677661 100644
 --- a/crates/apex-host/src/lib.rs
 +++ b/crates/apex-host/src/lib.rs
-@@ -45,6 +45,7 @@
+@@ -45,6 +45,7 @@ mod personal_voice;
  mod model_metrics;
  pub mod events;
  pub mod quit;
@@ -516,6 +528,7 @@ diff --git a/crates/apex-host/src/lib.rs b/crates/apex-host/src/lib.rs
  #[cfg(test)]
 diff --git a/crates/apex-host/src/maintenance.rs b/crates/apex-host/src/maintenance.rs
 new file mode 100644
+index 00000000..0ee5f8f2
 --- /dev/null
 +++ b/crates/apex-host/src/maintenance.rs
 @@ -0,0 +1,116 @@
@@ -636,9 +649,10 @@ new file mode 100644
 +    }
 +}
 diff --git a/crates/apex-host/src/monitor_check.rs b/crates/apex-host/src/monitor_check.rs
+index a8c08ab3..fa74d53c 100644
 --- a/crates/apex-host/src/monitor_check.rs
 +++ b/crates/apex-host/src/monitor_check.rs
-@@ -237,6 +237,7 @@
+@@ -237,6 +237,7 @@ impl Host {
          F: FnOnce(ParticipantConfig, TurnRequest) -> Fut,
          Fut: Future<Output = Result<String, String>>,
      {
@@ -647,9 +661,10 @@ diff --git a/crates/apex-host/src/monitor_check.rs b/crates/apex-host/src/monito
              let m = monitors
                  .iter_mut()
 diff --git a/crates/apex-host/src/next_steps.rs b/crates/apex-host/src/next_steps.rs
+index e51567d8..634f01cb 100644
 --- a/crates/apex-host/src/next_steps.rs
 +++ b/crates/apex-host/src/next_steps.rs
-@@ -18,8 +18,10 @@
+@@ -18,8 +18,10 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
  /// message or another turn since then means there is nothing to suggest.
  /// `answers` is the finished chain's interactive-answers preference.
  pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
@@ -657,13 +672,14 @@ diff --git a/crates/apex-host/src/next_steps.rs b/crates/apex-host/src/next_step
      let runtime = host.runtime().clone();
      runtime.spawn(async move {
 +        let _maintenance = maintenance;
-         if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
-         let prepared = {
-             let current = handle.room.lock().await;
+         // Suppress next-step suggestions while any unfinished runner owns the room
+         {
+             if let Ok(Some(runner)) = host.runner_service.lock().unwrap().state(&room) {
 diff --git a/crates/apex-host/src/personal_worker.rs b/crates/apex-host/src/personal_worker.rs
+index 91af2c62..89d809a0 100644
 --- a/crates/apex-host/src/personal_worker.rs
 +++ b/crates/apex-host/src/personal_worker.rs
-@@ -501,6 +501,11 @@
+@@ -501,6 +501,11 @@ impl Host {
              let mut held: HashMap<tokio::task::Id, Vec<String>> = HashMap::new();
              loop {
                  let Some(host) = owner.upgrade() else { break };
@@ -675,7 +691,7 @@ diff --git a/crates/apex-host/src/personal_worker.rs b/crates/apex-host/src/pers
                  let mut delay = Duration::from_secs(60);
                  match host.personal_tick(now()) {
                      Ok(tick) => {
-@@ -509,7 +514,8 @@
+@@ -509,7 +514,8 @@ impl Host {
                          }
                          if !tick.pushes.is_empty() {
                              let host = host.clone();
@@ -685,7 +701,7 @@ diff --git a/crates/apex-host/src/personal_worker.rs b/crates/apex-host/src/pers
                          }
                      }
                      Err(error) => eprintln!("Personal assistant clock: {error}"),
-@@ -520,7 +526,11 @@
+@@ -520,7 +526,11 @@ impl Host {
                      Ok(claimed) => {
                          for (keys, work) in claimed {
                              let (host, tools) = (host.clone(), tools.clone());
@@ -697,7 +713,7 @@ diff --git a/crates/apex-host/src/personal_worker.rs b/crates/apex-host/src/pers
                                  if let Err(error) = host.personal_do(&tools, work).await {
                                      eprintln!("Personal assistant: {error}");
                                  }
-@@ -533,6 +543,7 @@
+@@ -533,6 +543,7 @@ impl Host {
                          delay = delay.min(Duration::from_secs(5));
                      }
                  }
@@ -705,3 +721,50 @@ diff --git a/crates/apex-host/src/personal_worker.rs b/crates/apex-host/src/pers
                  drop(host);
                  tokio::select! {
                      Some(done) = jobs.join_next_with_id(), if !jobs.is_empty() => {
+diff --git a/crates/apex-host/src/runner/runtime.rs b/crates/apex-host/src/runner/runtime.rs
+index c8587695..90a3d3ac 100644
+--- a/crates/apex-host/src/runner/runtime.rs
++++ b/crates/apex-host/src/runner/runtime.rs
+@@ -66,6 +66,9 @@ impl Host {
+     }
+ 
+     async fn runner_tick(&self, room: &str, time: u64) -> Result<bool, String> {
++        // Sleeping workers retry after maintenance; admitted ticks retain their
++        // permit through provider work, state writes and cancellation cleanup.
++        let Ok(_maintenance) = self.maintenance.enter() else { return Ok(true); };
+         let gate = self.runner_gate(room);
+         let guard = gate.lock().await;
+         let Some(mut snapshot) = self.runner_service.lock().unwrap().state(room)? else { return Ok(false); };
+@@ -254,3 +257,32 @@ impl Host {
+ fn runner_context(s: &RunnerSnapshot) -> String {
+     format!("You are working on a bounded {} owned by Deck. Objective: {}\nLatest checkpoint: {}\nWork on the next concrete step. Do not start another autonomous runner or prompt other bots. Respect the room's permissions and the human's instructions. End your final reply with exactly one top-level fenced apex-runner JSON report, version 1. Required fields: version (1), disposition (working|done|blocked), done (string), next (string), blocker (string or null), criteria (array of {{id, status (pending|done|failed), evidence (string array)}}). Use real evidence; completion without independent checks is reported completion only. Example:\n```apex-runner\n{{\"version\":1,\"disposition\":\"working\",\"done\":\"one concrete result\",\"next\":\"next step\",\"blocker\":null,\"criteria\":[{{\"id\":\"objective\",\"status\":\"pending\",\"evidence\":[]}}]}}\n```", if s.kind == RunnerKind::Goal { "goal" } else { "loop run" }, s.objective.as_deref().or(s.prompt.as_deref()).unwrap_or(""), serde_json::to_string(&s.checkpoint).unwrap_or_default())
+ }
++
++
++#[cfg(test)]
++mod maintenance_tests {
++    use super::*;
++
++    #[tokio::test]
++    async fn maintenance_defers_runner_ticks_and_detects_sleeping_workers() {
++        let data = std::env::temp_dir().join(format!("apex-runner-maintenance-{}-{}", std::process::id(), now()));
++        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, tokio::runtime::Handle::current());
++        let stamp = crate::maintenance::now_ms();
++        loop {
++            if host.maintenance.try_begin("test-lease".into(), stamp + 60_000, stamp, || Ok(())).is_ok() { break; }
++            tokio::time::sleep(Duration::from_millis(5)).await;
++        }
++        // A missing room would return false normally. A sealed tick must defer
++        // before reading or changing any runner state.
++        assert!(host.runner_tick("missing", now()).await.unwrap());
++        host.maintenance.cancel("test-lease").unwrap();
++        assert!(!host.runner_tick("missing", now()).await.unwrap());
++        host.runner_workers.lock().unwrap().insert("sleeping-loop".into());
++        assert!(host.maintenance_blockers().unwrap_err().contains("goal or loop"));
++        host.runner_workers.lock().unwrap().clear();
++        assert!(host.maintenance_blockers().is_ok());
++        host.shutdown();
++        drop(host);
++        std::fs::remove_dir_all(data).unwrap();
++    }
++}
