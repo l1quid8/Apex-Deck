@@ -20,6 +20,14 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
     let runtime = host.runtime().clone();
     runtime.spawn(async move {
+        // Suppress next-step suggestions while any unfinished runner owns the room
+        {
+            if let Ok(Some(runner)) = host.runner_service.lock().unwrap().state(&room) {
+                if runner.is_active() && !runner.dismissed {
+                    return;
+                }
+            }
+        }
         if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
         let prepared = {
             let current = handle.room.lock().await;

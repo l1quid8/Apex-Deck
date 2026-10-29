@@ -402,6 +402,9 @@ impl Host {
         // reads protected state and must wait for an admitted host restart.
         if protected_ledgers_available {
             host.redispatch_recovered_queued()?;
+            // Runner recovery: unfinished runners become paused with reason recovery, no auto-replay
+            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let _ = host.runner_service.lock().unwrap().recover_paused(now_ms);
         }
         Ok(host)
     }
@@ -880,7 +883,13 @@ impl Host {
 
     pub async fn room_runner_start(self: &Arc<Self>, input: crate::runner::service::RunnerStartInput) -> Result<serde_json::Value, String> {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-        let res = self.runner_service.lock().unwrap().start(input, now_ms)?;
+        let res = self.runner_service.lock().unwrap().start(input.clone(), now_ms)?;
+        // Cancel/suppress any in-flight next-step suggestion when starting a runner
+        if let Ok(handle) = self.handle(&input.id) {
+            self.room_event(&input.id, RoomEvent::NextSteps { id: ParticipantId::new("runner"), steps: vec![], pending: false });
+            // Also clear live next_steps cache
+            handle.live.lock().unwrap().next_steps = None;
+        }
         Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
     }
 
@@ -999,6 +1008,9 @@ impl Host {
 
     pub(crate) async fn room_post_with_answer_guidance(self: &Arc<Self>, id: String, text: String, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), vec![], None, answers, capability).await? { return Ok(()); }
+        // Human message takes priority: pause runner before new turn
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().notify_human_message(&id, now_ms);
         let handle = self.handle(&id)?;
         let batch = self.prepare_post(&id, &handle, &text, None).await?.with_answer_guidance(answers, capability);
         self.run_batch(&id, &handle, batch).await
@@ -1015,6 +1027,8 @@ impl Host {
 
     pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None, answers, capability).await? { return Ok(()); }
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().notify_human_message(&id, now_ms);
         let handle = self.handle(&id)?;
         let batch = self.prepare_post(&id, &handle, &text, Some(targets)).await?.with_answer_guidance(answers, capability);
         self.run_batch_in_background(id, handle, batch);
@@ -1069,6 +1083,9 @@ impl Host {
                 handle.approvals.reject_all();
             }
         }
+        // Runner: Stop during countdown also pauses
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().notify_stop(&id, now_ms);
     }
 
     /// Turn the thread's Plan switch on or off. Saved at once; every client
@@ -1202,6 +1219,9 @@ impl Host {
     }
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
+        // Worker removal pauses runner
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1216,6 +1236,8 @@ impl Host {
 
     /// Empty a chat's transcript, keeping its participants and settings.
     pub async fn room_clear(&self, id: String) -> Result<(), String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1234,6 +1256,8 @@ impl Host {
 
     /// Retry: delete every message from `upto` on. The caller then runs a turn.
     pub async fn room_rewind(&self, id: String, upto: usize) -> Result<(), String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1261,6 +1285,8 @@ impl Host {
     /// ones that didn't exist), and with `chat`, delete message `at` and
     /// everything after it. Returns the files it couldn't put back.
     pub async fn room_revert(&self, id: String, at: usize, bot: Option<ParticipantId>, chat: bool, files: Vec<String>) -> Result<Vec<String>, String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1641,6 +1667,20 @@ impl Host {
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().invalidate(&id, now_ms);
+        // Also remove runner record entirely on delete
+        let _ = self.runner_service.lock().unwrap().load_all().map(|_| ()); // ensure store loaded
+        // Best effort remove
+        {
+            let store_path = self.paths.data.join("room-runners-v1.json");
+            // removal via service would go through store; we use invalidate + remove through store if needed
+            // For now invalidate pauses; actual removal is via store.remove inside service if we implement
+            // We'll attempt to remove directly
+            let data_dir = self.paths.data.clone();
+            let runner_store = crate::runner::store::RunnerStore::new(data_dir);
+            let _ = runner_store.remove(&id);
+        }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let handle = self.handle(&id).ok();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {

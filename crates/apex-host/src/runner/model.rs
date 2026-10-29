@@ -181,6 +181,8 @@ pub struct RunnerSnapshot {
     pub pending_request_id: Option<String>,
     #[serde(default)]
     pub dismissed: bool,
+    #[serde(default)]
+    pub consecutive_unchanged: u32,
 }
 
 impl RunnerSnapshot {
@@ -317,7 +319,13 @@ pub fn reduce(mut snapshot: RunnerSnapshot, event: RunnerEvent, now_ms: u64) -> 
             }
         }
         RunnerEvent::TurnCompleted { checkpoint, cost_micros, .. } => {
-            // cost: if unknown, increment unknown_cost_turns, keep cost_micros as None or sum
+            // Check for unchanged checkpoint for stuck detection (goal only)
+            let is_same = if let Some(prev) = &snapshot.checkpoint {
+                prev.done == checkpoint.done && prev.next == checkpoint.next && prev.blocker == checkpoint.blocker
+                    && prev.criteria.len() == checkpoint.criteria.len()
+                    && prev.criteria.iter().zip(&checkpoint.criteria).all(|(a,b)| a.id==b.id && a.status==b.status)
+            } else { false };
+
             snapshot.checkpoint = Some(checkpoint);
             snapshot.usage.turns += 1;
             snapshot.usage.invocations += 1; // simplified: per turn 1 invocation; include checker later via usage accounting
@@ -325,10 +333,8 @@ pub fn reduce(mut snapshot: RunnerSnapshot, event: RunnerEvent, now_ms: u64) -> 
                 if let Some(existing) = snapshot.usage.cost_micros {
                     snapshot.usage.cost_micros = Some(existing + c);
                 } else if snapshot.usage.cost_micros.is_none() && snapshot.usage.unknown_cost_turns == 0 {
-                    // first known cost
                     snapshot.usage.cost_micros = Some(c);
                 } else {
-                    // mixture: keep existing known, unknown count separate
                     if snapshot.usage.cost_micros.is_some() {
                         snapshot.usage.cost_micros = Some(snapshot.usage.cost_micros.unwrap() + c);
                     } else {
@@ -337,11 +343,24 @@ pub fn reduce(mut snapshot: RunnerSnapshot, event: RunnerEvent, now_ms: u64) -> 
                 }
             } else {
                 snapshot.usage.unknown_cost_turns += 1;
-                // keep cost_micros as is (could be None)
             }
             snapshot.usage.elapsed_ms = now_ms.saturating_sub(snapshot.started_at);
             snapshot.revision += 1;
-            dispatch = true;
+
+            // Stuck detection: after two consecutive unchanged goal turns with same checkpoint and no new evidence
+            if is_same && snapshot.kind == RunnerKind::Goal {
+                snapshot.consecutive_unchanged += 1;
+                if snapshot.consecutive_unchanged >= 2 {
+                    snapshot.phase = RunnerPhase::Paused;
+                    snapshot.reason = RunnerReason::Stuck;
+                    dispatch = false;
+                } else {
+                    dispatch = true;
+                }
+            } else {
+                snapshot.consecutive_unchanged = if is_same { snapshot.consecutive_unchanged } else { 0 };
+                dispatch = true;
+            }
         }
         RunnerEvent::LoopRunCompleted { cost_micros, .. } => {
             snapshot.usage.turns += 1;
@@ -447,6 +466,7 @@ mod tests {
             next_run_at: None,
             pending_request_id: None,
             dismissed: false,
+            consecutive_unchanged: 0,
         }
     }
 
