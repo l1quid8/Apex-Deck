@@ -109,7 +109,8 @@ import { restartQuestions, updateActions, useUpdates } from "./updates.ts";
 import { UpdateNotices } from "./UpdateNotices.tsx";
 import { ipcWords } from "./electronShell";
 import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, workThreadPlace, type ChatPlace } from "./desktopChats.ts";
-import { ChatRail, ChatView, NewChatDialog } from "./DesktopChat.tsx";
+import { ChatRail, NewChatDialog } from "./DesktopChatsUI.tsx";
+import { TalkOnlyChat } from "./TalkOnlyChat.tsx";
 import { findRoom, type ChatEntry } from "./chatCatalog.ts";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -2595,7 +2596,7 @@ export function App() {
       <UpdateNotices updates={updates} onRestart={restartToUpdate} />
       {newChatOpen && <NewChatDialog chats={chats} onClose={() => setNewChatOpen(false)} onStarted={(row) => { setNewChatOpen(false); setMainView({kind:"workspace"}); setCreatingAssistant(false); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
-      <div className={`body${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
+      <div className={`body${sidePanelFull && !chatShown ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
             backend={backend}
@@ -2656,9 +2657,9 @@ export function App() {
           />
         )}
 
-        <main ref={canvasRef} className={`canvas section-${section}`} inert={sidePanelFull ? true : undefined} aria-hidden={sidePanelFull ? true : undefined}>
+        <main ref={canvasRef} className={`canvas section-${section}`} inert={sidePanelFull && !chatShown ? true : undefined} aria-hidden={sidePanelFull && !chatShown ? true : undefined}>
           {chatShown && (openChatRow
-            ? <ChatView key={chatKey(openChat!)} row={openChatRow} chats={chats} onClose={() => setOpenChat(null)}
+            ? <TalkOnlyChat onOpenChat={id => setOpenChat({hostId:openChat!.hostId,room:id})} settings={settings} agents={agents} profiles={profiles} onProfilesChange={saveAgents} key={chatKey(openChat!)} row={openChatRow} chats={chats} onClose={() => setOpenChat(null)}
                 draft={chatDrafts[chatKey(openChat!)] ?? ""} onDraft={(text) => { const key = chatKey(openChat!); setChatDrafts((all) => ({ ...all, [key]: text })); }}
                 onOpenWork={openWorkThread} />
             : <div className="picker"><p role="status">Opening the chat…</p><button onClick={() => setOpenChat(null)}>Close</button></div>)}
@@ -2852,7 +2853,7 @@ export function App() {
         </main>
 
 
-        {detailsOpen && <>
+        {detailsOpen && !chatShown && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close side panel overlay" onClick={closeDetails} />}
           {!sidePanelFull && <SidebarHandle
             which="details"

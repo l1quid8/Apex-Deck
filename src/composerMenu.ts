@@ -80,8 +80,12 @@ export function menuItems(trigger: Trigger | null, people: readonly MenuPerson[]
 }
 
 /** Remove choices the caller cannot actually perform for this destination. */
-export function availableMenuItems(items: MenuItem[], capabilities: { attach?: boolean; folder?: boolean; tools?: boolean }): MenuItem[] {
-  return items.filter(item => item.kind !== 'attach' || capabilities.attach !== false)
+export function availableMenuItems(items: MenuItem[], capabilities: { attach?: boolean; folder?: boolean; tools?: boolean; talkOnly?: boolean }): MenuItem[] {
+  const allowed = capabilities.talkOnly ? items.filter(item =>
+    !['attach', 'attach-folder', 'tools', 'server'].includes(item.kind) &&
+    !(item.kind === 'command' && ['plan', 'diff', 'image'].includes(item.key)))
+    .map(item => item.kind === 'command' && item.key === 'fork' ? { ...item, detail: 'Copy into a new chat' } : item) : items;
+  return allowed.filter(item => item.kind !== 'attach' || capabilities.attach !== false)
     .filter(item => item.kind !== 'attach-folder' || capabilities.folder !== false)
     .filter(item => item.kind !== 'tools' || capabilities.tools !== false);
 }

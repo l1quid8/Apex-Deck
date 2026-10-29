@@ -39,10 +39,13 @@ test('a running card exposes Stop and a stopped card exposes Restart',()=>{
 test('chat revokes generated execution whenever its host is disconnected or its room is not ready',()=>{
  const chat=fs.readFileSync(new URL('../src/ChatPane.tsx',import.meta.url),'utf8');
  const expression=chat.match(/executionAllowed=\{([^}]+)\}/)[1];
- const allowed=new Function('focused','ready',`return (${expression});`);
+ const evaluate=new Function('focused','ready','chatReadOnly','hostConnection','hostCanMutate',`return (${expression});`);
+ const allowed=(focused,ready,chatReadOnly=false,connected=true)=>evaluate(focused,ready,chatReadOnly,{status:{kind:connected?'connected':'off'}},status=>status.kind==='connected');
  assert.equal(allowed(true,true),true);
  assert.equal(allowed(true,false),false);
  assert.equal(allowed(false,true),false);
+ assert.equal(allowed(true,true,true),false,'moved source cannot run generated interfaces');
+ assert.equal(allowed(true,true,false,false),false,'cached offline chat cannot run generated interfaces');
 });
 test('Retry and Revert invalidate a generated run before an asynchronous history mutation starts',()=>{
  const chat=fs.readFileSync(new URL('../src/ChatPane.tsx',import.meta.url),'utf8');
