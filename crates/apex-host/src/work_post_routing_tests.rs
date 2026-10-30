@@ -124,6 +124,25 @@ fn room_post_with_client_id_keeps_work_tool_server_validation() { assert_work_se
 #[test]
 fn room_post_to_with_client_id_keeps_work_tool_server_validation() { assert_work_server_validation("room_post_to"); }
 
+fn assert_work_quoted_server_names(command: &str) {
+    let f = Fixture::new(&format!("quoted-servers-{command}"), false);
+    f.runtime.block_on(async {
+        f.call("room_post", "discover available servers", None).await.unwrap();
+        f.idle().await;
+        let text = "Use !known\n\n> Null wrote:\n> Guard that branch with !curating too.";
+        f.call(command, text, Some("quoted-code")).await.unwrap();
+        let saved = f.host.store().room("r").unwrap().unwrap().snapshot;
+        let message = saved.transcript.iter().find(|message| message.text == text).expect("the quote is saved verbatim");
+        assert_eq!(message.servers, vec!["known"]);
+    });
+}
+
+#[test]
+fn room_post_ignores_quoted_tool_requests() { assert_work_quoted_server_names("room_post"); }
+
+#[test]
+fn room_post_to_ignores_quoted_tool_requests() { assert_work_quoted_server_names("room_post_to"); }
+
 fn assert_work_task_ownership(command: &str) {
     use crate::assistant_tasks::{HumanRequest, TaskDestination, TaskMode, TaskOwner};
     let f = Fixture::new(&format!("task-{command}"), false);

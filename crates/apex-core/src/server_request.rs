@@ -25,6 +25,16 @@ pub fn parse_server_requests(text: &str) -> Vec<String> {
  let mut found = Vec::new(); let mut seen = std::collections::HashSet::new();
  let mut i = 0; let mut delimiter = 0;
  while i < chars.len() {
+  // Keep quoted replies informational, including their code delimiters:
+  // selected code may contain an unmatched backtick or a logical negation.
+  if i == 0 || chars[i - 1] == '\n' {
+   let mut start = i;
+   while start < chars.len() && matches!(chars[start], ' ' | '\t') { start += 1; }
+   if chars.get(start) == Some(&'>') {
+    while i < chars.len() && chars[i] != '\n' { i += 1; }
+    continue;
+   }
+  }
   if delimiter == 0 && chars[i] == '\\' { i += 2; continue; }
   if chars[i] == '`' {
    let start = i; while i < chars.len() && chars[i] == '`' { i += 1; }
