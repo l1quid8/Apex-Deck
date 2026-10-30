@@ -177,7 +177,11 @@ export class ParticipantQueues {
     this.draining = true;
     try {
       const blocked = new Set<string>();
-      for (const item of [...this.items]) {
+      for (const id of this.items.map(item => item.id)) {
+        // A preceding post may await a long-running job. Honor edits and
+        // removals made while it ran instead of dispatching a stale copy.
+        const item = this.items.find(item => item.id === id);
+        if (!item) continue;
         if(item.voice?.canceled?.()){this.items=this.items.filter(x=>x.id!==item.id);this.publish();continue;}
         if (!this.available() || this.connectionPaused) break;
         if (item.failed || item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working") || (wholeRoom(item.kind) && this.active)) {
@@ -198,6 +202,7 @@ export class ParticipantQueues {
           // UI. Retaining it would leave an invisible, unretryable FIFO blocker.
           if (this.retainFailed && item.kind !== "turn" && !item.voice) this.items.unshift({ ...item, failed: true });
           this.failed(error); this.publish();
+          if (wholeRoom(item.kind)) break;
         }
       }
     } finally {

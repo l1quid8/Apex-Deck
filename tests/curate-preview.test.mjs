@@ -40,7 +40,11 @@ test('preview curation protects recent, compacted, pinned and long Human message
   await backend.roomClose('curate-preview');
   const reopened = await backend.roomCreate('curate-preview',[],snapshot.options,'');
   assert.deepEqual(reopened.curations,saved.curations);
+  events.length = 0;
   assert.deepEqual(await backend.roomCurateUndo('curate-preview'),{restored:13,sealed:0});
+  assert.equal(events.length,1);
+  assert.equal(events[0].type,'curations_changed');
+  assert.equal(typeof events[0].curations[0].undone,'number');
   assert.deepEqual(await backend.roomCurateUndo('curate-preview'),{restored:0,sealed:0});
   // The next curation is sealed by /compact, so undo reports it without reviving it.
   await backend.roomCurate('curate-preview');
@@ -71,6 +75,23 @@ const snapshot = {
   transcript:Array.from({length:60},(_,seq)=>({seq,speaker:{kind:'bot',id:'null'},text:`Reply ${seq}`})),
   curations:[{by:'null',at:50,hidden:[[0,9]],reason:'Earlier work',when:1}],
 };
+
+for (const state of ['empty', 'undone', 'sealed']) {
+  test(`preview undo emits no change when ${state} curation restores nothing`, async t => {
+    const id = `curate-undo-${state}`;
+    const saved = structuredClone(snapshot);
+    if (state === 'empty') saved.curations = [];
+    if (state === 'undone') saved.curations[0].undone = 2;
+    if (state === 'sealed') saved.compaction = {upto:50,summary:'Earlier work'};
+    const backend = await fixture(t,id,saved);
+    const events = [];
+    const unlisten = await backend.onRoomEvent((room,event)=>{if(room===id)events.push(event);});
+    t.after(unlisten);
+    assert.deepEqual(await backend.roomCurateUndo(id),{restored:0,sealed:state==='sealed'?10:0});
+    assert.deepEqual(events,[]);
+    assert.deepEqual((await backend.roomCreate(id,[],snapshot.options,'')).curations,saved.curations);
+  });
+}
 
 for (const operation of ['fork','rewind','revert','clear']) {
   test(`preview ${operation} drops curation records beyond the history boundary`, async t => {

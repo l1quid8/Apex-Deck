@@ -1086,7 +1086,7 @@ function demoBackend(): Backend {
         else { restored += count; curation.undone = Date.now(); }
       }
       saveRoom(id);
-      emitRoom(id, { type: "curations_changed", curations: structuredClone(room.curations ?? []) });
+      if (restored > 0) emitRoom(id, { type: "curations_changed", curations: structuredClone(room.curations ?? []) });
       return { restored, sealed };
     },
     roomClose: async (id) => {
