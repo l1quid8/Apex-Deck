@@ -293,7 +293,7 @@ pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
     match request {
         VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
         VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
-        VoiceServerWarm { room } | VoiceServerOpen { room } => chat(thread(room)),
+        VoiceServerWarm { room } | VoiceServerOpen { room } | VoiceRealtimeSession { room, .. } => chat(thread(room)),
     }
 }
 

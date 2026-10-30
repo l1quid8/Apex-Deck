@@ -470,6 +470,32 @@ where
                             }
                         }
                         let is_open = matches!(request, VoiceServerOpen { .. });
+                        let maybe_realtime = match &request {
+                            crate::voice::session::VoiceRequest::VoiceRealtimeSession { model, voice, instructions, tools, room: _, participant: _ } => Some((model.clone(), voice.clone(), instructions.clone(), tools.clone())),
+                            _ => None,
+                        };
+                        if let Some((model, voice_name, instructions, tools)) = maybe_realtime {
+                            // Realtime session mint – never log key or secret.
+                            let api_key = crate::voice::realtime::lookup_key();
+                            let result = match api_key {
+                                None => Err("Missing OpenAI API key. Add OPENAI_API_KEY in Settings → Providers or environment.".to_string()),
+                                Some(key) => {
+                                    let args = crate::voice::realtime::MintArgs { model, voice: voice_name, instructions, tools };
+                                    match crate::voice::realtime::mint(&key, args, None).await {
+                                        Ok(session) => Ok(serde_json::to_value(session).unwrap()),
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                            };
+                            let frame = match result {
+                                Ok(v) => json!({"id":id,"ok":v}).to_string(),
+                                Err(e) => refusal(json!(id), e),
+                            };
+                            if let Err(stop) = send(&mut output, &mut guard, frame).await {
+                                return stop.into();
+                            }
+                            continue;
+                        }
                         let result = match request {
                             VoiceServerStatus {} => Ok(serde_json::to_value(daemon.voice.status()).unwrap()),
                             VoiceServerInstall {} => daemon.voice.install().map(|_| Value::Null),
@@ -509,6 +535,7 @@ where
                                 });
                                 continue;
                             }
+                            crate::voice::session::VoiceRequest::VoiceRealtimeSession { .. } => unreachable!("realtime handled above"),
                         };
                         let frame = match result {
                             Ok(v) => json!({"id":id,"ok":v}).to_string(),

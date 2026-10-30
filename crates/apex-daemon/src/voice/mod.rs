@@ -1,6 +1,7 @@
 pub mod helper;
 pub mod install;
 pub mod manifest;
+pub mod realtime;
 pub mod relay;
 pub mod session;
 pub mod sources;
