@@ -97,11 +97,22 @@ A smarter check on the socket won't fix this. Code running as that user can also
 read Deck's token and edit Deck's files, so checking which process called only
 slows it down.
 
-**Recommendation.** Make the paired device the identity. A bot holds no device key,
-so it can't pass as one. Setup already pairs the phone; pair the Mac the same way.
-On Linux, accept Allow, answers, plans and model, reasoning and Speed from a paired
-device, within its tier. Anything that picks a folder or raises a bot's access
-stays behind the machine's own folder list. The carried patch then goes away.
+**Recommendation.** Make the paired device the identity, and keep restricted bots
+away from what makes a device. Setup already pairs the phone; pair the Mac the same
+way. On Linux, accept Allow, answers, plans and model, reasoning and Speed from a
+paired device, within its tier. The carried patch then goes away.
+
+A device key alone isn't enough. Null's review on 2026-10-30 found that a local
+caller can add a device and approve a pairing, and the same Linux user can edit the
+device registry. So a bot below Full could mint its own paired device. Before these
+actions are enabled, bots below Full must be unable to reach the local socket, the
+pairing grants, the device registry or Deck's data folder.
+
+Today that isolation doesn't exist for every bot: Claude bots below Full have no
+operating-system sandbox on Linux. That is the real work this decision depends on.
+
+The folder list only answers which folders a device may pick. It doesn't authorize
+raising a bot's access, so raising access needs its own rule.
 
 Changing this means changing the recipe on the server first: the updater's
 installed test `scripts/vps-update-allow-test.rs` asserts these phone calls are
