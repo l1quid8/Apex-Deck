@@ -217,6 +217,16 @@ export function chatProfileMapping(snapshot: ChatDeliverySnapshot, catalog: Reco
   const aliases = new Set(snapshot.participants.map(participant => participant.id));
   return Object.fromEntries(Object.entries({ ...catalog, ...snapshot.importProfiles }).filter(([alias]) => aliases.has(alias)));
 }
+/**
+ * What a move left behind, said as a person would say it. A bot is named from the chat's own
+ * roster as it was when the move started: the phone's catalog row can be older than a bot added
+ * since. A name can't always be found, and a raw participant id means nothing to the reader, so
+ * that bot is called one.
+ */
+export function leftBehindWords(move: Pick<ChatMoveRecord, 'snapshot' | 'skipped'>, known: (id: string) => string | undefined): string[] {
+  const names = new Map(move.snapshot.participants.map(person => [person.id, person.display_name]));
+  return move.skipped.map(item => `${known(item.participant) ?? names.get(item.participant) ?? 'A bot'} stayed behind: ${item.reason}`);
+}
 function importParticipants(snapshot: ChatDeliverySnapshot): { participants: ChatBotRequest[]; skipped: { participant: string; reason: string }[] } {
   const participants: ChatBotRequest[] = [], skipped: { participant: string; reason: string }[] = [];
   for (const participant of snapshot.participants) {

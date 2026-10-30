@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ChatDeliveryController, JsonChatDeliveryStorage, ChatPendingAnswersError, chatDeliveryStatus } from '../src/chatDelivery.ts';
+import { ChatDeliveryController, JsonChatDeliveryStorage, ChatPendingAnswersError, chatDeliveryStatus, leftBehindWords } from '../src/chatDelivery.ts';
 
 const A = { id: 'studio', name: 'Studio MacBook' };
 const B = { id: 'server', name: 'Hetzner' };
@@ -694,4 +694,21 @@ test('a move retains the source group addressing and bot-hop policy', async () =
   h.remote.get('studio/r1').options = { policy: 'round_robin', max_bot_hops: 4 };
   await h.controller.move('chat', B);
   assert.deepEqual(h.calls.find(call => call[0] === 'import')[2].options, { policy: 'round_robin', max_bot_hops: 4 });
+});
+
+test('a bot left behind by a move is named, never shown by its raw id', () => {
+  const move = {
+    snapshot: { participants: [{ id: 'codex-2', display_name: 'Codex' }, { id: 'grok', display_name: 'Grok' }] },
+    skipped: [
+      { participant: 'codex-2', reason: 'Codex is not installed here.' },
+      { participant: 'muse-7', reason: 'The saved profile for this bot is unknown.' },
+    ],
+  };
+  // The phone's catalog row can be older than the chat: the chat's own roster still names the bot.
+  assert.deepEqual(leftBehindWords(move, () => undefined), [
+    'Codex stayed behind: Codex is not installed here.',
+    'A bot stayed behind: The saved profile for this bot is unknown.',
+  ]);
+  // A name the catalog does know is used as it is.
+  assert.equal(leftBehindWords(move, (id) => (id === 'muse-7' ? 'Muse' : undefined))[1], 'Muse stayed behind: The saved profile for this bot is unknown.');
 });

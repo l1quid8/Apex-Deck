@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TurnQueue } from '../src/turnQueue.ts';
+import { TurnQueue, ParticipantQueues } from '../src/turnQueue.ts';
 const tick = () => new Promise(r => setTimeout(r, 0));
 test('queued messages wait, can be edited or removed, and run in order', async () => {
   let release; const sent = []; const snapshots = [];
@@ -257,4 +257,45 @@ test('explicit retry after reconnection releases its connection hold, and offlin
   assert.equal(q.items[0].failed, true);
   online = true; fail = false; q.retry(id); await tick();
   assert.deepEqual(posts, ['retry me', 'retry me']); assert.equal(q.connectionPaused, false);
+});
+
+test('a queued message goes by the answer rule in force when it is sent, not when it was typed', async () => {
+  let rule = ['a']; const sent = [];
+  const q = new ParticipantQueues(
+    async () => ['a'], // what the phone knew when the message was typed
+    async (text, to) => { sent.push({ text, to }); },
+    async () => {}, () => {}, () => {}, () => true, true,
+    async () => rule, // the thread's own answer, asked again when it is actually sent
+  );
+  await q.send('first');
+  assert.deepEqual(sent, [{ text: 'first', to: ['a'] }]);
+  void q.send('follow up'); // waits: a is busy
+  await tick();
+  assert.deepEqual(q.items.map((item) => item.to), [['a']]);
+  rule = ['b']; // whoever answers changed while it waited
+  q.idle('a'); await tick(); await tick();
+  assert.deepEqual(sent, [{ text: 'first', to: ['a'] }, { text: 'follow up', to: ['b'] }]);
+});
+
+test('a message taken back while its routing is asked sends nothing', async () => {
+  const sent = []; let answer;
+  const q = new ParticipantQueues(async () => ['a'], async (text, to) => sent.push({ text, to }), async () => {}, () => {}, () => {}, () => true, true, () => new Promise((r) => (answer = r)));
+  void q.send('take me back');
+  await tick();
+  q.remove(q.items[0].id);
+  answer(['b']); await tick(); await tick();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(q.items, []);
+});
+
+test('a machine that goes away while its routing is asked does not send', async () => {
+  const sent = []; let answer; let online = true;
+  const q = new ParticipantQueues(async () => ['a'], async (text, to) => sent.push({ text, to }), async () => {}, () => {}, () => {}, () => online, true, () => new Promise((r) => (answer = r)));
+  q.send('waits for the machine');
+  await tick();
+  online = false; q.availabilityChanged();
+  answer(['a']); await tick(); await tick();
+  assert.deepEqual(sent, []);
+  assert.equal(q.connectionPaused, true);
+  assert.deepEqual(q.items.map((item) => item.text), ['waits for the machine']);
 });

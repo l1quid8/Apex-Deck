@@ -2,6 +2,7 @@
 // chips is folded down to avatars.
 
 import type { AgentTool, ParticipantConfig } from "./types";
+import { carriedFlag } from "./threadState";
 
 /** Shared chip display preferences. Compact layouts keep full details in
  *  the hover card and bot settings. Omitted style preserves the original look. */
@@ -50,3 +51,6 @@ export function levelsShown<T extends { context: number | null; plan: number | n
 const key = (pane: string) => `deck.botsFolded.${pane}`;
 export const loadFolded = (pane: string) => { try { return localStorage.getItem(key(pane)) === "1"; } catch { return false; } };
 export const saveFolded = (pane: string, folded: boolean) => { try { folded ? localStorage.setItem(key(pane), "1") : localStorage.removeItem(key(pane)); } catch { /* private mode */ } };
+/** The folded panel for a thread kept under its machine and id. A choice saved under the thread's old
+ *  bare-id key moves over the first time it is read. */
+export const foldedFor = (pane: string, legacy: string) => carriedFlag(loadFolded, saveFolded, pane, legacy);

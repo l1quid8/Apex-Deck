@@ -1433,6 +1433,11 @@ impl Host {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if let Some((existing_id, saved)) = self.store.imported_chat(&move_id)? {
             let meta = self.store.update_chat_meta(&existing_id, |meta| {
+                // A chat imported before this was recorded has a history but no activity time,
+                // so the list calls it new. Its newest message says when it was last used.
+                if meta.updated_at == 0 {
+                    meta.updated_at = saved.snapshot.transcript.iter().filter_map(|message| message.at).max().unwrap_or_else(now_millis);
+                }
                 if let Some(title) = &title { meta.title = title.clone(); }
                 meta.profiles.retain(|alias, _| saved.snapshot.participants.iter().any(|bot| bot.id.as_str() == alias));
                 for bot in &saved.snapshot.participants {
@@ -1472,6 +1477,9 @@ impl Host {
         snapshot.import_skipped = skipped.clone();
         snapshot.import_profiles = made_from;
         snapshot.transcript = entries;
+        // When this chat was last used, as its own history says. A phone's older chats carry no
+        // times, so the copy itself is the last moment it was touched.
+        let last_at = snapshot.transcript.iter().filter_map(|message| message.at).max();
         let mut origins = std::collections::HashSet::new();
         snapshot.transcript.retain(|message| message.origin.as_ref().is_none_or(|origin| origins.insert(origin.clone())));
         for (seq, message) in snapshot.transcript.iter_mut().enumerate() { message.seq = seq; }
@@ -1482,6 +1490,9 @@ impl Host {
         let meta = self.store.update_chat_meta(&id, |meta| {
             meta.title = title.unwrap_or_else(|| "New chat".into());
             meta.profiles = saved.snapshot.import_profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect();
+            // An imported chat has history, so the list should age it by that rather than call
+            // it new: its newest message, or the copy when the history carries no times.
+            meta.updated_at = meta.updated_at.max(last_at.unwrap_or_else(now_millis));
         })?;
         Ok(serde_json::json!({"id":id,"room":saved.snapshot,"skipped":skipped,"profiles":meta.profiles}))
     }
@@ -2926,6 +2937,14 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
     store.save_room(id, &checkpoint)?;
     if let RoomEvent::MessageAdded { message } = event { update_chat_message_meta(store, id, checkpoint.snapshot.kind.is_chat(), message); }
     Ok(())
+}
+
+/// Milliseconds since the Unix epoch, which the chat list sorts and ages by.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn update_chat_message_meta(store: &Store, id: &str, chat: bool, message: &apex_core::Message) {

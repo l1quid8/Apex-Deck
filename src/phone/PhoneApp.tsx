@@ -41,7 +41,7 @@ import { ThreadCard } from "../interactiveAnswers/ThreadCard.tsx";
 import { QuestionForm } from "../QuestionForm";
 import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
-import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "../tldr";
+import { loadTldr, saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "../tldr";
 import { appendToolToken } from "../composerMenu";
 import { chooseOutcome, pickerMatches, pickerRows, workInRows, type PickerRow } from "../destinations";
 import { buildNotice, dotState, helperNotice } from "../hostFacts";
@@ -79,7 +79,8 @@ import { parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTick
 import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
-import type { ChatDeliveryStatus } from "../chatDelivery";
+import { carriedEntry } from "../threadState";
+import { leftBehindWords, type ChatDeliveryStatus } from "../chatDelivery";
 import { forkedPane, forkUpto } from "./messageFork";
 import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
 import { PickedText } from "./PickedText";
@@ -703,8 +704,6 @@ export function PhoneApp() {
   }, [chatView]);
   const sessionHost = (pane: AssistantVisiblePane) => { const workspace = workspaces.find((item) => item.id === pane.workspaceId); return pane.hostId ?? (workspace ? workspaceHost(workspace) : ""); };
   const openPane = pickOpenPane(panes, chatPlaces.panes, openId, openHost, sessionHost);
-  /** Where the open thread's draft, quotes and TL;DR are kept: a chat's names its machine too. */
-  const openKey = openPane ? threadKey(openPane, isChatSpace) : openId;
   const pendingWorkspace = workspaces.find((workspace) => workspace.id === pending?.workspaceId) ?? null;
   const viewingPending = pending !== null && openId === pending.id;
   const openWorkspace = viewingPending ? pendingWorkspace : workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? chatPlaces.workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? null;
@@ -714,6 +713,9 @@ export function PhoneApp() {
   const openWork = openPane && !openChat && openPane.hostId && !panes.some((pane) => pane.id === openPane.id) ? findRoom(chatView, openPane.hostId, openPane.id) : null;
   const hostOf = (workspace: Workspace | null) => links.find((link) => link.id === (workspace ? workspaceHost(workspace) : "")) ?? null;
   const openHostId = openPane?.hostId ?? (openWorkspace ? workspaceHost(openWorkspace) : "");
+  /** Where the open thread's draft, quotes and TL;DR are kept: its machine and its id, so a same-id thread
+   *  on another machine never shares them. */
+  const openKey = openPane ? threadKey(openPane, openHostId) : openId;
   const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
   const openLink = linkOf(openHostId) ?? hostOf(openWorkspace);
   const runnerBackend=phoneHost(openHostId)?.backend;
@@ -891,7 +893,7 @@ export function PhoneApp() {
     if (!openPane || !openPane.hostId || !isChatSpace(openPane.workspaceId)) return;
     const route = chatRoute(delivery.snapshot(), openPane.hostId, openPane.id);
     if (!route.moved) return;
-    const from = threadKey(openPane, isChatSpace);
+    const from = threadKey(openPane, openHostId);
     const to = JSON.stringify([route.hostId, route.room]);
     setDrafts((all) => all[from] && !all[to] ? { ...all, [to]: all[from] } : all);
     setOpenHost(route.hostId);
@@ -899,6 +901,16 @@ export function PhoneApp() {
     refreshChats(route.hostId).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPane?.id, openPane?.hostId, deliveryTick]);
+  // A Work thread's draft, quotes and TL;DR were saved under its bare id before those keys named the
+  // machine. Carry them over when it opens, before the first paint, so an upgrade loses no draft.
+  useLayoutEffect(() => {
+    if (!openPane || isChatSpace(openPane.workspaceId)) return;
+    const now = threadKey(openPane, openHostId);
+    setDrafts((all) => carriedEntry(all, now, openPane.id));
+    setQuotes((all) => carriedEntry(all, now, openPane.id));
+    if (tldrFor(now, openPane.id)) setTldrs((all) => ({ ...all, [now]: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openPane?.id, openPane?.hostId, openHostId]);
   async function startChat(hostId: string, profiles: string[]) {
     const host = phoneHost(hostId);
     if (!host) throw new Error("That machine isn't paired with this phone.");
@@ -964,8 +976,8 @@ export function PhoneApp() {
     await Promise.allSettled([refreshChats(row.hostId), refreshChats(toHostId)]);
     setChatSheet(null);
     if (chat) openChatRow({ hostId: chat.machine.id, id: chat.room });
-    const left = journal?.skipped ?? [];
-    setNotice(left.length ? `Moved to ${to.name}. ${left.map((item) => `${row.bots.find((bot) => bot.id === item.participant)?.name ?? item.participant} stayed behind: ${item.reason}`).join(" ")}` : `Moved to ${to.name}.`);
+    const left = journal ? leftBehindWords(journal, (botId) => row.bots.find((bot) => bot.id === botId)?.name) : [];
+    setNotice(left.length ? `Moved to ${to.name}. ${left.join(" ")}` : `Moved to ${to.name}.`);
   }
   /** A move to a Work thread, saved on the phone before it is sent and kept until the machine confirms,
    *  so a retry gets the same thread with the same access. Nothing is sent if it can't be saved. */
@@ -1072,9 +1084,10 @@ export function PhoneApp() {
     const key = `${queueKey(hostId, paneId)}\u0000${text}`;
     const sent = queuedDrafts.current.get(key);
     const back = sent?.draft ?? { text: splitTldr(text).text, files: [] };
+    const box = threadKey({ id: paneId }, hostId);
     queuedDrafts.current.delete(key);
-    setDrafts((all) => ({ ...all, [paneId]: giveBack(all[paneId] ?? emptyDraft(), back) }));
-    if (sent?.quotes.length) setQuotes((all) => ({ ...all, [paneId]: quotesBack(all[paneId] ?? [], sent.quotes) }));
+    setDrafts((all) => ({ ...all, [box]: giveBack(all[box] ?? emptyDraft(), back) }));
+    if (sent?.quotes.length) setQuotes((all) => ({ ...all, [box]: quotesBack(all[box] ?? [], sent.quotes) }));
   }
   /** A thread's queue, made the first time it is needed. A thread never changes machines once it has started. */
   function queueFor(paneId: string, hostId: string): ParticipantQueues {
@@ -1118,6 +1131,8 @@ export function PhoneApp() {
       (error) => setNotice(words(error)),
       () => { const found = host(); return queues.current.get(queueKey(hostId, paneId)) === queue && found !== null && toLink(found.connection.get().status) === "online"; },
       false, // Phone restores the complete draft itself on dispatch failure.
+      // Asked again when a queued message is actually sent, so a rule changed while it waited still applies.
+      (text) => backend().roomTargets(paneId, text),
     );
     for (const id of busyRef.current[queueKey(hostId, paneId)] ?? []) queue.started(id);
     queues.current.set(queueKey(hostId, paneId), queue);
@@ -1187,7 +1202,7 @@ export function PhoneApp() {
     const sameShown = roomRef.current?.id === openPane.id && roomRef.current.hostId === openHostId;
     // Anything else on screen goes at once, so its form and buttons can't act while this one loads.
     if (roomRef.current && !sameShown) setRoom(null);
-    const key = threadKey(openPane, isChatSpace);
+    const key = threadKey(openPane, openHostId);
     // Offline keeps what is already on screen under the banner; it reloads when the machine is back.
     // Bots that were mid-reply are cut off: their turn shows as interrupted, not still going.
     if (!host || toLink(host.connection.get().status) !== "online") {
@@ -1360,7 +1375,9 @@ export function PhoneApp() {
     if (openChat) { sendChat(openChat); return; }
     if (!id || !openWorkspace || !openLink || sendingRef.current) return;
     if (readingRef.current > 0) { setNotice("Wait for the file to finish attaching."); return; }
-    const draft = draftFor(id);
+    // This thread's box, quotes and TL;DR, under its machine and id: a pending draft has neither yet.
+    const box = openKey ?? id;
+    const draft = draftFor(box);
     const gate = threadSend(links, openLink.id, draft.text, draft.files.length);
     if (!gate.enabled) { if (gate.reason) setNotice(gate.reason); return; }
     const host = phoneHost(openLink.id);
@@ -1390,9 +1407,12 @@ export function PhoneApp() {
         pane = made;
         participants = state.snapshot.participants.map(toPerson);
         transcriptLength = state.snapshot.transcript.length;
-        movedRef.current[pending.id] = made.id;
-        setDrafts((all) => { const next = { ...all, [made.id]: all[pending.id] ?? draft }; delete next[pending.id]; return next; });
-        if (tldrOf(pending.id)) { setTldr(made.id, true); setTldr(pending.id, false); }
+        // The new thread's box names its machine, as every Work thread's does. Files picked while this
+        // was still a draft go there, which is where the box now reads them from.
+        const madeBox = threadKey(made, host.machine.id);
+        movedRef.current[pending.id] = madeBox;
+        setDrafts((all) => { const next = { ...all, [madeBox]: all[pending.id] ?? draft }; delete next[pending.id]; return next; });
+        if (tldrOf(pending.id)) { setTldr(madeBox, true); setTldr(pending.id, false); }
         setPending(null);
         delete pendingRoomIds.current[pending.id];
         setPendingDraftPlans((all) => { const next = { ...all }; delete next[pending.id]; return next; });
@@ -1405,6 +1425,8 @@ export function PhoneApp() {
       }
       if (!pane) return;
       const sentPane = pane;
+      // The box key for the thread that actually gets this, which is a new thread when the draft started one.
+      const sentBox = threadKey(sentPane, host.machine.id);
       if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add one from Bots in the thread’s ⋯ menu."); return; }
       const parsed=parseComposer(draft.text.trim());
       if ('command' in parsed || runnerMode) {
@@ -1413,16 +1435,16 @@ export function PhoneApp() {
           const workers=await host.backend.roomTargets(sentPane.id,'arg' in command?command.arg:'');
           const result=await runnerCommand(host.backend,sentPane.id,command.name,command.arg,workers,runnerLimits,runnerConfig);
           setRunner(result.snapshot??null);if(result.confirmEnd){runnerClear.current=true;setRunnerEndRequest(v=>v+1);}if(result.show)setRunnerShowRequest(v=>v+1);if(result.message)setNotice(result.message);
-          setDraft(sentPane.id,{...draft,text:''});setRunnerMode(null);return;
+          setDraft(sentBox,{...draft,text:''});setRunnerMode(null);return;
         }
         throw Error('Use /goal or /loop controls here. Other slash commands are available on desktop. Start with // to send literal text.');
       }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
       // Quotes go under the text, led by the bot they're handed to, as on the desktop.
-      const sentQuotes = quotes[id] ?? [];
+      const sentQuotes = quotes[sentBox] ?? [];
       // TL;DR asks every bot for a short answer; the line rides on the message but never shows in the chat.
-      const body = withTldr(withAttachments(outgoingText(postable(draft.text), sentQuotes, participants), paths), tldrOf(id));
+      const body = withTldr(withAttachments(outgoingText(postable(draft.text), sentQuotes, participants), paths), tldrOf(sentBox));
       // The room picks who answers, as on the desktop: whoever is @named, or whoever was named last.
       // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
       // This resolves once the machine has it, or once it is queued; until then the box keeps it.
@@ -1436,10 +1458,10 @@ export function PhoneApp() {
       if (entry.failed) { queuedDrafts.current.delete(key); return; }
       // Clear only what was sent; anything typed, attached or quoted while it was sending stays.
       setDrafts((all) => {
-        const now = all[sentPane.id] ?? emptyDraft();
-        return { ...all, [sentPane.id]: { text: now.text === draft.text ? "" : now.text, files: now.files.filter((file) => !draft.files.includes(file)) } };
+        const now = all[sentBox] ?? emptyDraft();
+        return { ...all, [sentBox]: { text: now.text === draft.text ? "" : now.text, files: now.files.filter((file) => !draft.files.includes(file)) } };
       });
-      if (sentQuotes.length) setQuotes((all) => ({ ...all, [sentPane.id]: (all[sentPane.id] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
+      if (sentQuotes.length) setQuotes((all) => ({ ...all, [sentBox]: (all[sentBox] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
       setNotice("");
       // One save for the title and Recents, so the two can't overwrite each other.
       const title = transcriptLength === 0 || sentPane.title === "New thread" ? threadTitleFromMessage(draft.text) : "New thread";
@@ -1589,8 +1611,9 @@ export function PhoneApp() {
   }, [composerOpen, openId, openWorkspace?.id]);
 
   function startPicker() {
-    // This runs from the picker button, before the native picker can suspend the page.
-    pickerDraft.current = openId;
+    // This runs from the picker button, before the native picker can suspend the page. The picked
+    // files belong to the open thread's box, which names its machine.
+    pickerDraft.current = openKey ?? openId;
   }
 
   async function readAttachments(_kind: "camera" | "photos" | "files", selected: File[]) {
@@ -1915,7 +1938,11 @@ export function PhoneApp() {
       const line = failedLine(failed) ?? putBackLine(request.files);
       if (line) setNotice(line);
       // Your message goes back in the box, unsent.
-      if (kind === "revert" && request.chat) setDrafts((all) => ({ ...all, [paneId]: { ...(all[paneId] ?? emptyDraft()), text: splitTldr(message.text).text } }));
+      if (kind === "revert" && request.chat) {
+        // The box is kept under the thread's machine and id, like every other thread's.
+        const box = threadKey({ id: paneId }, host.machine.id);
+        setDrafts((all) => ({ ...all, [box]: { ...(all[box] ?? emptyDraft()), text: splitTldr(message.text).text } }));
+      }
       if (kind === "retry" && bot) { stuckRef.current = true; queueFor(paneId, host.machine.id).turn([bot], null); }
     } catch (error) {
       setNotice(`Could not ${kind}: ${words(error)}`);
