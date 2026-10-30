@@ -120,7 +120,7 @@ export function createRoomRecovery<T, E = never>({ load, apply, fail, event, rep
 export function representedRoomEvent(state: RoomState, event: RoomEvent): boolean {
   if (state.recovery_seq == null || event.recovery_seq == null || event.recovery_seq > state.recovery_seq) return false;
   switch (event.type) {
-    case "message_added": case "usage": case "changed": case "allowed_changed": case "compacted":
+    case "message_added": case "usage": case "changed": case "allowed_changed": case "compacted": case "curations_changed":
     case "turn_started": case "participant_idle": case "approval_requested": case "approval_resolved": case "idle": case "stopped":
     case "question_requested": case "question_resolved": case "next_steps": case "plan_changed": case "participant_changed": case "participants_changed":
       return true;

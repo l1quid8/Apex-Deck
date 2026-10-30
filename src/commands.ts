@@ -2,6 +2,8 @@
 export type Command =
   | { name: "clear" }
   | { name: "compact" }
+  | { name: "curate" }
+  | { name: "curate_undo" }
   | { name: "fork"; title: string }
   | { name: "export"; format: "markdown" | "json" }
   | { name: "diff" }
@@ -33,6 +35,10 @@ export function parseComposer(body: string): Parsed {
     case "diff":
     case "plan":
       return arg ? { command: { name: "unknown", typed: body } } : { command: { name } as Command };
+    case "curate":
+      if (arg === "") return { command: { name: "curate" } };
+      if (arg.toLowerCase() === "undo") return { command: { name: "curate_undo" } };
+      return { command: { name: "unknown", typed: body } };
     case "goal":
     case "loop": {
       const raw = match[2] ?? "";

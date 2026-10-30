@@ -104,6 +104,52 @@ test('compaction waits for all models and blocks new participant turns until set
   release(); await tick(); assert.deepEqual(sent, ['@null first', '/compact', '@jigga later']);
 });
 
+for (const kind of ['curate', 'curate_undo']) {
+  test(`${kind} waits for every bot, blocks later turns, and releases its reservation on reply`, async () => {
+    const { ParticipantQueues } = await import('../src/turnQueue.ts');
+    const sent = []; let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const q = new ParticipantQueues(async text => [text.startsWith('@third') ? 'third' : 'null'], async (text, _to, action) => {
+      sent.push(text);
+      if (action === kind) await pending;
+    }, async () => {}, () => {});
+    q.started('jigga');
+    const accepted = q.send('/curate', kind);
+    await tick();
+    assert.deepEqual(sent, [], 'a different active bot must still block the whole-room job');
+    await accepted;
+    await q.send('@third later');
+    assert.deepEqual(sent, [], 'a different active bot must still block the whole-room job');
+    q.idle('jigga'); await tick();
+    assert.deepEqual(sent, ['/curate']);
+    release(); await tick();
+    assert.deepEqual(sent, ['/curate', '@third later']);
+    assert.equal(q.state.null, 'idle', 'the command reply releases the reservation without a participant event');
+  });
+
+  test(`a failed ${kind} blocks later bots until explicitly retried`, async () => {
+    const { ParticipantQueues } = await import('../src/turnQueue.ts');
+    let fail = true; const sent = [];
+    const q = new ParticipantQueues(async text => [text.startsWith('@third') ? 'third' : 'null'], async (text, _to, action) => {
+      if (action === kind && fail) throw Error('curation refused');
+      sent.push(text);
+    }, async () => {}, () => {}, () => {});
+    const id = await q.send('/curate', kind);
+    await q.send('@third later');
+    assert.deepEqual(sent, []);
+    assert.equal(q.items[0].failed, true);
+    fail = false; q.retry(id); await tick();
+    assert.deepEqual(sent, ['/curate', '@third later']);
+  });
+}
+
+test('wholeRoom identifies only context-changing queue jobs', async () => {
+  const { wholeRoom } = await import('../src/turnQueue.ts');
+  assert.equal(typeof wholeRoom, 'function');
+  for (const kind of ['compact', 'curate', 'curate_undo']) assert.equal(wholeRoom(kind), true);
+  for (const kind of ['message', 'turn']) assert.equal(wholeRoom(kind), false);
+});
+
 test('trying again runs the failed bot first, then what was queued for it', async () => {
   const { ParticipantQueues } = await import('../src/turnQueue.ts');
   const sent = [];

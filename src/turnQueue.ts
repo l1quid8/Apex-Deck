@@ -3,7 +3,11 @@ import type { TurnPolicy } from "./types";
 import { hasMention } from "./recipients.ts";
 import type { Mentionable } from "./slug.ts";
 /** "turn" runs bots on the transcript as it is and posts no text (see ParticipantQueues.turn). */
-export type TurnKind = "message" | "compact" | "turn";
+export type TurnKind = "message" | "compact" | "curate" | "curate_undo" | "turn";
+/** Context changes wait for the whole room and block every later turn. */
+export function wholeRoom(kind: TurnKind): boolean {
+  return kind === "compact" || kind === "curate" || kind === "curate_undo";
+}
 /** `hops` is set on "turn" items only: the cap on bot-to-bot rounds, null for the room's own. */
 export interface QueuedMessage { id: number; text: string; kind: TurnKind; hops?: number | null; voice?: {requestId:string; canceled?:()=>boolean} }
 export class TurnQueue {
@@ -176,15 +180,15 @@ export class ParticipantQueues {
       for (const item of [...this.items]) {
         if(item.voice?.canceled?.()){this.items=this.items.filter(x=>x.id!==item.id);this.publish();continue;}
         if (!this.available() || this.connectionPaused) break;
-        if (item.failed || item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working") || (item.kind === "compact" && this.active)) {
-          if (item.kind === "compact") break;
+        if (item.failed || item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working") || (wholeRoom(item.kind) && this.active)) {
+          if (wholeRoom(item.kind)) break;
           item.to.forEach(id => blocked.add(id)); continue;
         }
         item.to.forEach(id => { this.state[id] = "working"; });
         this.items = this.items.filter(x => x.id !== item.id); this.publish();
         try {
           await this.post(item.text, item.to, item.kind, item.hops, item.voice);
-          if (item.kind === "compact") { item.to.forEach(id => { this.state[id] = "idle"; }); this.publish(); }
+          if (wholeRoom(item.kind)) { item.to.forEach(id => { this.state[id] = "idle"; }); this.publish(); }
         }
         catch (error) {
           item.to.forEach(id => { this.state[id] = "idle"; this.paused.add(id); });
