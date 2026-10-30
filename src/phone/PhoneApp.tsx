@@ -2755,7 +2755,7 @@ function BackButton({ label, onClick, className }: { label: string; onClick(): v
   return <button type="button" className={`ph-back${className ? ` ${className}` : ""}`} aria-label={`Back to ${label}`} onClick={onClick}><ChevronLeft size={26} />{label}</button>;
 }
 
-function Sheet({ title, onClose, children, variant }: { title: string; onClose(): void; children: ReactNode; variant?: "location" }) {
+function Sheet({ title, tag, onClose, children, variant }: { title: string; tag?: ReactNode; onClose(): void; children: ReactNode; variant?: "location" }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.focus(); }, []);
   return (
@@ -2763,7 +2763,7 @@ function Sheet({ title, onClose, children, variant }: { title: string; onClose()
       <div className={`ph-sheet${variant ? ` ph-sheet-${variant}` : ""}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={ref} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
         <div className="ph-handle" />
         <div className={`ph-sheet-title${variant ? ` ph-sheet-title-${variant}` : ""}`}>
-          <h3>{title}</h3>
+          <h3>{title}{tag}</h3>
           <button type="button" className="ph-icon" aria-label="Close" onClick={onClose}><X size={20} /></button>
         </div>
         <div className={`ph-sheet-body${variant ? ` ph-sheet-body-${variant}` : ""}`}>{children}</div>

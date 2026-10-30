@@ -5,6 +5,8 @@ import {
   type VoiceDependencies,
   type VoiceController,
 } from "../voice/controller.ts";
+import { joinVoiceEngines } from "../voice/engineController.ts";
+import { createRealtimeVoiceController } from "../voice/realtimeController.ts";
 import { connectServerVoice } from "../voice/serverClient.ts";
 import { openVoiceAudio } from "../voice/audio.ts";
 import { preferenceFor, readVoiceSettings, voiceFor } from "../voice/settings.ts";
@@ -12,6 +14,7 @@ import { createThreadVoiceBridge } from "../voice/threadBridge.ts";
 import { machineVoice, type PhoneTouched } from "./machineVoice.ts";
 import type { CallLook } from "../voice/callView.ts";
 import type {
+  CallEngine,
   CallScope,
   ServerVoiceLink,
   ServerVoiceRuntime,
@@ -54,6 +57,10 @@ export interface PhoneVoice {
   /** Save from the settings sheet. Fields that differ from `settingsFor(hostId)` become the phone's own. */
   save(settings: VoiceSettings, hostId?: string): void;
   look(hostId: string): CallLook;
+  /** Which engine the running call uses; "local" when no call is on. */
+  engine(): CallEngine;
+  /** Read the machine's saved call settings again, so a call uses its current engine. */
+  refreshSettings(hostId: string): Promise<void>;
   view(): { weak: boolean; attention: boolean };
   subscribe(fn: () => void): () => void;
   failed(
@@ -79,11 +86,40 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
   const touched: PhoneTouched = {
     silence: rawTouched?.silence === true,
     look: rawTouched?.look === true,
+    realtimeVoice: rawTouched?.realtimeVoice === true,
+    realtimeModel: rawTouched?.realtimeModel === true,
   };
   const machines = new Map<string, VoiceSettings>(),
-    machineLoaded = new Map<string, number>();
+    machineLoaded = new Map<string, number>(),
+    machineLoading = new Map<string, Promise<void>>();
   const settingsFor = (hostId: string) =>
     machineVoice(settings, machines.get(hostId) ?? null, touched, hostId);
+  // The machine's saved call settings (pause, look, voices, engine). Reading them needs Full access; without it the phone keeps its own.
+  const loadMachine = (id: string, maxAgeMs: number): Promise<void> => {
+    const h = deps.host(id),
+      now = (deps.now ?? Date.now)(),
+      last = machineLoaded.get(id);
+    if (!h?.backend.settingsLoad) return Promise.resolve();
+    if (last !== undefined && now - last < maxAgeMs) return machineLoading.get(id) ?? Promise.resolve();
+    machineLoaded.set(id, now);
+    const loading: Promise<void> = h.backend
+      .settingsLoad()
+      .then((raw) => {
+        const voice = raw && typeof raw === "object" ? (raw as { voice?: unknown }).voice : undefined;
+        if (!voice) return;
+        machines.set(id, readVoiceSettings(voice));
+        changed();
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (machineLoading.get(id) === loading) machineLoading.delete(id);
+      });
+    machineLoading.set(id, loading);
+    return loading;
+  };
+  // Just before a call: the engine may have changed on the Mac, but a slow link mustn't hold the call up.
+  const refreshSettings = (id: string) =>
+    Promise.race([loadMachine(id, 1000), new Promise<void>((done) => setTimeout(done, 2000))]);
   const rawUsed = read(PHONE_VOICE_USED_KEY);
   const used = new Set<string>(
     Array.isArray(rawUsed)
@@ -143,15 +179,21 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
     bridges.set(key, made);
     return made;
   };
-  const controller: VoiceController<ServerVoiceRuntime> =
+  const focus = (s: CallScope) => {
+    if (!deps.onScreen(s.hostId, s.roomId)) {
+      attention = true;
+      changed();
+    }
+  };
+  const local: VoiceController<ServerVoiceRuntime> =
     createVoiceController<ServerVoiceRuntime>({
       runtime: {
         status: () => {
-          const s = controller.getState().scope;
+          const s = local.getState().scope;
           return host(s!.hostId).voice.status();
         },
         start: async () => {
-          const s = controller.getState().scope!;
+          const s = local.getState().scope!;
           const h = host(s.hostId);
           await h.whenConnected(10000);
           const runtime = await h.voice.open(s.roomId);
@@ -189,7 +231,7 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
       },
       openAudio: deps.openAudio ?? openVoiceAudio,
       candidates: () => {
-        const s = controller.getState().scope;
+        const s = local.getState().scope;
         return s ? candidates(s.hostId, s.roomId) : [];
       },
       bridge,
@@ -203,16 +245,44 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
           deps.participants(s.hostId, s.roomId).find((p) => p.id === s.participantId)?.voice,
         ),
       silence: () => {
-        const s = controller.getState().scope;
+        const s = local.getState().scope;
         return (s ? settingsFor(s.hostId) : settings).silenceMs;
       },
-      focus: (s) => {
-        if (!deps.onScreen(s.hostId, s.roomId)) {
-          attention = true;
-          changed();
-        }
-      },
+      focus,
     });
+  const realtime = createRealtimeVoiceController({
+    candidates: () => {
+      const s = realtime.getState().scope;
+      return s ? candidates(s.hostId, s.roomId) : [];
+    },
+    bridge,
+    voiceSettings: () => {
+      const s = realtime.getState().scope;
+      return s ? settingsFor(s.hostId) : settings;
+    },
+    // The machine holds the OpenAI key; the phone only gets the short-lived pass.
+    mintSession: async (args) => {
+      const s = realtime.getState().scope;
+      if (!s) throw Error("The call ended");
+      const h = host(s.hostId);
+      await h.whenConnected(10000);
+      try {
+        return await h.backend.call("voice_realtime_session", args);
+      } catch (error) {
+        if (/unknown variant/.test(String(error))) throw Error(`Update ${h.name} to use GPT-Live calls.`);
+        throw error;
+      }
+    },
+    focus,
+  });
+  const engines = joinVoiceEngines(local, realtime, (s) => settingsFor(s.hostId).engine);
+  const controller: VoiceController<ServerVoiceRuntime> = {
+    ...engines.controller,
+    start: async (s: CallScope) => {
+      await refreshSettings(s.hostId);
+      return engines.controller.start(s);
+    },
+  };
   controller.subscribe(() => {
     const s = controller.getState(),
       on = !["off", "error", "setup"].includes(s.status);
@@ -239,11 +309,16 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
     settings: () => settings,
     settingsFor,
     look: (hostId) => settingsFor(hostId).look,
+    engine: engines.engine,
+    refreshSettings,
     save: (value, hostId) => {
       const before = hostId ? settingsFor(hostId) : settings;
-      settings = readVoiceSettings(value);
+      // The engine is only ever the machine's, so the phone's copy stays Local.
+      settings = { ...readVoiceSettings(value), engine: "local" };
       if (settings.silenceMs !== before.silenceMs) touched.silence = true;
       if (settings.look !== before.look) touched.look = true;
+      if (settings.realtimeVoice !== before.realtimeVoice) touched.realtimeVoice = true;
+      if (settings.realtimeModel !== before.realtimeModel) touched.realtimeModel = true;
       try {
         deps.storage.setItem(PHONE_VOICE_KEY, JSON.stringify(settings));
         deps.storage.setItem(PHONE_VOICE_TOUCHED_KEY, JSON.stringify(touched));
@@ -266,21 +341,8 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
         changed();
       }
       const now = (deps.now ?? Date.now)();
-      const h = deps.host(id);
-      // The machine's saved call settings (pause, look, voices). Reading them needs Full access; without it the phone keeps its own.
-      if (h?.backend.settingsLoad && (!machineLoaded.has(id) || now - machineLoaded.get(id)! >= 60000)) {
-        machineLoaded.set(id, now);
-        void h.backend
-          .settingsLoad()
-          .then((raw) => {
-            const voice = raw && typeof raw === "object" ? (raw as { voice?: unknown }).voice : undefined;
-            if (!voice) return;
-            machines.set(id, readVoiceSettings(voice));
-            changed();
-          })
-          .catch(() => {});
-      }
-      if (used.has(id) && (!warm.has(id) || now - warm.get(id)! >= 60000)) {
+      void loadMachine(id, 60000);
+      if (settingsFor(id).engine !== "realtime" && used.has(id) && (!warm.has(id) || now - warm.get(id)! >= 60000)) {
         warm.set(id, now);
         void deps
           .host(id)

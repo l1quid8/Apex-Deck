@@ -1,10 +1,10 @@
 import type { VoiceSettings } from "../voice/types.ts";
 /** Which call settings the phone has changed itself. Those stay the phone's; the rest follow the machine. */
-export type PhoneTouched = { silence: boolean; look: boolean };
+export type PhoneTouched = { silence: boolean; look: boolean; realtimeVoice: boolean; realtimeModel: boolean };
 /**
  * The settings a call in one machine's threads uses: the phone's own, with the machine's saved
- * pause, look, default voice and agents' voices wherever the phone hasn't chosen. A Mac files its own threads' voices
- * under "local", so they're re-keyed to the phone's id for that machine.
+ * pause, look, default voice, agents' voices and GPT-Live picks wherever the phone hasn't chosen. The engine is
+ * always the machine's. A Mac files its own threads' voices under "local", so they're re-keyed to the phone's id for that machine.
  */
 export function machineVoice(
   phone: VoiceSettings,
@@ -26,8 +26,14 @@ export function machineVoice(
   }
   Object.assign(preferences, phone.preferences);
   const defaultVoice = phone.defaultVoice ?? machine.defaultVoice;
+  const realtimeVoice = touched.realtimeVoice ? phone.realtimeVoice : machine.realtimeVoice;
+  const realtimeModel = touched.realtimeModel ? phone.realtimeModel : machine.realtimeModel;
+  const { realtimeVoice: _voice, realtimeModel: _model, ...own } = phone;
   return {
-    ...phone,
+    ...own,
+    engine: machine.engine,
+    ...(realtimeVoice ? { realtimeVoice } : {}),
+    ...(realtimeModel ? { realtimeModel } : {}),
     ...(defaultVoice ? { defaultVoice } : {}),
     silenceMs: touched.silence ? phone.silenceMs : machine.silenceMs,
     look: touched.look ? phone.look : machine.look,

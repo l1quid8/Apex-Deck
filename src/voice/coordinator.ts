@@ -10,6 +10,7 @@ import type {
   VoiceSettings,
 } from "./types.ts";
 import { createRealtimeVoiceController } from "./realtimeController.ts";
+import { joinVoiceEngines } from "./engineController.ts";
 
 export interface VoiceRegistration {
   candidates: VoiceCandidate[];
@@ -111,7 +112,7 @@ const realtimeController = createRealtimeVoiceController({
 });
 
 /* ---- unified controller that picks engine based on settings ---- */
-function currentEngineFor(scope: CallScope): "local" | "realtime" {
+function currentEngineFor(scope: CallScope): CallEngine {
   try {
     return lookup(scope).settings.engine ?? "local";
   } catch {
@@ -119,69 +120,9 @@ function currentEngineFor(scope: CallScope): "local" | "realtime" {
   }
 }
 
-function activeController(): VoiceController | ReturnType<typeof createRealtimeVoiceController> {
-  const ls = localController.getState();
-  const rs = realtimeController.getState();
-  if (ls.status !== "off") return localController as any;
-  if (rs.status !== "off") return realtimeController as any;
-  return localController as any;
-}
-
-/** Which engine the running call uses; "local" when no call is on. */
-export function callEngine(): CallEngine {
-  return localController.getState().status === "off" && realtimeController.getState().status !== "off" ? "realtime" : "local";
-}
-
-export const voiceController: VoiceController = {
-  getState: () => {
-    const ls = localController.getState();
-    const rs = realtimeController.getState();
-    if (ls.status !== "off") return ls;
-    if (rs.status !== "off") return rs as any;
-    return ls;
-  },
-  subscribe: (fn: () => void) => {
-    const off1 = localController.subscribe(fn);
-    const off2 = realtimeController.subscribe(fn);
-    return () => { off1(); off2(); };
-  },
-  start: async (scope: CallScope) => {
-    const engine = currentEngineFor(scope);
-    if (engine === "realtime") {
-      await (localController as any).end?.("switch to realtime");
-      return (realtimeController as any).start(scope);
-    } else {
-      await (realtimeController as any).end?.("switch to local");
-      return (localController as any).start(scope);
-    }
-  },
-  end: async (reason?: string) => {
-    const p1 = (localController as any).end(reason);
-    const p2 = (realtimeController as any).end(reason);
-    await Promise.all([p1, p2]);
-  },
-  switchAgent: async (scope: CallScope) => {
-    // Decide which controller owns current call
-    const ac = activeController();
-    return (ac as any).switchAgent(scope);
-  },
-  mute: (value: boolean) => {
-    const ac = activeController();
-    (ac as any).mute(value);
-    // Also sync mute to other controller's state so UI shows consistent
-    if (ac === localController) (realtimeController as any).mute(value);
-    else (localController as any).mute(value);
-  },
-  preview: (voice: string) => {
-    // Preview only supported on local engine (Kokoro). For realtime, do nothing.
-    const ls = localController.getState();
-    if (ls.status !== "off") return (localController as any).preview(voice);
-    // If no call, allow sampling (which uses local helper)
-    return (localController as any).preview(voice);
-  },
-  sample: (voice: string) => (localController as any).sample(voice),
-  stopSample: () => (localController as any).stopSample(),
-} as any;
+const joined = joinVoiceEngines(localController as VoiceController, realtimeController, currentEngineFor);
+export const voiceController: VoiceController = joined.controller;
+export const callEngine = joined.engine;
 
 // A thread view that only reloads (reconnect, new backend) registers again at
 // once; the call ends only if its thread stays gone past this grace period.

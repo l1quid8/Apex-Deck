@@ -116,7 +116,8 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
           onError: (error) => {
             if (gen !== callGen) return;
             if (state.status !== "off") {
-              void end("error: " + error.message).finally(() => set({ status: "error", scope, error: error.message }));
+              const failed = scope;
+              void end("error: " + error.message).finally(() => set({ status: "error", scope: failed, error: error.message }));
             }
           },
           onClose: () => {

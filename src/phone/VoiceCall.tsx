@@ -4,13 +4,13 @@ import { Avatar } from "../Avatar";
 import type { PhoneVoice } from "./phoneVoice.ts";
 import type { ServerVoiceLink, ServerVoiceStatus, VoiceCandidate } from "../voice/types.ts";
 import { CALL_LOOKS, callClock, callLine, pickNote, pickRows, voiceLabel, type CallLook, type WaveMode } from "../voice/callView.ts";
-import { chatVoice, preferenceFor, voiceFor, withChatPreference } from "../voice/settings.ts";
+import { CALL_ENGINES, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, REALTIME_MODELS, REALTIME_VOICES, chatVoice, preferenceFor, readRealtimeModel, readRealtimeVoice, realtimeVoiceLabel, voiceFor, withChatPreference } from "../voice/settings.ts";
 import { voiceCallView } from "./voiceCallView.ts";
 import "./voice-call.css";
 
 /** A bot's avatar seed and colour, for the call's name, the strip and Call who?. */
 export type PhoneVoiceWho = (participantId: string) => { seed: string; color: string } | undefined;
-type SheetProps = { title: string; onClose(): void; children: ReactNode };
+type SheetProps = { title: string; tag?: ReactNode; onClose(): void; children: ReactNode };
 type Base = { voice: PhoneVoice; hostId: string; roomId: string; who?: PhoneVoiceWho };
 
 // One sheet for the whole call, shared by the mic, the pill, the strip (look A) and the capsule (look C).
@@ -196,6 +196,9 @@ export function VoiceCall(props: Base & {
     if (call.here && state.status === "setup") void refresh().then(() => setOpen("setup"));
   }, [call.here, state.status]);
   useEffect(() => {
+    if (call.here && state.status === "error") setOpen("setup");
+  }, [call.here, state.status]);
+  useEffect(() => {
     if (choices) setOpen("settings");
   }, [choices]);
   // A call already running in another thread on this machine moves here, as saying "call Jigga" would.
@@ -208,9 +211,13 @@ export function VoiceCall(props: Base & {
   };
   const tap = async () => {
     if (live) return setOpen("settings");
-    const status = await link.status();
-    setSetup(status);
-    if (!status.installed) return setOpen("setup");
+    await voice.refreshSettings(hostId);
+    // GPT-Live needs nothing on the machine but its key, so the local voice setup doesn't apply.
+    if (voice.settingsFor(hostId).engine !== "realtime") {
+      const status = await link.status();
+      setSetup(status);
+      if (!status.installed) return setOpen("setup");
+    }
     if (pick && (addressed || candidates.length === 1)) return start(pick);
     setOpen("pick");
   };
@@ -248,8 +255,11 @@ export function VoiceCall(props: Base & {
     const picked = chatVoice(s, c.hostId, c.profileId, c.roomId, c.participantId);
     const fallback = voiceFor(s, c.hostId, c.profileId, undefined, undefined, c.agentVoice);
     const voices = [...new Set([...(picked ? [picked] : []), ...state.voices])];
+    // The running call's engine, not the saved one: the Mac's setting can change mid-call.
+    const realtime = voice.engine() === "realtime";
+    const engineTag = <span className="ph-call-engine-tag" data-engine={realtime ? "realtime" : "local"}>{CALL_ENGINES.find((e) => e.id === (realtime ? "realtime" : "local"))?.label}</span>;
     sheet = (
-      <Sheet title={choosingThread ? "Which thread?" : `Call with ${c.name}`} onClose={close}>
+      <Sheet title={choosingThread ? "Which thread?" : `Call with ${c.name}`} tag={engineTag} onClose={close}>
         <div className="ph-voice-sheet">
           {problem && <p role="alert">{problem}</p>}
           {choosingThread && <p className="ph-call-note">Heard “{threadQuery}”.</p>}
@@ -275,20 +285,43 @@ export function VoiceCall(props: Base & {
             </div>
           )}
           {choices && <p className="ph-call-note">{pickNote(choices, choosingThread)}</p>}
-          <label className="ph-call-set">
-            <span>{c.name}'s voice</span>
-            <span className="ph-call-voice">
-              <select value={picked} onChange={(e) => savePref(c, { voice: e.target.value })}>
-                <option value="">Default · {voiceLabel(fallback)}</option>
-                {voices.map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
-              </select>
-              <button type="button" className="ph-call-round small" aria-label="Preview voice" onClick={() => voice.controller.preview(picked || fallback)}>{Ico.play}</button>
-            </span>
-          </label>
-          <label className="ph-call-set col">
-            <span>Pause before reply · <b>{call.settings.silenceMs} ms</b></span>
-            <input type="range" min="100" max="2000" step="1" value={call.settings.silenceMs} onChange={(e) => save({ silenceMs: Number(e.target.value) })} />
-          </label>
+          {realtime ? (
+            <>
+              <label className="ph-call-set">
+                <span>Model</span>
+                <span className="ph-call-voice">
+                  <select aria-label="GPT-Live model" value={readRealtimeModel(s.realtimeModel) ?? DEFAULT_REALTIME_MODEL} onChange={(e) => save({ realtimeModel: e.target.value })}>
+                    {REALTIME_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                </span>
+              </label>
+              <label className="ph-call-set">
+                <span>GPT-Live voice</span>
+                <span className="ph-call-voice">
+                  <select aria-label="GPT-Live voice" value={readRealtimeVoice(s.realtimeVoice) ?? DEFAULT_REALTIME_VOICE} onChange={(e) => save({ realtimeVoice: e.target.value })}>
+                    {REALTIME_VOICES.map((v) => <option key={v} value={v}>{realtimeVoiceLabel(v)}</option>)}
+                  </select>
+                </span>
+              </label>
+            </>
+          ) : (
+            <>
+              <label className="ph-call-set">
+                <span>{c.name}'s voice</span>
+                <span className="ph-call-voice">
+                  <select value={picked} onChange={(e) => savePref(c, { voice: e.target.value })}>
+                    <option value="">Default · {voiceLabel(fallback)}</option>
+                    {voices.map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
+                  </select>
+                  <button type="button" className="ph-call-round small" aria-label="Preview voice" onClick={() => voice.controller.preview(picked || fallback)}>{Ico.play}</button>
+                </span>
+              </label>
+              <label className="ph-call-set col">
+                <span>Pause before reply · <b>{call.settings.silenceMs} ms</b></span>
+                <input type="range" min="100" max="2000" step="1" value={call.settings.silenceMs} onChange={(e) => save({ silenceMs: Number(e.target.value) })} />
+              </label>
+            </>
+          )}
           <label className="ph-call-set">
             <span>Nicknames</span>
             <input type="text" placeholder="e.g. Nul, Knoll" defaultValue={pref(c).aliases.join(", ")}
@@ -302,7 +335,7 @@ export function VoiceCall(props: Base & {
               ))}
             </span>
           </div>
-          <p className="ph-call-note">Settings follow your Mac · the pause applies to the next call</p>
+          <p className="ph-call-note">{realtime ? "Settings follow your Mac · model and voice apply to the next call" : "Settings follow your Mac · the pause applies to the next call"}</p>
         </div>
       </Sheet>
     );

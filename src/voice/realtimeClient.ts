@@ -150,6 +150,7 @@ export async function connectRealtime(
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
   const pc = new RTCPeerConnection();
+  let closed = false;
 
   if (signal) {
     signal.addEventListener("abort", () => {
@@ -159,6 +160,11 @@ export async function connectRealtime(
 
   pc.ontrack = ev => {
     if (ev.streams[0]) events.onAudio(ev.streams[0]);
+  };
+
+  // A phone changing networks can drop the call with no data channel error.
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "failed" && !closed) events.onError(new Error("The connection to OpenAI was lost"));
   };
 
   // Capture the mic stream for THIS call only – prevents A attaching B's mic.
@@ -172,7 +178,6 @@ export async function connectRealtime(
   }
 
   const dc = pc.createDataChannel("oai-events");
-  let closed = false;
   let channelOpen = false;
   const queuedSends: string[] = [];
 
