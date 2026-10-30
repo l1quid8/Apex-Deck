@@ -348,22 +348,39 @@ function TerminalSettings({ settings, onChange }: { settings: AppSettings; onCha
 
 function CallsSettings({ settings, onChange, backend }: { settings: AppSettings; onChange: (s: AppSettings) => void; backend: Backend }) {
   const voice = readVoiceSettings(settings.voice);
-  const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [keyState, setKeyState] = useState<KeyState | null>(null);
+  const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const refreshKey = useCallback(() => {
-    backend.apiKeyStatus(["OPENAI_API_KEY"]).then(list => setHasKey(list[0] !== "missing"), () => setHasKey(null));
+    backend.apiKeyStatus(["OPENAI_API_KEY"]).then(list => setKeyState(list[0]), () => setKeyState(null));
   }, [backend]);
   useEffect(() => { refreshKey(); }, [refreshKey]);
 
+  const canRealtime = keyState === "saved" || keyState === "environment";
   const setEngine = (engine: "local" | "realtime") => {
     onChange({ ...settings, voice: { ...voice, engine } });
   };
   const setRealtimeVoice = (v: string) => {
     onChange({ ...settings, voice: { ...voice, realtimeVoice: v } });
   };
+  const saveKey = async () => {
+    const v = draft.trim(); if (!v || busy) return;
+    setBusy(true); setErr("");
+    try { await backend.apiKeySave("OPENAI_API_KEY", v); setDraft(""); setEditing(false); refreshKey(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  const removeKey = async () => {
+    setBusy(true); setErr("");
+    try { await backend.apiKeyRemove("OPENAI_API_KEY"); refreshKey(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
 
-  const canRealtime = hasKey === true;
   return <div className="settings-card">
-    <Row label="Call engine" note={canRealtime ? "Local uses Whisper+Kokoro on this Mac. GPT-Live uses OpenAI Realtime with delegation to Deck agents." : "Add an OpenAI API key in Providers to enable GPT-Live."}>
+    <Row label="Call engine" note={canRealtime ? "Local uses Whisper+Kokoro on this Mac. GPT-Live uses OpenAI Realtime with delegation to Deck agents in the active thread." : "Add an OpenAI API key to enable GPT-Live."}>
       <span className="voice-seg" role="group" aria-label="Call engine">
         <button type="button" aria-pressed={voice.engine !== "realtime"} onClick={() => setEngine("local")}>Local</button>
         <button type="button" aria-pressed={voice.engine === "realtime"} disabled={!canRealtime} title={!canRealtime ? "Add an OpenAI key first" : undefined} onClick={() => setEngine("realtime")}>GPT-Live</button>
@@ -374,6 +391,18 @@ function CallsSettings({ settings, onChange, backend }: { settings: AppSettings;
         {(["alloy","ash","ballad","coral","echo","sage","shimmer","verse","marin","cedar"]).map(v => <option key={v} value={v}>{v}</option>)}
       </select>
     </Row>}
+    <Row label="OpenAI API key" note={err || (keyState ? KEY_STATE_LABEL[keyState] + (keyState === "environment" ? " – remove from shell to replace here." : "") + (keyState !== "missing" ? " Key never shown; only a short-lived token reaches the call." : " Needed for GPT-Live. Realtime requires API key auth; ChatGPT login alone is not enough.") : "Checking…")}>
+      {!editing && <>
+        <button className="ghost" disabled={busy} onClick={() => { setErr(""); setEditing(true); }}>{keyState === "saved" || keyState === "environment" ? "Replace" : "Add key"}</button>
+        {keyState === "saved" && <button className="ghost" disabled={busy} onClick={removeKey}>Remove</button>}
+      </>}
+    </Row>
+    {editing && <Row label="New key" note="Enter saves. Deck never shows it again.">
+      <input type="password" aria-label="OPENAI_API_KEY value" autoComplete="off" spellCheck={false} disabled={busy} value={draft} autoFocus onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); saveKey(); } else if (e.key === "Escape") { setDraft(""); setEditing(false); } }} />
+      <button disabled={!draft.trim() || busy} onClick={saveKey}>{busy ? "Saving…" : "Save"}</button>
+      <button className="ghost" disabled={busy} onClick={() => { setDraft(""); setEditing(false); }}>Cancel</button>
+    </Row>}
+
     <Row label="Local voice" note="For agents with no voice of their own. Set one agent's voice in its form.">
       <span className="voice-pick">
         <select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={(e) => onChange({ ...settings, voice: { ...voice, defaultVoice: e.target.value } })}>
@@ -391,7 +420,7 @@ function CallsSettings({ settings, onChange, backend }: { settings: AppSettings;
         {CALL_LOOKS.map(l => <button type="button" key={l.id} aria-pressed={l.id === voice.look} onClick={() => onChange({ ...settings, voice: { ...voice, look: l.id as any } })}>{l.label}</button>)}
       </span>
     </Row>
-    {!canRealtime && <p className="settings-note">To use GPT-Live, add <code>OPENAI_API_KEY</code> in Settings → Providers. The key never leaves the daemon – the app only gets a short-lived session token.</p>}
+    {!canRealtime && <p className="settings-note">Get a key at platform.openai.com with Realtime access. The long-lived key stays in the daemon (Keychain); the renderer only ever gets an ephemeral client_secret.</p>}
   </div>;
 }
 

@@ -13,6 +13,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
   let state: VoiceState = { status: "off", muted: false, voices: [] };
   const listeners = new Set<() => void>();
   let callId = "";
+  let callGen = 0;
   let scope: CallScope | undefined;
   let pcClient: import("./realtimeClient.ts").RealtimeClient | undefined;
   let remoteAudio: HTMLAudioElement | undefined;
@@ -35,6 +36,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
 
   const end = async (reason = "ended by user") => {
     if (callId || state.status !== "off") console.warn("[voice realtime end] " + JSON.stringify({ callId, reason, status: state.status }));
+    callGen++; // invalidate any pending startup
     const wasCall = callId;
     callId = "";
     scope = undefined;
@@ -48,17 +50,22 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
 
   const start = async (nextScope: CallScope) => {
     await end("new call started");
+    const gen = ++callGen;
     callId = crypto.randomUUID();
     scope = nextScope;
     startedAt = Date.now();
     set({ status: "warming", scope: nextScope, startedAt, muted: false, error: undefined });
 
+    let micStream: MediaStream | undefined;
     try {
-      // Get mic stream
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      if (gen !== callGen) {
+        for (const t of stream.getTracks()) try { t.stop(); } catch {}
+        return;
+      }
+      micStream = stream;
       localStream = stream;
 
-      // Prepare remote audio element
       const audioEl = new Audio();
       audioEl.autoplay = true;
       remoteAudio = audioEl;
@@ -75,8 +82,8 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
         nextScope,
         {
           onEvent: (e) => {
+            if (gen !== callGen) return;
             const type = e.type as string;
-            // Map some realtime events to VoiceState
             if (type === "input_audio_buffer.speech_started") {
               set({ status: "hearing" });
             } else if (type === "input_audio_buffer.speech_stopped" || type === "input_audio_buffer.committed") {
@@ -90,19 +97,21 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
             }
           },
           onAudio: (stream) => {
+            if (gen !== callGen) return;
             if (remoteAudio) {
               remoteAudio.srcObject = stream;
-              // Ensure playing
               remoteAudio.play().catch(() => {});
               set({ status: "speaking" });
             }
           },
           onError: (error) => {
+            if (gen !== callGen) return;
             if (state.status !== "off") {
               void end("error: " + error.message).finally(() => set({ status: "error", scope, error: error.message }));
             }
           },
           onClose: () => {
+            if (gen !== callGen) return;
             if (callId && state.status !== "off") {
               void end("realtime closed");
             }
@@ -114,10 +123,23 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
         }
       );
 
+      if (gen !== callGen) {
+        try { client.close("superseded"); } catch {}
+        if (micStream) {
+          for (const t of micStream.getTracks()) try { t.stop(); } catch {}
+          if (localStream === micStream) localStream = undefined;
+        }
+        return;
+      }
+
       pcClient = client;
       set({ status: "listening", voices: [] });
       deps.focus(nextScope);
     } catch (e) {
+      if (gen !== callGen) return;
+      if (micStream) {
+        for (const t of micStream.getTracks()) try { t.stop(); } catch {}
+      }
       await end("start failed");
       const msg = e instanceof Error ? e.message : String(e);
       set({ status: "error", scope: nextScope, error: msg });

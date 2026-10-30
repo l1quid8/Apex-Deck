@@ -1,13 +1,13 @@
 /**
- * GPT-Live (OpenAI Realtime) WebRTC client.
- * Model/voice lookup verified 2026-10-29:
- * endpoint POST https://api.openai.com/v1/realtime/calls?model=<model>
- *   Headers: Authorization: Bearer <ephemeral>, Content-Type: application/sdp
- *   Body: SDP offer, Response: SDP answer
- * WebSocket alternative: wss://api.openai.com/v1/realtime?model=<model>
- * Models: gpt-realtime, gpt-realtime-2.1, gpt-realtime-mini are current GA.
+/**
+ * GPT-Live (OpenAI Realtime) WebRTC client – GA schema 2026-10-29+
+ * Endpoints: POST /v1/realtime/client_secrets (daemon, Bearer api key -> ek_)
+ *            POST /v1/realtime/calls?model=<model> (browser, Bearer ek_ -> SDP answer)
+ * GA nested: session.type=realtime, session.audio.input.transcription, turn_detection,
+ *            audio.output.voice, expires_after. Response uses output_modalities.
+ * Models: gpt-realtime, gpt-realtime-2.1, gpt-realtime-mini.
  * Voices: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar.
- * This file uses WebRTC, which gives echo cancellation in-browser.
+ * Verified via OpenAI Realtime docs client_secrets reference 2026-10-29.
  */
 
 import type { VoiceCandidate, CallScope, VoiceSettings } from "./types.ts";
@@ -25,7 +25,6 @@ export type RealtimeSessionMint = {
 };
 
 export interface RealtimeClient {
-  /** Send an event over the data channel. */
   send(event: Record<string, unknown>): void;
   close(reason?: string): void;
 }
@@ -44,6 +43,11 @@ export type RealtimeDependencies = {
   voiceSettings(): VoiceSettings;
 };
 
+type ToolCallInfo = {
+  argumentJson: string;
+  name?: string;
+};
+
 export async function connectRealtime(
   deps: RealtimeDependencies,
   scope: CallScope,
@@ -60,21 +64,23 @@ export async function connectRealtime(
   const realtimeVoice = (settings.realtimeVoice ?? "verse").toLowerCase();
   const voice = REALTIME_VOICES.includes(realtimeVoice as any) ? realtimeVoice : "verse";
 
-  // Build instructions listing thread's agents.
-  const candidates = deps.candidates().filter(c => c.hostId === scope.hostId);
+  // Strictly same thread – prevents routing across rooms.
+  const all = deps.candidates();
+  const candidates = all.filter(c => c.hostId === scope.hostId && c.roomId === scope.roomId);
   const agentList = candidates
-    .map(c => `- ${c.name} (id ${c.participantId}): ${c.roomTitle ?? c.name}`)
+    .map(c => `- ${c.name} (id ${c.participantId})`)
     .slice(0, 32)
     .join("\n");
   const defaultTarget = candidates.find(c => c.participantId === scope.participantId)?.name ?? candidates[0]?.name ?? "agent";
 
   const instructions = `You are GPT-Live inside Apex Deck, a voice interface for coding agents.
-Default agent is "${defaultTarget}". Agents available in this workspace:
+Default agent is "${defaultTarget}". Agents available in THIS thread only:
 ${agentList || "- none listed"}
 
 Rules:
 - Chat naturally. When the user asks to do work (code, search, file edit, research, questions about project), call ask_agent with the right agent and their request.
 - To pick a different agent by voice, parse "ask <Name> to ..." or "call <Name>".
+- If the user mentions an agent not in this thread's list, say that agent is not in this thread and ask who to use from the list.
 - Keep your own small talk brief. Do not invent file contents.
 - When an agent is working, say once that it's working, then stay quiet until the result arrives. Do not spam "On it."
 - Speak the agent's final result closely, not adding extra facts.
@@ -86,11 +92,11 @@ Rules:
     {
       type: "function",
       name: "ask_agent",
-      description: "Ask a Deck agent to do work. The agent runs with its own history and tools. Returns its final reply text via tool output.",
+      description: "Ask a Deck agent to do work. The agent runs with its own history and tools.",
       parameters: {
         type: "object",
         properties: {
-          agent: { type: "string", description: "Agent name or id, e.g. Jigga, Null, Muck. Use exact name from list." },
+          agent: { type: "string", description: "Agent name or id from thread list" },
           request: { type: "string", description: "The user request to send to that agent." },
         },
         required: ["agent", "request"],
@@ -104,7 +110,7 @@ Rules:
       parameters: {
         type: "object",
         properties: {
-          agent: { type: "string", description: "Agent name or id" },
+          agent: { type: "string", description: "Agent name or id from thread list" },
         },
         required: ["agent"],
         additionalProperties: false,
@@ -126,15 +132,12 @@ Rules:
     throw e instanceof Error ? e : new Error(String(e));
   }
 
-  // --- WebRTC setup ---
   const pc = new RTCPeerConnection();
 
-  // Remote audio
   pc.ontrack = ev => {
     if (ev.streams[0]) events.onAudio(ev.streams[0]);
   };
 
-  // Mic track
   const localStream = mic.stream();
   if (localStream) {
     for (const track of localStream.getAudioTracks()) {
@@ -143,43 +146,62 @@ Rules:
     }
   }
 
-  // Data channel – OpenAI uses a channel named oai-events
   const dc = pc.createDataChannel("oai-events");
   let closed = false;
 
-  const pendingToolCalls = new Map<string, { agent: string; request: string; responseId: string }>();
+  // Deduplication + argument accumulation for function calls
+  const pendingArgs = new Map<string, ToolCallInfo>();
+  const handledCalls = new Set<string>();
+  type PendingSubmission = { requestId: string; bridgeScope: CallScope };
+  const pendingSubmissions = new Map<string, PendingSubmission>();
 
-  // Bridge handling for ask_agent
-  const handleAskAgent = async (callId: string, agentName: string, requestText: string, responseId: string) => {
+  const resolveAgent = (nameRaw: string): VoiceCandidate | { ambiguous: true; names: string[] } | null => {
+    const lower = nameRaw.trim().toLowerCase();
+    if (!lower) return null;
+    const byExact = candidates.filter(c => c.name.toLowerCase() === lower || c.participantId.toLowerCase() === lower);
+    if (byExact.length === 1) return byExact[0];
+    if (byExact.length > 1) return { ambiguous: true, names: byExact.map(c => c.name) };
+    // For voice routing we allow no fuzzy include to avoid cross-name collisions; require exact.
+    // If user typed "Ask j" we still want default.
+    return null;
+  };
+
+  const handleAskAgent = async (callId: string, agentName: string, requestText: string) => {
+    if (handledCalls.has(callId)) return;
+    handledCalls.add(callId);
     try {
-      // Resolve agent name to candidate
-      const lower = agentName.trim().toLowerCase();
-      let target = candidates.find(c => c.name.toLowerCase() === lower || c.participantId.toLowerCase() === lower);
-      if (!target) {
-        // fuzzy by inclusion
-        target = candidates.find(c => c.name.toLowerCase().includes(lower) || lower.includes(c.name.toLowerCase()));
+      const resolved = resolveAgent(agentName);
+      if (resolved && "ambiguous" in resolved) {
+        throw new Error(`Ambiguous agent "${agentName}": ${resolved.names.join(", ")}. Say exactly one name from this thread.`);
       }
-      const chosen = target ?? candidates.find(c => c.participantId === scope.participantId) ?? candidates[0];
-      if (!chosen) throw new Error(`No agent found matching "${agentName}"`);
+      let target: VoiceCandidate | undefined;
+      if (resolved && !("ambiguous" in resolved)) target = resolved as VoiceCandidate;
+      else {
+        // If user didn't specify or name unknown, use default participant if present
+        target = candidates.find(c => c.participantId === scope.participantId) ?? candidates[0];
+        if (agentName && agentName.trim().toLowerCase() !== (target?.name.toLowerCase() ?? "") && agentName.trim().toLowerCase() !== (target?.participantId.toLowerCase() ?? "")) {
+          throw new Error(`No agent named "${agentName}" in this thread. Available: ${candidates.map(c => c.name).join(", ") || "none"}.`);
+        }
+      }
+      if (!target) throw new Error(`No agent found matching "${agentName}"`);
 
-      const bridge = deps.bridge(chosen);
+      const bridge = deps.bridge(target);
       const requestId = crypto.randomUUID();
       const callIdUnique = `${Date.now()}-${requestId}`;
       const generation = 0;
       const utteranceId = crypto.randomUUID();
 
-      // Subscribe before submit
       let finalText = "";
       let done = false;
       const unlisten = bridge.subscribe(ev => {
         if (ev.requestId !== requestId) return;
-        if (ev.scope.hostId !== chosen.hostId || ev.scope.roomId !== chosen.roomId || ev.scope.participantId !== chosen.participantId) return;
+        if (ev.scope.hostId !== target.hostId || ev.scope.roomId !== target.roomId || ev.scope.participantId !== target.participantId) return;
         if (ev.type === "text" && ev.text) finalText += ev.text;
         if (ev.type === "done" || ev.type === "failed" || ev.type === "canceled") {
           if (!done) {
             done = true;
             unlisten();
-            // Send function_call_output
+            pendingSubmissions.delete(callId);
             const output = ev.type === "failed" ? `Agent failed: ${ev.text ?? ""}` : finalText || "(no reply)";
             try {
               dc.send(JSON.stringify({
@@ -190,24 +212,22 @@ Rules:
                   output,
                 },
               }));
-              dc.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio","text"] } }));
+              dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
             } catch {}
-            pendingToolCalls.delete(callId);
           }
         }
       });
 
-      pendingToolCalls.set(callId, { agent: chosen.participantId, request: requestText, responseId });
+      pendingSubmissions.set(callId, { requestId, bridgeScope: target });
 
-      // Say once that it's working after short delay if not done quickly
       setTimeout(() => {
         if (!done) {
           try {
             dc.send(JSON.stringify({
               type: "response.create",
               response: {
-                modalities: ["audio","text"],
-                instructions: `Briefly say: "Asking ${chosen.name}, working on it." Then stay quiet until tool output arrives.`,
+                instructions: `Briefly say: "Asking ${target!.name}, working on it." Then stay quiet until tool output arrives.`,
+                output_modalities: ["audio","text"],
               },
             }));
           } catch {}
@@ -219,10 +239,11 @@ Rules:
         generation,
         utteranceId,
         requestId,
-        scope: chosen,
+        scope: target,
         text: requestText,
       });
     } catch (e) {
+      pendingSubmissions.delete(callId);
       try {
         dc.send(JSON.stringify({
           type: "conversation.item.create",
@@ -232,109 +253,138 @@ Rules:
             output: `Error: ${e instanceof Error ? e.message : String(e)}`,
           },
         }));
-        dc.send(JSON.stringify({ type: "response.create" }));
+        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
       } catch {}
     }
   };
 
   const handleStopAgent = async (callId: string, agentName: string) => {
-    const lower = agentName.trim().toLowerCase();
-    let target = candidates.find(c => c.name.toLowerCase() === lower || c.participantId.toLowerCase() === lower);
-    if (!target) target = candidates.find(c => c.name.toLowerCase().includes(lower));
-    const chosen = target ?? candidates.find(c => c.participantId === scope.participantId);
-    if (!chosen) {
+    if (handledCalls.has(callId)) return;
+    handledCalls.add(callId);
+    const resolved = resolveAgent(agentName);
+    if (resolved && "ambiguous" in resolved) {
       try {
         dc.send(JSON.stringify({
           type: "conversation.item.create",
-          item: { type: "function_call_output", call_id: callId, output: `No agent matching ${agentName}` },
+          item: { type: "function_call_output", call_id: callId, output: `Ambiguous agent "${agentName}": ${resolved.names.join(", ")}` },
         }));
-        dc.send(JSON.stringify({ type: "response.create" }));
+        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
       } catch {}
       return;
     }
+    let target: VoiceCandidate | undefined;
+    if (resolved) target = resolved as VoiceCandidate;
+    else {
+      // No exact match – reject, don't stop default implicitly for stop
+      try {
+        dc.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "function_call_output", call_id: callId, output: `No agent named "${agentName}" in this thread. Available: ${candidates.map(c => c.name).join(", ") || "none"}.` },
+        }));
+        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
+      } catch {}
+      return;
+    }
+
     try {
-      const bridge = deps.bridge(chosen);
-      // Cancel last request? Our bridge only cancels by requestId, not by agent. For simplicity, ask backend to stop agent via roomStop.
-      // The threadBridge's cancel is per request; we can attempt to stop via backend if available.
-      // Fallback: inform GPT-Live that stop was requested – actual stop happens via per-reply Stop button.
-      // Try to use global voice controller? For now, just report.
-      // The bridge we have doesn't have roomStop, but we can list pendingToolCalls and cancel those matching agent.
-      for (const [cid, info] of pendingToolCalls) {
-        if (info.agent === chosen.participantId) {
-          try { await bridge.cancel(info.responseId ?? ""); } catch {}
-          pendingToolCalls.delete(cid);
+      const bridge = deps.bridge(target);
+      let canceled = 0;
+      for (const [cId, info] of [...pendingSubmissions.entries()]) {
+        if (info.bridgeScope.participantId === target.participantId) {
+          try { await bridge.cancel(info.requestId); canceled++; } catch {}
+          pendingSubmissions.delete(cId);
         }
+      }
+      if (canceled === 0) {
+        // Also try last request via bridge cancel with no id interpreted as latest? We only have requestId map.
+        // Tell user nothing pending.
       }
       dc.send(JSON.stringify({
         type: "conversation.item.create",
-        item: { type: "function_call_output", call_id: callId, output: `Stop requested for ${chosen.name}.` },
+        item: { type: "function_call_output", call_id: callId, output: canceled > 0 ? `Stop requested for ${target.name}.` : `No pending work for ${target.name}.` },
       }));
-      dc.send(JSON.stringify({ type: "response.create" }));
+      dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
     } catch (e) {
       try {
         dc.send(JSON.stringify({
           type: "conversation.item.create",
           item: { type: "function_call_output", call_id: callId, output: `Error stopping: ${String(e)}` },
         }));
-        dc.send(JSON.stringify({ type: "response.create" }));
+        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
       } catch {}
     }
+  };
+
+  const dispatchFunctionCall = (callId: string, name: string, rawArgs: string | object) => {
+    if (!callId) return;
+    let args: any = {};
+    try { args = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs ?? {}; } catch { args = {}; }
+    if (name === "ask_agent") void handleAskAgent(callId, args.agent ?? "", args.request ?? "");
+    else if (name === "stop_agent") void handleStopAgent(callId, args.agent ?? "");
   };
 
   dc.onmessage = ev => {
     try {
       const msg = JSON.parse(ev.data);
       const type = msg.type as string;
-      if (type === "response.function_call_arguments.done" || type === "response.function_call_arguments.delta") {
-        // Accumulate?
-      }
-      if (type === "response.output_item.done" || type === "response.done") {
-        const outputs = msg.response?.output ?? [];
-        for (const out of outputs) {
-          if (out?.type === "function_call" || out?.type === "tool_call") {
+
+      // Argument delta accumulation (server_vad tool call streaming)
+      if (type === "response.function_call_arguments.delta") {
+        const callId = msg.call_id ?? msg.item_id ?? "";
+        if (callId) {
+          const prev = pendingArgs.get(callId) ?? { argumentJson: "" };
+          prev.argumentJson += msg.delta ?? "";
+          if (msg.name) prev.name = msg.name;
+          pendingArgs.set(callId, prev);
+        }
+      } else if (type === "response.function_call_arguments.done") {
+        const callId = msg.call_id ?? "";
+        const info = pendingArgs.get(callId);
+        const name = msg.name ?? info?.name ?? "";
+        const argsStr = msg.arguments ?? info?.argumentJson ?? "{}";
+        pendingArgs.delete(callId);
+        dispatchFunctionCall(callId, name, argsStr);
+      } else if (type === "response.output_item.done" || type === "response.output_item.added" || type === "response.done" || type === "conversation.item.created") {
+        // GA shapes – output items
+        const response = msg.response ?? null;
+        const items: any[] = (() => {
+          if (response?.output) return response.output as any[];
+          if (msg.item) return [msg.item];
+          if (msg.output) return [msg.output];
+          return [];
+        })();
+        for (const out of items) {
+          if (out?.type === "function_call") {
             const callId = out.call_id ?? out.id;
             const name = out.name;
-            let args: any = {};
-            try { args = typeof out.arguments === "string" ? JSON.parse(out.arguments) : out.arguments; } catch { args = {}; }
-            if (name === "ask_agent") {
-              void handleAskAgent(callId, args.agent ?? scope.participantId, args.request ?? "", msg.response?.id ?? "");
-            } else if (name === "stop_agent") {
-              void handleStopAgent(callId, args.agent ?? "");
+            const args = out.arguments;
+            if (callId && name && !handledCalls.has(callId)) {
+              dispatchFunctionCall(callId, name, args);
             }
           }
         }
-        // Alternative shape: response.function_call
       }
-      // More direct: conversation item with function_call
-      if (msg.type === "conversation.item.created" || msg.type === "response.output_item.added" || msg.type === "response.output_item.done") {
-        const item = msg.item ?? msg.output ?? null;
-        if (item?.type === "function_call") {
-          const callId = item.call_id;
-          const name = item.name;
-          let args: any = {};
-          try { args = typeof item.arguments === "string" ? JSON.parse(item.arguments) : item.arguments; } catch { }
-          if (name === "ask_agent") void handleAskAgent(callId, args.agent ?? "", args.request ?? "", msg.response?.id ?? "");
-          if (name === "stop_agent") void handleStopAgent(callId, args.agent ?? "");
-        }
-      }
-      // Let controller know
+
       events.onEvent(msg);
     } catch {}
   };
 
   dc.onopen = () => {
-    // Greeting trigger – let model start listening
     try {
       dc.send(JSON.stringify({
         type: "session.update",
         session: {
           model,
-          voice,
           instructions,
+          audio: {
+            input: {
+              transcription: { model: "whisper-1" },
+              turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
+            },
+            output: { voice },
+          },
           tools,
           tool_choice: "auto",
-          input_audio_transcription: { model: "whisper-1" },
-          turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
         },
       }));
     } catch {}
@@ -344,7 +394,6 @@ Rules:
     if (!closed) events.onError(new Error("Realtime data channel error"));
   };
 
-  // SDP exchange
   const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
   await pc.setLocalDescription(offer);
 
@@ -359,8 +408,7 @@ Rules:
       body: offer.sdp ?? "",
     });
     if (!resp.ok) {
-      const txt = await resp.text().catch(() => "");
-      throw new Error(`Realtime SDP failed ${resp.status}: ${txt.slice(0,300)}`);
+      throw new Error(`Realtime SDP failed ${resp.status}`);
     }
     answerSdp = await resp.text();
   } catch (e) {

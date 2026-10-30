@@ -63,13 +63,14 @@ as an agent message (it shows in the call transcript only).
 
 ## Implementation notes (2026-10-29, Muck)
 
-OpenAI Realtime docs checked 2026-10-29 via web search + GitHub:
-- **Endpoint for WebRTC**: `POST https://api.openai.com/v1/realtime/calls?model=<model>` with `Authorization: Bearer <ephemeral>` and `Content-Type: application/sdp`, body = offer SDP, response = answer SDP. Verified in minimal-realtime-kit research doc and OpenAI examples.
-- **Ephemeral mint endpoint**: `POST https://api.openai.com/v1/realtime/sessions` with `Authorization: Bearer <api_key>`; returns `{ client_secret: { value, expires_at }, model, id }`.
+OpenAI Realtime docs checked 2026-10-29 via fetch of https://developers.openai.com/api/reference/resources/realtime/subresources/client_secrets/methods/create (+ .md):
+- **Endpoint for WebRTC**: `POST https://api.openai.com/v1/realtime/calls?model=<model>` with `Authorization: Bearer <ephemeral ek_>` and `Content-Type: application/sdp`, body = offer SDP, response = answer SDP. GA documented in WebRTC guide.
+- **Ephemeral mint endpoint (GA)**: `POST https://api.openai.com/v1/realtime/client_secrets` with `Authorization: Bearer <api_key>`, body `{ expires_after: {anchor: created_at, seconds: 600}, session: { type: "realtime", model, audio: {input: {transcription: {model: whisper-1}, turn_detection: {type: server_vad,...}}, output: {voice}}, instructions, tools, tool_choice } }`. Returns `{ id, value: "ek_...", expires_at, session: { model,... } }`. Old `POST /v1/realtime/sessions` now deprecated – previously used but replaced to match GA contract per Jigga fix 2026-10-29.
 - **Model**: used `gpt-realtime` as default GA model (also seen `gpt-realtime-2.1`, `gpt-realtime-mini` in docs). Daemon default `gpt-realtime`, overridable per request.
-- **Voices**: `alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar` – current list per docs. Default `verse` for GPT-Live (sounds natural). Daemon validates against this list.
-- **Data channel**: name `oai-events`, carries `session.update`, `response.create`, `conversation.item.create` with `function_call_output`.
-- Code paths: daemon `voice/realtime.rs` mints ephemeral, never logs key or secret; client `realtimeClient.ts` does WebRTC + tool delegation via `ThreadVoiceBridge`.
+- **Voices**: `alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar` – current list per docs. Default `verse` for GPT-Live (sounds natural). Daemon validates against this list. Voices configured via `session.audio.output.voice`.
+- **Session config**: GA nests audio: `audio.input.transcription`, `audio.input.turn_detection`, `audio.output.voice`. Response creation uses `output_modalities: ["audio","text"]` not legacy `modalities`.
+- **Data channel**: name `oai-events`, carries `session.update` (with nested audio), `response.create`, `conversation.item.create` with `function_call_output`.
+- Code paths: daemon `voice/realtime.rs` mints ephemeral via GA client_secrets, never logs key or secret, never echoes response bodies; client `realtimeClient.ts` does WebRTC + tool delegation via `ThreadVoiceBridge` with call_id dedupe and pendingSubmissions storing Deck requestId.
 
 ## Owed by Human
 

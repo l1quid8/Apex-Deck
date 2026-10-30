@@ -1,30 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 const OPENAI_KEY_NAME: &str = "OPENAI_API_KEY";
-const REALTIME_ENDPOINT: &str = "https://api.openai.com/v1/realtime/sessions";
-// Current GA model as of late 2026. Verified via OpenAI docs 2026-10-29:
-// model id `gpt-realtime` (and `gpt-realtime-2.1`) with voices alloy, ash, ballad,
-// coral, echo, sage, shimmer, verse, marin, cedar.
+// GA endpoint per https://developers.openai.com/api/reference/resources/realtime/subresources/client_secrets/methods/create
+// Old POST /v1/realtime/sessions deprecated; GA uses POST /v1/realtime/client_secrets
+const REALTIME_ENDPOINT: &str = "https://api.openai.com/v1/realtime/client_secrets";
+// Models verified 2026-10-29 via OpenAI docs: gpt-realtime, gpt-realtime-2.1, gpt-realtime-mini
+// Voices: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar.
 pub const DEFAULT_MODEL: &str = "gpt-realtime";
 pub const DEFAULT_VOICE: &str = "verse";
 const ALLOWED_VOICES: &[&str] = &[
     "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar",
 ];
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ClientSecret {
-    pub value: String,
-    pub expires_at: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RealtimeSessionResponse {
-    pub client_secret: ClientSecret,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub id: Option<String>,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MintResult {
@@ -49,7 +35,9 @@ pub struct MintArgs {
 pub async fn mint(api_key: &str, args: MintArgs, base_url: Option<&str>) -> Result<MintResult, String> {
     let key = api_key.trim();
     if key.is_empty() {
-        return Err("Missing OpenAI API key. Add it in Settings → Providers or as OPENAI_API_KEY.".into());
+        return Err(
+            "Missing OpenAI API key. Add it in Settings → Providers or as OPENAI_API_KEY.".into(),
+        );
     }
     let model = args
         .model
@@ -71,23 +59,34 @@ pub async fn mint(api_key: &str, args: MintArgs, base_url: Option<&str>) -> Resu
         DEFAULT_VOICE.to_string()
     };
 
-    // Build request body for OpenAI session creation.
-    // Instructions + tools are included when provided, so ephemeral token inherits them.
-    let mut body = serde_json::json!({
+    // GA body: { expires_after, session: { type: "realtime", model, audio, instructions, tools } }
+    let mut session = serde_json::json!({
+        "type": "realtime",
         "model": model,
-        "voice": voice,
+        "audio": {
+            "input": {
+                "transcription": { "model": "whisper-1" },
+                "turn_detection": { "type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 500 }
+            },
+            "output": { "voice": voice }
+        }
     });
     if let Some(inst) = args.instructions {
         if !inst.trim().is_empty() {
-            body["instructions"] = serde_json::Value::String(inst);
+            session["instructions"] = serde_json::Value::String(inst);
         }
     }
     if let Some(tools) = args.tools {
         if !tools.is_empty() {
-            body["tools"] = serde_json::Value::Array(tools);
-            body["tool_choice"] = serde_json::Value::String("auto".into());
+            session["tools"] = serde_json::Value::Array(tools);
+            session["tool_choice"] = serde_json::Value::String("auto".into());
         }
     }
+
+    let body = serde_json::json!({
+        "expires_after": { "anchor": "created_at", "seconds": 600 },
+        "session": session
+    });
 
     let url = base_url.unwrap_or(REALTIME_ENDPOINT);
     let client = reqwest::Client::builder()
@@ -105,24 +104,49 @@ pub async fn mint(api_key: &str, args: MintArgs, base_url: Option<&str>) -> Resu
         .map_err(|e| format!("Network error talking to OpenAI Realtime: {e}"))?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("Read error: {e}"))?;
+    let text = resp.text().await.map_err(|_| "Read error from OpenAI".to_string())?;
 
     if !status.is_success() {
-        // Do not include key or secret in error. Text is from OpenAI, may contain reason.
-        let snippet: String = text.chars().take(400).collect();
+        // Never echo response body – it could contain key material or secrets.
         if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(format!("OpenAI key rejected ({status}): {snippet}"));
+            return Err("OpenAI key rejected. Check OPENAI_API_KEY in Settings → Providers.".into());
         }
-        return Err(format!("OpenAI Realtime error {status}: {snippet}"));
+        return Err(format!("OpenAI Realtime error {status}"));
     }
 
-    let parsed: RealtimeSessionResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("Could not parse OpenAI response: {e}. Body: {}", text.chars().take(200).collect::<String>()))?;
+    // GA response: { value, expires_at, id, session: {model,...} }
+    // Legacy fallback: { client_secret: { value, expires_at }, model }
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|_| "Could not parse OpenAI response".to_string())?;
+
+    let secret_value = v
+        .get("value")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("client_secret").and_then(|cs| cs.get("value")).and_then(|x| x.as_str()))
+        .ok_or_else(|| "Could not parse OpenAI response".to_string())?
+        .to_string();
+
+    let expires_at = v
+        .get("expires_at")
+        .and_then(|x| x.as_u64())
+        .or_else(|| {
+            v.get("client_secret")
+                .and_then(|cs| cs.get("expires_at"))
+                .and_then(|x| x.as_u64())
+        });
+
+    let parsed_model = v
+        .get("session")
+        .and_then(|s| s.get("model"))
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("model").and_then(|x| x.as_str()))
+        .unwrap_or(&model)
+        .to_string();
 
     Ok(MintResult {
-        client_secret: parsed.client_secret.value,
-        expires_at: parsed.client_secret.expires_at,
-        model: parsed.model.unwrap_or(model),
+        client_secret: secret_value,
+        expires_at,
+        model: parsed_model,
         voice,
     })
 }
@@ -179,9 +203,10 @@ mod tests {
         let (addr, handle) = fake_openai_server(
             "sk-test-123",
             serde_json::json!({
-                "id": "sess_123",
-                "model": "gpt-realtime",
-                "client_secret": {"value": "ek_abcdef", "expires_at": 9999999999u64}
+                "id": "cs_123",
+                "value": "ek_abcdef",
+                "expires_at": 9999999999u64,
+                "session": { "type": "realtime", "model": "gpt-realtime" }
             }),
             200,
         )
