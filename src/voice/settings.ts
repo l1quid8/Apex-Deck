@@ -1,5 +1,17 @@
 import { readCallLook } from "./callView.ts";
-import type { VoicePreferences, VoiceSettings } from "./types.ts";
+import type { CallEngine, VoicePreferences, VoiceSettings } from "./types.ts";
+export const REALTIME_VOICES = [
+  "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar",
+] as const;
+export const DEFAULT_REALTIME_VOICE = "verse";
+export const CALL_ENGINES: { id: CallEngine; label: string }[] = [
+  { id: "local", label: "Local" },
+  { id: "realtime", label: "GPT-Live" },
+];
+export const readCallEngine = (raw: unknown): CallEngine =>
+  raw === "realtime" ? "realtime" : "local";
+export const readRealtimeVoice = (raw: unknown): string | undefined =>
+  typeof raw === "string" && /^[a-z]{2,20}$/.test(raw.trim().toLowerCase()) ? raw.trim().toLowerCase() : undefined;
 export const DEFAULT_VOICE = "am_michael";
 /** The English Kokoro voices the call helper offers ([ab][fm]_*), for picking one outside a call. */
 export const CALL_VOICES = [
@@ -47,6 +59,7 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
       };
     }
   const defaultVoice = readVoiceId(r.defaultVoice);
+  const realtimeVoice = readRealtimeVoice(r.realtimeVoice);
   return {
     enabled: r.enabled === true,
     ...(defaultVoice ? { defaultVoice } : {}),
@@ -56,6 +69,8 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
         : 100,
     look: readCallLook(r.look),
     preferences,
+    engine: readCallEngine(r.engine),
+    ...(realtimeVoice ? { realtimeVoice } : {}),
   };
 }
 export function preferenceFor(
