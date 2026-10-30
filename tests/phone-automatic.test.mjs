@@ -111,16 +111,15 @@ test("QR stays the default and the selector shows, with no Remote access card", 
   const code = transform(source.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), {
     transforms: ["typescript", "jsx", "imports"], jsxRuntime: "automatic", production: true,
   }).code;
-  const AddHowPicker = new Function("require", `${code}; return AddHowPicker;`)(require);
+  const AddHowPicker = new Function("require", "Camera", "Terminal", `${code}; return AddHowPicker;`)(require, () => null, () => null);
   const html = renderToStaticMarkup(React.createElement(AddHowPicker, {
     pairing: true,
     how: defaultAddHow(true),
     onHow() {},
   }));
-  assert.match(html, /aria-label="How"/);
-  assert.match(html, /QR code/);
-  assert.match(html, /Address and token/);
-  assert.match(html, /aria-checked="true"[^>]*>QR code/);
+  assert.match(html, /aria-label="How to add it"/);
+  assert.match(html, /aria-checked="true"[^>]*>(<svg.*?<\/svg>)?QR code/);
+  assert.match(html, /Remote SSH/);
   assert.doesNotMatch(html, /Remote access|Direct only|Copy ID/);
   const hidden = renderToStaticMarkup(React.createElement(AddHowPicker, {
     pairing: false,

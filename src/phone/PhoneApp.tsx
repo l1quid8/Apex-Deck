@@ -69,6 +69,7 @@ import { irohConnect } from "../daemon/irohLink";
 import { remotePlugin, type Route } from "./remotePlugin";
 import { clearRemoteMode, defaultAddHow, PAIR_MACHINE_HINT, startAutomatic, whenAutomatic } from "./automatic";
 import { AddHowPicker } from "./AddHow";
+import { RemoteSsh } from "./RemoteSsh";
 import { PairSheet } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
@@ -93,7 +94,7 @@ import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedPr
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
-import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
+import { identityFor, parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
 import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, takeScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
 import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
@@ -3616,7 +3617,7 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 }
 
 /** How a new machine is reached: its QR code, or an address and token typed in. */
-type AddHow = "qr" | "address";
+type AddHow = "qr" | "ssh" | "address";
 
 function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
@@ -3654,11 +3655,10 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
     const trimmed = link.trim();
     // A link already holds the slot. Camera and paste take it here, or leave the open sheet alone.
     if (!held && !reserve(trimmed)) return false;
-    const kind = over?.kind ?? form.kind;
     try {
       const preview = parsePairingLink(trimmed);
-      const name = (over ? "" : form.name.trim()) || preview.name;
-      const id = kind === "mac" ? "local" : form.id.trim();
+      const kind = over?.kind ?? identityFor(machines, preview).kind;
+      const { name, id } = over ? { name: preview.name, id: kind === "mac" ? "local" : form.id.trim() } : identityFor(machines, preview);
       // Checked now, so a bad name or id doesn't surface only after the machine approved.
       withPairedMachine(machines, { id, name, kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
       onPair({ link: trimmed, kind, id, name });
@@ -3730,8 +3730,16 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
         );
       })}
       {missing.length > 0 && <p className="ph-intro">Your Mac's threads also use {missing.join(", ")}. Pair each one so those threads work here too.</p>}
-      {!adding && !editing && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setAdding(true); }}>Add a machine…</button>}
-      {adding && (
+      {!adding && !editing && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setHow(defaultAddHow(pairing)); setAdding(true); }}>Add a machine…</button>}
+      {adding && how === "ssh" && (
+        <div className="ph-group ph-padded ph-form">
+          <img className="ph-logo-wide" src="/branding/logo-horizontal.svg" alt="Apex Deck" width="160" height="40" />
+          <h3>Add a machine</h3>
+          <AddHowPicker pairing={pairing} how={how} onHow={setHow} />
+          <RemoteSsh setup={null} onCancel={machines.length > 0 ? () => setAdding(false) : undefined} onDone={() => setAdding(false)} />
+        </div>
+      )}
+      {adding && how !== "ssh" && (
         <form className="ph-group ph-padded ph-form" onSubmit={(event) => {
           event.preventDefault();
           if (how === "qr") { pairWith(pasted); return; }
@@ -3742,19 +3750,19 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
         }}>
           <img className="ph-logo-wide" src="/branding/logo-horizontal.svg" alt="Apex Deck" width="160" height="40" />
           <h3>Add a machine</h3>
-          <div className="ph-segment" role="radiogroup" aria-label="Kind">
-            <button type="button" role="radio" aria-checked={form.kind === "mac"} disabled={hasMac} onClick={() => setForm({ ...form, kind: "mac", id: "" })}><Laptop size={16} />Mac</button>
-            <button type="button" role="radio" aria-checked={form.kind === "server"} onClick={() => setForm({ ...form, kind: "server", id: form.id || missing[0] || "" })}><Globe size={16} />Server</button>
-          </div>
           <AddHowPicker pairing={pairing} how={how} onHow={setHow} />
-          <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={how === "qr" ? "From the code" : form.kind === "mac" ? "Tyler's MacBook" : "Apex-Terminal"} required={how === "address"} autoCapitalize="words" /></label>
-          {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
           {how === "qr" ? <>
-            <p className="ph-muted">{PAIR_MACHINE_HINT} On a server, run <code>apex-daemon pair</code>.</p>
+            <p className="ph-muted">{PAIR_MACHINE_HINT} On a server, run <code>apex-daemon pair</code>. The name comes from the code.</p>
             {scan && <ScanCodeButton scan={scan} reserve={reserve} adopt={adopt} giveBack={giveBack} onCode={(text) => pairWith(text, undefined, true)} onError={onError} auto={autoScan && !incoming} onAuto={onAutoScan} />}
             <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
           </> : <>
+            <div className="ph-segment" role="radiogroup" aria-label="Kind">
+              <button type="button" role="radio" aria-checked={form.kind === "mac"} disabled={hasMac} onClick={() => setForm({ ...form, kind: "mac", id: "" })}><Laptop size={16} />Mac</button>
+              <button type="button" role="radio" aria-checked={form.kind === "server"} onClick={() => setForm({ ...form, kind: "server", id: form.id || missing[0] || "" })}><Globe size={16} />Server</button>
+            </div>
+            <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={form.kind === "mac" ? "Mac Studio" : "Apex-Terminal"} required autoCapitalize="words" /></label>
+            {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
             <label className="ph-label">Address<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder={form.kind === "mac" ? "ws://your-Mac's-address:7421" : "ws://server-address:7420"} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <label className="ph-label">Daemon token<input type="password" value={form.token} onChange={(event) => setForm({ ...form, token: event.target.value.trim() })} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} required /><small>Paste only the token. Spaces and line breaks are removed.</small></label>
             <button type="submit" className="primary ph-wide">Pair {form.kind === "mac" ? "Mac" : "server"}</button>
@@ -3762,7 +3770,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           {machines.length > 0 && <button type="button" className="ph-plain ph-wide" onClick={() => setAdding(false)}>Cancel</button>}
         </form>
       )}
-      <p className="ph-foot">{how === "qr" ? "Pairing keys stay in this phone's Keychain." : "The token works like a password. It stays on this phone."}</p>
+      <p className="ph-foot">{how === "address" ? "The token works like a password. It stays on this phone." : "Pairing keys stay in this phone's Keychain."}</p>
     </main>
   );
 }

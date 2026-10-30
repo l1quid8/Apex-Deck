@@ -2,7 +2,7 @@
 // the cryptography; this reads the link for a preview and tracks one attempt
 // from dialing to the machine's Approve or Deny.
 
-import { addMachine, isPaired, withHints, type Machine, type PairedMachine } from "../phoneRules.ts";
+import { addMachine, isPaired, withHints, type Machine, type MachineKind, type PairedMachine } from "../phoneRules.ts";
 import { CLOSE, type RemotePlugin } from "./remotePlugin.ts";
 
 /** Our relay. A link naming any other is refused (crates/apex-pairing/src/link.rs). */
@@ -138,6 +138,21 @@ export function startPairing(plugin: RemotePlugin, link: string, label: string, 
  */
 export function scansAtLaunch(machineCount: number, canScan: boolean): boolean {
   return machineCount === 0 && canScan;
+}
+
+/**
+ * Who a machine is when it's added from a code, which names it and nothing
+ * else. The first machine is the phone's Mac, the rest are servers with an id
+ * from their endpoint. Two machines may share a name, so a later one takes a
+ * number. An entry this pairing will replace doesn't count as taking the name.
+ */
+export function identityFor(list: Machine[], preview: PairingPreview): { kind: MachineKind; id: string; name: string } {
+  const kind: MachineKind = list.some((machine) => machine.kind === "mac") ? "server" : "mac";
+  const others = list.filter((machine) => (isPaired(machine) ? machine.hostEndpointId !== preview.host : kind === "mac"));
+  const taken = (name: string) => others.some((machine) => machine.name.trim().toLowerCase() === name.trim().toLowerCase());
+  let name = preview.name;
+  for (let at = list.length + 1; taken(name); at += 1) name = `${preview.name} ${at}`;
+  return { kind, id: kind === "mac" ? "local" : `h-${preview.host.slice(0, 12)}`, name };
 }
 
 /**

@@ -1,7 +1,8 @@
 # Add a machine over SSH: design
 
 Status: design approved by the Human on the mockup `mockups/local-chat-jigga.html`
-(source `mockups/local-chat-jigga/main.tsx`). Not started. Null cleared the mockup.
+(source `mockups/local-chat-jigga/main.tsx`). Null cleared the mockup. Part 1
+(phone screens) is on `feat/add-machine-screens`.
 
 ## Goal
 
@@ -20,6 +21,15 @@ Mac/Server selector, the `h-…` Id box and the Address/token fields
 
 **QR code:** Scan, or "Or paste the pairing link". The name comes from the code,
 then a 6-digit match and Approve on the machine.
+
+A code names a machine and nothing else, so with the Mac/Server pick and Id gone
+the phone works the rest out (`identityFor`, `src/phone/pairing.ts`): the first
+machine is the phone's Mac (`local`), later ones are servers with the id
+`h-<first 12 of the endpoint>`, and a name already in use takes a number. Known
+limit: a Linux machine paired first by QR is filed as the Mac, because the code
+doesn't carry the OS. Adding the OS to the code belongs with part 4. Threads the
+Mac files under a server id are not guessed at; Edit keeps its Id box for linking
+them. A phone build without pairing (the browser) keeps the address form.
 
 **Remote SSH:**
 
