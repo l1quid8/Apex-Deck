@@ -20,6 +20,28 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
   let localStream: MediaStream | undefined;
   let startedAt: number | undefined;
   let abortController: AbortController | undefined;
+  let pendingInstructions: string | undefined;
+
+  const buildRealtimeInstructions = (forScope: CallScope): string => {
+    const all = deps.candidates();
+    const filtered = all.filter(c => c.hostId === forScope.hostId && c.roomId === forScope.roomId);
+    const agentList = filtered.map(c => `- ${c.name} (id ${c.participantId})`).slice(0, 32).join("\n");
+    const defaultTarget = filtered.find(c => c.participantId === forScope.participantId)?.name ?? filtered[0]?.name ?? "agent";
+    return `You are GPT-Live inside Apex Deck, a voice interface for coding agents.
+Default agent is "${defaultTarget}". Agents available in THIS thread only:
+${agentList || "- none listed"}
+
+Rules:
+- Chat naturally. When the user asks to do work (code, search, file edit, research, questions about project), call ask_agent with the right agent and their request.
+- To pick a different agent by voice, parse "ask <Name> to ..." or "call <Name>".
+- If the user mentions an agent not in this thread's list, say that agent is not in this thread and ask who to use from the list.
+- Keep your own small talk brief. Do not invent file contents.
+- When an agent is working, say once that it's working, then stay quiet until the result arrives. Do not spam "On it."
+- Speak the agent's final result closely, not adding extra facts.
+- If you need to stop an agent's current reply, call stop_agent.
+- Ending or muting the call never cancels agent work.
+`;
+  };
 
   const set = (patch: Partial<VoiceState>) => {
     state = { ...state, ...patch };
@@ -40,6 +62,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
     callGen++; // invalidate any pending startup
     try { abortController?.abort(); } catch {}
     abortController = undefined;
+    pendingInstructions = undefined;
     const wasCall = callId;
     callId = "";
     scope = undefined;
@@ -141,8 +164,22 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
       }
 
       pcClient = client;
+      // If a switch happened during startup, apply latest full instructions now.
+      if (pendingInstructions) {
+        const instr = pendingInstructions;
+        pendingInstructions = undefined;
+        try {
+          pcClient.send({ type: "session.update", session: { type: "realtime", instructions: instr } } as any);
+        } catch {}
+      } else if (scope && (scope.participantId !== nextScope.participantId || scope.roomId !== nextScope.roomId)) {
+        // scope was updated mid-startup via switchAgent
+        const latestScope = scope;
+        try {
+          pcClient.send({ type: "session.update", session: { type: "realtime", instructions: buildRealtimeInstructions(latestScope) } } as any);
+        } catch {}
+      }
       set({ status: "listening", voices: [] });
-      deps.focus(nextScope);
+      deps.focus(scope ?? nextScope);
     } catch (e) {
       if (gen !== callGen) return;
       if (e instanceof DOMException && e.name === "AbortError") return;
@@ -157,21 +194,23 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
 
   const switchAgent = async (next: CallScope) => {
     if (!callId) return start(next);
-    // Switching only moves the call – agent work keeps going (same as local).
-    // For realtime, we need to update default agent in session but keep peer alive.
-    // Simplest: restart realtime session with new default, without canceling prior agents.
     const prevCall = callId;
     const prevScope = scope;
     if (prevScope && prevScope.hostId === next.hostId && prevScope.roomId === next.roomId) {
-      // Same thread, different agent – just update state, keep connection
       scope = next;
       set({ scope: next });
       deps.focus(next);
-      // Tell realtime about switch via data channel message if possible
-      pcClient?.send({ type: "session.update", session: { type: "realtime", instructions: `Default agent now ${next.participantId}` } } as any);
+      const fullInstructions = buildRealtimeInstructions(next);
+      if (pcClient) {
+        try {
+          pcClient.send({ type: "session.update", session: { type: "realtime", instructions: fullInstructions } } as any);
+        } catch {}
+      } else {
+        // Still in startup (pcClient undefined) – queue for after connect
+        pendingInstructions = fullInstructions;
+      }
       return;
     }
-    // Cross-thread switch: end and start new realtime call
     await end("switch");
     if (prevCall) {
       await start(next);
