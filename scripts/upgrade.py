@@ -21,6 +21,22 @@ DAEMON = TRUSTED / 'Contents/Resources/bin/apex-daemon'
 APPLICATION = Path('/Applications/Apex Deck.app')
 BROKER_PLIST = Path('/Library/LaunchDaemons/dev.apexdeck.provenance.plist')
 AUTHORITY = ('private-key','public-key','journal.json')
+JOURNAL_LOG = 'journal.log'  # Optional on older installations; absence is part of the snapshot.
+
+def authority_digest(name):
+    try: return digest(ROOT/name)
+    except FileNotFoundError:
+        if name == JOURNAL_LOG: return None
+        raise
+
+def new_backup():
+    # Never reuse evidence from an earlier attempt, even for the same package.
+    attempt=1
+    while True:
+        suffix='' if attempt==1 else '-retry-'+str(attempt)
+        backup=UPGRADES/('backup-'+M['id']+suffix)
+        try: backup.mkdir(mode=0o700); return backup
+        except FileExistsError: attempt+=1
 
 def run(*args, required=True):
     result = subprocess.run([str(arg) for arg in args], capture_output=True, text=True, env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'})
@@ -86,6 +102,8 @@ def preflight(payload=False):
     protected(ROOT); protected(ROOT/'TrustedUI'); protected(TRUSTED); protected(ROOT/'apex-provenance'); protected(BROKER_PLIST)
     for name in (*AUTHORITY,'config.json'):
         regular(ROOT/name); protected(ROOT/name)
+    if (ROOT/JOURNAL_LOG).exists() or (ROOT/JOURNAL_LOG).is_symlink():
+        regular(ROOT/JOURNAL_LOG); protected(ROOT/JOURNAL_LOG)
     regular(BROKER_PLIST)
     config = json.loads((ROOT/'config.json').read_bytes())
     if not isinstance(config,dict) or not all(isinstance(config.get(k),str) for k in ('uiCdhash','daemonCdhash')): raise RuntimeError('Invalid authority config')
@@ -171,11 +189,14 @@ def install(notes=None):
     broker_state=run('/bin/launchctl','print','system/dev.apexdeck.provenance',required=False)
     broker_loaded=broker_state.returncode==0
     previous_broker_pid=service_pid(broker_state.stdout)
-    backup=UPGRADES/('backup-'+M['id'])
-    backup.mkdir(mode=0o700)
     steps=[]; stopped=False; config_changed=False; complete=False; records={}; broker_stopped=False; broker_started=False; recovery_ok=False; others_stopped=[]
     lock=UPGRADES/'install.lock'; lock.mkdir(mode=0o700)
-    agent_hash=digest(agent)
+    try:
+        backup=new_backup()
+        agent_hash=digest(agent)
+    except BaseException:
+        lock.rmdir()
+        raise
     try:
         if agent_loaded: run('/bin/launchctl','bootout',domain+'/dev.apexdeck.daemon')
         stopped=True
@@ -195,9 +216,10 @@ def install(notes=None):
         if broker_loaded:
             run('/bin/launchctl','bootout','system/dev.apexdeck.provenance'); broker_stopped=True
         # Snapshot only after both writers have stopped. No user-store files are touched.
-        records={name:digest(ROOT/name) for name in AUTHORITY}
+        records={name:authority_digest(name) for name in (*AUTHORITY,JOURNAL_LOG)}
         authority_backup=backup/'authority'; authority_backup.mkdir(mode=0o700)
-        for name in (*AUTHORITY,'config.json'):
+        for name in (*records,'config.json'):
+            if name in records and records[name] is None: continue
             run('/usr/bin/ditto',ROOT/name,authority_backup/name)
             if digest(ROOT/name)!=digest(authority_backup/name): raise RuntimeError('Authority backup verification failed')
         run('/usr/bin/ditto',agent,backup/'dev.apexdeck.daemon.plist')
@@ -210,7 +232,7 @@ def install(notes=None):
         protected(candidate); validate_bundle(candidate)
         broker_candidate=backup/'candidate-broker'
         run('/usr/bin/install','-o','root','-g','wheel','-m','755',candidate/'Contents/Resources/bin/apex-provenance',broker_candidate)
-        applications_candidate=Path('/Applications')/('Apex Deck.app.upgrade-'+M['id'])
+        applications_candidate=Path('/Applications')/('Apex Deck.app.upgrade-'+backup.name.removeprefix('backup-'))
         if applications_candidate.exists() or applications_candidate.is_symlink(): raise RuntimeError('Application staging path already exists')
         run('/usr/bin/ditto',candidate,applications_candidate)
         validate_bundle(applications_candidate)
@@ -225,13 +247,16 @@ def install(notes=None):
         swap(APPLICATION,applications_candidate,backup/'previous-applications.app')
         update_config(ROOT/'config.json',M['ui'],M['daemon']); config_changed=True
         for name,want in records.items():
-            if digest(ROOT/name)!=want: raise RuntimeError('Authority changed during installation')
+            if authority_digest(name)!=want: raise RuntimeError('Authority changed during installation')
         validate_bundle(TRUSTED); validate_bundle(APPLICATION)
         previous_socket=broker_socket_identity()
         run('/bin/launchctl','bootstrap','system',BROKER_PLIST); broker_started=True
         wait_for_broker(previous_broker_pid,previous_socket)
-        for name,want in records.items():
-            if digest(ROOT/name)!=want: raise RuntimeError('Authority changed before the app was reopened')
+        # Startup validates and replays the signed journal, then folds journal.log
+        # into journal.json before publishing its socket. Those bytes may change;
+        # only the signing identity must remain byte-identical after it is live.
+        for name in ('private-key','public-key'):
+            if digest(ROOT/name)!=records[name]: raise RuntimeError('Authority changed before the app was reopened')
         if digest(agent)!=agent_hash: raise RuntimeError('User service plist changed during installation')
         install_update_service()
         # The same plist is retained byte for byte, including its protected daemon path.
@@ -244,6 +269,12 @@ def install(notes=None):
         try:
             if broker_started: run('/bin/launchctl','bootout','system/dev.apexdeck.provenance')
         except BaseException as error: recovery.append(str(error))
+        if recovery:
+            # A live replacement broker may still write the journal. Retain the
+            # complete new installation and recovery lock rather than mixing it
+            # with restored files underneath that process.
+            print('ROLLBACK NEEDS ATTENTION: '+repr(recovery)+'; retained evidence '+str(backup),file=sys.stderr)
+            raise
         for active,saved in reversed(steps):
             try:
                 if active.exists() or active.is_symlink(): os.rename(active,backup/('failed-'+saved.name))
@@ -257,12 +288,13 @@ def install(notes=None):
             except BaseException as error: recovery.append(str(error))
         for name,want in records.items():
             try:
-                if digest(ROOT/name)!=want:
-                    os.rename(ROOT/name,backup/('failed-'+name))
-                    run('/usr/bin/ditto',backup/'authority'/name,ROOT/name)
-                if digest(ROOT/name)!=want: raise RuntimeError('Authority recovery verification failed: '+name)
+                if authority_digest(name)!=want:
+                    if (ROOT/name).exists() or (ROOT/name).is_symlink():
+                        os.rename(ROOT/name,backup/('failed-'+name))
+                    if want is not None: run('/usr/bin/ditto',backup/'authority'/name,ROOT/name)
+                if authority_digest(name)!=want: raise RuntimeError('Authority recovery verification failed: '+name)
             except BaseException as error: recovery.append(str(error))
-        if broker_loaded and broker_stopped:
+        if broker_loaded and broker_stopped and not recovery:
             try: run('/bin/launchctl','bootstrap','system',BROKER_PLIST)
             except BaseException as error: recovery.append(str(error))
         recovery_ok=not recovery

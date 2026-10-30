@@ -329,3 +329,106 @@ assert (u.TRUSTED/'version').read_text()=='old' and ('start',501,str(agent),'old
 assert len(notes)==1 and '"Other Person"' in notes[0],notes
 shutil.rmtree(directory)
 `));
+
+test('broker startup may fold journal.log into journal.json after the stopped-writer snapshot',()=>python(accountsFixture+String.raw`
+(u.ROOT/'journal.log').write_bytes(b'pending signed entries\n')
+def restart(pid,socket):
+ (u.ROOT/'journal.json').write_bytes(b'folded snapshot')
+ (u.ROOT/'journal.log').write_bytes(b'')
+ return 222
+u.wait_for_broker=restart
+u.install()
+backup=u.UPGRADES/('backup-'+u.M['id'])
+assert (backup/'authority/journal.log').read_bytes()==b'pending signed entries\n'
+assert (backup/'authority/journal.json').read_bytes()==b'old-journal.json'
+assert (u.ROOT/'journal.json').read_bytes()==b'folded snapshot'
+assert (backup/'installation-verified.json').exists()
+shutil.rmtree(directory)
+`));
+
+for (const hadLog of [false,true]) test(`rollback restores the journal snapshot and ${hadLog ? 'original log' : 'absence of a log'} together`,()=>python(accountsFixture+String.raw`
+had_log=${hadLog ? 'True' : 'False'}
+if had_log:(u.ROOT/'journal.log').write_bytes(b'original log\n')
+def restart(pid,socket):
+ (u.ROOT/'journal.json').write_bytes(b'folded snapshot')
+ (u.ROOT/'journal.log').write_bytes(b'new generation')
+ raise RuntimeError('injected readiness failure after compaction')
+u.wait_for_broker=restart
+try:u.install()
+except RuntimeError as error:assert 'injected readiness' in str(error),error
+else:raise AssertionError('failed installation reported success')
+assert (u.ROOT/'journal.json').read_bytes()==b'old-journal.json'
+assert (u.ROOT/'journal.log').exists()==had_log
+if had_log:assert (u.ROOT/'journal.log').read_bytes()==b'original log\n'
+assert not (u.UPGRADES/'install.lock').exists()
+shutil.rmtree(directory)
+`));
+
+test('retry after a rolled-back install retains old evidence and uses a fresh backup and staging path',()=>python(accountsFixture+String.raw`
+fail.append('injected broker failure')
+try:u.install()
+except RuntimeError:pass
+else:raise AssertionError('expected failure')
+backup=u.UPGRADES/('backup-'+u.M['id'])
+before={str(p.relative_to(backup)):p.read_bytes() for p in backup.rglob('*') if p.is_file()}
+# A failure before the swap can also leave application staging behind.
+old_stage=base/'Applications'/('Apex Deck.app.upgrade-'+u.M['id'])
+old_stage.mkdir();(old_stage/'evidence').write_text('retain')
+u.install()
+assert (u.TRUSTED/'version').read_text()=='new'
+assert before=={str(p.relative_to(backup)):p.read_bytes() for p in backup.rglob('*') if p.is_file()}
+assert (old_stage/'evidence').read_text()=='retain'
+assert len(list(u.UPGRADES.glob('backup-*')))==2
+assert not (u.UPGRADES/'install.lock').exists()
+shutil.rmtree(directory)
+`));
+
+test('a changed signing key still fails after broker startup and rolls back',()=>python(accountsFixture+String.raw`
+def restart(pid,socket):
+ (u.ROOT/'private-key').write_bytes(b'changed key')
+ return 222
+u.wait_for_broker=restart
+try:u.install()
+except RuntimeError as error:assert 'Authority changed' in str(error),error
+else:raise AssertionError('accepted changed signing identity')
+assert (u.ROOT/'private-key').read_bytes()==b'old-private-key'
+assert (u.TRUSTED/'version').read_text()=='old'
+assert not (u.UPGRADES/'install.lock').exists()
+shutil.rmtree(directory)
+`));
+
+test('an unresolved recovery lock blocks retry before creating another backup or stopping services',()=>python(accountsFixture+String.raw`
+(u.UPGRADES/'install.lock').mkdir()
+(u.UPGRADES/'install.lock/recovery-needed.txt').write_text('inspect prior failure')
+try:u.install()
+except FileExistsError:pass
+else:raise AssertionError('ignored recovery lock')
+assert not list(u.UPGRADES.glob('backup-*'))
+assert events==[]
+shutil.rmtree(directory)
+`));
+
+test('rollback never rewrites the journal or swaps apps if the replacement broker cannot be stopped',()=>python(accountsFixture+String.raw`
+def restart(pid,socket):
+ (u.ROOT/'journal.json').write_bytes(b'live folded snapshot')
+ (u.ROOT/'journal.log').write_bytes(b'live log')
+ raise RuntimeError('injected readiness failure')
+u.wait_for_broker=restart
+original_run=u.run
+stops=[]
+def refuse_second_stop(*args,**kwargs):
+ if tuple(map(str,args[:3]))==('/bin/launchctl','bootout','system/dev.apexdeck.provenance'):
+  stops.append(True)
+  if len(stops)==2:raise RuntimeError('broker still running')
+ return original_run(*args,**kwargs)
+u.run=refuse_second_stop
+try:u.install()
+except RuntimeError:pass
+else:raise AssertionError('expected failure')
+assert (u.ROOT/'journal.json').read_bytes()==b'live folded snapshot'
+assert (u.ROOT/'journal.log').read_bytes()==b'live log'
+assert (u.TRUSTED/'version').read_text()=='new'
+assert (u.UPGRADES/'install.lock/recovery-needed.txt').exists()
+assert not loaded[501] and not loaded[502]
+shutil.rmtree(directory)
+`));
