@@ -5,7 +5,7 @@ default-members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host
 members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "crates/apex-daemon", "crates/apex-pairing", "crates/apex-provenance", "crates/apex-host-production-check", "crates/apex-ipc-check"]
 
 [workspace.package]
-version = "0.9.6"
+version = "0.9.7"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/l1quid8/apex-deck"
