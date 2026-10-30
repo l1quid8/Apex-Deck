@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
 
-use crate::curation::{self, Curation};
+use crate::curation::{self, Curation, CurateOutcome};
 use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedAction};
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
@@ -158,6 +158,7 @@ pub enum RoomEvent {
     },
     /// The models now see `summary` in place of the first `upto` messages.
     Compacted { id: ParticipantId, summary: String, upto: usize },
+    CurationsChanged { curations: Vec<Curation> },
     /// The human pressed stop.
     Stopped,
     /// The room finished handling the human message.
@@ -551,6 +552,7 @@ pub struct Room {
     last_targets: Vec<ParticipantId>,
     compaction: Option<Compaction>,
     curations: Vec<Curation>,
+    curate_from: usize,
     pins: Vec<String>,
     changes: Vec<ChangeRecord>,
     baseline: Option<String>,
@@ -627,6 +629,7 @@ impl Room {
             kind: snapshot.kind,
             roster,
             curations: curation::keep_valid(snapshot.curations, snapshot.transcript.len()),
+            curate_from: 0,
             transcript: snapshot.transcript,
             checklists: Arc::new(Mutex::new(snapshot.checklists)),
             options: snapshot.options,
@@ -661,6 +664,7 @@ impl Room {
             last_targets: Vec::new(),
             compaction: None,
             curations: Vec::new(),
+            curate_from: 0,
             pins: Vec::new(),
             changes: Vec::new(),
             baseline: None,
@@ -785,6 +789,7 @@ impl Room {
         self.last_targets.clear();
         self.compaction = None;
         self.curations.clear();
+        self.curate_from = 0;
         self.changes.clear();
         self.baseline = None;
     }
@@ -795,6 +800,7 @@ impl Room {
         if upto >= self.transcript.len() { return; }
         self.pins.retain(|pin| response_pin_parts(pin).is_none_or(|(seq, _)| seq < upto));
         self.transcript.truncate(upto);
+        self.curate_from = self.curate_from.min(upto);
         self.curations = curation::keep_valid(std::mem::take(&mut self.curations), upto);
         for record in self.client_messages.values_mut() {
             record.human_seq = record.human_seq.filter(|seq| *seq < upto);
@@ -883,6 +889,51 @@ impl Room {
         self.compaction = Some(Compaction { summary: summary.to_string(), upto });
         on_event(RoomEvent::Compacted { id, summary: summary.to_string(), upto });
         Ok(())
+    }
+
+    /// A between-turn visibility operation. Replies are control data, never chat text.
+    pub async fn curate(&mut self, curator: &dyn Participant, on_event: EventSink<'_>) -> Result<CurateOutcome, String> {
+        let hidden = self.hidden_ranges();
+        let eligible: Vec<_> = (self.compacted_upto()..self.transcript.len().saturating_sub(curation::KEEP_NEWEST))
+            .filter(|n| !curation::contains(&hidden,*n) && curation::offerable(&self.transcript[*n])
+                && !self.pins.iter().any(|p| response_pin_parts(p).is_some_and(|(seq,_)|seq==*n))).collect();
+        if eligible.is_empty() { return Err("there is nothing old enough to hide".into()); }
+        let mut candidates: Vec<_> = eligible.iter().copied().filter(|n| *n >= self.curate_from).collect();
+        if candidates.is_empty() { candidates = eligible; }
+        let system = curation::CURATE_SYSTEM.to_string() + &pinned_section(&self.pins);
+        let budget = curation::REQUEST_CHARS.saturating_sub(system.chars().count()+curation::OUTPUT_CHARS+32);
+        if budget < 1_024 { return Err("Pinned context is too large to curate safely. Reduce pins and try again.".into()); }
+        let (digest,offered) = curation::digest(&self.transcript,&candidates,self.summary(),&self.configs(),budget);
+        if offered.is_empty() { return Err("Pinned context is too large to leave room for a curation candidate.".into()); }
+        let request = TurnRequest { system, turns: vec![ViewTurn { role: Role::User, content: digest }], access: Some(crate::Access::Read), ..TurnRequest::default() };
+        let id = curator.config().id.clone();
+        self.stop.store(false,Ordering::SeqCst);
+        on_event(RoomEvent::TurnStarted { id: id.clone() });
+        on_event(RoomEvent::Activity { id: id.clone(), text: curation::CURATE_WORKING.into() });
+        let progress = |update: Progress<'_>| { if !matches!(update,Progress::Text(_)) { on_event(progress_event(&id,update)); } };
+        let outcome = Self::interruptible(curator,request,self.stop.clone(),&progress,&crate::approval::NoApprover).await;
+        let result = if self.stopped() {
+            on_event(RoomEvent::Stopped);
+            Ok(CurateOutcome::Stopped)
+        } else {
+            outcome.map_err(|e|e.to_string()).and_then(|reply| {
+                if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
+                    self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens,reply.output_tokens,reply.cost_micros,reply.cost_estimated);
+                    on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros, cost_estimated: reply.cost_estimated });
+                }
+                let picks = curation::parse_picks(&reply.text,&offered).map_err(|_|format!("{} did not give a usable list",curator.config().display_name))?;
+                self.curate_from = offered.last().copied().unwrap()+1;
+                let unchecked = candidates.iter().filter(|n| **n >= self.curate_from).count();
+                if picks.hidden.is_empty() { return Ok(CurateOutcome::Nothing { unchecked }); }
+                let curation = Curation { by: id.clone(), at: self.transcript.len(), hidden: picks.hidden, reason: picks.reason, when: curation::now(), undone: None };
+                let count = curation.count();
+                self.curations.push(curation);
+                on_event(RoomEvent::CurationsChanged { curations: self.curations.clone() });
+                Ok(CurateOutcome::Hidden { count, unchecked })
+            })
+        };
+        on_event(RoomEvent::ParticipantIdle { id });
+        result
     }
 
     fn hidden_ranges(&self) -> Vec<[usize; 2]> {
