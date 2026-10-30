@@ -259,10 +259,6 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        // Linux has no broker to sign a chat move. The Mac app sends it over
-        // SSH like a room action; a phone's folder is checked before this
-        // gate (`device_folder_command`).
-        if cfg!(target_os = "linux") && matches!(self, Self::ChatPromote { .. }) { return false; }
         matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
@@ -805,21 +801,6 @@ mod tests {
     fn handoff_preparation_command_deserializes_exact_payload() {
         let command = Command::from_json(json!({"cmd":"assistant_handoff_prepare","args":{"requestId":"child","batchId":"batch","owner":{"workspaceId":"w","cwd":"/p","hostId":"h","conversationId":"c"},"revision":2,"originalRequest":"Ask Null to fix login","brief":"Fix login","destination":{"threadId":"t","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[]}})).unwrap();
         assert!(matches!(command, Command::AssistantHandoffPrepare { input } if input.batch_id == "batch" && input.revision == 2));
-    }
-
-    #[test]
-    fn a_chat_move_needs_a_receipt_only_where_a_broker_can_sign_one() {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let data = std::env::temp_dir().join(format!("apex-linux-chat-move-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&data);
-        let host = Host::new(HostPaths { data:data.clone(), downloads:None }, runtime.handle().clone());
-        let promote = Command::from_json(json!({"cmd":"chat_promote","args":{"source":"no-such-chat","target":"w","cwd":"/srv/project"}})).unwrap();
-        assert_eq!(promote.requires_provenance(), !cfg!(target_os = "linux"));
-        let reply = runtime.block_on(host.call(promote));
-        let refused = reply.as_ref().err().is_some_and(|e| e.contains("protected provenance receipt"));
-        assert_eq!(refused, !cfg!(target_os = "linux"), "{reply:?}");
-        host.shutdown();
-        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]

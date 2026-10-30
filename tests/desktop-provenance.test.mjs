@@ -126,11 +126,6 @@ test('remote device management reaches the host while local Mac grants require a
   assert.equal(mod.needsAttestation('devices_revoke', false), false);
 });
 
-test('a chat moves to a Work thread on the machine that holds it', () => {
-  assert.equal(mod.needsAttestation('chat_promote', false), true);
-  assert.equal(mod.needsAttestation('chat_promote', true), false);
-});
-
 test('malformed remote commands cannot crash the desktop admission route', () => {
   for (const cmd of [undefined, null, {}, []]) assert.equal(mod.needsAttestation(cmd, true), false);
 });
