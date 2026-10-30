@@ -34,7 +34,7 @@ pub struct ViewTurn {
     pub content: String,
 }
 
-fn display_name<'a>(id: &ParticipantId, roster: &'a [ParticipantConfig]) -> &'a str {
+pub(crate) fn display_name<'a>(id: &ParticipantId, roster: &'a [ParticipantConfig]) -> &'a str {
     roster
         .iter()
         .find(|c| &c.id == id)
@@ -256,19 +256,32 @@ pub fn render_view_after(
     me: &ParticipantId,
     roster: &[ParticipantConfig],
 ) -> Vec<ViewTurn> {
+    render_view_hiding(summary, transcript, &[], me, roster)
+}
+
+pub fn render_view_hiding(summary: Option<&str>, transcript: &[Message], hidden: &[[usize; 2]], me: &ParticipantId, roster: &[ParticipantConfig]) -> Vec<ViewTurn> {
     let mut turns: Vec<ViewTurn> = Vec::new();
     if let Some(summary) = summary {
         turns.push(ViewTurn { role: Role::User, content: format!("{SUMMARY_LABEL}:\n{summary}") });
     }
 
+    let mut previous_hidden = None;
     for message in transcript {
-        let (role, content) = match &message.speaker {
+        let range = hidden.iter().find(|[a,b]| *a <= message.seq && message.seq <= *b).copied();
+        let (role, content) = if let Some(range) = range {
+            if previous_hidden == Some(range) { continue; }
+            previous_hidden = Some(range);
+            (Role::User, crate::curation::hidden_line(range))
+        } else {
+            previous_hidden = None;
+            match &message.speaker {
             Speaker::Bot(id) if id == me => (Role::Assistant, message.text.clone()),
             Speaker::Bot(id) => (
                 Role::User,
                 format!("[{}]: {}", display_name(id, roster), message.text),
             ),
             Speaker::Human => (Role::User, format!("[Human]: {}", message.text)),
+            }
         };
 
         match turns.last_mut() {

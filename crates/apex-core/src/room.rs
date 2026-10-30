@@ -9,11 +9,12 @@ use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
 
+use crate::curation::{self, Curation};
 use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedAction};
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
 use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker, TokenTotals};
-use crate::view::{answers_system_for_capability, GeneratedUiCapability, pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
+use crate::view::{answers_system_for_capability, GeneratedUiCapability, pinned_section, render_view_hiding, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -468,6 +469,8 @@ pub struct RoomSnapshot {
     pub last_targets: Vec<ParticipantId>,
     #[serde(default)]
     pub compaction: Option<Compaction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curations: Vec<Curation>,
     #[serde(default)]
     pub pins: Vec<String>,
     #[serde(default)]
@@ -519,6 +522,7 @@ impl RoomSnapshot {
             cursors: self.cursors.iter().map(|(id, &seen)| (id.clone(), seen.min(upto))).collect(),
             last_targets: if upto == self.transcript.len() { self.last_targets.clone() } else { Vec::new() },
             compaction: self.compaction.clone().filter(|c| c.upto <= upto),
+            curations: curation::keep_valid(self.curations.clone(), upto),
             pins: self.pins.clone(),
             changes: self.changes.iter().filter(|c| c.seq < upto).cloned().collect(),
             baseline: self.baseline.clone(),
@@ -546,6 +550,7 @@ pub struct Room {
     cursors: HashMap<ParticipantId, usize>,
     last_targets: Vec<ParticipantId>,
     compaction: Option<Compaction>,
+    curations: Vec<Curation>,
     pins: Vec<String>,
     changes: Vec<ChangeRecord>,
     baseline: Option<String>,
@@ -596,6 +601,7 @@ impl Room {
             cursors: self.cursors.clone(),
             last_targets: self.last_targets.clone(),
             compaction: self.compaction.clone(),
+            curations: self.curations.clone(),
             pins: self.pins.clone(),
             changes: self.changes.clone(),
             baseline: self.baseline.clone(),
@@ -620,6 +626,7 @@ impl Room {
             reply_client_message_id: None,
             kind: snapshot.kind,
             roster,
+            curations: curation::keep_valid(snapshot.curations, snapshot.transcript.len()),
             transcript: snapshot.transcript,
             checklists: Arc::new(Mutex::new(snapshot.checklists)),
             options: snapshot.options,
@@ -653,6 +660,7 @@ impl Room {
             cursors: HashMap::new(),
             last_targets: Vec::new(),
             compaction: None,
+            curations: Vec::new(),
             pins: Vec::new(),
             changes: Vec::new(),
             baseline: None,
@@ -776,6 +784,7 @@ impl Room {
         self.cursors.clear();
         self.last_targets.clear();
         self.compaction = None;
+        self.curations.clear();
         self.changes.clear();
         self.baseline = None;
     }
@@ -786,6 +795,7 @@ impl Room {
         if upto >= self.transcript.len() { return; }
         self.pins.retain(|pin| response_pin_parts(pin).is_none_or(|(seq, _)| seq < upto));
         self.transcript.truncate(upto);
+        self.curations = curation::keep_valid(std::mem::take(&mut self.curations), upto);
         for record in self.client_messages.values_mut() {
             record.human_seq = record.human_seq.filter(|seq| *seq < upto);
             record.reply_seqs.retain(|seq| *seq < upto);
@@ -850,7 +860,7 @@ impl Room {
         let id = summarizer.config().id.clone();
         // Seen from nobody's side, every message is labelled with its speaker.
         let outsider = ParticipantId::new("");
-        let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
+        let mut turns = render_view_hiding(self.summary(), &self.transcript[self.compacted_upto()..], &self.hidden_ranges(), &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
         let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None };
 
@@ -873,6 +883,11 @@ impl Room {
         self.compaction = Some(Compaction { summary: summary.to_string(), upto });
         on_event(RoomEvent::Compacted { id, summary: summary.to_string(), upto });
         Ok(())
+    }
+
+    fn hidden_ranges(&self) -> Vec<[usize; 2]> {
+        curation::merge_ranges(self.curations.iter().filter(|c| c.undone.is_none() && c.at > self.compacted_upto())
+            .flat_map(|c| c.hidden.iter().flat_map(|[a,b]| *a..=*b)))
     }
 
     fn compacted_upto(&self) -> usize {
@@ -1056,9 +1071,10 @@ impl Room {
         // What the summary covers counts as seen.
         let start = self.compacted_upto();
         let seen = self.cursors.get(id).copied().unwrap_or(0).max(start).min(self.transcript.len());
+        let hidden = self.hidden_ranges();
         let unseen = self.transcript[seen..]
             .iter()
-            .filter(|m| m.speaker != Speaker::Bot(id.clone()))
+            .filter(|m| m.speaker != Speaker::Bot(id.clone()) && !curation::contains(&hidden, m.seq))
             .cloned()
             .collect();
         let mut request = TurnRequest {
@@ -1069,7 +1085,7 @@ impl Room {
             }).unwrap_or_default()
                 // Before Plan mode's text: next_steps_request cuts that off the end.
                 + answer_guidance,
-            turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
+            turns: render_view_hiding(self.summary(), &self.transcript[start..], &hidden, id, &configs),
             unseen,
             plan: false,
             cwd: None,
