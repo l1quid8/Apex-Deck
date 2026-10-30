@@ -112,3 +112,6 @@ pub fn parse_picks(reply: &str, offered: &[usize]) -> Result<Picks,String> {
     Ok(Picks{hidden,reason})
 }
 pub(crate) fn now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_millis() as u64).unwrap_or(0) }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CurationUndo { pub restored: usize, pub sealed: usize }

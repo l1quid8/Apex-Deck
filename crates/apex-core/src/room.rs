@@ -936,6 +936,20 @@ impl Room {
         result
     }
 
+    pub fn undo_curation(&mut self, on_event: EventSink<'_>) -> curation::CurationUndo {
+        let upto = self.compacted_upto();
+        let mut outcome = curation::CurationUndo { restored: 0, sealed: 0 };
+        for c in self.curations.iter_mut().filter(|c|c.undone.is_none()) {
+            if c.at <= upto { outcome.sealed += c.count(); }
+            else { outcome.restored += c.count(); c.undone = Some(curation::now()); }
+        }
+        if outcome.restored > 0 {
+            self.curate_from = 0;
+            on_event(RoomEvent::CurationsChanged { curations: self.curations.clone() });
+        }
+        outcome
+    }
+
     fn hidden_ranges(&self) -> Vec<[usize; 2]> {
         curation::merge_ranges(self.curations.iter().filter(|c| c.undone.is_none() && c.at > self.compacted_upto())
             .flat_map(|c| c.hidden.iter().flat_map(|[a,b]| *a..=*b)))

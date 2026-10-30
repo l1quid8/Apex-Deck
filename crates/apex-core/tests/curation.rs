@@ -140,3 +140,20 @@ fn curate(r:&mut Room, bot:&ScriptedParticipant)->(Result<CurateOutcome,String>,
 #[test] fn bad_replies_do_not_advance_the_scan() {
     let mut r=seed(3000).0;let b=ScriptedParticipant::new("null",&["bad",r#"{"hide":[]}"#]);assert!(curate(&mut r,&b).0.is_err());curate(&mut r,&b).0.unwrap();assert_eq!(b.requests()[0],b.requests()[1]);
 }
+#[test] fn undo_restores_all_live_curations_once() {
+    let mut r=with_curations(seed(50).0,vec![curation(30,vec![[2,5]]),curation(40,vec![[12,14]])]);
+    let events=Mutex::new(vec![]);let undo=r.undo_curation(&|e|events.lock().unwrap().push(e));assert_eq!(undo,CurationUndo{restored:7,sealed:0});assert!(text(&r).contains("message 3"));
+    assert_eq!(events.lock().unwrap().len(),1);assert_eq!(r.undo_curation(&|_|panic!("unexpected event")),CurationUndo{restored:0,sealed:0});
+}
+#[test] fn compact_seals_old_curations_and_undo_only_restores_later_ones() {
+    let mut s=seed(60).0.snapshot();s.compaction=Some(Compaction{summary:"summary".into(),upto:40});s.curations=vec![curation(30,vec![[2,6]]),curation(55,vec![[42,44]])];let mut r=Room::restore(vec![],s);
+    assert_eq!(r.undo_curation(&|_|{}),CurationUndo{restored:3,sealed:5});assert!(r.snapshot().curations[0].undone.is_none());
+    assert_eq!(r.undo_curation(&|_|{}),CurationUndo{restored:0,sealed:5});
+}
+#[test] fn rewind_past_a_summary_makes_retained_curations_live_again() {
+    let mut s=seed(60).0.snapshot();s.compaction=Some(Compaction{summary:"summary".into(),upto:40});s.curations=vec![curation(30,vec![[2,6]])];let mut r=Room::restore(vec![],s);r.rewind(35);
+    assert_eq!(r.undo_curation(&|_|{}),CurationUndo{restored:5,sealed:0});
+}
+#[test] fn undo_resets_the_scan_for_restored_messages() {
+    let mut r=seed(3000).0;let b=ScriptedParticipant::new("null",&[r#"{"hide":[0]}"#,r#"{"hide":[]}"#]);curate(&mut r,&b).0.unwrap();r.undo_curation(&|_|{});curate(&mut r,&b).0.unwrap();assert!(b.requests()[1].turns[0].content.contains("#0 [Human]"));
+}
