@@ -245,16 +245,21 @@ mod tests {
             .contains("Could not start"));
         assert!(failed["baseUrl"].is_null());
         drop(conflict);
-        // The same inherited-socket window applies to the dropped conflict listener.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let restarted = loop {
-            let status = start(&daemon, None, config.bind).await.unwrap();
-            if status["enabled"] == true || std::time::Instant::now() >= deadline {
-                break status;
+        // Like the stopped gateway above, the conflict socket can remain in a
+        // concurrent fork until exec. Wait for recovery instead of assuming
+        // dropping our copy makes the port immediately available.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            let recovered = start(&daemon, None, config.bind).await.unwrap();
+            if recovered["enabled"] == true {
+                break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        };
-        assert_eq!(restarted["enabled"], true, "{restarted}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "gateway did not recover after releasing the conflict socket: {recovered}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
         assert!(tokio::net::TcpStream::connect((config.bind, port))
             .await
             .is_ok());
@@ -276,18 +281,11 @@ mod tests {
             std::time::Duration::from_millis(500)
         };
         let mut accepted = 0;
-        let mut reset = 0;
         let refusal = tokio::time::timeout(refusal_deadline, async {
             loop {
                 match tokio::net::TcpStream::connect((config.bind, port)).await {
                     Ok(_) => {
                         accepted += 1;
-                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
-                        // Closing the old listener can reset a queued connection.
-                        // Keep waiting until the port actually refuses connections.
-                        reset += 1;
                         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                     }
                     Err(error) => break error,
@@ -296,7 +294,7 @@ mod tests {
         })
         .await
         .unwrap_or_else(|_| panic!(
-            "TCP connection did not report refusal after gateway disable within {refusal_deadline:?}; {accepted} successful connections completed; {reset} connections reset"
+            "TCP connection did not report refusal after gateway disable within {refusal_deadline:?}; {accepted} successful connections completed"
         ));
         assert_eq!(refusal.kind(), std::io::ErrorKind::ConnectionRefused);
         assert_eq!(

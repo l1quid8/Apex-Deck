@@ -35,15 +35,17 @@ INSTALLED_DAEMON="$INSTALLED_APP/Contents/Resources/bin/apex-daemon"
 AGENT_PLIST="$HOME/Library/LaunchAgents/dev.apexdeck.daemon.plist"
 EVIDENCE="$REPO/target/acceptance-provenance/evidence-$(/bin/date -u +%Y%m%dT%H%M%SZ).json"
 KEEP=0
+RUNNER_ONLY=0
 DAEMON_PID=''
 
 usage() {
   /bin/cat <<'TEXT'
-usage: scripts/acceptance-provenance.sh [--evidence PATH] [--keep]
+usage: scripts/acceptance-provenance.sh [--evidence PATH] [--keep] [--runner-startup-only]
 
   --evidence PATH  where to write the JSON evidence (default: a timestamped file
                    under target/acceptance-provenance/)
   --keep           keep the isolated temporary data folder for inspection
+  --runner-startup-only  check runner reads across two real protected-daemon starts
   --help           this text
 
 Prints one PASS/FAIL/SKIP line per check from
@@ -56,6 +58,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --evidence) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; EVIDENCE=$2; shift 2 ;;
     --keep) KEEP=1; shift ;;
+    --runner-startup-only) RUNNER_ONLY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -644,6 +647,36 @@ positive_trusted_daemon() {
   fi
 }
 
+positive_runner_startup() {
+  local id='positive.runner-startup' attempt reply log
+  if [[ ! -x "$DAEMON" ]]; then
+    fail_check "$id" "no installed protected daemon: $DAEMON"
+    return
+  fi
+  # No fixture host or ledger bypass: launch the pinned installed daemon on
+  # fresh data, so its real ownership and signed broker reads are mandatory.
+  # Repeat with the same data to cover restart recovery as well as first boot.
+  for attempt in 1 2; do
+    log="runner-startup-$attempt"
+    if ! start_daemon "$DAEMON" "$WORK/runner-data" "$log"; then
+      fail_check "$id" "start $attempt failed: $(headline "$WORK/$log.log")"
+      stop_daemon
+      return
+    fi
+    reply=$(speak "$WORK/runner-data" '{"cmd":"room_runner_state","args":{"id":"acceptance-no-runner"}}')
+    stop_daemon
+    if /usr/bin/grep -Eq 'protected ledgers unavailable|goals and loops unavailable|Not a protected ledger name' "$WORK/$log.log"; then
+      fail_check "$id" "start $attempt used unavailable protected storage: $(headline "$WORK/$log.log")"
+      return
+    fi
+    if ! /usr/bin/python3 -I -c 'import json,sys; v=json.loads(sys.argv[1]); sys.exit(0 if v == {"id":1,"ok":None} else 1)' "$reply"; then
+      fail_check "$id" "start $attempt did not read the protected runner ledger: $reply"
+      return
+    fi
+  done
+  pass_check "$id" "two starts read room-runners-v1.json through the installed security helper; no fixture or unavailable fallback"
+}
+
 tamper_forged_json() {
   local id="tamper.forged-user-json"
   local fixture="$REPO/crates/apex-host/tests/fixtures/forged-assistant-tasks-v1.json"
@@ -759,6 +792,7 @@ echo "protected copy: $APP"
 echo "isolated work:  $WORK (deleted on exit unless --keep)"
 echo
 
+if [[ "$RUNNER_ONLY" == 0 ]]; then
 static_signatures
 static_runtime
 static_entitlements
@@ -772,6 +806,8 @@ negative_installed_daemon
 positive_trusted_daemon
 tamper_forged_json
 skips
+fi
+positive_runner_startup
 
 /usr/bin/awk -F'\t' '{ printf "%-5s %-40s %s\n", $2, $1, $3 }' "$TABLE"
 echo

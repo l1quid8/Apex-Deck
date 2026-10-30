@@ -198,10 +198,10 @@ fn restart_at_each_two_bot_durable_boundary_never_resumes_an_old_id() {
 #[test]
 fn failed_claim_write_leaves_no_human_message_and_can_be_retried_once() {
     let (runtime, host, path) = fixture("save-failure");
-    let rooms = host.store.folder().join("rooms");
-    let backup = host.store.folder().join("rooms-backup");
-    std::fs::rename(&rooms, &backup).unwrap();
-    std::fs::write(&rooms, "block writes").unwrap();
+    // Keep the saved room readable so command routing reaches the durable
+    // claim; block only its replacement file to fail the acceptance commit.
+    let pending = host.store.folder().join("rooms").join("72.tmp");
+    std::fs::create_dir(&pending).unwrap();
     runtime.block_on(async {
         let refused = call(&host, json!({"command":"room_post","id":"r","text":"hello","clientMessageId":"m"})).await;
         assert!(refused.is_err(), "{refused:?}");
@@ -209,14 +209,46 @@ fn failed_claim_write_leaves_no_human_message_and_can_be_retried_once() {
         assert!(snapshot.transcript.is_empty(), "refused with {refused:?} but the chat kept a message");
         assert!(snapshot.client_messages.is_empty());
     });
-    std::fs::remove_file(&rooms).unwrap();
-    std::fs::rename(&backup, &rooms).unwrap();
+    std::fs::remove_dir(&pending).unwrap();
     runtime.block_on(async {
         call(&host, json!({"command":"room_post","id":"r","text":"hello","clientMessageId":"m"})).await.unwrap();
         assert_eq!(host.store.room("r").unwrap().unwrap().snapshot.transcript.iter().filter(|message| matches!(message.speaker, apex_core::Speaker::Human)).count(), 1);
     });
     drop(host);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn missing_saved_chat_never_downgrades_client_posts_to_legacy_delivery() {
+    for command in ["room_post", "room_post_to"] {
+        let (runtime, host, path) = fixture(command);
+        let rooms = host.store.folder().join("rooms");
+        let backup = host.store.folder().join("rooms-backup");
+        std::fs::rename(&rooms, &backup).unwrap();
+        std::fs::create_dir(&rooms).unwrap();
+        // A missing room reads as None on every platform. A legacy send
+        // would append the human message before this replacement fails.
+        std::fs::create_dir(rooms.join("72.tmp")).unwrap();
+        let post = json!({"command":command,"id":"r","text":"hello","targets":["a"],"clientMessageId":"m"});
+        runtime.block_on(async {
+            assert!(call(&host, post.clone()).await.is_err());
+            let snapshot = host.handle("r").unwrap().room.lock().await.snapshot();
+            assert!(snapshot.transcript.is_empty());
+            assert!(snapshot.client_messages.is_empty());
+        });
+        std::fs::remove_dir_all(&rooms).unwrap();
+        std::fs::rename(&backup, &rooms).unwrap();
+        runtime.block_on(async {
+            call(&host, post.clone()).await.unwrap();
+            call(&host, post).await.unwrap();
+            let snapshot = host.store.room("r").unwrap().unwrap().snapshot;
+            assert_eq!(snapshot.transcript.iter().filter(|message| matches!(message.speaker, apex_core::Speaker::Human)).count(), 1);
+            assert!(snapshot.client_messages.contains_key("m"));
+        });
+        drop(host);
+        drop(runtime);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
 
 #[test]
@@ -368,8 +400,17 @@ fn claim_and_history_merge_refuse_work_rooms() {
         let saved = host.store.room("work").unwrap().unwrap().snapshot;
         assert!(saved.transcript.is_empty());
         assert!(saved.client_messages.is_empty());
+        // Work rooms still use their existing post handlers even when a
+        // client includes a chat-delivery ID.
+        for command in ["room_post", "room_post_to"] {
+            call(&host, json!({"command":command,"id":"work","text":"hello","targets":[],"clientMessageId":"m"})).await.unwrap();
+        }
+        let saved = host.store.room("work").unwrap().unwrap().snapshot;
+        assert_eq!(saved.transcript.len(), 2);
+        assert!(saved.client_messages.is_empty());
     });
     drop(host);
+    drop(runtime);
     std::fs::remove_dir_all(path).unwrap();
 }
 

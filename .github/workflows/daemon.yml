@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Linux runs gateway and talk-only turns inside bubblewrap, as users must.
+      # Linux gateway and talk-only integration tests require the real sandbox.
       - name: Install bubblewrap
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y bubblewrap

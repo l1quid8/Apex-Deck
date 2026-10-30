@@ -110,7 +110,8 @@ later version can then arrive through **Restart to update**.
 
 ## Not covered yet
 
-- Windows and Linux.
+- Windows. Linux VPS updates use the separate
+  [systemd source-release updater](daemon-ubuntu.md#automatic-published-release-updates).
 - Automatic resume after a power cut mid-install (it stops and asks for a
   look instead).
 - `/usr/bin/python3` must be present, as it already must for the `.pkg`.

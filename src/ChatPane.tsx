@@ -1,4 +1,11 @@
+import { RunnerWork } from "./runner/RunnerWork.tsx";
+import { useRunner } from './runner/useRunner.ts';
+import { runnerCommand, runnerAction } from './runner/client.ts';
+import { defaultLimits, type RunnerKind, type RunnerConfig } from './runner/types.ts';
+import { RunnerSetup } from './runner/RunnerSetup.tsx';
 import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
+import { RunnerDrawer } from './runner/RunnerDrawer.tsx';
+import './runner/runner.css';
 import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
@@ -583,6 +590,21 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const [legacy, setLegacy] = useState<import("./types").RoomState["legacy"]>();
+  const [runner, setRunner, runnerHostOffset] = useRunner(backend, pane.id);
+  const runnerRef=useRef(runner);runnerRef.current=runner;
+  const [runnerMode,setRunnerMode]=useState<RunnerKind|null>(null);
+  const [runnerInterval,setRunnerInterval]=useState('10m');
+  const [runnerLimits,setRunnerLimits]=useState(defaultLimits);
+  const [runnerConfig,setRunnerConfig]=useState<RunnerConfig>({});
+  const [runnerEndRequest,setRunnerEndRequest]=useState(0);
+  const [runnerShowRequest,setRunnerShowRequest]=useState(0);
+  const runnerClear=useRef(false);
+  const runnerUnfinished=!!runner&&!['completed','ended'].includes(runner.phase);
+  const armRunner=(kind:RunnerKind)=>{
+    if(runnerUnfinished){notify(`A ${runner!.kind} is unfinished here. End it first.`);return;}
+    if(planOn){notify('Turn off Plan before selecting Goal or Loop.');return;}
+    setRunnerMode(kind);input.current?.focus();
+  };
   const [pins, setPins] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<AllowedRule[]>([]);
   /** "Removed. Null asks again next time.", shown for a moment after Remove. */
@@ -930,6 +952,16 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   activity.current = onActivity;
   const signal = useRef(onSignal);
   signal.current = onSignal;
+  const runnerSignalKey=useRef('');
+  useEffect(()=>{
+    if(!runner)return;
+    const key=`${runner.id}:${runner.phase}:${runner.reason}`;
+    if(runnerSignalKey.current===key)return;runnerSignalKey.current=key;
+    if(runner.phase==='completed')signal.current?.(pane.id,'done',`${runner.kind==='goal'?'Goal':'Loop'} finished`);
+    else if(runner.phase==='waiting'||runner.phase==='paused'&&!['human','recovery','none'].includes(runner.reason))signal.current?.(pane.id,'needs_input',`${runner.kind}: ${runner.reason.replaceAll('_',' ')}`);
+    else if(['running','scheduled'].includes(runner.phase))signal.current?.(pane.id,null);
+  },[runner?.id,runner?.phase,runner?.reason,pane.id]);
+
   const approvals = useRef(onApprovals);
   approvals.current = onApprovals;
   const preview = useRef(profileMode ? undefined : onPreview);
@@ -1196,7 +1228,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           if (showChangesRef.current) refreshDiff.current();
           // A round the person stopped themselves needs no flag.
           const wants = round.current.stopped ? null : afterRound(round.current.failed, round.current.lastReply);
-          if (wants) signal.current?.(pane.id, wants.kind, wants.note);
+          if (wants && !(wants.kind==='done'&&runnerRef.current&&!['completed','ended'].includes(runnerRef.current.phase))) signal.current?.(pane.id, wants.kind, wants.note);
           round.current = { failed: [], lastReply: null, stopped: false };
           setBusy(turnQueue.active);
           setDrafts({});
@@ -1222,6 +1254,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         if (!alive) return;
         const saved = state.snapshot;
         setLegacy(state.legacy);
+        setRunner(state.runner ?? null);
         setMountHistory(state.mounts ?? []);
         if (state.cwd && state.cwd !== cwd) folderChanged.current?.(state.cwd);
         closeGitCard();
@@ -1970,6 +2003,20 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     if (chatReadOnly && !['fork', 'export'].includes(command.name)) return;
 
     switch (command.name) {
+      case "goal":
+      case "loop": {
+        void (async()=>{
+          try {
+            const workers=stickyFor(text,turnQueue.items)??await backend.roomTargets(pane.id,command.arg);
+            const result=await runnerCommand(backend,pane.id,command.name,command.arg,workers,runnerLimits,runnerConfig);
+            setRunner(result.snapshot??null);
+            if(result.confirmEnd){runnerClear.current=true;setRunnerEndRequest(v=>v+1);}
+            if(result.show)setRunnerShowRequest(v=>v+1);
+            if(result.message)notify(result.message);
+            setText('');setRunnerMode(null);
+          }catch(error){notify(String(error),'error');}
+        })();return;
+      }
       case "clear":
         if (busy || turnQueue.active) return notify("Wait for the models to finish before clearing the chat.");
         return clearChat();
@@ -1983,7 +2030,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
       case "diff":
         setText(""); if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); } return;
       case "plan":
-        setText(""); void setPlan(!planOn); return;
+        setText(""); if(runnerMode){setRunnerMode(null);notify("Goal/Loop start mode cleared; Plan selected.");} void setPlan(!planOn); return;
       case "image": {
         // The picture is posted as your message, so every model can see it,
         // without asking anyone to reply.
@@ -2535,6 +2582,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
       if (!body) return;
       const parsed = parseComposer(body);
       if ('command' in parsed) return runCommand(parsed.command);
+      if (runnerMode) return runCommand({name:runnerMode,arg:runnerMode==='loop'?`${runnerInterval} ${body}`:`start ${body}`});
       try {
         onChatSend(withTldr(replyText(postable(parsed.text), replies.length ? replies : null, participants), tldr));
         setText(''); setReplies([]); stuck.current = true;
@@ -2558,6 +2606,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     if ((!body && !sendable.length) || !ready || saving) return;
     const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
+    if (runnerMode) {
+      return runCommand({name:runnerMode,arg:runnerMode==='loop'?`${runnerInterval} ${body}`:`start ${body}`});
+    }
     if (participants.length === 0) return;
     // A picture or video bot needs its picture. Each picture or video is asked for on the bot's own card, before it is made.
     const sends = mediaSendsFor(targetIds, participants, providerModels, sendable.some(a => isImage(a.path!)));
@@ -3623,7 +3674,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         )}
         {pane.fork && pane.fork.at === 0 && forkLine}
         {transcriptMounted.current && entries.flatMap((entry) => {
-          const item = entry.kind === "notice" ? (
+          const renderEntry=(entry:(typeof entries)[number])=>{
+            return entry.kind === "notice" ? (
             <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}${entry.notice.action ? " with-action" : ""}`}>
               <span>{entry.notice.text}</span>
               {entry.notice.action && noticeButton(entry.notice.key, entry.notice.action)}
@@ -3684,6 +3736,16 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
               {messageActions(entry.message)}
             </div>
           );
+          };
+          const item=renderEntry(entry);
+          if(runner&&entry.kind==='message'&&runner.replySeqs?.includes(entry.message.seq)){
+            const index=entries.indexOf(entry);
+            const previous=entries[index-1];
+            if(previous?.kind==='message'&&runner.replySeqs.includes(previous.message.seq))return [];
+            const group=[];
+            for(let n=index;n<entries.length;n++){const row=entries[n];if(row.kind!=='message'||!runner.replySeqs.includes(row.message.seq))break;group.push(row);}
+            return [<RunnerWork key={`runner-${entry.message.seq}`} snapshot={runner} count={group.length}>{group.map(row=>renderEntry(row))}</RunnerWork>];
+          }
           // "New since you looked" goes above the first reply you have not seen.
           const after = entry.kind === "message" && entry.message.seq === forkAfter ? [forkLine] : [];
           return entry.kind === "message" && entry.message.seq === dividerAt
@@ -3883,9 +3945,14 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         {!talkOnly && <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />}
         <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock"} ref={field}>
           {quickAdd === "dock" && quickAddMenu}
-          <ComposerMenu talkOnly={talkOnly} disabled={chatReadOnly} ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          <RunnerDrawer snapshot={runner} hostNowOffsetMs={runnerHostOffset} composerRef={input} platform="desktop" endRequest={runnerEndRequest} showRequest={runnerShowRequest} onEndCancel={()=>{runnerClear.current=false;}}
+            onAction={(action,limits)=>{if(!runner)return;void runnerAction(backend,pane.id,runner,action,limits,runnerClear.current).then(next=>{runnerClear.current=false;setRunner(next);}).catch(error=>notify(String(error),'error'));}}
+            onReviewChanges={()=>{setTurnPaths(runner?.changedPaths??[]);setFocusPath(null);details?.show("changes");loadDiff();}}/>
+          {runnerMode&&!runnerUnfinished&&<RunnerSetup config={runnerConfig} onConfig={setRunnerConfig} participants={participants.map(p=>({id:p.id,name:p.display_name}))} kind={runnerMode} interval={runnerInterval} onInterval={setRunnerInterval} limits={runnerLimits} onLimits={setRunnerLimits} onCancel={()=>setRunnerMode(null)}/>}
+          <ComposerMenu talkOnly={talkOnly} disabled={chatReadOnly} ref={composerMenu} planOn={planOn} disabledCommands={runnerUnfinished?{goal:`A ${runner!.kind} is unfinished here. End it first.`,loop:`A ${runner!.kind} is unfinished here. End it first.`}:planOn?{goal:'Turn off Plan first',loop:'Turn off Plan first'}:backend.supports?.('room_runner_v1')===false?{goal:'Update this host to use goals and loops',loop:'Update this host to use goals and loops'}:{}} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
             if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
+            if (item.kind === "command" && (item.key === 'goal' || item.key === 'loop') && !trigger) { armRunner(item.key); return; }
             if (item.kind === "command" && item.command) {
               const draft = text;
               runCommand(item.command);

@@ -1,0 +1,68 @@
+{
+  "backup": {
+    "path": "/var/lib/apex-deck-update/l1quid8/backups/20261029T193315Z-02f3a24f8659",
+    "sha256": "648bd942e6f0da75db1c90e841c6fa57eb7c8042d1f043959ed1182d18a377cc"
+  },
+  "daemon_active_since": "Thu 2026-10-29 19:41:55 UTC",
+  "daemon_enabled": "enabled",
+  "daemon_main_pid": 1773129,
+  "daemon_unit": "apex-daemon-managed@l1quid8.service",
+  "focused_linux_checks": {
+    "checked_at": 1793302988,
+    "checks": [
+      {
+        "log": "/var/lib/apex-deck-update/l1quid8/verified-focused-1.log",
+        "passed": 1
+      },
+      {
+        "log": "/var/lib/apex-deck-update/l1quid8/verified-focused-2.log",
+        "passed": 4
+      },
+      {
+        "log": "/var/lib/apex-deck-update/l1quid8/verified-focused-3.log",
+        "passed": 4
+      }
+    ],
+    "total_passed": 9
+  },
+  "highest_version": "0.9.4",
+  "installed_file_sha256": {
+    "apex-deck-update@.service": "24467bd3470ef0047d0260cf583e3d7b0722a0e3959673adc3fcb8aa3cf314a7",
+    "apex-deck-update@.timer": "45f9194ffbc581e7dc31559fd6fa6ca4583034610bcfb3b0e273046f107ddb4c",
+    "vps-update-allow-test.rs": "703c918481551aa80c56f43de2896906fe0b723f525c357a4af6703090276329",
+    "vps-update-maintenance.patch": "bb378b5f75f6a85d304ddc6cfea813c689da49362eb077527128c2a97a0e5a34",
+    "vps_update.py": "f669b6c496e9d3ec1c8e0f3534dea5929536802875fdfa00dd18c0fdef4b9974",
+    "vps_update_compat.py": "fde33ec3416ec2c9dac5481175430cd4ccdaf579589abf3a2a951e573a6ecee7"
+  },
+  "live_maintenance_check": {
+    "admission_reopened": true,
+    "boot_id": "f93e8782a30d72e0efaf87a2c3a79686",
+    "build_commit": "10f47ca9e504",
+    "checked_at": 1793303217,
+    "executable_sha256": "bfdf1fc82b878d5a556844287f00a19df7da11f4b7b656721483b49e543bf244",
+    "expired_reservation_refused": true,
+    "maintenance_blocks_work": true,
+    "unit": "apex-daemon-managed@l1quid8.service",
+    "version": "0.9.4"
+  },
+  "observed_at_utc": "2026-10-29T19:49:47.757238+00:00",
+  "pending_transaction": false,
+  "previous_instance_disabled_and_masked": true,
+  "running": {
+    "boot_id": "f93e8782a30d72e0efaf87a2c3a79686",
+    "build_commit": "10f47ca9e504",
+    "build_dirty": true,
+    "executable_sha256": "bfdf1fc82b878d5a556844287f00a19df7da11f4b7b656721483b49e543bf244",
+    "version": "0.9.4"
+  },
+  "updater": {
+    "active": true,
+    "enabled": true,
+    "last_checked_at": 1793303253,
+    "last_result": "current",
+    "latest_release": "v0.9.4",
+    "schedule": "NEXT                         LEFT LAST                              PASSED UNIT                           ACTIVATES\nThu 2026-10-29 20:18:45 UTC 28min Thu 2026-10-29 19:47:30 UTC 2min 17s ago apex-deck-update@l1quid8.timer apex-deck-update@l1quid8.service\n\n1 timers listed.\nPass --all to see loaded but inactive timers, too.",
+    "timer": "apex-deck-update@l1quid8.timer",
+    "unit": "apex-deck-update@l1quid8.service"
+  }
+}

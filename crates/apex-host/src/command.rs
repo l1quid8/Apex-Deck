@@ -242,6 +242,9 @@ pub enum Command {
     WorktreeRemove { path: String, worktree: String, force: bool },
     WorktreeForget { path: String, worktree: String, force: bool },
     WorktreePrune { path: String },
+    RoomRunnerStart { #[serde(flatten)] input: crate::runner::service::RunnerStartInput },
+    RoomRunnerAction { #[serde(flatten)] input: crate::runner::service::RunnerActionInput },
+    RoomRunnerState { id: String },
     QuitHeard { request: u64 },
     /// Confirms the quit; the shell that owns the window does the exiting.
     QuitApp {},
@@ -256,7 +259,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -293,7 +296,9 @@ impl Host {
         if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,capability).await;}
         use Command::*;
         let needs_receipt = |command:&Command| -> Result<bool,String> {
-            if command.requires_provenance() {return Ok(true);}
+            if command.requires_provenance() {
+                return Ok(true);
+            }
             match command {
                 RoomPost{id,..}|RoomPostTo{id,..}|RoomTurn{id,..} => Ok(self.assistant_tasks.execution(id).map_err(|e|e.to_string())?.is_some()),
                 _ => Ok(false),
@@ -560,9 +565,11 @@ impl Host {
             ChatPromoteAbandon { source, request_id } => reply(self.chat_promote_abandon(source, request_id)?),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers, client_message_id } => match client_message_id {
+                // A missing saved room must fail before routing: treating it as
+                // Work would bypass durable chat acceptance and mutate memory.
                 // Work sends retain task continuation, Revert snapshots, and
                 // requested-server validation in the existing post handlers.
-                Some(request_id) if self.room_is_chat(&id)? => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
+                Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
                 _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
@@ -573,7 +580,7 @@ impl Host {
                     reply(self.room_client_post(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability).await?)
                 } else {
                     match client_message_id {
-                        Some(request_id) if self.room_is_chat(&id)? => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
+                        Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
                         _ => reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?),
                     }
                 }
@@ -624,6 +631,9 @@ impl Host {
             WorktreeRemove { path, worktree, force } => reply(self.worktree_remove(path, worktree, force).await?),
             WorktreeForget { path, worktree, force } => reply(self.worktree_forget(path, worktree, force).await?),
             WorktreePrune { path } => reply(self.worktree_prune(path).await?),
+            RoomRunnerStart { input } => reply(self.room_runner_start(input).await?),
+            RoomRunnerAction { input } => reply(self.room_runner_action(input).await?),
+            RoomRunnerState { id } => reply(self.room_runner_state(id)?),
             QuitHeard { request } => { self.quit_heard(request); reply(()) },
             QuitApp {} => { self.quit_confirm(); reply(()) },
             ModRead { dir } => reply(self.mod_read(dir)?),
@@ -662,6 +672,14 @@ mod tests {
         let delegation = Command::from_json(json!({"cmd":"personal_project_delegate_ui","args":{"assistantId":"nonexistent","project":{"hostId":"host","workspaceId":"workspace","cwd":"/repo"},"sourceEventId":"","delegationId":"ui-task","brief":"Inspect login","destination":{"threadId":"thread","workers":["worker"],"newThread":false},"mode":"read_only","expectedRevision":1}})).unwrap();
         let error = runtime.block_on(host.call(delegation)).unwrap_err();
         assert!(error.contains("protected provenance receipt"), "{error}");
+        for value in [
+            json!({"cmd":"room_runner_start","args":{"id":"r","requestId":"forged","runner":{"schemaVersion":1,"kind":"goal","objective":"unauthorized","workers":["w"],"limits":{"schemaVersion":1,"maxTurns":1,"maxInvocations":1,"lifetimeMs":60000}}}}),
+            json!({"cmd":"room_runner_action","args":{"id":"r","runnerId":"r","expectedRevision":1,"requestId":"forged-action","action":{"action":"resume"}}}),
+        ] {
+            let error=runtime.block_on(host.call(Command::from_json(value).unwrap())).unwrap_err();
+            assert!(error.contains("protected provenance receipt"),"{error}");
+        }
+        assert!(!data.join("room-runners-v1.json").exists());
         assert!(!data.join("assistant-conversations-v1.json").exists());
         assert!(!crate::authority_file::fixture_path(&data.join("assistant-conversations-v1.json")).exists());
         let _ = std::fs::remove_dir_all(data);
@@ -765,7 +783,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 189);
+        assert_eq!(names.len(), 192);
         for name in [
             "chat_profiles",
             "chat_list",

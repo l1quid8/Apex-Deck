@@ -79,7 +79,7 @@ export function chatThreadBackend(backend: Backend, route: ChatThreadRoute): Bac
     roomRevertPlan: async () => ({ available:false, note:'Only chat history goes back; this chat has no files.', files:[], skipped:[], effects:[] }),
   };
   const history = new Set(['roomClear','roomRevert','roomCompact']);
-  const mutations = new Set(['answerSave','roomClear','roomCompact','roomSetOptions','roomPin','roomUnpin','roomRevert','roomTurn','roomSetEditor']);
+  const mutations = new Set(['answerSave','roomClear','roomCompact','roomSetOptions','roomPin','roomUnpin','roomRevert','roomTurn','roomSetEditor','roomRunnerStart','roomRunnerAction']);
   const guarded = new Map<PropertyKey, unknown>();
   return new Proxy(backend, {
     get(target, key) {

@@ -497,6 +497,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
                 | "room-authority-v1.json"
                 | "personal-machine.json"
                 | "project-memory-v1.json"
+                | "room-runners-v1.json"
                 | "devices.json"
         )
     {
@@ -546,7 +547,7 @@ pub fn protected(name: &str) -> bool {
             | "room_remove_participant"
             | "room_set_options"
             | "room_forget_allowed"
-            | "room_set_plan"
+            | "room_runner_start" | "room_runner_action" | "room_set_plan"
             | "room_mount"
             | "personal_memory_add"
             | "personal_memory_correct"
@@ -1312,6 +1313,28 @@ mod tests {
                     true
                 )
                 .is_err());
+        }
+    }
+
+    #[test]
+    fn room_runners_are_protected_and_survive_helper_restart() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let name = "room-runners-v1.json";
+        assert!(journal.read_document(501, "/data", name, false).is_err());
+        let empty = journal.read_document(501, "/data", name, true).unwrap();
+        assert!(empty.value.is_null());
+        let value = json!({"runners":{},"receipts":{}});
+        assert!(journal.write_document(501, "/data", name, 0, value.clone(), false).is_err());
+        journal.write_document(501, "/data", name, 0, value.clone(), true).unwrap();
+        assert!(journal.write_document(501, "/data", name, 0, json!({}), true).is_err());
+        journal.compact(&key).unwrap();
+        let restored = Journal::open(&serde_json::to_vec(&journal).unwrap(), key.public_key().as_ref()).unwrap();
+        assert_eq!(restored.read_document(501, "/data", name, true).unwrap().value, value);
+        assert!(restored.read_document(502, "/data", name, true).unwrap().value.is_null());
+        assert!(restored.read_document(501, "/other", name, true).unwrap().value.is_null());
+        for invalid in ["../room-runners-v1.json", "room-runners-v1.json.bak", "room-runners-v2.json"] {
+            assert!(restored.read_document(501, "/data", invalid, true).is_err());
         }
     }
 

@@ -20,6 +20,14 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
     let runtime = host.runtime().clone();
     runtime.spawn(async move {
+        // Suppress next-step suggestions while any unfinished runner owns the room
+        {
+            if let Ok(Some(runner)) = host.runner_service.lock().unwrap().state(&room) {
+                if runner.is_active() && !runner.dismissed {
+                    return;
+                }
+            }
+        }
         if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
         let prepared = {
             let current = handle.room.lock().await;
@@ -34,9 +42,19 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
         if handle.has_open_questions() || handle.busy() { return; }
         host.room_event(&room, RoomEvent::NextSteps { id: id.clone(), steps: Vec::new(), pending: true });
         let quiet = |_: Progress<'_>| {};
-        let steps = match tokio::time::timeout(TIMEOUT, participant.respond_with_approvals(request, &quiet, &NoApprover)).await {
-            Ok(Ok(reply)) => next_steps::parse(&reply.text),
-            _ => Vec::new(),
+        let superseded = async {
+            loop {
+                if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        let steps = tokio::select! {
+            result = tokio::time::timeout(TIMEOUT, participant.respond_with_approvals(request, &quiet, &NoApprover)) => match result {
+                Ok(Ok(reply)) => next_steps::parse(&reply.text), _ => Vec::new(),
+            },
+            // Drop only this suggestion future and its owned processes. A global
+            // participant cancel could stop the newer human turn that superseded it.
+            _ = superseded => Vec::new(),
         };
         // Something newer happened (a message, a turn, stop): its own
         // events already cleared the placeholder, and these are stale.

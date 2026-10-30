@@ -1321,17 +1321,21 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Observed s
 #[tokio::test]
 async fn tool_free_monitor_refuses_custom_cli_before_starting_it() {
     let dir = fake_tool("monitor-custom-cli", "custom-monitor", "#!/bin/sh\necho started > marker\necho unsafe\n");
+    // Exclude system tools so Linux always exercises missing-bwrap admission.
+    let mut context = context_in(&dir);
+    context.path = Some(dir.to_string_lossy().into_owned());
     let bot = CliParticipant::new(config("monitor", Backend::Cli {
         program: "custom-monitor".into(), args: vec![],
-    })).with_context(&context_in(&dir)).with_tools_disabled();
+    })).with_context(&context).with_tools_disabled();
     let (result, _) = ask(&bot, "inspect only").await;
-    // Where the host has a process sandbox (macOS, or Linux with bubblewrap) the CLI itself is
-    // refused; otherwise setting up the sandbox fails first and names what is missing.
-    let expected = match apex_adapters::isolation_available(context_in(&dir).path.as_deref()) {
-        Ok(()) => "verified tool-free mode".to_owned(),
-        Err(missing) => missing,
+    let expected = if cfg!(target_os = "macos") {
+        "verified tool-free mode"
+    } else if cfg!(target_os = "linux") {
+        "Linux process isolation requires bubblewrap (bwrap)"
+    } else {
+        "this backend requires the macOS or Linux process sandbox on this host"
     };
-    assert!(matches!(result, Err(ParticipantError::Failed(message)) if message.contains(&expected)));
+    assert!(matches!(&result, Err(ParticipantError::Failed(message)) if message.contains(expected)), "{result:?}");
     assert!(!dir.join("marker").exists(), "unsupported backend started despite tool-free mode");
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -1937,15 +1941,20 @@ async fn tools_disabled_denies_ask_user_question_without_consulting_the_approver
 async fn tools_disabled_fails_closed_without_supported_process_isolation() {
     use apex_core::AgentTool;
     let dir = fake_tool("agent-tools-disabled-unsupported", "codex", "#!/bin/sh\necho ran > invoked\nexit 90\n");
-    // A PATH holding only the fake tool, so no bubblewrap is found whatever the host has installed.
-    let context = BuildContext { path: Some(dir.to_string_lossy().into_owned()), ..context_in(&dir) };
-    let missing = apex_adapters::isolation_available(context.path.as_deref()).unwrap_err();
+    // Do not inherit a runner's bubblewrap installation into this negative test.
+    let mut context = context_in(&dir);
+    context.path = Some(dir.to_string_lossy().into_owned());
     for tool in [AgentTool::Codex, AgentTool::Grok, AgentTool::Gemini, AgentTool::Muse] {
         let bot = CliParticipant::new(config("monitor", Backend::Agent { tool, model: None }))
             .with_context(&context).with_tools_disabled();
         let (result, _) = ask(&bot, "inspect evidence").await;
         let error = result.unwrap_err().to_string();
-        assert!(error.contains(&missing), "{tool:?}: {error}");
+        let expected = if cfg!(target_os = "linux") {
+            "Linux process isolation requires bubblewrap (bwrap)"
+        } else {
+            "requires the macOS or Linux process sandbox"
+        };
+        assert!(error.contains(expected), "{tool:?}: {error}");
         assert!(!dir.join("invoked").exists(), "{tool:?} must fail before process launch");
     }
     std::fs::remove_dir_all(dir).unwrap();
