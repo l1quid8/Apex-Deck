@@ -15,7 +15,7 @@ export const protectedCommands=new Set(['assistant_message','assistant_task_acti
 // Broker failure on this Mac never changes whether attestation is required.
 export function needsAttestation(cmd, remote = false) {
   if (typeof cmd !== 'string') return false;
-  if (remote && (cmd.startsWith('room_') || ['devices_add', 'devices_set_tier', 'devices_set_threads', 'pair_approve'].includes(cmd))) return false;
+  if (remote && (cmd.startsWith('room_') || ['chat_promote', 'devices_add', 'devices_set_tier', 'devices_set_threads', 'pair_approve'].includes(cmd))) return false;
   return protectedCommands.has(cmd);
 }
 
