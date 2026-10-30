@@ -119,7 +119,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomRevert { id, .. } => full(thread(id)),
         RoomPin { id, .. } => full(thread(id)),
         RoomUnpin { id, .. } => full(thread(id)),
-        RoomCompact { id } => full(thread(id)),
+        RoomCompact { id } | RoomCurate { id } | RoomCurateUndo { id } => full(thread(id)),
         RoomClose { id } => full(thread(id)),
         // Spends one of the account's usage resets, which can't be given back.
         RoomPlanReset { room, .. } => full(thread(room)),
@@ -436,6 +436,8 @@ mod tests {
             ("room_pin", Some((Full, "thread")), json!({ "id": "mine", "fact": "f" })),
             ("room_unpin", Some((Full, "thread")), json!({ "id": "mine", "index": 0 })),
             ("room_compact", Some((Full, "thread")), json!({ "id": "mine" })),
+            ("room_curate", Some((Full, "thread")), json!({ "id": "mine" })),
+            ("room_curate_undo", Some((Full, "thread")), json!({ "id": "mine" })),
             ("room_close", Some((Full, "thread")), json!({ "id": "mine" })),
             ("artifacts_save", Some((Full, "thread")), json!({ "room": "mine", "artifacts": [] })),
             ("list_tool_servers", Some((Full, "thread")), json!({ "room": "mine", "agent": "null" })),

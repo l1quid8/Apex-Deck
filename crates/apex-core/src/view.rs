@@ -259,28 +259,42 @@ pub fn render_view_after(
     render_view_hiding(summary, transcript, &[], me, roster)
 }
 
-pub fn render_view_hiding(summary: Option<&str>, transcript: &[Message], hidden: &[[usize; 2]], me: &ParticipantId, roster: &[ParticipantConfig]) -> Vec<ViewTurn> {
+pub fn render_view_hiding(
+    summary: Option<&str>,
+    transcript: &[Message],
+    hidden: &[[usize; 2]],
+    me: &ParticipantId,
+    roster: &[ParticipantConfig],
+) -> Vec<ViewTurn> {
     let mut turns: Vec<ViewTurn> = Vec::new();
     if let Some(summary) = summary {
-        turns.push(ViewTurn { role: Role::User, content: format!("{SUMMARY_LABEL}:\n{summary}") });
+        turns.push(ViewTurn {
+            role: Role::User,
+            content: format!("{SUMMARY_LABEL}:\n{summary}"),
+        });
     }
 
     let mut previous_hidden = None;
     for message in transcript {
-        let range = hidden.iter().find(|[a,b]| *a <= message.seq && message.seq <= *b).copied();
+        let range = hidden
+            .iter()
+            .find(|[a, b]| *a <= message.seq && message.seq <= *b)
+            .copied();
         let (role, content) = if let Some(range) = range {
-            if previous_hidden == Some(range) { continue; }
+            if previous_hidden == Some(range) {
+                continue;
+            }
             previous_hidden = Some(range);
             (Role::User, crate::curation::hidden_line(range))
         } else {
             previous_hidden = None;
             match &message.speaker {
-            Speaker::Bot(id) if id == me => (Role::Assistant, message.text.clone()),
-            Speaker::Bot(id) => (
-                Role::User,
-                format!("[{}]: {}", display_name(id, roster), message.text),
-            ),
-            Speaker::Human => (Role::User, format!("[Human]: {}", message.text)),
+                Speaker::Bot(id) if id == me => (Role::Assistant, message.text.clone()),
+                Speaker::Bot(id) => (
+                    Role::User,
+                    format!("[{}]: {}", display_name(id, roster), message.text),
+                ),
+                Speaker::Human => (Role::User, format!("[Human]: {}", message.text)),
             }
         };
 
@@ -296,7 +310,10 @@ pub fn render_view_hiding(summary: Option<&str>, transcript: &[Message], hidden:
     if matches!(turns.first(), Some(t) if t.role == Role::Assistant) {
         turns.insert(
             0,
-            ViewTurn { role: Role::User, content: "(The conversation begins.)".to_string() },
+            ViewTurn {
+                role: Role::User,
+                content: "(The conversation begins.)".to_string(),
+            },
         );
     }
     turns

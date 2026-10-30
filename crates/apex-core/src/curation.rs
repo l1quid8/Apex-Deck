@@ -130,20 +130,26 @@ pub fn digest(
         context.extend(summary.chars().take(context_budget / 2));
         context.push('\n');
     }
-    for message in transcript
-        .iter()
-        .skip(transcript.len().saturating_sub(KEEP_NEWEST))
-    {
+    // Spend the context allowance on the newest evidence first, then render it
+    // in chronological order. An older huge message must not hide the current ask.
+    let mut recent = Vec::new();
+    let mut recent_size = context.chars().count();
+    for message in transcript.iter().rev().take(KEEP_NEWEST) {
         let line = excerpt(message, roster);
-        let left = context_budget.saturating_sub(context.chars().count());
+        let left = context_budget.saturating_sub(recent_size);
         if left <= 32 {
             break;
         }
         if line.chars().count() > left {
-            context.extend(line.chars().take(left - 24));
-            context.push_str(" … [context clipped]\n");
+            let mut clipped: String = line.chars().take(left - 24).collect();
+            clipped.push_str(" … [context clipped]\n");
+            recent.push(clipped);
             break;
         }
+        recent_size += line.chars().count();
+        recent.push(line);
+    }
+    for line in recent.into_iter().rev() {
         context.push_str(&line);
     }
     context.push_str("\nOlder messages you may hide, oldest first.\n\n");

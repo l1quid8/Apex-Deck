@@ -546,3 +546,60 @@ fn journal_hint_is_present_only_for_standing_curations_and_precedes_plan() {
         .system
         .contains("Older messages in this chat may be hidden"));
 }
+
+#[test]
+fn digest_preserves_the_latest_request_when_older_recent_context_is_huge() {
+    let mut s = seed(40).0.snapshot();
+    s.transcript[20].text = "older context ".repeat(10_000);
+    s.transcript[39].text = "LATEST_ACTIVE_REQUIREMENT: preserve the Linux path".into();
+    let (digest, offered) = digest(
+        &s.transcript,
+        &(0..20).collect::<Vec<_>>(),
+        None,
+        &s.participants,
+        DIGEST_CHARS,
+    );
+    assert!(digest.contains("LATEST_ACTIVE_REQUIREMENT"));
+    assert!(!offered.is_empty());
+}
+
+struct MeteredCurator(ParticipantConfig);
+#[async_trait::async_trait]
+impl Participant for MeteredCurator {
+    fn config(&self) -> &ParticipantConfig {
+        &self.0
+    }
+    async fn respond(&self, _: TurnRequest, _: DeltaSink<'_>) -> Result<Reply, ParticipantError> {
+        Ok(Reply {
+            text: r#"{"hide":[]}"#.into(),
+            input_tokens: Some(100),
+            output_tokens: Some(12),
+            cost_micros: Some(7),
+            cost_estimated: false,
+        })
+    }
+}
+#[test]
+fn curator_usage_is_counted_even_when_it_hides_nothing() {
+    let mut room = seed(40).0;
+    let bot = MeteredCurator(ScriptedParticipant::new("null", &[]).config().clone());
+    let events = Mutex::new(vec![]);
+    block_on(room.curate(&bot, &|e| events.lock().unwrap().push(e))).unwrap();
+    let totals = &room.usage()[&ParticipantId::new("null")];
+    assert_eq!(
+        (
+            totals.input,
+            totals.output,
+            totals.cost_micros,
+            totals.turns
+        ),
+        (100, 12, 7, 1)
+    );
+    assert!(events.into_inner().unwrap().iter().any(|e| matches!(
+        e,
+        RoomEvent::Usage {
+            cost_micros: Some(7),
+            ..
+        }
+    )));
+}

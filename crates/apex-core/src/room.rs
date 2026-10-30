@@ -895,43 +895,133 @@ impl Room {
     }
 
     /// A between-turn visibility operation. Replies are control data, never chat text.
-    pub async fn curate(&mut self, curator: &dyn Participant, on_event: EventSink<'_>) -> Result<CurateOutcome, String> {
+    pub async fn curate(
+        &mut self,
+        curator: &dyn Participant,
+        on_event: EventSink<'_>,
+    ) -> Result<CurateOutcome, String> {
         let hidden = self.hidden_ranges();
-        let eligible: Vec<_> = (self.compacted_upto()..self.transcript.len().saturating_sub(curation::KEEP_NEWEST))
-            .filter(|n| !curation::contains(&hidden,*n) && curation::offerable(&self.transcript[*n])
-                && !self.pins.iter().any(|p| response_pin_parts(p).is_some_and(|(seq,_)|seq==*n))).collect();
-        if eligible.is_empty() { return Err("there is nothing old enough to hide".into()); }
-        let mut candidates: Vec<_> = eligible.iter().copied().filter(|n| *n >= self.curate_from).collect();
-        if candidates.is_empty() { candidates = eligible; }
+        let eligible: Vec<_> = (self.compacted_upto()
+            ..self.transcript.len().saturating_sub(curation::KEEP_NEWEST))
+            .filter(|n| {
+                !curation::contains(&hidden, *n)
+                    && curation::offerable(&self.transcript[*n])
+                    && !self
+                        .pins
+                        .iter()
+                        .any(|p| response_pin_parts(p).is_some_and(|(seq, _)| seq == *n))
+            })
+            .collect();
+        if eligible.is_empty() {
+            return Err("there is nothing old enough to hide".into());
+        }
+        let mut candidates: Vec<_> = eligible
+            .iter()
+            .copied()
+            .filter(|n| *n >= self.curate_from)
+            .collect();
+        if candidates.is_empty() {
+            candidates = eligible;
+        }
         let system = curation::CURATE_SYSTEM.to_string() + &pinned_section(&self.pins);
-        let budget = curation::REQUEST_CHARS.saturating_sub(system.chars().count()+curation::OUTPUT_CHARS+32);
-        if budget < 1_024 { return Err("Pinned context is too large to curate safely. Reduce pins and try again.".into()); }
-        let (digest,offered) = curation::digest(&self.transcript,&candidates,self.summary(),&self.configs(),budget);
-        if offered.is_empty() { return Err("Pinned context is too large to leave room for a curation candidate.".into()); }
-        let request = TurnRequest { system, turns: vec![ViewTurn { role: Role::User, content: digest }], access: Some(crate::Access::Read), ..TurnRequest::default() };
+        let budget = curation::REQUEST_CHARS
+            .saturating_sub(system.chars().count() + curation::OUTPUT_CHARS + 32);
+        if budget < 1_024 {
+            return Err(
+                "Pinned context is too large to curate safely. Reduce pins and try again.".into(),
+            );
+        }
+        let (digest, offered) = curation::digest(
+            &self.transcript,
+            &candidates,
+            self.summary(),
+            &self.configs(),
+            budget,
+        );
+        if offered.is_empty() {
+            return Err(
+                "Pinned context is too large to leave room for a curation candidate.".into(),
+            );
+        }
+        let request = TurnRequest {
+            system,
+            turns: vec![ViewTurn {
+                role: Role::User,
+                content: digest,
+            }],
+            access: Some(crate::Access::Read),
+            ..TurnRequest::default()
+        };
         let id = curator.config().id.clone();
-        self.stop.store(false,Ordering::SeqCst);
+        self.stop.store(false, Ordering::SeqCst);
         on_event(RoomEvent::TurnStarted { id: id.clone() });
-        on_event(RoomEvent::Activity { id: id.clone(), text: curation::CURATE_WORKING.into() });
-        let progress = |update: Progress<'_>| { if !matches!(update,Progress::Text(_)) { on_event(progress_event(&id,update)); } };
-        let outcome = Self::interruptible(curator,request,self.stop.clone(),&progress,&crate::approval::NoApprover).await;
+        on_event(RoomEvent::Activity {
+            id: id.clone(),
+            text: curation::CURATE_WORKING.into(),
+        });
+        let progress = |update: Progress<'_>| {
+            if !matches!(update, Progress::Text(_)) {
+                on_event(progress_event(&id, update));
+            }
+        };
+        let outcome = Self::interruptible(
+            curator,
+            request,
+            self.stop.clone(),
+            &progress,
+            &crate::approval::NoApprover,
+        )
+        .await;
         let result = if self.stopped() {
             on_event(RoomEvent::Stopped);
             Ok(CurateOutcome::Stopped)
         } else {
-            outcome.map_err(|e|e.to_string()).and_then(|reply| {
-                if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
-                    self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens,reply.output_tokens,reply.cost_micros,reply.cost_estimated);
-                    on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros, cost_estimated: reply.cost_estimated });
+            outcome.map_err(|e| e.to_string()).and_then(|reply| {
+                if reply.input_tokens.is_some()
+                    || reply.output_tokens.is_some()
+                    || reply.cost_micros.is_some()
+                {
+                    self.usage.entry(id.clone()).or_default().add_turn(
+                        reply.input_tokens,
+                        reply.output_tokens,
+                        reply.cost_micros,
+                        reply.cost_estimated,
+                    );
+                    on_event(RoomEvent::Usage {
+                        id: id.clone(),
+                        input_tokens: reply.input_tokens,
+                        output_tokens: reply.output_tokens,
+                        cost_micros: reply.cost_micros,
+                        cost_estimated: reply.cost_estimated,
+                    });
                 }
-                let picks = curation::parse_picks(&reply.text,&offered).map_err(|_|format!("{} did not give a usable list",curator.config().display_name))?;
-                self.curate_from = offered.last().copied().unwrap()+1;
-                let unchecked = candidates.iter().filter(|n| **n >= self.curate_from).count();
-                if picks.hidden.is_empty() { return Ok(CurateOutcome::Nothing { unchecked }); }
-                let curation = Curation { by: id.clone(), at: self.transcript.len(), hidden: picks.hidden, reason: picks.reason, when: curation::now(), undone: None };
+                let picks = curation::parse_picks(&reply.text, &offered).map_err(|_| {
+                    format!(
+                        "{} did not give a usable list",
+                        curator.config().display_name
+                    )
+                })?;
+                self.curate_from = offered.last().copied().unwrap() + 1;
+                let unchecked = candidates
+                    .iter()
+                    .filter(|n| **n >= self.curate_from)
+                    .count();
+                if picks.hidden.is_empty() {
+                    return Ok(CurateOutcome::Nothing { unchecked });
+                }
+                let curation = Curation {
+                    by: id.clone(),
+                    at: self.transcript.len(),
+                    hidden: picks.hidden,
+                    reason: picks.reason,
+                    when: curation::now(),
+                    undone: None,
+                };
                 let count = curation.count();
                 self.curations.push(curation);
-                on_event(RoomEvent::CurationsChanged { curations: self.curations.clone() });
+                on_event(RoomEvent::CurationsChanged {
+                    curations: self.curations.clone(),
+                });
                 Ok(CurateOutcome::Hidden { count, unchecked })
             })
         };
@@ -941,25 +1031,42 @@ impl Room {
 
     pub fn undo_curation(&mut self, on_event: EventSink<'_>) -> curation::CurationUndo {
         let upto = self.compacted_upto();
-        let mut outcome = curation::CurationUndo { restored: 0, sealed: 0 };
-        for c in self.curations.iter_mut().filter(|c|c.undone.is_none()) {
-            if c.at <= upto { outcome.sealed += c.count(); }
-            else { outcome.restored += c.count(); c.undone = Some(curation::now()); }
+        let mut outcome = curation::CurationUndo {
+            restored: 0,
+            sealed: 0,
+        };
+        for c in self.curations.iter_mut().filter(|c| c.undone.is_none()) {
+            if c.at <= upto {
+                outcome.sealed += c.count();
+            } else {
+                outcome.restored += c.count();
+                c.undone = Some(curation::now());
+            }
         }
         if outcome.restored > 0 {
             self.curate_from = 0;
-            on_event(RoomEvent::CurationsChanged { curations: self.curations.clone() });
+            on_event(RoomEvent::CurationsChanged {
+                curations: self.curations.clone(),
+            });
         }
         outcome
     }
 
-    pub fn set_journal_path(&mut self, path: Option<String>) { *self.journal_path.lock().unwrap() = path; }
+    pub fn set_journal_path(&mut self, path: Option<String>) {
+        *self.journal_path.lock().unwrap() = path;
+    }
 
-    pub fn journal_path_handle(&self) -> Arc<Mutex<Option<String>>> { self.journal_path.clone() }
+    pub fn journal_path_handle(&self) -> Arc<Mutex<Option<String>>> {
+        self.journal_path.clone()
+    }
 
     fn hidden_ranges(&self) -> Vec<[usize; 2]> {
-        curation::merge_ranges(self.curations.iter().filter(|c| c.undone.is_none() && c.at > self.compacted_upto())
-            .flat_map(|c| c.hidden.iter().flat_map(|[a,b]| *a..=*b)))
+        curation::merge_ranges(
+            self.curations
+                .iter()
+                .filter(|c| c.undone.is_none() && c.at > self.compacted_upto())
+                .flat_map(|c| c.hidden.iter().flat_map(|[a, b]| *a..=*b)),
+        )
     }
 
     fn compacted_upto(&self) -> usize {
