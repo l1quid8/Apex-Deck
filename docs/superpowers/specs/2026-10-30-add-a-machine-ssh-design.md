@@ -73,6 +73,25 @@ Cases:
   the Linux prefix of `call_from_device` makes machines running the installed
   updater refuse the release. Change them together with the updater recipe.
 
+## Open decision: phones on Linux
+
+A paired phone has no protected room actions on Linux. Allow, answering a
+question, new Work threads and changing a bot's model, reasoning or Speed all
+need a receipt, and Linux has no broker to give one, so `call_from_device` refuses
+them. Chats avoid this with their own `chat_*` commands. Work threads don't.
+A bot below Full access in a Work thread on a headless machine therefore waits
+for an approval the phone can't give.
+
+Recommendation: let a phone do what its tier already allows for Allow, answers,
+plans, and model, reasoning and Speed. Keep anything that picks a folder or raises
+a bot's access behind the machine's own folder list or a Mac over SSH.
+
+This is the Human's call and needs Null's review. It was a deliberate gate: the
+updater's installed test `scripts/vps-update-allow-test.rs` asserts these phone
+calls are refused, so the release that changes it must change the recipe on the
+server first. `Host::device_folder_command` is the place for it, because it sits
+outside the hashed admission code.
+
 ## Known unknowns
 
 1. **Headless pairing.** `apex-daemon pair` (`crates/apex-daemon/src/pair_cli.rs`)
