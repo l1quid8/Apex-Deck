@@ -1,5 +1,4 @@
 /**
-/**
  * GPT-Live (OpenAI Realtime) WebRTC client – GA schema 2026-10-29+
  * Endpoints: POST /v1/realtime/client_secrets (daemon, Bearer api key -> ek_)
  *            POST /v1/realtime/calls?model=<model> (browser, Bearer ek_ -> SDP answer)
@@ -27,6 +26,7 @@ export type RealtimeSessionMint = {
 export interface RealtimeClient {
   send(event: Record<string, unknown>): void;
   close(reason?: string): void;
+  setDefault(nextScope: CallScope): void;
 }
 
 export type RealtimeDependencies = {
@@ -52,6 +52,28 @@ type ConnectOpts = {
   signal?: AbortSignal;
 };
 
+export function buildRealtimeInstructions(cands: VoiceCandidate[], forScope: CallScope): string {
+  const agentList = cands
+    .map(c => `- ${c.name} (id ${c.participantId})`)
+    .slice(0, 32)
+    .join("\n");
+  const defaultTarget = cands.find(c => c.participantId === forScope.participantId)?.name ?? cands[0]?.name ?? "agent";
+  return `You are GPT-Live inside Apex Deck, a voice interface for coding agents.
+Default agent is "${defaultTarget}". Agents available in THIS thread only:
+${agentList || "- none listed"}
+
+Rules:
+- Chat naturally. When the user asks to do work (code, search, file edit, research, questions about project), call ask_agent with the right agent and their request.
+- To pick a different agent by voice, parse "ask <Name> to ..." or "call <Name>".
+- If the user mentions an agent not in this thread's list, say that agent is not in this thread and ask who to use from the list.
+- Keep your own small talk brief. Do not invent file contents.
+- When an agent is working, say once that it's working, then stay quiet until the result arrives. Do not spam "On it."
+- Speak the agent's final result closely, not adding extra facts.
+- If you need to stop an agent's current reply, call stop_agent.
+- Ending or muting the call never cancels agent work.
+`;
+}
+
 export async function connectRealtime(
   deps: RealtimeDependencies,
   scope: CallScope,
@@ -73,26 +95,10 @@ export async function connectRealtime(
   // Strictly same thread – prevents routing across rooms.
   const all = deps.candidates();
   const candidates = all.filter(c => c.hostId === scope.hostId && c.roomId === scope.roomId);
-  const agentList = candidates
-    .map(c => `- ${c.name} (id ${c.participantId})`)
-    .slice(0, 32)
-    .join("\n");
-  const defaultTarget = candidates.find(c => c.participantId === scope.participantId)?.name ?? candidates[0]?.name ?? "agent";
 
-  const instructions = `You are GPT-Live inside Apex Deck, a voice interface for coding agents.
-Default agent is "${defaultTarget}". Agents available in THIS thread only:
-${agentList || "- none listed"}
-
-Rules:
-- Chat naturally. When the user asks to do work (code, search, file edit, research, questions about project), call ask_agent with the right agent and their request.
-- To pick a different agent by voice, parse "ask <Name> to ..." or "call <Name>".
-- If the user mentions an agent not in this thread's list, say that agent is not in this thread and ask who to use from the list.
-- Keep your own small talk brief. Do not invent file contents.
-- When an agent is working, say once that it's working, then stay quiet until the result arrives. Do not spam "On it."
-- Speak the agent's final result closely, not adding extra facts.
-- If you need to stop an agent's current reply, call stop_agent.
-- Ending or muting the call never cancels agent work.
-`;
+  let liveScope: CallScope = scope;
+  let candidatesLive: VoiceCandidate[] = candidates;
+  const instructions = buildRealtimeInstructions(candidatesLive, liveScope);
 
   const tools = [
     {
@@ -176,11 +182,10 @@ Rules:
   const resolveAgent = (nameRaw: string): VoiceCandidate | { ambiguous: true; names: string[] } | null => {
     const lower = nameRaw.trim().toLowerCase();
     if (!lower) return null;
-    const byExact = candidates.filter(c => c.name.toLowerCase() === lower || c.participantId.toLowerCase() === lower);
+    const byExact = candidatesLive.filter(c => c.name.toLowerCase() === lower || c.participantId.toLowerCase() === lower);
     if (byExact.length === 1) return byExact[0];
     if (byExact.length > 1) return { ambiguous: true, names: byExact.map(c => c.name) };
     // For voice routing we allow no fuzzy include to avoid cross-name collisions; require exact.
-    // If user typed "Ask j" we still want default.
     return null;
   };
 
@@ -195,10 +200,10 @@ Rules:
       let target: VoiceCandidate | undefined;
       if (resolved && !("ambiguous" in resolved)) target = resolved as VoiceCandidate;
       else {
-        // If user didn't specify or name unknown, use default participant if present
-        target = candidates.find(c => c.participantId === scope.participantId) ?? candidates[0];
+        // If user didn't specify or name unknown, use live default participant if present
+        target = candidatesLive.find(c => c.participantId === liveScope.participantId) ?? candidatesLive[0];
         if (agentName && agentName.trim().toLowerCase() !== (target?.name.toLowerCase() ?? "") && agentName.trim().toLowerCase() !== (target?.participantId.toLowerCase() ?? "")) {
-          throw new Error(`No agent named "${agentName}" in this thread. Available: ${candidates.map(c => c.name).join(", ") || "none"}.`);
+          throw new Error(`No agent named "${agentName}" in this thread. Available: ${candidatesLive.map(c => c.name).join(", ") || "none"}.`);
         }
       }
       if (!target) throw new Error(`No agent found matching "${agentName}"`);
@@ -297,7 +302,7 @@ Rules:
       try {
         dc.send(JSON.stringify({
           type: "conversation.item.create",
-          item: { type: "function_call_output", call_id: callId, output: `No agent named "${agentName}" in this thread. Available: ${candidates.map(c => c.name).join(", ") || "none"}.` },
+          item: { type: "function_call_output", call_id: callId, output: `No agent named "${agentName}" in this thread. Available: ${candidatesLive.map(c => c.name).join(", ") || "none"}.` },
         }));
         dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
       } catch {}
@@ -312,10 +317,6 @@ Rules:
           try { await bridge.cancel(info.requestId); canceled++; } catch {}
           pendingSubmissions.delete(cId);
         }
-      }
-      if (canceled === 0) {
-        // Also try last request via bridge cancel with no id interpreted as latest? We only have requestId map.
-        // Tell user nothing pending.
       }
       dc.send(JSON.stringify({
         type: "conversation.item.create",
@@ -486,6 +487,12 @@ Rules:
       try { dc.close(); } catch {}
       try { pc.close(); } catch {}
       events.onClose(reason);
+    },
+    setDefault(nextScope: CallScope) {
+      liveScope = nextScope;
+      // Also keep candidates filtered to same thread as new scope (same host/room by definition same-thread switch)
+      // For safety re-filter from original all list if room changed; but same-thread switch keeps same room.
+      candidatesLive = all.filter(c => c.hostId === nextScope.hostId && c.roomId === nextScope.roomId);
     },
   };
 }

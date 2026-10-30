@@ -1,5 +1,5 @@
 import type { CallScope, VoiceCandidate, VoiceState, VoiceSettings, ThreadVoiceBridge } from "./types.ts";
-import { connectRealtime, type RealtimeDependencies } from "./realtimeClient.ts";
+import { connectRealtime, buildRealtimeInstructions, type RealtimeDependencies } from "./realtimeClient.ts";
 
 export interface RealtimeControllerDeps {
   candidates(): VoiceCandidate[];
@@ -21,27 +21,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
   let startedAt: number | undefined;
   let abortController: AbortController | undefined;
   let pendingInstructions: string | undefined;
-
-  const buildRealtimeInstructions = (forScope: CallScope): string => {
-    const all = deps.candidates();
-    const filtered = all.filter(c => c.hostId === forScope.hostId && c.roomId === forScope.roomId);
-    const agentList = filtered.map(c => `- ${c.name} (id ${c.participantId})`).slice(0, 32).join("\n");
-    const defaultTarget = filtered.find(c => c.participantId === forScope.participantId)?.name ?? filtered[0]?.name ?? "agent";
-    return `You are GPT-Live inside Apex Deck, a voice interface for coding agents.
-Default agent is "${defaultTarget}". Agents available in THIS thread only:
-${agentList || "- none listed"}
-
-Rules:
-- Chat naturally. When the user asks to do work (code, search, file edit, research, questions about project), call ask_agent with the right agent and their request.
-- To pick a different agent by voice, parse "ask <Name> to ..." or "call <Name>".
-- If the user mentions an agent not in this thread's list, say that agent is not in this thread and ask who to use from the list.
-- Keep your own small talk brief. Do not invent file contents.
-- When an agent is working, say once that it's working, then stay quiet until the result arrives. Do not spam "On it."
-- Speak the agent's final result closely, not adding extra facts.
-- If you need to stop an agent's current reply, call stop_agent.
-- Ending or muting the call never cancels agent work.
-`;
-  };
+  let pendingScope: CallScope | undefined;
 
   const set = (patch: Partial<VoiceState>) => {
     state = { ...state, ...patch };
@@ -63,6 +43,7 @@ Rules:
     try { abortController?.abort(); } catch {}
     abortController = undefined;
     pendingInstructions = undefined;
+    pendingScope = undefined;
     const wasCall = callId;
     callId = "";
     scope = undefined;
@@ -165,17 +146,38 @@ Rules:
 
       pcClient = client;
       // If a switch happened during startup, apply latest full instructions now.
-      if (pendingInstructions) {
+      if (pendingScope && pendingInstructions) {
+        const ps = pendingScope;
         const instr = pendingInstructions;
+        pendingScope = undefined;
         pendingInstructions = undefined;
+        try {
+          pcClient.setDefault(ps);
+        } catch {}
         try {
           pcClient.send({ type: "session.update", session: { type: "realtime", instructions: instr } } as any);
         } catch {}
+        scope = ps;
+        set({ scope: ps });
+      } else if (pendingScope) {
+        // scope changed mid-startup but instructions not yet built via switchAgent race – build now
+        const ps = pendingScope;
+        pendingScope = undefined;
+        pendingInstructions = undefined;
+        try { pcClient.setDefault(ps); } catch {}
+        try {
+          const allCands = deps.candidates().filter(c => c.hostId === ps.hostId && c.roomId === ps.roomId);
+          pcClient.send({ type: "session.update", session: { type: "realtime", instructions: buildRealtimeInstructions(allCands, ps) } } as any);
+        } catch {}
+        scope = ps;
+        set({ scope: ps });
       } else if (scope && (scope.participantId !== nextScope.participantId || scope.roomId !== nextScope.roomId)) {
-        // scope was updated mid-startup via switchAgent
+        // scope was updated mid-startup via direct assignment (defensive)
         const latestScope = scope;
         try {
-          pcClient.send({ type: "session.update", session: { type: "realtime", instructions: buildRealtimeInstructions(latestScope) } } as any);
+          pcClient.setDefault(latestScope);
+          const allCands = deps.candidates().filter(c => c.hostId === latestScope.hostId && c.roomId === latestScope.roomId);
+          pcClient.send({ type: "session.update", session: { type: "realtime", instructions: buildRealtimeInstructions(allCands, latestScope) } } as any);
         } catch {}
       }
       set({ status: "listening", voices: [] });
@@ -194,27 +196,27 @@ Rules:
 
   const switchAgent = async (next: CallScope) => {
     if (!callId) return start(next);
-    const prevCall = callId;
     const prevScope = scope;
     if (prevScope && prevScope.hostId === next.hostId && prevScope.roomId === next.roomId) {
+      const allCands = deps.candidates().filter(c => c.hostId === next.hostId && c.roomId === next.roomId);
+      const fullInstructions = buildRealtimeInstructions(allCands, next);
       scope = next;
       set({ scope: next });
       deps.focus(next);
-      const fullInstructions = buildRealtimeInstructions(next);
       if (pcClient) {
+        try { pcClient.setDefault(next); } catch {}
         try {
           pcClient.send({ type: "session.update", session: { type: "realtime", instructions: fullInstructions } } as any);
         } catch {}
       } else {
         // Still in startup (pcClient undefined) – queue for after connect
+        pendingScope = next;
         pendingInstructions = fullInstructions;
       }
       return;
     }
     await end("switch");
-    if (prevCall) {
-      await start(next);
-    }
+    await start(next);
   };
 
   return {
@@ -233,8 +235,7 @@ Rules:
       }
     },
     preview(_voice: string) {
-      // Realtime voices preview via a short sample? For now no-op: we could speak via TTS API separately.
-      // Leave empty – UI disables preview when realtime engine selected.
+      // Realtime voices preview via a short sample? For now no-op
     },
     sample: (_voice: string) => Promise.reject(new Error("Samples use local voices. Switch engine to Local.")),
     stopSample: () => Promise.resolve(),
