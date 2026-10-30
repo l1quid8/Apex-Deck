@@ -1,6 +1,6 @@
 # `/curate` Task 8 acceptance record
 
-Status: **incomplete — matching desktop service required**. This report records an attempted native-app run, not a successful curation or provider lookup.
+Status: **incomplete — authorized matching upgrade awaits administrator authentication**. This report records an attempted native-app run, not a successful curation or provider lookup. See [upgrade preparation and resume instructions](2026-10-30-curate-service-upgrade.md).
 
 ## Checkout and launch evidence
 
@@ -80,6 +80,6 @@ README and SPEC now document the commands with an explicit live-acceptance-pendi
 
 ## Resume gate
 
-Run the acceptance scenarios after the UI and service both use the reviewed feature build. Do not stop the active service, replace the installed app, re-pin provenance, change the required dev data directory, or widen bot permissions merely to fill the table. The plan explicitly requires the Human's word before installation. A matching upgrade package was proposed for preparation; authorization is pending.
+The Human explicitly authorized preparing and installing the matching service upgrade, preserving existing data, and then resuming Task 8. That authorization covers the upgrade's required app/service restart; it does not authorize a destructive provenance reset, changing the required dev data directory, or widening existing bot permissions. The verified installer and data backup are recorded in [the upgrade report](2026-10-30-curate-service-upgrade.md). macOS administrator authentication remains necessary; this is an authentication dependency, not another request for permission.
 
 Task 8 is not complete and the branch is not ready to merge on the evidence above.
