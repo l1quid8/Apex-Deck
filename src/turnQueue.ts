@@ -14,7 +14,8 @@ export class TurnQueue {
   private post: (text: string, kind: TurnKind) => Promise<void>;
   private stop: () => Promise<void>;
   private changed: (items: QueuedMessage[]) => void;
-  private failed: (error: unknown) => void;
+  /** `unsent` is a message that never left and isn't kept here: the caller holds what it needs to give it back. */
+  private failed: (error: unknown, unsent?: ParticipantMessage) => void;
   constructor(post: (text: string, kind: TurnKind) => Promise<void>, stop: () => Promise<void>, changed: (items: QueuedMessage[]) => void, failed: (error: unknown) => void = () => {}) {
     this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
   }
@@ -48,7 +49,9 @@ export class TurnQueue {
   }
 }
 
-export interface ParticipantMessage extends QueuedMessage { to: string[]; failed?: boolean }
+/** `to` names who answers. It is settled when the message is queued, for ordering, and asked
+ *  again when it is sent unless `pinned`: a rule changed while it waited still applies. */
+export interface ParticipantMessage extends QueuedMessage { to: string[]; pinned?: boolean; failed?: boolean }
 /** One FIFO per recipient. Multi-recipient messages wait until every target
  * is free, then post once. Other participants can continue independently. */
 export class ParticipantQueues {
@@ -65,13 +68,16 @@ export class ParticipantQueues {
   private draining = false;
   private rerun = false;
   private targets: (text: string) => Promise<string[]>;
+  /** Who answers right now, without the queue's own pending-tag guess. Null keeps the queued answer. */
+  private ask: ((text: string) => Promise<string[]>) | null;
   private post: (text: string, to: string[], kind: TurnKind, hops?: number | null, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>;
   private stop: (id?: string) => Promise<void>;
   private changed: (items: ParticipantMessage[]) => void;
-  private failed: (error: unknown) => void;
-  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true, retainFailed = true) {
+  /** `unsent` is a message that never left and isn't kept here: the caller holds what it needs to give it back. */
+  private failed: (error: unknown, unsent?: ParticipantMessage) => void;
+  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown, unsent?: ParticipantMessage) => void = () => {}, available: () => boolean = () => true, retainFailed = true, ask: ((text: string) => Promise<string[]>) | null = null) {
     this.targets = targets; this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
-    this.available = available; this.retainFailed = retainFailed;
+    this.available = available; this.retainFailed = retainFailed; this.ask = ask;
   }
   private requireAvailable(epoch = this.availabilityEpoch) { if (!this.available() || epoch !== this.availabilityEpoch) throw new Error("Not connected to the host; nothing was queued."); }
   availabilityChanged() {
@@ -99,7 +105,7 @@ export class ParticipantQueues {
       this.requireAvailable();
       if(voice?.canceled?.()) throw new Error("Voice turn canceled before dispatch");
       const id = ++this.serial;
-      this.items.push({ id, text, kind: "message", to, ...(voice ? {voice}: {}) }); this.publish();
+      this.items.push({ id, text, kind: "message", to, pinned: true, ...(voice ? {voice}: {}) }); this.publish();
       await this.drain(); return id;
     });
     this.accepting = accepted.catch(() => {});
@@ -135,7 +141,7 @@ export class ParticipantQueues {
   async steer(id: string, text: string) {
     this.requireAvailable();
     this.paused.add(id);
-    this.items.unshift({id: ++this.serial, text, kind: "message", to: [id]}); this.publish();
+    this.items.unshift({id: ++this.serial, text, kind: "message", to: [id], pinned: true}); this.publish();
     try { if (this.state[id] === "working") await this.stop(id); this.resume(id); }
     catch (error) { this.failed(error); }
   }
@@ -158,7 +164,7 @@ export class ParticipantQueues {
   turn(to: string[], hops: number | null) {
     if (!this.available()) return;
     for (const id of to) this.paused.delete(id);
-    this.items.unshift({ id: ++this.serial, text: "", kind: "turn", to, hops });
+    this.items.unshift({ id: ++this.serial, text: "", kind: "turn", to, hops, pinned: true });
     this.publish(); void this.drain();
   }
   async halt(id?: string) {
@@ -179,6 +185,32 @@ export class ParticipantQueues {
         if (item.failed || item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working") || (item.kind === "compact" && this.active)) {
           if (item.kind === "compact") break;
           item.to.forEach(id => blocked.add(id)); continue;
+        }
+        // Who answers is asked again now: the rule may have changed while this waited, and a
+        // queued answer settled against an older rule would send it to the wrong bots. A fixed
+        // set (Steer, next step, re-run) is never re-decided.
+        if (!item.pinned && this.ask) {
+          const epoch = this.availabilityEpoch;
+          let fresh: string[] | null = null, lost: unknown = null;
+          try { fresh = await this.ask(item.text); } catch (error) { lost = error; }
+          // Asking takes a round trip, and that wait can be overtaken: the message may be taken
+          // back or edited, and the machine may go away. Neither one sends what was queued.
+          const queued = this.items.find(entry => entry.id === item.id);
+          if (!queued || queued.text !== item.text) continue;
+          if (!this.available() || epoch !== this.availabilityEpoch || this.connectionPaused) break;
+          // With no answer there is no knowing who it is for, and the old recipients may be the wrong
+          // bots, so this fails like a refused send. An empty answer is real: it goes to nobody.
+          if (!fresh) {
+            item.to.forEach(id => { blocked.add(id); this.paused.add(id); });
+            if (this.retainFailed) item.failed = true;
+            else this.items = this.items.filter(x => x.id !== item.id);
+            this.failed(lost, this.retainFailed ? undefined : item); this.publish();
+            continue;
+          }
+          item.to = fresh;
+          if (item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working")) {
+            item.to.forEach(id => blocked.add(id)); continue;
+          }
         }
         item.to.forEach(id => { this.state[id] = "working"; });
         this.items = this.items.filter(x => x.id !== item.id); this.publish();

@@ -72,7 +72,7 @@ import { DeckIcon } from "./DeckIcon";
 import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
 import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
-import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
+import { AGENT_LABEL, chipDescription, foldedFor, levelsShown, saveFolded, type ChipParts } from "./botChip";
 import { planOf, usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { HexColorPicker } from "./HexColorPicker";
@@ -114,7 +114,7 @@ import { ModelMetricPills } from "./ModelMetricPills";
 import { METRICS_CAPABILITY, metricsRequest } from "./modelMetrics.ts";
 import { botGroups, reasoningLevels } from "./phoneRules";
 import { AttachedImages, AttachedVideos } from "./AttachedImages";
-import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
+import { saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, recipientName } from "./recipients";
 import { askerOf, hopNotice, letLabel, liveActions, retryFor, stillHere, type NoticeAction } from "./noticeActions";
@@ -914,9 +914,12 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const [sendingFirst, setSendingFirst] = useState(false);
   /** Where the room was last opened, to tell a move to another machine or folder. */
   const place = useRef<{ backend: Backend; cwd: string } | null>(null);
-  const preferenceKey = talkOnly ? JSON.stringify([backend.host?.id ?? "local", pane.id]) : pane.id;
-  const [tldr, setTldr] = useState(() => loadTldr(preferenceKey));
-  const [folded, setFolded] = useState(() => loadFolded(preferenceKey));
+  /** TL;DR and the folded panel belong to one thread on one machine: two machines can each have a
+   *  thread with the same id. A choice saved under the bare id, before keys named the machine, is
+   *  carried over the first time it is read. */
+  const preferenceKey = JSON.stringify([backend.host?.id ?? "local", pane.id]);
+  const [tldr, setTldr] = useState(() => tldrFor(preferenceKey, pane.id));
+  const [folded, setFolded] = useState(() => foldedFor(preferenceKey, pane.id));
   const toggleFolded = () => setFolded((on) => { saveFolded(preferenceKey, !on); return !on; });
   const toggleTldr = () => setTldr((on) => { saveTldr(preferenceKey, !on); return !on; });
   // The thread's Plan switch, as the host keeps it.
@@ -1629,6 +1632,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused. Check whether it arrived before retrying.`, "error"); },
     () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
+    true, // A failed send keeps its message here, so the thread shows it and can retry.
+    // Asked again when a queued message is actually sent, so a rule changed while it waited still applies.
+    (message) => current.current.roomTargets(pane.id, message),
   ));
   useEffect(() => {
     const store = backend.host?.connection;

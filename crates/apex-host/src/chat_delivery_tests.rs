@@ -390,6 +390,26 @@ fn import_is_folderless_idempotent_and_merge_preserves_new_history() {
 }
 
 #[test]
+fn imported_chat_is_aged_by_its_history_instead_of_called_new() {
+    let (runtime, host, path) = fixture("import-age");
+    let row = |id: &str| host.chat_list().unwrap()["rooms"].as_array().unwrap().iter().find(|r| r["id"] == id).cloned().unwrap();
+    runtime.block_on(async {
+        // A phone's older chats carry no times at all. The copy is the last moment the chat was
+        // touched, so the list ages it rather than calling it new.
+        call(&host, json!({"command":"chat_import","id":"timeless","moveId":"timeless-move","participants":[],"entries":[{"seq":0,"speaker":{"kind":"human"},"text":"ancient"}]})).await.unwrap();
+        // A copy that keeps its history's times is aged by the last of them, not by now.
+        call(&host, json!({"command":"chat_import","id":"dated","moveId":"dated-move","participants":[],"entries":[
+            {"seq":0,"speaker":{"kind":"human"},"text":"then","at":1_600_000_000_000u64},
+            {"seq":1,"speaker":{"kind":"human"},"text":"later","at":1_600_000_500_000u64}]})).await.unwrap();
+    });
+    let timeless = row("timeless")["updatedAt"].as_u64().unwrap();
+    assert!(timeless > 0, "an imported chat is never new: {timeless}");
+    assert_eq!(row("dated")["updatedAt"], json!(1_600_000_500_000u64));
+    drop(host);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn claim_and_history_merge_refuse_work_rooms() {
     let (runtime, host, path) = fixture("work-refusal");
     host.room_create("work".into(), vec![], RoomOptions::default(), None).unwrap();
