@@ -1,6 +1,6 @@
 /** TL;DR mode: a per-chat switch that quietly asks every model for a short
  *  answer. The instruction rides on the message but never shows in the chat. */
-import { carriedFlag } from "./threadState";
+import { carriedFlag } from "./threadState.ts";
 
 export const TLDR_LINE = "[TL;DR mode: answer in 2–4 sentences. Lead with the answer. No preamble, no headings. Expand only if asked.]";
 

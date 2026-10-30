@@ -299,3 +299,36 @@ test('a machine that goes away while its routing is asked does not send', async 
   assert.equal(q.connectionPaused, true);
   assert.deepEqual(q.items.map((item) => item.text), ['waits for the machine']);
 });
+
+test('a queued message whose routing cannot be asked waits for Retry and goes to nobody meanwhile', async () => {
+  const sent = [], errors = []; let lookup = async () => { throw Error('lookup failed'); };
+  const q = new ParticipantQueues(async () => ['a'], async (text, to) => { sent.push({ text, to }); }, async () => {}, () => {}, (error) => errors.push(error.message), () => true, true, (text) => lookup(text));
+  await q.send('follow up');
+  assert.deepEqual(sent, []);
+  assert.deepEqual(errors, ['lookup failed']);
+  assert.deepEqual(q.items.map((item) => [item.text, item.failed]), [['follow up', true]]);
+  lookup = async () => ['b'];
+  q.retry(q.items[0].id); await tick(); await tick();
+  assert.deepEqual(sent, [{ text: 'follow up', to: ['b'] }]);
+  assert.deepEqual(q.items, []);
+});
+
+test('a queued message whose rule now names no bot is posted to nobody', async () => {
+  const sent = [];
+  const q = new ParticipantQueues(async () => ['a'], async (text, to) => { sent.push({ text, to }); }, async () => {}, () => {}, () => {}, () => true, true, async () => []);
+  await q.send('note to the room');
+  assert.deepEqual(sent, [{ text: 'note to the room', to: [] }]);
+});
+
+test('with no routing answer, a queue that keeps no failures hands the message back and later bots still go', async () => {
+  const sent = [], unsent = []; let targets = async () => ['a'];
+  const q = new ParticipantQueues((text) => targets(text), async (text, to) => { sent.push({ text, to }); }, async () => {}, () => {}, (_error, item) => unsent.push(item?.text), () => true, false, async (text) => { if (text === 'lost') throw Error('lookup failed'); return ['b']; });
+  q.started('a');
+  void q.send('lost'); await tick();
+  targets = async () => ['b'];
+  void q.send('next'); await tick();
+  q.idle('a'); await tick(); await tick();
+  assert.deepEqual(unsent, ['lost']);
+  assert.deepEqual(q.items, []);
+  assert.deepEqual(sent, [{ text: 'next', to: ['b'] }]);
+});

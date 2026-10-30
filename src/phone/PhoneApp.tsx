@@ -1099,6 +1099,17 @@ export function PhoneApp() {
       if (!found) throw new Error("This thread's machine isn't paired with this phone.");
       return found.backend;
     };
+    /** A message that didn't go: give its draft back, and say where it is now. */
+    const unsentDraft = (text: string, to: string[], error: unknown): unknown => {
+      const sent = queuedDrafts.current.get(`${queueKey(hostId, paneId)}\u0000${text}`);
+      // The queue holds these bots after a failure, as on the desktop. When the message is in the box again,
+      // sending it again should just send, so let go of any bot with nothing else waiting once the queue has paused it.
+      if (sent) setTimeout(() => { for (const bot of to) if (!queue.items.some((item) => item.to.includes(bot))) queue.resume(bot); }, 0);
+      // Still in the box when Send is waiting on it; a message that had been queued goes back into it.
+      if (sent?.inBox) { sent.failed = true; return new Error(`${words(error)}. Your message is still in the box.`); }
+      if (sent) { takeBack(hostId, paneId, text); return new Error(`${words(error)}. Your message is back in the box.`); }
+      return error;
+    };
     const queue: ParticipantQueues = new ParticipantQueues(
       async (text) => {
         const shown = roomRef.current;
@@ -1115,20 +1126,13 @@ export function PhoneApp() {
         try { await postFromPhone(backend(), paneId, text, to, voice); }
         catch (error) {
           if (voice) { phoneVoice.failed(hostId,paneId,to[0],voice.requestId,error); throw error; }
-          const sent = queuedDrafts.current.get(key);
-          // The queue holds these bots after a failure, as on the desktop. When the message is in the box again,
-          // sending it again should just send, so let go of any bot with nothing else waiting once the queue has paused it.
-          if (sent) setTimeout(() => { for (const bot of to) if (!queue.items.some((item) => item.to.includes(bot))) queue.resume(bot); }, 0);
-          // Still in the box when Send is waiting on it; a message that had been queued goes back into it.
-          if (sent?.inBox) { sent.failed = true; throw new Error(`${words(error)}. Your message is still in the box.`); }
-          if (sent) { takeBack(hostId, paneId, text); throw new Error(`${words(error)}. Your message is back in the box.`); }
-          throw error;
+          throw unsentDraft(text, to, error);
         }
         queuedDrafts.current.delete(key);
       },
       (id) => backend().roomStop(paneId, id),
       (items) => setQueued((all) => ({ ...all, [queueKey(hostId, paneId)]: { items, paused: [...queue.paused], lost: queue.connectionPaused } })),
-      (error) => setNotice(words(error)),
+      (error, unsent) => setNotice(words(unsent ? unsentDraft(unsent.text, unsent.to, error) : error)),
       () => { const found = host(); return queues.current.get(queueKey(hostId, paneId)) === queue && found !== null && toLink(found.connection.get().status) === "online"; },
       false, // Phone restores the complete draft itself on dispatch failure.
       // Asked again when a queued message is actually sent, so a rule changed while it waited still applies.

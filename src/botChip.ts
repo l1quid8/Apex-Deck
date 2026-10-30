@@ -2,7 +2,7 @@
 // chips is folded down to avatars.
 
 import type { AgentTool, ParticipantConfig } from "./types";
-import { carriedFlag } from "./threadState";
+import { carriedFlag } from "./threadState.ts";
 
 /** Shared chip display preferences. Compact layouts keep full details in
  *  the hover card and bot settings. Omitted style preserves the original look. */

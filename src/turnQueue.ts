@@ -14,7 +14,8 @@ export class TurnQueue {
   private post: (text: string, kind: TurnKind) => Promise<void>;
   private stop: () => Promise<void>;
   private changed: (items: QueuedMessage[]) => void;
-  private failed: (error: unknown) => void;
+  /** `unsent` is a message that never left and isn't kept here: the caller holds what it needs to give it back. */
+  private failed: (error: unknown, unsent?: ParticipantMessage) => void;
   constructor(post: (text: string, kind: TurnKind) => Promise<void>, stop: () => Promise<void>, changed: (items: QueuedMessage[]) => void, failed: (error: unknown) => void = () => {}) {
     this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
   }
@@ -72,8 +73,9 @@ export class ParticipantQueues {
   private post: (text: string, to: string[], kind: TurnKind, hops?: number | null, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>;
   private stop: (id?: string) => Promise<void>;
   private changed: (items: ParticipantMessage[]) => void;
-  private failed: (error: unknown) => void;
-  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true, retainFailed = true, ask: ((text: string) => Promise<string[]>) | null = null) {
+  /** `unsent` is a message that never left and isn't kept here: the caller holds what it needs to give it back. */
+  private failed: (error: unknown, unsent?: ParticipantMessage) => void;
+  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown, unsent?: ParticipantMessage) => void = () => {}, available: () => boolean = () => true, retainFailed = true, ask: ((text: string) => Promise<string[]>) | null = null) {
     this.targets = targets; this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
     this.available = available; this.retainFailed = retainFailed; this.ask = ask;
   }
@@ -189,13 +191,23 @@ export class ParticipantQueues {
         // set (Steer, next step, re-run) is never re-decided.
         if (!item.pinned && this.ask) {
           const epoch = this.availabilityEpoch;
-          const fresh = await this.ask(item.text).catch(() => null);
+          let fresh: string[] | null = null, lost: unknown = null;
+          try { fresh = await this.ask(item.text); } catch (error) { lost = error; }
           // Asking takes a round trip, and that wait can be overtaken: the message may be taken
           // back or edited, and the machine may go away. Neither one sends what was queued.
           const queued = this.items.find(entry => entry.id === item.id);
           if (!queued || queued.text !== item.text) continue;
           if (!this.available() || epoch !== this.availabilityEpoch || this.connectionPaused) break;
-          if (fresh && fresh.length) item.to = fresh;
+          // With no answer there is no knowing who it is for, and the old recipients may be the wrong
+          // bots, so this fails like a refused send. An empty answer is real: it goes to nobody.
+          if (!fresh) {
+            item.to.forEach(id => { blocked.add(id); this.paused.add(id); });
+            if (this.retainFailed) item.failed = true;
+            else this.items = this.items.filter(x => x.id !== item.id);
+            this.failed(lost, this.retainFailed ? undefined : item); this.publish();
+            continue;
+          }
+          item.to = fresh;
           if (item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working")) {
             item.to.forEach(id => blocked.add(id)); continue;
           }
