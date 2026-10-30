@@ -18,6 +18,10 @@ use crate::storage::{SavedRoom, Store};
 use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images, worktrees};
 
 #[cfg(test)]
+#[path = "curation_tests.rs"]
+mod curation_tests;
+
+#[cfg(test)]
 #[path = "chat_delivery_tests.rs"]
 mod chat_delivery_tests;
 
@@ -75,6 +79,8 @@ pub(crate) struct RoomHandle {
     /// Immutable import attribution read from protected authority when opened.
     legacy: Option<crate::legacy_import::LegacyMarker>,
     pub(crate) deleted: Arc<AtomicBool>,
+    pub(crate) journal: Option<PathBuf>,
+    journal_hint: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
     plan: Arc<AtomicBool>,
@@ -1050,7 +1056,7 @@ impl Host {
         } else {
             saved.as_ref().map(|s| s.mounts.clone()).unwrap_or_default()
         };
-        let room = match saved {
+        let mut room = match saved {
             Some(saved) => Room::restore(roster, saved.snapshot),
             None => Room::new(roster, options).with_kind(kind),
         };
@@ -1063,7 +1069,12 @@ impl Host {
             let retired = Arc::clone(&deleted);
             std::thread::spawn(move || { let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
         }
-        self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
+        let journal = if kind.is_chat() { None } else { Some(crate::journal::path_for(&self.paths.data.join("attachments"), &id)?) };
+        if let Err(error) = self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }) {
+            return Err(invalidate_journal(&mut room, journal.as_deref(), error));
+        }
+        sync_journal(&mut room, journal.as_deref(), &snapshot)?;
+        let journal_hint = room.journal_path_handle();
         let stop = room.stop_handle();
         let plan = room.plan_handle();
         let answers = room.answers_handle();
@@ -1107,7 +1118,7 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, journal, journal_hint, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
         Ok(snapshot)
     }
 
@@ -2471,10 +2482,11 @@ impl Host {
                 let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
             }
         }
-        match handle {
+        let result = match handle {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),
             None => self.store.delete_room(&id),
-        }
+        };
+        combine_result(result, crate::journal::remove(&self.paths.data.join("attachments"), &id))
     }
 
     /// Explicit deletion waits for a task's exact worker attempt before removing its saved room.
@@ -2809,10 +2821,15 @@ impl Host {
             // new copy, and once it is written none ever will.
             Ok(handle) => {
                 let _checkpoint = handle.checkpoint.lock().unwrap();
+                *handle.journal_hint.lock().unwrap() = None;
+                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
                 self.store.save_room(&id, &saved)?;
                 handle.deleted.store(true, Ordering::SeqCst);
             }
-            Err(_) => self.store.save_room(&id, &saved)?,
+            Err(_) => {
+                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
+                self.store.save_room(&id, &saved)?;
+            },
         }
         // Replacing a room is an explicit lifecycle action, unlike detaching a view.
         if let Some(handle) = self.rooms.lock().unwrap().remove(&id) {
@@ -2957,7 +2974,7 @@ fn update_chat_message_meta(store: &Store, id: &str, chat: bool, message: &apex_
 }
 
 async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
-    let room = handle.room.lock().await;
+    let mut room = handle.room.lock().await;
     let _boundary = handle.recovery.lock().unwrap();
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
@@ -2973,7 +2990,29 @@ async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result
         }
     }
     checkpoint.snapshot = snapshot;
-    store.save_room(id, &checkpoint)
+    if let Err(error) = store.save_room(id, &checkpoint) {
+        return Err(invalidate_journal(&mut room, handle.journal.as_deref(), error));
+    }
+    sync_journal(&mut room, handle.journal.as_deref(), &checkpoint.snapshot)
+}
+
+fn invalidate_journal(room: &mut Room, path: Option<&Path>, error: String) -> String {
+    room.set_journal_path(None);
+    if let Some(path) = path {
+        if let Err(removal) = crate::journal::invalidate(path) {
+            return format!("{error}; Journal text may still be readable in {}: {removal}", path.display());
+        }
+    }
+    error
+}
+
+fn sync_journal(room: &mut Room, path: Option<&Path>, snapshot: &RoomSnapshot) -> Result<(),String> {
+    let Some(path) = path else { room.set_journal_path(None); return Ok(()); };
+    match crate::journal::sync(path,snapshot) {
+        Ok(()) => { room.set_journal_path(apex_core::stands(&snapshot.curations).then(||path.display().to_string())); Ok(()) },
+        Err(crate::journal::SyncError::Gone(why)) => { room.set_journal_path(None); eprintln!("[apex-deck] journal unavailable: {why}"); Ok(()) },
+        Err(crate::journal::SyncError::Stale(why)) => { room.set_journal_path(None); Err(format!("Journal text may still be readable in {}: {why}",path.display())) },
+    }
 }
 
 fn delete_checkpoint(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
@@ -3601,7 +3640,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { legacy: None, checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
+        let handle = RoomHandle { legacy: None, journal: None, journal_hint: Arc::default(), checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { mounts: vec![], cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }
@@ -5084,4 +5123,9 @@ mod protected_host_ownership_tests {
         assert!(guard.is_none());
         assert!(unavailable.unwrap().contains("broker absent"));
     }
+}
+
+/// Preserve both the primary operation error and its persistence/cleanup error.
+fn combine_result<T>(result: Result<T,String>, saved: Result<(),String>) -> Result<T,String> {
+    match (result,saved) { (Ok(value),Ok(()))=>Ok(value), (Err(a),Err(b))=>Err(format!("{a}; {b}")), (Err(e),_)|(_,Err(e))=>Err(e) }
 }

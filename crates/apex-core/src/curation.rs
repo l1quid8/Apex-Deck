@@ -1,6 +1,6 @@
 //! Shared, reversible context visibility. Transcript positions remain untouched.
-use serde::{Deserialize, Serialize};
 use crate::ParticipantId;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Curation {
@@ -12,21 +12,52 @@ pub struct Curation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undone: Option<u64>,
 }
-impl Curation { pub fn count(&self) -> usize { self.hidden.iter().map(|[a,b]| b.saturating_sub(*a).saturating_add(1)).sum() } }
-pub fn stands(curations: &[Curation]) -> bool { curations.iter().any(|c| c.undone.is_none()) }
-pub fn merge_ranges(numbers: impl IntoIterator<Item=usize>) -> Vec<[usize;2]> {
-    let mut numbers: Vec<_> = numbers.into_iter().collect(); numbers.sort_unstable(); numbers.dedup();
-    let mut ranges: Vec<[usize;2]> = vec![];
-    for n in numbers { match ranges.last_mut() { Some([_,b]) if b.saturating_add(1) == n => *b=n, _=>ranges.push([n,n]) } }
+impl Curation {
+    pub fn count(&self) -> usize {
+        self.hidden
+            .iter()
+            .map(|[a, b]| b.saturating_sub(*a).saturating_add(1))
+            .sum()
+    }
+}
+pub fn stands(curations: &[Curation]) -> bool {
+    curations.iter().any(|c| c.undone.is_none())
+}
+pub fn merge_ranges(numbers: impl IntoIterator<Item = usize>) -> Vec<[usize; 2]> {
+    let mut numbers: Vec<_> = numbers.into_iter().collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    let mut ranges: Vec<[usize; 2]> = vec![];
+    for n in numbers {
+        match ranges.last_mut() {
+            Some([_, b]) if b.saturating_add(1) == n => *b = n,
+            _ => ranges.push([n, n]),
+        }
+    }
     ranges
 }
-pub fn contains(ranges: &[[usize;2]], n: usize) -> bool { ranges.iter().any(|[a,b]| *a<=n && n<=*b) }
-pub fn hidden_line([a,b]: [usize;2]) -> String {
-    if a==b { format!("[#{a} hidden, 1 message]") } else { format!("[#{a}–#{b} hidden, {} messages]",b-a+1) }
+pub fn contains(ranges: &[[usize; 2]], n: usize) -> bool {
+    ranges.iter().any(|[a, b]| *a <= n && n <= *b)
+}
+pub fn hidden_line([a, b]: [usize; 2]) -> String {
+    if a == b {
+        format!("[#{a} hidden, 1 message]")
+    } else {
+        format!("[#{a}–#{b} hidden, {} messages]", b - a + 1)
+    }
 }
 pub fn keep_valid(curations: Vec<Curation>, len: usize) -> Vec<Curation> {
-    curations.into_iter().filter(|c| c.at<=len && !c.hidden.is_empty() && c.hidden.iter().all(|[a,b]| a<=b && *b<c.at)
-        && c.hidden.windows(2).all(|pair| pair[0][1].checked_add(1).is_some_and(|n| n<pair[1][0]))).collect()
+    curations
+        .into_iter()
+        .filter(|c| {
+            c.at <= len
+                && !c.hidden.is_empty()
+                && c.hidden.iter().all(|[a, b]| a <= b && *b < c.at)
+                && c.hidden
+                    .windows(2)
+                    .all(|pair| pair[0][1].checked_add(1).is_some_and(|n| n < pair[1][0]))
+        })
+        .collect()
 }
 
 use crate::{Message, ParticipantConfig, Speaker};
@@ -52,66 +83,218 @@ If you are unsure, keep it. You have no tools. Reply with one JSON object and no
 {\"hide\":[\"120-340\",\"355\"],\"reason\":\"one short line\"}. \
 Reply {\"hide\":[],\"reason\":\"\"} if nothing is worth hiding.";
 
-pub struct Picks { pub hidden: Vec<[usize; 2]>, pub reason: String }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag="status", rename_all="snake_case")]
-pub enum CurateOutcome { Hidden { count: usize, unchecked: usize }, Nothing { unchecked: usize }, Stopped }
-pub fn offerable(message: &Message) -> bool { message.speaker != Speaker::Human || message.text.chars().count()<=HUMAN_CHARS }
-fn one_line(text: &str) -> String { text.split_whitespace().collect::<Vec<_>>().join(" ") }
-fn excerpt(message: &Message, roster: &[ParticipantConfig]) -> String {
-    let name=match &message.speaker { Speaker::Human=>"Human", Speaker::Bot(id)=>crate::view::display_name(id,roster) };
-    let size=message.text.chars().count();
-    let body=if message.speaker != Speaker::Human && size>HEAD_CHARS+TAIL_CHARS {
-        let head: String=message.text.chars().take(HEAD_CHARS).collect();
-        let tail: String=message.text.chars().skip(size-TAIL_CHARS).collect();
-        format!("({size} chars) {} … {}",one_line(&head),one_line(&tail))
-    } else {one_line(&message.text)};
-    format!("#{} [{name}] {body}\n",message.seq)
+pub struct Picks {
+    pub hidden: Vec<[usize; 2]>,
+    pub reason: String,
 }
-pub fn digest(transcript: &[Message], candidates: &[usize], summary: Option<&str>, roster: &[ParticipantConfig], budget: usize) -> (String, Vec<usize>) {
-    let budget=budget.min(DIGEST_CHARS);
-    let context_budget=CONTEXT_CHARS.min(budget/3);
-    let mut context=String::from("Where the chat is now. These messages stay visible.\n\n");
-    if let Some(summary)=summary {context.push_str("Summary of earlier messages: ");context.extend(summary.chars().take(context_budget/2));context.push('\n');}
-    for message in transcript.iter().skip(transcript.len().saturating_sub(KEEP_NEWEST)) {
-        let line=excerpt(message,roster);let left=context_budget.saturating_sub(context.chars().count());
-        if left<=32 {break;}
-        if line.chars().count()>left {context.extend(line.chars().take(left-24));context.push_str(" … [context clipped]\n");break;}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CurateOutcome {
+    Hidden { count: usize, unchecked: usize },
+    Nothing { unchecked: usize },
+    Stopped,
+}
+pub fn offerable(message: &Message) -> bool {
+    message.speaker != Speaker::Human || message.text.chars().count() <= HUMAN_CHARS
+}
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+fn excerpt(message: &Message, roster: &[ParticipantConfig]) -> String {
+    let name = match &message.speaker {
+        Speaker::Human => "Human",
+        Speaker::Bot(id) => crate::view::display_name(id, roster),
+    };
+    let size = message.text.chars().count();
+    let body = if message.speaker != Speaker::Human && size > HEAD_CHARS + TAIL_CHARS {
+        let head: String = message.text.chars().take(HEAD_CHARS).collect();
+        let tail: String = message.text.chars().skip(size - TAIL_CHARS).collect();
+        format!("({size} chars) {} … {}", one_line(&head), one_line(&tail))
+    } else {
+        one_line(&message.text)
+    };
+    format!("#{} [{name}] {body}\n", message.seq)
+}
+pub fn digest(
+    transcript: &[Message],
+    candidates: &[usize],
+    summary: Option<&str>,
+    roster: &[ParticipantConfig],
+    budget: usize,
+) -> (String, Vec<usize>) {
+    let budget = budget.min(DIGEST_CHARS);
+    let context_budget = CONTEXT_CHARS.min(budget / 3);
+    let mut context = String::from("Where the chat is now. These messages stay visible.\n\n");
+    if let Some(summary) = summary {
+        context.push_str("Summary of earlier messages: ");
+        context.extend(summary.chars().take(context_budget / 2));
+        context.push('\n');
+    }
+    for message in transcript
+        .iter()
+        .skip(transcript.len().saturating_sub(KEEP_NEWEST))
+    {
+        let line = excerpt(message, roster);
+        let left = context_budget.saturating_sub(context.chars().count());
+        if left <= 32 {
+            break;
+        }
+        if line.chars().count() > left {
+            context.extend(line.chars().take(left - 24));
+            context.push_str(" … [context clipped]\n");
+            break;
+        }
         context.push_str(&line);
     }
     context.push_str("\nOlder messages you may hide, oldest first.\n\n");
-    let mut size=context.chars().count();let mut offered=vec![];
+    let mut size = context.chars().count();
+    let mut offered = vec![];
     for &seq in candidates {
-        let Some(message)=transcript.get(seq).filter(|m|m.seq==seq && offerable(m)) else {continue;};
-        let line=excerpt(message,roster);let len=line.chars().count();
-        if size+len+140>budget {break;}
-        context.push_str(&line);size+=len;offered.push(seq);
+        let Some(message) = transcript.get(seq).filter(|m| m.seq == seq && offerable(m)) else {
+            continue;
+        };
+        let line = excerpt(message, roster);
+        let len = line.chars().count();
+        if size + len + 140 > budget {
+            break;
+        }
+        context.push_str(&line);
+        size += len;
+        offered.push(seq);
     }
-    let left=candidates.len().saturating_sub(offered.len());
-    if left>0 {context.push_str(&format!("({left} newer messages were left out of this list and stay visible.)\n"));}
-    if context.chars().count()>budget {return (String::new(),vec![]);}
-    (context,offered)
+    let left = candidates.len().saturating_sub(offered.len());
+    if left > 0 {
+        context.push_str(&format!(
+            "({left} newer messages were left out of this list and stay visible.)\n"
+        ));
+    }
+    if context.chars().count() > budget {
+        return (String::new(), vec![]);
+    }
+    (context, offered)
 }
-pub fn parse_picks(reply: &str, offered: &[usize]) -> Result<Picks,String> {
-    let start=reply.find('{').ok_or("missing object")?;
-    let mut stream=serde_json::Deserializer::from_str(&reply[start..]).into_iter::<serde_json::Value>();
-    let object=stream.next().ok_or("missing object")?.map_err(|e|e.to_string())?;
-    let list=object.get("hide").and_then(|v|v.as_array()).ok_or("missing hide list")?;
+pub fn parse_picks(reply: &str, offered: &[usize]) -> Result<Picks, String> {
+    let start = reply.find('{').ok_or("missing object")?;
+    let mut stream =
+        serde_json::Deserializer::from_str(&reply[start..]).into_iter::<serde_json::Value>();
+    let object = stream
+        .next()
+        .ok_or("missing object")?
+        .map_err(|e| e.to_string())?;
+    let list = object
+        .get("hide")
+        .and_then(|v| v.as_array())
+        .ok_or("missing hide list")?;
     // Intersect intervals with offered IDs; never expand a model-supplied range.
-    let mut ranges=vec![];
+    let mut ranges = vec![];
     for item in list {
-        if let Some(n)=item.as_u64().and_then(|n|usize::try_from(n).ok()) {ranges.push([n,n]);continue;}
-        let Some(s)=item.as_str() else {continue;};
-        let s=s.replace('#',"").replace('–',"-");let mut parts=s.split('-');
-        let Some(a)=parts.next().and_then(|s|s.trim().parse::<usize>().ok()) else {continue;};
-        let b=match parts.next(){Some(s)=>match s.trim().parse::<usize>() {Ok(n)=>n,Err(_)=>continue},None=>a};
-        if parts.next().is_none() && a<=b {ranges.push([a,b]);}
+        if let Some(n) = item.as_u64().and_then(|n| usize::try_from(n).ok()) {
+            ranges.push([n, n]);
+            continue;
+        }
+        let Some(s) = item.as_str() else {
+            continue;
+        };
+        let s = s.replace('#', "").replace('–', "-");
+        let mut parts = s.split('-');
+        let Some(a) = parts.next().and_then(|s| s.trim().parse::<usize>().ok()) else {
+            continue;
+        };
+        let b = match parts.next() {
+            Some(s) => match s.trim().parse::<usize>() {
+                Ok(n) => n,
+                Err(_) => continue,
+            },
+            None => a,
+        };
+        if parts.next().is_none() && a <= b {
+            ranges.push([a, b]);
+        }
     }
-    let hidden=merge_ranges(offered.iter().copied().filter(|n|contains(&ranges,*n)));
-    let reason=one_line(object.get("reason").and_then(|v|v.as_str()).unwrap_or("")).chars().take(REASON_CHARS).collect();
-    Ok(Picks{hidden,reason})
+    let hidden = merge_ranges(offered.iter().copied().filter(|n| contains(&ranges, *n)));
+    let reason = one_line(object.get("reason").and_then(|v| v.as_str()).unwrap_or(""))
+        .chars()
+        .take(REASON_CHARS)
+        .collect();
+    Ok(Picks { hidden, reason })
 }
-pub(crate) fn now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_millis() as u64).unwrap_or(0) }
+pub(crate) fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct CurationUndo { pub restored: usize, pub sealed: usize }
+pub struct CurationUndo {
+    pub restored: usize,
+    pub sealed: usize,
+}
+
+pub const JOURNAL_LINE_CHARS: usize = 1_000;
+pub const JOURNAL_BYTES: usize = 9 * 1024 * 1024;
+fn json_char_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
+        c if c < '\u{0020}' => 6,
+        _ => 1,
+    }
+}
+/// Exact original text in JSON chunks; `?` records duplicate boundary text for search only.
+pub fn journal_text(transcript: &[Message], roster: &[ParticipantConfig]) -> String {
+    let coverage = transcript
+        .last()
+        .map(|m| format!("messages #0–#{}", m.seq))
+        .unwrap_or_else(|| "no messages".into());
+    let mut out=format!("Deck journal v1: {coverage} of this chat, exact text in JSON chunks. Each #number · speaker starts a message. Concatenate decoded | strings; ignore ? search-only overlaps. Newer messages may already be in your chat.\n");
+    for m in transcript {
+        let name = match &m.speaker {
+            Speaker::Human => "Human",
+            Speaker::Bot(id) => crate::view::display_name(id, roster),
+        };
+        out.push_str(&format!(
+            "\n#{} · {}\n",
+            m.seq,
+            one_line(name).chars().take(80).collect::<String>()
+        ));
+        let chars: Vec<char> = m.text.chars().collect();
+        let mut start = 0;
+        if chars.is_empty() {
+            out.push_str("| \"\"\n");
+        }
+        while start < chars.len() {
+            let mut end = start;
+            let mut encoded = 2;
+            while end < chars.len() && encoded + json_char_len(chars[end]) <= JOURNAL_LINE_CHARS {
+                encoded += json_char_len(chars[end]);
+                end += 1;
+            }
+            if end < chars.len() {
+                if let Some(space) = (start..end).rev().take(100).find(|&i| chars[i] == ' ') {
+                    end = space + 1;
+                }
+            }
+            let chunk: String = chars[start..end].iter().collect();
+            out.push_str("| ");
+            out.push_str(&serde_json::to_string(&chunk).expect("string JSON"));
+            out.push('\n');
+            if end < chars.len() {
+                let overlap: String = chars[end.saturating_sub(64)..(end + 64).min(chars.len())]
+                    .iter()
+                    .collect();
+                out.push_str("? ");
+                out.push_str(&serde_json::to_string(&overlap).expect("string JSON"));
+                out.push('\n');
+            }
+            start = end;
+        }
+    }
+    out
+}
+pub fn journal_section(path: Option<&str>) -> String {
+    let intro="\nOlder messages in this chat may be hidden to save space. A line like [#120–#340 hidden, 221 messages] marks each gap, and a summary may stand in for earlier ones. ";
+    match path {
+        Some(path)=>format!("{intro}If you can read files, `{path}` holds their exact text, up to the message named on its first line. Each #number · speaker starts a message. Concatenate decoded | JSON strings to recover the original; ? strings repeat boundary text for search only. Search it before you rely on anything hidden, and never guess what a hidden message said.\n"),
+        None=>format!("{intro}Their text can't be read right now, so never guess what a hidden message said. Tell the human if you need one.\n"),
+    }
+}

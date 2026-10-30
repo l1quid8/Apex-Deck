@@ -481,6 +481,20 @@ mod tests {
     }
 
     #[test]
+    fn journal_reads_and_searches_reach_a_long_single_line_message() {
+        let dir = scratch("journal");
+        let message: apex_core::Message = serde_json::from_value(serde_json::json!({"seq":0,"speaker":{"kind":"human"},"text":format!("{}BLUEHERON{}", "x".repeat(3995), "z".repeat(1000))})).unwrap();
+        let path = dir.join("chat.md");
+        std::fs::write(&path, apex_core::journal_text(&[message], &[])).unwrap();
+        let text = read(&path, None, None).unwrap();
+        assert!(text.contains("BLUEHERON"));
+        assert!(!text.contains("line cut"));
+        let args = Grep { pattern: "BLUEHERON", glob: None, ignore_case: false, mode: GrepMode::Content, context: 0, max: 50 };
+        assert!(grep(&path, "chat.md", &args).unwrap().contains("BLUEHERON"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn paths_are_resolved_inside_or_outside_the_project() {
         let dir = scratch("resolve");
         std::fs::create_dir_all(dir.join("src")).unwrap();

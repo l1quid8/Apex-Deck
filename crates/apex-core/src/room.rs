@@ -553,6 +553,7 @@ pub struct Room {
     compaction: Option<Compaction>,
     curations: Vec<Curation>,
     curate_from: usize,
+    journal_path: Arc<Mutex<Option<String>>>,
     pins: Vec<String>,
     changes: Vec<ChangeRecord>,
     baseline: Option<String>,
@@ -630,6 +631,7 @@ impl Room {
             roster,
             curations: curation::keep_valid(snapshot.curations, snapshot.transcript.len()),
             curate_from: 0,
+            journal_path: Arc::default(),
             transcript: snapshot.transcript,
             checklists: Arc::new(Mutex::new(snapshot.checklists)),
             options: snapshot.options,
@@ -665,6 +667,7 @@ impl Room {
             compaction: None,
             curations: Vec::new(),
             curate_from: 0,
+            journal_path: Arc::default(),
             pins: Vec::new(),
             changes: Vec::new(),
             baseline: None,
@@ -950,6 +953,10 @@ impl Room {
         outcome
     }
 
+    pub fn set_journal_path(&mut self, path: Option<String>) { *self.journal_path.lock().unwrap() = path; }
+
+    pub fn journal_path_handle(&self) -> Arc<Mutex<Option<String>>> { self.journal_path.clone() }
+
     fn hidden_ranges(&self) -> Vec<[usize; 2]> {
         curation::merge_ranges(self.curations.iter().filter(|c| c.undone.is_none() && c.at > self.compacted_upto())
             .flat_map(|c| c.hidden.iter().flat_map(|[a,b]| *a..=*b)))
@@ -1145,7 +1152,9 @@ impl Room {
         let mut request = TurnRequest {
             effort_override: None,
             access: Some(participant.config().access),
-            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.checklist_section(id) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
+            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins)
+                + &if curation::stands(&self.curations) { curation::journal_section(self.journal_path.lock().unwrap().as_deref()) } else { String::new() }
+                + &self.checklist_section(id) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
                 crate::server_request::prompt_section(&m.text)
             }).unwrap_or_default()
                 // Before Plan mode's text: next_steps_request cuts that off the end.
