@@ -263,3 +263,21 @@ test("realtimeClient queues sends until open and uses current default liveScope"
   assert.ok(src.includes("queuedSends"), "client queues sends");
   assert.ok(src.includes("currentInstructions") || src.includes("buildRealtimeInstructions(candidatesLive, liveScope)"), "onopen uses liveScope");
 });
+
+test("end right after start cancels it before the mic opens (real controller)", async () => {
+  let asked = 0;
+  getUserMediaImpl = async () => { asked++; return new FakeStream(); };
+  const { createRealtimeVoiceController: createCtrl } = await import("../src/voice/realtimeController.ts");
+  const controller = createCtrl({
+    candidates: () => [cand("Alice","a1")],
+    bridge: () => ({ subscribe:()=>()=>{}, submit: async()=>{}, cancel: async()=>{} }),
+    voiceSettings: () => ({ engine:"realtime", realtimeVoice:"verse", pauseMs:100, style:"pill", voices:[] }),
+    mintSession: async () => ({ client_secret:"ek_fake", model:"gpt-realtime", voice:"verse" }),
+    focus: () => {},
+  });
+  const started = controller.start({ hostId:"h1", roomId:"r1", participantId:"a1" });
+  const ended = controller.end();
+  await Promise.all([started, ended]);
+  assert.equal(controller.getState().status, "off");
+  assert.equal(asked, 0, "the microphone was never opened");
+});

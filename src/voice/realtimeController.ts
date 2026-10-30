@@ -54,8 +54,11 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
   };
 
   const start = async (nextScope: CallScope) => {
-    await end("new call started");
-    const gen = ++callGen;
+    // Same order as the local engine: own the generation before the first wait.
+    const previous = end("new call started");
+    const gen = callGen;
+    await previous;
+    if (gen !== callGen) return;
     abortController = new AbortController();
     const signal = abortController.signal;
     callId = crypto.randomUUID();
