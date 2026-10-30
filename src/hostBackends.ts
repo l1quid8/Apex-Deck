@@ -19,7 +19,7 @@ const appMethods = new Set([
 const writes = new Set([
   "roomPost", "roomPostTo", "roomTurn", "roomDecide", "roomAnswer", "roomSetPlan", "roomSetOptions", "roomForgetAllowed", "roomAddParticipant",
   "roomUpdateParticipant", "roomRemoveParticipant", "roomClear", "roomRewind", "roomRevert", "roomPin", "roomUnpin",
-  "roomFork", "roomImport", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
+  "roomFork", "roomImport", "roomCompact", "roomCurate", "roomCurateUndo", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
   "generateImage", "importReplyImage", "libraryRemove", "libraryRename", "artifactsSave", "answerSave",
   "monitorAssign", "monitorMessage", "monitorPause", "monitorCheckNow", "monitorResolve", "monitorSourcesUpdate",
   "botCopiesSetCheck", "worktreeAdd", "worktreeRemove", "worktreeForget", "worktreePrune",

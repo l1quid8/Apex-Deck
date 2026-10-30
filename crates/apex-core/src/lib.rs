@@ -11,6 +11,8 @@
 
 mod approval;
 mod concurrent;
+pub mod curation;
+pub use curation::{journal_text, journal_section,Curation, CurationUndo, CurateOutcome, hidden_line, keep_valid, merge_ranges, stands};
 mod mention;
 mod participant;
 mod room;

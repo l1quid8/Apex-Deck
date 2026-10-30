@@ -27,6 +27,8 @@ export const COMMANDS: Extract<MenuItem, { kind: "command" }>[] = [
   {kind:'command',key:'goal',label:'/goal',detail:'Keep working toward an outcome',command:null},
   {kind:'command',key:'loop',label:'/loop',detail:'Repeat a prompt: /loop 10m check build',command:null},
   { kind: "command", key: "compact", label: "/compact", detail: "Summarize earlier turns and free up context", command: { name: "compact" } },
+  { kind: "command", key: "curate", label: "/curate", detail: "Hide old messages from bots; nothing is deleted", command: { name: "curate" } },
+  { kind: "command", key: "curate undo", label: "/curate undo", detail: "Bring back messages /curate hid", command: { name: "curate_undo" } },
   { kind: "command", key: "clear", label: "/clear", detail: "Empty the chat; keep the models", command: { name: "clear" } },
   { kind: "command", key: "diff", label: "/diff", detail: "Show what changed in the folder", command: { name: "diff" } },
   { kind: "command", key: "fork", label: "/fork", detail: "Copy this chat into a new thread", command: { name: "fork", title: "" } },
@@ -85,7 +87,7 @@ export function menuItems(trigger: Trigger | null, people: readonly MenuPerson[]
 export function availableMenuItems(items: MenuItem[], capabilities: { attach?: boolean; folder?: boolean; tools?: boolean; talkOnly?: boolean }): MenuItem[] {
   const allowed = capabilities.talkOnly ? items.filter(item =>
     !['attach', 'attach-folder', 'tools', 'server'].includes(item.kind) &&
-    !(item.kind === 'command' && ['plan', 'diff', 'image'].includes(item.key)))
+    !(item.kind === 'command' && ['plan', 'diff', 'image', 'curate', 'curate undo'].includes(item.key)))
     .map(item => item.kind === 'command' && item.key === 'fork' ? { ...item, detail: 'Copy into a new chat' } : item) : items;
   return allowed.filter(item => item.kind !== 'attach' || capabilities.attach !== false)
     .filter(item => item.kind !== 'attach-folder' || capabilities.folder !== false)

@@ -211,6 +211,8 @@ export interface RoomSnapshot {
   transcript: Message[];
   /** The summary the models see in place of the first `upto` messages, after `/compact`. */
   compaction?: Compaction | null;
+  /** Visibility changes leave every original transcript message intact. */
+  curations?: Curation[];
   /** What the person chose "Always allow" for. */
   allowed?: AllowedRule[];
   /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */
@@ -251,6 +253,22 @@ export interface Compaction {
   summary: string;
   upto: number;
 }
+
+export interface Curation {
+  by: string;
+  at: number;
+  /** Inclusive message-number ranges. */
+  hidden: [number, number][];
+  reason: string;
+  when: number;
+  undone?: number;
+}
+export interface CurationUndo { restored: number; sealed: number }
+export type CurateReply = { by: string; unchecked?: number } & (
+  | { status: "hidden"; count: number }
+  | { status: "nothing" }
+  | { status: "stopped" }
+);
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
@@ -360,10 +378,13 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
+  /** Retrieval warning; does not fail or stop a participant's turn. */
+  | { type: "journal_warning"; error: string }
   /** The room cut off bots answering each other; `next` is who the last replies asked. */
   | { type: "hop_limit_reached"; limit: number; next: string[] }
   /** The models now see `summary` in place of the first `upto` messages. */
   | { type: "compacted"; id: string; summary: string; upto: number }
+  | { type: "curations_changed"; curations: Curation[] }
   | { type: "stopped" }
   | { type: "idle" });
 

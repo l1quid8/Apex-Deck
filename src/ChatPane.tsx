@@ -25,9 +25,10 @@ import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
+import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, Curation, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
@@ -238,6 +239,7 @@ type Entry =
   | { kind: "message"; message: Message }
   | { kind: "notice"; notice: Notice }
   | { kind: "summary"; summary: Summary }
+  | { kind: "curation"; curation: Curation }
   | { kind: "low"; low: LowContext };
 
 function messagesOf(entries: Entry[]): Message[] {
@@ -247,6 +249,13 @@ function compactionOf(entries: Entry[]) {
   const summary = entries.filter((entry) => entry.kind === "summary").at(-1);
   return summary?.kind === "summary" ? { upto: summary.summary.upto, summary: summary.summary.summary } : null;
 }
+const noteTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+/** One line of a /curate note: its message numbers bold, the line bots see as code. */
+const noteLine = (line: string, key: number) => (
+  <p key={key}>
+    {line.split(/(^Messages? [^·]+(?= · )|\[#[^\]]+\])/).map((part, i) => i % 2 === 0 ? part : part.startsWith("[") ? <code key={i}>{part}</code> : <strong key={i}>{part}</strong>)}
+  </p>
+);
 
 export { slug };
 
@@ -1188,6 +1197,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           setWorking(({ [event.id]: _gone, ...rest }) => rest);
           notify(`${nameOf(event.id)} had nothing to add.`);
           break;
+        case "journal_warning":
+          notify(event.error, "error");
+          break;
         case "failed":
           turnQueue.error(event.id);
           setDrafts(({ [event.id]: _gone, ...rest }) => rest);
@@ -1215,6 +1227,12 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           // is stays unknown until its next turn says.
           forgetContext();
           setCompactions((n) => n + 1);
+          break;
+        case "curations_changed":
+          setEntries((list) => withCurationNotes(list, event.curations));
+          // Every model now sees a different chat, so how full each window is
+          // stays unknown until its next turn says.
+          forgetContext();
           break;
         case "stopped":
           setDrafts({});
@@ -1287,9 +1305,10 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         setUsed(saved.usage ?? {});
         setContextFill(savedContext(pane.id));
         contextLoaded.current = true;
-        const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
+        const transcript: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
-        if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
+        if (saved.compaction) transcript.splice(Math.min(saved.compaction.upto, transcript.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
+        const restored = withCurationNotes(transcript, saved.curations ?? []);
         const mounted = state.mounts?.at(-1);
         const mountNotice: Entry[] = mounted ? [{kind:"notice", notice:{key:noticeKey.current++, text:mounted.note ?? `Now working in ${mounted.to.split(/[\\/]/).filter(Boolean).at(-1)}.`, tone:"info", source:"mount"}}] : [];
         setEntries(old => [...restored, ...mountNotice, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load" && e.notice.source !== "mount")]);
@@ -1595,20 +1614,44 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
       .catch((error) => notify(`Could not clear the chat: ${String(error)}`, "error"));
   };
 
-  /** Have a model summarize the chat. The models then see the summary in
-   *  place of the messages so far; the person still sees them all. */
-  const compactChat = () => {
+  const contextJob = (command: string, kind: TurnKind) => {
     setText("");
     setReplies([]);
     setBusy(true);
-    void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
+    void turnQueue.send(command, kind).catch(error => notify(String(error), "error"));
   };
+  /** Have a model summarize the chat. The models then see the summary in
+   *  place of the messages so far; the person still sees them all. */
+  const compactChat = () => contextJob("/compact", "compact");
+  /** Have a model pick old messages to hide from the models, or bring them back. */
+  const curateChat = () => contextJob("/curate", "curate");
+  const undoCuration = () => contextJob("/curate undo", "curate_undo");
 
   const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
   dispatch.current = async (message, to, kind, hops) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
+    } else if (kind === "curate" || kind === "curate_undo") {
+      try {
+        if (kind === "curate") {
+          const reply = await backend.roomCurate(pane.id);
+          const notice = curateNotice({ ...reply, by: namesRef.current.get(reply.by) ?? reply.by });
+          if (notice) notify(notice.text, notice.tone);
+        } else {
+          const notice = undoNotice(await backend.roomCurateUndo(pane.id));
+          notify(notice.text, notice.tone);
+        }
+      } catch (error) {
+        notify(failedNotice(message, error), "error");
+        // A failed final save can leave what bots see changed, so show what the host has.
+        const state = await backend.roomState?.(pane.id).catch(() => null);
+        if (state) setEntries((list) => withCurationNotes(list, state.snapshot.curations ?? []));
+      } finally {
+        setDrafts({});
+        setWorking({});
+        to.forEach(id => turnQueue.idle(id));
+      }
     } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
     else await backend.roomPostTo(pane.id, message, to);
   };
@@ -2007,6 +2050,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     if (talkOnly && ['diff', 'plan', 'image'].includes(command.name)) {
       notify('Move to a Work thread to use files, tools or Plan.', 'info'); return;
     }
+    if (talkOnly && (command.name === 'curate' || command.name === 'curate_undo')) {
+      notify('Move to a Work thread to use /curate.', 'info'); return;
+    }
     if (chatReadOnly && !['fork', 'export'].includes(command.name)) return;
 
     switch (command.name) {
@@ -2029,6 +2075,10 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         return clearChat();
       case "compact":
         return compactChat();
+      case "curate":
+        return curateChat();
+      case "curate_undo":
+        return undoCuration();
       case "fork":
         setText(""); return void forkAt(command.title || `${pane.title} (fork)`, null);
       case "export":
@@ -2858,6 +2908,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     if (entry.kind === "message" && entry.message.speaker.kind === "bot") newestReply.set(entry.message.speaker.id, entry.message.seq);
   }
   const canCompact = !chatReadOnly && ready && !busy && participants.length > 0;
+  const compactedUpto = compactionOf(entries)?.upto ?? 0;
+  const jumpToMessage = (seq: number) => scroller.current?.querySelector<HTMLElement>(`[data-seq="${seq}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
 
   /** The quick menu's Resets row for `p`'s provider, when it has granted any. */
   const resetsFor = (p: ParticipantConfig | undefined) => {
@@ -3465,7 +3517,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         <summary className="pins-label">Pinned <span>({pins.length})</span></summary>
         <div className="pins-list">
         {pins.map((pin, index) => <div className="pin" key={pin}>
-          {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => scroller.current?.querySelector<HTMLElement>(`[data-seq="${pinSource(pin)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
+          {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => jumpToMessage(pinSource(pin)!)}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
           <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning || chatReadOnly} onClick={() => removePin(index)}>×</button>
         </div>)}
         </div>
@@ -3699,6 +3751,17 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
               </summary>
               <Markdown text={entry.summary.summary} onOpen={openTarget} pathExists={pathExists} />
             </details>
+          ) : entry.kind === "curation" ? (
+            <details key={`c${entry.curation.at}-${entry.curation.when}`} className="compacted">
+              <summary>{noteTitle(entry.curation, names.get(entry.curation.by) ?? entry.curation.by)}</summary>
+              <div className="md">
+                {noteLines(entry.curation, names.get(entry.curation.by) ?? entry.curation.by, isSealed(entry.curation, compactedUpto), noteTime).map(noteLine)}
+                <p className="curation-actions">
+                  <button type="button" className="ghost" onClick={() => jumpToMessage(entry.curation.hidden[0][0])}>Show in chat</button>
+                  {entry.curation.undone == null && !isSealed(entry.curation, compactedUpto) && <button type="button" className="ghost" onClick={undoCuration} disabled={!canCompact}>Undo</button>}
+                </p>
+              </div>
+            </details>
           ) : entry.message.speaker.kind === "human" ? (
             <div key={`m${entry.message.seq}`} className="message-row human-row" data-seq={entry.message.seq}>
               {messageActions(entry.message)}
@@ -3767,6 +3830,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           const hidden = steps.length - shown.length;
           const config = configOf(id);
           const quiet = turn && !asks[id]?.length && config && isCommandLine(config.backend) ? quietLine(heard.current.get(id) ?? turn.startedAt, now) : null;
+          const curating = isCurating(steps);
           return (
             <div key={`d${id}`} className="bot-row">
               <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
@@ -3776,7 +3840,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                 </span>
                 {turn?.work.structured ? (
                   <WorkSteps turn={turn.work} live />
-                ) : steps.length > 0 && (
+                ) : steps.length > 0 && !curating && (
                   <ul className="steps" aria-label="Steps so far">
                     {hidden > 0 && <li className="step done">{hidden === 1 ? "1 earlier step" : `${hidden} earlier steps`}</li>}
                     {shown.map((step, i) => (
@@ -3810,7 +3874,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                     <i />
                     <i />
                   </span>
-                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
+                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (curating ? CURATE_WORKING : planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
                   {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
                   {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${names.get(id) ?? id}`} title={chargeWarning([id]) ? `Stop ${names.get(id) ?? id}. ${chargeWarning([id])}` : `Stop ${names.get(id) ?? id}`} onClick={() => stopBots(id)}><StopSquare /> Stop</button>}
                 </div>
@@ -3831,6 +3895,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                     const parsed = parseQueueEdit(e.target.value);
                     if ("text" in parsed) turnQueue.edit(item.id, parsed.text);
                     else if (parsed.command.name === "compact") turnQueue.edit(item.id, "/compact", "compact");
+                    else if (!talkOnly && parsed.command.name === "curate") turnQueue.edit(item.id, "/curate", "curate");
+                    else if (!talkOnly && parsed.command.name === "curate_undo") turnQueue.edit(item.id, "/curate undo", "curate_undo");
                     else { turnQueue.remove(item.id); setText(e.target.value); runCommand(parsed.command); }
                   }} />
               : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{splitTldr(item.text).text}</button>}

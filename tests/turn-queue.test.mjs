@@ -104,6 +104,123 @@ test('compaction waits for all models and blocks new participant turns until set
   release(); await tick(); assert.deepEqual(sent, ['@null first', '/compact', '@jigga later']);
 });
 
+for (const kind of ['compact', 'curate']) {
+  test(`a message removed during ${kind} is never dispatched`, async () => {
+    const { ParticipantQueues } = await import('../src/turnQueue.ts');
+    const sent = []; let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const q = new ParticipantQueues(async text => [text.startsWith('@jigga') ? 'jigga' : 'null'], async (text, _to, action) => {
+      sent.push(text);
+      if (action === kind) await pending;
+    }, async () => {}, () => {});
+    q.started('blocker');
+    await q.send(`/${kind}`, kind);
+    const id = await q.send('@jigga remove me');
+    q.idle('blocker'); await tick();
+    assert.deepEqual(sent, [`/${kind}`]);
+    q.remove(id);
+    release(); await tick();
+    assert.deepEqual(sent, [`/${kind}`]);
+    assert.deepEqual(q.items, []);
+  });
+
+  test(`a message edited during ${kind} dispatches its latest text and recipients once`, async () => {
+    const { ParticipantQueues } = await import('../src/turnQueue.ts');
+    const sent = []; let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const q = new ParticipantQueues(async text => [text.startsWith('@jigga') ? 'jigga' : text.startsWith('@forge') ? 'forge' : 'null'], async (text, to, action) => {
+      sent.push({text, to, kind: action});
+      if (action === kind) await pending;
+    }, async () => {}, () => {});
+    q.started('blocker');
+    await q.send(`/${kind}`, kind);
+    const id = await q.send('@jigga original');
+    q.idle('blocker'); await tick();
+    assert.equal(sent.length, 1);
+    await q.edit(id, '@forge edited');
+    release(); await tick();
+    assert.deepEqual(sent, [
+      {text: `/${kind}`, to: ['null'], kind},
+      {text: '@forge edited', to: ['forge'], kind: 'message'},
+    ]);
+    assert.deepEqual(q.items, []);
+  });
+
+  test(`a failed ${kind} blocks messages already queued until explicit retry`, async () => {
+    const { ParticipantQueues } = await import('../src/turnQueue.ts');
+    const sent = [], errors = []; let reject, fail = true;
+    const pending = new Promise((_, rejectJob) => { reject = rejectJob; });
+    const q = new ParticipantQueues(async text => [text.startsWith('@jigga') ? 'jigga' : 'null'], async (text, _to, action) => {
+      sent.push(text);
+      if (action === kind && fail) {
+        try { await pending; }
+        finally { q.idle('null'); }
+      }
+    }, async () => {}, () => {}, error => errors.push(error));
+    q.started('blocker');
+    const id = await q.send(`/${kind}`, kind);
+    const later = await q.send('@jigga later');
+    q.idle('blocker'); await tick();
+    assert.deepEqual(sent, [`/${kind}`]);
+    reject(Error('context job refused')); await tick();
+    assert.deepEqual(sent, [`/${kind}`]);
+    assert.deepEqual(q.items.map(item => item.id), [id, later]);
+    assert.equal(q.items[0].failed, true);
+    assert.equal(errors.length, 1);
+    q.resume(); await tick();
+    assert.deepEqual(sent, [`/${kind}`], 'Resume cannot retry an uncertain command');
+    fail = false; q.retry(id); await tick();
+    assert.deepEqual(sent, [`/${kind}`, `/${kind}`, '@jigga later']);
+    assert.deepEqual(q.items, []);
+  });
+}
+
+for (const kind of ['curate', 'curate_undo']) {
+  test(`${kind} waits for every bot, blocks later turns, and releases its reservation on reply`, async () => {
+    const { ParticipantQueues } = await import('../src/turnQueue.ts');
+    const sent = []; let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const q = new ParticipantQueues(async text => [text.startsWith('@third') ? 'third' : 'null'], async (text, _to, action) => {
+      sent.push(text);
+      if (action === kind) await pending;
+    }, async () => {}, () => {});
+    q.started('jigga');
+    const accepted = q.send('/curate', kind);
+    await tick();
+    assert.deepEqual(sent, [], 'a different active bot must still block the whole-room job');
+    await accepted;
+    await q.send('@third later');
+    assert.deepEqual(sent, [], 'a different active bot must still block the whole-room job');
+    q.idle('jigga'); await tick();
+    assert.deepEqual(sent, ['/curate']);
+    release(); await tick();
+    assert.deepEqual(sent, ['/curate', '@third later']);
+    assert.equal(q.state.null, 'idle', 'the command reply releases the reservation without a participant event');
+  });
+
+  test(`a failed ${kind} blocks later bots until explicitly retried`, async () => {
+    const { ParticipantQueues } = await import('../src/turnQueue.ts');
+    let fail = true; const sent = [];
+    const q = new ParticipantQueues(async text => [text.startsWith('@third') ? 'third' : 'null'], async (text, _to, action) => {
+      if (action === kind && fail) throw Error('curation refused');
+      sent.push(text);
+    }, async () => {}, () => {}, () => {});
+    const id = await q.send('/curate', kind);
+    await q.send('@third later');
+    assert.deepEqual(sent, []);
+    assert.equal(q.items[0].failed, true);
+    fail = false; q.retry(id); await tick();
+    assert.deepEqual(sent, ['/curate', '@third later']);
+  });
+}
+
+test('wholeRoom identifies only context-changing queue jobs', async () => {
+  const { wholeRoom } = await import('../src/turnQueue.ts');
+  assert.equal(typeof wholeRoom, 'function');
+  for (const kind of ['compact', 'curate', 'curate_undo']) assert.equal(wholeRoom(kind), true);
+  for (const kind of ['message', 'turn']) assert.equal(wholeRoom(kind), false);
+});
+
 test('trying again runs the failed bot first, then what was queued for it', async () => {
   const { ParticipantQueues } = await import('../src/turnQueue.ts');
   const sent = [];

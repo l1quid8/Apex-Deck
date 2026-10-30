@@ -18,6 +18,10 @@ use crate::storage::{SavedRoom, Store};
 use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images, worktrees};
 
 #[cfg(test)]
+#[path = "curation_tests.rs"]
+mod curation_tests;
+
+#[cfg(test)]
 #[path = "chat_delivery_tests.rs"]
 mod chat_delivery_tests;
 
@@ -61,6 +65,13 @@ fn reject_registry_link(directory: &Path) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct CurateReply {
+    pub by: String,
+    #[serde(flatten)]
+    pub outcome: apex_core::CurateOutcome,
+}
+
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
     /// Serializes snapshot reads with persistence and numbered event emission.
@@ -75,6 +86,8 @@ pub(crate) struct RoomHandle {
     /// Immutable import attribution read from protected authority when opened.
     legacy: Option<crate::legacy_import::LegacyMarker>,
     pub(crate) deleted: Arc<AtomicBool>,
+    pub(crate) journal: Option<PathBuf>,
+    journal_hint: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
     plan: Arc<AtomicBool>,
@@ -311,7 +324,7 @@ impl Host {
                     &host.turn_sink(&thread_id, &handle, &error),
                 ).await?;
                 if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-                checkpoint_room(&handle, &host.store, &thread_id).await?;
+                host.checkpoint_room(&handle, &thread_id).await?;
                 host.run_batch_in_background(thread_id, handle, batch);
                 Ok(())
             })
@@ -469,7 +482,7 @@ impl Host {
         let handle = self.handle(id)?;
         let error = Mutex::new(None);
         handle.room.lock().await.append_assistant_note(text, &self.turn_sink(id, &handle, &error));
-        checkpoint_room(&handle, &self.store, id).await?;
+        self.checkpoint_room(&handle, id).await?;
         if let Some(error) = error.into_inner().unwrap() { return Err(error); }
         Ok(())
     }
@@ -494,16 +507,39 @@ impl Host {
 
     pub(crate) fn room_event(&self, room: &str, event: RoomEvent) {
         if let Ok(handle) = self.handle(room) {
-            let mut seq = handle.recovery.lock().unwrap();
-            // Compaction emits before the final full snapshot is saved.
-            if let RoomEvent::Compacted { summary, upto, .. } = &event {
-                handle.checkpoint.lock().unwrap().snapshot.compaction = Some(apex_core::Compaction { summary: summary.clone(), upto: *upto });
-            }
-            *seq += 1;
-            self.emit_room_event(room, event, Some(&handle), Some(*seq));
+            self.room_event_for(room, &handle, event);
         } else {
             self.emit_room_event(room, event, None, None);
         }
+    }
+
+    /// Async control operations keep their original handle across replacement.
+    fn room_event_for(&self, room: &str, handle: &RoomHandle, event: RoomEvent) {
+        let mut seq = handle.recovery.lock().unwrap();
+        {
+            let mut checkpoint = handle.checkpoint.lock().unwrap();
+            if handle.deleted.load(Ordering::SeqCst) {
+                return;
+            }
+            // Context operations emit before the final full snapshot is saved.
+            match &event {
+                RoomEvent::Compacted { summary, upto, .. } => {
+                    checkpoint.snapshot.compaction = Some(apex_core::Compaction {
+                        summary: summary.clone(),
+                        upto: *upto,
+                    })
+                }
+                RoomEvent::CurationsChanged { curations } => {
+                    checkpoint.snapshot.curations = curations.clone()
+                }
+                _ => {}
+            }
+        }
+        if handle.deleted.load(Ordering::SeqCst) {
+            return;
+        }
+        *seq += 1;
+        self.emit_room_event(room, event, Some(handle), Some(*seq));
     }
 
     fn persist_and_emit(&self, id: &str, handle: &RoomHandle, event: RoomEvent) -> Result<(), String> {
@@ -1050,7 +1086,7 @@ impl Host {
         } else {
             saved.as_ref().map(|s| s.mounts.clone()).unwrap_or_default()
         };
-        let room = match saved {
+        let mut room = match saved {
             Some(saved) => Room::restore(roster, saved.snapshot),
             None => Room::new(roster, options).with_kind(kind),
         };
@@ -1063,7 +1099,12 @@ impl Host {
             let retired = Arc::clone(&deleted);
             std::thread::spawn(move || { let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
         }
-        self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
+        let journal = if kind.is_chat() { None } else { Some(crate::journal::path_for(&self.paths.data.join("attachments"), &id)?) };
+        if let Err(error) = self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }) {
+            return Err(invalidate_journal(&mut room, journal.as_deref(), error));
+        }
+        let journal_warning = sync_journal(&mut room, journal.as_deref(), &snapshot);
+        let journal_hint = room.journal_path_handle();
         let stop = room.stop_handle();
         let plan = room.plan_handle();
         let answers = room.answers_handle();
@@ -1107,7 +1148,10 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id.clone(), RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, journal, journal_hint, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+        if let Some(error) = journal_warning {
+            self.room_event(&id, RoomEvent::JournalWarning { error });
+        }
         Ok(snapshot)
     }
 
@@ -1264,7 +1308,7 @@ impl Host {
         let error = Mutex::new(None);
         let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        checkpoint_room(handle, &self.store, id).await?;
+        self.checkpoint_room(handle, id).await?;
         Ok(batch)
     }
 
@@ -1280,7 +1324,7 @@ impl Host {
             if error.lock().unwrap().is_some() { room.interrupt_client_message(request_id); }
             else { room.finish_client_message(request_id); }
         }
-        checkpoint_room(handle, &self.store, id).await?;
+        self.checkpoint_room(handle, id).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
             if let Some(cwd) = handle.context.cwd.clone() {
@@ -1729,9 +1773,13 @@ impl Host {
         if let Ok(handle) = self.handle(&id) {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             handle.runtime.stop(participant.as_ref());
+            // Compact/curate hold the transcript lock but do not reserve a
+            // normal turn slot. Their bubble's Stop must reach the shared flag.
+            if participant.is_none() || !handle.runtime.busy() {
+                handle.stop.store(true, Ordering::SeqCst);
+            }
             if let Some(participant) = participant { handle.approvals.reject_for(&participant); }
             else {
-                handle.stop.store(true, Ordering::SeqCst);
                 handle.approvals.reject_all();
             }
         }
@@ -2138,6 +2186,71 @@ impl Host {
         self.save_room(&id).await
     }
 
+    /// Curate between turns with the same verified tool-free builder as talk-only rooms.
+    pub async fn room_curate(&self, id: String) -> Result<CurateReply, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        self.require_idle(&id)?;
+        let context = self.room_context(&id)?;
+        let result = {
+            let mut room = handle.room.lock().await;
+            self.require_idle(&id)?;
+            if room.kind().is_chat() {
+                return Err("Move to a Work thread to use /curate.".into());
+            }
+            let mut config = room
+                .summarizer()
+                .ok_or("add a participant before curating")?;
+            config.access = Access::Read;
+            apex_adapters::chat_profile_ok(&config, context.path.as_deref()).map_err(|_| {
+                format!(
+                    "{} can't pick without tools. Message another bot, then run /curate again.",
+                    config.display_name
+                )
+            })?;
+            let by = config.id.to_string();
+            let curator =
+                apex_adapters::participant_for_room(apex_core::RoomKind::Chat, config, &context);
+            let path = handle
+                .journal
+                .as_deref()
+                .ok_or("This thread has no journal path")?;
+            {
+                // Events reacquire this lock. Release it before awaiting the model.
+                let _checkpoint = handle.checkpoint.lock().unwrap();
+                if handle.deleted.load(Ordering::SeqCst) {
+                    return Err("This chat was deleted".into());
+                }
+                if let Err(error) = crate::journal::write(path, &room.snapshot()) {
+                    return Err(invalidate_journal(&mut room, Some(path), error));
+                }
+                room.set_journal_path(Some(path.display().to_string()));
+            }
+            room.curate(curator.as_ref(), &|event| {
+                self.room_event_for(&id, &handle, event)
+            })
+            .await
+            .map(|outcome| CurateReply { by, outcome })
+        };
+        combine_result(result, self.save_curation(&handle, &id).await)
+    }
+
+    pub async fn room_curate_undo(&self, id: String) -> Result<apex_core::CurationUndo, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        self.require_idle(&id)?;
+        let outcome = {
+            let mut room = handle.room.lock().await;
+            self.require_idle(&id)?;
+            if room.kind().is_chat() {
+                return Err("Move to a Work thread to use /curate.".into());
+            }
+            room.undo_curation(&|event| self.room_event_for(&id, &handle, event))
+        };
+        self.save_curation(&handle, &id).await?;
+        Ok(outcome)
+    }
+
     pub fn room_close(&self, id: String) {
         // Closing a view detaches it. Active jobs and assistant children are host owned.
         let _lifecycle = self.room_lifecycle.lock().unwrap();
@@ -2482,10 +2595,11 @@ impl Host {
                 let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
             }
         }
-        match handle {
+        let result = match handle {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),
             None => self.store.delete_room(&id),
-        }
+        };
+        combine_result(result, crate::journal::remove(&self.paths.data.join("attachments"), &id))
     }
 
     /// Explicit deletion waits for a task's exact worker attempt before removing its saved room.
@@ -2820,10 +2934,15 @@ impl Host {
             // new copy, and once it is written none ever will.
             Ok(handle) => {
                 let _checkpoint = handle.checkpoint.lock().unwrap();
+                *handle.journal_hint.lock().unwrap() = None;
+                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
                 self.store.save_room(&id, &saved)?;
                 handle.deleted.store(true, Ordering::SeqCst);
             }
-            Err(_) => self.store.save_room(&id, &saved)?,
+            Err(_) => {
+                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
+                self.store.save_room(&id, &saved)?;
+            },
         }
         // Replacing a room is an explicit lifecycle action, unlike detaching a view.
         if let Some(handle) = self.rooms.lock().unwrap().remove(&id) {
@@ -2837,7 +2956,26 @@ impl Host {
     }
 
     async fn save_room(&self, id: &str) -> Result<(), String> {
-        checkpoint_room(&self.handle(id)?, &self.store, id).await
+        self.checkpoint_room(&self.handle(id)?, id).await
+    }
+
+    pub(crate) async fn checkpoint_room(&self, handle: &RoomHandle, id: &str) -> Result<(), String> {
+        // Deliver warnings after releasing the transcript/recovery/checkpoint locks.
+        if let Some(error) = checkpoint_room(handle, &self.store, id).await? {
+            self.room_event_for(id, handle, RoomEvent::JournalWarning { error });
+        }
+        Ok(())
+    }
+
+    /// A replaced/deleted handle must never checkpoint the new room with the same ID.
+    async fn save_curation(&self, handle: &RoomHandle, id: &str) -> Result<(), String> {
+        let saved = self.checkpoint_room(handle, id).await;
+        let live = if handle.deleted.load(Ordering::SeqCst) {
+            Err("This chat was deleted or replaced while curating. Reopen the chat.".into())
+        } else {
+            Ok(())
+        };
+        combine_result(saved, live)
     }
 
     // ------------------------------------------------------------ quitting
@@ -2975,11 +3113,11 @@ fn update_chat_message_meta(store: &Store, id: &str, chat: bool, message: &apex_
     }
 }
 
-async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
-    let room = handle.room.lock().await;
+async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<Option<String>, String> {
+    let mut room = handle.room.lock().await;
     let _boundary = handle.recovery.lock().unwrap();
     let mut checkpoint = handle.checkpoint.lock().unwrap();
-    if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
+    if handle.deleted.load(Ordering::SeqCst) { return Ok(None); }
     let snapshot = room.snapshot();
     let len = snapshot.transcript.len();
     if len < checkpoint.snapshot.transcript.len() && !checkpoint.mounts.is_empty() {
@@ -2992,7 +3130,53 @@ async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result
         }
     }
     checkpoint.snapshot = snapshot;
-    store.save_room(id, &checkpoint)
+    if let Err(error) = store.save_room(id, &checkpoint) {
+        return Err(invalidate_journal(&mut room, handle.journal.as_deref(), error));
+    }
+    Ok(sync_journal(&mut room, handle.journal.as_deref(), &checkpoint.snapshot))
+}
+
+fn invalidate_journal(room: &mut Room, path: Option<&Path>, error: String) -> String {
+    room.set_journal_path(None);
+    if let Some(path) = path {
+        if let Err(removal) = crate::journal::invalidate(path) {
+            return format!(
+                "{error}; Journal text may still be readable in {}: {removal}",
+                path.display()
+            );
+        }
+    }
+    error
+}
+
+fn sync_journal(
+    room: &mut Room,
+    path: Option<&Path>,
+    snapshot: &RoomSnapshot,
+) -> Option<String> {
+    let Some(path) = path else {
+        room.set_journal_path(None);
+        return None;
+    };
+    match crate::journal::sync(path, snapshot) {
+        Ok(()) => {
+            room.set_journal_path(
+                apex_core::stands(&snapshot.curations).then(|| path.display().to_string()),
+            );
+            None
+        }
+        Err(crate::journal::SyncError::Gone(why)) => {
+            room.set_journal_path(None);
+            Some(format!("Journal unavailable: {why} Hidden text can't be read right now."))
+        }
+        Err(crate::journal::SyncError::Stale(why)) => {
+            room.set_journal_path(None);
+            Some(format!(
+                "Journal text may still be readable in {}: {why}",
+                path.display()
+            ))
+        }
+    }
 }
 
 fn delete_checkpoint(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
@@ -3620,7 +3804,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { legacy: None, checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
+        let handle = RoomHandle { legacy: None, journal: None, journal_hint: Arc::default(), checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { mounts: vec![], cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }
@@ -5102,5 +5286,14 @@ mod protected_host_ownership_tests {
         let (guard, unavailable) = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Unavailable("broker absent".into())))).unwrap();
         assert!(guard.is_none());
         assert!(unavailable.unwrap().contains("broker absent"));
+    }
+}
+
+/// Preserve both the primary operation error and its persistence/cleanup error.
+fn combine_result<T>(result: Result<T, String>, saved: Result<(), String>) -> Result<T, String> {
+    match (result, saved) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(a), Err(b)) => Err(format!("{a}; {b}")),
+        (Err(e), _) | (_, Err(e)) => Err(e),
     }
 }

@@ -1305,6 +1305,7 @@ export function PhoneApp() {
         plans: { ...current.plans, [planKey(event.provider, event.model)]: mergePlan(current.plans[planKey(event.provider, event.model)], event.windows, event.partial) },
         credits: event.reset_credits ? { ...current.credits, [event.provider]: event.reset_credits } : current.credits,
       } : current);
+      if (event.type === "journal_warning") setNotice(event.error);
       if (event.type === "failed") setNotice(`${roomRef.current?.participants.find((person) => person.id === event.id)?.display_name ?? event.id} couldn't reply: ${event.error}`);
       setCuts((all) => { const now = all[key]; const next = now && applyCutEvent(now, event); return !now || next === now ? all : { ...all, [key]: next }; });
       setRoom((current) => {

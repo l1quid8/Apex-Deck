@@ -215,6 +215,8 @@ pub enum Command {
     RoomPin { id: String, fact: String },
     RoomUnpin { id: String, index: usize },
     RoomCompact { id: String },
+    RoomCurate { id: String },
+    RoomCurateUndo { id: String },
     RoomClose { id: String },
     ApiModels { base_url: String, api_key_env: Option<String> },
     ApiBalance { base_url: String, api_key_env: Option<String> },
@@ -604,6 +606,8 @@ impl Host {
             RoomPin { id, fact } => reply(self.room_pin(id, fact).await?),
             RoomUnpin { id, index } => reply(self.room_unpin(id, index).await?),
             RoomCompact { id } => reply(self.room_compact(id).await?),
+            RoomCurate { id } => reply(self.room_curate(id).await?),
+            RoomCurateUndo { id } => reply(self.room_curate_undo(id).await?),
             RoomClose { id } => { self.room_close(id); reply(()) },
             ApiModels { base_url, api_key_env } => reply(self.api_models(base_url, api_key_env).await?),
             ApiBalance { base_url, api_key_env } => reply(self.api_balance(base_url, api_key_env).await?),
@@ -660,6 +664,14 @@ mod tests {
     use super::*;
     use crate::HostPaths;
     use serde_json::json;
+
+    #[test]
+    fn curate_commands_parse() {
+        let curate = Command::from_json(json!({"cmd":"room_curate","args":{"id":"r"}})).unwrap();
+        assert!(matches!(curate, Command::RoomCurate { id } if id == "r"));
+        let undo = Command::from_json(json!({"cmd":"room_curate_undo","args":{"id":"r"}})).unwrap();
+        assert!(matches!(undo, Command::RoomCurateUndo { id } if id == "r"));
+    }
 
     #[test]
     fn provenance_unverified_command_is_refused_before_any_mutation() {
@@ -783,8 +795,10 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 192);
+        assert_eq!(names.len(), 194);
         for name in [
+            "room_curate",
+            "room_curate_undo",
             "chat_profiles",
             "chat_list",
             "chat_create",

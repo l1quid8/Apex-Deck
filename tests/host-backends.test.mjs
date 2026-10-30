@@ -3,6 +3,28 @@ import assert from 'node:assert/strict';
 const mod=await import('../src/hostBackends.ts').catch(()=>({}));
 const store=await import('../src/hostConnections.ts').catch(()=>({}));
 
+test('curation methods and raw commands reject offline writes without replay', async () => {
+  const connection = store.hostConnectionStore('server','Server');
+  const calls = [];
+  const guarded = mod.guardHostWrites({
+    roomCurate:async id=>{calls.push(['curate',id]);return {by:'null',status:'nothing',unchecked:0};},
+    roomCurateUndo:async id=>{calls.push(['undo',id]);return {restored:2,sealed:1};},
+    call:async command=>{calls.push(command);},
+  }, connection);
+  for (const status of [{kind:'idle'},{kind:'resync'},{kind:'reconnecting',attempt:1}]) {
+    connection.setStatus(status);
+    await assert.rejects(guarded.roomCurate('r'), /nothing was queued/);
+    await assert.rejects(guarded.roomCurateUndo('r'), /nothing was queued/);
+    await assert.rejects(guarded.call('room_curate',{id:'r'}), /nothing was queued/);
+    await assert.rejects(guarded.call('room_curate_undo',{id:'r'}), /nothing was queued/);
+  }
+  connection.setStatus({kind:'connected',hostId:'server'});
+  assert.deepEqual(calls, []);
+  assert.equal((await guarded.roomCurate('r')).status, 'nothing');
+  assert.deepEqual(await guarded.roomCurateUndo('r'), {restored:2,sealed:1});
+  assert.deepEqual(calls, [['curate','r'],['undo','r']]);
+});
+
 test('remote turns always carry card guidance without writing remote app preferences', async () => {
   const calls=[];
   const c=store.hostConnectionStore('at','AT');c.setStatus({kind:'connected',hostId:'at'});

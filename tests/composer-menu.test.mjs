@@ -25,7 +25,7 @@ test('items filter by kind and prefix', () => {
   assert.deepEqual(menuItems(findTrigger('@j', 2), people).map(i => i.label), ['@jigga']);
   assert.deepEqual(menuItems(findTrigger('@a', 2), people).map(i => i.label), ['@all']);
   const all = menuItems(null, people).map(i => i.label);
-  assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', 'Plan', 'Goal', 'Loop', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan']);
+  assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', 'Plan', 'Goal', 'Loop', '@all', '@null', '@jigga', '/compact', '/curate', '/curate undo', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan']);
 });
 
 test('a renamed bot is offered and inserted by its new name only', () => {
@@ -82,8 +82,18 @@ test('mod commands show up after the built-in ones and are inserted, not run', (
   const hl = menuItems(findTrigger('/h', 2), people, [], mods);
   assert.deepEqual(hl.map(i => [i.label, i.detail, i.command]), [['/hl', 'Hyperliquid positions', null]]);
   const all = menuItems(findTrigger('/', 1), people, [], mods).map(i => i.label);
-  assert.deepEqual(all, ['/goal', '/loop', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan', '/hl']);
+  assert.deepEqual(all, ['/goal', '/loop', '/compact', '/curate', '/curate undo', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan', '/hl']);
   assert.deepEqual(findTrigger('/my-mod2', 8), { kind: 'command', query: 'my-mod2', start: 0, end: 8 });
+});
+
+test('the menu offers both curate commands with the mockup wording', () => {
+  const items = menuItems(findTrigger('/cur', 4), people);
+  assert.deepEqual(items.map(({ key, label, detail, command }) => ({ key, label, detail, command })), [
+    { key:'curate', label:'/curate', detail:'Hide old messages from bots; nothing is deleted', command:{name:'curate'} },
+    { key:'curate undo', label:'/curate undo', detail:'Bring back messages /curate hid', command:{name:'curate_undo'} },
+  ]);
+  assert.deepEqual(menuItems(findTrigger('/curate u', 9), people).map(i => i.command), [{name:'curate_undo'}]);
+  assert.deepEqual(availableMenuItems(items, {talkOnly:true}), []);
 });
 
 test('a menu opened with "+" closes when you click in the message box', () => {
