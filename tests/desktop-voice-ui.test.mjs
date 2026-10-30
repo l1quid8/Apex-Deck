@@ -28,6 +28,7 @@ test("desktop calls wait for an explicit singleton thread choice", { timeout: 15
     };
     export const voiceRegistration = () => ({ settings, save() {} });
     export const warmVoice = () => {};
+    export const callEngine = () => "local";
     window.askThread = () => {
       state = { ...state, status: "needs-attention", error: "Choose which thread to call.", threadQuery: "voise call", candidates: [elsewhere] };
       emit();

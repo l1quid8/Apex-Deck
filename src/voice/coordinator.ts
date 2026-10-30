@@ -3,6 +3,7 @@ import { openVoiceAudio, playVoiceSample } from "./audio.ts";
 import { connectLocalVoice } from "./localClient.ts";
 import { readVoiceSettings, voiceFor } from "./settings.ts";
 import type {
+  CallEngine,
   CallScope,
   ThreadVoiceBridge,
   VoiceCandidate,
@@ -124,6 +125,11 @@ function activeController(): VoiceController | ReturnType<typeof createRealtimeV
   if (ls.status !== "off") return localController as any;
   if (rs.status !== "off") return realtimeController as any;
   return localController as any;
+}
+
+/** Which engine the running call uses; "local" when no call is on. */
+export function callEngine(): CallEngine {
+  return localController.getState().status === "off" && realtimeController.getState().status !== "off" ? "realtime" : "local";
 }
 
 export const voiceController: VoiceController = {

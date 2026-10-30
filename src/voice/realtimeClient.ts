@@ -10,8 +10,9 @@
  */
 
 import type { VoiceCandidate, CallScope, VoiceSettings } from "./types.ts";
+import { DEFAULT_REALTIME_MODEL, readRealtimeModel } from "./settings.ts";
 
-export const REALTIME_MODEL_DEFAULT = "gpt-realtime";
+export const REALTIME_MODEL_DEFAULT = DEFAULT_REALTIME_MODEL;
 export const REALTIME_VOICES = [
   "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar",
 ] as const;
@@ -88,7 +89,7 @@ export async function connectRealtime(
 ): Promise<RealtimeClient> {
   const signal = opts.signal;
   const settings = deps.voiceSettings();
-  const model = REALTIME_MODEL_DEFAULT;
+  const model = readRealtimeModel(settings.realtimeModel) ?? REALTIME_MODEL_DEFAULT;
   const realtimeVoice = (settings.realtimeVoice ?? "verse").toLowerCase();
   const voice = REALTIME_VOICES.includes(realtimeVoice as any) ? realtimeVoice : "verse";
 

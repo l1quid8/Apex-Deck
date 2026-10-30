@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
-import { CALL_VOICES, defaultVoiceOf, readVoiceSettings } from "./voice/settings";
+import { CALL_VOICES, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, REALTIME_MODELS, REALTIME_VOICES, defaultVoiceOf, readVoiceSettings, realtimeVoiceLabel } from "./voice/settings";
 import { VoiceSampleButton } from "./voice/VoiceSampleButton";
 import { CALL_LOOKS, voiceLabel } from "./voice/callView";
 import { DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
@@ -387,8 +387,13 @@ function CallsSettings({ settings, onChange, backend }: { settings: AppSettings;
       </span>
     </Row>
     {voice.engine === "realtime" && <Row label="GPT-Live voice" note="Voice GPT-Live speaks with (OpenAI realtime voices).">
-      <select aria-label="GPT-Live voice" value={voice.realtimeVoice ?? "verse"} onChange={e => setRealtimeVoice(e.target.value)}>
-        {(["alloy","ash","ballad","coral","echo","sage","shimmer","verse","marin","cedar"]).map(v => <option key={v} value={v}>{v}</option>)}
+      <select aria-label="GPT-Live voice" value={voice.realtimeVoice ?? DEFAULT_REALTIME_VOICE} onChange={e => setRealtimeVoice(e.target.value)}>
+        {REALTIME_VOICES.map(v => <option key={v} value={v}>{realtimeVoiceLabel(v)}</option>)}
+      </select>
+    </Row>}
+    {voice.engine === "realtime" && <Row label="GPT-Live model" note="OpenAI realtime model. Applies next call.">
+      <select aria-label="GPT-Live model" value={voice.realtimeModel ?? DEFAULT_REALTIME_MODEL} onChange={e => onChange({ ...settings, voice: { ...voice, realtimeModel: e.target.value } })}>
+        {REALTIME_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
       </select>
     </Row>}
     <Row label="OpenAI API key" note={err || (keyState ? KEY_STATE_LABEL[keyState] + (keyState === "environment" ? " – remove from shell to replace here." : "") + (keyState !== "missing" ? " Key never shown; only a short-lived token reaches the call." : " Needed for GPT-Live. Realtime requires API key auth; ChatGPT login alone is not enough.") : "Checking…")}>

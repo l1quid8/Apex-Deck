@@ -80,3 +80,12 @@ test("a phone follows its machine's default voice", () => {
   assert.equal(machineVoice(phone, machine, touched, "mac").defaultVoice, "bf_lily");
   assert.equal(voiceFor(machineVoice(phone, machine, touched, "mac"), "mac", "null", "r", "null", null), "bf_lily");
 });
+
+test("GPT-Live keeps its own model and voice, apart from the local voices", () => {
+  const s = readVoiceSettings({ engine: "realtime", realtimeModel: "gpt-realtime-2.1", realtimeVoice: "Marin" });
+  assert.equal(s.realtimeModel, "gpt-realtime-2.1");
+  assert.equal(s.realtimeVoice, "marin");
+  assert.equal(readVoiceSettings({ realtimeModel: "gpt-4o" }).realtimeModel, undefined);
+  assert.equal(readVoiceSettings({ realtimeModel: "gpt-realtime" }).defaultVoice, undefined);
+  assert.ok(!CALL_VOICES.includes("verse"));
+});

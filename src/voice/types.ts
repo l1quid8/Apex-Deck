@@ -36,6 +36,8 @@ export type VoiceSettings = {
   engine: CallEngine;
   /** Voice for the GPT-Live engine (OpenAI realtime voices). */
   realtimeVoice?: string;
+  /** Model for the GPT-Live engine (settings.ts REALTIME_MODELS). */
+  realtimeModel?: string;
 };
 export type VoiceState = {
   status:
