@@ -172,6 +172,17 @@ export async function connectRealtime(
 
   const dc = pc.createDataChannel("oai-events");
   let closed = false;
+  let channelOpen = false;
+  const queuedSends: string[] = [];
+
+  const rawSendJson = (obj: Record<string, unknown>) => {
+    const text = JSON.stringify(obj);
+    if (channelOpen && (dc as any).readyState === "open") {
+      try { dc.send(text); } catch {}
+    } else {
+      queuedSends.push(text);
+    }
+  };
 
   // Deduplication + argument accumulation for function calls
   const pendingArgs = new Map<string, ToolCallInfo>();
@@ -409,13 +420,16 @@ export async function connectRealtime(
   };
 
   dc.onopen = () => {
+    channelOpen = true;
     try {
+      // Opening instructions use current live default (handles switch during startup)
+      const currentInstructions = buildRealtimeInstructions(candidatesLive, liveScope);
       dc.send(JSON.stringify({
         type: "session.update",
         session: {
           type: "realtime",
           model,
-          instructions,
+          instructions: currentInstructions,
           audio: {
             input: {
               transcription: { model: "whisper-1" },
@@ -427,6 +441,10 @@ export async function connectRealtime(
           tool_choice: "auto",
         },
       }));
+      // Drain queued updates
+      for (const q of queuedSends.splice(0)) {
+        try { dc.send(q); } catch {}
+      }
     } catch {}
   };
 
@@ -479,7 +497,7 @@ export async function connectRealtime(
 
   return {
     send(event) {
-      try { dc.send(JSON.stringify(event)); } catch {}
+      rawSendJson(event as Record<string, unknown>);
     },
     close(reason = "closed") {
       if (closed) return;

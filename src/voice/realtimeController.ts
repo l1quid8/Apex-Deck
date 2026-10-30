@@ -20,7 +20,6 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
   let localStream: MediaStream | undefined;
   let startedAt: number | undefined;
   let abortController: AbortController | undefined;
-  let pendingInstructions: string | undefined;
   let pendingScope: CallScope | undefined;
 
   const set = (patch: Partial<VoiceState>) => {
@@ -42,7 +41,6 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
     callGen++; // invalidate any pending startup
     try { abortController?.abort(); } catch {}
     abortController = undefined;
-    pendingInstructions = undefined;
     pendingScope = undefined;
     const wasCall = callId;
     callId = "";
@@ -145,34 +143,21 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
       }
 
       pcClient = client;
-      // If a switch happened during startup, apply latest full instructions now.
-      if (pendingScope && pendingInstructions) {
+      // If a switch happened during startup, apply latest default.
+      // Client onopen already uses liveScope for opening instructions,
+      // and queued sends are drained there. We still setDefault now and
+      // re-send if channel already open (send queues otherwise).
+      if (pendingScope) {
         const ps = pendingScope;
-        const instr = pendingInstructions;
         pendingScope = undefined;
-        pendingInstructions = undefined;
-        try {
-          pcClient.setDefault(ps);
-        } catch {}
-        try {
-          pcClient.send({ type: "session.update", session: { type: "realtime", instructions: instr } } as any);
-        } catch {}
         scope = ps;
         set({ scope: ps });
-      } else if (pendingScope) {
-        // scope changed mid-startup but instructions not yet built via switchAgent race – build now
-        const ps = pendingScope;
-        pendingScope = undefined;
-        pendingInstructions = undefined;
         try { pcClient.setDefault(ps); } catch {}
         try {
           const allCands = deps.candidates().filter(c => c.hostId === ps.hostId && c.roomId === ps.roomId);
           pcClient.send({ type: "session.update", session: { type: "realtime", instructions: buildRealtimeInstructions(allCands, ps) } } as any);
         } catch {}
-        scope = ps;
-        set({ scope: ps });
       } else if (scope && (scope.participantId !== nextScope.participantId || scope.roomId !== nextScope.roomId)) {
-        // scope was updated mid-startup via direct assignment (defensive)
         const latestScope = scope;
         try {
           pcClient.setDefault(latestScope);
@@ -209,9 +194,8 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
           pcClient.send({ type: "session.update", session: { type: "realtime", instructions: fullInstructions } } as any);
         } catch {}
       } else {
-        // Still in startup (pcClient undefined) – queue for after connect
+        // Still in startup – queue scope, client onopen will use liveScope
         pendingScope = next;
-        pendingInstructions = fullInstructions;
       }
       return;
     }
