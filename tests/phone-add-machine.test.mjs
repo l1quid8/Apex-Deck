@@ -14,13 +14,26 @@ const require = createRequire(import.meta.url);
 
 const field = (text) => [0, 0, (text.length >> 8) & 255, text.length & 255].map((byte) => String.fromCharCode(byte)).join("") + text;
 const COUNT = "\0\0\0\x01";
-const PUBLIC = (type) => field(field(type) + field("x".repeat(32)));
-const PRIVATE = "\x01\x02\x03\x04\x01\x02\x03\x04sealed..";
+const PUBLIC_KEY = "p".repeat(32);
+const CHECK = "\x01\x02\x03\x04";
+const PARTS = {
+  "ssh-ed25519": { public: [PUBLIC_KEY], private: [PUBLIC_KEY, "s".repeat(64), "me@mac"] },
+  "ssh-rsa": { public: ["\x01\0\x01", "n".repeat(256)], private: ["n".repeat(256), "\x01\0\x01", "d", "i", "q", "r", ""] },
+};
+const PUBLIC = (type, parts = PARTS[type].public) => field(field(type) + parts.map(field).join(""));
+const pad = (body) => {
+  let padded = body;
+  for (let next = 1; padded.length % 8; next += 1) padded += String.fromCharCode(next);
+  return padded;
+};
+const PRIVATE = (type = "ssh-ed25519", parts = PARTS[type].private, check = CHECK + CHECK) => pad(check + field(type) + parts.map(field).join(""));
+const SEALED = "z".repeat(136);
+const KDF_OPTIONS = field("saltsaltsaltsalt") + "\0\0\0\x10";
 const pem = (blob) => `-----BEGIN OPENSSH PRIVATE KEY-----\n${btoa(blob)}\n-----END OPENSSH PRIVATE KEY-----\n`;
 /** The header of an OpenSSH key file, up to the private block. */
-const header = (cipher, type = "ssh-ed25519") => "openssh-key-v1\0" + field(cipher) + field(cipher === "none" ? "none" : "bcrypt") + field("") + COUNT + PUBLIC(type);
+const header = (cipher, type = "ssh-ed25519") => "openssh-key-v1\0" + field(cipher) + field(cipher === "none" ? "none" : "bcrypt") + field(cipher === "none" ? "" : KDF_OPTIONS) + COUNT + PUBLIC(type);
 /** An OpenSSH key file with the given cipher and key type. The layout is real, the key isn't. */
-const keyFile = (cipher, type) => pem(header(cipher, type) + field(PRIVATE));
+const keyFile = (cipher, type) => pem(header(cipher, type) + field(cipher === "none" ? PRIVATE(type) : SEALED));
 
 const form = (over = {}) => ({ label: "", host: "203.0.113.10", user: "demo", port: "22", password: "pw", key: null, passphrase: "", keep: false, ...over });
 const endpoint = (fill) => fill.repeat(64);
@@ -55,6 +68,8 @@ test("anything but an OpenSSH private key is refused", () => {
 
 test("a key file cut short or put together wrongly is refused", () => {
   const magic = "openssh-key-v1\0" + field("none") + field("none") + field("");
+  const locked = (options, sealed = SEALED, tail = "") => "openssh-key-v1\0" + field("aes256-ctr") + field("bcrypt") + field(options) + COUNT + PUBLIC("ssh-ed25519") + field(sealed) + tail;
+  const parts = PARTS["ssh-ed25519"].private;
   const bad = {
     "no key count": magic,
     "no public key": magic + COUNT,
@@ -62,18 +77,44 @@ test("a key file cut short or put together wrongly is refused", () => {
     "no private block": header("none"),
     "an empty private block": header("none") + field(""),
     "cut inside the private block": header("none") + "\0\0\0\x10abc",
-    "two keys": magic + "\0\0\0\x02" + PUBLIC("ssh-ed25519") + field(PRIVATE),
-    "no keys": magic + "\0\0\0\0" + PUBLIC("ssh-ed25519") + field(PRIVATE),
-    "no cipher named": "openssh-key-v1\0" + field("") + field("none") + field("") + COUNT + PUBLIC("ssh-ed25519") + field(PRIVATE),
-    "a cipher with no kdf": "openssh-key-v1\0" + field("aes256-ctr") + field("none") + field("") + COUNT + PUBLIC("ssh-ed25519") + field(PRIVATE),
-    "a key type that isn't a name": magic + COUNT + field(field("\x01\x02") + field("x")) + field(PRIVATE),
-    "unlocked, but the check numbers differ": header("none") + field("\x01\x02\x03\x04\x05\x06\x07\x08sealed.."),
+    "two keys": magic + "\0\0\0\x02" + PUBLIC("ssh-ed25519") + field(PRIVATE()),
+    "no keys": magic + "\0\0\0\0" + PUBLIC("ssh-ed25519") + field(PRIVATE()),
+    "no cipher named": "openssh-key-v1\0" + field("") + field("none") + field("") + COUNT + PUBLIC("ssh-ed25519") + field(PRIVATE()),
+    "a cipher with no kdf": "openssh-key-v1\0" + field("aes256-ctr") + field("none") + field("") + COUNT + PUBLIC("ssh-ed25519") + field(PRIVATE()),
+    "a key type that isn't a name": magic + COUNT + field(field("\x01\x02") + field("x")) + field(PRIVATE()),
+    "unlocked, but the check numbers differ": header("none") + field(PRIVATE(undefined, undefined, CHECK + "\x05\x06\x07\x08")),
+    "bytes left after an unlocked key": header("none") + field(PRIVATE()) + "x",
+    "a public part cut inside its length": magic + COUNT + field(field("ssh-ed25519") + "\0") + field(PRIVATE()),
+    "a public key of the wrong size": magic + COUNT + PUBLIC("ssh-ed25519", ["p".repeat(31)]) + field(PRIVATE()),
+    "an empty public key": magic + COUNT + PUBLIC("ssh-ed25519", [""]) + field(PRIVATE()),
+    "an RSA key missing its modulus": magic + COUNT + PUBLIC("ssh-rsa", ["\x01\0\x01"]) + field(PRIVATE("ssh-rsa")),
+    "extra bytes after the public key": magic + COUNT + field(field("ssh-ed25519") + field(PUBLIC_KEY) + "x") + field(PRIVATE()),
+    "a private block of only check numbers": header("none") + field(CHECK + CHECK),
+    "a private block of a different type": header("none") + field(PRIVATE("ssh-rsa")),
+    "a private key of the wrong size": header("none") + field(PRIVATE(undefined, [parts[0], "s".repeat(63), parts[2]])),
+    "a private block for another public key": header("none") + field(PRIVATE(undefined, ["q".repeat(32), parts[1], parts[2]])),
+    "a private block with no comment": header("none") + field(PRIVATE(undefined, parts.slice(0, 2))),
+    "padding that doesn't count up": header("none") + field(`${PRIVATE().slice(0, -1)}\xff`),
+    "a private block that isn't whole blocks": header("none") + field(PRIVATE() + "\x01"),
+    "locked, no kdf options": locked(""),
+    "locked, kdf options cut short": locked(field("saltsaltsaltsalt")),
+    "locked, no rounds to run": locked(field("saltsaltsaltsalt") + "\0\0\0\0"),
+    "locked, a kdf nothing can run": locked(KDF_OPTIONS).replace("bcrypt", "scrypt"),
+    "locked, a private block far too small": locked(KDF_OPTIONS, "z".repeat(8)),
+    "locked, a private block that isn't whole blocks": locked(KDF_OPTIONS, "z".repeat(137)),
+    "locked, a tail on a cipher with no tag": locked(KDF_OPTIONS, SEALED, "t".repeat(16)),
+    "locked, a cipher's auth tag missing": header("chacha20-poly1305@openssh.com") + field(SEALED),
   };
   for (const [what, blob] of Object.entries(bad)) assert.throws(() => readKey("x", pem(blob)), /isn't an OpenSSH private key/, what);
 });
 
 test("a locked key may carry an auth tag after its private block", () => {
-  assert.equal(readKey("id", pem(header("chacha20-poly1305@openssh.com") + field("sealed bytes....") + "t".repeat(16))).locked, true);
+  assert.equal(readKey("id", pem(header("chacha20-poly1305@openssh.com") + field(SEALED) + "t".repeat(16))).locked, true);
+});
+
+test("a kind of key that can't sign from the phone is named, not called junk", () => {
+  const magic = "openssh-key-v1\0" + field("none") + field("none") + field("");
+  assert.throws(() => readKey("x", pem(magic + COUNT + field(field("sk-ssh-ed25519@openssh.com") + field(PUBLIC_KEY)) + field(PRIVATE()))), /sk-ssh-ed25519@openssh\.com keys won't work here/);
 });
 
 test("a host must be a real name or address", () => {

@@ -60,22 +60,25 @@ export interface SshKey {
   locked: boolean;
 }
 
-/**
- * Read an imported file as an OpenSSH private key, without unlocking it.
- * Its header says whether it needs a passphrase. Throws a sentence for the
- * person for anything else: a .pub, a PuTTY .ppk, an old PEM key, junk.
- */
-export function readKey(name: string, text: string): SshKey {
-  const body = /-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]*?)-----END OPENSSH PRIVATE KEY-----/.exec(text)?.[1];
-  if (!body) throw new Error(NOT_A_KEY);
-  let bytes: string;
-  try {
-    bytes = atob(body.replace(/\s/g, ""));
-  } catch {
-    throw new Error(NOT_A_KEY);
-  }
-  if (!bytes.startsWith(MAGIC)) throw new Error(NOT_A_KEY);
-  let at = MAGIC.length;
+/** How many parts follow the type in each kind of key. The private count includes the comment. */
+const KEY_PARTS: Record<string, { public: number; private: number }> = {
+  "ssh-ed25519": { public: 1, private: 3 },
+  "ssh-rsa": { public: 2, private: 7 },
+  "ecdsa-sha2-nistp256": { public: 2, private: 4 },
+  "ecdsa-sha2-nistp384": { public: 2, private: 4 },
+  "ecdsa-sha2-nistp521": { public: 2, private: 4 },
+};
+const ED25519_PUBLIC_BYTES = 32;
+const ED25519_PRIVATE_BYTES = 64;
+/** A private block comes in whole blocks of at least this, whatever the cipher. */
+const BLOCK_BYTES = 8;
+/** Smaller than the smallest private block, an ed25519 one with no comment. */
+const MIN_SEALED_BYTES = 64;
+const AUTH_TAG_BYTES = 16;
+
+/** Reads the length-prefixed numbers and strings of a key file. Running off the end throws. */
+function reader(bytes: string) {
+  let at = 0;
   const count = (): number => {
     if (at + 4 > bytes.length) throw new Error(NOT_A_KEY);
     at += 4;
@@ -87,20 +90,72 @@ export function readKey(name: string, text: string): SshKey {
     at += size;
     return bytes.slice(at - size, at);
   };
-  const cipher = field();
-  const kdf = field();
-  field(); // kdf options
-  if (!cipher || !kdf || (cipher === "none") !== (kdf === "none") || count() !== 1) throw new Error(NOT_A_KEY);
-  const publicKey = field();
-  const sealed = field(); // the private key. A locked key may have an auth tag after it.
-  if (!sealed) throw new Error(NOT_A_KEY);
-  // An unlocked key opens with the same check number twice.
-  if (cipher === "none" && (sealed.length < 8 || sealed.slice(0, 4) !== sealed.slice(4, 8))) throw new Error(NOT_A_KEY);
-  bytes = publicKey;
-  at = 0;
-  const type = field();
-  if (!/^[a-z0-9][a-z0-9@.-]*$/.test(type) || at >= bytes.length) throw new Error(NOT_A_KEY);
-  return { name, text, type: type.replace(/^ssh-/, ""), locked: cipher !== "none" };
+  return { count, field, rest: () => bytes.slice(at) };
+}
+
+/** The unlocked private block: the check number twice, the key again, a comment, then padding of 1, 2, 3. */
+function checkPrivateBlock(block: string, type: string, publicParts: string[], parts: number): void {
+  const read = reader(block);
+  if (block.length % BLOCK_BYTES || read.count() !== read.count() || read.field() !== type) throw new Error(NOT_A_KEY);
+  const fields = Array.from({ length: parts }, read.field);
+  const secret = fields.slice(0, -1);
+  if (secret.some((part) => !part) || !publicParts.every((part) => secret.includes(part))) throw new Error(NOT_A_KEY);
+  if (type === "ssh-ed25519" && secret[1].length !== ED25519_PRIVATE_BYTES) throw new Error(NOT_A_KEY);
+  const padding = read.rest();
+  for (let index = 0; index < padding.length; index += 1) {
+    if (padding.charCodeAt(index) !== index + 1) throw new Error(NOT_A_KEY);
+  }
+  if (padding.length >= BLOCK_BYTES) throw new Error(NOT_A_KEY);
+}
+
+/** A locked block can't be read without the passphrase, but its size and how it was locked can. */
+function checkLockedBlock(sealed: string, cipher: string, kdf: string, options: string, tail: string): void {
+  const read = reader(options);
+  const salt = read.field();
+  const rounds = read.count();
+  const whole = sealed.length >= MIN_SEALED_BYTES && sealed.length % BLOCK_BYTES === 0;
+  if (kdf !== "bcrypt" || !salt || rounds === 0 || read.rest() || !whole) throw new Error(NOT_A_KEY);
+  if (tail.length !== (/gcm|poly1305/.test(cipher) ? AUTH_TAG_BYTES : 0)) throw new Error(NOT_A_KEY);
+}
+
+/**
+ * Read an imported file as an OpenSSH private key, without unlocking it. Its
+ * header says whether it needs a passphrase. Checks the whole layout, and the
+ * maths stays with the SSH library. Throws a sentence for the person for
+ * anything else: a .pub, a PuTTY .ppk, an old PEM key, junk.
+ */
+export function readKey(name: string, text: string): SshKey {
+  const body = /-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]*?)-----END OPENSSH PRIVATE KEY-----/.exec(text)?.[1];
+  if (!body) throw new Error(NOT_A_KEY);
+  let bytes: string;
+  try {
+    bytes = atob(body.replace(/\s/g, ""));
+  } catch {
+    throw new Error(NOT_A_KEY);
+  }
+  if (!bytes.startsWith(MAGIC)) throw new Error(NOT_A_KEY);
+  const file = reader(bytes.slice(MAGIC.length));
+  const cipher = file.field();
+  const kdf = file.field();
+  const options = file.field();
+  if (!cipher || !kdf || (cipher === "none") !== (kdf === "none") || file.count() !== 1) throw new Error(NOT_A_KEY);
+  const publicKey = reader(file.field());
+  const sealed = file.field();
+  const type = publicKey.field();
+  if (!/^[a-z0-9][a-z0-9@.-]*$/.test(type)) throw new Error(NOT_A_KEY);
+  const parts = KEY_PARTS[type];
+  if (!parts) throw new Error(`${type} keys won't work here. Use an ed25519, RSA or ECDSA key.`);
+  const publicParts = Array.from({ length: parts.public }, publicKey.field);
+  if (publicKey.rest() || publicParts.some((part) => !part)) throw new Error(NOT_A_KEY);
+  if (type === "ssh-ed25519" && publicParts[0].length !== ED25519_PUBLIC_BYTES) throw new Error(NOT_A_KEY);
+  const locked = cipher !== "none";
+  if (locked) {
+    checkLockedBlock(sealed, cipher, kdf, options, file.rest());
+  } else {
+    if (file.rest()) throw new Error(NOT_A_KEY);
+    checkPrivateBlock(sealed, type, publicParts, parts.private);
+  }
+  return { name, text, type: type.replace(/^ssh-/, ""), locked };
 }
 
 export interface SshForm {
