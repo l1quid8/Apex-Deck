@@ -211,10 +211,13 @@ export function VoiceCall(props: Base & {
   };
   const tap = async () => {
     if (live) return setOpen("settings");
+    const wanted = voice.startWanted();
     await voice.refreshSettings(hostId);
+    if (!wanted()) return;
     // GPT-Live needs nothing on the machine but its key, so the local voice setup doesn't apply.
     if (voice.settingsFor(hostId).engine !== "realtime") {
       const status = await link.status();
+      if (!wanted()) return;
       setSetup(status);
       if (!status.installed) return setOpen("setup");
     }

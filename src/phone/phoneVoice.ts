@@ -61,6 +61,8 @@ export interface PhoneVoice {
   engine(): CallEngine;
   /** Read the machine's saved call settings again, so a call uses its current engine. */
   refreshSettings(hostId: string): Promise<void>;
+  /** Call before a wait that leads to `start`; the check turns false once the call is ended or another starts. */
+  startWanted(): () => boolean;
   view(): { weak: boolean; attention: boolean };
   subscribe(fn: () => void): () => void;
   failed(
@@ -275,14 +277,13 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
     },
     focus,
   });
-  const engines = joinVoiceEngines(local, realtime, (s) => settingsFor(s.hostId).engine);
-  const controller: VoiceController<ServerVoiceRuntime> = {
-    ...engines.controller,
-    start: async (s: CallScope) => {
-      await refreshSettings(s.hostId);
-      return engines.controller.start(s);
-    },
-  };
+  const engines = joinVoiceEngines(
+    local,
+    realtime,
+    (s) => settingsFor(s.hostId).engine,
+    (s) => refreshSettings(s.hostId),
+  );
+  const controller: VoiceController<ServerVoiceRuntime> = engines.controller;
   controller.subscribe(() => {
     const s = controller.getState(),
       on = !["off", "error", "setup"].includes(s.status);
@@ -310,6 +311,7 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
     settingsFor,
     look: (hostId) => settingsFor(hostId).look,
     engine: engines.engine,
+    startWanted: engines.startWanted,
     refreshSettings,
     save: (value, hostId) => {
       const before = hostId ? settingsFor(hostId) : settings;
@@ -350,9 +352,7 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
           .catch(() => {});
       }
     },
-    leftScreen: () => {
-      if (controller.getState().status !== "off")
-        void controller.end("app left the screen");
-    },
+    // Always ends: a call still waiting on the machine has no status yet.
+    leftScreen: () => void controller.end("app left the screen"),
   };
 }

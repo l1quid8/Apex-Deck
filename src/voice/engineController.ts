@@ -10,7 +10,11 @@ export function joinVoiceEngines<R>(
   local: VoiceController<R>,
   realtime: RealtimeVoiceController,
   engineFor: (scope: CallScope) => CallEngine,
+  /** Runs before a call opens. Ending the call while this waits cancels the start. */
+  prepare: (scope: CallScope) => Promise<void> = async () => {},
 ) {
+  // Every start and end moves this on, so a start still waiting can see it was overtaken.
+  let latest = 0;
   const running = (): VoiceController<R> | RealtimeVoiceController => {
     if (local.getState().status !== "off") return local;
     return realtime.getState().status !== "off" ? realtime : local;
@@ -24,14 +28,20 @@ export function joinVoiceEngines<R>(
       return () => { off1(); off2(); };
     },
     start: async (scope: CallScope) => {
+      const mine = ++latest;
+      await prepare(scope);
+      if (mine !== latest) return;
       if (engineFor(scope) === "realtime") {
         await local.end("switch to realtime");
+        if (mine !== latest) return;
         return realtime.start(scope);
       }
       await realtime.end("switch to local");
+      if (mine !== latest) return;
       return local.start(scope);
     },
     end: async (reason?: string) => {
+      latest++;
       await Promise.all([local.end(reason), realtime.end(reason)]);
     },
     switchAgent: (scope: CallScope) => running().switchAgent(scope),
@@ -45,5 +55,10 @@ export function joinVoiceEngines<R>(
     controller,
     /** Which engine the running call uses; "local" when no call is on. */
     engine: (): CallEngine => (running() === realtime ? "realtime" : "local"),
+    /** For a wait before `start`: the check turns false once the call is ended or another starts. */
+    startWanted: () => {
+      const mine = latest;
+      return () => mine === latest;
+    },
   };
 }

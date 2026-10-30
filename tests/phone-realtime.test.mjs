@@ -134,3 +134,36 @@ test("picks saved on the phone stay the phone's and never store an engine", asyn
   assert.equal(f.voice.settingsFor("mac").engine, "realtime");
   assert.equal(JSON.parse(f.storage.get(PHONE_VOICE_KEY)).engine, "local");
 });
+
+test("ending a call while it waits for the machine's settings cancels it", async () => {
+  let settings;
+  const f = fixture({ settingsLoad: () => new Promise((resolve) => { settings = resolve; }) });
+  const pending = f.voice.controller.start(scope);
+  await f.voice.controller.end("user stopped");
+  settings({ voice: { engine: "realtime" } });
+  await pending;
+  assert.equal(f.voice.controller.getState().status, "off", "the call opened after End");
+  assert.deepEqual(f.calls, [], "no GPT-Live session was bought for an ended call");
+});
+
+test("leaving the screen while a call waits for the machine's settings cancels it", async () => {
+  let settings;
+  const f = fixture({ settingsLoad: () => new Promise((resolve) => { settings = resolve; }) });
+  const pending = f.voice.controller.start(scope);
+  f.voice.leftScreen();
+  settings({ voice: { engine: "realtime" } });
+  await pending;
+  assert.equal(f.voice.controller.getState().status, "off", "the call opened on a hidden app");
+  assert.deepEqual(f.calls, [], "no GPT-Live session was bought after leaving");
+});
+
+test("a mic tap still waiting is no longer wanted after End, leaving the screen or a newer call", async () => {
+  const f = fixture({ machine: { engine: "local" } });
+  for (const stop of [() => f.voice.leftScreen(), () => f.voice.controller.end(), () => f.voice.controller.start(scope)]) {
+    const wanted = f.voice.startWanted();
+    assert.equal(wanted(), true);
+    await stop();
+    assert.equal(wanted(), false);
+  }
+  await f.voice.controller.end();
+});
