@@ -48,6 +48,10 @@ type ToolCallInfo = {
   name?: string;
 };
 
+type ConnectOpts = {
+  signal?: AbortSignal;
+};
+
 export async function connectRealtime(
   deps: RealtimeDependencies,
   scope: CallScope,
@@ -58,7 +62,9 @@ export async function connectRealtime(
     onClose: (reason: string) => void;
   },
   mic: { muted(): boolean; stream(): MediaStream | null },
+  opts: ConnectOpts = {},
 ): Promise<RealtimeClient> {
+  const signal = opts.signal;
   const settings = deps.voiceSettings();
   const model = REALTIME_MODEL_DEFAULT;
   const realtimeVoice = (settings.realtimeVoice ?? "verse").toLowerCase();
@@ -118,6 +124,8 @@ Rules:
     },
   ];
 
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
   let minted: RealtimeSessionMint;
   try {
     minted = await deps.mintSession({
@@ -132,16 +140,26 @@ Rules:
     throw e instanceof Error ? e : new Error(String(e));
   }
 
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
   const pc = new RTCPeerConnection();
+
+  if (signal) {
+    signal.addEventListener("abort", () => {
+      try { pc.close(); } catch {}
+    }, { once: true });
+  }
 
   pc.ontrack = ev => {
     if (ev.streams[0]) events.onAudio(ev.streams[0]);
   };
 
+  // Capture the mic stream for THIS call only – prevents A attaching B's mic.
   const localStream = mic.stream();
   if (localStream) {
     for (const track of localStream.getAudioTracks()) {
       pc.addTrack(track, localStream);
+      // respect mute at attach time; controller controls enabled later
       track.enabled = !mic.muted();
     }
   }
@@ -212,7 +230,7 @@ Rules:
                   output,
                 },
               }));
-              dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
+              dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
             } catch {}
           }
         }
@@ -227,7 +245,7 @@ Rules:
               type: "response.create",
               response: {
                 instructions: `Briefly say: "Asking ${target!.name}, working on it." Then stay quiet until tool output arrives.`,
-                output_modalities: ["audio","text"],
+                output_modalities: ["audio"],
               },
             }));
           } catch {}
@@ -253,7 +271,7 @@ Rules:
             output: `Error: ${e instanceof Error ? e.message : String(e)}`,
           },
         }));
-        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
+        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
       } catch {}
     }
   };
@@ -268,7 +286,7 @@ Rules:
           type: "conversation.item.create",
           item: { type: "function_call_output", call_id: callId, output: `Ambiguous agent "${agentName}": ${resolved.names.join(", ")}` },
         }));
-        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
+        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
       } catch {}
       return;
     }
@@ -281,7 +299,7 @@ Rules:
           type: "conversation.item.create",
           item: { type: "function_call_output", call_id: callId, output: `No agent named "${agentName}" in this thread. Available: ${candidates.map(c => c.name).join(", ") || "none"}.` },
         }));
-        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
+        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
       } catch {}
       return;
     }
@@ -303,24 +321,33 @@ Rules:
         type: "conversation.item.create",
         item: { type: "function_call_output", call_id: callId, output: canceled > 0 ? `Stop requested for ${target.name}.` : `No pending work for ${target.name}.` },
       }));
-      dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
+      dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
     } catch (e) {
       try {
         dc.send(JSON.stringify({
           type: "conversation.item.create",
           item: { type: "function_call_output", call_id: callId, output: `Error stopping: ${String(e)}` },
         }));
-        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio","text"] } }));
+        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
       } catch {}
     }
   };
 
   const dispatchFunctionCall = (callId: string, name: string, rawArgs: string | object) => {
     if (!callId) return;
+    if (handledCalls.has(callId)) return;
     let args: any = {};
-    try { args = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs ?? {}; } catch { args = {}; }
-    if (name === "ask_agent") void handleAskAgent(callId, args.agent ?? "", args.request ?? "");
-    else if (name === "stop_agent") void handleStopAgent(callId, args.agent ?? "");
+    try { args = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs ?? {}; } catch { return; } // ignore incomplete JSON
+    if (!args || typeof args !== "object") return;
+    if (name === "ask_agent") {
+      const req = typeof args.request === "string" ? args.request.trim() : "";
+      if (!req) return; // P1 fix: ignore empty/incomplete requests
+      void handleAskAgent(callId, args.agent ?? "", req);
+    } else if (name === "stop_agent") {
+      const ag = typeof args.agent === "string" ? args.agent.trim() : "";
+      if (!ag) return;
+      void handleStopAgent(callId, ag);
+    }
   };
 
   dc.onmessage = ev => {
@@ -339,18 +366,27 @@ Rules:
         }
       } else if (type === "response.function_call_arguments.done") {
         const callId = msg.call_id ?? "";
-        const info = pendingArgs.get(callId);
-        const name = msg.name ?? info?.name ?? "";
-        const argsStr = msg.arguments ?? info?.argumentJson ?? "{}";
-        pendingArgs.delete(callId);
-        dispatchFunctionCall(callId, name, argsStr);
-      } else if (type === "response.output_item.done" || type === "response.output_item.added" || type === "response.done" || type === "conversation.item.created") {
-        // GA shapes – output items
+        if (!callId) { /* ignore */ }
+        else {
+          const info = pendingArgs.get(callId);
+          const name = msg.name ?? info?.name ?? "";
+          const argsStr = msg.arguments ?? info?.argumentJson ?? "";
+          if (!argsStr || argsStr.trim() === "" || argsStr.trim() === "{}") {
+            pendingArgs.delete(callId);
+            // Ignore empty – don't submit
+          } else {
+            pendingArgs.delete(callId);
+            dispatchFunctionCall(callId, name, argsStr);
+          }
+        }
+      } else if (type === "response.output_item.done" || type === "response.done") {
+        // GA: only dispatch on done, never on added (incomplete args)
         const response = msg.response ?? null;
         const items: any[] = (() => {
           if (response?.output) return response.output as any[];
           if (msg.item) return [msg.item];
           if (msg.output) return [msg.output];
+          if (Array.isArray(response)) return response as any[];
           return [];
         })();
         for (const out of items) {
@@ -358,6 +394,8 @@ Rules:
             const callId = out.call_id ?? out.id;
             const name = out.name;
             const args = out.arguments;
+            const argsStr = typeof args === "string" ? args : JSON.stringify(args ?? {});
+            if (!argsStr || argsStr.trim() === "{}" || argsStr.trim() === "") continue; // incomplete
             if (callId && name && !handledCalls.has(callId)) {
               dispatchFunctionCall(callId, name, args);
             }
@@ -374,6 +412,7 @@ Rules:
       dc.send(JSON.stringify({
         type: "session.update",
         session: {
+          type: "realtime",
           model,
           instructions,
           audio: {
@@ -394,8 +433,21 @@ Rules:
     if (!closed) events.onError(new Error("Realtime data channel error"));
   };
 
+  if (signal?.aborted) {
+    try { pc.close(); } catch {}
+    throw new DOMException("Aborted", "AbortError");
+  }
+
   const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
+  if (signal?.aborted) {
+    try { pc.close(); } catch {}
+    throw new DOMException("Aborted", "AbortError");
+  }
   await pc.setLocalDescription(offer);
+  if (signal?.aborted) {
+    try { pc.close(); } catch {}
+    throw new DOMException("Aborted", "AbortError");
+  }
 
   let answerSdp: string;
   try {
@@ -406,14 +458,20 @@ Rules:
         "Content-Type": "application/sdp",
       },
       body: offer.sdp ?? "",
+      signal: signal ?? undefined,
     });
     if (!resp.ok) {
       throw new Error(`Realtime SDP failed ${resp.status}`);
     }
     answerSdp = await resp.text();
   } catch (e) {
-    pc.close();
+    try { pc.close(); } catch {}
     throw e instanceof Error ? e : new Error(String(e));
+  }
+
+  if (signal?.aborted) {
+    try { pc.close(); } catch {}
+    throw new DOMException("Aborted", "AbortError");
   }
 
   await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });

@@ -19,6 +19,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
   let remoteAudio: HTMLAudioElement | undefined;
   let localStream: MediaStream | undefined;
   let startedAt: number | undefined;
+  let abortController: AbortController | undefined;
 
   const set = (patch: Partial<VoiceState>) => {
     state = { ...state, ...patch };
@@ -37,6 +38,8 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
   const end = async (reason = "ended by user") => {
     if (callId || state.status !== "off") console.warn("[voice realtime end] " + JSON.stringify({ callId, reason, status: state.status }));
     callGen++; // invalidate any pending startup
+    try { abortController?.abort(); } catch {}
+    abortController = undefined;
     const wasCall = callId;
     callId = "";
     scope = undefined;
@@ -51,6 +54,8 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
   const start = async (nextScope: CallScope) => {
     await end("new call started");
     const gen = ++callGen;
+    abortController = new AbortController();
+    const signal = abortController.signal;
     callId = crypto.randomUUID();
     scope = nextScope;
     startedAt = Date.now();
@@ -59,7 +64,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
     let micStream: MediaStream | undefined;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-      if (gen !== callGen) {
+      if (gen !== callGen || signal.aborted) {
         for (const t of stream.getTracks()) try { t.stop(); } catch {}
         return;
       }
@@ -77,6 +82,8 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
         mintSession: deps.mintSession,
       };
 
+      // Capture THIS call's mic stream – prevents stale A attaching B's mic.
+      const thisMicStream = micStream;
       const client = await connectRealtime(
         rDeps,
         nextScope,
@@ -119,11 +126,12 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
         },
         {
           muted: () => state.muted,
-          stream: () => localStream ?? null,
-        }
+          stream: () => thisMicStream,
+        },
+        { signal }
       );
 
-      if (gen !== callGen) {
+      if (gen !== callGen || signal.aborted) {
         try { client.close("superseded"); } catch {}
         if (micStream) {
           for (const t of micStream.getTracks()) try { t.stop(); } catch {}
@@ -137,6 +145,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
       deps.focus(nextScope);
     } catch (e) {
       if (gen !== callGen) return;
+      if (e instanceof DOMException && e.name === "AbortError") return;
       if (micStream) {
         for (const t of micStream.getTracks()) try { t.stop(); } catch {}
       }
@@ -159,7 +168,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
       set({ scope: next });
       deps.focus(next);
       // Tell realtime about switch via data channel message if possible
-      pcClient?.send({ type: "session.update", session: { instructions: `Default agent now ${next.participantId}` } } as any);
+      pcClient?.send({ type: "session.update", session: { type: "realtime", instructions: `Default agent now ${next.participantId}` } } as any);
       return;
     }
     // Cross-thread switch: end and start new realtime call
