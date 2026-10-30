@@ -262,12 +262,6 @@ impl Command {
         matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
-    /// Protected room actions the Mac app sends unsigned to a Linux host.
-    /// Room posts in assistant rooms are not here; they stay protected.
-    pub fn is_room_admin(&self) -> bool {
-        matches!(self, Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. })
-    }
-
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
     /// may leave `args` out.
     pub fn from_json(mut value: Value) -> Result<Command, String> {
@@ -298,19 +292,10 @@ impl Host {
     /// Session context is supplied by the authenticated transport, never from
     /// a command argument or durable room setting. This host does not execute UI.
     pub async fn call_with_client_capability(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
-        self.admit(command, capability, cfg!(target_os = "linux")).await
-    }
-
-    /// `local_admin` is true only for local socket/SSH stdio calls on Linux.
-    /// Linux has no signed UI broker, so the Mac app sends room actions there
-    /// unsigned (desktop/provenance.mjs needsAttestation) and SSH login is the
-    /// trust boundary. Assistant commands and paired phones keep the gate.
-    async fn admit(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability, local_admin: bool) -> Result<Value, String> {
         #[cfg(feature="test-support")]
         if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,capability).await;}
         use Command::*;
         let needs_receipt = |command:&Command| -> Result<bool,String> {
-            if local_admin && command.is_room_admin() {return Ok(false);}
             if command.requires_provenance() {
                 return Ok(true);
             }
@@ -356,7 +341,7 @@ impl Host {
             if self.device_folder_command(&command)? {
                 return self.dispatch_command(command, capability).await;
             }
-            return self.admit(command, capability, false).await;
+            return self.call_with_client_capability(command, capability).await;
         }
         #[cfg(feature="test-support")]
         if crate::test_support::isolated(self.data_dir()) { return self.dispatch_command(command, capability).await; }
@@ -697,29 +682,6 @@ mod tests {
         assert!(!data.join("room-runners-v1.json").exists());
         assert!(!data.join("assistant-conversations-v1.json").exists());
         assert!(!crate::authority_file::fixture_path(&data.join("assistant-conversations-v1.json")).exists());
-        let _ = std::fs::remove_dir_all(data);
-    }
-
-    #[test]
-    fn linux_local_room_actions_skip_the_receipt_but_assistant_and_phone_calls_do_not() {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let data = std::env::temp_dir().join(format!("apex-linux-room-admin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&data);
-        let host = Host::new(HostPaths { data:data.clone(), downloads:None }, runtime.handle().clone());
-        let refused = |e: &str| e.contains("protected provenance receipt");
-        let allow_always = || Command::from_json(json!({"cmd":"room_decide","args":{"id":"no-such-room","request":"q","approve":true,"always":true}})).unwrap();
-        let local = runtime.block_on(host.call(allow_always()));
-        if cfg!(target_os = "linux") {
-            assert!(!local.as_ref().err().is_some_and(|e| refused(e)), "Linux local room action was refused: {local:?}");
-        } else {
-            assert!(local.as_ref().err().is_some_and(|e| refused(e)), "Mac accepted an unsigned room action: {local:?}");
-        }
-        let phone = runtime.block_on(host.admit(allow_always(), apex_core::GeneratedUiCapability::Unsupported, false));
-        assert!(phone.as_ref().err().is_some_and(|e| refused(e)), "phone path skipped the receipt: {phone:?}");
-        let assistant = Command::from_json(json!({"cmd":"personal_send","args":{"assistantId":"nonexistent","requestId":"r","text":"x"}})).unwrap();
-        let error = runtime.block_on(host.call(assistant)).unwrap_err();
-        assert!(refused(&error), "{error}");
-        host.shutdown();
         let _ = std::fs::remove_dir_all(data);
     }
 
