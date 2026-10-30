@@ -360,6 +360,8 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
+  /** Retrieval warning; does not fail or stop a participant's turn. */
+  | { type: "journal_warning"; error: string }
   /** The room cut off bots answering each other; `next` is who the last replies asked. */
   | { type: "hop_limit_reached"; limit: number; next: string[] }
   /** The models now see `summary` in place of the first `upto` messages. */

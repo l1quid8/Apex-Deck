@@ -241,6 +241,32 @@ fn reasons_are_one_short_line() {
     assert!(p.reason.chars().count() <= REASON_CHARS);
     assert!(!p.reason.contains('\n'));
 }
+
+#[test]
+fn picks_use_the_last_valid_answer_after_stray_braces_and_prompt_examples() {
+    let p = parse_picks(
+        "A stray { is not JSON. Example: {\"hide\":[\"120-340\"],\"reason\":\"example\"}\n\
+         My answer: {\"hide\":[\"355\"],\"reason\":\"finished\"}\n{\"other\":true} {incomplete",
+        &[120, 121, 340, 355],
+    ).unwrap();
+    assert_eq!(p.hidden, vec![[355, 355]]);
+    assert_eq!(p.reason, "finished");
+    assert!(parse_picks("{ stray\n{\"hide\":[]}", &[120]).unwrap().hidden.is_empty());
+}
+
+#[test]
+fn picks_ignore_thinking_including_unclosed_thinking_and_nested_json() {
+    for tag in ["think", "thinking", "analysis"] {
+        let thinking = format!("<{tag}>Example: {{\"hide\":[120]}}</{tag}>");
+        assert!(parse_picks(&thinking, &[120]).is_err());
+        let reply = format!("{thinking}{{\"hide\":[355],\"reason\":\"literal {{ brace \\\"quoted\\\"\"}}\n<{tag}>{{\"hide\":[120]}}");
+        let p = parse_picks(&reply, &[120, 355]).unwrap();
+        assert_eq!(p.hidden, vec![[355, 355]]);
+        assert_eq!(p.reason, "literal { brace \"quoted\"");
+    }
+    let p = parse_picks(r#"{"hide":[355],"extra":{"hide":[120]}}"#, &[120, 355]).unwrap();
+    assert_eq!(p.hidden, vec![[355, 355]]);
+}
 #[test]
 fn curate_hides_picks_without_streaming_or_mutating_the_transcript() {
     let mut r = seed(40).0;

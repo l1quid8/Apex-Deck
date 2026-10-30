@@ -179,14 +179,50 @@ pub fn digest(
     }
     (context, offered)
 }
+fn without_thinking(reply: &str) -> String {
+    let lower = reply.to_ascii_lowercase();
+    let mut answer = String::new();
+    let mut offset = 0;
+    loop {
+        let opening = ["think", "thinking", "analysis"]
+            .into_iter()
+            .filter_map(|tag| {
+                lower[offset..].find(&format!("<{tag}>")).map(|at| (offset + at, tag))
+            })
+            .min_by_key(|(at, _)| *at);
+        let Some((at, tag)) = opening else {
+            answer.push_str(&reply[offset..]);
+            break;
+        };
+        answer.push_str(&reply[offset..at]);
+        let after = at + tag.len() + 2;
+        let closing = format!("</{tag}>");
+        // An unfinished thinking block contains no final answer.
+        let Some(end) = lower[after..].find(&closing) else { break; };
+        offset = after + end + closing.len();
+    }
+    answer
+}
+
 pub fn parse_picks(reply: &str, offered: &[usize]) -> Result<Picks, String> {
-    let start = reply.find('{').ok_or("missing object")?;
-    let mut stream =
-        serde_json::Deserializer::from_str(&reply[start..]).into_iter::<serde_json::Value>();
-    let object = stream
-        .next()
-        .ok_or("missing object")?
-        .map_err(|e| e.to_string())?;
+    let answer = without_thinking(reply);
+    let mut rest = answer.as_str();
+    let mut last = None;
+    while let Some(start) = rest.find('{') {
+        rest = &rest[start..];
+        let mut stream = serde_json::Deserializer::from_str(rest).into_iter::<serde_json::Value>();
+        match stream.next() {
+            Some(Ok(object)) => {
+                if object.get("hide").is_some_and(|v| v.is_array()) {
+                    last = Some(object);
+                }
+                // Skip the whole object, including nested objects and quoted braces.
+                rest = &rest[stream.byte_offset()..];
+            }
+            _ => rest = &rest[1..],
+        }
+    }
+    let object = last.ok_or("missing valid object with a hide list")?;
     let list = object
         .get("hide")
         .and_then(|v| v.as_array())

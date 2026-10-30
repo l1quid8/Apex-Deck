@@ -163,17 +163,24 @@ fn journal_deletion_handles_open_and_closed_threads_and_late_checkpoints() {
     }
 }
 #[test]
-fn journal_open_surfaces_stale_failure() {
+fn journal_open_warns_about_stale_text_without_blocking_the_thread() {
     let (h, rt, data) = fixture("openstale", true);
     h.room_close("r".into());
     let p = path(&data);
     std::fs::remove_file(&p).unwrap();
     std::fs::create_dir(&p).unwrap();
     std::fs::create_dir(p.with_extension("md.tmp")).unwrap();
-    let err = h
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let seen = warnings.clone();
+    h.events().listen(move |envelope| seen.lock().unwrap().push(serde_json::to_value(&envelope.event).unwrap()));
+    h
         .room_open("r".into(), vec![], RoomOptions::default(), None, true)
-        .unwrap_err();
-    assert!(err.contains("may still be readable"));
+        .unwrap();
+    assert!(h.handle("r").is_ok());
+    assert!(warnings.lock().unwrap().iter().any(|e| e["payload"]["event"]["type"] == "journal_warning"
+        && e["payload"]["event"]["error"].as_str().is_some_and(|s| s.contains("may still be readable"))));
+    let req = rt.block_on(async { h.handle("r").unwrap().room.lock().await.next_steps_request(&ParticipantId::new("null")).unwrap().1 });
+    assert!(req.system.contains("can't be read right now"));
     h.shutdown();
     drop(h);
     drop(rt);
@@ -291,7 +298,8 @@ fn curate_and_undo_refuse_a_running_turn() {
 #[test]
 fn curate_unwritable_journal_hides_nothing() {
     let (h, rt, data) = fixture("preflight", false);
-    std::fs::write(data.join("attachments/r/deck-journal"), "block").unwrap();
+    std::fs::create_dir_all(data.join("attachments/deck-journals")).unwrap();
+    std::fs::write(path(&data).parent().unwrap(), "block").unwrap();
     let err = rt.block_on(h.room_curate("r".into())).err().unwrap();
     assert!(err.to_lowercase().contains("journal"));
     assert!(h
@@ -391,7 +399,10 @@ fn curate_does_not_mask_a_stale_journal_warning_with_a_model_error() {
     h.room_open("r".into(), vec![], RoomOptions::default(), None, true)
         .unwrap();
     let p = path(&data);
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let seen = warnings.clone();
     h.events().listen(move |envelope| {
+        seen.lock().unwrap().push(serde_json::to_value(&envelope.event).unwrap());
         if matches!(
             envelope.event,
             HostEvent::Room {
@@ -405,9 +416,106 @@ fn curate_does_not_mask_a_stale_journal_warning_with_a_model_error() {
     });
     let err = rt.block_on(h.room_curate("r".into())).unwrap_err();
     assert!(
-        err.contains("CURATOR_OFFLINE") && err.contains("may still be readable"),
+        err.contains("CURATOR_OFFLINE"),
         "{err}"
     );
+    assert!(warnings.lock().unwrap().iter().any(|e| e["payload"]["event"]["type"] == "journal_warning"
+        && e["payload"]["event"]["error"].as_str().is_some_and(|s| s.contains("may still be readable"))));
+    h.shutdown();
+    drop(h);
+    drop(rt);
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn journal_warning_does_not_block_accepted_posts_or_terminal_idle() {
+    let (h, rt, data) = fixture("poststale", true);
+    let p = path(&data);
+    std::fs::remove_file(&p).unwrap();
+    std::fs::create_dir(&p).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = events.clone();
+    h.events().listen(move |e| seen.lock().unwrap().push(serde_json::to_value(&e.event).unwrap()));
+    let handle = h.handle("r").unwrap();
+    rt.block_on(async {
+        let batch = h.prepare_post("r", &handle, "continue", None).await.unwrap();
+        h.run_batch("r", &handle, batch).await.unwrap();
+    });
+    assert!(h.store.room("r").unwrap().unwrap().snapshot.transcript.iter().any(|m| m.text == "continue"));
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|e| e["payload"]["event"]["type"] == "journal_warning"));
+    assert!(events.iter().any(|e| e["payload"]["event"]["type"] == "idle"));
+    assert!(!events.iter().any(|e| e["payload"]["event"]["type"] == "failed"));
+    assert!(!handle.runtime.busy());
+    drop(events);
+    h.shutdown();
+    drop(h);
+    drop(rt);
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn per_bot_stop_cancels_compaction_without_setting_a_summary() {
+    per_bot_stop_cancels_context_operation(true);
+}
+
+#[test]
+fn per_bot_stop_cancels_curation_without_hiding_messages() {
+    per_bot_stop_cancels_context_operation(false);
+}
+
+fn per_bot_stop_cancels_context_operation(compact: bool) {
+    struct Waiting {
+        config: ParticipantConfig,
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+    #[async_trait::async_trait]
+    impl apex_core::Participant for Waiting {
+        fn config(&self) -> &ParticipantConfig { &self.config }
+        async fn respond(&self, _: apex_core::TurnRequest, _: apex_core::DeltaSink<'_>) -> Result<apex_core::Reply, apex_core::ParticipantError> {
+            if let Some(started) = self.started.lock().unwrap().take() { let _ = started.send(()); }
+            std::future::pending().await
+        }
+    }
+    let (h, rt, data) = fixture(if compact { "compactstop" } else { "curatestop" }, false);
+    let handle = h.handle("r").unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let bot = Waiting {
+        config: handle.checkpoint.lock().unwrap().snapshot.participants[0].clone(),
+        started: Mutex::new(Some(tx)),
+    };
+    rt.block_on(async {
+        let operation = async {
+            let mut room = handle.room.lock().await;
+            let sink = |event| h.room_event_for("r", &handle, event);
+            if compact { room.compact(&bot, &sink).await.unwrap(); }
+            else { assert_eq!(room.curate(&bot, &sink).await.unwrap(), apex_core::CurateOutcome::Stopped); }
+            assert!(room.snapshot().curations.is_empty());
+            assert!(room.snapshot().compaction.is_none());
+        };
+        let stop = async {
+            rx.await.unwrap();
+            h.room_stop("r".into(), Some(ParticipantId::new("null")));
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async { tokio::join!(operation, stop); }).await
+            .expect("per-bot Stop must interrupt a context operation while it holds the room lock");
+    });
+    h.shutdown();
+    drop(h);
+    drop(rt);
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn per_bot_stop_during_a_normal_turn_does_not_stop_the_whole_room() {
+    let (h, rt, data) = fixture("normalstop", false);
+    let handle = h.handle("r").unwrap();
+    rt.block_on(async {
+        let batch = handle.runtime.begin_post("go", None, &|_| {}).await.unwrap();
+        h.room_stop("r".into(), Some(ParticipantId::new("null")));
+        assert!(!handle.stop.load(Ordering::SeqCst));
+        handle.runtime.run(batch, &|_| {}).await;
+    });
     h.shutdown();
     drop(h);
     drop(rt);
@@ -467,7 +575,7 @@ fn curate_events_from_a_retired_handle_cannot_change_a_reopened_thread() {
         .curations
         .is_empty());
     assert!(rt
-        .block_on(save_curation(&old, &h.store, "r"))
+        .block_on(h.save_curation(&old, "r"))
         .unwrap_err()
         .contains("replaced"));
     assert!(!path(&data).exists());

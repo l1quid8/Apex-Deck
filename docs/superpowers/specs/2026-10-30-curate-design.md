@@ -28,12 +28,12 @@ They type `/curate`. One bot works for a moment ("Choosing what to hide"), then 
 
 Deck writes the thread's exact text to a plain file, and bots read it with the file tools they already have.
 
-- **Where:** `<data>/attachments/<room>/deck-journal/chat.md`. Deck already tells every bot it may read `<data>/attachments` (`allow_reading`, `host.rs:263`).
+- **Where:** `<data>/attachments/deck-journals/<room>/chat.md`, separate from user attachments so a file named `deck-journal` cannot block journal updates. Deck already tells every bot it may read `<data>/attachments` (`allow_reading`).
 - **Format:** versioned exact-text encoding. Each message starts `#<number> · <speaker>` followed by `| <JSON string>` chunks. Concatenate their decoded strings to restore the original, including literal markers, CRLF, Unicode and trailing newlines. Encoded lines stay below the file reader limit. `? <JSON string>` records repeat up to 64 characters on either side of a split for search; ignore them when restoring text. Ordinary text search terms up to 64 characters work across splits; JSON-escaped characters require searching their encoded form, and longer patterns may require ranged reading.
 - **Numbers:** a message's number is its existing `seq`.
 - **Coverage:** its first line names the last message it holds. Bots need it only for what isn't in their prompt, which is hidden messages and whatever a summary replaced, and anything newer is already in front of them.
 - **Lifetime:** the file exists only while a curation stands. Deck brings it up to date on every full room save and on thread open, and removes it when the last curation is undone or the thread is deleted. Those saves follow curate, compact, rewind, revert and clear, and run at the start and end of each chain. Replacement imports synchronize or remove the old journal under the import/checkpoint lock before replacing history, including when the thread is closed.
-- **Current or gone:** if a rewrite fails, Deck removes the old file and tells bots the text can't be read right now, so a prompt never names a missing file and a cut message doesn't stay readable. If removal fails too, the Human gets an error saying stale text may still be readable, including on room open and alongside a simultaneous curator error. A failed room-snapshot save also invalidates the old journal and clears its live hint; errors are combined rather than masked. During `/curate` itself a failed write stops the run before any model call, with nothing hidden.
+- **Current or gone:** if a rewrite fails, Deck removes the old file and tells bots the text can't be read right now, so a prompt never names a missing file and a cut message doesn't stay readable. If removal fails too, the Human gets a `journal_warning` notice saying stale text may still be readable, including on room open and alongside a simultaneous curator error. A journal warning does not block opening, accepted posts or terminal Idle after a successful room save, and does not fail an assistant task. A failed room-snapshot save still fails the operation; it also invalidates the old journal and clears its live hint, combining removal errors rather than masking them. During `/curate` itself a failed preflight write stops the run before any model call, with nothing hidden.
 - **Replacement during curation:** events and the final checkpoint stay bound to the original handle; a retired run cannot change the reopened room, and its caller receives an error.
 - **Deletion:** journal writes check the same `deleted` flag under the same lock as room saves, and the journal is removed after that flag is set, so a late write can't bring it back.
 - **Size:** a journal over 9 MiB is refused, which keeps it inside the API `grep` tool's 10 MiB limit. The longest real thread is about 0.47 MB.
@@ -114,6 +114,13 @@ Hiding by pattern, per-bot hidden lists, curating in the middle of a turn, raw t
 ## Second review revisions
 
 - Replacement imports invalidate the prior journal even for closed threads.
-- Failed snapshot saves clear the journal hint and remove old text; stale-removal failures are surfaced on open, import and curation, alongside other errors. Journal removal returns `Result<(), String>`.
+- Failed snapshot saves clear the journal hint and remove old text; stale-removal failures after a successful save are warning notices on open and curation, alongside other errors. Explicit import/deletion cleanup can still fail. Journal removal returns `Result<(), String>`.
+
+## Backend review corrections
+
+- Normal and concurrent read-only turns share the same system-prompt builder, including journal lookup or unavailability guidance.
+- Journal sync stays under room → recovery → checkpoint locks; its warning is delivered only after those locks are released.
+- Per-bot Stop reaches the shared compact/curate cancellation flag when no normal turn is reserved. Normal per-bot cancellation remains scoped to that bot.
+- Curator parsing ignores `<think>`, `<thinking>` and `<analysis>` blocks, including unfinished blocks, and uses the last valid JSON object containing a `hide` array. Earlier prompt examples, stray braces and nested objects cannot override the final answer.
 - Versioned JSON chunk records make wrapping reversible; search-only overlap records cover short terms crossing a split.
 - Complete curator requests budget pins, instructions, digest framing and output allowance. The preflight checkpoint guard is released before the model runs.

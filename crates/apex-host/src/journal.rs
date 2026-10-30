@@ -13,8 +13,9 @@ pub(crate) enum SyncError {
 }
 pub(crate) fn path_for(attachments: &Path, room: &str) -> Result<PathBuf, String> {
     Ok(attachments
+        .join("deck-journals")
         .join(crate::export::safe_file_name(room)?)
-        .join("deck-journal/chat.md"))
+        .join("chat.md"))
 }
 pub(crate) fn write(path: &Path, snapshot: &RoomSnapshot) -> Result<(), String> {
     if snapshot
@@ -137,6 +138,20 @@ mod tests {
         assert!(!path.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn journal_does_not_collide_with_a_deck_journal_attachment() {
+        let (root, s) = fixture("attachment-clash");
+        std::fs::create_dir_all(root.join("room")).unwrap();
+        let attachment = root.join("room/deck-journal");
+        std::fs::write(&attachment, "user attachment").unwrap();
+        let path = path_for(&root, "room").unwrap();
+        write(&path, &s.snapshot).unwrap();
+        assert!(path.is_file());
+        remove(&root, "room").unwrap();
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_to_string(attachment).unwrap(), "user attachment");
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[cfg(unix)]
     #[test]
     fn journal_is_private_to_its_owner() {
@@ -174,6 +189,7 @@ mod tests {
         let (root, s) = fixture("remove");
         let path = path_for(&root, "room").unwrap();
         write(&path, &s.snapshot).unwrap();
+        std::fs::create_dir_all(root.join("room")).unwrap();
         std::fs::write(root.join("room/keep.txt"), "keep").unwrap();
         remove(&root, "room").unwrap();
         remove(&root, "room").unwrap();

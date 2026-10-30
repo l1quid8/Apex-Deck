@@ -1,13 +1,13 @@
 # `/curate` backend handoff
 
-Scope: Tasks 1–5 of `docs/superpowers/plans/2026-10-30-curate.md`, on `feat/curate` from `55a73439`. No frontend source or frontend test files changed. Task 6 remains Ds4's work; Tasks 7–9 remain separate.
+Initial scope: Tasks 1–5 of `docs/superpowers/plans/2026-10-30-curate.md`, on `feat/curate` from `55a73439` through `8d409968`. The initial implementation changed no frontend source or frontend tests. Review follow-up is below. Task 6 remains Ds4's work; Tasks 7–9 remain separate.
 
 ## Implemented
 
 - Shared, persisted curation ranges; original transcript text stays intact. Model views get gap markers, and hidden messages also stay out of attachment/media `unseen` inputs.
 - A bounded, tool-free curator turn using the existing talk-only participant builder. Newest 20 messages, response pins, existing hidden ranges, pre-summary history and oversized Human messages are excluded from candidates. Scan progression advances even when a run hides nothing, wraps at the end and resets appropriately.
 - Undo restores every live curation; `/compact` reads visible messages and seals earlier curations. Rewind/fork remove out-of-bounds curations; removing a summary can make retained curations live again.
-- Versioned, atomically replaced journals under `attachments/<room>/deck-journal/chat.md`, with 0600 file permissions. JSON chunks preserve exact text, including CRLF, literal markers, trailing newlines and Unicode. Search-only overlap records cover short ordinary search terms crossing splits. The API reader regression reaches text beyond character 3,000.
+- Versioned, atomically replaced journals under `attachments/deck-journals/<room>/chat.md` after review, with 0600 file permissions. JSON chunks preserve exact text, including CRLF, literal markers, trailing newlines and Unicode. Search-only overlap records cover short ordinary search terms crossing splits. The API reader regression reaches text beyond character 3,000.
 - Journal synchronization on full checkpoints and open; replacement import invalidation; deletion cleanup; current-or-gone failure handling. Stale-removal warnings are surfaced, including alongside model errors.
 - `room_curate { id }` and `room_curate_undo { id }`, both authorized as `full(thread(id))`. Success means the final checkpoint succeeded. Curation events update recovery state before the final snapshot. Events and saves stay bound to the original handle across replacement/deletion.
 
@@ -45,4 +45,28 @@ New regressions were observed failing before implementation. Author review also 
 
 No native-app or live-provider acceptance was performed. Journal reads by each provider/access level, actual tool-free execution, chat-note rendering and the `/compact` comparison are Tasks 7–9. Tiny-model retrieval quality and cost savings remain unmeasured. The accepted head/tail excerpt risk remains: a requirement in the middle of a long bot reply can be hidden.
 
-Fresh review by Jigga is pending. No merge, push, release build or installation was performed.
+Jigga's first review identified five follow-up fixes below. No merge, push, release build or installation was performed.
+
+## Review follow-up: `fix/curate-review`
+
+The branch starts at `8d409968` and addresses all five requested fixes:
+
+1. `Room::turn_system` now builds both normal and concurrent read-only system prompts. Both retain journal paths or the explicit unavailable-text instruction. A two-writer regression covers both states and verifies hidden gap markers still appear.
+2. A successful room save remains successful when journal synchronization fails. The hint is cleared, and a separate `journal_warning` event tells the Human when retrieval is unavailable or stale text may remain. Warnings are emitted after transcript/recovery/checkpoint locks are released. Open, accepted posts and terminal Idle continue; actual snapshot-save failures still return errors and invalidate old journal text. Explicit import/deletion cleanup failures still fail those operations.
+3. Journal files now use `attachments/deck-journals/<room>/chat.md`, outside the room's user-attachment folder. Creation and removal preserve a user attachment named `deck-journal`. The file format and 9 MiB limit are unchanged. This unmerged feature has no deployed-format migration.
+4. A per-bot Stop sets the shared cancellation flag when no normal turn is reserved, interrupting both curation and compaction. Waiting-provider regressions exercise cancellation while the transcript lock is held; a normal-turn control keeps cancellation scoped to that bot.
+5. Reply parsing ignores `think`, `thinking` and `analysis` blocks, including unfinished blocks; skips stray braces; and chooses the last valid JSON object containing a `hide` array. Parsed objects are consumed whole so nested objects and quoted braces cannot override the answer. Offered-ID intersection remains enforced.
+
+Small frontend additions are necessary for fix 2: the warning variant in `src/types.ts`, a `ChatPane.tsx` branch that displays it through the existing error notice, and a matching phone notice for an already-curated Work thread. None invokes turn-queue failure handling. Phone `/curate` command support remains out of scope. Task 6's composer, queue, backend and recovery implementation is untouched. Both design documents reflect the reviewed behavior.
+
+Regression failures were reproduced before the corresponding fixes. Live-provider and native-app validation remain outstanding; the notification branch is type-checked and covered at the emitted host-event boundary, not visually validated.
+
+Follow-up verification:
+
+- `TMPDIR=/tmp cargo test`: 1,779 passed, 19 ignored, 0 failed across all default workspace members and doc tests.
+- Final `TMPDIR=/tmp cargo test -p apex-core`: passed after the parser formatting cleanup.
+- `npm test`: 2,806 passed, 3 skipped, 0 failed, including a phone warning regression that runs the real event handler and replays an open-time warning without ending an active turn.
+- `npx tsc --noEmit` and `git diff --check`: passed.
+- An independent code review found the missing phone warning delivery; that was fixed and its regression observed failing and passing. No remaining actionable findings were reported. Jigga's requested re-check is still pending.
+
+No merge, push, release build, installation or live-provider call was performed in this follow-up.

@@ -324,7 +324,7 @@ impl Host {
                     &host.turn_sink(&thread_id, &handle, &error),
                 ).await?;
                 if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-                checkpoint_room(&handle, &host.store, &thread_id).await?;
+                host.checkpoint_room(&handle, &thread_id).await?;
                 host.run_batch_in_background(thread_id, handle, batch);
                 Ok(())
             })
@@ -482,7 +482,7 @@ impl Host {
         let handle = self.handle(id)?;
         let error = Mutex::new(None);
         handle.room.lock().await.append_assistant_note(text, &self.turn_sink(id, &handle, &error));
-        checkpoint_room(&handle, &self.store, id).await?;
+        self.checkpoint_room(&handle, id).await?;
         if let Some(error) = error.into_inner().unwrap() { return Err(error); }
         Ok(())
     }
@@ -1103,7 +1103,7 @@ impl Host {
         if let Err(error) = self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }) {
             return Err(invalidate_journal(&mut room, journal.as_deref(), error));
         }
-        sync_journal(&mut room, journal.as_deref(), &snapshot)?;
+        let journal_warning = sync_journal(&mut room, journal.as_deref(), &snapshot);
         let journal_hint = room.journal_path_handle();
         let stop = room.stop_handle();
         let plan = room.plan_handle();
@@ -1148,7 +1148,10 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, journal, journal_hint, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id.clone(), RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, journal, journal_hint, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+        if let Some(error) = journal_warning {
+            self.room_event(&id, RoomEvent::JournalWarning { error });
+        }
         Ok(snapshot)
     }
 
@@ -1305,7 +1308,7 @@ impl Host {
         let error = Mutex::new(None);
         let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        checkpoint_room(handle, &self.store, id).await?;
+        self.checkpoint_room(handle, id).await?;
         Ok(batch)
     }
 
@@ -1321,7 +1324,7 @@ impl Host {
             if error.lock().unwrap().is_some() { room.interrupt_client_message(request_id); }
             else { room.finish_client_message(request_id); }
         }
-        checkpoint_room(handle, &self.store, id).await?;
+        self.checkpoint_room(handle, id).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
             if let Some(cwd) = handle.context.cwd.clone() {
@@ -1759,9 +1762,13 @@ impl Host {
         if let Ok(handle) = self.handle(&id) {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             handle.runtime.stop(participant.as_ref());
+            // Compact/curate hold the transcript lock but do not reserve a
+            // normal turn slot. Their bubble's Stop must reach the shared flag.
+            if participant.is_none() || !handle.runtime.busy() {
+                handle.stop.store(true, Ordering::SeqCst);
+            }
             if let Some(participant) = participant { handle.approvals.reject_for(&participant); }
             else {
-                handle.stop.store(true, Ordering::SeqCst);
                 handle.approvals.reject_all();
             }
         }
@@ -2214,7 +2221,7 @@ impl Host {
             .await
             .map(|outcome| CurateReply { by, outcome })
         };
-        combine_result(result, save_curation(&handle, &self.store, &id).await)
+        combine_result(result, self.save_curation(&handle, &id).await)
     }
 
     pub async fn room_curate_undo(&self, id: String) -> Result<apex_core::CurationUndo, String> {
@@ -2229,7 +2236,7 @@ impl Host {
             }
             room.undo_curation(&|event| self.room_event_for(&id, &handle, event))
         };
-        save_curation(&handle, &self.store, &id).await?;
+        self.save_curation(&handle, &id).await?;
         Ok(outcome)
     }
 
@@ -2938,7 +2945,26 @@ impl Host {
     }
 
     async fn save_room(&self, id: &str) -> Result<(), String> {
-        checkpoint_room(&self.handle(id)?, &self.store, id).await
+        self.checkpoint_room(&self.handle(id)?, id).await
+    }
+
+    pub(crate) async fn checkpoint_room(&self, handle: &RoomHandle, id: &str) -> Result<(), String> {
+        // Deliver warnings after releasing the transcript/recovery/checkpoint locks.
+        if let Some(error) = checkpoint_room(handle, &self.store, id).await? {
+            self.room_event_for(id, handle, RoomEvent::JournalWarning { error });
+        }
+        Ok(())
+    }
+
+    /// A replaced/deleted handle must never checkpoint the new room with the same ID.
+    async fn save_curation(&self, handle: &RoomHandle, id: &str) -> Result<(), String> {
+        let saved = self.checkpoint_room(handle, id).await;
+        let live = if handle.deleted.load(Ordering::SeqCst) {
+            Err("This chat was deleted or replaced while curating. Reopen the chat.".into())
+        } else {
+            Ok(())
+        };
+        combine_result(saved, live)
     }
 
     // ------------------------------------------------------------ quitting
@@ -3068,11 +3094,11 @@ fn update_chat_message_meta(store: &Store, id: &str, chat: bool, message: &apex_
     }
 }
 
-async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
+async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<Option<String>, String> {
     let mut room = handle.room.lock().await;
     let _boundary = handle.recovery.lock().unwrap();
     let mut checkpoint = handle.checkpoint.lock().unwrap();
-    if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
+    if handle.deleted.load(Ordering::SeqCst) { return Ok(None); }
     let snapshot = room.snapshot();
     let len = snapshot.transcript.len();
     if len < checkpoint.snapshot.transcript.len() && !checkpoint.mounts.is_empty() {
@@ -3088,18 +3114,7 @@ async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result
     if let Err(error) = store.save_room(id, &checkpoint) {
         return Err(invalidate_journal(&mut room, handle.journal.as_deref(), error));
     }
-    sync_journal(&mut room, handle.journal.as_deref(), &checkpoint.snapshot)
-}
-
-/// A replaced/deleted handle must never checkpoint the new room with the same ID.
-async fn save_curation(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
-    let saved = checkpoint_room(handle, store, id).await;
-    let live = if handle.deleted.load(Ordering::SeqCst) {
-        Err("This chat was deleted or replaced while curating. Reopen the chat.".into())
-    } else {
-        Ok(())
-    };
-    combine_result(saved, live)
+    Ok(sync_journal(&mut room, handle.journal.as_deref(), &checkpoint.snapshot))
 }
 
 fn invalidate_journal(room: &mut Room, path: Option<&Path>, error: String) -> String {
@@ -3119,26 +3134,25 @@ fn sync_journal(
     room: &mut Room,
     path: Option<&Path>,
     snapshot: &RoomSnapshot,
-) -> Result<(), String> {
+) -> Option<String> {
     let Some(path) = path else {
         room.set_journal_path(None);
-        return Ok(());
+        return None;
     };
     match crate::journal::sync(path, snapshot) {
         Ok(()) => {
             room.set_journal_path(
                 apex_core::stands(&snapshot.curations).then(|| path.display().to_string()),
             );
-            Ok(())
+            None
         }
         Err(crate::journal::SyncError::Gone(why)) => {
             room.set_journal_path(None);
-            eprintln!("[apex-deck] journal unavailable: {why}");
-            Ok(())
+            Some(format!("Journal unavailable: {why} Hidden text can't be read right now."))
         }
         Err(crate::journal::SyncError::Stale(why)) => {
             room.set_journal_path(None);
-            Err(format!(
+            Some(format!(
                 "Journal text may still be readable in {}: {why}",
                 path.display()
             ))

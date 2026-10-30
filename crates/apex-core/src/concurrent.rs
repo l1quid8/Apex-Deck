@@ -699,13 +699,7 @@ impl ConcurrentRoom {
                     let e = configs.iter().find(|c| c.id == held_by).map(|c| c.display_name.clone()).unwrap_or_else(|| held_by.to_string());
                     (b, e)
                 };
-                let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
-                request.system = crate::view::system_prompt(&config, &room.configs())
-                    + &crate::view::pinned_section(room.pins())
-                    + &room.checklist_section(&ticket.id)
-                    + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
-                    + answer_guidance;
-                if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+                request.system = room.turn_system(&config, answers, generated_ui, request.plan);
                 let line = read_only_line(&bot_name, &editor_name, &reason);
                 request.system.push_str("\n\n");
                 request.system.push_str(&line);

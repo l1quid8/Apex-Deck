@@ -1185,6 +1185,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           setWorking(({ [event.id]: _gone, ...rest }) => rest);
           notify(`${nameOf(event.id)} had nothing to add.`);
           break;
+        case "journal_warning":
+          notify(event.error, "error");
+          break;
         case "failed":
           turnQueue.error(event.id);
           setDrafts(({ [event.id]: _gone, ...rest }) => rest);

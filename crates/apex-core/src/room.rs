@@ -149,6 +149,8 @@ pub enum RoomEvent {
     Passed { id: ParticipantId },
     /// A participant could not reply.
     Failed { id: ParticipantId, error: String },
+    /// Journal retrieval failed; the room and any successful turn remain usable.
+    JournalWarning { error: String },
     /// Bots kept addressing each other and the room cut them off. `next`
     /// lists who the last replies addressed, so the person can let them answer.
     HopLimitReached {
@@ -1243,10 +1245,22 @@ impl Room {
         self.request_for_capability(id, self.answers.load(Ordering::SeqCst), GeneratedUiCapability::Unsupported)
     }
 
+    pub(crate) fn turn_system(&self, config: &ParticipantConfig, answers: bool, capability: GeneratedUiCapability, plan: bool) -> String {
+        let mut system = system_prompt(config, &self.configs()) + &pinned_section(&self.pins)
+            + &if curation::stands(&self.curations) { curation::journal_section(self.journal_path.lock().unwrap().as_deref()) } else { String::new() }
+            + &self.checklist_section(&config.id)
+            + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human)
+                .map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
+            // Before Plan mode's text: next_steps_request cuts that off the end.
+            + if answers { answers_system_for_capability(capability) } else { "" };
+        if plan { system.push_str(PLAN_SYSTEM); }
+        system
+    }
+
     pub(crate) fn request_for_capability(&self, id: &ParticipantId, answers: bool, capability: GeneratedUiCapability) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let participant = self.roster.iter().find(|p| &p.config().id == id)?.clone();
-        let answer_guidance = if answers { answers_system_for_capability(capability) } else { "" };
         let configs = self.configs();
+        let plan = self.plan.load(Ordering::SeqCst);
         // What the summary covers counts as seen.
         let start = self.compacted_upto();
         let seen = self.cursors.get(id).copied().unwrap_or(0).max(start).min(self.transcript.len());
@@ -1259,22 +1273,14 @@ impl Room {
         let mut request = TurnRequest {
             effort_override: None,
             access: Some(participant.config().access),
-            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins)
-                + &if curation::stands(&self.curations) { curation::journal_section(self.journal_path.lock().unwrap().as_deref()) } else { String::new() }
-                + &self.checklist_section(id) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
-                crate::server_request::prompt_section(&m.text)
-            }).unwrap_or_default()
-                // Before Plan mode's text: next_steps_request cuts that off the end.
-                + answer_guidance,
+            system: self.turn_system(participant.config(), answers, capability, plan),
             turns: render_view_hiding(self.summary(), &self.transcript[start..], &hidden, id, &configs),
             unseen,
-            plan: false,
+            plan,
             cwd: None,
         };
-        if self.plan.load(Ordering::SeqCst) {
-            request.plan = true;
+        if plan {
             request.access = Some(crate::Access::Read);
-            request.system.push_str(PLAN_SYSTEM);
         }
         Some((participant, request))
     }
