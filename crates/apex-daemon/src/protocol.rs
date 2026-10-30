@@ -901,7 +901,7 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
     }
     if value["cmd"]
         .as_str()
-        .is_some_and(|c| c.starts_with("voice_server_"))
+        .is_some_and(|c| c.starts_with("voice_server_") || c.starts_with("voice_realtime_"))
     {
         return serde_json::from_value(value)
             .map(|r| (id, Request::Voice(r)))
@@ -2204,6 +2204,22 @@ mod tests {
         let frame = device.next().await.unwrap();
         assert_eq!(frame["seq"], json!(after), "{}", frame.to_string().chars().take(200).collect::<String>());
         assert!(!session.is_finished());
+    }
+
+    #[test]
+    fn voice_realtime_session_is_routed_to_voice_request() {
+        // Regression for "unknown variant voice_realtime_session" – the cmd
+        // must be parsed as Request::Voice, not Request::Host.
+        let frame = r#"{"id":1,"cmd":"voice_realtime_session","args":{"room":"r","model":"gpt-realtime"}}"#;
+        let (id, req) = read_request(frame).expect("should parse");
+        assert_eq!(id, 1);
+        assert!(matches!(req, Request::Voice(crate::voice::session::VoiceRequest::VoiceRealtimeSession { .. })), "expected VoiceRealtimeSession");
+
+        // voice_server_* still routes to Voice as before.
+        let frame2 = r#"{"id":2,"cmd":"voice_server_status","args":{}}"#;
+        let (id2, req2) = read_request(frame2).expect("should parse");
+        assert_eq!(id2, 2);
+        assert!(matches!(req2, Request::Voice(crate::voice::session::VoiceRequest::VoiceServerStatus { .. })));
     }
 
     #[test]
