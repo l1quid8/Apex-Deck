@@ -432,3 +432,10 @@ assert (u.UPGRADES/'install.lock/recovery-needed.txt').exists()
 assert not loaded[501] and not loaded[502]
 shutil.rmtree(directory)
 `));
+
+test('the packaged app and daemon declare the same release version',()=>{
+ const app=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8'));
+ const workspace=fs.readFileSync(new URL('../Cargo.toml',import.meta.url),'utf8');
+ const version=/\[workspace\.package\]\s*\nversion\s*=\s*"([^"]+)"/.exec(workspace)?.[1];
+ assert.equal(version,app.version,'daemon workspace version must match the app to avoid Different builds');
+});
