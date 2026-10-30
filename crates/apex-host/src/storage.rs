@@ -355,12 +355,17 @@ impl Store {
     }
 
     pub fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
-        let Some(mut room):Option<SavedRoom>=self.read(&self.room_path(id))? else{return Ok(None)};
-        let authority=self.room_authorities()?;
+        let Some(room):Option<SavedRoom>=self.read(&self.room_path(id))? else{return Ok(None)};
+        self.apply_room_authority(id, room, &self.room_authorities()?).map(Some)
+    }
+
+    /// Restore permission-bearing fields only from the protected manifest.
+    /// A catalog request shares one freshly read manifest across its rooms.
+    fn apply_room_authority(&self, id: &str, mut room: SavedRoom, authority: &serde_json::Map<String, serde_json::Value>) -> Result<SavedRoom, String> {
         // Linux keeps the manifest as a plain file beside the room, so it is no
         // more trusted than the room file itself. A room saved before the
         // manifest existed keeps its own settings there, as it did before.
-        if crate::authority_file::plain(&self.root)&&!authority.contains_key(id){return Ok(Some(room));}
+        if crate::authority_file::plain(&self.root)&&!authority.contains_key(id){return Ok(room);}
         let trusted:RoomAuthority=serde_json::from_value(authority.get(id).cloned().ok_or("This legacy room has no verified authority manifest. It requires explicit reauthorization; its original file was preserved.")?).map_err(|e|e.to_string())?;
         room.snapshot.kind=trusted.kind;
         room.cwd=trusted.cwd;
@@ -369,7 +374,7 @@ impl Store {
         room.snapshot.allowed=trusted.allowed;
         room.snapshot.plan=trusted.plan;
         room.mounts=trusted.mounts;
-        Ok(Some(room))
+        Ok(room)
     }
 
     pub(crate) fn room_ids(&self) -> Result<Vec<String>, String> {
@@ -1027,9 +1032,13 @@ impl Store {
         let mut out = Vec::new();
         for id in candidate_ids {
             let meta = metas.get(&id).cloned();
-            let saved = match self.room(&id) {
+            let saved = match self.read(&self.room_path(&id)) {
                 Ok(Some(saved)) => saved,
                 Ok(None) | Err(_) => continue,
+            };
+            let saved = match self.apply_room_authority(&id, saved, &authorities) {
+                Ok(saved) => saved,
+                Err(_) => continue,
             };
             if !saved.snapshot.kind.is_chat() && meta.is_none() {
                 continue;
@@ -1318,6 +1327,52 @@ mod tests {
         assert!(write_new(&store.room_path("destination"), &different).unwrap_err().contains("already exists"));
         assert_eq!(std::fs::read(store.room_path("destination")).unwrap(), bytes);
         drop(host);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_list_reads_authority_once_for_many_rooms() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let saved = SavedRoom { cwd: None, mounts: vec![], snapshot: Room::new(vec![], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat).snapshot() };
+        for n in 0..131 { store.save_room(&format!("chat-{n}"), &saved).unwrap(); }
+
+        let (listed, reads) = crate::authority_file::tests::track_reads(|| store.chat_list().unwrap());
+        assert_eq!(listed.len(), 131);
+        assert_eq!(reads.len(), 1, "A catalog refresh must not reopen the protected ledger per room");
+        assert_eq!(reads[0], root.join("room-authority-v1.json"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_list_uses_fresh_protected_authority_and_rejects_forged_rooms() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut trusted = SavedRoom { cwd: Some("/trusted".into()), mounts: vec![], snapshot: Room::new(vec![], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat).snapshot() };
+        store.save_room("trusted", &trusted).unwrap();
+        let mut forged = trusted.clone();
+        forged.cwd = Some("/forged".into());
+        forged.snapshot.kind = apex_core::RoomKind::Work;
+        forged.snapshot.participants = vec![serde_json::from_value(serde_json::json!({"id":"attacker","display_name":"Forged","persona":"","access":"full","backend":{"kind":"agent","tool":"codex"}})).unwrap()];
+        std::fs::write(store.room_path("trusted"), serde_json::to_vec(&forged).unwrap()).unwrap();
+        std::fs::write(store.room_path("unverified"), serde_json::to_vec(&trusted).unwrap()).unwrap();
+        store.save_room("broken", &trusted).unwrap();
+        std::fs::write(store.room_path("broken"), b"not JSON").unwrap();
+
+        let rows = store.chat_list().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "trusted");
+        assert_eq!(rows[0].kind, apex_core::RoomKind::Chat);
+        assert_eq!(rows[0].cwd.as_deref(), Some("/trusted"));
+        assert!(rows[0].participants.is_empty());
+
+        // No cross-request cache: changed authority is used on the next list.
+        trusted.cwd = Some("/new-trusted".into());
+        store.save_room("trusted", &trusted).unwrap();
+        assert_eq!(store.chat_list().unwrap()[0].cwd.as_deref(), Some("/new-trusted"));
+        let manifest = root.join("room-authority-v1.json");
+        crate::authority_file::write(&manifest, b"not JSON").unwrap();
+        assert!(store.chat_list().is_err(), "A failed protected read must never fall back to editable room authority");
         std::fs::remove_dir_all(root).unwrap();
     }
 
