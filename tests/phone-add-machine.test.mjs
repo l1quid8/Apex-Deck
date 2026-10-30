@@ -8,16 +8,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { transform } from "sucrase";
 
 import { identityFor, withPairedMachine } from "../src/phone/pairing.ts";
-import { goodPort, hostPort, parseHost, readKey, sshFormError, sshRequest, sshTarget } from "../src/phone/sshSetup.ts";
+import { goodHost, goodPort, hostPort, parseHost, readKey, sshFormError, sshRequest, sshTarget } from "../src/phone/sshSetup.ts";
 
 const require = createRequire(import.meta.url);
 
-/** An OpenSSH key file with the given cipher and key type. Only the header is real. */
-function keyFile(cipher, type = "ssh-ed25519") {
-  const field = (text) => [0, 0, 0, text.length].map((byte) => String.fromCharCode(byte)).join("") + text;
-  const blob = "openssh-key-v1\0" + field(cipher) + field(cipher === "none" ? "none" : "bcrypt") + field("") + "\0\0\0\x01" + field(field(type) + "public") + field("private");
-  return `-----BEGIN OPENSSH PRIVATE KEY-----\n${btoa(blob)}\n-----END OPENSSH PRIVATE KEY-----\n`;
-}
+const field = (text) => [0, 0, (text.length >> 8) & 255, text.length & 255].map((byte) => String.fromCharCode(byte)).join("") + text;
+const COUNT = "\0\0\0\x01";
+const PUBLIC = (type) => field(field(type) + field("x".repeat(32)));
+const PRIVATE = "\x01\x02\x03\x04\x01\x02\x03\x04sealed..";
+const pem = (blob) => `-----BEGIN OPENSSH PRIVATE KEY-----\n${btoa(blob)}\n-----END OPENSSH PRIVATE KEY-----\n`;
+/** The header of an OpenSSH key file, up to the private block. */
+const header = (cipher, type = "ssh-ed25519") => "openssh-key-v1\0" + field(cipher) + field(cipher === "none" ? "none" : "bcrypt") + field("") + COUNT + PUBLIC(type);
+/** An OpenSSH key file with the given cipher and key type. The layout is real, the key isn't. */
+const keyFile = (cipher, type) => pem(header(cipher, type) + field(PRIVATE));
 
 const form = (over = {}) => ({ label: "", host: "203.0.113.10", user: "demo", port: "22", password: "pw", key: null, passphrase: "", keep: false, ...over });
 const endpoint = (fill) => fill.repeat(64);
@@ -50,7 +53,37 @@ test("anything but an OpenSSH private key is refused", () => {
   for (const text of bad) assert.throws(() => readKey("x", text), /isn't an OpenSSH private key/);
 });
 
+test("a key file cut short or put together wrongly is refused", () => {
+  const magic = "openssh-key-v1\0" + field("none") + field("none") + field("");
+  const bad = {
+    "no key count": magic,
+    "no public key": magic + COUNT,
+    "a key type and nothing else": magic + COUNT + field(field("ssh-ed25519")),
+    "no private block": header("none"),
+    "an empty private block": header("none") + field(""),
+    "cut inside the private block": header("none") + "\0\0\0\x10abc",
+    "two keys": magic + "\0\0\0\x02" + PUBLIC("ssh-ed25519") + field(PRIVATE),
+    "no keys": magic + "\0\0\0\0" + PUBLIC("ssh-ed25519") + field(PRIVATE),
+    "no cipher named": "openssh-key-v1\0" + field("") + field("none") + field("") + COUNT + PUBLIC("ssh-ed25519") + field(PRIVATE),
+    "a cipher with no kdf": "openssh-key-v1\0" + field("aes256-ctr") + field("none") + field("") + COUNT + PUBLIC("ssh-ed25519") + field(PRIVATE),
+    "a key type that isn't a name": magic + COUNT + field(field("\x01\x02") + field("x")) + field(PRIVATE),
+    "unlocked, but the check numbers differ": header("none") + field("\x01\x02\x03\x04\x05\x06\x07\x08sealed.."),
+  };
+  for (const [what, blob] of Object.entries(bad)) assert.throws(() => readKey("x", pem(blob)), /isn't an OpenSSH private key/, what);
+});
+
+test("a locked key may carry an auth tag after its private block", () => {
+  assert.equal(readKey("id", pem(header("chacha20-poly1305@openssh.com") + field("sealed bytes....") + "t".repeat(16))).locked, true);
+});
+
+test("a host must be a real name or address", () => {
+  for (const good of ["server.example.com", "server.example.com.", "h", "apex-terminal", "203.0.113.10", "2001:db8::1", "::1", "::ffff:203.0.113.10", "1:2:3:4:5:6:7:8"]) assert.equal(goodHost(good), true, good);
+  for (const bad of ["", "bad host", "::::", ":::", "1::2::3", "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:9", "12345::", "::g", "::ffff:999.0.0.1", "999.1.1.1", "1.2.3", "-bad.example.com", "bad-.example.com", "a..b", "[x]", "a:b:c", "x".repeat(64), `${"a.".repeat(127)}aa`]) assert.equal(goodHost(bad), false, bad);
+});
+
 test("Connect says what's missing, in form order", () => {
+  assert.match(sshFormError(form({ host: "bad host" })), /host won't work/);
+  assert.match(sshFormError(form({ host: "::::" })), /host won't work/);
   assert.match(sshFormError(form({ host: "" })), /host and user/);
   assert.match(sshFormError(form({ user: " " })), /host and user/);
   assert.match(sshFormError(form({ port: "70000" })), /Port 70000/);
@@ -86,17 +119,25 @@ test("machines sharing a name both pair, because the name can't be typed any mor
   assert.equal(list.length, 3);
 });
 
-test("the same machine again keeps its one entry, and its old address entry is replaced", () => {
+test("the same machine again keeps its one entry", () => {
   const mac = paired("local", "Studio", "mac", "a");
   const server = paired("h-old", "Apex-Terminal", "server", "b");
   const again = identityFor([mac, server], preview("Apex-Terminal", "b"));
   assert.equal(again.name, "Apex-Terminal");
   assert.equal(withPairedMachine([mac, server], paired(again.id, again.name, again.kind, "b")).length, 2);
-  const direct = { id: "h-old", name: "Apex-Terminal", kind: "server", url: "ws://x:7420", token: "t" };
-  const moved = identityFor([mac, direct], preview("Apex-Terminal", "b"));
-  assert.equal(moved.name, "Apex-Terminal");
-  const list = withPairedMachine([mac, direct], paired(moved.id, moved.name, moved.kind, "b"));
-  assert.deepEqual(list.map((machine) => [machine.id, machine.hostEndpointId]), [["local", endpoint("a")], ["h-old", endpoint("b")]]);
+});
+
+test("a code with the same name as an address entry never takes its place", () => {
+  const server = { id: "h-old", name: "Studio", kind: "server", url: "ws://x:7420", token: "t" };
+  const mac = { id: "local", name: "Studio", kind: "mac", url: "ws://y:7420", token: "t" };
+  for (const entry of [server, mac]) {
+    const made = identityFor([entry], preview("Studio", "b"));
+    assert.equal(made.name, "Studio 2");
+    assert.equal(made.kind, entry.kind === "mac" ? "server" : "mac");
+    const list = withPairedMachine([entry], paired(made.id, made.name, made.kind, "b"));
+    assert.deepEqual(list[0], entry);
+    assert.equal(list.length, 2);
+  }
 });
 
 test("the picker offers QR code and Remote SSH only", () => {

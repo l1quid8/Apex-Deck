@@ -144,11 +144,12 @@ export function scansAtLaunch(machineCount: number, canScan: boolean): boolean {
  * Who a machine is when it's added from a code, which names it and nothing
  * else. The first machine is the phone's Mac, the rest are servers with an id
  * from their endpoint. Two machines may share a name, so a later one takes a
- * number. An entry this pairing will replace doesn't count as taking the name.
+ * number. Only this same machine's own entry doesn't count as taking the name:
+ * a matching name doesn't prove another entry is this machine, so it stays.
  */
 export function identityFor(list: Machine[], preview: PairingPreview): { kind: MachineKind; id: string; name: string } {
   const kind: MachineKind = list.some((machine) => machine.kind === "mac") ? "server" : "mac";
-  const others = list.filter((machine) => (isPaired(machine) ? machine.hostEndpointId !== preview.host : kind === "mac"));
+  const others = list.filter((machine) => !isPaired(machine) || machine.hostEndpointId !== preview.host);
   const taken = (name: string) => others.some((machine) => machine.name.trim().toLowerCase() === name.trim().toLowerCase());
   let name = preview.name;
   for (let at = list.length + 1; taken(name); at += 1) name = `${preview.name} ${at}`;
@@ -161,18 +162,15 @@ export function identityFor(list: Machine[], preview: PairingPreview): { kind: M
  * the addresses the machine sent and the new pairedAt, which reconnects it.
  * Otherwise the entry it takes the place of is replaced where it stands,
  * keeping its id and kind: the phone's Mac when a Mac is paired (a phone has
- * one), or an address-and-token machine with the same id or name (case and
- * spaces ignored). Otherwise the machine is added.
+ * one), or an address-and-token machine with the same id. Otherwise the machine
+ * is added; a name alone never replaces anything.
  * Throws as addMachine does.
  */
 export function withPairedMachine(list: Machine[], made: PairedMachine): Machine[] {
   const same = list.findIndex((machine) => isPaired(machine) && machine.hostEndpointId === made.hostEndpointId);
   if (same >= 0) return list.map((machine, at) => (at === same ? { ...withHints(machine as PairedMachine, made.addrs), pairedAt: made.pairedAt } : machine));
-  const name = made.name.trim().toLowerCase();
   const id = made.id.trim();
-  const stale = list.findIndex((machine) => (made.kind === "mac"
-    ? machine.kind === "mac"
-    : !isPaired(machine) && (machine.id === id || machine.name.trim().toLowerCase() === name)));
+  const stale = list.findIndex((machine) => (made.kind === "mac" ? machine.kind === "mac" : !isPaired(machine) && machine.id === id));
   if (stale < 0) return addMachine(list, made);
   const old = list[stale];
   const replaced = addMachine(list.filter((_, at) => at !== stale), { ...made, id: old.id, kind: old.kind }).at(-1)!;

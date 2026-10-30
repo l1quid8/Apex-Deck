@@ -25,7 +25,10 @@ then a 6-digit match and Approve on the machine.
 A code names a machine and nothing else, so with the Mac/Server pick and Id gone
 the phone works the rest out (`identityFor`, `src/phone/pairing.ts`): the first
 machine is the phone's Mac (`local`), later ones are servers with the id
-`h-<first 12 of the endpoint>`, and a name already in use takes a number. Known
+`h-<first 12 of the endpoint>`, and a name already in use takes a number. A name
+never proves two entries are one machine, so an old address entry with the same
+name stays and the person removes it; only the same endpoint or id reuses an
+entry. Part 3 must add SSH machines through this same check. Known
 limit: a Linux machine paired first by QR is filed as the Mac, because the code
 doesn't carry the OS. Adding the OS to the code belongs with part 4. Threads the
 Mac files under a server id are not guessed at; Edit keeps its Id box for linking
@@ -63,6 +66,11 @@ for a real failure.
 9. Paired and saved. This happens before Done, survives the sheet being
    dismissed, and a retry reuses the same request.
 10. Signed out and sign-in wiped.
+
+The run must not belong to the `RemoteSsh` screen. Today leaving it, or pressing
+Done (enabled as soon as step 9 lands), cancels the run. In part 3 the run lives
+outside the screen, and dismissing only detaches the screen, so sign-out and the
+wipe in step 10 always finish.
 
 Cases:
 

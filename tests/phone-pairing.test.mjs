@@ -187,16 +187,13 @@ test("a machine paired again by its endpoint ID keeps its place, id and name, an
   assert.deepEqual(next[1], { ...paired, addrs: ["198.51.100.4:41641"], pairedAt: 99 });
 });
 
-test("an address-and-token machine with the same name is replaced in its place, keeping its id and kind", () => {
-  const next = withPairedMachine([vps, direct], scanned({ id: "h-3", name: "  vps ", hostEndpointId: OTHER_HOST }));
-  assert.deepEqual(next, [
-    { id: "h-2", name: "vps", kind: "server", transport: "iroh", hostEndpointId: OTHER_HOST, addrs: ["198.51.100.4:41641"], pairedAt: 99 },
-    direct,
-  ]);
+test("a name doesn't prove a machine is the same one: an address-and-token entry with that name stays", () => {
+  assert.throws(() => withPairedMachine([vps, direct], scanned({ id: "h-3", name: "  vps " })), /already a machine called/);
+  const mac = { ...direct, id: "local", kind: "mac", name: "Studio" };
+  assert.throws(() => withPairedMachine([mac], scanned({ name: "Studio" })), /already a machine called/);
 });
 
-test("a same-name match is only for an address-and-token machine; a paired one with that name is not replaced", () => {
-  // Two machines can't share a name, so the new one is refused rather than added as a copy.
+test("two machines can't share a name, so a new one is refused rather than added as a copy", () => {
   assert.throws(() => withPairedMachine([paired], scanned({ name: "apex-terminal" })), /already a machine called/);
   assert.equal(withPairedMachine([paired], scanned({ name: "Studio" })).length, 2);
 });
@@ -207,11 +204,6 @@ test("a machine that matches nothing is added at the end", () => {
   assert.equal(next[0], direct);
   assert.equal(next[1], paired);
   assert.deepEqual(next[2], scanned());
-});
-
-test("the same name matches ignoring case and spaces, but a different name does not", () => {
-  assert.equal(withPairedMachine([vps], scanned({ name: "  VPS " })).length, 1, "replaced, not added");
-  assert.equal(withPairedMachine([vps], scanned({ name: "VPS 2" })).length, 2, "a different name is added");
 });
 
 test("the camera opens at launch only when no machine is saved and the phone can pair by QR code", () => {
