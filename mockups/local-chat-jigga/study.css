@@ -1,0 +1,72 @@
+body { overflow: auto; }
+#root { height: auto; min-height: 100%; }
+.jx-study { max-width: 1400px; margin: auto; padding: 28px; font-size: 14px; color: var(--text); }
+.jx-top { display: flex; justify-content: space-between; align-items: center; gap: 24px; flex-wrap: wrap; margin-bottom: 28px; }
+.jx-top h1 { font-size: 26px; letter-spacing: -.7px; margin: 0 0 6px; }
+.jx-top p { margin: 0; color: var(--muted); }
+.jx-top fieldset { border: 1px solid var(--line); border-radius: 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 8px 12px; }
+.jx-top legend { color: var(--muted); font-size: 12px; padding: 0 5px; }
+.jx-top label { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.jx-top button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+.jx-layout { display: grid; grid-template-columns: minmax(200px, 1fr) 390px minmax(200px, 1fr); gap: 44px; align-items: start; }
+@media (max-width: 1000px) { .jx-layout { grid-template-columns: 1fr; justify-items: center; } }
+.jx-notes h2 { font-size: 18px; letter-spacing: -.3px; margin: 0 0 10px; }
+.jx-notes ol { padding-left: 20px; margin: 0; }
+.jx-notes li, .jx-notes p { color: var(--muted); line-height: 1.6; margin: 0 0 12px; }
+.jx-notes b { color: var(--text); font-weight: 600; }
+.jx-src { font-size: 12px; border-top: 1px solid var(--line); padding-top: 14px; }
+.jx-status { margin-top: 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+.jx-phone.ph-app { height: 812px; width: 390px; border: 1px solid var(--line); border-radius: 34px; box-shadow: 0 22px 70px #0006; overflow: hidden; position: relative; }
+.jx-phone .phone-frame { width: 100%; }
+.jx-clock { padding: 12px 26px 0; font-weight: 600; font-size: 13px; }
+.jx-scroll { flex: 1; min-height: 0; overflow: auto; }
+.jx-scroll > .ph-content { overflow: visible; flex: none; }
+.jx-chats { padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.jx-chats .ph-tl-section svg { color: var(--muted); }
+
+.jx-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.jx-dot.connected { background: var(--mint); }
+.jx-dot.reconnecting, .jx-dot.updating { background: var(--amber); }
+.ph-context .jx-dot { margin-right: 2px; }
+.ph-srow small .jx-dot { vertical-align: 1px; }
+
+.jx-by { font-size: 13px !important; font-weight: 600; margin-bottom: 4px !important; }
+.jx-by span { font-weight: 400; color: var(--muted); }
+.jx-suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin: -4px 0 18px; color: var(--muted); font-size: 14px; }
+.jx-suggest > span { margin-right: 2px; }
+.ph-app .jx-suggest .ph-plain { min-height: 36px; padding: 6px 4px; font-size: 14px; }
+.ph-app .jx-suggest .jx-quiet { color: var(--muted); }
+.jx-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding-top: 90px; color: var(--muted); }
+.jx-empty strong { color: var(--text); font-size: 17px; }
+.jx-label { margin: 14px 0 8px !important; font-size: 13px; color: var(--muted); }
+.ph-app .jx-done { margin-bottom: 20px; }
+.ph-app .jx-inline { min-height: 0; padding: 0; display: inline; font-size: inherit; }
+.ph-sheet-body .ph-list .ph-srow[aria-pressed=true] { background: var(--panel-2); }
+.ph-sheet-body > .ph-wide { margin-bottom: 20px; }
+
+/* Group chat pieces */
+.jx-stack { display: inline-flex; flex: none; margin-right: 2px; }
+.jx-stack .identicon { width: 16px; height: 16px; box-shadow: 0 0 0 1.5px var(--bg); border-radius: 5px; }
+.jx-stack .identicon + .identicon { margin-left: -5px; }
+.ph-tl-l2 > .jx-host { flex: none; }
+.jx-field { padding: 12px 14px 4px; display: grid; gap: 8px; }
+.jx-field > strong { font-size: 15px; font-weight: 500; }
+.jx-field .ph-segment { margin-bottom: 8px; }
+.ph-group.jx-field { padding: 10px 12px 2px; }
+.jx-pad { padding: 4px 14px; margin: 0 !important; }
+.jx-access-list .ph-bot-row { min-height: 52px; }
+.jx-access-list .ph-bot-info { flex: 0 0 auto; min-width: 92px; }
+.jx-seg-sm { flex: 1; margin-bottom: 0 !important; }
+.jx-seg-sm button { min-height: 34px; font-size: 13px; padding: 0 4px; }
+.ph-sheet-body > .ph-bot-list { margin-bottom: 8px; }
+.jx-field .ph-segment button { font-size: 14px; white-space: nowrap; }
+
+/* Add a machine */
+.jx-row2 { display: flex; gap: 10px; }
+.jx-row2 > .ph-label { flex: 1; }
+.jx-row2 > .jx-port { flex: 0 0 84px; }
+.ph-app .ph-sheet-body > .jx-scan { flex-direction: row; gap: 8px; }
+.jx-check { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0 10px; }
+.ph-sheet-body .ph-form { display: grid; gap: 6px; }
+.jx-unready strong { opacity: 0.6; }
