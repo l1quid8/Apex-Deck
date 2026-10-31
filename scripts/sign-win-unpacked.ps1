@@ -4,7 +4,7 @@ param([Parameter(Mandatory=$true)][string]$Unpacked)
 $ErrorActionPreference='Stop'
 $Unpacked=(Resolve-Path $Unpacked).Path
 Install-Module -Name TrustedSigning -MinimumVersion 0.5.0 -Force -Repository PSGallery -Scope CurrentUser
-$files=@('Apex Deck.exe','resources\elevate.exe','resources\bin\apex-daemon.exe','resources\bin\apex-provenance.exe') |
+$files=@('Apex Deck.exe','resources\bin\apex-daemon.exe','resources\bin\apex-provenance.exe') |
   ForEach-Object { Join-Path $Unpacked $_ }
 foreach ($file in $files) {
   if (-not (Test-Path $file)) { throw "nothing to sign at $file" }
