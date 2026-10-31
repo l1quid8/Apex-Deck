@@ -1,10 +1,10 @@
 # Linux: confine bots below Full, then let paired devices act
 
-Status: revision 5, for Null's review. No Deck code yet. The "Spike" results below came
-from throwaway Docker runs against revision 3. The snapshot Git results came from Git 2.54
-on macOS, and are unproven on Linux.
+Status: revision 6, for Null's review. No Deck code yet. The "Spike" results below came
+from throwaway Docker runs against revision 3. The snapshot Git results came from a script
+on Git 2.25, 2.43 and 2.54, not from Deck's code.
 Answers "Who can act on a Linux machine" in `2026-10-30-add-a-machine-ssh-design.md`.
-Earlier revisions: `7bc63529`, `4227a3e5`, `9812b519`, `e4316011`.
+Earlier revisions: `7bc63529`, `4227a3e5`, `9812b519`, `e4316011`, `26348014`.
 
 ## The problem in one picture
 
@@ -273,28 +273,59 @@ in the folder, with `core.fsmonitor` in its own `.git/config`, ran that command 
 snapshot's `git add --all`.
 
 Snapshots can't simply move into the jail, because the store lives in the hidden data folder.
-They need no project code either, only bytes. So `git()` in `checkpoints.rs` always sets:
+They need no project code either, only bytes. Three parts make that true, and all three are
+needed. Revision 5 had only the first, and Null showed it wasn't enough: a global
+`init.templateDir` put a filter in the store's own config, and `.gitattributes` still changed
+CRLF to LF.
+
+*Every Git call is isolated.* One function runs all of them, including `git init` in
+`store()` and `gc` in `compact()`, which today run separately with no hardening. It sets:
 
     GIT_CONFIG_NOSYSTEM=1  GIT_CONFIG_GLOBAL=/dev/null  GIT_ATTR_NOSYSTEM=1
+    HOME and XDG_CONFIG_HOME = an empty Deck folder
     -c core.attributesFile=  -c core.fsmonitor=false  -c core.hooksPath=/dev/null
 
 and clears every inherited `GIT_*` variable it doesn't set itself, including
-`GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`. With no config source left, a filter named in
-`.gitattributes` has no command behind it. The store is bare, created by Deck and hidden, so
-its own config is Deck's.
+`GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`. The `HOME` line isn't a spare: Git before 2.32
+ignores `GIT_CONFIG_GLOBAL`, so without it Ubuntu 20.04's Git 2.25 would read the person's
+config.
 
-Spike: planted `filter.clean`, `filter.smudge`, `textconv`, global `core.fsmonitor`, a global
-`core.attributesFile` and `core.hooksPath`, and a nested repository's `core.fsmonitor`. Run
-across `add --all`, `write-tree`, `ls-files`, `read-tree`, `checkout-index`, `diff-tree` and
-`diff`: all ran code unisolated, and none did with the settings above. That was Git 2.54 on
-macOS. The test has to pass on the oldest Git we support on Linux, as well as the newest.
+*The store is rebuilt, never trusted.* New stores use `git init --bare --template=`. Before
+the first use of a store in each daemon run, old or new, Deck makes a scratch store the same
+way next to it, copies its `config` over the store's, deletes `hooks/` and writes
+`info/attributes`. Copying from a scratch init keeps what Git probes per filesystem
+(`ignorecase`, `symlinks`), and replacing the file removes any `include.path` and
+`extensions.worktreeConfig`. Objects are kept, because they're data and nothing runs them. If
+this step fails, that snapshot fails and nothing runs Git against the store.
 
-**Cost:** a snapshot now stores the raw bytes in the folder, with no person's filter applied.
-That's right for Retry and Revert, and new snapshots restore exactly. An older snapshot from
-a machine with a Git LFS filter stored a pointer, and with no smudge filter it would restore
-that pointer as the file. So snapshots taken before this change don't restore through this
-path where the blob is an LFS pointer: Revert says so and leaves that file alone. This
-applies on every platform, since one code path is simpler than a Linux branch.
+*Attributes can't convert bytes.* `$GIT_DIR/info/attributes` outranks every `.gitattributes`,
+including nested ones and macros, on all Git versions. Deck writes one line:
+
+    * !filter !diff !merge -text -crlf !eol !ident !working-tree-encoding
+
+`-text` stops line-ending changes. The others return each attribute to unspecified, so no
+driver is named. `diff` stays unspecified rather than unset, so the diff panel still shows
+text files as text. This replaces no setting above: a config key that can run code stays
+removed even with its attribute cleared.
+
+Spike, on Git 2.25.1 (Ubuntu 20.04), 2.43.0 (Ubuntu 24.04) and 2.54 (macOS), in throwaway
+containers on the Linux ones. A planted template put a filter, `core.fsmonitor`, `textconv`
+and two hooks into a store through today's plain `git init`. With only the isolation settings,
+`git add` ran the project's script three times, which reproduces Null's finding. After the
+rebuild, nothing ran across `ls-files`, `add -A`, `write-tree`, `read-tree`, `checkout-index`,
+`diff` and `gc`, with a hostile global config, a nested `.gitattributes`, a macro attribute and
+a nested repository's `core.fsmonitor` all in place. Stored blobs matched the folder for CRLF
+under `text eol=lf`, `eol=crlf`, `ident`, `working-tree-encoding=UTF-16LE`, a filter and a
+macro, and restore returned every file byte for byte. Not yet run: `GIT_*` clearing, Git for
+Windows, and Deck's own code, which hasn't changed.
+
+**Cost:** snapshots taken before this change can hold converted bytes: LFS pointers,
+normalised line endings, re-encoded text. No check can tell which, so they aren't restored at
+all. New checkpoints carry `raw: true`. Going back to a checkpoint without it gives "This
+snapshot is from an older Deck, so only the chat can go back." One rule replaces revision 5's
+LFS pointer check. Later checkpoints in a list are never older than the one chosen, so raw
+and old trees are never compared. A one-time loss: Revert to a message from before the update
+stops working, on every platform, since one code path is simpler than a Linux branch.
 
 **Full bots are gated.** A Full launch, or a mount, on a folder overlapping a tainted one
 is refused until a person accepts it:
@@ -641,12 +672,15 @@ Deck-run path (changes, bot copies, runner, project check) runs them in the jail
 all. A test fails on a raw project-folder spawn outside `project_process()`. Withdrawing
 acceptance stops a Full bot there and gates its next launch.
 
-Snapshots: with a planted global and system filter, `textconv`, `core.fsmonitor`,
-`core.attributesFile`, `core.hooksPath`, `GIT_CONFIG_PARAMETERS` in the daemon's environment,
-a nested repository with its own `core.fsmonitor`, and a `.gitattributes` naming each, every
-Git call in `checkpoints.rs` runs nothing from the project, on the oldest and newest Git we
-support. Snapshot then restore returns identical bytes. An older LFS-pointer snapshot is
-reported and left alone.
+Snapshots: with a planted global and system filter, an `init.templateDir` that plants config
+and hooks, `textconv`, `core.fsmonitor`, `core.attributesFile`, `core.hooksPath`,
+`GIT_CONFIG_PARAMETERS` in the daemon's environment, a nested repository with its own
+`core.fsmonitor`, an old store made through plain `git init`, and root, nested and macro
+`.gitattributes` naming each, every Git call in `checkpoints.rs`, including `init` and `gc`,
+runs nothing from the project on the oldest and newest Git we support, Windows included.
+Snapshot then restore returns identical bytes for CRLF, `ident`, `working-tree-encoding` and
+filters. A checkpoint without `raw` is chat-only. If rebuilding the store fails, no Git call
+runs against it.
 
 Alternate paths: a symlink in the project to the data folder, a bind or symlink project
 that resolves to `$HOME`, `..` in a mount, a symlink swapped between check and launch,
