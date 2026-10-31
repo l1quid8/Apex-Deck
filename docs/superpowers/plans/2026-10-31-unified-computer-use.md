@@ -6,6 +6,8 @@
 
 ## Production completion amendment
 
+Current usage and release behavior are documented in [`docs/unified-computer-use.md`](../../unified-computer-use.md).
+
 The product and its user-facing helper are named **Unified Computer Use**. Agent Desktop is an attributed dependency, pinned at `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc`.
 
 Complete the existing helper with native reading, retained targets and verified actions for granted Mac applications. Bundle the signed helper inside Deck; expose it automatically through the existing API, Claude Code and Codex connections with per-turn credentials. Add Settings → Unified Computer Use for enablement, permissions and Stop, and an explicit screenshot setting for API bots. Default enablement is off. Reading also requires an app grant. Read-only and Plan turns cannot mutate the desktop.
@@ -16,7 +18,7 @@ The optional JEV/CLEF helper is separate from native control. Upstream's `script
 
 Earlier staged steps remain below as historical design context; the production completion amendment takes precedence wherever their approval process or TextEdit-only scope conflicts.
 
-## Authorized engine integration amendment (2026-10-31)
+## Historical engine integration amendment (2026-10-31)
 
 The Human explicitly approved integrating pinned agent-desktop now, before the initial proof gate, to shorten delivery. This supersedes the earlier ordering that postponed engine integration. The Task 4 Human gate still blocks broader production rollout; current single-connection TextEdit-only proof is not the production session/grant system.
 
@@ -28,13 +30,13 @@ The Human explicitly approved integrating pinned agent-desktop now, before the i
 
 **Goal:** Give Deck's API, Claude and Codex bots one shared way to see and control Mac apps, including models that cannot read images.
 
-**Architecture:** One small signed helper, Apex Computer, ships inside Deck and is the only thing that touches the screen. Every bot reaches it through a thin stdio MCP server that forwards to the helper's private socket. Deck opens an authenticated session for each bot, and the helper enforces that session's access, the per-app permissions, the desktop lock and Stop itself.
+**Architecture:** One small signed helper, Unified Computer Use, ships inside Deck and is the only thing that touches the screen. Every bot reaches it through a thin stdio MCP server that forwards to the helper's private socket. Deck opens an authenticated session for each bot, and the helper enforces that session's access, the per-app permissions, the desktop lock and Stop itself.
 
 **Tech Stack:** Swift (Accessibility API, ScreenCaptureKit, CGEvent), Rust (`apex-adapters`), React/TypeScript (bot form), electron-builder.
 
 **Spec:** The Design section below is the spec. It carries Jigga's plan from the 2026-10-31 group chat plus Null's five reviews and the implementation preflight.
 
-## Design
+## Historical staged design
 
 ### Why a separate helper, not a plain MCP server
 
@@ -42,7 +44,7 @@ Claude and Codex each start their own copy of an MCP server, and Deck's API pool
 
 ```
 API bot ──────► apex-computer-mcp ─┐
-Claude bot ───► apex-computer-mcp ─┼─ private socket ─► Apex Computer.app ─► Mac apps
+Claude bot ───► apex-computer-mcp ─┼─ private socket ─► Unified Computer Use.app ─► Mac apps
 Codex bot ────► apex-computer-mcp ─┘         ▲          lock, permissions, sessions,
                                              │          Stop, screen access
 Deck daemon ── opens and ends sessions ──────┘
@@ -60,7 +62,7 @@ One long-running helper gives us one lock, one macOS permission identity, and a 
 | Text-only models promised full use | Allowed, with a reliability notice | Null, confirmed by the Human |
 | Done when the tool works | Done when DS4 and a vision API bot finish the same native-app task in running Deck | Null |
 | Reading the screen runs freely | Reading an app also needs that app's permission | Jigga: screens show private content |
-| Permission cards inside Deck | Native dialog from Apex Computer | Jigga, accepted by Null for version one |
+| Permission cards inside Deck | Native dialog from Unified Computer Use | Jigga, accepted by Null for version one |
 | Bot name from the server, label only | Deck-opened session, enforced by the helper | Null |
 | Grant ends when the connection closes | Session bound to thread and bot, ended by Deck | Null |
 | Approval skip trusted the server name | Skip identifies the bundled server by its path | Null |
@@ -105,7 +107,7 @@ Different API bots already get separate pools, because each participant creates 
 - **Downgrades:** host notifications immediately restrict the active computer capability when access is lowered or Plan is enabled, even though ordinary tools keep their turn-start policy. Within a turn, monotonic policy revisions may only restrict. This interrupts running input and drops queued actions while keeping app grants. Upgrades wait for a new turn; stale revisions never loosen policy. Talk-only/tools-disabled turns receive no computer capability.
 - **Between turns:** `finish_turn(session, turn_id)` permanently revokes that turn capability, its snapshots, lease and queued input, preserving session app grants. Conditional stale finish is a no-op. A retained old token is refused during every later turn.
 - **Ending:** Deck calls `end_session` on cancellation, bot removal and thread close. The helper also ends a session after 30 minutes without an action, on Stop, and on daemon disconnect, and tells Deck over the daemon's connection when the daemon is still there. Ending clears its grants, lease and snapshots.
-- **Trust limit:** this is not a sandbox. A bot with full shell access runs as the Human's user and can already do a lot without Apex Computer. This design protects against mistakes and instructions planted on screen, not a bot deliberately working around it. Do not describe it as more than that.
+- **Trust limit:** this is not a sandbox. A bot with full shell access runs as the Human's user and can already do a lot without Unified Computer Use. This design protects against mistakes and instructions planted on screen, not a bot deliberately working around it. Do not describe it as more than that.
 
 ### Permission model
 
@@ -117,7 +119,7 @@ Different API bots already get separate pools, because each participant creates 
 - **Revalidation:** the person or the app can scroll, swap controls or change the document without moving the window, so a frame and epoch check isn't enough. Before an action the helper re-reads the live element held by the snapshot. The element must still resolve, in the same process, under the same window and document, with the same role, subrole, identifier, label, enabled state and position in the window, and a hit test at its centre must land on it or inside it. Role and title alone never pass. `type_text` and `press_key` also verify the focused editable value and caret/selection where available, plus the app/window/document identity. The same focused control with a changed value or insertion point is stale. Reacquiring a lapsed lease requires this full revalidation; if required state cannot be observed, act on nothing and return a fresh reading. During typing track the expected value/selection evolution caused by completed helper input, so its own keystrokes do not invalidate themselves. Any unexpected mismatch stops input and returns a fresh reading.
 - **Actions with no element:** a coordinate click, or a `scroll` with no element, has nothing to revalidate. After a lease lapse it returns a fresh reading and does nothing, even if the lease was never taken by anyone else.
 - **One action at a time:** the helper runs desktop actions in a single serial queue. When ownership changes, every earlier snapshot becomes invalid.
-- **Protected, never allowed:** Apex Computer, Apex Deck, System Settings, Keychain Access, Passwords, 1Password, and macOS permission and security prompts such as SecurityAgent. These control the permission system or hold secrets. Task 6 fixes the exact bundle ids and system processes. The list is enforced twice: at the grant, and at the input target of every action, because a prompt can appear over a granted app.
+- **Protected, never allowed:** Unified Computer Use, Apex Deck, System Settings, Keychain Access, Passwords, 1Password, and macOS permission and security prompts such as SecurityAgent. These control the permission system or hold secrets. Task 6 fixes the exact bundle ids and system processes. The list is enforced twice: at the grant, and at the input target of every action, because a prompt can appear over a granted app.
 - **Input target check:** before a click, the helper finds the process that actually owns the target. For an accessibility press that is the element's pid; for a `CGEvent` click it is the frontmost window at that point. Before each key event, the frontmost app and the focused element's pid are checked. Any mismatch clicks or types nothing. A synthetic-click heuristic never establishes authorization for anything.
 - **Blocked by default:** Terminal and iTerm. The Human can add an exception from the helper's menu. Bots have no tool for this.
 
@@ -179,7 +181,7 @@ Coverage varies by app for every model: some interfaces expose no usable accessi
 - Never log typed text, screen text, screenshots or session tokens.
 - Session tokens never appear in command-line arguments, config files, saved state or the daemon's own environment.
 - Do not claim low overhead without the Task 2 measurements.
-- Sign Apex Computer with the same Developer ID as Deck, and do not ad-hoc sign it. An ad-hoc signature resets macOS permissions on every build.
+- Sign Unified Computer Use with the same Developer ID as Deck, and do not ad-hoc sign it. An ad-hoc signature resets macOS permissions on every build.
 - Accessibility is required. Screen Recording is requested only on first `get_screenshot`.
 - First version covers API, Claude and Codex bots. Gemini, Grok and Muse bots do not get the server until their approval paths are checked.
 - Run `npx tsc --noEmit` before any merge.
@@ -281,7 +283,7 @@ The internal types are general, but forwarding stays limited to `apex-computer` 
 - Test: `computer-helper/Tests/ComputerCoreTests/LeaseTests.swift`, `SessionsTests.swift`, `GrantsTests.swift`, `ActionQueueTests.swift`
 
 **Interfaces:**
-- Produces: socket at `~/Library/Application Support/Apex Computer/control.sock`, folder mode 0700, one JSON request per line. Daemon methods, all verified against the real peer and owning connection: `open_session(thread, participant, bot_name) -> SessionId` disabled by default; `begin_turn(session, turn_id, stop_generation, policy_revision, policy) -> TurnCapability`; `restrict_turn(session, turn_id, revision, policy)`; `finish_turn(session, turn_id)`; `end_session(session)`. App grants are session-scoped, capabilities/snapshots/queued input are turn-scoped. Session/turn incarnation accompanies helper events. Helper-to-daemon events on the same connection: `session_stopped(thread, participant, session_id, turn_id)`, `session_ended(thread, participant, session_id, turn_id)`. `PeerVerifier.verify(auditToken) -> Bool`, a protocol so core tests can substitute it. `Lease.acquire(session: String, now: Date) -> LeaseResult` (`.held(epoch)`, `.busy(holder: String)`), with the epoch changing only on a different owner. `Grants.check(session: String, bundleId: String, now: Date) -> GrantState` (`.granted`, `.notGranted`, `.protected`, `.blocked`, `.expired`). `Grants.stopAll()`. `StopSignal`, an atomic flag per action. `HumanInput.count() -> UInt64`, hardware events without the helper's tag, and `HumanInput.changedSince(count: UInt64) -> Bool`, true also when the tap is missing or was disabled.
+- Produces: socket at `~/Library/Application Support/Unified Computer Use/control.sock`, folder mode 0700, one JSON request per line. Daemon methods, all verified against the real peer and owning connection: `open_session(thread, participant, bot_name) -> SessionId` disabled by default; `begin_turn(session, turn_id, stop_generation, policy_revision, policy) -> TurnCapability`; `restrict_turn(session, turn_id, revision, policy)`; `finish_turn(session, turn_id)`; `end_session(session)`. App grants are session-scoped, capabilities/snapshots/queued input are turn-scoped. Session/turn incarnation accompanies helper events. Helper-to-daemon events on the same connection: `session_stopped(thread, participant, session_id, turn_id)`, `session_ended(thread, participant, session_id, turn_id)`. `PeerVerifier.verify(auditToken) -> Bool`, a protocol so core tests can substitute it. `Lease.acquire(session: String, now: Date) -> LeaseResult` (`.held(epoch)`, `.busy(holder: String)`), with the epoch changing only on a different owner. `Grants.check(session: String, bundleId: String, now: Date) -> GrantState` (`.granted`, `.notGranted`, `.protected`, `.blocked`, `.expired`). `Grants.stopAll()`. `StopSignal`, an atomic flag per action. `HumanInput.count() -> UInt64`, hardware events without the helper's tag, and `HumanInput.changedSince(count: UInt64) -> Bool`, true also when the tap is missing or was disabled.
 
 - [ ] **Step 1: Write failing tests:** `second_bot_gets_busy_with_holder_name`, `lease_lapses_after_60_seconds`, `action_renews_lease`, `read_renews_lease`, `reading_takes_the_lease_before_the_snapshot`, `first_click_after_a_read_keeps_its_epoch`, `same_owner_after_a_lapse_keeps_its_epoch`, `new_owner_changes_the_epoch`, `owner_change_invalidates_snapshots`, `read_only_read_takes_no_lease`, `read_only_read_works_while_another_bot_holds_the_lease`, `read_only_snapshot_cannot_act`, `read_only_request_app_does_not_open_or_focus`, `busy_request_app_shows_no_dialog_and_does_not_focus`, `unverified_peer_cannot_open_a_session`, `unverified_peer_cannot_update_a_session`, `unverified_peer_cannot_end_a_session`, `another_daemon_connection_cannot_change_a_session`, `daemon_disconnect_revokes_its_sessions`, `old_token_is_refused_after_daemon_restart`, `restarted_daemon_gets_fresh_tokens`, `shim_without_a_token_gets_no_session`, `shim_reconnect_keeps_session_while_the_daemon_stays_connected`, `read_only_session_refuses_control`, `plan_session_refuses_control`, `end_session_clears_grants_and_lease`, `grant_covers_one_app_only`, `grant_expires_after_30_idle_minutes`, `stop_clears_every_grant_and_lease`, `stopped_session_stays_stopped`, `stop_does_not_wait_for_a_running_action`, `stop_drops_queued_actions`, `protected_app_is_refused_even_with_an_exception`, `terminal_needs_a_human_exception`, `agent_app_can_be_granted`, `human_input_since_the_observation_pauses`, `human_input_that_already_ended_still_pauses`, `the_helpers_own_events_do_not_count_as_human`, `missing_event_tap_counts_as_human_input`, `new_session_is_disabled`, `disabled_session_refuses_reads_and_control`, `first_policy_update_enables_the_session`, `session_is_disabled_between_turns`, `access_downgrade_interrupts_running_input`, `plan_turn_interrupts_running_input`, `downgrade_keeps_grants`, `older_generation_update_is_ignored`, `late_update_cannot_undo_stop`, `read_only_read_does_not_activate_the_app`, `read_only_read_does_not_renew_the_holders_lease`, `read_only_read_leaves_the_holders_snapshots_valid`, `observations_are_kept_per_session`, `read_only_snapshot_stays_observation_only_after_access_returns`, `actions_run_one_at_a_time`, `capability_is_unique_per_turn`, `old_worker_cannot_read_or_act_during_next_turn`, `stale_finish_cannot_disable_current_turn`, `late_begin_after_timeout_is_fenced`, `unacknowledged_revoke_closes_owner_connection`, `all_control_methods_require_verified_owner`, `stale_event_cannot_end_new_session`, `tap_is_ready_before_actionable_snapshot`, `tap_restart_invalidates_previous_observations`.
 - [ ] **Step 2: Run** `swift test --package-path computer-helper`. Expected: FAIL.
@@ -290,7 +292,7 @@ The internal types are general, but forwarding stays limited to `apex-computer` 
 - [ ] **Step 5: Run tests.** Expected: PASS.
 - [ ] **Step 6: Stdio check.** Send `initialize` and `tools/list` to the shim. Expected: eight tools, and a second shim shares the same helper process.
 - [ ] **Step 7: Live identity check.** With the real signed daemon, open a session. Confirm an ad-hoc-signed copy of a caller is refused on all five control-plane methods. Kill the daemon, confirm the surviving shim is refused, restart it, and confirm a fresh token works.
-- [ ] **Step 8: Commit** `feat: add Apex Computer helper, sessions and Stop`.
+- [ ] **Step 8: Commit** `feat: add Unified Computer Use helper, sessions and Stop`.
 
 ### Task 6: Read tools and opening apps
 
@@ -344,14 +346,14 @@ Three things about the current hook seam:
 
 - [ ] **Step 1: Write failing tests:** `helper_gated_tools_skip_deck_approval`, `same_name_with_another_command_is_not_gated`, `codex_normalized_name_is_gated`, `config_entry_named_apex_computer_is_ignored`, `spec_is_absent_off_macos`, `session_token_is_not_in_arguments`, `session_token_is_not_in_the_daemon_environment`, `each_child_gets_its_own_token`, `turn_start_hook_gets_final_access_plan_and_generation`, `hooks_run_in_order_checkpoint_then_computer`, `no_folder_room_gets_the_computer_hook`, `plan_turn_updates_the_session`, `read_only_turn_from_the_write_slot_updates_the_session`, `failed_update_drops_the_token`, `hung_helper_times_out_and_the_turn_continues`, `stop_during_the_hook_stops_the_turn_and_keeps_the_session_stopped`, `turn_end_disables_the_session`, `api_pool_reconnects_when_the_token_changes`, `room_stop_ends_the_session`, `participant_removal_ends_the_session`, `chat_participant_removal_ends_the_session`, `room_close_ends_the_session`, `room_delete_ends_the_session`, `helper_stop_calls_room_stop_for_that_participant`, `helper_stop_pauses_goal_and_loop`, `runner_turn_cannot_reopen_a_stopped_session`, `human_message_allows_a_new_session`, `helper_loss_clears_sessions_and_the_next_turn_opens_fresh`, `gemini_grok_and_muse_do_not_get_the_server`, `turn_id_changes_without_stop`, `finish_hook_runs_on_all_setup_and_participant_exits`, `future_drop_revokes_capability`, `stale_finish_cannot_disable_newer_turn`, `adapter_token_lookup_requires_exact_turn`, `timeout_late_reply_cannot_enable_turn`, `revoke_failure_disconnects_owner`, `cold_start_has_separate_deadline`, `live_access_reduction_interrupts_input`, `plan_on_restricts_current_capability`, `talk_only_turn_gets_no_capability`, `cli_registration_provenance_survives_clone_and_fallback`.
 - [ ] **Step 2: Run** `cargo test -p apex-core`, `cargo test -p apex-adapters --lib mcp` and `cargo test -p apex-host --lib computer`. Expected: FAIL.
-- [ ] **Step 3: Bundle** `Apex Computer.app` under `Contents/Resources/computer/`, signed with Deck's Developer ID, and build it in `_desktop:package`.
+- [ ] **Step 3: Bundle** `Unified Computer Use.app` under `Contents/Resources/computer/`, signed with Deck's Developer ID, and build it in `_desktop:package`.
 - [ ] **Step 4: Register the server.** Add `computer_spec(&exact_turn_capability)` after user entries, removing any config entry with the reserved name. Set `APEX_COMPUTER_TOKEN` with `Command::env` on each spawned child only (`cli.rs:246`, `codex_server.rs:1099`, `mcp_client.rs:240`). Inject the server into Claude with `--mcp-config` and `${APEX_COMPUTER_TOKEN}`, and into Codex with `-c mcp_servers.apex-computer.*` and `env_vars`. Use the injected definition even if the user defines the same name; verify precedence on each CLI before relying on it.
 - [ ] **Step 5: Wire the host.** Install ordered paired `TurnLifecycleHook::{before_turn,after_turn}` and update the existing checkpoint implementer. Create one `Sessions` on the host, put `ComputerContext` in `BuildContext`, and install `ComputerTurnLifecycle` with paired exact-turn cleanup for every room with a supported bot. Call `Sessions::turn_ended` with the exact turn id on every completion/cancellation/setup exit, including drop fallback. Add active restriction notifications before access-lowering or Plan-on settings operations return; never upgrade an active turn. Call `end` in `room_remove_participant`, `chat_remove_participant`, the retiring branch of `room_close`, `room_delete` and `room_delete_owned`, and in `room_stop`, for one bot or for every bot in the thread. Run a task on `ComputerEvent`: `Stopped` calls `room_stop(thread, Some(participant))` and blocks reopening only if its session/turn identity still matches; matching `Ended` forgets that exact capability. Stale events are no-ops. Only the host's Human-message path calls `allow_new_session`.
 - [ ] **Step 6: Wire the adapters.** Each send path reads `Sessions::token` and passes it to the child or the API pool. No token means the server's calls are refused, and the bot still runs. The pool replaces its `apex-computer` connection when the token changes. Reconnect to the helper with backoff, and treat a lost connection as ended sessions.
 - [ ] **Step 7: Skip Deck approval** in the three paths through `helper_gated`, because the helper enforces grants, access and Plan itself.
 - [ ] **Step 8: Live token forwarding.** First use no-screen authenticated handshakes; apply Task 9 minimum CLI redaction before any actual screen call. Run one real Claude and one real Codex turn in the dev build. Confirm the shim received the token and got a session, and that the token doesn't appear in `ps` output or either CLI's config files.
 - [ ] **Step 9: Run** `cargo test -p apex-core`, `cargo test -p apex-adapters --lib` and `cargo test -p apex-host --lib`. Expected: PASS.
-- [ ] **Step 10: Commit** `feat: give API, Claude and Codex bots Apex Computer`.
+- [ ] **Step 10: Commit** `feat: give API, Claude and Codex bots Unified Computer Use`.
 
 ### Task 9: Finish redaction
 
