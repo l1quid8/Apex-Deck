@@ -349,7 +349,8 @@ impl CliParticipant {
         match codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await {
             Ok(reply) => Ok(reply),
             Err(TurnError::Unavailable(why)) => {
-                Err(ParticipantError::Failed(format!("Codex app server unavailable ({why}); this turn did not run because MCP approvals require it.")))
+                let hint=if self.computer.is_some() {" If an external HTTP MCP server uses the reserved name apex-computer or apex_computer, rename that entry in Codex settings."}else{""};
+                Err(ParticipantError::Failed(format!("Codex app server unavailable ({why}); this turn did not run because MCP approvals require it.{hint}")))
             }
             Err(TurnError::Failed(why)) => {
                 let why=if self.computer.is_some() {"Computer tool session failed; private content hidden".into()} else {why};
