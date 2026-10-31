@@ -352,7 +352,7 @@ assert (backup/'installation-verified.json').exists()
 shutil.rmtree(directory)
 `));
 
-for (const hadLog of [false,true]) test(`rollback restores the journal snapshot and ${hadLog ? 'original log' : 'absence of a log'} together`,()=>python(accountsFixture+String.raw`
+for (const hadLog of [false,true]) test(`rollback restores the journal snapshot and ${hadLog ? 'original log' : 'absence of a log'} together`,POSIX_ONLY,()=>python(accountsFixture+String.raw`
 had_log=${hadLog ? 'True' : 'False'}
 if had_log:(u.ROOT/'journal.log').write_bytes(b'original log\n')
 def restart(pid,socket):
