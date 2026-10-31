@@ -1,6 +1,6 @@
 # Native computer-use spike (Task 2, throwaway)
 
-Status on 2026-10-31: **built and signed; supervised proof pending Accessibility setup and source review.** This is not a production helper, grant/lease system, or evidence that DS4 can complete the task. No live TextEdit input has been sent.
+Status on 2026-10-31: **built, signed and source-reviewed; supervised proof pending Accessibility setup and a protected backend update.** This is not a production helper, grant/lease system, or evidence that DS4 can complete the task. No live TextEdit input has been sent. The Task 4 Human go/no-go remains required before Tasks 5–11.
 
 ## Artifact and identity
 
@@ -64,6 +64,17 @@ The parent owns the actual registration and fresh signed backend deployment carr
 ## Evidence and remaining experiments
 
 Build/signature checks and fourteen focused safety/protocol tests pass. The no-permission protocol smoke checks initialization, all five truthful schemas, unknown-method rejection, denied screen reading and invalid control refusals without a valid input request. `npx tsc --noEmit` passes. These checks do not prove native UI behavior.
+
+Resumption checks: the exact signed stable bundle reports `accessibilityTrusted=false`, `listenEventAccess=false`, `tapHealthy=false`, `stopped=true`. Its executable code/data sections match the reviewed release build for all three binaries. The actual live daemon's hello reports commit `861824670088`, so it does not carry the new privacy/image code. The candidate below is ready but has not been installed. A harmless function-calling compatibility request to `gpt-6-luna` with `reasoning_effort=none` returned HTTP 200 and `proof_ready({ready:true})` using the existing Deck-saved Keychain credential. No credential was printed or copied to a config. This checks account/API compatibility only; it is not the vision/native proof. Official model requirements: <https://developers.openai.com/api/docs/models/gpt-6-luna>.
+
+### Concrete backend candidate and remaining handoff
+
+- Package: `/Users/tylercaldwell/Downloads/apex-deck/release/Apex-Deck_0.9.7_computer-326f28926989_20261031_upgrade.pkg`.
+- SHA-256: `9dc072db1e5d303efe38c7d8c7920e07e206c768b659f84dbfa21eb327b6f11d` (parent independently read back).
+- Frozen source: `release/apex-computer-proof-source` at `326f28926989`; packaged UI and daemon carry that clean stamp. The candidate's native spike is the separate reviewed stable bundle, not a production bundled helper.
+- Developer ID signed/hardened app payload; strict bundle verification passes. Existing packaging creates an unsigned `.pkg` container and skipped notarization. Do not describe the installer itself as signed or notarized.
+- Existing upgrade scripts preserve authority and verify the payload. Installation requires quitting Deck and native administrator authentication; no installer has been launched and the live service has not been replaced. Do not reset or repin authority to test.
+- After the Human grants the exact spike Accessibility and installs the candidate, read back both OS trust and the real daemon commit. Then create the isolated one-bot Work proof room, use normal Human approval cards, and start the supervised DS4 runs. Only afterward run the vision proof; Screen Recording permission is still a separate future prerequisite. Tasks 5–11 remain behind the explicit Task 4 approval.
 
 | Required measurement | Current result |
 |---|---|

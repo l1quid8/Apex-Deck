@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status:** Revision 5, incorporating Null's revision 4 review and independent implementation preflight. The Human authorized Null to orchestrate implementation until full completion on 2026-10-31. The order remains API privacy, DS4 proof, minimal image path, vision proof, then an evidence gate. Continue without repeated permission requests when proofs pass; failed proofs or required macOS permission grants remain real blockers. No live proof is claimed by this plan.
+> **Status:** Revision 5, incorporating Null's revision 4 review and independent implementation preflight. The Human authorized the initial proof stage on 2026-10-31 and explicitly retained the Task 4 approval gate. The order remains API privacy, DS4 proof, minimal image path, vision proof, then the Human's go/no-go before Tasks 5–11. Continue authorized proof preparation without repeated build permission requests; required macOS grants and failed proofs remain real blockers. No live proof is claimed by this plan.
 
 **Goal:** Give Deck's API, Claude and Codex bots one shared way to see and control Mac apps, including models that cannot read images.
 
@@ -214,7 +214,7 @@ Matching by name is safe here because a wrong match only hides more. It never sk
 - Consumes: Task 1's redaction. The spike registers as `apex-computer` so that redaction applies.
 - Produces: temporary tools `request_app`, `read_screen`, `click`, `type_text`, `press_key`, with bundle id `com.apple.TextEdit` hard-coded as the only target. `request_app` launches and focuses TextEdit with no dialog. There is no production grant/lease system, so use only harmless isolated fixtures. Even this spike checks the real target pid, focused control and secure/protected surfaces before each bounded input event, and has a directly reachable cancellation flag. Watching alone does not establish target safety. Register it only in a disposable one-bot Work room: a dedicated proof project owns its `.mcp.json`, and `enabledMcpjsonServers` approval is scoped to that canonical project path. No global `mcpServers` entry is added. This is room/project scope, not a nonexistent per-bot configuration API; never add another bot to that room. Remove this temporary entry after proof. Ordinary Deck tool approvals still apply. It gets no approval skip, so Deck's normal approval rules apply during the proof.
 
-- [ ] **Step 1: Build** the tools with the same accessibility calls Task 6 will use, and sign the spike so Accessibility permission holds between runs.
+- [x] **Step 1: Build** the tools with the same accessibility calls Task 6 will use, and sign the spike so Accessibility permission holds between runs. Source reviewed through `dee335eb`; 14 focused tests and stable bundle signature verified. This does not establish live OS trust or proof success.
 - [ ] **Step 2: Run DS4 in running Deck** (current signed installed backend/UI for protected submissions, prescribed root dev build alongside if needed; verify the actual daemon carries Task 1 before proof) on: "Open TextEdit, make a new plain-text document, type `Apex computer test DS4`, and save it as `~/Documents/apex-computer-DS4.txt`." Repeat five times. Record passes, steps taken and what failed. Note whether the Save sheet appears in the accessibility list, and whether it belongs to TextEdit or a separate system service. Confirm from the saved step log that no screen text or typed text was recorded.
 - [ ] **Step 3: Measure.** Record the helper's idle and active CPU and memory, plus DS4's tokens per second on the same prompt with and without the helper running. Also record DS4's longest gap between tool calls, to test the 60-second lease.
 - [ ] **Step 4: Measure the synthetic-click risk.** Build a one-window test dialog. Post a `CGEvent` click at its button from an ordinary child process of a bot's shell, and also click it by hand. Record whether the posted click presses the button. This only measures exposure. No field it finds may be used as authorization.
@@ -236,11 +236,11 @@ Matching by name is safe here because a wrong match only hides more. It never sk
 
 The internal types are general, but forwarding stays limited to `apex-computer` in this version.
 
-- [ ] **Step 1: Write failing tests:** `image_blocks_are_kept_with_the_text`, `tool_message_stays_text_and_image_follows_as_user_message`, `all_tool_replies_come_before_the_image_message`, `only_the_latest_two_tool_images_stay_in_the_request`, `oversized_image_is_dropped_with_a_note`, `bot_without_can_read_images_gets_no_image_and_the_notice`, `images_from_other_servers_stay_text_stubs`, `images_never_reach_the_work_step`, `old_config_without_the_field_loads`.
-- [ ] **Step 2: Run** `cargo test -p apex-adapters --lib`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `content_text` keeps its current output, and `call` also collects images. Carry them through `Done` and `Turn::run`. In `openai.rs`, append every `role: tool` reply for the round first, then push one `role: user` message with `image_url` parts, because many OpenAI-style servers reject images in tool messages. Refuse a single image over 5 MB.
-- [ ] **Step 4: Run tests.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat: pass computer screenshots to vision API bots`.
+- [x] **Step 1: Write failing tests:** `image_blocks_are_kept_with_the_text`, `tool_message_stays_text_and_image_follows_as_user_message`, `all_tool_replies_come_before_the_image_message`, `only_the_latest_two_tool_images_stay_in_the_request`, `oversized_image_is_dropped_with_a_note`, `bot_without_can_read_images_gets_no_image_and_the_notice`, `images_from_other_servers_stay_text_stubs`, `images_never_reach_the_work_step`, `old_config_without_the_field_loads`.
+- [x] **Step 2: Run** `cargo test -p apex-adapters --lib`. Expected: FAIL. RED evidence archived in the Task 3 report.
+- [x] **Step 3: Implement.** `content_text` keeps its current output, and `call` also collects images. Carry them through `Done` and `Turn::run`. In `openai.rs`, append every `role: tool` reply for the round first, then push one `role: user` message with `image_url` parts, because many OpenAI-style servers reject images in tool messages. Refuse a single image over 5 MB.
+- [x] **Step 4: Run tests.** Expected: PASS. Full archived suite: 1,818 passed, 20 ignored; independent review reran 20 focused cases and TypeScript. No live screenshot/native proof claimed.
+- [x] **Step 5: Commit** `feat: pass computer screenshots to vision API bots`. `326f2892`, independent spec and quality approval recorded. Prepared before deployment to avoid two privileged updates; DS4 live proof still precedes vision live proof.
 
 ### Task 4: Vision bot proof and go/no-go gate
 
@@ -249,7 +249,7 @@ The internal types are general, but forwarding stays limited to `apex-computer` 
 
 - [ ] **Step 1: Add** a TextEdit-only `get_screenshot` to the spike.
 - [ ] **Step 2: Run one vision API bot** five times on the Task 2 task, confirming it can name something visible only in the picture. The bot needs `can_read_images` set by hand in its saved config, because the form comes in Task 10.
-- [ ] **Step 3: Gate.** Stop and report to the Human and Null with the numbers. The Human's full-completion request authorizes proceeding to Task 5 if both proofs pass. Record the actual files, calls, five outcomes, measurements and limitations. Missing/failed proof is not permission to declare success: fix it first or report the concrete blocker. If DS4 cannot do the task reliably, improve the design before continuing.
+- [ ] **Step 3: Gate.** Stop and report to the Human and Null with the numbers, then obtain the Human's explicit go/no-go before Tasks 5–11. The latest authorization covers the initial proof stage only. Record the actual files, calls, five outcomes, measurements and limitations. Missing/failed proof is not permission to declare success: fix it first or report the concrete blocker. If DS4 cannot do the task reliably, improve the design before continuing.
 
 ### Task 5: Helper, sessions, grants and Stop
 
@@ -400,4 +400,4 @@ The Human grants Accessibility and Screen Recording once at the start. All chats
 - Carry actual trusted registration provenance through every approval path. Conservative privacy redaction stays broader than approval trust.
 - Screenshots use one selected window with exact coordinate mapping. Service-owned sheets require narrow verified attachment.
 - TextEdit is the initial task; inspect the installed DS4 app for real-world AX coverage unless another target is supplied.
-- The Human's latest full-completion authorization replaces repeated go/no-go questions. It does not replace macOS permission grants or passing live evidence.
+- The Human's latest authorization covers continued initial proof work and explicitly retains the Task 4 go/no-go before Tasks 5–11. It does not replace macOS permission grants or passing live evidence.
