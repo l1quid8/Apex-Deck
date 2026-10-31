@@ -414,6 +414,21 @@ impl Host {
         Ok(self.computer_status().await)
     }
     pub async fn computer_set_enabled(&self, enabled: bool) -> Result<Value, String> {
+        if enabled {
+            // Only an explicit UI enable/Resume may clear the native Stop
+            // latch. Keep the host stopped until its acknowledgement arrives;
+            // a timed-out/late native resume cannot re-enable host turns.
+            self.computer.stopped.store(true, Ordering::SeqCst);
+            self.computer.revoke(None, None);
+            #[cfg(unix)]
+            if let Ok(mut stream) = connect().await {
+                let result = rpc(&mut stream, "unified/resume", json!({})).await?;
+                if result["resumed"] != true {
+                    return Err("Unified Computer Use did not acknowledge Resume.".into());
+                }
+            }
+            // An offline helper starts with no Stop latch or registered turns.
+        }
         self.computer.set_enabled(enabled)?;
         Ok(self.computer_status().await)
     }
