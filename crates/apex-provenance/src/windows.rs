@@ -19,7 +19,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
     Storage::FileSystem::*,
-    System::{Pipes::*, Threading::*},
+    System::{Diagnostics::Debug::CheckRemoteDebuggerPresent, Pipes::*, ProcessStatus::*, Threading::*},
 };
 pub const PIPE: &str = r"\\.\pipe\ApexDeckProvenance-v1";
 pub const SYSTEM: &str = "S-1-5-18";
@@ -477,6 +477,154 @@ pub fn process_image(handle: RawHandle) -> Result<PathBuf, String> {
         String::from_utf16(&buffer[..len as usize]).map_err(|e| e.to_string())?,
     ))
 }
+// Query, wait and terminate only: nothing that can read, write or run code in it.
+const OUTSIDE_ACCESS: u32 = 0x0010_1001;
+const OWNER_RIGHTS: &str = "S-1-3-4";
+fn process_sddl(sid: &str) -> String {
+    format!(
+        "D:P(A;;0x1fffff;;;SY)(A;;{OUTSIDE_ACCESS:#x};;;BA)(A;;{OUTSIDE_ACCESS:#x};;;OW)(A;;{OUTSIDE_ACCESS:#x};;;{sid})"
+    )
+}
+/// Close `pid` to other programs, its own user's included. Owner Rights removes
+/// the owner's implicit right to change this list back. This cannot help a
+/// process that something already holds open, such as one it started suspended.
+pub fn protect_process(pid: u32) -> Result<(), String> {
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | WRITE_DAC, 0, pid) };
+    if raw.is_null() {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let descriptor = descriptor(&process_sddl(&process_sid(process.as_raw_handle())?))?;
+    let (mut present, mut defaulted, mut dacl) = (0, 0, ptr::null_mut());
+    if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let result = unsafe {
+        SetSecurityInfo(
+            process.as_raw_handle(),
+            SE_KERNEL_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            dacl,
+            ptr::null(),
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::from_raw_os_error(result as i32).to_string());
+    }
+    Ok(())
+}
+fn process_closed(process: RawHandle) -> Result<bool, String> {
+    let mut dacl = ptr::null_mut();
+    let mut raw = ptr::null_mut();
+    let result = unsafe {
+        GetSecurityInfo(
+            process,
+            SE_KERNEL_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut raw,
+        )
+    };
+    let _allocation = Allocation(raw);
+    if result != 0 || dacl.is_null() {
+        return Err("Cannot inspect Apex Deck's process protection".into());
+    }
+    let mut owner_limited = false;
+    for i in 0..unsafe { (*dacl).AceCount } {
+        let mut ace = ptr::null_mut();
+        if unsafe { GetAce(dacl, i as u32, &mut ace) } == 0 {
+            return Err("Cannot inspect Apex Deck's process protection".into());
+        }
+        if unsafe { &*ace.cast::<ACE_HEADER>() }.AceType != 0 {
+            return Ok(false);
+        }
+        let allow = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let sid = sid_string(ptr::addr_of!(allow.SidStart).cast_mut().cast())?;
+        owner_limited |= sid == OWNER_RIGHTS;
+        if sid != SYSTEM && allow.Mask & !OUTSIDE_ACCESS != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(owner_limited)
+}
+fn known_folder(id: &windows_sys::core::GUID) -> Result<String, String> {
+    use windows_sys::Win32::{System::Com::CoTaskMemFree, UI::Shell::SHGetKnownFolderPath};
+    let mut raw = ptr::null_mut();
+    if unsafe { SHGetKnownFolderPath(id, 0, ptr::null_mut(), &mut raw) } < 0 {
+        return Err("Cannot locate a protected Windows folder".into());
+    }
+    let mut len = 0;
+    unsafe {
+        while *raw.add(len) != 0 {
+            len += 1;
+        }
+    }
+    let path = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(raw, len) });
+    unsafe {
+        CoTaskMemFree(raw.cast());
+    }
+    Ok(path)
+}
+/// Code a normal user can't replace: Windows itself and installed programs.
+fn system_module(module: &str, folders: &[String]) -> bool {
+    let module = module.strip_prefix(r"\\?\").unwrap_or(module).to_lowercase();
+    folders
+        .iter()
+        .any(|folder| module.starts_with(&format!("{}\\", folder.trim_end_matches('\\').to_lowercase())))
+}
+fn modules(process: RawHandle) -> Result<Vec<String>, String> {
+    let mut handles = vec![ptr::null_mut(); 1024];
+    let mut used = 0;
+    let size = (handles.len() * std::mem::size_of::<HMODULE>()) as u32;
+    if unsafe { EnumProcessModulesEx(process, handles.as_mut_ptr(), size, &mut used, LIST_MODULES_ALL) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    handles.truncate((used as usize / std::mem::size_of::<HMODULE>()).min(1024));
+    let mut names = Vec::with_capacity(handles.len());
+    for module in handles {
+        let mut buffer = vec![0u16; 32768];
+        let len = unsafe { GetModuleFileNameExW(process, module, buffer.as_mut_ptr(), buffer.len() as u32) };
+        if len != 0 {
+            names.push(String::from_utf16_lossy(&buffer[..len as usize]));
+        }
+    }
+    Ok(names)
+}
+/// Refuse a pinned client that shows signs of tampering: not closed to other
+/// programs, being debugged, or running code from a folder a user can write to.
+/// Code injected without a file leaves none of these, so this narrows the attack
+/// rather than ending it; see docs/security/provenance-boundary.md.
+pub fn peer_intact(pid: u32) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Windows};
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | READ_CONTROL, 0, pid) };
+    if raw.is_null() {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    if !process_closed(process.as_raw_handle())? {
+        return Err("Apex Deck isn't protected from other programs. Restart it.".into());
+    }
+    let mut debugged = 0;
+    if unsafe { CheckRemoteDebuggerPresent(process.as_raw_handle(), &mut debugged) } == 0 || debugged != 0 {
+        return Err("Apex Deck is being debugged, so it can't approve commands.".into());
+    }
+    let folders = [
+        known_folder(&FOLDERID_Windows)?,
+        known_folder(&FOLDERID_ProgramFiles)?,
+        known_folder(&FOLDERID_ProgramFilesX86)?,
+    ];
+    for module in modules(process.as_raw_handle())? {
+        if !system_module(&module, &folders) {
+            return Err(format!("Apex Deck has outside code loaded, so it can't approve commands: {module}"));
+        }
+    }
+    Ok(())
+}
 pub fn digest(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     protected_handle(&file)?;
@@ -560,6 +708,36 @@ pub fn identity(path: &Path) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_windows_and_installed_programs_count_as_system_code() {
+        let folders = [r"C:\Windows".to_owned(), r"C:\Program Files".to_owned()];
+        assert!(system_module(r"c:\windows\system32\ntdll.dll", &folders));
+        assert!(system_module(r"\\?\C:\Program Files\Apex Deck\ffmpeg.dll", &folders));
+        assert!(!system_module(r"C:\Users\me\AppData\Local\Temp\evil.dll", &folders));
+        assert!(!system_module(r"C:\Windows-evil\x.dll", &folders));
+        assert!(!system_module(r"C:\Program Files Evil\x.dll", &folders));
+    }
+    #[test]
+    #[ignore = "requires an elevated Windows token; run by installer CI"]
+    fn a_protected_process_refuses_its_own_user_and_reports_as_closed() {
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        protect_process(pid).unwrap();
+        assert!(unsafe { OpenProcess(PROCESS_VM_WRITE, 0, pid) }.is_null());
+        assert!(unsafe { OpenProcess(WRITE_DAC, 0, pid) }.is_null());
+        assert!(unsafe { OpenProcess(PROCESS_CREATE_THREAD, 0, pid) }.is_null());
+        let reader = unsafe { OpenProcess(READ_CONTROL, 0, pid) };
+        if !reader.is_null() {
+            let reader = unsafe { OwnedHandle::from_raw_handle(reader) };
+            assert!(process_closed(reader.as_raw_handle()).unwrap());
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
     #[test]
     #[ignore = "requires an elevated Windows token; run by installer CI"]
     fn service_owned_files_are_readable_lockable_and_refuse_writable_authority() {

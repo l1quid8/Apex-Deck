@@ -1,7 +1,7 @@
 // Exact UI commands go to a separate root service. Full-access shells retain
 // their ordinary daemon tools but cannot make a submission count as human.
 import fs from 'node:fs';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import path from 'node:path';
@@ -21,13 +21,14 @@ export function needsAttestation(cmd, remote = false) {
   return protectedCommands.has(cmd);
 }
 
-export function assertTrustedStartup(packaged,argv,env){
+export function assertTrustedStartup(packaged,argv,env,platform=process.platform){
   if (!packaged) return;
   const badEnv=Object.keys(env).some(k=>((k.startsWith('APEX_') && k!=='APEX_DECK_DATA_DIR') || k.startsWith('ELECTRON_') || k==='NODE_OPTIONS' || k.startsWith('DYLD_')) && env[k]);
   // Packaged trusted UI has no developer-command or URL escape hatch. Only
   // ordinary file/open event arguments and approved OS launch flags are allowed.
   if(env.APEX_DECK_DATA_DIR && !path.isAbsolute(env.APEX_DECK_DATA_DIR)) throw new Error('Apex data directory must be absolute.');
-  const badArg=argv.slice(1).some(a=>a.startsWith('--') && !['--allow-file-access-from-files'].includes(a));
+  // Chromium on Windows also reads switches written as -name and /name.
+  const badArg=argv.slice(1).some(a=>(platform==='win32'?/^[-/]/.test(a):a.startsWith('--')) && !['--allow-file-access-from-files'].includes(a));
   if(badEnv || badArg) throw new Error('Trusted Apex UI refuses development overrides and runtime switches. Use a development build for diagnostics.');
 }
 
@@ -82,10 +83,19 @@ export function issue(request,{publicKey:key,platform=process.platform,endpoint=
     connect();
   });
 }
+const windowsHelper=()=>path.join(process.resourcesPath??path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../target/release'),'bin','apex-provenance.exe');
+
+// Close this process to other programs, its own user's included, before it can
+// approve anything. The service refuses a client that isn't closed.
+export function protectWindowsProcess(run=execFileSync){
+  try { run(windowsHelper(),['protect-process',String(process.pid)],{windowsHide:true,timeout:30000,env:{SystemRoot:process.env.SystemRoot}}); }
+  catch(error){ console.warn(`Windows process protection unavailable: ${error.message}`); }
+}
+
 // The installed helper verifies SYSTEM ownership and ACLs before reading the
 // per-SID public key. It cannot issue receipts on behalf of its parent.
 export function windowsIdentity(dataDir) {
-  const helper=path.join(process.resourcesPath??path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../target/release'),'bin','apex-provenance.exe');
+  const helper=windowsHelper();
   return new Promise((resolve,reject)=>execFile(helper,['identity',dataDir],{windowsHide:true,timeout:30000,maxBuffer:16384,env:{SystemRoot:process.env.SystemRoot}},(error,stdout)=>{
     if(error)return reject(new Error('Protected Windows authority unavailable. Repair the Apex Deck installation.'));
     try { const value=JSON.parse(stdout); if(value.uid!==0 || typeof value.dataDir!=='string' || typeof value.publicKey!=='string' || Buffer.from(value.publicKey,'base64').length!==32)throw new Error('Invalid Windows authority identity.');resolve(value); }catch(error){reject(error);}

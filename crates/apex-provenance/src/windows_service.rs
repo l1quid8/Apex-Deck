@@ -276,6 +276,9 @@ async fn answer(stream: &mut NamedPipeServer, config: &Config) -> Result<Value, 
     if !ui && !daemon && !helper {
         return Err("Untrusted provenance peer".into());
     }
+    if ui || daemon {
+        win::peer_intact(pid)?;
+    }
     let mut bytes = Vec::new();
     BufReader::new((&mut *stream).take(MAX_BYTES as u64 + 1))
         .read_until(b'\n', &mut bytes)
@@ -503,6 +506,10 @@ pub fn run() -> Result<(), String> {
         Some("identity") if args.len() == 2 => {
             println!("{}", win::identity(Path::new(&args[1]))?);
             Ok(())
+        }
+        Some("protect-process") if args.len() == 2 => {
+            let pid = args[1].to_str().and_then(|pid| pid.parse().ok());
+            win::protect_process(pid.ok_or("Invalid process id")?)
         }
         Some("install") if args.len() == 1 => install(),
         Some("service") if args.len() == 1 => {

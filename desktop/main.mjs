@@ -26,7 +26,7 @@ import { installLogonTask, removeLogonTask, startLogonTaskDaemon, usesLogonTask 
 import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
-import { assertTrustedStartup, attestFrame, needsAttestation, requestUpdate } from './provenance.mjs';
+import { assertTrustedStartup, attestFrame, needsAttestation, protectWindowsProcess, requestUpdate } from './provenance.mjs';
 import { Updater, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
@@ -36,6 +36,7 @@ const repo = path.resolve(here, '..');
 const dist = path.join(repo, 'dist');
 const env = process.env;
 assertTrustedStartup(app.isPackaged, process.argv, env);
+if (app.isPackaged && process.platform === 'win32') protectWindowsProcess();
 const smoke = env.APEX_DECK_SMOKE === '1';
 const devUrl = env.APEX_DECK_DEV_URL || '';
 /** Set for tests and the smoke run: the host's data folder. */

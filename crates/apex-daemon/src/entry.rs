@@ -15,6 +15,10 @@ pub fn run() {
         std::process::exit(crate::phone_cli::main(&args));
     }
     crate::log_time::start();
+    #[cfg(windows)]
+    if let Err(error) = apex_provenance::windows::protect_process(std::process::id()) {
+        eprintln!("apex-daemon: process protection unavailable: {error}");
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = match cli::parse(&args) {
         Ok(cli) => cli,

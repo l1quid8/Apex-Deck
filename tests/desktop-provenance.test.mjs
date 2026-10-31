@@ -26,6 +26,9 @@ test('ordinary commands retain Full access transport and are not signed',async()
 test('packaged provenance refuses code injection switches and development URLs',()=>{
   assert.equal(typeof mod.assertTrustedStartup,'function');
   assert.throws(()=>mod.assertTrustedStartup(true,['app','--remote-debugging-port=9222'],{}));
+  assert.throws(()=>mod.assertTrustedStartup(true,['app','-remote-debugging-port=9222'],{},'win32'));
+  assert.throws(()=>mod.assertTrustedStartup(true,['app','/remote-debugging-port=9222'],{},'win32'));
+  assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app','C:\\work\\project'],{},'win32'));
   assert.throws(()=>mod.assertTrustedStartup(true,['app'],{APEX_DECK_DEV_URL:'http://localhost:5173'}));
   assert.throws(()=>mod.assertTrustedStartup(true,['app'],{NODE_OPTIONS:'--require=/tmp/x'}));
   assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app'],{APEX_DECK_DATA_DIR:'/tmp/isolated-apex'}));

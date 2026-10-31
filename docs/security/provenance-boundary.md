@@ -26,6 +26,23 @@ existing SSH route. SSH/token connections cannot issue assistant submissions.
 Authenticated paired iPhones use the protected grant path below; this does not
 upgrade an existing Linux/remote daemon.
 
+### Windows limit
+
+macOS can check a client's code signature from the kernel. Windows offers no
+equivalent for ordinary apps, so a program running under the same account can
+start the pinned Deck or daemon, write into it before it protects itself, or
+send input to its window. A bot running as that user can therefore obtain an
+approval it did not earn. Windows does not give the human-approval guarantee
+above, and Settings says so.
+
+The design narrows this without closing it. Packaged Deck refuses runtime
+switches in every Windows spelling. Deck's main process and the daemon close
+their process objects to their own user, including the owner's implicit rights.
+The service refuses a pinned client that isn't closed, has a debugger attached,
+or has loaded a module from outside Windows and Program Files. Deck's renderers
+stay open, a process started suspended can be altered first, and code injected
+without a file passes these checks.
+
 ## Paired iPhone intents
 
 On macOS, the pinned daemon may call `phone_claim` only for the peer identity obtained
