@@ -1,9 +1,10 @@
 # Linux: confine bots below Full, then let paired devices act
 
-Status: revision 4, for Null's review. No Deck code yet; the "Spike" results below came
-from throwaway Docker runs against revision 3, and nothing new here has been run.
+Status: revision 5, for Null's review. No Deck code yet. The "Spike" results below came
+from throwaway Docker runs against revision 3. The snapshot Git results came from Git 2.54
+on macOS, and are unproven on Linux.
 Answers "Who can act on a Linux machine" in `2026-10-30-add-a-machine-ssh-design.md`.
-Earlier revisions: `7bc63529`, `4227a3e5`, `9812b519`.
+Earlier revisions: `7bc63529`, `4227a3e5`, `9812b519`, `e4316011`.
 
 ## The problem in one picture
 
@@ -251,8 +252,9 @@ Deck itself runs things in project folders outside any jail:
 
 One rule covers these, hooks and project scripts alike:
 
-> **Nothing Deck starts outside the jail runs in a folder a jailed bot could write, unless
-> a person has accepted that folder.**
+> **Deck's automatic project operations never run a jailed bot's code outside the jail, and
+> a Full bot doesn't start in a folder a jailed bot could write until a person accepts that
+> folder.**
 
 **Taint.** A jail with a writable folder records that folder, resolved, in the data folder.
 The record is on disk before the jail starts, and it is never cleared by Deck.
@@ -261,20 +263,53 @@ Read-only jails record nothing, so Full alongside Read has no gate.
 **Deck's own work always jails.** Every project-folder spawn goes through one function,
 `project_process()`. On a tainted folder it runs the command in a jail at Edits, accepted or
 not: `git` in `bot_copies.rs`, changes, runner and project checks. A test fails on a raw
-spawn outside it. `checkpoints.rs:95` is exempt, because its `GIT_DIR` is Deck's own store
-and it reads no repository config; a test holds that.
+spawn outside it.
+
+**Snapshots stay outside the jail, with Git isolated.** Revision 4 exempted
+`checkpoints.rs:95` on the claim that it reads no repository config. That was wrong. Null ran
+a project script through a global `filter.*.clean` and `.gitattributes`, and I reproduced it.
+It's also worse than that finding, because it needs no global config: a nested repository
+in the folder, with `core.fsmonitor` in its own `.git/config`, ran that command during the
+snapshot's `git add --all`.
+
+Snapshots can't simply move into the jail, because the store lives in the hidden data folder.
+They need no project code either, only bytes. So `git()` in `checkpoints.rs` always sets:
+
+    GIT_CONFIG_NOSYSTEM=1  GIT_CONFIG_GLOBAL=/dev/null  GIT_ATTR_NOSYSTEM=1
+    -c core.attributesFile=  -c core.fsmonitor=false  -c core.hooksPath=/dev/null
+
+and clears every inherited `GIT_*` variable it doesn't set itself, including
+`GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`. With no config source left, a filter named in
+`.gitattributes` has no command behind it. The store is bare, created by Deck and hidden, so
+its own config is Deck's.
+
+Spike: planted `filter.clean`, `filter.smudge`, `textconv`, global `core.fsmonitor`, a global
+`core.attributesFile` and `core.hooksPath`, and a nested repository's `core.fsmonitor`. Run
+across `add --all`, `write-tree`, `ls-files`, `read-tree`, `checkout-index`, `diff-tree` and
+`diff`: all ran code unisolated, and none did with the settings above. That was Git 2.54 on
+macOS. The test has to pass on the oldest Git we support on Linux, as well as the newest.
+
+**Cost:** a snapshot now stores the raw bytes in the folder, with no person's filter applied.
+That's right for Retry and Revert, and new snapshots restore exactly. An older snapshot from
+a machine with a Git LFS filter stored a pointer, and with no smudge filter it would restore
+that pointer as the file. So snapshots taken before this change don't restore through this
+path where the blob is an LFS pointer: Revert says so and leaves that file alone. This
+applies on every platform, since one code path is simpler than a Linux branch.
 
 **Full bots are gated.** A Full launch, or a mount, on a folder overlapping a tainted one
 is refused until a person accepts it:
 
     This folder has bots with lower access writing to it.
-    A Full bot here can run code they wrote, as you.
+    A Full bot here can run code they wrote, now or later, as you.
     [ Accept this folder ]   [ Keep Full out ]
 
 Acceptance is per folder and standing, because Full and Edits in one project is a normal
-team, and asking at each launch would train people to click. It's recorded with who and
-when, listed in the machine's settings, and can be withdrawn. The gate works the other way
-too: an Edits launch in a folder with a live, unaccepted Full bot gets the same card.
+team, and asking at each launch would train people to click. It covers future edits by
+lower bots, and the card says so. It's recorded with who and when, listed in the machine's
+settings, and can be withdrawn. Withdrawing stops any Full bot in that folder the way
+lowering a level does, and the gate applies again from its next launch. The gate works the
+other way too: an Edits launch in a folder with a live, unaccepted Full bot gets the same
+card.
 
 Acceptance authorizes like raising access, see below. A bot can't press it: jailed ones
 can't reach the daemon, and Full is the person.
@@ -282,8 +317,9 @@ can't reach the daemon, and Full is the person.
 **What this costs.** One tap per shared folder, Linux only. Project checks fail if they need
 something the jail lacks, such as a local socket, and say why.
 
-**The stated claim** now reads: a bot below Full can't gain device authority through
-anything Deck starts, unless a person accepted that folder. Known limits covers what's left.
+**The stated claim** now reads: a process in the jail can't gain device authority itself, and
+Deck's automatic project operations don't run its code outside the jail. A Full bot in an
+accepted folder is outside this claim. Known limits covers what's left.
 
 ## Changing a bot's level
 
@@ -363,41 +399,72 @@ Two different things can survive from the unjailed past:
   of. If the bot is later jailed, it can dial in through the relay on port 443 and press its
   own Allow. That is a real jail escape, and this is what the epoch stops.
 
-So `confined_epoch` is a random value written only by a trust step below, and only a record
-carrying it can act. It's never found and adopted: a file already sitting there means
-nothing. The stored record is `HMAC(TRUST_SALT, epoch)`, where `TRUST_SALT` is a random
-constant fixed when the first jail release is built, so a file planted on an older build
-can't be a valid record. The salt is public once that release is out, so this covers plants
-made before then; `trust-host` replaces the epoch regardless.
+So `confined_epoch` is a random value written only by `trust-host`, and only a device record
+carrying it can act. Its job is narrow: once a person has established trust, it voids every
+pairing made before that moment. **It doesn't establish trust, and nothing in the data folder
+can.**
 
-The hidden data folder is enough protection for the epoch afterwards, because every
-below-Full bot from then on is jailed and only Full, which is the person, can read it.
+**`TRUST_SALT` is gone.** Null's finding, and it's right: a constant in a public build can't
+tell a real trust record from a forged one. A same-user process can write anything the
+daemon can. So a malicious bot running unjailed on an old build, after this format is public,
+could plant a trust record and an epoch-bearing device. The jail build can't detect that, and
+this design doesn't claim to. It's the "Known limits" entry below, and the only full cure is
+a boundary a same-user process can't cross: a new account, a rebuilt server, or a root-owned
+record. What Deck does offer is visibility: Settings shows "Trusted on <date>" and every
+device, on the Mac and phone.
 
-### Trust steps
+The hidden data folder protects the epoch afterwards, because every below-Full bot from then
+on is jailed and only Full, which is the person, can read it. That holds only after a trusted
+bootstrap.
 
-**Clean install.** Add a machine's script checks for the data folder before it installs
-Deck. If there is none, no Deck bot ever ran on that account, so the first passing probe
-writes the epoch and the trust record before any bot can start, and pairing follows.
-A server that fails the probe stays untrusted and pairs without an epoch; when the probe
-later passes it still needs no person, because no below-Full bot could have run there
-meanwhile. The record `clean_install` says so, and only the setup script can start it.
+### Trust is always a person's decision
 
-**Existing machine.** A person runs `apex-daemon trust-host` in their own shell:
+**Changed from revision 4,** which trusted a machine automatically if setup found no data
+folder. Null's finding: an old bot, or a person, could have deleted that folder. A missing
+folder proves nothing, so there's no automatic path. The check decides only which door is
+offered, never the answer.
+
+`apex-daemon trust-host` is the one mechanism, run from the person's own shell or SSH session:
 
 1. It stops the daemon, which ends every bot.
-2. It prints what could outlive that: the user's other processes, crontab, user systemd
-   units, autostart entries, and shell start-up files changed since the first bot ran.
-3. It asks the person to look, and to reboot. A reboot ends detached processes; anything
-   persistent is on the list from step 2.
-4. On the next start, before any bot launches, the daemon writes a new epoch and the trust
-   record. Every existing device record is left without an epoch.
+2. It prints some of what could outlive that: the user's other processes, crontab, user
+   systemd units, autostart entries, and recently changed shell start-up files. **The output
+   says this list is incomplete.** It can't be otherwise, and Deck can't vouch for what's
+   left out of it.
+3. It saves the boot id and asks the person to look and reboot, then to run it again. A
+   reboot ends detached processes. The daemon may come back in between; its bots are jailed
+   and it stays Not trusted.
+4. On the second run, with a new boot id, it stops the daemon again, writes a new epoch and
+   the trust record, and leaves every existing device record without an epoch.
+
+`--no-reboot` skips steps 3 and 4's wait, for accounts that can't reboot, and adds to the
+wording that anything already running stays running. Without sudo, that's the only way.
 
 The wording says what this is: "Deck can't check this machine for you. Only continue if you
-trust what bots did here before." A hostile live process could run this command itself, but
-by the argument above that gives it nothing new.
+trust what has run on this account." A hostile live process could run this command itself,
+but by the argument above that gives it nothing new.
 
-Apex-Terminal takes this path, then its phone pairs again. On Add a machine, a server that
-already has a data folder finishes setup and its row reads "Not trusted yet", with the command.
+**On Add a machine,** setup pauses once, after Deck has started and before pairing, because
+`trust-host` voids devices paired earlier:
+
+    Trust this machine?
+    Your phone can press Allow here only if you trust what has run on this account.
+    Deck can't check that. Pick Trust for a new server, or one you know.
+    [ Trust this machine ]   [ Not now ]
+
+- **Trust this machine** runs `trust-host --no-reboot` over the signed-in SSH session, so the
+  person's own credentials and tap carry the decision. It's offered only when setup found no
+  data folder.
+- **Not now** carries on and pairs without an epoch. The row reads "Not trusted yet", with
+  the command. Trusting later means pairing that phone again.
+- **A server that already has a data folder** isn't offered the button. It always gets the
+  row and the command, so a known history gets the reboot by default.
+
+Automatic trust stays possible only behind a real provisioning boundary, such as setup
+creating a new Linux account. That moves bots, logins and projects to another user, so it
+isn't in this build.
+
+Apex-Terminal takes the command, then its phone pairs again.
 
 ## Who can do what from a paired device
 
@@ -504,10 +571,11 @@ their key. `prepare_source` and `git apply --check` run before merge.
    startup probe, the breakout tests. First a spike: does a real signed-in turn of each
    provider work behind the proxy, under the filter, on a generated home?
 2. Route all five launch points. Change-level order, MCP key. Taint record and the Full
-   gate. `project_process()` and every project-folder spawn moved onto it. List every tool
-   bots reach through `apex-daemon`, then move each to the turn's channel or refuse it.
-3. Host trust: clean-install path, `trust-host`, epoch and salt. Then `access_effect`,
-   paired-device rules, raising rule, phone Face ID step.
+   gate. `project_process()` and every project-folder spawn moved onto it. Isolated Git in
+   `checkpoints.rs`. List every tool bots reach through `apex-daemon`, then move each to the
+   turn's channel or refuse it.
+3. Host trust: `trust-host`, the epoch, the setup card. Then `access_effect`, paired-device
+   rules, raising rule, phone Face ID step.
 4. Real runs on Docker and a real VM, all providers, including Ubuntu 24.04 AppArmor and
    a desktop session with X11.
 5. Updater recipe change, then release.
@@ -528,7 +596,7 @@ Null reviews each step. Nothing from step 3 merges before steps 1 and 2 pass.
 - Everything below Full, on a machine where the jail doesn't work.
 - Provider plugins, hooks and any setting not on the generated list, for bots below Full.
 - A Full bot in a folder a lower bot can write, until a person accepts that folder.
-- Paired devices acting on a machine with bots in its past, until `trust-host` has run.
+- Paired devices acting on any Linux machine, until a person has trusted it and the device paired after that.
 - Project checks and runner checks that need something the jail doesn't have.
 - `sudo`.
 - Edits and Ask in `$HOME` or `/`.
@@ -552,11 +620,12 @@ that changes answer between lookups, a redirect from a public URL to a refused a
 port 80, and a port on the machine's public address.
 
 State: bubblewrap removed, then restart: no below-Full bot starts, and a Full bot does.
-Host trust: a device record without the epoch can't act; a planted epoch file and a record
-built from it are ignored on a machine with a data folder from before the jail; a file
-without the release salt isn't a trust record; `trust-host` replaces the epoch, voids every
-device, and refuses to finish until the reboot has happened; a probe failure after trust
-runs no below-Full bot and keeps trust; a clean install reaches trust before any bot starts.
+Host trust: a device record without the epoch can't act; `trust-host` replaces the epoch,
+voids every device, and doesn't finish until the boot id has changed, unless `--no-reboot`
+was given; a probe failure after trust runs no below-Full bot and keeps trust; a server with
+no data folder is Not trusted until a person chooses, and setup never trusts on its own;
+the Trust button isn't offered when a data folder exists; "Not now" pairs a device that
+can't act; a device paired before Trust can't act afterwards.
 
 Generated home: an unknown executable setting in the host's Claude and Codex config, on
 the real launch path, doesn't appear in the jail's home; the same setting in project config
@@ -569,7 +638,15 @@ jail starts, and survives a crash at that moment; an Edits launch beside a live 
 gets the same gate; a limited device can't accept. With `core.fsmonitor`, `diff.external`,
 a `filter.*.clean` driver, `.git/hooks/*` and a project check all planted by a jail: every
 Deck-run path (changes, bot copies, runner, project check) runs them in the jail or not at
-all. A test fails on a raw project-folder spawn outside `project_process()`.
+all. A test fails on a raw project-folder spawn outside `project_process()`. Withdrawing
+acceptance stops a Full bot there and gates its next launch.
+
+Snapshots: with a planted global and system filter, `textconv`, `core.fsmonitor`,
+`core.attributesFile`, `core.hooksPath`, `GIT_CONFIG_PARAMETERS` in the daemon's environment,
+a nested repository with its own `core.fsmonitor`, and a `.gitattributes` naming each, every
+Git call in `checkpoints.rs` runs nothing from the project, on the oldest and newest Git we
+support. Snapshot then restore returns identical bytes. An older LFS-pointer snapshot is
+reported and left alone.
 
 Alternate paths: a symlink in the project to the data folder, a bind or symlink project
 that resolves to `$HOME`, `..` in a mount, a symlink swapped between check and launch,
@@ -586,16 +663,20 @@ project don't overwrite each other's private home.
 
 ## Known limits
 
-- **The claim is about what Deck starts.** Lower-writable folders below stops Deck
-  running a lower bot's code outside the jail without a person's say-so. It can't stop a
-  person typing `git commit` or `make` in their own terminal, including the Code tab, or
-  a Full bot in another folder using `cd` to reach one. Those run as the person. The Code
-  tab shows a banner in such a folder; nothing else can be done from here.
+- **The claim covers confined processes and Deck's automatic project operations.** It can't
+  stop a person typing `git commit` or `make` in their own terminal, including the Code
+  tab, or a Full bot in another folder deliberately running this folder's code. Those run
+  as the person. The Code tab shows a banner in such a folder; nothing else can be done
+  from here.
 - **An accepted folder is a chosen bridge.** Once a person accepts a folder, a lower bot's
-  code can reach a Full bot there, and from it a device key.
-- **Host trust is a statement.** On a machine that ran unjailed bots, `trust-host` records
-  a person's decision. It proves nothing about what is still on the account. A rebuilt
-  server or a new Linux user is the only clean answer.
+  code, written then or later, can reach a Full bot there, and from it a device key.
+  Withdrawing stops new runs. It can't undo what already ran.
+- **Host trust is a statement.** `trust-host` records a person's decision. It proves nothing
+  about what is on the account, and its inspection list is incomplete. A rebuilt server or a
+  new Linux user is the only clean answer.
+- **A trust record can be forged before the jail arrives.** A same-user process on a pre-jail
+  build can write the record itself, and Deck can't tell. Settings shows the date and
+  devices; a date nobody recognises means rebuild.
 - **Going back to a pre-jail build** runs unjailed bots that can read the epoch, and the
   later jail build can't detect that. Run `trust-host` again after any such rollback.
 - **A root-owned record would be stronger.** Mac grants live in a root broker
