@@ -280,7 +280,11 @@ protected path.
   `apiKeyHelper`, hooks, plugins and MCP servers never load, and the environment is cleared to
   a short allowlist. Both CLIs replace the refresh token each time, so a run can't be thrown
   away: the new login is saved whole, only if a launch would accept it and the host's file
-  hasn't changed since the copy. If it has, the other writer's login stays. Refreshes run one
+  hasn't changed since the copy. If it has, the other writer's login stays, even if that spends
+  this run's token and the person must sign in again. The CLIs take no lock Deck can share, so
+  the save is an atomic exchange, not a check then a rename: the swap keeps the old file whole,
+  Deck compares it, and swaps back if it changed. A folder that can't do the exchange is refused
+  before a token is spent. Refreshes run one
   at a time, and the scratch folder is removed afterwards. A failed refresh refuses the launch
   with the refresh message. Gemini has no proven command yet, and its logins last about an
   hour, so Gemini bots are refused once under 20 minutes until Task 5 settles one. Grok and

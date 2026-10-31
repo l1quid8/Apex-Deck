@@ -9,8 +9,9 @@ use super::JailError;
 use crate::gateway_sandbox::codex_auth_document;
 use crate::owned_process::Registry;
 use apex_core::{AgentTool, ParticipantError};
-use std::ffi::{OsStr, OsString};
+use std::ffi::{CString, OsStr, OsString};
 use std::io::{self, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -60,13 +61,62 @@ fn private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
-/// Replaces the file whole, so a crash leaves the old login or the new one.
-fn replace(target: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Swaps two paths in one step, so neither file is ever overwritten.
+fn exchange(first: &Path, second: &Path) -> io::Result<()> {
+    let text = |path: &Path| CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
+    let (first, second) = (text(first)?, text(second)?);
+    #[cfg(target_os = "linux")]
+    let done = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, first.as_ptr(), libc::AT_FDCWD, second.as_ptr(), libc::RENAME_EXCHANGE) == 0 };
+    #[cfg(target_os = "macos")]
+    let done = unsafe { libc::renamex_np(first.as_ptr(), second.as_ptr(), libc::RENAME_SWAP) == 0 };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let done = { let _ = (first, second); return Err(io::Error::from(io::ErrorKind::Unsupported)) };
+    if done { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+fn sibling(target: &Path, tag: &str) -> PathBuf {
+    target.with_extension(format!("apex-{tag}-{}", std::process::id()))
+}
+
+/// Proves the login's folder can do the swap, before a refresh token is spent
+/// on a login that couldn't then be saved.
+fn can_swap(target: &Path) -> io::Result<()> {
     let target = std::fs::canonicalize(target)?;
-    let temp = target.with_extension(format!("apex-{}", std::process::id()));
-    let _ = std::fs::remove_file(&temp);
-    private_file(&temp, bytes)?;
-    std::fs::rename(&temp, &target).inspect_err(|_| { let _ = std::fs::remove_file(&temp); })
+    let (first, second) = (sibling(&target, "a"), sibling(&target, "b"));
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+    let swapped = private_file(&first, b"").and_then(|()| private_file(&second, b"")).and_then(|()| exchange(&first, &second));
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+    swapped
+}
+
+/// Puts `after` in place only if the file still holds `before`, and never loses
+/// a change made at the same moment. Nothing can compare and write as one step
+/// against a CLI that takes no lock, so this writes first and looks second: the
+/// swap keeps the old file whole, whatever replaced it. A CLI that opened it to
+/// write has already truncated it, so that shows too, and swapping back hands
+/// that CLI's own file back while it finishes. A sign-out leaves nothing to swap
+/// with, and a later change lands on the new file, so it stays. A crash leaves
+/// the old login or the new one.
+fn swap_in(target: &Path, before: &[u8], after: &[u8]) -> io::Result<bool> {
+    let target = std::fs::canonicalize(target)?;
+    let held = sibling(&target, "swap");
+    let _ = std::fs::remove_file(&held);
+    private_file(&held, after)?;
+    if let Err(error) = exchange(&held, &target) {
+        let _ = std::fs::remove_file(&held);
+        return if error.kind() == io::ErrorKind::NotFound { Ok(false) } else { Err(error) };
+    }
+    let saved = std::fs::read(&held).is_ok_and(|old| old == before);
+    if !saved {
+        // Written over the new login since? Then that's newer, so swap again.
+        let swapped_back = exchange(&held, &target).is_ok();
+        if swapped_back && !std::fs::read(&held).is_ok_and(|ours| ours == after) { let _ = exchange(&held, &target); }
+    }
+    let _ = std::fs::remove_file(&held);
+    if let Some(folder) = target.parent() { std::fs::File::open(folder)?.sync_all()?; }
+    Ok(saved)
 }
 
 fn write_scratch(scratch: &Path, login: &Login, bytes: &[u8]) -> io::Result<()> {
@@ -113,6 +163,7 @@ async fn run_codex(registry: &Registry, mut command: Command) -> io::Result<()> 
 }
 
 async fn renew(registry: &Registry, login: &Login, program: &Path, path: &OsStr, scratch: &Path, before: &[u8], timeout: Duration) -> io::Result<bool> {
+    can_swap(&login.source)?;
     write_scratch(scratch, login, before)?;
     let command = command(program, path, scratch);
     let run = async {
@@ -124,8 +175,7 @@ async fn renew(registry: &Registry, login: &Login, program: &Path, path: &OsStr,
     // Someone else refreshed while this ran. Theirs is what the person's own
     // tools are using, so it stays, and this launch takes it if it's usable.
     if std::fs::read(&login.source)? != before { return Ok(false); }
-    replace(&login.source, &after)?;
-    Ok(true)
+    swap_in(&login.source, before, &after)
 }
 
 /// Renews the person's login if a launch would refuse it, and does nothing for
@@ -307,6 +357,58 @@ mod tests {
         let cli = fixture.cli(&format!("printf '%s' '{theirs}' > {}\n{}", fixture.claude_file().display(), writes_claude(&claude_login("new", 480))));
         fixture.run(AgentTool::ClaudeCode, &cli, TIMEOUT).await.unwrap();
         assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), theirs);
+    }
+
+    #[test]
+    fn a_login_replaced_in_the_gap_is_put_back() {
+        let fixture = fixture();
+        std::fs::write(fixture.claude_file(), "theirs").unwrap();
+        assert!(!swap_in(&fixture.claude_file(), b"old", b"new").unwrap());
+        assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), "theirs");
+        assert_eq!(std::fs::read_dir(&fixture.host.claude_dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_write_already_under_way_survives_the_swap() {
+        let fixture = fixture();
+        std::fs::write(fixture.claude_file(), "old").unwrap();
+        let mut writer = std::fs::File::create(fixture.claude_file()).unwrap();
+        assert!(!swap_in(&fixture.claude_file(), b"old", b"new").unwrap());
+        writer.write_all(b"theirs").unwrap();
+        assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), "theirs");
+    }
+
+    #[test]
+    fn a_sign_out_stays_signed_out() {
+        let fixture = fixture();
+        // The swap has nothing to trade with, so nothing can bring a login back.
+        let held = fixture.root.join("held");
+        std::fs::write(&held, "new").unwrap();
+        assert_eq!(exchange(&held, &fixture.claude_file()).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert!(!fixture.claude_file().exists());
+    }
+
+    #[test]
+    fn an_unchanged_login_is_replaced_and_nothing_is_left_beside_it() {
+        let fixture = fixture();
+        std::fs::write(fixture.claude_file(), "old").unwrap();
+        assert!(swap_in(&fixture.claude_file(), b"old", b"new").unwrap());
+        assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), "new");
+        assert_eq!(std::fs::metadata(fixture.claude_file()).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_dir(&fixture.host.claude_dir).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_cant_save_spends_nothing() {
+        if unsafe { libc::geteuid() } == 0 { return; }
+        let fixture = fixture();
+        std::fs::write(fixture.claude_file(), claude_login("old", 5)).unwrap();
+        let cli = fixture.cli(&format!("touch {}", fixture.seen().display()));
+        std::fs::set_permissions(&fixture.host.claude_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = fixture.run(AgentTool::ClaudeCode, &cli, TIMEOUT).await;
+        std::fs::set_permissions(&fixture.host.claude_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert!(!fixture.seen().exists());
     }
 
     #[tokio::test]
