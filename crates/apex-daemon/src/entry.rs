@@ -4,6 +4,10 @@ use crate::cli::{self, Action};
 use crate::{devices_cli, gateway_cli, pair_cli, promote_cli, serve, stdio};
 
 pub fn run() {
+    // The first thing in a Linux bot jail; see the adapters' linux_jail/init.rs.
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == apex_adapters::linux_jail::INIT_ARG) {
+        apex_adapters::linux_jail::init::main();
+    }
     // Codex runs this executable before each MCP call; see the adapters'
     // codex_hook.rs. It answers and exits.
     if std::env::args().nth(1).as_deref() == Some(apex_adapters::CODEX_HOOK_ARG) {

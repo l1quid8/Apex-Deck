@@ -93,8 +93,9 @@ pub async fn serve<P: Purposes>(mut control: UnixStream, purposes: Arc<P>) {
     }
 }
 
-/// The forwarder's side: asks for one connected fd. `&mut` because the replies
-/// have no ids, so two requests at once would swap fds.
+/// The forwarder's side: asks for one connected fd, in blocking mode whatever
+/// the daemon's end uses. `&mut` because the replies have no ids, so two
+/// requests at once would swap fds.
 pub fn fresh(control: &mut std::os::unix::net::UnixStream) -> io::Result<OwnedFd> {
     control.write_all(b"n")?;
     let (mut byte, mut space) = ([0u8], [0u64; 4]);
@@ -124,6 +125,12 @@ pub fn fresh(control: &mut std::os::unix::net::UnixStream) -> io::Result<OwnedFd
     #[cfg(not(target_os = "linux"))]
     // SAFETY: `fd` is open and owned here.
     unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+    // SAFETY: `fd` is open and owned here.
+    let blocking = unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) >= 0
+    };
+    if !blocking { return Err(io::Error::last_os_error()); }
     Ok(fd)
 }
 
@@ -180,6 +187,14 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), async {
             while !what() { tokio::time::sleep(Duration::from_millis(5)).await; }
         }).await.expect("timed out");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_fd_blocks_for_the_forwarder() {
+        let (mut control, _count, _running) = start();
+        let fd = tokio::task::spawn_blocking(move || fresh(&mut control).unwrap()).await.unwrap();
+        // SAFETY: F_GETFL only reads this open fd's flags.
+        assert_eq!(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) } & libc::O_NONBLOCK, 0);
     }
 
     #[tokio::test]

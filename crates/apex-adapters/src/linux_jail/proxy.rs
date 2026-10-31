@@ -147,7 +147,7 @@ async fn read_head<S: AsyncRead + Unpin>(stream: &mut S, seen: &mut Vec<u8>) -> 
     let mut chunk = [0u8; 1024];
     timeout(HEAD_TIMEOUT, async {
         loop {
-            if let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") { return Some(end + 4); }
+            if let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") { return Some(end + 4).filter(|end| *end <= MAX_HEAD); }
             if seen.len() > MAX_HEAD { return None; }
             match stream.read(&mut chunk).await {
                 Ok(0) | Err(_) => return None,
@@ -378,6 +378,21 @@ mod tests {
         big.extend(b"\r\n\r\n");
         let net = Fake::new(vec![vec!["1.1.1.1"]]);
         assert!(ask(&net, &big).await.starts_with("HTTP/1.1 403"));
+        assert!(net.dialled().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_head_is_limited_to_exactly_its_maximum() {
+        let sized = |size: usize| {
+            let mut head = b"CONNECT example.com:443 HTTP/1.1\r\nX: ".to_vec();
+            head.extend(vec![b'a'; size - head.len() - 4]);
+            head.extend(b"\r\n\r\n");
+            head
+        };
+        let net = Fake::new(vec![vec!["1.1.1.1"]]);
+        assert!(ask(&net, &sized(MAX_HEAD)).await.starts_with("HTTP/1.1 200"));
+        let net = Fake::new(vec![vec!["1.1.1.1"]]);
+        assert!(ask(&net, &sized(MAX_HEAD + 1)).await.starts_with("HTTP/1.1 403"));
         assert!(net.dialled().is_empty());
     }
 

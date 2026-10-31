@@ -3,28 +3,39 @@
 //! see tests/linux-jail/run.sh.
 #![cfg(target_os = "linux")]
 
-use apex_adapters::linux_jail::{bwrap_args, jail_env, paths, seccomp, Bind, JailSpec};
-use std::io::Write;
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
+use apex_adapters::linux_jail::{channel, launch, paths, Bind, JailSpec, HOOK_PORT, PROXY_PORT};
+use apex_adapters::{OwnedProcessChild as OwnedChild, OwnedProcessRegistry as Registry};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
+use tokio::runtime::Runtime;
 
 const PROBE: &str = include_str!("../../../tests/linux-jail/probe.py");
 
 fn wanted() -> bool { std::env::var_os("APEX_JAIL_KERNEL_TEST").is_some() }
 
-fn filter_pipe() -> (OwnedFd, RawFd) {
-    let mut fds = [0; 2];
-    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-    std::fs::File::from(write).write_all(&seccomp::filter()).unwrap();
-    let raw = std::os::fd::AsRawFd::as_raw_fd(&read);
-    (read, raw)
+/// The real daemon binary, so these run the real start-up too.
+fn init() -> PathBuf { std::env::var_os("APEX_JAIL_INIT").expect("run.sh sets this").into() }
+
+struct Echo;
+
+#[async_trait::async_trait]
+impl channel::Purposes for Echo {
+    async fn proxy(&self, stream: UnixStream) { echo(stream, b"proxy:").await }
+    async fn codex_hook(&self, stream: UnixStream) { echo(stream, b"hook:").await }
 }
 
-struct Tree { root: PathBuf, home: PathBuf, data: PathBuf, project: PathBuf, init: PathBuf }
+async fn echo(mut stream: UnixStream, label: &[u8]) {
+    let mut seen = Vec::new();
+    let _ = stream.read_to_end(&mut seen).await;
+    let _ = stream.write_all(label).await;
+    let _ = stream.write_all(&seen).await;
+}
+
+struct Tree { root: PathBuf, home: PathBuf, data: PathBuf, project: PathBuf }
 
 fn tree(name: &str) -> Tree {
     let root = std::env::temp_dir().join(format!("apex-jail-kernel-{name}-{}", std::process::id()));
@@ -40,11 +51,8 @@ fn tree(name: &str) -> Tree {
     std::fs::write(data.join("attachments/note.txt"), "shown").unwrap();
     std::fs::write(project.join("probe.py"), PROBE).unwrap();
     std::fs::write(project.join("marker"), "shown\n").unwrap();
-    let init = root.join("init");
-    std::fs::write(&init, "#!/bin/sh\nshift 3\nexec \"$@\"\n").unwrap();
-    std::fs::set_permissions(&init, std::fs::Permissions::from_mode(0o755)).unwrap();
     let root = root.canonicalize().unwrap();
-    Tree { home: root.join("home"), data: root.join("home/.local/share/apex"), project: root.join("home/work/app"), init: root.join("init"), root }
+    Tree { home: root.join("home"), data: root.join("home/.local/share/apex"), project: root.join("home/work/app"), root }
 }
 
 fn mounts() -> paths::Mounts { paths::Mounts::current().unwrap() }
@@ -55,9 +63,8 @@ fn run(tree: &Tree, writable: bool, folder: &Path) -> std::process::Output {
     jail(tree, folder, writable, tree.project.clone(), "/usr/bin/python3", args)
 }
 
-fn jail(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str, args: Vec<String>) -> std::process::Output {
-    let (read, raw) = filter_pipe();
-    let spec = JailSpec {
+fn spec(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str, args: Vec<String>) -> JailSpec {
+    JailSpec {
         program: program.into(),
         args,
         cwd,
@@ -67,25 +74,57 @@ fn jail(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str,
         read_only: vec!["/usr/local/bin".into()],
         protected: protected(tree),
         restored: vec![Bind { source: tree.data.join("attachments"), target: tree.data.join("attachments"), writable: false }],
-        init: tree.init.clone(),
+        init: init(),
         path: "/usr/local/bin:/usr/bin:/bin".into(),
         provider_env: vec![],
-        seccomp_fd: raw,
-        control_fd: 0,
-    };
-    let args = bwrap_args(&spec, &mounts(), |p| std::fs::metadata(p).ok().map(|m| m.is_dir())).unwrap();
-    let mut command = Command::new("bwrap");
-    command.env_clear().args(args).envs(jail_env(&spec));
-    unsafe {
-        command.pre_exec(move || {
-            libc::fcntl(raw, libc::F_SETFD, 0);
-            if libc::setsid() < 0 { return Err(std::io::Error::last_os_error()); }
-            Ok(())
-        });
+        seccomp_fd: -1,
+        control_fd: -1,
     }
-    let output = command.output().unwrap();
-    drop(read);
-    output
+}
+
+fn start(spec: &JailSpec, stdin: Stdio) -> (OwnedChild, tokio::task::JoinHandle<()>) {
+    let mut jailed = launch::jailed_command(spec, Path::new("/usr/bin/bwrap")).unwrap();
+    jailed.command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let (child, control) = jailed.spawn(&Registry::default()).unwrap();
+    (child, tokio::spawn(channel::serve(control, Arc::new(Echo))))
+}
+
+async fn finish(mut child: OwnedChild) -> std::process::Output {
+    let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let (_, _, status) = tokio::join!(out.read_to_end(&mut stdout), err.read_to_end(&mut stderr), child.wait());
+    std::process::Output { status: status.unwrap(), stdout, stderr }
+}
+
+fn jail(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str, args: Vec<String>) -> std::process::Output {
+    let spec = spec(tree, folder, writable, cwd, program, args);
+    Runtime::new().unwrap().block_on(async { finish(start(&spec, Stdio::null()).0).await })
+}
+
+/// `sh -c script` in a jail on the tree's project.
+fn shell(tree: &Tree, script: &str) -> JailSpec {
+    spec(tree, &tree.project, true, tree.project.clone(), "/bin/sh", vec!["-c".into(), script.into()])
+}
+
+/// Processes with exactly this command line, seen from outside the jail.
+fn running(words: &[&str]) -> usize {
+    let wanted: Vec<u8> = words.iter().flat_map(|word| [word.as_bytes(), b"\0"].concat()).collect();
+    std::fs::read_dir("/proc").unwrap().flatten()
+        .filter(|entry| std::fs::read(entry.path().join("cmdline")).is_ok_and(|line| line == wanted))
+        .filter(|entry| !std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default().contains(") Z "))
+        .count()
+}
+
+async fn until(what: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !what() {
+        assert!(Instant::now() < deadline, "timed out");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn ended(serve: tokio::task::JoinHandle<()>) {
+    tokio::time::timeout(Duration::from_secs(10), serve).await.expect("the channel outlived the jail").unwrap();
 }
 
 fn expect(output: std::process::Output) {
@@ -234,4 +273,146 @@ fn a_project_that_is_its_own_mount_under_home_still_works() {
 fn disk_folder(path: &Path) -> PathBuf {
     std::fs::create_dir_all(path).unwrap();
     path.to_path_buf()
+}
+
+#[test]
+fn the_bot_holds_only_stdio_and_no_process_shows_it_a_socket() {
+    if !wanted() { return; }
+    let tree = tree("fds");
+    // The forwarder would show its control socket here if it could be read.
+    let script = r#"
+import glob, os
+print(sorted(f for f in map(int, os.listdir("/proc/self/fd")) if os.path.exists(f"/proc/self/fd/{f}")))
+links = []
+for fd in glob.glob("/proc/[0-9]*/fd/*"):
+    try: links.append(os.readlink(fd))
+    except OSError: pass
+print([l for l in links if l.startswith("socket:")])
+print(len(glob.glob("/proc/[0-9]*")) >= 3)
+"#;
+    let output = jail(&tree, &tree.project, true, tree.project.clone(), "/usr/bin/python3", vec!["-c".into(), script.into()]);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "[0, 1, 2]\n[]\nTrue\n", "{}", String::from_utf8_lossy(&output.stderr));
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_file_the_daemon_leaked_stops_at_the_jail_door() {
+    if !wanted() { return; }
+    let tree = tree("leak");
+    let secret = std::fs::File::open(tree.data.join("gateway.token")).unwrap();
+    let leaked = std::os::fd::AsRawFd::as_raw_fd(&secret);
+    let script = r#"import os; print(sorted(f for f in map(int, os.listdir("/proc/self/fd")) if os.path.exists(f"/proc/self/fd/{f}")))"#;
+    let spec = spec(&tree, &tree.project, true, tree.project.clone(), "/usr/bin/python3", vec!["-c".into(), script.into()]);
+    let output = Runtime::new().unwrap().block_on(async {
+        let mut jailed = launch::jailed_command(&spec, Path::new("/usr/bin/bwrap")).unwrap();
+        jailed.command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        unsafe {
+            jailed.command.pre_exec(move || {
+                if libc::fcntl(leaked, libc::F_SETFD, 0) < 0 { return Err(std::io::Error::last_os_error()); }
+                Ok(())
+            });
+        }
+        let (child, control) = jailed.spawn(&Registry::default()).unwrap();
+        tokio::spawn(channel::serve(control, Arc::new(Echo)));
+        finish(child).await
+    });
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "[0, 1, 2]\n", "{}", String::from_utf8_lossy(&output.stderr));
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn the_forwarder_passes_bytes_under_the_filter_on_each_port() {
+    if !wanted() { return; }
+    let tree = tree("forward");
+    let script = format!(r#"
+import socket
+for port, words in (({PROXY_PORT}, b"hello"), ({HOOK_PORT}, b"there"), ({PROXY_PORT}, b"again" * 100000)):
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s.sendall(words); s.shutdown(socket.SHUT_WR)
+    got = b""
+    while (more := s.recv(65536)): got += more
+    print(got[:16], len(got))
+"#);
+    let output = jail(&tree, &tree.project, true, tree.project.clone(), "/usr/bin/python3", vec!["-c".into(), script]);
+    assert_eq!(String::from_utf8_lossy(&output.stdout),
+        "b'proxy:hello' 11\nb'hook:there' 10\nb'proxy:againagain' 500006\n", "{}", String::from_utf8_lossy(&output.stderr));
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn group_stop_ends_the_bot_and_everything_that_tried_to_leave() {
+    if !wanted() { return; }
+    let tree = tree("stop");
+    let script = "setsid sleep 3101 & (sleep 3102 &) ; setsid sh -c '(sleep 3103 &)'; exec sleep 3100";
+    Runtime::new().unwrap().block_on(async {
+        let (mut child, serve) = start(&shell(&tree, script), Stdio::null());
+        let all = [["sleep", "3100"], ["sleep", "3101"], ["sleep", "3102"], ["sleep", "3103"]];
+        until(|| all.iter().all(|words| running(words) == 1)).await;
+        child.terminate_tree().await.unwrap();
+        until(|| all.iter().all(|words| running(words) == 0)).await;
+        ended(serve).await;
+    });
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_bot_exit_ends_the_jail_with_its_status() {
+    if !wanted() { return; }
+    let tree = tree("exit");
+    Runtime::new().unwrap().block_on(async {
+        let (child, serve) = start(&shell(&tree, "sleep 3104 & exit 7"), Stdio::null());
+        let output = tokio::time::timeout(Duration::from_secs(10), finish(child)).await.expect("the jail outlived the bot");
+        assert_eq!(output.status.code(), Some(7), "{}", String::from_utf8_lossy(&output.stderr));
+        until(|| running(&["sleep", "3104"]) == 0).await;
+        ended(serve).await;
+    });
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_jail_killed_while_starting_leaves_nothing() {
+    if !wanted() { return; }
+    let tree = tree("starting");
+    Runtime::new().unwrap().block_on(async {
+        for delay in 0..30 {
+            let (mut child, serve) = start(&shell(&tree, "exec sleep 3105"), Stdio::null());
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            child.terminate_tree().await.unwrap();
+            ended(serve).await;
+            until(|| running(&["sleep", "3105"]) == 0).await;
+        }
+    });
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_bad_launch_never_runs_the_bot_or_outlives_its_failure() {
+    if !wanted() { return; }
+    let tree = tree("noprogram");
+    let spec = spec(&tree, &tree.project, true, tree.project.clone(), "/no/such/program", vec![]);
+    let output = Runtime::new().unwrap().block_on(async { finish(start(&spec, Stdio::null()).0).await });
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not start the bot"));
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_bot_can_not_type_into_a_terminal_it_inherits() {
+    if !wanted() { return; }
+    let tree = tree("tty");
+    let (mut main, mut side) = (-1, -1);
+    assert_eq!(unsafe { libc::openpty(&mut main, &mut side, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) }, 0);
+    let side = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(side) };
+    let script = r#"
+import fcntl, os, termios
+print(os.isatty(0))
+for name, try_it in (("TIOCSTI", lambda: fcntl.ioctl(0, termios.TIOCSTI, b"x")), ("/dev/tty", lambda: open("/dev/tty"))):
+    try: try_it(); print(name, "worked")
+    except OSError as e: print(name, "refused")
+"#;
+    let spec = spec(&tree, &tree.project, true, tree.project.clone(), "/usr/bin/python3", vec!["-c".into(), script.into()]);
+    let output = Runtime::new().unwrap().block_on(async { finish(start(&spec, Stdio::from(side)).0).await });
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "True\nTIOCSTI refused\n/dev/tty refused\n", "{}", String::from_utf8_lossy(&output.stderr));
+    unsafe { libc::close(main) };
+    let _ = std::fs::remove_dir_all(&tree.root);
 }

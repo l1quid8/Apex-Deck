@@ -65,16 +65,16 @@
 
 ### Task 3: In-jail init, launch and group stop
 
-**Files:** Create `crates/apex-adapters/src/linux_jail/init.rs`, `launch.rs`. Modify `owned_process.rs` (`Registry::spawn` gains a `setsid` mode), `crates/apex-daemon/src/entry.rs` (`__jail-init` handled before tokio starts).
+**Files:** Create `crates/apex-adapters/src/linux_jail/init.rs`, `launch.rs`. Modify `owned_process.rs` (`Registry::spawn_session`), `crates/apex-daemon/src/entry.rs` (`__jail-init` handled before tokio starts).
 
 **Interfaces:**
 - Consumes: Task 1 `JailSpec`, `bwrap_args`, `jail_env`; Task 2 `channel::serve`.
-- Produces: `launch::jailed_command(&JailSpec) -> Result<Jailed, JailError>`, where `Jailed { command, control }`; `init::run(fd, port, argv) -> !`.
+- Produces: `launch::jailed_command(&JailSpec, bwrap) -> Result<Jailed, JailError>`, where `Jailed { command, .. }` and `Jailed::spawn(self, &Registry) -> (OwnedChild, control)`; `Registry::spawn_session`; `init::run(fd, port, argv) -> !`, which listens on `port` for the proxy and `port + 1` for the Codex hook.
 
-- [ ] Failing Linux tests: the bot's `/proc/self/fd` shows only stdio; the forwarder passes bytes under the filter; group kill leaves no process; `setsid` plus double-fork children die with the jail; `TIOCSTI` fails.
-- [ ] Implement. Init forks: the child keeps the control fd and forwards, the parent closes it and `exec`s the bot.
-- [ ] Pass in Docker.
-- [ ] Commit.
+- [x] Failing Linux tests: the bot's `/proc/self/fd` shows only stdio; the forwarder passes bytes under the filter; group kill leaves no process; `setsid` plus double-fork children die with the jail; `TIOCSTI` fails.
+- [x] Implement. Init forks: the child keeps the control fd and forwards, the parent closes it and `exec`s the bot.
+- [x] Pass in Docker.
+- [x] Commit.
 
 ### Task 4: Generated provider homes and login copy-back
 

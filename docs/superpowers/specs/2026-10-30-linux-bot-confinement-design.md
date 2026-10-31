@@ -65,11 +65,18 @@ Every jail has all of these. The breakout tests check each one from inside.
   leader, so its group id is still its own pid, and it has no controlling terminal to
   inject keystrokes into. `setsid()` fails on a process already leading a group, so the
   two calls are exclusive.
+- **Capabilities:** `--cap-drop ALL`. Bubblewrap keeps every capability for a daemon
+  running as root, and an SSH setup as root is ordinary, so this isn't only theory. The
+  kernel test caught it: a root jail could `TIOCSTI` and read the forwarder's fds. The
+  bounding set stays full for root; no-new-privileges stops `exec` regaining any.
 - **`/proc`:** fresh, from `--proc`, inside a new PID namespace. The daemon isn't
   visible there.
 - **`/dev`:** the small set from `--dev`, with its own `devpts`.
 - **Namespaces:** PID, IPC, UTS, cgroup and network are all new, see Network below.
-  `--die-with-parent` stays.
+  `--die-with-parent` stays. It follows the thread that spawned bubblewrap, so launches
+  must come from a tokio worker, not `spawn_blocking`. When the bot exits, bubblewrap
+  exits with its status and the namespace goes with it, so nothing a bot leaves behind
+  outlives its process.
 - **Environment:** cleared, then an allowlist, as `gateway_sandbox.rs:309` does. Only
   the one provider key the bot needs is added. Nothing named for Deck's socket, data
   folder, gateway or `$APEX_DECK_BIN` passes through, nor `SSH_AUTH_SOCK`,

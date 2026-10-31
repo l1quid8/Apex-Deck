@@ -59,6 +59,28 @@ impl Registry {
             use std::os::unix::process::CommandExt;
             command.as_std_mut().process_group(0);
         }
+        self.start(command)
+    }
+
+    /// Like `spawn`, but the command leads a new session, so it has no
+    /// controlling terminal. Its group id still equals its pid, so everything
+    /// else here is unchanged. `setsid` fails on a group leader, which is why
+    /// this replaces `process_group(0)`, and it goes before the start gate
+    /// because the gate's `exec` ends the pre-exec hooks.
+    #[cfg(unix)]
+    pub fn spawn_session(&self, command: &mut Command) -> std::io::Result<OwnedChild> {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe.
+        unsafe {
+            command.as_std_mut().pre_exec(|| {
+                if libc::setsid() < 0 { return Err(std::io::Error::last_os_error()); }
+                Ok(())
+            });
+        }
+        self.start(command)
+    }
+
+    fn start(&self, command: &mut Command) -> std::io::Result<OwnedChild> {
         #[cfg(unix)]
         let gate = if self.directory.is_some() {
             let gate = StartGate::new()?;
@@ -550,6 +572,21 @@ impl Drop for StartGate {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_session_child_leads_its_session_and_stops_as_a_group() {
+        let temp = TempDir::new();
+        for registry in [Registry::default(), Registry::new(Some(temp.0.join("workers")))] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "sleep 30"]);
+            let mut child = registry.spawn_session(&mut command).unwrap();
+            let id = child.id().unwrap() as i32;
+            // SAFETY: both only query this child.
+            assert_eq!((unsafe { libc::getsid(id) }, unsafe { libc::getpgid(id) }), (id, id));
+            child.terminate_tree().await.unwrap();
+        }
+    }
 
     #[test]
     fn concurrent_workers_can_create_their_shared_registry_namespace() {

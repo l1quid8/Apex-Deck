@@ -34,6 +34,10 @@ check("io_uring_setup", libc.syscall(425, 1, 0) == -1 and ctypes.get_errno() == 
 if platform.machine() == "x86_64":
     check("x32 socket number", libc.syscall(0x40000000 | 41, 1, 1, 0) == -1 and ctypes.get_errno() == errno.ENOSYS)
 
+status = dict(line.split(":\t", 1) for line in open("/proc/self/status").read().splitlines() if ":\t" in line)
+check("no capabilities", all(int(status[name], 16) == 0 for name in ("CapInh", "CapPrm", "CapEff", "CapAmb")))
+check("none regained at exec", b"CapEff:\t0000000000000000" in run("cat", "/proc/self/status").stdout)
+check("no new privileges", status["NoNewPrivs"].strip() == "1")
 check("no /run", not os.path.exists("/run/user") and not os.path.exists("/run/systemd"))
 check("no ssh key", not os.path.exists(f"{home}/.ssh/id_ed25519"))
 check("no gateway token", not os.path.exists(f"{data}/gateway.token"))

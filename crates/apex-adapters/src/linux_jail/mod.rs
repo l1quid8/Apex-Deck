@@ -5,6 +5,9 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 pub mod channel;
+pub mod init;
+#[cfg(target_os = "linux")]
+pub mod launch;
 pub mod paths;
 pub mod proxy;
 pub mod seccomp;
@@ -14,6 +17,8 @@ use std::path::{Path, PathBuf};
 
 /// The port the forwarder listens on, on the jail's own loopback.
 pub const PROXY_PORT: u16 = 18080;
+/// The Codex hook's port, always the one after the proxy's.
+pub const HOOK_PORT: u16 = PROXY_PORT + 1;
 /// Where the daemon's own binary appears, to run the in-jail start-up.
 pub const INIT_PATH: &str = "/.apex/init";
 pub const INIT_ARG: &str = "__jail-init";
@@ -43,6 +48,7 @@ pub struct JailSpec {
     pub init: PathBuf,
     pub path: OsString,
     pub provider_env: Vec<(String, OsString)>,
+    /// Set by `launch::jailed_command`, which owns both fds.
     pub seccomp_fd: i32,
     pub control_fd: i32,
 }
@@ -56,8 +62,9 @@ fn bind(out: &mut Vec<OsString>, item: &Bind) {
 /// `is_dir` is `None` for a path that doesn't exist, so tests need no real tree.
 /// Refused when a folder holds protected content, so no launch skips the check.
 pub fn bwrap_args(spec: &JailSpec, mounts: &paths::Mounts, is_dir: impl Fn(&Path) -> Option<bool>) -> Result<Vec<OsString>, paths::Refused> {
+    // A daemon running as root would otherwise hand the bot every capability.
     let mut out: Vec<OsString> = [
-        "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        "--cap-drop", "ALL", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
         "--unshare-cgroup", "--unshare-net", "--proc", "/proc", "--dev", "/dev",
         "--tmpfs", "/tmp",
     ].map(OsString::from).into();
@@ -162,6 +169,7 @@ mod tests {
         for flag in ["--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--unshare-net"] {
             assert!(args.iter().any(|a| a == flag), "{flag}");
         }
+        assert!(args.windows(2).any(|w| w == ["--cap-drop", "ALL"]));
         assert!(args.windows(2).any(|w| w == ["--proc", "/proc"]));
         assert!(args.windows(2).any(|w| w == ["--dev", "/dev"]));
         assert!(args.windows(2).any(|w| w == ["--seccomp", "11"]));
