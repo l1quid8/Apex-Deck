@@ -42,6 +42,8 @@ pub struct Checkpoint {
     /// Files left out because they are over `MAX_FILE`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw: bool,
 }
 
 /// A command a bot ran that a revert can't undo.
@@ -85,27 +87,74 @@ impl RevertPlan {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoreState {
+    Ready,
+    Failed(String),
+}
+
 /// One thread's snapshots run one at a time, since they share its index and
 /// checkpoint list. Other threads, even in the same folder, never wait for
 /// them: a snapshot of a large folder can take minutes. The list also has a
 /// lock of its own, held only while it is read and saved, so noting a
 /// command a bot ran never waits for a snapshot.
-pub struct Snapshots { root: PathBuf, threads: Mutex<HashMap<String, Arc<Mutex<()>>>>, lists: Mutex<HashMap<String, Arc<Mutex<()>>>>, stores: Mutex<()> }
+pub struct Snapshots {
+    root: PathBuf,
+    threads: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    lists: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    stores: Mutex<HashMap<PathBuf, StoreState>>,
+}
 
-fn git(store: &Path, cwd: &Path, index: Option<&Path>, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+fn isolated_git(
+    empty_dir: &Path,
+    store: Option<&Path>,
+    cwd: Option<&Path>,
+    index: Option<&Path>,
+    args: &[&str],
+    input: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
     use std::io::Write;
-    let cwd = &std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let mut command = Command::new("git");
-    command.args(["-c", "core.quotePath=false", "-c", "core.excludesFile=", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false"])
-        .args(args)
-        .env("GIT_DIR", crate::assistant_git::external_path(store).as_os_str())
-        .env("GIT_WORK_TREE", crate::assistant_git::external_path(cwd).as_os_str())
-        .current_dir(cwd)
+    for (k, _) in std::env::vars() {
+        if k.starts_with("GIT_") {
+            command.env_remove(&k);
+        }
+    }
+    command.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("HOME", empty_dir)
+        .env("XDG_CONFIG_HOME", empty_dir);
+    if let Some(path) = crate::agents::login_path() { command.env("PATH", path); }
+    command.args([
+        "-c", "core.quotePath=false",
+        "-c", "core.excludesFile=",
+        "-c", "core.autocrlf=false",
+        "-c", "core.safecrlf=false",
+        "-c", "core.attributesFile=",
+        "-c", "core.fsmonitor=false",
+        "-c", "core.hooksPath=/dev/null",
+    ]);
+    if let Some(store) = store {
+        command.env("GIT_DIR", crate::assistant_git::external_path(store).as_os_str());
+    }
+    if let Some(cwd) = cwd {
+        let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        command.env("GIT_WORK_TREE", crate::assistant_git::external_path(&cwd).as_os_str());
+        command.current_dir(&cwd);
+    } else if let Some(store) = store {
+        command.current_dir(store);
+    } else {
+        command.current_dir(empty_dir);
+    }
+    match index {
+        Some(index) => { command.env("GIT_INDEX_FILE", crate::assistant_git::external_path(index).as_os_str()); },
+        None => { command.env_remove("GIT_INDEX_FILE"); },
+    }
+    command.args(args)
         .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if let Some(path) = crate::agents::login_path() { command.env("PATH", path); }
-    match index { Some(index) => { command.env("GIT_INDEX_FILE", crate::assistant_git::external_path(index).as_os_str()); }, None => { command.env_remove("GIT_INDEX_FILE"); } }
     let mut child = command.spawn().map_err(|e| format!("could not run git: {e}"))?;
     if let Some(input) = input { child.stdin.take().unwrap().write_all(input).map_err(|e| e.to_string())?; }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
@@ -131,13 +180,21 @@ fn safe(thread: &str) -> String {
 /// build output such as `release/` or `dist/`, which can hold gigabytes.
 /// Listed against an index that is never written, so what an earlier
 /// snapshot saved doesn't hide them, and git doesn't walk into them.
-fn ignored_folders(store: &Path, cwd: &Path) -> Vec<String> {
-    let args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"];
-    let Ok(out) = git(store, cwd, Some(&store.join("empty-index")), &args, None) else { return Vec::new() };
-    out.split(|b| *b == 0)
-        .filter_map(|p| String::from_utf8_lossy(p).strip_suffix('/').map(str::to_string))
-        .filter(|p| !p.is_empty())
-        .collect()
+impl Snapshots {
+    fn ignored_folders(&self, store: &Path, cwd: &Path) -> Vec<String> {
+        let args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"];
+        let Ok(out) = self.git(store, cwd, Some(&store.join("empty-index")), &args, None) else { return Vec::new() };
+        out.split(|b| *b == 0)
+            .filter_map(|p| String::from_utf8_lossy(p).strip_suffix('/').map(str::to_string))
+            .filter(|p| !p.is_empty())
+            .collect()
+    }
+
+    fn changed(&self, store: &Path, cwd: &Path, from: &str, to: &str) -> Result<BTreeSet<String>, String> {
+        if from == to { return Ok(BTreeSet::new()); }
+        let out = self.git(store, cwd, None, &["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to], None)?;
+        Ok(out.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect())
+    }
 }
 
 /// Files over `MAX_FILE`, outside the skipped and `ignored` folders, relative to `cwd`.
@@ -161,12 +218,6 @@ fn big_files(cwd: &Path, ignored: &[String]) -> Vec<String> {
     found
 }
 
-fn changed(store: &Path, cwd: &Path, from: &str, to: &str) -> Result<BTreeSet<String>, String> {
-    if from == to { return Ok(BTreeSet::new()); }
-    let out = git(store, cwd, None, &["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to], None)?;
-    Ok(out.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect())
-}
-
 /// Commands that change things outside the folder, which a revert can't undo.
 pub fn irreversible(command: &str) -> bool {
     let c = command.to_lowercase();
@@ -181,6 +232,75 @@ pub fn irreversible(command: &str) -> bool {
 
 impl Snapshots {
     pub fn new(root: PathBuf) -> Self { Snapshots { root, threads: Mutex::default(), lists: Mutex::default(), stores: Mutex::default() } }
+
+    fn empty_dir(&self) -> PathBuf {
+        let empty = self.root.join("empty");
+        let _ = std::fs::create_dir_all(&empty);
+        empty
+    }
+
+    fn git(&self, store: &Path, cwd: &Path, index: Option<&Path>, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+        isolated_git(&self.empty_dir(), Some(store), Some(cwd), index, args, input)
+    }
+
+    fn git_init_bare(&self, path: &Path) -> Result<(), String> {
+        let path_str = crate::assistant_git::external_path(path).to_string_lossy().into_owned();
+        isolated_git(&self.empty_dir(), None, None, None, &["init", "--bare", "--template=", &path_str], None)?;
+        Ok(())
+    }
+
+    fn prepare_store(&self, store: &Path, dir: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+
+        if !store.join("HEAD").exists() {
+            self.git_init_bare(store)?;
+            let _ = std::fs::write(dir.join("README"), "Apex Deck file snapshots for Retry and Revert. Safe to delete when Deck is closed.\n");
+        } else {
+            static SCRATCH_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = SCRATCH_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let scratch = dir.join(format!("scratch-{}-{id}.git", std::process::id()));
+            if scratch.exists() {
+                let _ = std::fs::remove_dir_all(&scratch);
+            }
+            self.git_init_bare(&scratch)?;
+            let copy_res = std::fs::copy(scratch.join("config"), store.join("config")).map_err(|e| format!("could not replace store config: {e}"));
+            let _ = std::fs::remove_dir_all(&scratch);
+            copy_res?;
+        }
+
+        let hooks = store.join("hooks");
+        if hooks.exists() {
+            std::fs::remove_dir_all(&hooks).map_err(|e| format!("could not remove hooks: {e}"))?;
+        }
+
+        let info = store.join("info");
+        std::fs::create_dir_all(&info).map_err(|e| format!("could not create store info dir: {e}"))?;
+        std::fs::write(info.join("attributes"), "* !filter !diff !merge -text -crlf !eol !ident !working-tree-encoding\n")
+            .map_err(|e| format!("could not write store attributes: {e}"))?;
+
+        Ok(())
+    }
+
+    fn ensure_store(&self, store: &Path, dir: &Path) -> Result<(), String> {
+        let mut stores = self.stores.lock().unwrap();
+        if let Some(state) = stores.get(store) {
+            return match state {
+                StoreState::Ready => Ok(()),
+                StoreState::Failed(e) => Err(e.clone()),
+            };
+        }
+
+        match self.prepare_store(store, dir) {
+            Ok(()) => {
+                stores.insert(store.to_path_buf(), StoreState::Ready);
+                Ok(())
+            }
+            Err(e) => {
+                stores.insert(store.to_path_buf(), StoreState::Failed(e.clone()));
+                Err(e)
+            }
+        }
+    }
 
     fn thread_lock(&self, thread: &str) -> Arc<Mutex<()>> {
         Arc::clone(self.threads.lock().unwrap().entry(thread.to_string()).or_default())
@@ -214,17 +334,7 @@ impl Snapshots {
     fn store(&self, cwd: &Path) -> Result<PathBuf, String> {
         let dir = self.root.join(folder_key(cwd));
         let store = dir.join("store.git");
-        // Two threads opening in a new folder make its store once.
-        let _making = self.stores.lock().unwrap();
-        if !store.join("HEAD").exists() {
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            let out = Command::new("git").args(["init", "--bare", "-q"]).arg(&store).env_remove("GIT_DIR")
-                .output().map_err(|e| format!("could not run git: {e}"))?;
-            if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).trim().to_string()); }
-            // Unreachable objects are only collected after a long while, and
-            // the store is never pushed anywhere.
-            let _ = std::fs::write(dir.join("README"), "Apex Deck file snapshots for Retry and Revert. Safe to delete when Deck is closed.\n");
-        }
+        self.ensure_store(&store, &dir)?;
         Ok(store)
     }
 
@@ -235,7 +345,7 @@ impl Snapshots {
         let store = self.store(cwd)?;
         let index = self.index(cwd, thread);
         // Ignored files on their own (a .env) are still saved; ignored folders are not.
-        let ignored = ignored_folders(&store, cwd);
+        let ignored = self.ignored_folders(&store, cwd);
         let skipped = big_files(cwd, &ignored);
         let mut args: Vec<String> = ["add", "-A", "-f", "--ignore-errors", "--", "."].iter().map(|s| s.to_string()).collect();
         for folder in SKIPPED_FOLDERS { args.push(format!(":(exclude,glob)**/{folder}/**")); }
@@ -244,15 +354,15 @@ impl Snapshots {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         // --ignore-errors still exits non-zero when one file can't be read;
         // the rest are added, so carry on to write-tree.
-        let _ = git(&store, cwd, Some(&index), &args, None);
+        let _ = self.git(&store, cwd, Some(&index), &args, None);
         if !ignored.is_empty() {
             // An earlier snapshot may have saved a folder that is ignored now.
             let mut forget: Vec<String> = ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"].iter().map(|s| s.to_string()).collect();
             forget.extend(ignored.iter().map(|folder| format!(":(literal){folder}")));
             let forget: Vec<&str> = forget.iter().map(String::as_str).collect();
-            let _ = git(&store, cwd, Some(&index), &forget, None);
+            let _ = self.git(&store, cwd, Some(&index), &forget, None);
         }
-        let tree = text(git(&store, cwd, Some(&index), &["write-tree"], None)?);
+        let tree = text(self.git(&store, cwd, Some(&index), &["write-tree"], None)?);
         Ok((tree, skipped))
     }
 
@@ -273,9 +383,9 @@ impl Snapshots {
         file.cwd = cwd.to_string_lossy().into_owned();
         // Two idle checkpoints in a row with the same tree say nothing new.
         if let Some(last) = file.checkpoints.last() {
-            if last.tree == tree && !kind.working() && !last.kind.working() { return Ok(last.clone()); }
+            if last.tree == tree && !kind.working() && !last.kind.working() && last.raw { return Ok(last.clone()); }
         }
-        let checkpoint = Checkpoint { seq, kind, by, tree, skipped };
+        let checkpoint = Checkpoint { seq, kind, by, tree, skipped, raw: true };
         file.checkpoints.push(checkpoint.clone());
         self.save(thread, &file)?;
         Ok(checkpoint)
@@ -306,6 +416,9 @@ impl Snapshots {
         let Some(k) = Self::point(&file.checkpoints, at, bot) else {
             return RevertPlan::unavailable("There's no file snapshot from that point, so only the chat can go back.");
         };
+        if !file.checkpoints[k].raw {
+            return RevertPlan::unavailable("This snapshot is from an older Deck, so only the chat can go back.");
+        }
         match self.plan_from(thread, cwd, &file, k) {
             Ok(plan) => plan,
             Err(error) => RevertPlan::unavailable(&format!("Couldn't read the snapshots ({error}), so only the chat can go back.")),
@@ -319,11 +432,11 @@ impl Snapshots {
         let mut ours = BTreeSet::new();
         let mut theirs = BTreeSet::new();
         for pair in list.windows(2) {
-            let set = changed(&store, cwd, &pair[0].tree, &pair[1].tree)?;
+            let set = self.changed(&store, cwd, &pair[0].tree, &pair[1].tree)?;
             if pair[0].kind.working() { ours.extend(set) } else { theirs.extend(set) }
         }
         let last = list.last().unwrap();
-        let tail = changed(&store, cwd, &last.tree, &now)?;
+        let tail = self.changed(&store, cwd, &last.tree, &now)?;
         // A thread that stopped without an idle checkpoint (the app quit) still owns its last turn.
         if last.kind.working() { ours.extend(tail) } else { theirs.extend(tail) }
         let then = &list[0].tree;
@@ -341,7 +454,7 @@ impl Snapshots {
         if paths.is_empty() { return Ok(BTreeSet::new()); }
         let mut args = vec!["ls-tree", "-r", "--name-only", "-z", tree, "--"];
         args.extend(paths.iter().map(String::as_str));
-        let out = git(store, cwd, None, &args, None)?;
+        let out = self.git(store, cwd, None, &args, None)?;
         Ok(out.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect())
     }
 
@@ -350,6 +463,9 @@ impl Snapshots {
     pub fn restore(&self, thread: &str, cwd: &Path, at: usize, bot: Option<&ParticipantId>, paths: &[String]) -> Result<Vec<String>, String> {
         let file = self.load(thread);
         let k = Self::point(&file.checkpoints, at, bot).ok_or("there's no file snapshot from that point")?;
+        if !file.checkpoints[k].raw {
+            return Err("This snapshot is from an older Deck, so only the chat can go back.".into());
+        }
         let tree = file.checkpoints[k].tree.clone();
         let store = self.store(cwd)?;
         let wanted: BTreeSet<String> = paths.iter().filter(|p| safe_path(p)).cloned().collect();
@@ -361,8 +477,8 @@ impl Snapshots {
             let temp = std::env::temp_dir().join(format!("apex-deck-restore-{}-{}-{serial}", std::process::id(), safe(thread)));
             let mut input = Vec::new();
             for path in &existed { input.extend_from_slice(path.as_bytes()); input.push(0); }
-            let result = git(&store, cwd, Some(&temp), &["read-tree", &tree], None)
-                .and_then(|_| git(&store, cwd, Some(&temp), &["checkout-index", "-f", "-z", "--stdin"], Some(&input)));
+            let result = self.git(&store, cwd, Some(&temp), &["read-tree", &tree], None)
+                .and_then(|_| self.git(&store, cwd, Some(&temp), &["checkout-index", "-f", "-z", "--stdin"], Some(&input)));
             let _ = std::fs::remove_file(&temp);
             if let Err(error) = result { return Err(format!("could not restore files: {error}")); }
         }
@@ -433,7 +549,7 @@ impl Snapshots {
         let first = self.load(thread).checkpoints.first()?.tree.clone();
         Some(self.store(cwd).and_then(|store| {
             let (now, _) = { let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap(); self.write_tree(cwd, thread)? };
-            git(&store, cwd, None, &["diff", "--no-color", "--no-ext-diff", "--no-renames", &first, &now], None).map(|b| String::from_utf8_lossy(&b).into_owned())
+            self.git(&store, cwd, None, &["diff", "--no-color", "--no-ext-diff", "--no-renames", &first, &now], None).map(|b| String::from_utf8_lossy(&b).into_owned())
         }))
     }
 
@@ -443,7 +559,9 @@ impl Snapshots {
         for dir in dirs.flatten() {
             let store = dir.path().join("store.git");
             if store.join("HEAD").exists() {
-                let _ = Command::new("git").arg("--git-dir").arg(&store).args(["gc", "--auto", "--quiet"]).env_remove("GIT_DIR").output();
+                if self.ensure_store(&store, &dir.path()).is_ok() {
+                    let _ = isolated_git(&self.empty_dir(), Some(&store), None, None, &["gc", "--auto", "--quiet"], None);
+                }
             }
         }
     }
@@ -629,7 +747,7 @@ mod tests {
 
     fn files_in(snaps: &Snapshots, cwd: &Path, tree: &str) -> Vec<String> {
         let store = snaps.store(cwd).unwrap();
-        text(git(&store, cwd, None, &["ls-tree", "-r", "--name-only", tree], None).unwrap()).lines().map(String::from).collect()
+        text(snaps.git(&store, cwd, None, &["ls-tree", "-r", "--name-only", tree], None).unwrap()).lines().map(String::from).collect()
     }
 
     #[test]
@@ -699,5 +817,210 @@ mod tests {
         snaps.take("t", &cwd, 0, Kind::Open, None).unwrap();
         assert_eq!(std::fs::read_dir(cwd.join(".git/objects")).unwrap().count(), before);
         assert!(!cwd.join(".git/index").exists());
+    }
+
+    #[test]
+    fn byte_exact_snapshots_preserve_crlf_ident_encoding_and_filters() {
+        let (cwd, snaps) = folder("byte-exact");
+        std::fs::write(cwd.join(".gitattributes"), "*.crlf text eol=lf\n*.lf text eol=crlf\n*.id ident\n").unwrap();
+        let crlf_bytes = b"hello\r\nworld\r\n";
+        let lf_bytes = b"hello\nworld\n";
+        let id_bytes = b"$Id: demo test $\n";
+        std::fs::write(cwd.join("file.crlf"), crlf_bytes).unwrap();
+        std::fs::write(cwd.join("file.lf"), lf_bytes).unwrap();
+        std::fs::write(cwd.join("file.id"), id_bytes).unwrap();
+
+        snaps.take("t", &cwd, 0, Kind::Open, None).unwrap();
+        snaps.take("t", &cwd, 0, Kind::Send, None).unwrap();
+
+        // Mutate the files in cwd
+        std::fs::write(cwd.join("file.crlf"), b"changed\n").unwrap();
+        std::fs::write(cwd.join("file.lf"), b"changed\n").unwrap();
+        std::fs::write(cwd.join("file.id"), b"changed\n").unwrap();
+        snaps.take("t", &cwd, 1, Kind::Idle, None).unwrap();
+
+        let plan = snaps.plan("t", &cwd, 0, None);
+        assert!(plan.available);
+        let paths = vec!["file.crlf".into(), "file.lf".into(), "file.id".into()];
+        let failed = snaps.restore("t", &cwd, 0, None, &paths).unwrap();
+        assert!(failed.is_empty());
+
+        assert_eq!(std::fs::read(cwd.join("file.crlf")).unwrap(), crlf_bytes, "CRLF must not be converted to LF");
+        assert_eq!(std::fs::read(cwd.join("file.lf")).unwrap(), lf_bytes, "LF must not be converted to CRLF");
+        assert_eq!(std::fs::read(cwd.join("file.id")).unwrap(), id_bytes, "Ident must not be expanded");
+    }
+
+    #[test]
+    fn checkpoint_without_raw_is_chat_only_and_refuses_restore() {
+        let (cwd, snaps) = folder("old-checkpoint");
+        std::fs::write(cwd.join("a.txt"), "hello\n").unwrap();
+
+        // Simulate an old checkpoint serialized without `raw`
+        let old_json = format!(
+            r#"{{
+            "cwd": "{}",
+            "checkpoints": [
+                {{
+                    "seq": 0,
+                    "kind": "send",
+                    "tree": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                    "skipped": []
+                }}
+            ],
+            "effects": []
+        }}"#,
+            cwd.to_string_lossy()
+        );
+        let thread_path = snaps.thread_path("old-thread");
+        std::fs::create_dir_all(thread_path.parent().unwrap()).unwrap();
+        std::fs::write(&thread_path, old_json).unwrap();
+
+        // The old checkpoint must be chat-only
+        let plan = snaps.plan("old-thread", &cwd, 0, None);
+        assert!(!plan.available);
+        assert_eq!(
+            plan.note.as_deref(),
+            Some("This snapshot is from an older Deck, so only the chat can go back.")
+        );
+
+        let restore_err = snaps.restore("old-thread", &cwd, 0, None, &["a.txt".into()]).unwrap_err();
+        assert_eq!(restore_err, "This snapshot is from an older Deck, so only the chat can go back.");
+
+        // New checkpoints taken on the thread must carry raw: true
+        let cp = snaps.take("old-thread", &cwd, 1, Kind::Send, None).unwrap();
+        assert!(cp.raw);
+        let new_plan = snaps.plan("old-thread", &cwd, 1, None);
+        assert!(new_plan.available);
+    }
+
+    #[test]
+    fn failed_store_rebuild_blocks_all_git_calls() {
+        let (cwd, snaps) = folder("failed-rebuild");
+        let dir = snaps.root.join(folder_key(&cwd));
+        let store = dir.join("store.git");
+        std::fs::create_dir_all(&store).unwrap();
+        // Make store.git/HEAD exist so it's treated as an existing store
+        std::fs::write(store.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        // Make store.git/config a directory so copying scratch config over it fails with EISDIR
+        std::fs::create_dir_all(store.join("config")).unwrap();
+
+        let err = snaps.store(&cwd).unwrap_err();
+        assert!(err.contains("store config") || err.contains("replace"), "Rebuild must fail: {err}");
+
+        // Subsequent calls must return the cached failed state without running git
+        let err2 = snaps.take("t", &cwd, 0, Kind::Open, None).unwrap_err();
+        assert_eq!(err2, err);
+
+        // compact() must skip the store safely
+        snaps.compact();
+    }
+
+    #[test]
+    fn concurrent_store_rebuild_is_serialized_and_rebuilds_once() {
+        let (cwd, snaps) = folder("concurrent-rebuild");
+        std::fs::write(cwd.join("test.txt"), "concurrent").unwrap();
+        let snaps = Arc::new(snaps);
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let snaps_c = Arc::clone(&snaps);
+            let cwd_c = cwd.clone();
+            handles.push(std::thread::spawn(move || {
+                snaps_c.take(&format!("thread-{i}"), &cwd_c, i, Kind::Send, None).unwrap()
+            }));
+        }
+
+        for handle in handles {
+            let cp = handle.join().unwrap();
+            assert!(cp.raw);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshots_run_nothing_from_project_or_environment() {
+        let (cwd, snaps) = folder("isolation-safety");
+        let base = cwd.parent().unwrap();
+        let marker = base.join("executed.txt");
+        let script = base.join("evil.sh");
+        std::fs::write(&script, format!("#!/bin/sh\necho ran > {}\nexit 1\n", marker.to_string_lossy())).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // Set up templateDir that plants config and hooks
+        let template_dir = base.join("template");
+        let template_hooks = template_dir.join("hooks");
+        std::fs::create_dir_all(&template_hooks).unwrap();
+        std::fs::copy(&script, template_hooks.join("post-checkout")).unwrap();
+        std::fs::copy(&script, template_hooks.join("pre-rebase")).unwrap();
+        std::fs::write(template_dir.join("config"), format!("[core]\nfsmonitor = {}\n", script.to_string_lossy())).unwrap();
+
+        // Set up a hostile global gitconfig in a fake home directory
+        let fake_home = base.join("fake_home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let global_config = fake_home.join(".gitconfig");
+        std::fs::write(&global_config, format!(
+            "[init]\n\ttemplateDir = {}\n[filter \"evil\"]\n\tclean = {}\n\tsmudge = {}\n[diff \"evil\"]\n\ttextconv = {}\n[core]\n\tfsmonitor = {}\n\tattributesFile = {}\n\thooksPath = {}\n",
+            template_dir.to_string_lossy(),
+            script.to_string_lossy(),
+            script.to_string_lossy(),
+            script.to_string_lossy(),
+            script.to_string_lossy(),
+            base.join("fake_attr").to_string_lossy(),
+            template_hooks.to_string_lossy(),
+        )).unwrap();
+
+        // Project root and nested .gitattributes
+        std::fs::write(cwd.join(".gitattributes"), "*.txt filter=evil diff=evil\n").unwrap();
+        let nested_dir = cwd.join("nested");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(nested_dir.join(".gitattributes"), format!("[attr]evilmacro filter=evil diff=evil\n*.sub evilmacro\n")).unwrap();
+        std::fs::write(nested_dir.join("nested.sub"), "sub-content\n").unwrap();
+        std::fs::write(cwd.join("a.txt"), "content\n").unwrap();
+
+        // Nested repository with its own core.fsmonitor in .git/config
+        let nested_repo = cwd.join("nested_repo");
+        std::fs::create_dir_all(nested_repo.join(".git")).unwrap();
+        std::fs::write(nested_repo.join(".git/config"), format!("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tfsmonitor = {}\n", script.to_string_lossy())).unwrap();
+        std::fs::write(nested_repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        // Pre-existing old store with planted hooks and config before first use
+        let dir = snaps.root.join(folder_key(&cwd));
+        let store = dir.join("store.git");
+        std::fs::create_dir_all(&store).unwrap();
+        assert!(Command::new("git").args(["init", "--bare", "-q"]).arg(&store).status().unwrap().success());
+        let store_hooks = store.join("hooks");
+        std::fs::create_dir_all(&store_hooks).unwrap();
+        std::fs::copy(&script, store_hooks.join("pre-commit")).unwrap();
+        std::fs::copy(&script, store_hooks.join("post-commit")).unwrap();
+        std::fs::write(store.join("config"), format!("[core]\n\tbare = true\n\tfsmonitor = {}\n[filter \"evil\"]\n\tclean = {}\n", script.to_string_lossy(), script.to_string_lossy())).unwrap();
+
+        // Set inherited GIT_CONFIG_PARAMETERS in environment
+        std::env::set_var("GIT_CONFIG_PARAMETERS", format!("'core.fsmonitor={}'", script.to_string_lossy()));
+
+        // Run full checkpoints lifecycle: store(), take(), plan(), restore(), diff_since_start(), compact()
+        snaps.take("t", &cwd, 0, Kind::Open, None).unwrap();
+        snaps.take("t", &cwd, 0, Kind::Send, None).unwrap();
+
+        std::fs::write(cwd.join("a.txt"), "modified\n").unwrap();
+        snaps.take("t", &cwd, 1, Kind::Idle, None).unwrap();
+
+        let plan = snaps.plan("t", &cwd, 0, None);
+        assert!(plan.available);
+
+        let paths = vec!["a.txt".into()];
+        let failed = snaps.restore("t", &cwd, 0, None, &paths).unwrap();
+        assert!(failed.is_empty());
+
+        let diff = snaps.diff_since_start("t", &cwd);
+        assert!(diff.is_some());
+
+        snaps.compact();
+
+        std::env::remove_var("GIT_CONFIG_PARAMETERS");
+
+        assert!(!marker.exists(), "Hostile script must never be executed by any git operation");
     }
 }
