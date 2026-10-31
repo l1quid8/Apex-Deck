@@ -17,6 +17,7 @@ on:
     branches:
       - feat/win-m4-installer
       - feat/windows-11
+      - fix/windows-catch-up
 
 concurrency:
   group: windows-installer-${{ github.ref }}
