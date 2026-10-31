@@ -12,4 +12,5 @@ let package = Package(
     .executableTarget(name: "SpikeMCP", dependencies: ["SpikeCore"]),
     .executableTarget(name: "SpikeEventProbe", dependencies: ["SpikeCore"]),
     .testTarget(name: "SpikeCoreTests", dependencies: ["SpikeCore"]),
+    .testTarget(name: "SpikeAppTests", dependencies: ["SpikeApp", "SpikeCore"]),
   ])

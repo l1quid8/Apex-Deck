@@ -33,7 +33,7 @@ guard fd >= 0 else {
 }
 if let mode = operatorMode {
   Wire.send(["jsonrpc": "2.0", "id": 1, "method": allowed[mode]!], fd: fd)
-  Wire.lines(fd: fd) { data in
+  Wire.responses(fd: fd) { data in
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data([10]))
     close(fd)
@@ -42,7 +42,7 @@ if let mode = operatorMode {
   exit(1)
 }
 DispatchQueue.global().async {
-  Wire.lines(fd: fd) { data in
+  Wire.responses(fd: fd) { data in
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data([10]))
   }

@@ -103,7 +103,7 @@ final class Server {
       }
       guard let id = object["id"] else { return }
       if method == "spike/status" {
-        self.response(id, self.status(), client)
+        self.queue.async { self.response(id, self.status(), client) }
         return
       }
       if method == "spike/show-test-dialog" {
@@ -122,26 +122,26 @@ final class Server {
         return
       }
       if method == "initialize" {
-        self.response(
+        self.queue.async { self.response(
           id,
           [
             "protocolVersion": "2025-06-18", "capabilities": ["tools": [:]],
             "serverInfo": ["name": "apex-computer", "version": "0.1.0-spike"],
-          ], client)
+          ], client) }
         return
       }
       if method == "ping" {
-        self.response(id, [:], client)
+        self.queue.async { self.response(id, [:], client) }
         return
       }
       if method == "tools/list" {
-        self.response(id, ["tools": Self.tools], client)
+        self.queue.async { self.response(id, ["tools": Self.tools], client) }
         return
       }
       if method != "tools/call" {
-        self.send(
+        self.queue.async { self.send(
           ["jsonrpc": "2.0", "id": id, "error": ["code": -32601, "message": "Method not found"]],
-          client)
+          client) }
         return
       }
       self.activeLock.lock()
@@ -149,7 +149,7 @@ final class Server {
       if !busy { self.activeID = String(describing: id) }
       self.activeLock.unlock()
       if busy {
-        self.fail(id, "action_busy", client)
+        self.queue.async { self.fail(id, "action_busy", client) }
         return
       }
       self.queue.async {
@@ -159,26 +159,33 @@ final class Server {
           self.activeLock.unlock()
         }
         do {
-          let result = try self.call(params, id: String(describing: id))
-          self.response(id, result, client)
+          let requestID = String(describing: id)
+          let result = try self.call(params, id: requestID)
+          guard let epoch = self.snapshot?.epoch else { throw Refusal("observation_unavailable") }
+          // All successful tools export a screen observation. Recheck after
+          // waiting for the output lock and throughout a backpressured write.
+          _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": result],
+            fd: client, output: self.output,
+            check: { try self.latch.check(requestID, epoch: epoch) },
+            invalidate: { self.snapshot = nil; self.latch.stop() })
         } catch let error as Refusal {
           self.snapshot = nil
-          // A screenshot refusal must not do an extra AX read after Stop or
-          // a missing permission; only a successful request exports its pair.
-          let screenshot = params["name"] as? String == "get_screenshot"
-          let fresh = screenshot ? nil : (try? self.ax.capture(epoch: self.latch.state().0))?.output
-          self.fail(
-            id,
-            error.code
-              + (fresh.map { "\nFresh reading (control still requires a new request):\n" + $0 }
-                ?? ""),
-            client)
+          // A refusal never performs another AX read or exports screen text.
+          // The caller must explicitly request a new observation while active.
+          self.fail(id, error.code, client)
         } catch {
           self.snapshot = nil
           self.fail(id, "internal_error", client)
         }
       }
     }
+  }
+  func observe(id: String, epoch: UInt64? = nil) throws -> Snapshot {
+    let expected = epoch ?? latch.state().0
+    try latch.check(id, epoch: expected)
+    let fresh = try ax.capture(epoch: expected)
+    try latch.check(id, epoch: expected)
+    return fresh
   }
   func call(_ params: [String: Any], id: String) throws -> [String: Any] {
     if params["name"] as? String == "get_screenshot" {
@@ -197,14 +204,17 @@ final class Server {
   func callText(_ params: [String: Any], id: String) throws -> String {
     let name = params["name"] as? String ?? ""
     let args = params["arguments"] as? [String: Any] ?? [:]
+    try latch.check(id)
     if name == "read_screen" {
-      let s = try ax.capture(epoch: latch.state().0)
+      guard args.isEmpty else { throw Refusal("read_screen_takes_no_arguments") }
+      let s = try observe(id: id)
       snapshot = s
       return s.output
     }
     try latch.check(id)
     guard ax.trusted() else { throw Refusal("accessibility_not_trusted") }
     if name == "request_app" {
+      let epoch = latch.state().0
       guard let bundle = args["app"] as? String, Policy.target(bundle),
         let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle)
       else { throw Refusal("only_TextEdit_allowed") }
@@ -216,7 +226,7 @@ final class Server {
       let semaphore = DispatchSemaphore(value: 0)
       var launched: NSRunningApplication?
       DispatchQueue.main.async {
-        guard (try? self.latch.check(id)) != nil else {
+        guard (try? self.latch.check(id, epoch: epoch)) != nil else {
           semaphore.signal()
           return
         }
@@ -230,14 +240,17 @@ final class Server {
       guard semaphore.wait(timeout: .now() + 5) == .success, launched != nil else {
         throw Refusal("launch_failed")
       }
-      try latch.check(id)
+      try latch.check(id, epoch: epoch)
       let end = ProcessInfo.processInfo.systemUptime + 2
       while NSWorkspace.shared.frontmostApplication?.bundleIdentifier != bundle
         && ProcessInfo.processInfo.systemUptime < end
       {
-        try latch.check(id)
+        try latch.check(id, epoch: epoch)
         Thread.sleep(forTimeInterval: 0.02)
       }
+      let fresh = try prepareTextEdit(id: id, epoch: epoch)
+      snapshot = fresh
+      return fresh.output
     } else {
       guard let s = snapshot, args["snapshot"] as? String == s.id else {
         throw Refusal("fresh_snapshot_required")
@@ -249,16 +262,21 @@ final class Server {
       case "type_text":
         guard let text = args["text"] as? String else { throw Refusal("text_required") }
         let count = try input.text(text, s: s, id: id)
-        let fresh = try ax.capture(epoch: latch.state().0)
+        let fresh = try observe(id: id, epoch: s.epoch)
         snapshot = fresh
         return "delivered_clusters: \(count)\n" + fresh.output
       case "press_key":
         guard let key = args["key"] as? String else { throw Refusal("key_required") }
+        if key == "Cmd-N" {
+          let fresh = try createNewTextEditDocument(previous: s, id: id, epoch: s.epoch)
+          snapshot = fresh
+          return fresh.output
+        }
         try input.key(key, s: s, id: id)
       default: throw Refusal("unknown_tool")
       }
     }
-    let s = try ax.capture(epoch: latch.state().0)
+    let s = try observe(id: id, epoch: snapshot?.epoch)
     snapshot = s
     return s.output
   }

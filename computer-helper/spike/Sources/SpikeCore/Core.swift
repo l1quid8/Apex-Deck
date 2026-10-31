@@ -35,6 +35,63 @@ public enum Policy {
   }
 }
 public enum Wire {
+  public static let screenshotResponseLineLimit = ((5 * 1024 * 1024 + 2) / 3) * 4 + 256 * 1024
+  public static func responses(fd: Int32, body: (Data) -> Void) {
+    lines(fd: fd, limit: screenshotResponseLineLimit, body: body)
+  }
+  public static func publishScreenshot(_ value: [String: Any], fd: Int32, output: NSLock,
+      check: () throws -> Void, invalidate: () -> Void) -> Bool {
+    output.lock(); defer { output.unlock() }
+    func abort() -> Bool {
+      invalidate()
+      // The reader owns close(). Shutdown also wakes it when a partial image
+      // cannot be completed; no later response may complete that same line.
+      shutdown(fd, SHUT_RDWR)
+      return false
+    }
+    do {
+      // Capture may have finished while another response owned the output lock.
+      try check()
+      // Base64 '/' bytes must keep their one-byte representation so the wire
+      // ceiling actually accommodates every image allowed by ScreenshotPolicy.
+      let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])
+      guard data.count <= screenshotResponseLineLimit else { return abort() }
+      let deadline = ProcessInfo.processInfo.systemUptime + 2
+      func write(_ data: Data) throws -> Bool {
+        try data.withUnsafeBytes { raw in
+          var offset = 0
+          while offset < raw.count {
+            try check()
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { return false }
+            var ready = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            // A blocked peer must not defer Stop/activity checks for the whole
+            // transport timeout. Each actual send is nonblocking and bounded.
+            let polled = Darwin.poll(&ready, 1, Int32(min(remaining * 1000, 20).rounded(.up)))
+            if polled < 0 && errno == EINTR { continue }
+            if polled == 0 { continue }
+            guard polled > 0,
+              ready.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0,
+              ready.revents & Int16(POLLOUT) != 0
+            else { return false }
+            try check()
+            let n = Darwin.send(fd, raw.baseAddress!.advanced(by: offset),
+              min(raw.count - offset, 16 * 1024), MSG_DONTWAIT)
+            if n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+            guard n > 0 else { return false }
+            offset += n
+          }
+          return true
+        }
+      }
+      // Publish the delimiter separately so a final invalidation check occurs
+      // after the image bytes and before the relay can accept a complete frame.
+      guard try write(data), try write(Data([10])) else { return abort() }
+      return true
+    } catch {
+      return abort()
+    }
+  }
   public static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
     "Library/Application Support/Apex Computer Spike")
   public static let bundle = root.appendingPathComponent("Apex Computer Spike.app")
@@ -95,6 +152,9 @@ public enum Wire {
   }
 
   public static func lines(fd: Int32, body: (Data) -> Void) {
+    lines(fd: fd, limit: 65536, body: body)
+  }
+  private static func lines(fd: Int32, limit: Int, body: (Data) -> Void) {
     var pending = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
     while true {
@@ -108,13 +168,18 @@ public enum Wire {
         continue
       }
       if n <= 0 { return }
-      pending.append(buffer, count: n)
-      if pending.count > 65536 { return }
-      while let end = pending.firstIndex(of: 10) {
-        let line = pending.prefix(upTo: end)
-        pending.removeSubrange(...end)
-        body(Data(line))
+      // Scan only the new bytes. Limits apply to individual lines, excluding
+      // their delimiter, even when a read contains the end of several frames.
+      var start = 0
+      while let end = buffer[start..<n].firstIndex(of: 10) {
+        guard end - start <= limit - pending.count else { return }
+        pending.append(contentsOf: buffer[start..<end])
+        body(pending)
+        pending.removeAll(keepingCapacity: true)
+        start = end + 1
       }
+      guard n - start <= limit - pending.count else { return }
+      pending.append(contentsOf: buffer[start..<n])
     }
   }
 }
