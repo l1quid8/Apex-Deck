@@ -179,7 +179,7 @@ def fake_run(*args,required=True):
 u.run=fake_run
 `;
 
-test('another signed-in account’s background service stops for the install and starts again on the new copy',()=>python(accountsFixture+String.raw`
+test('another signed-in account’s background service stops for the install and starts again on the new copy', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 u.install()
 assert (u.TRUSTED/'version').read_text()=='new'
 # Both services are down before the broker is, and the other account's comes back
@@ -190,7 +190,7 @@ assert not loaded[501] and loaded[502]
 shutil.rmtree(directory)
 `));
 
-test('a rolled-back install starts the other account’s background service again on the old copy',()=>python(accountsFixture+String.raw`
+test('a rolled-back install starts the other account’s background service again on the old copy', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 fail.append('injected broker failure')
 try:u.install()
 except RuntimeError as error:assert 'injected' in str(error),error
@@ -201,7 +201,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('another account’s service that isn’t its own regular file is refused before anything stops',()=>python(accountsFixture+String.raw`
+test('another account’s service that isn’t its own regular file is refused before anything stops', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 other_agent.unlink();other_agent.symlink_to(agent)
 try:u.install()
 except RuntimeError as error:assert 'another account' in str(error),error
@@ -210,7 +210,7 @@ assert events==[] and loaded=={501:True,502:True},events
 shutil.rmtree(directory)
 `));
 
-test('a background service the update can’t stop says so instead of a vague “still running”',()=>python(accountsFixture+String.raw`
+test('a background service the update can’t stop says so instead of a vague “still running”', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 stray[0]=True
 try:u.install()
 except RuntimeError as error:assert "couldn't stop" in str(error) and 'nothing was installed' in str(error),error
@@ -220,7 +220,7 @@ assert ('start',502,str(other_agent),'old') in events,'the stopped services are 
 shutil.rmtree(directory)
 `));
 
-test('an account that signs out as the update starts is skipped, not a reason to refuse',()=>python(accountsFixture+String.raw`
+test('an account that signs out as the update starts is skipped, not a reason to refuse', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 real=u.run
 def signed_out(*args,required=True):
  if list(map(str,args[:3]))==['/bin/launchctl','bootout','gui/502/dev.apexdeck.daemon']:
@@ -235,7 +235,7 @@ assert not any(e[:2]==('start',502) for e in events if isinstance(e,tuple)),'not
 shutil.rmtree(directory)
 `));
 
-test('another account’s service that won’t stop refuses the update by name',()=>python(accountsFixture+String.raw`
+test('another account’s service that won’t stop refuses the update by name', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 real=u.run
 def stuck(*args,required=True):
  if list(map(str,args[:3]))==['/bin/launchctl','bootout','gui/502/dev.apexdeck.daemon']:
@@ -251,7 +251,7 @@ assert ('start',501,str(agent),'old') in events,events
 shutil.rmtree(directory)
 `));
 
-test('a rollback that needs checking names the other accounts whose service stays off',()=>python(accountsFixture+String.raw`
+test('a rollback that needs checking names the other accounts whose service stays off', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 # pop() takes from the end: the install's broker start fails, then the rollback's.
 fail.extend(['rollback broker failure','injected broker failure'])
 notes=[]
@@ -264,7 +264,7 @@ assert len(notes)==1 and '"Other Person"' in notes[0] and 'stays off' in notes[0
 shutil.rmtree(directory)
 `));
 
-test('a directory account that getpwall leaves out is still found by its running background service',()=>python(accountsFixture+String.raw`
+test('a directory account that getpwall leaves out is still found by its running background service', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 net=base/'net';(net/'Library/LaunchAgents').mkdir(parents=True);net_agent=net/'Library/LaunchAgents/dev.apexdeck.daemon.plist';net_agent.write_text('net agent')
 directory_user=types.SimpleNamespace(pw_uid=503,pw_dir=str(net),pw_name='net',pw_gecos='Network Person')
 u.pwd.getpwuid=lambda uid:directory_user if uid==503 else (_ for _ in ()).throw(KeyError(uid))
@@ -280,7 +280,7 @@ assert 503 in found and found[503][0]=='Network Person',found
 shutil.rmtree(directory)
 `));
 
-test('a background service run by an account nobody can look up refuses the update',()=>python(accountsFixture+String.raw`
+test('a background service run by an account nobody can look up refuses the update', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 u.pwd.getpwuid=lambda uid:(_ for _ in ()).throw(KeyError(uid))
 real=u.run
 u.run=lambda *args,required=True:subprocess.CompletedProcess(list(map(str,args)),0,'  777 /x/apex-daemon\n','') if str(args[0])=='/bin/ps' else real(*args,required=required)
@@ -291,7 +291,7 @@ assert events==[],events
 shutil.rmtree(directory)
 `));
 
-test('Deck opened in another account as the update starts says so',()=>python(accountsFixture+String.raw`
+test('Deck opened in another account as the update starts says so', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 u.app_running=lambda uid=None:uid is None
 try:u.install()
 except RuntimeError as error:assert 'in another account' in str(error) and 'opened again' not in str(error),error
@@ -300,7 +300,7 @@ assert (u.TRUSTED/'version').read_text()=='old'
 shutil.rmtree(directory)
 `));
 
-test('a rollback whose own service file vanished still starts the other account’s background service again',()=>python(accountsFixture+String.raw`
+test('a rollback whose own service file vanished still starts the other account’s background service again', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 # The requester's plist disappears while the update is staged, which stops the install.
 u.validate_bundle=lambda p:agent.unlink() if 'upgrade-' in str(p) else None
 try:u.install()
@@ -313,7 +313,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('an account whose background service won’t start again is named, with what brings it back',()=>python(accountsFixture+String.raw`
+test('an account whose background service won’t start again is named, with what brings it back', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 refuse_start.add(502)
 notes=[]
 u.install(notes)
@@ -323,7 +323,7 @@ assert len(notes)==1 and '"Other Person"' in notes[0] and "didn't start again" i
 shutil.rmtree(directory)
 `));
 
-test('a clean rollback also names an account whose background service won’t start again',()=>python(accountsFixture+String.raw`
+test('a clean rollback also names an account whose background service won’t start again', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 refuse_start.add(502);fail.append('injected broker failure')
 notes=[]
 try:u.install(notes)

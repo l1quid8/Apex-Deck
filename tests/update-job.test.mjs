@@ -7,6 +7,9 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { upgradeScripts } from '../scripts/package-mac-upgrade.mjs';
 
+// macOS-only: the launchd update job runs /usr/bin/python3 against /Library.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the launchd update job' };
+
 const transaction = fileURLToPath(new URL('../scripts/upgrade.py', import.meta.url));
 
 function python(program) {
@@ -21,7 +24,7 @@ ${program}`], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
 }
 
-test('the shared transaction carries no build identity until a package renders one in', () => {
+test('the shared transaction carries no build identity until a package renders one in', MAC_ONLY, () => {
   python(String.raw`
 assert u.M is None and u.STAGED is None
 assert u.REQUIREMENT==u.DEVELOPER_ID
@@ -32,14 +35,14 @@ assert u.REQUIREMENT==u.DEVELOPER_ID
   assert.doesNotMatch(worker, /^MANIFEST_JSON = ''$/m);
 });
 
-test('versions compare as numbers and malformed ones are refused', () => python(String.raw`
+test('versions compare as numbers and malformed ones are refused', MAC_ONLY, () => python(String.raw`
 assert u.version_key('0.10.0')>u.version_key('0.9.9')
 assert u.version_key('1.0')==u.version_key('1.0.0.0')
 for bad in (None,'1','v1.0','1.0.0.0.0','1.0-beta',' 1.0'):
  raises(lambda:u.version_key(bad),'Invalid version')
 `));
 
-test('an update request is refused unless every field has the exact shape the broker writes', () => python(String.raw`
+test('an update request is refused unless every field has the exact shape the broker writes', MAC_ONLY, () => python(String.raw`
 u.protected=lambda p:None
 good={'id':'12345678-1234-1234-1234-123456789abc','version':'0.9.1','package':'/Users/a/Library/Caches/x/Apex-Deck-0.9.1-arm64.pkg','sha256':'f'*64,'size':10,'uid':501}
 with tempfile.TemporaryDirectory() as directory:
@@ -52,7 +55,7 @@ with tempfile.TemporaryDirectory() as directory:
  raises(lambda:check(dict(good,extra=1)),'Malformed')
 `));
 
-test('the package copy is refused when it is linked, owned by someone else, resized or does not hash', () => python(String.raw`
+test('the package copy is refused when it is linked, owned by someone else, resized or does not hash', MAC_ONLY, () => python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  base=pathlib.Path(directory);source=base/'u.pkg';source.write_bytes(b'package-bytes');sha=hashlib.sha256(b'package-bytes').hexdigest();uid=os.getuid()
  u.copy_package(source,base/'copy',13,sha,uid);assert (base/'copy').read_bytes()==b'package-bytes';assert (base/'copy').stat().st_mode&0o777==0o600
@@ -68,7 +71,7 @@ with tempfile.TemporaryDirectory() as directory:
  else:raise AssertionError('overwrote an existing copy')
 `));
 
-test('identity checks pin the installed team, the requested version, a newer version, the OS and the CPU', () => python(String.raw`
+test('identity checks pin the installed team, the requested version, a newer version, the OS and the CPU', MAC_ONLY, () => python(String.raw`
 calls=[]
 info={'trusted':{'CFBundleShortVersionString':'0.9.0','CFBundleIdentifier':'dev.apexdeck.app'},'staged':{'CFBundleShortVersionString':'0.9.1','CFBundleIdentifier':'dev.apexdeck.app','LSMinimumSystemVersion':'13.0'}}
 u.TRUSTED=pathlib.Path('/trusted/Apex Deck.app')
@@ -126,7 +129,7 @@ u.wait_for_exit=lambda uid:events.append(('wait',uid))
 u.reopen=lambda uid:events.append(('reopen',uid))
 `;
 
-test('a verified update installs only after Deck has closed, then records the result and reopens Deck', () => python(jobFixture + String.raw`
+test('a verified update installs only after Deck has closed, then records the result and reopens Deck', MAC_ONLY, () => python(jobFixture + String.raw`
 u.install=lambda notes:events.append(('install',u.M['id'],str(u.STAGED)))
 assert u.auto(job/'request.json')==0
 assert events[:3]==['stage','identify',('wait',501)] and events[3][0]=='install' and events[3][2].endswith(rid+'/Apex Deck.app')
@@ -139,7 +142,7 @@ assert u.VERIFIER==job/'verify-protected-bundle.sh', 'runs a private copy of the
 shutil.rmtree(directory)
 `));
 
-test('a refused update installs nothing, says why, and still reopens Deck', () => python(jobFixture + String.raw`
+test('a refused update installs nothing, says why, and still reopens Deck', MAC_ONLY, () => python(jobFixture + String.raw`
 def refuse(staged,request): raise RuntimeError('Version 0.9.1 is not newer than the installed 0.9.1')
 u.identify=refuse
 u.install=lambda notes:events.append('install')
@@ -150,7 +153,7 @@ assert result['outcome']=='failed' and 'not newer' in result['message']
 shutil.rmtree(directory)
 `));
 
-test('reopening waits for the quitting Deck to close first, and leaves a Deck that never closed alone', () => python(String.raw`
+test('reopening waits for the quitting Deck to close first, and leaves a Deck that never closed alone', MAC_ONLY, () => python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  u.TRUSTED=pathlib.Path(directory)/'Apex Deck.app';u.TRUSTED.mkdir()
  u.os.stat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_uid=501) if p=='/dev/console' else real(p,*a,**k))(u.os.stat)
@@ -169,7 +172,7 @@ with tempfile.TemporaryDirectory() as directory:
  assert 'open' not in events and events.count('sleep')==u.EXIT_WAIT,'still open: nothing to reopen'
 `));
 
-test('reopening waits for the requester’s own Deck only; another signed-in person’s copy doesn’t keep it closed', () => python(String.raw`
+test('reopening waits for the requester’s own Deck only; another signed-in person’s copy doesn’t keep it closed', MAC_ONLY, () => python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  u.TRUSTED=pathlib.Path(directory)/'Apex Deck.app';u.TRUSTED.mkdir()
  u.os.stat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_uid=501) if p=='/dev/console' else real(p,*a,**k))(u.os.stat)
@@ -190,7 +193,7 @@ with tempfile.TemporaryDirectory() as directory:
  assert u.app_running()
 `));
 
-test('installing waits for the requester’s own Deck to close, and says it didn’t when it stays open', () => python(String.raw`
+test('installing waits for the requester’s own Deck to close, and says it didn’t when it stays open', MAC_ONLY, () => python(String.raw`
 sleeps=[]
 u.time.sleep=lambda s:sleeps.append(s)
 u.run=lambda *args,required=True:types.SimpleNamespace(returncode=0)
@@ -200,7 +203,7 @@ u.run=lambda *args,required=True:types.SimpleNamespace(returncode=1)
 u.wait_for_exit(501)
 `));
 
-test('another signed-in person’s open Deck stops the update at once, and the message says it is open in another account', () => python(jobFixture + String.raw`
+test('another signed-in person’s open Deck stops the update at once, and the message says it is open in another account', MAC_ONLY, () => python(jobFixture + String.raw`
 u.wait_for_exit=wait_for_exit
 u.install=lambda notes:events.append('install')
 sleeps=[]
@@ -221,7 +224,7 @@ assert sleeps==[],sleeps
 shutil.rmtree(directory)
 `));
 
-test('an installed update says which other account’s background service didn’t start again', () => python(jobFixture + String.raw`
+test('an installed update says which other account’s background service didn’t start again', MAC_ONLY, () => python(jobFixture + String.raw`
 note='Apex Deck\'s background service in the account "Other Person" didn\'t start again.'
 u.install=lambda notes:notes.append(note)
 assert u.auto(job/'request.json')==0
@@ -231,7 +234,7 @@ assert events[-1]==('reopen',501)
 shutil.rmtree(directory)
 `));
 
-test('a rolled-back update lists the other account’s service note apart from its reason', () => python(jobFixture + String.raw`
+test('a rolled-back update lists the other account’s service note apart from its reason', MAC_ONLY, () => python(jobFixture + String.raw`
 def rolled_back(notes):
  notes.append('Apex Deck\'s background service in the account "Other Person" didn\'t start again.')
  raise RuntimeError('injected')
@@ -242,7 +245,7 @@ assert result['outcome']=='failed' and result['message']=='injected' and len(res
 shutil.rmtree(directory)
 `));
 
-test('25 accounts’ notes after a long command error are all written, none folded into the reason', () => python(jobFixture + String.raw`
+test('25 accounts’ notes after a long command error are all written, none folded into the reason', MAC_ONLY, () => python(jobFixture + String.raw`
 notes=['Apex Deck\'s background service in the account "account-'+str(i)+'" didn\'t start again, so agents and phone connections there stay off until Apex Deck is opened in that account.' for i in range(25)]
 error='launchctl bootstrap failed: '+'Bootstrap failed: 5: Input/output error. '*40
 def rolled_back(found):
@@ -255,7 +258,7 @@ assert result['message']==error and result['notes']==notes,result
 shutil.rmtree(directory)
 `));
 
-test('a failed transaction that could not roll back is reported as needing attention', () => python(jobFixture + String.raw`
+test('a failed transaction that could not roll back is reported as needing attention', MAC_ONLY, () => python(jobFixture + String.raw`
 def broken(notes):
  (u.UPGRADES/'install.lock').mkdir();(u.UPGRADES/'install.lock'/'recovery-needed.txt').write_text('inspect')
  raise RuntimeError('injected')
@@ -266,14 +269,14 @@ assert result['outcome']=='needs-attention' and result['message']=='injected'
 shutil.rmtree(directory)
 `));
 
-test('a request from someone other than the signed-in person is refused before anything is copied', () => python(jobFixture + String.raw`
+test('a request from someone other than the signed-in person is refused before anything is copied', MAC_ONLY, () => python(jobFixture + String.raw`
 u.os.stat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_uid=502) if p=='/dev/console' else real(p,*a,**k))(u.os.stat)
 assert u.auto(job/'request.json')==1 and 'stage' not in events
 assert 'not the one signed in' in json.loads((u.RESULTS/'last-update.json').read_text())['message']
 shutil.rmtree(directory)
 `));
 
-test('pruning keeps the two newest verified backups this job made and never touches administrator installs', () => python(String.raw`
+test('pruning keeps the two newest verified backups this job made and never touches administrator installs', MAC_ONLY, () => python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  base=pathlib.Path(directory);u.UPGRADES=base;u.JOBS=base/'jobs';u.JOBS.mkdir()
  ids=['%08d-0000-0000-0000-000000000000'%i for i in range(4)]
@@ -287,7 +290,7 @@ with tempfile.TemporaryDirectory() as directory:
  assert manual.exists() and failed.exists()
 `));
 
-test('staging unpacks a real package without running its scripts and leaves only the staged app', () => python(String.raw`
+test('staging unpacks a real package without running its scripts and leaves only the staged app', MAC_ONLY, () => python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  base=pathlib.Path(directory);payload=base/'payload/Apex Deck.app/Contents';payload.mkdir(parents=True);(payload/'Info.plist').write_text('x');(payload/'link').symlink_to('Info.plist')
  scripts=base/'scripts';scripts.mkdir();marker=base/'ran'
@@ -317,7 +320,7 @@ seen=[]
 u.reopen=lambda uid:seen.append(('reopen',uid))
 `;
 
-test('the queued request stays in place until its job is done, and junk in the queue is cleared', () => python(queueFixture + String.raw`
+test('the queued request stays in place until its job is done, and junk in the queue is cleared', MAC_ONLY, () => python(queueFixture + String.raw`
 (u.QUEUE/'stray.tmp').write_text('x');(u.QUEUE/'nested').mkdir()
 (u.QUEUE/(rid+'.json')).write_text(json.dumps(request))
 def fake_auto(path):
@@ -332,7 +335,7 @@ assert u.serve_queue()==0 and len(seen)==1, 'an empty queue does nothing'
 shutil.rmtree(directory)
 `));
 
-test('a request found again after a crash or reboot is reported as interrupted instead of run twice', () => python(queueFixture + String.raw`
+test('a request found again after a crash or reboot is reported as interrupted instead of run twice', MAC_ONLY, () => python(queueFixture + String.raw`
 (u.JOBS/rid).mkdir(parents=True);(u.JOBS/rid/'request.json').write_text(json.dumps(request))
 (u.QUEUE/(rid+'.json')).write_text(json.dumps(request))
 u.auto=lambda path:(_ for _ in ()).throw(AssertionError('ran an interrupted request again'))
@@ -346,7 +349,7 @@ assert json.loads((u.RESULTS/'last-update.json').read_text())['outcome']=='needs
 shutil.rmtree(directory)
 `));
 
-test('every install sets up the queue-started update service once and the running job never unloads itself', () => python(String.raw`
+test('every install sets up the queue-started update service once and the running job never unloads itself', MAC_ONLY, () => python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  base=pathlib.Path(directory);u.UPGRADES=base/'upgrades';u.QUEUE=u.UPGRADES/'queue';u.UPDATE_PLIST=base/'dev.apexdeck.update.plist'
  u.protected=lambda p:None
@@ -372,7 +375,7 @@ with tempfile.TemporaryDirectory() as directory:
  assert calls==[['print','system/dev.apexdeck.update'],['bootout','system/dev.apexdeck.update'],['bootstrap','system']]
 `));
 
-test('a job that fails before it can read its request still says so and reopens Deck for whoever is signed in', () => python(queueFixture + String.raw`
+test('a job that fails before it can read its request still says so and reopens Deck for whoever is signed in', MAC_ONLY, () => python(queueFixture + String.raw`
 u.os.stat=(lambda real:lambda p,*a,**k:types.SimpleNamespace(st_uid=501) if p=='/dev/console' else real(p,*a,**k))(u.os.stat)
 (u.QUEUE/(rid+'.json')).write_text('not json')
 assert u.serve_queue()==1
