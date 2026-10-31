@@ -6,7 +6,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use apex_core::{AgentTool, Backend, ParticipantConfig};
+use apex_core::{Access, AgentTool, Backend, ParticipantConfig};
 
 /// Where a bot finds the phone: the daemon's own program, the socket the
 /// daemon listens on, and the chat the bot is in.
@@ -33,13 +33,16 @@ pub fn uses_phone(config: &ParticipantConfig) -> bool {
 /// off or this bot does not use it.
 pub fn phone_vars(phone: Option<&PhoneEnv>, config: &ParticipantConfig) -> Vec<(&'static str, OsString)> {
     let Some(phone) = phone.filter(|_| uses_phone(config)) else { return Vec::new() };
-    vec![
+    let mut vars = vec![
         ("APEX_DECK_BIN", phone.bin.clone().into_os_string()),
-        ("APEX_DECK_PHONE_SOCKET", phone.socket.clone().into_os_string()),
         ("APEX_DECK_ROOM", OsString::from(&phone.room)),
         ("APEX_DECK_BOT", OsString::from(config.id.as_str())),
         ("APEX_DECK_BOT_NAME", OsString::from(&config.display_name)),
-    ]
+    ];
+    if matches!(config.access, Access::Full) {
+        vars.insert(1, ("APEX_DECK_PHONE_SOCKET", phone.socket.clone().into_os_string()));
+    }
+    vars
 }
 
 /// Codex filters inherited variables before running shell commands. Keep the
@@ -76,23 +79,42 @@ mod tests {
 
     #[test]
     fn claude_and_codex_get_the_phone_others_do_not() {
-        let vars = phone_vars(Some(&env()), &bot(AgentTool::ClaudeCode));
         let os = |text: &str| OsString::from(text);
+        let mut full_bot = bot(AgentTool::ClaudeCode);
+        full_bot.access = Access::Full;
+        let vars = phone_vars(Some(&env()), &full_bot);
         assert_eq!(vars, vec![("APEX_DECK_BIN", os("/A/apex-daemon")), ("APEX_DECK_PHONE_SOCKET", os("/D/daemon.sock")),
             ("APEX_DECK_ROOM", os("room-1")), ("APEX_DECK_BOT", os("jig")), ("APEX_DECK_BOT_NAME", os("Jigga"))]);
-        assert_eq!(phone_vars(Some(&env()), &bot(AgentTool::Codex)).len(), 5);
+        assert_eq!(phone_vars(Some(&env()), &full_bot).len(), 5);
+
+        // Below Full: APEX_DECK_PHONE_SOCKET is omitted
+        for access in [Access::Read, Access::Ask, Access::Edits] {
+            let mut lower = bot(AgentTool::ClaudeCode);
+            lower.access = access;
+            let lower_vars = phone_vars(Some(&env()), &lower);
+            assert_eq!(lower_vars.len(), 4);
+            assert!(!lower_vars.iter().any(|(k, _)| *k == "APEX_DECK_PHONE_SOCKET"));
+        }
+
         assert!(phone_vars(Some(&env()), &bot(AgentTool::Gemini)).is_empty());
         assert!(phone_vars(None, &bot(AgentTool::ClaudeCode)).is_empty());
     }
 
     #[test]
     fn codex_shell_settings_keep_only_the_five_phone_variables() {
-        let flags = codex_shell_flags(Some(&env()), &bot(AgentTool::Codex));
+        let mut full_bot = bot(AgentTool::Codex);
+        full_bot.access = Access::Full;
+        let flags = codex_shell_flags(Some(&env()), &full_bot);
         assert_eq!(flags.len(), 10);
         assert_eq!(&flags[..2], &["-c", "shell_environment_policy.set.APEX_DECK_BIN=\"/A/apex-daemon\""]);
         assert!(flags.contains(&"shell_environment_policy.set.APEX_DECK_BOT_NAME=\"Jigga\"".to_string()));
         assert!(codex_shell_flags(None, &bot(AgentTool::Codex)).is_empty());
         assert!(codex_shell_flags(Some(&env()), &bot(AgentTool::ClaudeCode)).is_empty());
+
+        let lower = bot(AgentTool::Codex);
+        let lower_flags = codex_shell_flags(Some(&env()), &lower);
+        assert_eq!(lower_flags.len(), 8);
+        assert!(!lower_flags.iter().any(|f| f.contains("APEX_DECK_PHONE_SOCKET")));
     }
 
     #[test]

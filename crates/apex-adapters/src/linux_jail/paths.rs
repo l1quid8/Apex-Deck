@@ -101,6 +101,11 @@ impl Mounts {
             .ok_or_else(|| std::io::Error::other("unreadable mount table"))
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub fn current() -> std::io::Result<Self> {
+        Ok(Self::default())
+    }
+
     /// True when anything is mounted at or below `folder`, other than what it's on.
     pub fn nested_in(&self, folder: &Path) -> bool {
         self.0.iter().any(|m| m.at.starts_with(folder))

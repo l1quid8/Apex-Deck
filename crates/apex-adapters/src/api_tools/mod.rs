@@ -63,6 +63,9 @@ impl ToolBox {
                 path: context.path.clone(),
                 temp: context.temp.clone(),
                 cargo_target_dir: context.cargo_target_dir.clone(),
+                access: None,
+                data_dir: context.data_dir.clone(),
+                observed_addrs: context.observed_addrs.clone(),
             },
             processes: Registry::new(context.process_registry.clone()),
             mcp: mcp_client::Pool::default(),
@@ -620,9 +623,12 @@ impl<'a> Turn<'a> {
         let env = if let Some(cwd) = &self.cwd {
             let mut e = self.tools.env.clone();
             e.cwd = Some(cwd.clone());
+            e.access = Some(self.own);
             e
         } else {
-            self.tools.env.clone()
+            let mut e = self.tools.env.clone();
+            e.access = Some(self.own);
+            e
         };
         if args["background"] == true {
             let result = self
@@ -660,7 +666,7 @@ impl<'a> Turn<'a> {
         };
         (self.progress)(Progress::Work(&step));
         (self.progress)(Progress::Activity(&format!("Starting {name}")));
-        let connection = match self.tools.mcp.connect(&spec, self.tools.env.cwd.as_deref(), self.tools.env.path.as_deref()).await {
+        let connection = match self.tools.mcp.connect(&spec, self.tools.env.cwd.as_deref(), self.tools.env.path.as_deref(), Some(self.own), self.tools.env.data_dir.as_deref()).await {
             Ok(connection) => connection,
             Err(why) => return (step, Err(why)),
         };

@@ -1094,6 +1094,69 @@ pub async fn list_servers(
     path: Option<String>,
 ) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
     use std::process::Stdio;
+    if crate::linux_jail::should_jail(apex_core::Access::Read) {
+        let bwrap = crate::gateway_sandbox::find_bwrap(path.as_deref());
+        match crate::linux_jail::state(bwrap.as_deref()) {
+            crate::linux_jail::JailState::Fails(reason) => {
+                return Err(format!("Couldn’t start codex for tool discovery: {reason}"));
+            }
+            crate::linux_jail::JailState::Works => {}
+        }
+        let _bwrap = bwrap.ok_or_else(|| {
+            format!("Couldn’t start codex for tool discovery: {}: it isn't installed", crate::linux_jail::probe::NEEDS_ADMIN)
+        })?;
+        #[cfg(target_os = "linux")]
+        {
+            let cwd_path = cwd.as_deref().map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let data_dir = home.join(".local/share/apex-deck");
+            let path_os = path.as_ref().map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+            let program = crate::executable::program("codex", path.as_deref());
+            let backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: None };
+            let args: Vec<String> = ARGS.iter().map(|s| s.to_string()).collect();
+
+            let spec = crate::linux_jail::build_spec(
+                std::path::Path::new(&program),
+                &args,
+                &cwd_path,
+                apex_core::Access::Read,
+                Some(&backend),
+                &home,
+                &data_dir,
+                "discovery",
+                "codex",
+                &path_os,
+                &[],
+                &[],
+            ).map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+
+            let registry = Registry::default();
+            let mut jailed = crate::linux_jail::launch::jailed_command(&spec, &_bwrap)
+                .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+            jailed.command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+            let (mut child, control) = jailed.spawn(&registry)
+                .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+            let net = std::sync::Arc::new(crate::linux_jail::proxy::Internet::default());
+            let purposes = std::sync::Arc::new(crate::linux_jail::DaemonPurposes::new(net));
+            tokio::spawn(crate::linux_jail::channel::serve(control, purposes));
+
+            let mut stdin = child.stdin.take().unwrap();
+            let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+            let result = async {
+                initialize(&mut stdin, &mut lines).await?;
+                mcp_inventory(&mut stdin, &mut lines, false)
+                    .await
+                    .and_then(|(_, names, _)| names)
+            }
+            .await;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            child.terminate_tree().await?;
+            return result;
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("Couldn’t start codex for tool discovery: Linux bot jail is only available on Linux".into());
+    }
     let mut command = tokio::process::Command::new(crate::executable::program("codex", path.as_deref()));
     if let Some(path) = path {
         command.env("PATH", path);

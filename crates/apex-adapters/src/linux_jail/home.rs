@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn no_provider_home_ever_holds_a_refresh_token() {
         let f = fixture();
-        let v = &f.values.host;
+        let _v = &f.values.host;
         put(&f.data.join("logins/claude/.claude/.credentials.json"), &claude_login("a", soon()));
         put(&f.data.join("logins/codex/.codex/auth.json"), &codex_login(3600, "mine"));
         put(&f.data.join("logins/gemini/.gemini/oauth_creds.json"), &json!({"access_token": "a", "refresh_token": "r-gemini", "expiry_date": soon()}));
@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn an_expiring_login_is_refused_and_leaves_no_old_one() {
         let f = fixture();
-        let v = &f.values.host;
+        let _v = &f.values.host;
         let cases = [(AgentTool::ClaudeCode, f.data.join("logins/claude/.claude/.credentials.json"), ".claude/.credentials.json", claude_login("a", soon()), claude_login("a", (now() + 60) * 1000)),
             (AgentTool::Codex, f.data.join("logins/codex/.codex/auth.json"), ".codex/auth.json", codex_login(3600, "mine"), codex_login(60, "mine")),
             (AgentTool::Gemini, f.data.join("logins/gemini/.gemini/oauth_creds.json"), ".gemini/oauth_creds.json",

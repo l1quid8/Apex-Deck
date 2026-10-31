@@ -246,6 +246,7 @@ mod tests {
         until(|| count.ended.load(Ordering::SeqCst) == 1).await;
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn past_the_limit_a_request_gets_a_closed_fd() {
         let (mut control, count, _running) = start();

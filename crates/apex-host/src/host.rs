@@ -1073,6 +1073,8 @@ impl Host {
             process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
             cargo_target_dir,
             phone: if !kind.is_chat() && cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
+            data_dir: Some(self.paths.data.clone()),
+            observed_addrs: Vec::new(),
         };
         let mut seen: Vec<&ParticipantId> = Vec::new();
         for config in &participants {
@@ -5028,6 +5030,8 @@ done
             media_dir: None,
             attachment_roots: Vec::new(),
             phone: None,
+            data_dir: None,
+            observed_addrs: Vec::new(),
         };
         let bot = apex_adapters::participant_for_room(apex_core::RoomKind::Work, config.clone(), &context);
         let answer = runtime.block_on(async { bot.respond_with_progress(turn(), &|_| {}).await }).expect("the promoted bot answers");

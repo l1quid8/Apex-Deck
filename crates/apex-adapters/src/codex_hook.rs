@@ -29,7 +29,17 @@ const HELPER_DEADLINE: Duration = Duration::from_secs(HOOK_TIMEOUT_SECS - 30);
 /// The command Codex runs before each MCP call. Codex runs it through a
 /// shell, so the path is quoted for one.
 pub fn hook_command(helper: &Path) -> String {
-    format!("'{}' {HOOK_ARG}", helper.to_string_lossy().replace('\'', r"'\''"))
+    hook_command_with_token(helper, None)
+}
+
+/// The command Codex runs before each MCP call, optionally passing a per-launch token.
+pub fn hook_command_with_token(helper: &Path, token: Option<&str>) -> String {
+    let base = format!("'{}' {HOOK_ARG}", helper.to_string_lossy().replace('\'', r"'\''"));
+    if let Some(token) = token {
+        format!("{base} '{token}'")
+    } else {
+        base
+    }
 }
 
 /// What the helper tells Codex.
@@ -43,8 +53,9 @@ pub(crate) enum Verdict {
 /// Codex, print the answer. Every failure blocks the call.
 pub fn codex_hook_main() -> i32 {
     use std::io::Write;
+    let token = std::env::args().nth(2);
     let socket = std::env::var_os(SOCKET_ENV).map(PathBuf::from);
-    let printed = respond(std::io::stdin().lock(), socket.as_deref(), HELPER_DEADLINE);
+    let printed = respond(std::io::stdin().lock(), socket.as_deref(), token.as_deref(), HELPER_DEADLINE);
     let mut out = std::io::stdout();
     let _ = out.write_all(printed.as_bytes());
     let _ = out.flush();
@@ -53,8 +64,8 @@ pub fn codex_hook_main() -> i32 {
 
 /// What to print for one hook call. Allowing prints nothing, which leaves
 /// the call to Codex's own checks; anything else blocks it.
-pub(crate) fn respond(input: impl Read, socket: Option<&Path>, deadline: Duration) -> String {
-    let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ask_deck(input, socket, deadline)));
+pub(crate) fn respond(input: impl Read, socket: Option<&Path>, token: Option<&str>, deadline: Duration) -> String {
+    let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ask_deck(input, socket, token, deadline)));
     let verdict = match asked {
         Ok(Ok(verdict)) => verdict,
         Ok(Err(why)) => Verdict::Deny(format!("Apex Deck couldn't check this tool call ({why}), so it was blocked.")),
@@ -69,18 +80,28 @@ pub(crate) fn respond(input: impl Read, socket: Option<&Path>, deadline: Duratio
 }
 
 #[cfg(unix)]
-fn ask_deck(input: impl Read, socket: Option<&Path>, deadline: Duration) -> Result<Verdict, String> {
+fn ask_deck(input: impl Read, socket: Option<&Path>, token: Option<&str>, deadline: Duration) -> Result<Verdict, String> {
     use std::io::{BufRead, BufReader, Write};
     // One JSON value, without waiting for the end of the input.
     let call = serde_json::Deserializer::from_reader(input).into_iter::<Value>().next()
         .and_then(Result::ok).filter(Value::is_object).ok_or("unreadable hook input")?;
-    let socket = socket.ok_or("not started by Apex Deck")?;
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("Deck is not listening: {e}"))?;
-    stream.set_read_timeout(Some(deadline)).map_err(|e| e.to_string())?;
-    stream.set_write_timeout(Some(deadline)).map_err(|e| e.to_string())?;
-    stream.write_all(format!("{call}\n").as_bytes()).map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(&stream).read_line(&mut line).map_err(|_| "no answer in time")?;
+    if let Some(token) = token {
+        use std::net::{Ipv4Addr, TcpStream};
+        let mut stream = TcpStream::connect_timeout(&(Ipv4Addr::LOCALHOST, crate::linux_jail::HOOK_PORT).into(), Duration::from_secs(5))
+            .map_err(|e| format!("Deck is not listening on hook port: {e}"))?;
+        stream.set_read_timeout(Some(deadline)).map_err(|e| e.to_string())?;
+        stream.set_write_timeout(Some(deadline)).map_err(|e| e.to_string())?;
+        stream.write_all(format!("{token}\n{call}\n").as_bytes()).map_err(|e| e.to_string())?;
+        BufReader::new(&stream).read_line(&mut line).map_err(|_| "no answer in time")?;
+    } else {
+        let socket = socket.ok_or("not started by Apex Deck")?;
+        let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("Deck is not listening: {e}"))?;
+        stream.set_read_timeout(Some(deadline)).map_err(|e| e.to_string())?;
+        stream.set_write_timeout(Some(deadline)).map_err(|e| e.to_string())?;
+        stream.write_all(format!("{call}\n").as_bytes()).map_err(|e| e.to_string())?;
+        BufReader::new(&stream).read_line(&mut line).map_err(|_| "no answer in time")?;
+    }
     let answer: Value = serde_json::from_str(&line).map_err(|_| "no answer")?;
     match answer["decision"].as_str() {
         Some("allow") => Ok(Verdict::Allow),
@@ -90,7 +111,7 @@ fn ask_deck(input: impl Read, socket: Option<&Path>, deadline: Duration) -> Resu
 }
 
 #[cfg(not(unix))]
-fn ask_deck(_: impl Read, _: Option<&Path>, _: Duration) -> Result<Verdict, String> {
+fn ask_deck(_: impl Read, _: Option<&Path>, _: Option<&str>, _: Duration) -> Result<Verdict, String> {
     Err("Apex Deck's Codex hook needs macOS or Linux".into())
 }
 
@@ -271,12 +292,17 @@ pub(crate) fn answer_line(verdict: &Verdict) -> String {
 }
 
 /// The turn's end of the helper's line: a socket in a folder only this
-/// user can open. The folder is removed when the turn ends.
+/// user can open, or an in-memory channel for a jailed turn.
 #[cfg(unix)]
 pub(crate) struct Hook {
     pub command: String,
-    dir: PathBuf,
-    listener: tokio::net::UnixListener,
+    dir: Option<PathBuf>,
+    listener: Option<tokio::net::UnixListener>,
+    receiver: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<tokio::net::UnixStream>>>,
+    #[allow(dead_code)]
+    sender: Option<tokio::sync::mpsc::Sender<tokio::net::UnixStream>>,
+    #[allow(dead_code)]
+    pub token: Option<String>,
 }
 
 #[cfg(unix)]
@@ -292,7 +318,14 @@ impl Hook {
         let dir = std::env::temp_dir().join(format!("a{}{:x}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
         match tokio::net::UnixListener::bind(dir.join("s")) {
-            Ok(listener) => Ok(Self { command: hook_command(helper), dir, listener }),
+            Ok(listener) => Ok(Self {
+                command: hook_command(helper),
+                dir: Some(dir),
+                listener: Some(listener),
+                receiver: None,
+                sender: None,
+                token: None,
+            }),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&dir);
                 Err(e)
@@ -300,8 +333,25 @@ impl Hook {
         }
     }
 
-    pub(crate) fn socket(&self) -> PathBuf {
-        self.dir.join("s")
+    pub(crate) fn bind_jailed(helper: &Path, token: String) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        Self {
+            command: hook_command_with_token(helper, Some(&token)),
+            dir: None,
+            listener: None,
+            receiver: Some(tokio::sync::Mutex::new(rx)),
+            sender: Some(tx),
+            token: Some(token),
+        }
+    }
+
+    pub(crate) fn socket(&self) -> Option<PathBuf> {
+        self.dir.as_ref().map(|d| d.join("s"))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn sender(&self) -> Option<tokio::sync::mpsc::Sender<tokio::net::UnixStream>> {
+        self.sender.clone()
     }
 
     pub(crate) fn flag(&self) -> String {
@@ -312,17 +362,24 @@ impl Hook {
 #[cfg(unix)]
 impl Drop for Hook {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if let Some(dir) = &self.dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
 /// The helper's next call. Without a hook it never comes.
 #[cfg(unix)]
 pub(crate) async fn next_call(hook: Option<&Hook>) -> std::io::Result<tokio::net::UnixStream> {
-    match hook {
-        Some(hook) => hook.listener.accept().await.map(|(stream, _)| stream),
-        None => std::future::pending().await,
+    let Some(hook) = hook else { return std::future::pending().await; };
+    if let Some(receiver) = &hook.receiver {
+        let mut rx = receiver.lock().await;
+        return rx.recv().await.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "hook closed"));
     }
+    if let Some(listener) = &hook.listener {
+        return listener.accept().await.map(|(stream, _)| stream);
+    }
+    std::future::pending().await
 }
 
 /// Answer one helper call. Reads go through, and a risky call goes to the
@@ -448,13 +505,13 @@ mod tests {
     #[test]
     fn deck_allowing_prints_nothing_and_deck_denying_blocks_with_its_reason() {
         let (socket, deck_side) = deck("allow", Some(r#"{"decision":"allow"}"#));
-        assert_eq!(respond(CALL, Some(&socket), Duration::from_secs(5)), "");
+        assert_eq!(respond(CALL, Some(&socket), None, Duration::from_secs(5)), "");
         let sent: Value = serde_json::from_str(&deck_side.join().unwrap()).unwrap();
         assert_eq!(sent["tool_name"], "mcp__probe__place_order");
         assert_eq!(sent["tool_input"]["quantity"], "0.001");
 
         let (socket, _) = deck("deny", Some(r#"{"decision":"deny","reason":"no thanks"}"#));
-        let printed: Value = serde_json::from_str(&respond(CALL, Some(&socket), Duration::from_secs(5))).unwrap();
+        let printed: Value = serde_json::from_str(&respond(CALL, Some(&socket), None, Duration::from_secs(5))).unwrap();
         assert_eq!(printed["hookSpecificOutput"]["hookEventName"], "PreToolUse");
         assert_eq!(printed["hookSpecificOutput"]["permissionDecision"], "deny");
         assert_eq!(printed["hookSpecificOutput"]["permissionDecisionReason"], "no thanks");
@@ -463,13 +520,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn every_failure_blocks_the_call() {
-        assert!(blocked(&respond(CALL, None, Duration::from_secs(1))), "not started by Deck");
-        assert!(blocked(&respond(CALL, Some(Path::new("/no/such/apex/socket")), Duration::from_secs(1))), "Deck has gone");
-        assert!(blocked(&respond(&b"not json"[..], None, Duration::from_secs(1))), "unreadable input");
+        assert!(blocked(&respond(CALL, None, None, Duration::from_secs(1))), "not started by Deck");
+        assert!(blocked(&respond(CALL, Some(Path::new("/no/such/apex/socket")), None, Duration::from_secs(1))), "Deck has gone");
+        assert!(blocked(&respond(&b"not json"[..], None, None, Duration::from_secs(1))), "unreadable input");
         let (socket, _) = deck("silent", None);
-        assert!(blocked(&respond(CALL, Some(&socket), Duration::from_millis(100))), "no answer before the deadline");
+        assert!(blocked(&respond(CALL, Some(&socket), None, Duration::from_millis(100))), "no answer before the deadline");
         let (socket, _) = deck("odd", Some(r#"{"decision":"maybe"}"#));
-        assert!(blocked(&respond(CALL, Some(&socket), Duration::from_secs(1))), "an answer Deck never gives");
+        assert!(blocked(&respond(CALL, Some(&socket), None, Duration::from_secs(1))), "an answer Deck never gives");
     }
     use apex_core::{Approver, Decision, Progress, ProposedAction};
 
@@ -595,11 +652,53 @@ mod tests {
     async fn the_socket_folder_is_private_and_goes_with_the_turn() {
         use std::os::unix::fs::PermissionsExt;
         let hook = Hook::bind(Path::new("/a/apex-deck")).unwrap();
-        let folder = hook.socket().parent().unwrap().to_path_buf();
+        let socket = hook.socket().unwrap();
+        let folder = socket.parent().unwrap().to_path_buf();
         assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(hook.command, "'/a/apex-deck' --codex-hook");
         drop(hook);
         assert!(!folder.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn loopback_tcp_mode_with_token_verifies_token_and_answers() {
+        use std::net::TcpListener;
+        use std::io::{BufRead, BufReader, Write};
+        let listener = TcpListener::bind(("127.0.0.1", crate::linux_jail::HOOK_PORT)).unwrap();
+        let token = "test-token-xyz";
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), token);
+            let mut call = String::new();
+            reader.read_line(&mut call).unwrap();
+            let mut writer = stream;
+            writer.write_all(b"{\"decision\":\"allow\"}\n").unwrap();
+        });
+        let res = respond(CALL, None, Some(token), Duration::from_secs(5));
+        assert_eq!(res, "");
+        handle.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn jailed_hook_receives_through_channel() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let hook = Hook::bind_jailed(Path::new("/.apex/init"), "secret123".into());
+        assert_eq!(hook.command, "'/.apex/init' --codex-hook 'secret123'");
+        assert!(hook.socket().is_none());
+        assert_eq!(hook.token.as_deref(), Some("secret123"));
+        let sender = hook.sender().unwrap();
+        let (mut near, far) = tokio::net::UnixStream::pair().unwrap();
+        sender.send(far).await.unwrap();
+        let mut received = next_call(Some(&hook)).await.unwrap();
+        near.write_all(b"test").await.unwrap();
+        let mut buf = [0u8; 4];
+        received.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"test");
     }
 
     #[test]

@@ -15,8 +15,81 @@ pub mod proxy;
 pub mod refresh;
 pub mod seccomp;
 
+pub use probe::JailState;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+
+static OVERRIDE_STATE: std::sync::RwLock<Option<probe::JailState>> = std::sync::RwLock::new(None);
+static FORCE_JAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn state(bwrap_path: Option<&Path>) -> probe::JailState {
+    if let Some(state) = OVERRIDE_STATE.read().unwrap().as_ref() {
+        return state.clone();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if bwrap_path.is_none() && crate::gateway_sandbox::find_bwrap(None).is_none() {
+            return probe::JailState::Fails(format!("{}: it isn't installed", probe::NEEDS_ADMIN));
+        }
+        probe::JailState::Works
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bwrap_path;
+        probe::JailState::Works
+    }
+}
+
+pub fn set_state_for_test(state: Option<probe::JailState>) {
+    *OVERRIDE_STATE.write().unwrap() = state;
+}
+
+pub fn set_forced_for_test(forced: bool) {
+    FORCE_JAIL.store(forced, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn should_jail(access: apex_core::Access) -> bool {
+    (cfg!(target_os = "linux") || FORCE_JAIL.load(std::sync::atomic::Ordering::SeqCst))
+        && !matches!(access, apex_core::Access::Full)
+}
+
+pub struct DaemonPurposes {
+    pub net: std::sync::Arc<proxy::Internet>,
+    pub codex_hook_token: Option<String>,
+    pub codex_hook_sender: Option<tokio::sync::mpsc::Sender<tokio::net::UnixStream>>,
+}
+
+impl DaemonPurposes {
+    pub fn new(net: std::sync::Arc<proxy::Internet>) -> Self {
+        Self { net, codex_hook_token: None, codex_hook_sender: None }
+    }
+
+    pub fn with_hook(net: std::sync::Arc<proxy::Internet>, token: String, sender: tokio::sync::mpsc::Sender<tokio::net::UnixStream>) -> Self {
+        Self { net, codex_hook_token: Some(token), codex_hook_sender: Some(sender) }
+    }
+}
+
+#[async_trait::async_trait]
+impl channel::Purposes for DaemonPurposes {
+    async fn proxy(&self, stream: tokio::net::UnixStream) {
+        proxy::serve(stream, self.net.as_ref()).await;
+    }
+
+    async fn codex_hook(&self, mut stream: tokio::net::UnixStream) {
+        use tokio::io::AsyncBufReadExt;
+        if let (Some(expected), Some(sender)) = (&self.codex_hook_token, &self.codex_hook_sender) {
+            let mut reader = tokio::io::BufReader::new(&mut stream);
+            let mut line = String::new();
+            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), reader.read_line(&mut line)).await {
+                if line.trim_end() == expected {
+                    let _ = sender.send(stream).await;
+                }
+            }
+        }
+    }
+}
 
 /// The port the forwarder listens on, on the jail's own loopback.
 pub const PROXY_PORT: u16 = 18080;
@@ -151,6 +224,101 @@ pub fn jail_env(spec: &JailSpec) -> Vec<(String, OsString)> {
     }
     out.extend(spec.provider_env.iter().filter(|(name, _)| !blocked(name)).cloned());
     out
+}
+
+pub fn build_spec(
+    program: &Path,
+    args: &[String],
+    cwd: &Path,
+    access: apex_core::Access,
+    backend: Option<&apex_core::Backend>,
+    home: &Path,
+    data_dir: &Path,
+    room: &str,
+    bot: &str,
+    path: &std::ffi::OsStr,
+    attachment_roots: &[PathBuf],
+    read_only_extra: &[PathBuf],
+) -> Result<JailSpec, JailError> {
+    let mounts = paths::Mounts::current()?;
+    let writable = matches!(access, apex_core::Access::Ask | apex_core::Access::Edits);
+    if writable {
+        let guard = paths::Guard {
+            home: home.to_path_buf(),
+            protected: paths::standard_protected(home, data_dir),
+            path_dirs: std::env::split_paths(path).collect(),
+            executables: Vec::new(),
+        };
+        paths::check_writable(cwd, &guard, &mounts)?;
+    } else {
+        paths::check_read(cwd, &paths::standard_protected(home, data_dir), &mounts)?;
+    }
+
+    let folders = vec![Bind {
+        source: cwd.to_path_buf(),
+        target: cwd.to_path_buf(),
+        writable,
+    }];
+
+    let safe_room = folder_name(room);
+    let safe_bot = folder_name(bot);
+    let mut private_home = data_dir.join("jail-homes").join(&safe_room).join(&safe_bot);
+    let mut provider_env = Vec::new();
+
+    if let Some(backend) = backend {
+        let values = home::HomeValues {
+            cwd: cwd.to_string_lossy().into_owned(),
+            effort: None,
+            host: home::HostPaths::from_env(home),
+        };
+        let jail_home = home::prepare(data_dir, room, bot, backend, &values)?;
+        private_home = jail_home.path().to_path_buf();
+        provider_env = jail_home.env().to_vec();
+    } else {
+        std::fs::create_dir_all(&private_home)?;
+    }
+
+    let mut read_only = Vec::new();
+    for entry in std::env::split_paths(path) {
+        if entry.is_dir() {
+            read_only.push(entry);
+        }
+    }
+    read_only.extend_from_slice(read_only_extra);
+
+    let mut restored = Vec::new();
+    for root in attachment_roots {
+        if root.is_dir() {
+            restored.push(Bind {
+                source: root.clone(),
+                target: root.clone(),
+                writable: false,
+            });
+        }
+    }
+
+    let init = std::env::current_exe().unwrap_or_else(|_| PathBuf::from(INIT_PATH));
+
+    Ok(JailSpec {
+        program: program.to_path_buf(),
+        args: args.to_vec(),
+        cwd: cwd.to_path_buf(),
+        home: home.to_path_buf(),
+        private_home,
+        folders,
+        read_only,
+        protected: paths::standard_protected(home, data_dir),
+        restored,
+        init,
+        path: path.to_os_string(),
+        provider_env,
+        seccomp_fd: -1,
+        control_fd: -1,
+    })
+}
+
+fn folder_name(name: &str) -> String {
+    name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(*c, '-' | '_')).collect()
 }
 
 #[cfg(test)]

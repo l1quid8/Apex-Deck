@@ -228,26 +228,101 @@ async fn write_line(stdin: &tokio::sync::Mutex<ChildStdin>, message: &Value) -> 
 }
 
 impl Connection {
-    async fn start(spec: &ServerSpec, registry: &Registry, cwd: Option<&Path>, path: Option<&str>) -> Result<Self, String> {
+    async fn start(
+        spec: &ServerSpec,
+        registry: &Registry,
+        cwd: Option<&Path>,
+        path: Option<&str>,
+        access: Option<apex_core::Access>,
+        data_dir: Option<&Path>,
+    ) -> Result<Self, String> {
+        let _ = data_dir;
         let link = match &spec.transport {
             Transport::Unsupported(why) => return Err(format!("The MCP server `{}` can't be used: {why}.", spec.name)),
+            Transport::Http { url, headers } => {
+                if access.map(crate::linux_jail::should_jail).unwrap_or(false) {
+                    return Err("HTTP MCP servers are unavailable below Full access on Linux".into());
+                }
+                Link::Http(HttpLink {
+                    client: reqwest::Client::builder()
+                        .connect_timeout(Duration::from_secs(15))
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                    url: url.clone(),
+                    headers: headers.clone(),
+                    session: Mutex::new(None),
+                    version: Mutex::new(None),
+                })
+            }
             Transport::Stdio { command, args, env } => {
-                let executable_path = env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
-                    .map(|(_, value)| value.as_str()).or(path);
-                let mut cmd = Command::new(crate::executable::program(command, executable_path));
-                cmd.args(args);
-                if let Some(path) = path {
-                    cmd.env("PATH", path);
-                }
-                cmd.envs(env.iter().map(|(k, v)| (k, v)));
-                if let Some(cwd) = cwd.filter(|c| c.is_dir()) {
-                    cmd.current_dir(cwd);
-                }
-                cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-                let mut child = registry.spawn(&mut cmd).map_err(|e| match e.kind() {
-                    std::io::ErrorKind::NotFound => format!("The MCP server `{}` couldn't start: `{command}` wasn't found.", spec.name),
-                    _ => format!("The MCP server `{}` couldn't start: {e}", spec.name),
-                })?;
+                let child = if access.map(crate::linux_jail::should_jail).unwrap_or(false) {
+                    let executable_path = env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                        .map(|(_, value)| value.as_str()).or(path);
+                    let bwrap = crate::gateway_sandbox::find_bwrap(executable_path);
+                    match crate::linux_jail::state(bwrap.as_deref()) {
+                        crate::linux_jail::JailState::Fails(reason) => {
+                            return Err(format!("The MCP server `{}` couldn't start: {reason}", spec.name));
+                        }
+                        crate::linux_jail::JailState::Works => {}
+                    }
+                    let _bwrap = bwrap.ok_or_else(|| {
+                        format!("The MCP server `{}` couldn't start: {}: it isn't installed", spec.name, crate::linux_jail::probe::NEEDS_ADMIN)
+                    })?;
+                    #[cfg(target_os = "linux")]
+                    {
+                        let cwd_path = cwd.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/tmp"));
+                        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+                        let data_dir_buf = data_dir.map(Path::to_path_buf).unwrap_or_else(|| home.join(".local/share/apex-deck"));
+                        let path_os = executable_path.map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+                        let program = crate::executable::program(command, executable_path);
+                        let mut jail_spec = crate::linux_jail::build_spec(
+                            Path::new(&program),
+                            args,
+                            &cwd_path,
+                            access.unwrap(),
+                            None,
+                            &home,
+                            &data_dir_buf,
+                            "mcp",
+                            &spec.name,
+                            &path_os,
+                            &[],
+                            &[],
+                        ).map_err(|e| format!("The MCP server `{}` couldn't start: {e}", spec.name))?;
+                        for (k, v) in env {
+                            jail_spec.provider_env.push((k.clone(), v.clone().into()));
+                        }
+                        let mut jailed = crate::linux_jail::launch::jailed_command(&jail_spec, &_bwrap)
+                            .map_err(|e| format!("The MCP server `{}` couldn't start: {e}", spec.name))?;
+                        jailed.command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+                        let (child, control) = jailed.spawn(registry)
+                            .map_err(|e| format!("The MCP server `{}` couldn't start: {e}", spec.name))?;
+                        let net = std::sync::Arc::new(crate::linux_jail::proxy::Internet::default());
+                        let purposes = std::sync::Arc::new(crate::linux_jail::DaemonPurposes::new(net));
+                        tokio::spawn(crate::linux_jail::channel::serve(control, purposes));
+                        child
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    return Err(format!("The MCP server `{}` couldn't start: Linux bot jail is only available on Linux", spec.name));
+                } else {
+                    let executable_path = env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                        .map(|(_, value)| value.as_str()).or(path);
+                    let mut cmd = Command::new(crate::executable::program(command, executable_path));
+                    cmd.args(args);
+                    if let Some(path) = path {
+                        cmd.env("PATH", path);
+                    }
+                    cmd.envs(env.iter().map(|(k, v)| (k, v)));
+                    if let Some(cwd) = cwd.filter(|c| c.is_dir()) {
+                        cmd.current_dir(cwd);
+                    }
+                    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+                    registry.spawn(&mut cmd).map_err(|e| match e.kind() {
+                        std::io::ErrorKind::NotFound => format!("The MCP server `{}` couldn't start: `{command}` wasn't found.", spec.name),
+                        _ => format!("The MCP server `{}` couldn't start: {e}", spec.name),
+                    })?
+                };
+                let mut child = child;
                 let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take().ok_or("no stdin")?));
                 let stdout = child.stdout.take().ok_or("no stdout")?;
                 let pending: Pending = Arc::default();
@@ -306,16 +381,6 @@ impl Connection {
                 }
                 Link::Stdio(StdioLink { child: Mutex::new(child), stdin, pending, alive, stderr })
             }
-            Transport::Http { url, headers } => Link::Http(HttpLink {
-                client: reqwest::Client::builder()
-                    .connect_timeout(Duration::from_secs(15))
-                    .build()
-                    .map_err(|e| e.to_string())?,
-                url: url.clone(),
-                headers: headers.clone(),
-                session: Mutex::new(None),
-                version: Mutex::new(None),
-            }),
         };
         let connection = Connection { spec: spec.clone(), link, next: AtomicU64::new(1), tools: tokio::sync::Mutex::new(None) };
         let init = connection
@@ -549,7 +614,14 @@ impl Pool {
     }
 
     /// The running server for `spec`, started if it isn't running.
-    pub async fn connect(&self, spec: &ServerSpec, cwd: Option<&Path>, path: Option<&str>) -> Result<Arc<Connection>, String> {
+    pub async fn connect(
+        &self,
+        spec: &ServerSpec,
+        cwd: Option<&Path>,
+        path: Option<&str>,
+        access: Option<apex_core::Access>,
+        data_dir: Option<&Path>,
+    ) -> Result<Arc<Connection>, String> {
         let mut live = self.live.lock().await;
         if let Some(connection) = live.get(&spec.name) {
             if connection.spec == *spec && connection.alive() {
@@ -557,7 +629,7 @@ impl Pool {
             }
         }
         live.remove(&spec.name);
-        let connection = Arc::new(Connection::start(spec, &self.registry, cwd, path).await?);
+        let connection = Arc::new(Connection::start(spec, &self.registry, cwd, path, access, data_dir).await?);
         live.insert(spec.name.clone(), connection.clone());
         Ok(connection)
     }
@@ -646,12 +718,37 @@ done
 "#;
         let spec = ServerSpec { name: "weather".into(), transport: Transport::Stdio { command: "sh".into(), args: vec!["-c".into(), script.into()], env: vec![] } };
         let pool = Pool::default();
-        let connection = pool.connect(&spec, None, None).await.unwrap();
+        let connection = pool.connect(&spec, None, None, None, None).await.unwrap();
         let tools = connection.tools().await.unwrap();
         assert_eq!(tools[0]["name"], "get_weather");
         let result = connection.call("get_weather", json!({}), Duration::from_secs(10)).await.unwrap();
         assert_eq!(result, CallResult { text: "sunny".into(), is_error: false });
-        let again = pool.connect(&spec, None, None).await.unwrap();
+        let again = pool.connect(&spec, None, None, None, None).await.unwrap();
         assert!(Arc::ptr_eq(&connection, &again), "a running server is reused");
+    }
+
+    #[tokio::test]
+    async fn jailed_mcp_refuses_when_jail_fails_or_http_below_full() {
+        let _lock = crate::linux_jail::TEST_LOCK.lock().unwrap();
+        crate::linux_jail::set_forced_for_test(true);
+        crate::linux_jail::set_state_for_test(Some(crate::linux_jail::JailState::Fails("mcp jail fail".into())));
+
+        let pool = Pool::default();
+        let spec = ServerSpec { name: "weather".into(), transport: Transport::Stdio { command: "sh".into(), args: vec![], env: vec![] } };
+        let err = match pool.connect(&spec, None, None, Some(apex_core::Access::Read), None).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(err.contains("The MCP server `weather` couldn't start: mcp jail fail"), "{err}");
+
+        let http = ServerSpec { name: "remote".into(), transport: Transport::Http { url: "http://127.0.0.1:9090".into(), headers: vec![] } };
+        let err = match pool.connect(&http, None, None, Some(apex_core::Access::Read), None).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err, "HTTP MCP servers are unavailable below Full access on Linux");
+
+        crate::linux_jail::set_forced_for_test(false);
+        crate::linux_jail::set_state_for_test(None);
     }
 }
