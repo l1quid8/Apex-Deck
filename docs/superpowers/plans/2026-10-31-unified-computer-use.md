@@ -196,11 +196,11 @@ Coverage varies by app for every model: some interfaces expose no usable accessi
 
 Matching by name is safe here because a wrong match only hides more. It never skips an approval: only `helper_gated` in Task 8 can do that, using the trusted bundled server. Task 9 carries the same conservative privacy behavior to CLI paths. Approval bypass and content privacy remain separate decisions.
 
-- [ ] **Step 1: Write failing tests:** `read_screen_output_never_reaches_the_work_step`, `typed_text_never_reaches_the_label_or_arguments`, `typed_text_never_reaches_the_approval_action`, `saved_history_has_no_screen_text`, `the_model_still_receives_the_full_result`, `other_servers_keep_their_output`, `provider_error_echoing_screen_text_is_not_reported`, `tools_refused_log_has_no_provider_text_with_computer_content`, `stream_error_has_no_provider_text_with_computer_content`, `provider_errors_keep_their_text_without_computer_content`.
-- [ ] **Step 2: Run** `cargo test -p apex-adapters --lib`. Expected: FAIL.
-- [ ] **Step 3: Implement.** In `Turn::mcp`, build the step from `redacted_step` instead of `args.to_string()`. In `Turn::run`, skip copying output into the step, and use the redacted text in the approval action, for this server. In `openai.rs`, track whether the request carries computer content, and leave the provider's text out of the three diagnostics when it does.
-- [ ] **Step 4: Run tests.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat: keep screen content out of API bot work steps`.
+- [x] **Step 1: Write failing tests:** `read_screen_output_never_reaches_the_work_step`, `typed_text_never_reaches_the_label_or_arguments`, `typed_text_never_reaches_the_approval_action`, `saved_history_has_no_screen_text`, `the_model_still_receives_the_full_result`, `other_servers_keep_their_output`, `provider_error_echoing_screen_text_is_not_reported`, `tools_refused_log_has_no_provider_text_with_computer_content`, `stream_error_has_no_provider_text_with_computer_content`, `provider_errors_keep_their_text_without_computer_content`.
+- [x] **Step 2: Run** `cargo test -p apex-adapters --lib`. Expected: FAIL.
+- [x] **Step 3: Implement.** In `Turn::mcp`, build the step from `redacted_step` instead of `args.to_string()`. In `Turn::run`, skip copying output into the step, and use the redacted text in the approval action, for this server. In `openai.rs`, track whether the request carries computer content, and leave the provider's text out of the three diagnostics when it does.
+- [x] **Step 4: Run tests.** Expected: PASS.
+- [x] **Step 5: Commit** `feat: keep screen content out of API bot work steps`.
 
 ### Task 2: Rough proof with DS4
 
