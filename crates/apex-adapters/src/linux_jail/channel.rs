@@ -197,6 +197,10 @@ mod tests {
         assert_eq!(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) } & libc::O_NONBLOCK, 0);
     }
 
+    // Linux only: when these tests run together, macOS sometimes disconnects a
+    // passed socket with no error on the daemon's side, in about 1 run in 20.
+    // Linux held for 500 runs, and the jail only exists there.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_fresh_fd_carries_bytes_to_its_purpose() {
         let (control, count, _running) = start();
