@@ -4,6 +4,36 @@ use serde_json::{json, Value};
 
 const RISKY: &[&str] = &["order", "trade", "buy", "sell", "swap", "transfer", "withdraw", "deposit", "leverage", "cancel", "post", "tweet", "publish", "send", "reply", "delete", "exercise", "create", "update", "archive", "execute", "write", "remove", "set_", "modify", "edit", "upload", "download", "install", "run_", "enable", "disable", "revoke", "approve", "submit", "save", "move", "copy", "restore", "reset", "start", "stop", "connect", "uninstall"];
 
+/// Conservative privacy matching only. This never confers approval or trust.
+pub(crate) fn is_computer_server(name: &str) -> bool {
+    name == "apex-computer"
+}
+
+/// Safe presentation metadata: no argument values or tool output are retained.
+pub(crate) struct RedactedStep {
+    pub label: String,
+}
+
+pub(crate) fn redacted_step(tool: &str, arguments: &Value) -> RedactedStep {
+    // Tool names and app identifiers also come from the model. Only known
+    // operation names enter the label; never echo arbitrary names or values.
+    let label = match tool {
+        "list_apps" => "List apps".into(),
+        "request_app" => "Request app access".into(),
+        "read_screen" => "Read screen".into(),
+        "get_screenshot" => "Take screenshot".into(),
+        "type_text" => match arguments["text"].as_str() {
+            Some(text) => format!("Type {} characters", text.chars().count()),
+            None => "Type text".into(),
+        },
+        "click" => "Click a control".into(),
+        "press_key" => "Press a key".into(),
+        "scroll" => "Scroll".into(),
+        _ => "Use computer".into(),
+    };
+    RedactedStep { label }
+}
+
 pub(crate) fn needs_approval(tool: &str) -> bool {
     let name = tool.to_ascii_lowercase();
     if RISKY.iter().any(|word| name.contains(word)) { return true; }

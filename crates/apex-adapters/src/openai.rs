@@ -345,6 +345,9 @@ impl Participant for OpenAiCompatParticipant {
         let mut rounds: Vec<Usage> = Vec::new();
         let mut stopped_early = false;
         let mut failure: Option<ParticipantError> = None;
+        // Sticky for this request's entire history, including failed calls and
+        // retries that remove tools or reasoning from subsequent requests.
+        let mut computer_content = messages_have_computer_content(&messages);
         'rounds: for round in 0.. {
             // A failure after tools have run keeps what the reply did so far.
             macro_rules! fail {
@@ -362,6 +365,7 @@ impl Participant for OpenAiCompatParticipant {
                 break;
             }
             let response = loop {
+                computer_content |= messages_have_computer_content(&messages);
                 let mut body = base.clone();
                 body["messages"] = json!(messages);
                 if let Some(turn) = &turn {
@@ -404,7 +408,7 @@ impl Participant for OpenAiCompatParticipant {
                 // turn with its own message below.
                 if turn.is_some() && round == 0 && matches!(status.as_u16(), 400 | 404 | 422 | 501) && refuses_tools(&lower) {
                     let now = Instant::now();
-                    eprintln!("[apex-deck] {model} turned tools down; answering without them until {:?} from now: {}", TOOLS_RETRY_AFTER, text.chars().take(200).collect::<String>());
+                    eprintln!("{}", tools_refused_diagnostic(model, &text, computer_content));
                     let off = cooldown_after_error(*self.tools_off_until.lock().unwrap(), status.as_u16(), &lower, now);
                     *self.tools_off_until.lock().unwrap() = off;
                     turn = None;
@@ -412,7 +416,7 @@ impl Participant for OpenAiCompatParticipant {
                     messages[0]["content"] = json!(format!("{system}{}", api_tools::NO_TOOLS));
                     continue;
                 }
-                let snippet: String = text.chars().take(300).collect();
+                let snippet = provider_text(&text, 300, computer_content);
                 let hint = match status.as_u16() {
                     401 | 403 if key.is_none() => " This server wants an API key. Open this bot's settings and paste one into API key.",
                     401 | 403 => " The saved API key was refused. Open this bot's settings and paste a new one into API key.",
@@ -443,7 +447,7 @@ impl Participant for OpenAiCompatParticipant {
                 on_progress(Progress::Text(text));
                 reply.text.push_str(text);
             };
-            let streamed = match read_stream(response, &url, &mut on_text).await {
+            let streamed = match read_stream(response, &url, &mut on_text, &mut computer_content).await {
                 Ok(streamed) => streamed,
                 Err(error) => fail!(error),
             };
@@ -543,7 +547,7 @@ struct Streamed {
 }
 
 /// Read an event stream to its end, passing on the text as it arrives.
-async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn FnMut(&str) + Send)) -> Result<Streamed, ParticipantError> {
+async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn FnMut(&str) + Send), computer_content: &mut bool) -> Result<Streamed, ParticipantError> {
     let mut out = Streamed::default();
     let mut decoder = Utf8Chunks::default();
     let mut line = String::new();
@@ -585,9 +589,19 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
                         call.name = name;
                     }
                     call.arguments.push_str(&arguments);
+                    // Incomplete JSON is normal while streaming any MCP tool.
+                    // Only commit known computer content now; an error/end below
+                    // treats still-malformed calls conservatively as private.
+                    if serde_json::from_str::<Value>(&call.arguments).is_ok() {
+                        *computer_content |= call.has_computer_content();
+                    }
                 }
                 SseLine::Usage { input, output, cached, cost_usd } => out.usage = Usage { input, output, cached, cost_usd },
-                SseLine::Error(message) => return Err(ParticipantError::Failed(format!("stream from {url} failed: {message}"))),
+                SseLine::Error(message) => {
+                    *computer_content |= out.calls.iter().any(ToolCall::has_computer_content);
+                    let message = provider_text(&message, usize::MAX, *computer_content);
+                    return Err(ParticipantError::Failed(format!("stream from {url} failed: {message}")));
+                }
                 SseLine::Done => *done = true,
                 SseLine::Ignored => {}
             }
@@ -611,6 +625,7 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
             handle(&line, &mut out, &mut done)?;
         }
     }
+    *computer_content |= out.calls.iter().any(ToolCall::has_computer_content);
     // A call without a name can't be run; one without an id gets one, since
     // its result has to point back at it.
     out.calls.retain(|c| !c.name.is_empty());
@@ -620,6 +635,23 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
         }
     }
     Ok(out)
+}
+
+/// Provider error bodies may quote the entire request, including tool input
+/// and output. Decide before formatting anything destined for history/logs.
+fn provider_text(text: &str, limit: usize, computer_content: bool) -> String {
+    if computer_content { "[computer content hidden]".into() } else { text.chars().take(limit).collect() }
+}
+
+fn tools_refused_diagnostic(model: &str, text: &str, computer_content: bool) -> String {
+    format!("[apex-deck] {model} turned tools down; answering without them until {:?} from now: {}", TOOLS_RETRY_AFTER, provider_text(text, 200, computer_content))
+}
+
+fn messages_have_computer_content(messages: &[Value]) -> bool {
+    messages.iter().filter_map(|message| message["tool_calls"].as_array()).flatten().any(|call| {
+        ToolCall { name: call["function"]["name"].as_str().unwrap_or("").into(),
+            arguments: call["function"]["arguments"].as_str().unwrap_or("").into(), ..Default::default() }.has_computer_content()
+    })
 }
 
 /// Whether an error says the model doesn't take tools at all, as opposed
@@ -691,6 +723,100 @@ impl OpenAiCompatParticipant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn fixture_stream(body: String) -> reqwest::Response {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).unwrap();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        reqwest::get(format!("http://{address}")).await.unwrap()
+    }
+
+    fn computer_frame(arguments: &str) -> String {
+        format!("data: {}\n\n", json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"computer","function":{"name":"mcp_call","arguments":arguments}}]}}]}))
+    }
+
+    #[tokio::test]
+    async fn stream_error_has_no_provider_text_with_computer_content() {
+        for args in [r#"{"server":"apex-computer","tool":"read_screen"}"#, r#"{"server":"apex-computer","arguments":{"text":"TYPED_SECRET"},"broken":"#] {
+            let body = format!("{}data: {{\"error\":{{\"message\":\"SCREEN_SECRET TOKEN_SECRET\"}}}}\n\n", computer_frame(args));
+            let response = fixture_stream(body).await;
+            let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut false).await.unwrap_err();
+            assert!(!error.to_string().contains("SECRET"), "provider text reached the error");
+            assert!(error.to_string().contains("provider.test"));
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_errors_keep_their_text_without_computer_content() {
+        let response = fixture_stream("data: {\"error\":{\"message\":\"ordinary problem\"}}\n\n".into()).await;
+        let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut false).await.unwrap_err();
+        assert!(error.to_string().contains("ordinary problem"));
+    }
+
+    #[test]
+    fn provider_error_echoing_screen_text_is_not_reported() {
+        let text = provider_text("SCREEN_SECRET TYPED_SECRET IMAGE_SECRET TOKEN_SECRET", 300, true);
+        assert!(!text.contains("SECRET"));
+    }
+
+    #[test]
+    fn tools_refused_log_has_no_provider_text_with_computer_content() {
+        let text = tools_refused_diagnostic("test-model", "unsupported tools SCREEN_SECRET TOKEN_SECRET", true);
+        assert!(text.contains("test-model"));
+        assert!(!text.contains("SECRET"));
+        assert!(tools_refused_diagnostic("test-model", "unsupported tools ordinary problem", false).contains("ordinary problem"));
+    }
+
+    #[tokio::test]
+    async fn request_history_stays_private_through_failed_calls_and_retries() {
+        // A failure/no-result does not remove the assistant's input from the
+        // next request. Malformed JSON and escaped server names count too.
+        for arguments in [
+            r#"{"server":"apex-computer","tool":"type_text","arguments":{"text":"TYPED_SECRET"}}"#,
+            r#"{"server":"apex-computer","arguments":{"text":"TYPED_SECRET"},"broken":"#,
+            r#"{"server":"apex\u002dcomputer","tool":"read_screen"}"#,
+        ] {
+            let mut messages = vec![json!({"role":"assistant", "reasoning_content":"thinking", "tool_calls":[{
+                "id":"failed", "function":{"name":"mcp_call","arguments":arguments}
+            }]})];
+            let mut private = messages_have_computer_content(&messages);
+            assert!(private);
+            // These are the same removals the provider retry path performs.
+            strip_reasoning(&mut messages);
+            private |= messages_have_computer_content(&messages);
+            assert!(!provider_text("SCREEN_SECRET", 300, private).contains("SECRET"));
+            // Even if a retry drops its calls, the prior request remains private.
+            messages.clear();
+            private |= messages_have_computer_content(&messages);
+            let response = fixture_stream("data: {\"error\":{\"message\":\"SCREEN_SECRET\"}}\n\n".into()).await;
+            let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut private).await.unwrap_err();
+            assert!(!error.to_string().contains("SECRET"));
+            assert!(private);
+        }
+    }
+
+    #[test]
+    fn non_computer_history_keeps_provider_diagnostics() {
+        let messages = [json!({"role":"assistant","tool_calls":[{"function":{"name":"mcp_call",
+            "arguments":r#"{"server":"weather","tool":"get_weather"}"#}}]})];
+        assert!(!messages_have_computer_content(&messages));
+        assert_eq!(provider_text("ordinary problem", 300, false), "ordinary problem");
+    }
+
+    #[tokio::test]
+    async fn fragmented_other_tools_keep_provider_error_text() {
+        let body = format!("{}{}data: {{\"error\":{{\"message\":\"ordinary problem\"}}}}\n\n",
+            computer_frame(r#"{"server":"weather","arguments":"#), computer_frame("{}}"));
+        let response = fixture_stream(body).await;
+        let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut false).await.unwrap_err();
+        assert!(error.to_string().contains("ordinary problem"));
+    }
 
     #[test]
     fn only_a_real_refusal_turns_tools_off() {

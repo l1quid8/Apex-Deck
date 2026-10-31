@@ -82,6 +82,20 @@ pub(crate) struct ToolCall {
     pub extra: Option<String>,
 }
 
+impl ToolCall {
+    /// A malformed MCP call may still carry typed text. Hide more when we
+    /// cannot identify its server; this flag only controls presentation.
+    pub(crate) fn has_computer_content(&self) -> bool {
+        if !matches!(self.name.as_str(), "mcp_call" | "mcp_list_tools") {
+            return false;
+        }
+        match serde_json::from_str::<Value>(&self.arguments) {
+            Ok(args) => args["server"].as_str().is_some_and(crate::mcp::is_computer_server),
+            Err(_) => true,
+        }
+    }
+}
+
 fn tool(name: &str, description: &str, parameters: Value) -> Value {
     json!({"type": "function", "function": {"name": name, "description": description, "parameters": parameters}})
 }
@@ -353,12 +367,14 @@ impl<'a> Turn<'a> {
 
     /// Carry out one call and give back what the model should be told.
     pub async fn run(&mut self, call: &ToolCall) -> String {
+        let private = call.has_computer_content();
         let arguments: Value = if call.arguments.trim().is_empty() {
             json!({})
         } else {
             match serde_json::from_str(&call.arguments) {
                 Ok(value @ Value::Object(_)) => value,
                 Ok(_) => return "The arguments must be a JSON object. Send the call again.".into(),
+                Err(_) if private => return "The arguments weren't valid JSON. Send the call again with a JSON object.".into(),
                 Err(e) => return format!("The arguments weren't valid JSON ({e}). Send the call again with a JSON object."),
             }
         };
@@ -371,9 +387,11 @@ impl<'a> Turn<'a> {
         step.status = if failed { StepStatus::Failed } else { StepStatus::Done };
         step.exit_code = code;
         step.duration_ms = Some(started.elapsed().as_millis() as u64);
-        let shown = cut_output(&text);
-        step.output_cut = shown.len() < text.len();
-        step.output = Some(shown);
+        if !private {
+            let shown = cut_output(&text);
+            step.output_cut = shown.len() < text.len();
+            step.output = Some(shown);
+        }
         (self.progress)(Progress::Work(&step));
         cut_result(&text)
     }
@@ -652,8 +670,12 @@ impl<'a> Turn<'a> {
         let name = args["server"].as_str().unwrap_or("").to_string();
         let tool_name = args["tool"].as_str().unwrap_or("").to_string();
         let listing = call.name == "mcp_list_tools";
-        let label = if listing { format!("{name}: list tools") } else { format!("{name}: {tool_name}") };
-        let step = self.step(call, StepKind::Tool, &label, &args.to_string());
+        let private = crate::mcp::is_computer_server(&name);
+        let label = if private {
+            crate::mcp::redacted_step(&tool_name, &args["arguments"]).label
+        } else if listing { format!("{name}: list tools") } else { format!("{name}: {tool_name}") };
+        let detail = if private { String::new() } else { args.to_string() };
+        let step = self.step(call, StepKind::Tool, &label, &detail);
         let Some(spec) = self.servers.iter().find(|s| s.name == name).cloned() else {
             let known: Vec<&str> = self.servers.iter().map(|s| s.name.as_str()).collect();
             return (step, Err(format!("There is no MCP server called `{name}`. The servers are: {}.", known.join(", "))));
@@ -694,7 +716,11 @@ impl<'a> Turn<'a> {
         } else if self.plan {
             Need::Refuse(format!("Plan mode is on, and `{tool_name}` could change things. Include it in the plan instead."))
         } else {
-            let mut action = crate::mcp::action(&name, &tool_name, &arguments);
+            let mut action = if private {
+                ProposedAction { kind: ActionKind::Tool, title: label.clone(), detail: "Computer content hidden".into(), expires_at: None, risky: true }
+            } else {
+                crate::mcp::action(&name, &tool_name, &arguments)
+            };
             action.risky = true;
             Need::Ask(action)
         };
@@ -796,6 +822,130 @@ mod tests {
 
     fn names(turn: &Turn<'_>) -> Vec<String> {
         turn.definitions().iter().map(|t| t["function"]["name"].as_str().unwrap().to_string()).collect()
+    }
+
+    // Fixture at the transport boundary: exercise real MCP parsing, approval,
+    // result handling and progress without reading the person's server config.
+    #[cfg(unix)]
+    async fn computer_run(server: &str, tool: &str, decision: Decision) -> (String, Vec<WorkStep>, Vec<ProposedAction>, Vec<String>) {
+        let tools = ToolBox::new(&crate::BuildContext::default());
+        let steps = Mutex::new(Vec::new());
+        let activities = Mutex::new(Vec::new());
+        let progress = |p: Progress<'_>| match p {
+            Progress::Work(step) => steps.lock().unwrap().push(step.clone()),
+            Progress::Activity(activity) => activities.lock().unwrap().push(activity.to_string()),
+            _ => {},
+        };
+        let answers = approver(decision);
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) result='{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}' ;;
+    *'"tools/list"'*) result='{"tools":[{"name":"read_screen","inputSchema":{"type":"object"}},{"name":"type_text","inputSchema":{"type":"object"}},{"name":"private-tool-SCREEN_SECRET","inputSchema":{"type":"object"}}]}' ;;
+    *'"tools/call"'*) result='{"content":[{"type":"text","text":"SCREEN_SECRET credential=TOKEN_SECRET"},{"type":"image","mimeType":"image/png","data":"IMAGE_SECRET"}]}' ;;
+    *) continue ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done
+"#;
+        let servers = vec![mcp_client::ServerSpec { name: server.into(), transport: mcp_client::Transport::Stdio {
+            command: "sh".into(), args: vec!["-c".into(), script.into()], env: vec![],
+        }}];
+        let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full, approver: &answers,
+            progress: &progress, jobs: shell::Jobs::default(), servers, cwd: None, roots: tools.roots.clone() };
+        let result = turn.run(&call("mcp_call", json!({"server": server, "tool": tool,
+            "arguments": {"text":"TYPED_SECRET", "app":"APP_SECRET", "snapshot":"SNAPSHOT_SECRET"}}))).await;
+        (result, steps.into_inner().unwrap(), answers.asked.into_inner().unwrap(), activities.into_inner().unwrap())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_screen_output_never_reaches_the_work_step() {
+        let (_, steps, _, _) = computer_run("apex-computer", "read_screen", Decision::Approve).await;
+        assert!(!steps.is_empty());
+        assert!(steps.iter().all(|s| s.output.is_none() && !s.output_cut));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn typed_text_never_reaches_the_label_or_arguments() {
+        for tool in ["type_text", "private-tool-SCREEN_SECRET"] {
+            let (_, steps, _, activities) = computer_run("apex-computer", tool, Decision::Approve).await;
+            assert!(activities.iter().all(|activity| !activity.contains("SECRET")));
+            for step in steps {
+                let saved = serde_json::to_string(&step).unwrap();
+                assert!(!saved.contains("SECRET"), "private content reached work metadata");
+                assert!(step.detail.is_empty());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn typed_text_never_reaches_the_approval_action() {
+        let (result, _, actions, _) = computer_run("apex-computer", "type_text", Decision::Reject).await;
+        assert!(result.contains("declined"));
+        assert_eq!(actions.len(), 1, "privacy must not bypass approval");
+        assert!(!format!("{:?}", actions[0]).contains("SECRET"));
+        assert!(actions[0].risky);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn saved_history_has_no_screen_text() {
+        let (_, steps, _, _) = computer_run("apex-computer", "read_screen", Decision::Approve).await;
+        let history = apex_core::work_steps::ReplySteps { by: apex_core::ParticipantId::new("bot"), seq: 0, steps, todo: vec![], dropped: 0 };
+        let saved = serde_json::to_string(&history).unwrap();
+        assert!(!saved.contains("SECRET"), "private content reached serialized reply steps");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_model_still_receives_the_full_result() {
+        let (result, _, _, _) = computer_run("apex-computer", "read_screen", Decision::Approve).await;
+        assert!(result.contains("SCREEN_SECRET credential=TOKEN_SECRET"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn other_servers_keep_their_output() {
+        let (result, steps, _, _) = computer_run("weather", "read_screen", Decision::Approve).await;
+        assert!(result.contains("SCREEN_SECRET"));
+        assert!(steps.last().unwrap().output.as_deref().unwrap().contains("SCREEN_SECRET"));
+        assert!(steps[0].detail.contains("TYPED_SECRET"));
+    }
+
+    #[tokio::test]
+    async fn failed_computer_connections_keep_errors_out_of_work_steps() {
+        let tools = ToolBox::new(&crate::BuildContext::default());
+        let steps = Mutex::new(Vec::new());
+        let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
+        let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full, approver: &NoApprover,
+            progress: &progress, jobs: shell::Jobs::default(), cwd: None, roots: tools.roots.clone(),
+            servers: vec![mcp_client::ServerSpec { name: "apex-computer".into(),
+                transport: mcp_client::Transport::Unsupported("SCREEN_SECRET TOKEN_SECRET".into()) }] };
+        let result = turn.run(&call("mcp_call", json!({"server":"apex-computer", "tool":"read_screen"}))).await;
+        assert!(result.contains("SCREEN_SECRET"), "the model needs the full error to recover");
+        let steps = steps.lock().unwrap();
+        assert_eq!(steps.last().unwrap().status, StepStatus::Failed);
+        assert!(steps.iter().all(|step| step.output.is_none() && step.detail.is_empty()));
+        assert!(!serde_json::to_string(&*steps).unwrap().contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn malformed_computer_arguments_are_private_before_dispatch() {
+        let tools = ToolBox::new(&crate::BuildContext::default());
+        let steps = Mutex::new(Vec::new());
+        let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
+        let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full, approver: &NoApprover,
+            progress: &progress, jobs: shell::Jobs::default(), servers: vec![], cwd: None, roots: tools.roots.clone() };
+        let call = ToolCall { name: "mcp_call".into(), arguments: r#"{"server":"apex-computer","arguments":{"text":"TYPED_SECRET"},"broken":"#.into(), ..Default::default() };
+        assert!(call.has_computer_content());
+        let result = turn.run(&call).await;
+        assert!(result.contains("weren't valid JSON"));
+        assert!(!result.contains("SECRET"));
+        assert!(steps.lock().unwrap().is_empty());
     }
 
     #[test]
