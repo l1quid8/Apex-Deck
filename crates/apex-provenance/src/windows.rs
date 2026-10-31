@@ -478,7 +478,7 @@ pub fn process_image(handle: RawHandle) -> Result<PathBuf, String> {
     ))
 }
 // Query, wait and terminate only: nothing that can read, write or run code in it.
-const OUTSIDE_ACCESS: u32 = 0x0010_1001;
+const OUTSIDE_ACCESS: u32 = 0x0010_1401;
 const OWNER_RIGHTS: &str = "S-1-3-4";
 fn process_sddl(sid: &str) -> String {
     format!(
