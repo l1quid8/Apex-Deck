@@ -121,7 +121,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
       if (!(failure instanceof ConnectFailure)) throw new StepFailure("reach", `Couldn't reach ${where}`, String(failure).replace(/^Error: /, ""));
       if (failure.stage === "key") {
         emit({ kind: "step", id: "reach", text: `Reached ${where}` });
-        throw new StepFailure("key", "Server key changed", `${where}'s key isn't the one this phone saved${failure.seen ? ` (now ${failure.seen})` : ""}. That can mean someone is in the way, so nothing was sent. If the server was rebuilt, remove it here and add it again.`);
+        throw new StepFailure("key", "Server key changed", `${where}'s key isn't the one this phone saved${failure.seen ? ` (now ${failure.seen})` : ""}. That can mean someone is in the way, so nothing was sent. If the server was rebuilt, unpair it here and add it again.`);
       }
       if (failure.stage === "signin") {
         emit({ kind: "step", id: "reach", text: `Reached ${where}` });
@@ -132,7 +132,6 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     }
     const ssh = session;
     step("reach", `Reached ${where}`);
-    deps.rememberKey(hostPort, ssh.fingerprint);
     step("key", `Server key ${known ? "matches" : "saved"} (${ssh.fingerprint.slice(0, 15)}…)`);
     step("signin", `Signed in as ${request.user}${request.key ? ` with ${request.key.name}` : " with password"}`);
 
@@ -231,6 +230,8 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
 
     const made = await pairOverSsh(ssh, deps, (cancel) => { stopPair = cancel; });
     paired = true;
+    // Saved only now, so a server rebuilt after a failed first try can be tried again.
+    deps.rememberKey(hostPort, ssh.fingerprint);
     if (request.keep) {
       await deps.keep(request).catch((failure: Error) => {
         request.keep = false;

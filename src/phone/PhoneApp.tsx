@@ -2425,7 +2425,13 @@ export function PhoneApp() {
             onEdit={(id, machine) => { setMachines(editMachine(machines, id, machine)); setNotice(`Saved ${machine.name.trim()}. Reconnecting…`); }}
             onUnpair={(id) => {
               const gone = machines.find((machine) => machine.id === id);
-              if (gone && isPaired(gone) && gone.setup?.kept) void ssh?.forget(signInId(gone.setup)).catch(() => {});
+              if (gone && isPaired(gone) && gone.setup) {
+                if (gone.setup.kept) void ssh?.forget(signInId(gone.setup)).catch(() => {});
+                try {
+                  const { [`${gone.setup.host}:${gone.setup.port}`]: _, ...rest } = readServerKeys();
+                  localStorage.setItem(SERVER_KEYS, JSON.stringify(rest));
+                } catch { /* the old key stays until storage works */ }
+              }
               setMachines((list) => removeMachine(list, id));
               setConfirmUnpair(null);
             }}

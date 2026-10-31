@@ -196,6 +196,9 @@ public class ApexSshPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let client = await self.connections.client(handle) else { return call.reject("Signed out.") }
             var out = Data(), err = Data()
             var code = 0
+            // Citadel closes the channel after the output ends, and that close
+            // throws when the server already closed it. The command had finished.
+            var finished = false
             let work = Task {
                 try await client.withExec(command) { inbound, outbound in
                     if let stdin = stdin { try await outbound.write(ByteBuffer(string: stdin)) }
@@ -205,10 +208,11 @@ public class ApexSshPlugin: CAPPlugin, CAPBridgedPlugin {
                         case .stderr(let buffer): err.append(contentsOf: buffer.readableBytesView)
                         }
                     }
+                    finished = true
                 }
             }
             let clock = Task { try await Task.sleep(for: .seconds(timeout)); work.cancel() }
-            do { try await work.value } catch let failed as SSHClient.CommandFailed { code = Int(failed.exitCode) } catch { code = -1 }
+            do { try await work.value } catch let failed as SSHClient.CommandFailed { code = Int(failed.exitCode) } catch { if !finished { code = -1 } }
             clock.cancel()
             call.resolve(["code": code, "stdout": String(decoding: out, as: UTF8.self), "stderr": String(decoding: err, as: UTF8.self)])
         }
@@ -224,6 +228,7 @@ public class ApexSshPlugin: CAPPlugin, CAPBridgedPlugin {
             stream.task = Task {
                 var held = Data()
                 var code = 0
+                var finished = false
                 do {
                     try await client.withExec(command) { inbound, outbound in
                         try await stream.attach(outbound)
@@ -235,8 +240,9 @@ public class ApexSshPlugin: CAPPlugin, CAPBridgedPlugin {
                                 held.removeSubrange(held.startIndex...end)
                             }
                         }
+                        finished = true
                     }
-                } catch let failed as SSHClient.CommandFailed { code = Int(failed.exitCode) } catch { code = -1 }
+                } catch let failed as SSHClient.CommandFailed { code = Int(failed.exitCode) } catch { if !finished { code = -1 } }
                 self.notifyListeners("ssh", data: ["stream": id, "end": code])
                 _ = await self.connections.removeStream(id)
             }

@@ -129,6 +129,17 @@ test("a changed server key stops before anything is sent", async () => {
   assert.equal(ask.password, "");
 });
 
+test("a server's key is saved only once it has paired", async () => {
+  const box = server({ install: { code: 3, stdout: "checksum=bad\n" } });
+  const failed = deps(box);
+  await run(box, failed);
+  assert.deepEqual(failed.keys, {});
+  const good = server();
+  const paired = deps(good);
+  await run(good, paired);
+  assert.equal(paired.keys["203.0.113.1:22"], good.session.fingerprint);
+});
+
 test("a refused sign-in fails on its own line and still wipes", async () => {
   const box = server();
   const { failed, ask, steps } = await run(box, deps(box, { deps: { connect: async () => { throw new ConnectFailure("signin", "No."); } } }));
