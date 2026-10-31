@@ -160,6 +160,15 @@ async fn connect() -> Result<tokio::io::BufReader<tokio::net::UnixStream>, Strin
         .map_err(|_| "Unified Computer Use is not running.".into())
 }
 #[cfg(unix)]
+fn duplicate_control(stream: &tokio::net::UnixStream) -> std::io::Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // Atomic CLOEXEC is essential: providers start concurrently, so setting
+    // the flag after dup would briefly expose an authenticated host channel.
+    let fd = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if fd < 0 { return Err(std::io::Error::last_os_error()); }
+    Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) })
+}
+#[cfg(unix)]
 async fn rpc(
     stream: &mut tokio::io::BufReader<tokio::net::UnixStream>,
     method: &str,
@@ -281,12 +290,7 @@ impl TurnLifecycleHook for TurnHook {
                 {
                     return None;
                 }
-                use std::os::fd::{AsRawFd, FromRawFd};
-                let fd = unsafe { libc::dup(stream.get_ref().as_raw_fd()) };
-                if fd < 0 {
-                    return None;
-                }
-                let shutdown = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+                let shutdown = duplicate_control(stream.get_ref()).ok()?;
                 {
                     let generations = self.computer.generations.lock().unwrap();
                     if generations.get(&self.thread).copied().unwrap_or(0) != generation
@@ -444,6 +448,16 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn authenticated_control_duplicate_is_close_on_exec() {
+        use std::os::fd::AsRawFd;
+        let (stream, _peer) = tokio::net::UnixStream::pair().unwrap();
+        let duplicate = duplicate_control(&stream).unwrap();
+        let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0, "authenticated control must not enter provider children");
+    }
     #[test]
     fn stop_and_disable_invalidate_pending_and_active_turns() {
         let data =
