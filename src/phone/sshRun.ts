@@ -231,10 +231,15 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
 
     const made = await pairOverSsh(ssh, deps, (cancel) => { stopPair = cancel; });
     paired = true;
+    if (request.keep) {
+      await deps.keep(request).catch((failure: Error) => {
+        request.keep = false;
+        notes += ` The sign-in wasn't kept: ${failure.message}`;
+      });
+    }
     deps.save(made, request, "linux");
     emit({ kind: "paired", name: made.name });
     emit({ kind: "step", id: "pair", text: `Paired and saved as ${request.label || made.name}` });
-    if (request.keep) await deps.keep(request);
     return notes.trim();
   };
 

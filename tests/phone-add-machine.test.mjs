@@ -190,3 +190,10 @@ test("the picker offers QR code and Remote SSH only", () => {
   assert.match(html, /aria-checked="true"[^>]*>Remote SSH/);
   assert.doesNotMatch(html, /Address and token|Mac|Server/);
 });
+
+test("a Linux machine is a server even when it's the first, and ECDSA keys are refused by name", () => {
+  const preview = { name: "VPS", host: "c".repeat(64), os: "linux" };
+  assert.equal(identityFor([], preview).kind, "server");
+  assert.equal(identityFor([], { ...preview, os: "macos" }).kind, "mac");
+  assert.equal(identityFor([], { ...preview, os: "" }).kind, "mac");
+});
