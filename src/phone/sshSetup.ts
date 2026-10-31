@@ -64,9 +64,6 @@ export interface SshKey {
 const KEY_PARTS: Record<string, { public: number; private: number }> = {
   "ssh-ed25519": { public: 1, private: 3 },
   "ssh-rsa": { public: 2, private: 7 },
-  "ecdsa-sha2-nistp256": { public: 2, private: 4 },
-  "ecdsa-sha2-nistp384": { public: 2, private: 4 },
-  "ecdsa-sha2-nistp521": { public: 2, private: 4 },
 };
 const ED25519_PUBLIC_BYTES = 32;
 const ED25519_PRIVATE_BYTES = 64;
@@ -144,7 +141,7 @@ export function readKey(name: string, text: string): SshKey {
   const type = publicKey.field();
   if (!/^[a-z0-9][a-z0-9@.-]*$/.test(type)) throw new Error(NOT_A_KEY);
   const parts = KEY_PARTS[type];
-  if (!parts) throw new Error(`${type} keys won't work here. Use an ed25519, RSA or ECDSA key.`);
+  if (!parts) throw new Error(`${type} keys won't work here. Use an ed25519 or RSA key.`);
   const publicParts = Array.from({ length: parts.public }, publicKey.field);
   if (publicKey.rest() || publicParts.some((part) => !part)) throw new Error(NOT_A_KEY);
   if (type === "ssh-ed25519" && publicParts[0].length !== ED25519_PUBLIC_BYTES) throw new Error(NOT_A_KEY);

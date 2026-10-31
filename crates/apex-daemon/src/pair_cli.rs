@@ -268,9 +268,28 @@ where
     emit(out, json!({ "event": "link", "link": started["link"], "expires_at": started["expires_at"] }))?;
 
     tokio::pin!(interrupted);
+    // Read from the start: stdin ending means the SSH session has gone, and
+    // nobody is left to approve anything.
+    let (answer_tx, mut answer_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut stdin = stdin;
+        let mut line = String::new();
+        let read = stdin.read_line(&mut line).map(|_| line);
+        let _ = answer_tx.send(read.ok());
+    });
     let waiting = client.send("pair_wait", json!({ "invitation": invitation })).await.map_err(|r| r.err)?;
+    let mut early = None;
     let claim = tokio::select! {
         claim = client.reply(waiting) => claim,
+        answer = &mut answer_rx => {
+            let answer = answer.ok().flatten().unwrap_or_default();
+            if answer.is_empty() {
+                cancel(client, &invitation).await;
+                return Err("the session ended; no phone was paired".into());
+            }
+            early = Some(answer);
+            client.reply(waiting).await
+        }
         _ = &mut interrupted => {
             cancel(client, &invitation).await;
             return Err("cancelled; no phone was paired".into());
@@ -280,19 +299,15 @@ where
     let code = claim["code"].as_str().unwrap_or_default().to_string();
     emit(out, json!({ "event": "claim", "label": claim["label"], "code": code }))?;
 
-    let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let mut stdin = stdin;
-        let mut line = String::new();
-        let read = stdin.read_line(&mut line).map(|_| line);
-        let _ = answer_tx.send(read.ok());
-    });
-    let answer = tokio::select! {
-        answer = answer_rx => answer.ok().flatten().unwrap_or_default(),
-        _ = &mut interrupted => {
-            cancel(client, &invitation).await;
-            return Err("cancelled; the phone was not paired".into());
-        }
+    let answer = match early {
+        Some(answer) => answer,
+        None => tokio::select! {
+            answer = answer_rx => answer.ok().flatten().unwrap_or_default(),
+            _ = &mut interrupted => {
+                cancel(client, &invitation).await;
+                return Err("cancelled; the phone was not paired".into());
+            }
+        },
     };
     if code.is_empty() || answer.trim() != format!("approve {code}") {
         cancel(client, &invitation).await;
