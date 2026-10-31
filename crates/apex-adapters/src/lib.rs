@@ -10,7 +10,7 @@
 mod ansi;
 mod assistant;
 pub use assistant::{assistant_profile_ok, build_assistant};
-mod api_tools;
+pub mod api_tools;
 mod attachments;
 mod api_info;
 mod catalog;

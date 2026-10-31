@@ -23,7 +23,7 @@ impl std::fmt::Display for ParticipantId {
 }
 
 /// What a participant is allowed to do to the workspace it runs in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
     /// May read files but not change them.
@@ -269,7 +269,7 @@ pub struct ResetCredit {
 
 /// Tokens a participant has used in one thread, over the turns that
 /// reported a count. Saved with the thread.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct TokenTotals {
     pub input: u64,
     pub output: u64,

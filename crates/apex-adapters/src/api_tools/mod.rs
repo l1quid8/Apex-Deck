@@ -18,7 +18,7 @@
 //! page, ask below Full access.
 
 pub(crate) mod files;
-pub(crate) mod mcp_client;
+pub mod mcp_client;
 pub(crate) mod shell;
 pub(crate) mod web;
 
@@ -42,6 +42,7 @@ const MCP_DEFAULT: Duration = Duration::from_secs(120);
 /// What a bot's tools work with. Lives as long as the bot: its MCP servers
 /// keep running between replies.
 pub(crate) struct ToolBox {
+    pub bot: String,
     pub roots: files::Roots,
     pub env: shell::Env,
     /// Commands the bot runs. Stop ends them all.
@@ -50,13 +51,19 @@ pub(crate) struct ToolBox {
 }
 
 impl ToolBox {
+    #[allow(dead_code)]
     pub fn new(context: &crate::BuildContext) -> Self {
+        Self::new_with_bot(context, "")
+    }
+
+    pub fn new_with_bot(context: &crate::BuildContext, bot: impl Into<String>) -> Self {
         let mut readable: Vec<PathBuf> = context.attachment_roots.clone();
         readable.extend(context.temp.clone());
         if let Some(dir) = crate::presets::readable_dir() {
             readable.push(PathBuf::from(dir));
         }
         Self {
+            bot: bot.into(),
             roots: files::Roots::new(context.cwd.as_deref(), &readable),
             env: shell::Env {
                 cwd: context.cwd.clone(),
@@ -119,7 +126,7 @@ enum Need {
 impl<'a> Turn<'a> {
     pub fn new(tools: &'a ToolBox, access: Access, plan: bool, own: Access, approver: &'a dyn Approver, progress: ProgressSink<'a>) -> Self {
         // Leave the MCP client's long-lived servers on the room folder across turns.
-        let servers = tools.mcp.servers(tools.env.cwd.as_deref());
+        let servers = tools.mcp.servers(tools.env.cwd.as_deref(), Some(own));
         if !servers.is_empty() {
             let menu: Vec<apex_core::server_request::ToolServer> = servers.iter().map(|s| s.name.clone().into()).collect();
             progress(Progress::ToolServers(&menu));
@@ -666,7 +673,7 @@ impl<'a> Turn<'a> {
         };
         (self.progress)(Progress::Work(&step));
         (self.progress)(Progress::Activity(&format!("Starting {name}")));
-        let connection = match self.tools.mcp.connect(&spec, self.tools.env.cwd.as_deref(), self.tools.env.path.as_deref(), Some(self.own), self.tools.env.data_dir.as_deref()).await {
+        let connection = match self.tools.mcp.connect(&self.tools.bot, &spec, self.tools.env.cwd.as_deref(), self.tools.env.path.as_deref(), Some(self.own), self.tools.env.data_dir.as_deref()).await {
             Ok(connection) => connection,
             Err(why) => return (step, Err(why)),
         };

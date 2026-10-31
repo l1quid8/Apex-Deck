@@ -34,7 +34,7 @@ const STDERR_KEEP: usize = 4_000;
 
 /// How to reach one server.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Transport {
+pub enum Transport {
     Stdio { command: String, args: Vec<String>, env: Vec<(String, String)> },
     Http { url: String, headers: Vec<(String, String)> },
     /// Something Deck can't speak to, with why.
@@ -42,7 +42,7 @@ pub(crate) enum Transport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ServerSpec {
+pub struct ServerSpec {
     pub name: String,
     pub transport: Transport,
 }
@@ -152,7 +152,7 @@ fn read_json(path: &Path) -> Option<Value> {
 
 /// What a server said in answer to a call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CallResult {
+pub struct CallResult {
     pub text: String,
     pub is_error: bool,
 }
@@ -212,7 +212,7 @@ enum Link {
 }
 
 /// One running server.
-pub(crate) struct Connection {
+pub struct Connection {
     pub spec: ServerSpec,
     link: Link,
     next: AtomicU64,
@@ -240,8 +240,8 @@ impl Connection {
         let link = match &spec.transport {
             Transport::Unsupported(why) => return Err(format!("The MCP server `{}` can't be used: {why}.", spec.name)),
             Transport::Http { url, headers } => {
-                if access.map(crate::linux_jail::should_jail).unwrap_or(false) {
-                    return Err("HTTP MCP servers are unavailable below Full access on Linux".into());
+                if access != Some(apex_core::Access::Full) {
+                    return Err("HTTP MCP servers are unavailable below Full access".into());
                 }
                 Link::Http(HttpLink {
                     client: reqwest::Client::builder()
@@ -397,7 +397,7 @@ impl Connection {
         Ok(connection)
     }
 
-    fn alive(&self) -> bool {
+    pub fn alive(&self) -> bool {
         match &self.link {
             Link::Stdio(link) => link.alive.load(Ordering::SeqCst) && link.child.lock().unwrap().try_wait().ok().flatten().is_none(),
             Link::Http(_) => true,
@@ -565,6 +565,10 @@ impl Connection {
         let result = self.request("tools/call", json!({"name": tool, "arguments": arguments}), timeout).await?;
         Ok(CallResult { text: content_text(&result), is_error: result["isError"] == true })
     }
+
+    pub async fn clear_cached_tools(&self) {
+        *self.tools.lock().await = None;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -574,18 +578,26 @@ struct Stamp {
     project: Option<SystemTime>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PoolKey {
+    pub bot: String,
+    pub server: String,
+    pub level: Option<apex_core::Access>,
+}
+
 /// The servers of one bot: what its settings name, and the ones started.
 #[derive(Default)]
-pub(crate) struct Pool {
-    live: tokio::sync::Mutex<HashMap<String, Arc<Connection>>>,
+pub struct Pool {
+    live: tokio::sync::Mutex<HashMap<PoolKey, Arc<Connection>>>,
     registry: Registry,
     known: Mutex<Option<(Stamp, Vec<ServerSpec>)>>,
 }
 
 impl Pool {
     /// The servers a chat in `cwd` may use. Read again only when a
-    /// settings file has changed.
-    pub fn servers(&self, cwd: Option<&Path>) -> Vec<ServerSpec> {
+    /// settings file has changed. When access is below Full, HTTP MCP servers
+    /// are omitted.
+    pub fn servers(&self, cwd: Option<&Path>, access: Option<apex_core::Access>) -> Vec<ServerSpec> {
         let user_path = claude_config_path();
         let project_path = cwd.map(|c| c.join(".mcp.json"));
         let mut cwds: Vec<String> = Vec::new();
@@ -600,38 +612,85 @@ impl Pool {
         }
         let stamp = Stamp { cwds: cwds.clone(), user: user_path.as_deref().and_then(modified), project: project_path.as_deref().and_then(modified) };
         let mut known = self.known.lock().unwrap();
-        if let Some((seen, servers)) = known.as_ref() {
+        let servers = if let Some((seen, servers)) = known.as_ref() {
             if *seen == stamp {
-                return servers.clone();
+                servers.clone()
+            } else {
+                let user = user_path.as_deref().and_then(read_json);
+                let project = project_path.as_deref().and_then(read_json);
+                let lookup = |name: &str| std::env::var(name).ok();
+                let servers = from_config(user.as_ref(), project.as_ref(), &cwds, &lookup);
+                *known = Some((stamp, servers.clone()));
+                servers
             }
+        } else {
+            let user = user_path.as_deref().and_then(read_json);
+            let project = project_path.as_deref().and_then(read_json);
+            let lookup = |name: &str| std::env::var(name).ok();
+            let servers = from_config(user.as_ref(), project.as_ref(), &cwds, &lookup);
+            *known = Some((stamp, servers.clone()));
+            servers
+        };
+        if access != Some(apex_core::Access::Full) {
+            servers.into_iter().filter(|s| !matches!(s.transport, Transport::Http { .. })).collect()
+        } else {
+            servers
         }
-        let user = user_path.as_deref().and_then(read_json);
-        let project = project_path.as_deref().and_then(read_json);
-        let lookup = |name: &str| std::env::var(name).ok();
-        let servers = from_config(user.as_ref(), project.as_ref(), &cwds, &lookup);
-        *known = Some((stamp, servers.clone()));
-        servers
     }
 
     /// The running server for `spec`, started if it isn't running.
     pub async fn connect(
         &self,
+        bot: &str,
         spec: &ServerSpec,
         cwd: Option<&Path>,
         path: Option<&str>,
         access: Option<apex_core::Access>,
         data_dir: Option<&Path>,
     ) -> Result<Arc<Connection>, String> {
+        let key = PoolKey {
+            bot: bot.to_string(),
+            server: spec.name.clone(),
+            level: access,
+        };
         let mut live = self.live.lock().await;
-        if let Some(connection) = live.get(&spec.name) {
+        if let Some(connection) = live.get(&key) {
             if connection.spec == *spec && connection.alive() {
                 return Ok(connection.clone());
             }
         }
-        live.remove(&spec.name);
+        live.remove(&key);
         let connection = Arc::new(Connection::start(spec, &self.registry, cwd, path, access, data_dir).await?);
-        live.insert(spec.name.clone(), connection.clone());
+        live.insert(key, connection.clone());
         Ok(connection)
+    }
+
+    /// Drop all cached connections and clear their cached tool lists for `bot`.
+    pub async fn drop_bot(&self, bot: &str) {
+        let mut live = self.live.lock().await;
+        let keys: Vec<PoolKey> = live.keys().filter(|k| k.bot == bot).cloned().collect();
+        for key in keys {
+            if let Some(conn) = live.remove(&key) {
+                conn.clear_cached_tools().await;
+            }
+        }
+        *self.known.lock().unwrap() = None;
+    }
+
+    /// Drop all connections and clear their cached tool lists.
+    pub async fn drop_all(&self) {
+        let mut live = self.live.lock().await;
+        for (_, conn) in live.drain() {
+            conn.clear_cached_tools().await;
+        }
+        *self.known.lock().unwrap() = None;
+    }
+
+    /// Terminate all owned process groups and drop all cached connections.
+    pub async fn terminate_all(&self) -> Result<bool, String> {
+        let res = self.registry.terminate_all().await;
+        self.drop_all().await;
+        res
     }
 }
 
@@ -718,13 +777,71 @@ done
 "#;
         let spec = ServerSpec { name: "weather".into(), transport: Transport::Stdio { command: "sh".into(), args: vec!["-c".into(), script.into()], env: vec![] } };
         let pool = Pool::default();
-        let connection = pool.connect(&spec, None, None, None, None).await.unwrap();
+        let connection = pool.connect("bot", &spec, None, None, None, None).await.unwrap();
         let tools = connection.tools().await.unwrap();
         assert_eq!(tools[0]["name"], "get_weather");
         let result = connection.call("get_weather", json!({}), Duration::from_secs(10)).await.unwrap();
         assert_eq!(result, CallResult { text: "sunny".into(), is_error: false });
-        let again = pool.connect(&spec, None, None, None, None).await.unwrap();
-        assert!(Arc::ptr_eq(&connection, &again), "a running server is reused");
+        let again = pool.connect("bot", &spec, None, None, None, None).await.unwrap();
+        assert!(Arc::ptr_eq(&connection, &again), "a running server is reused for the same bot and level");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cached_link_not_reused_across_levels_or_after_drop() {
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"t","version":"1"}}}\n' "$id" ;;
+    *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"test","description":"test","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+  esac
+done
+"#;
+        let spec = ServerSpec { name: "test_server".into(), transport: Transport::Stdio { command: "sh".into(), args: vec!["-c".into(), script.into()], env: vec![] } };
+        let pool = Pool::default();
+
+        let full_conn = pool.connect("bot1", &spec, None, None, Some(apex_core::Access::Full), None).await.unwrap();
+        let read_conn = pool.connect("bot1", &spec, None, None, Some(apex_core::Access::Read), None).await.unwrap();
+        assert!(!Arc::ptr_eq(&full_conn, &read_conn), "different access level must NOT reuse cached link");
+
+        let bot2_conn = pool.connect("bot2", &spec, None, None, Some(apex_core::Access::Full), None).await.unwrap();
+        assert!(!Arc::ptr_eq(&full_conn, &bot2_conn), "different bot must NOT reuse cached link");
+
+        pool.drop_bot("bot1").await;
+        let after_drop = pool.connect("bot1", &spec, None, None, Some(apex_core::Access::Full), None).await.unwrap();
+        assert!(!Arc::ptr_eq(&full_conn, &after_drop), "link must NOT be reused after drop_bot");
+    }
+
+    #[test]
+    fn api_bots_below_full_get_no_http_mcp_in_servers_list() {
+        let user = json!({
+            "mcpServers": {
+                "local_tool": {"command": "sh", "args": ["-c", "exit 0"]},
+                "remote_tool": {"type": "http", "url": "https://mcp.example.com", "headers": {}}
+            }
+        });
+        let pool = Pool::default();
+        let user_path = claude_config_path();
+        let stamp = Stamp { cwds: vec![], user: user_path.as_deref().and_then(modified), project: None };
+        let lookup = |_: &str| None;
+        let parsed = from_config(Some(&user), None, &[], &lookup);
+        *pool.known.lock().unwrap() = Some((stamp, parsed));
+
+        let full_servers = pool.servers(None, Some(apex_core::Access::Full));
+        assert_eq!(full_servers.len(), 2, "Full access gets both Stdio and Http");
+        assert!(full_servers.iter().any(|s| matches!(s.transport, Transport::Http { .. })));
+
+        for below_full in [apex_core::Access::Read, apex_core::Access::Ask, apex_core::Access::Edits] {
+            let servers = pool.servers(None, Some(below_full));
+            assert_eq!(servers.len(), 1, "below-Full access gets no HTTP MCP");
+            assert!(!servers.iter().any(|s| matches!(s.transport, Transport::Http { .. })));
+            assert_eq!(servers[0].name, "local_tool");
+        }
+
+        let none_access = pool.servers(None, None);
+        assert_eq!(none_access.len(), 1);
+        assert!(!none_access.iter().any(|s| matches!(s.transport, Transport::Http { .. })));
     }
 
     #[tokio::test]
@@ -735,18 +852,18 @@ done
 
         let pool = Pool::default();
         let spec = ServerSpec { name: "weather".into(), transport: Transport::Stdio { command: "sh".into(), args: vec![], env: vec![] } };
-        let err = match pool.connect(&spec, None, None, Some(apex_core::Access::Read), None).await {
+        let err = match pool.connect("bot", &spec, None, None, Some(apex_core::Access::Read), None).await {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
         assert!(err.contains("The MCP server `weather` couldn't start: mcp jail fail"), "{err}");
 
         let http = ServerSpec { name: "remote".into(), transport: Transport::Http { url: "http://127.0.0.1:9090".into(), headers: vec![] } };
-        let err = match pool.connect(&http, None, None, Some(apex_core::Access::Read), None).await {
+        let err = match pool.connect("bot", &http, None, None, Some(apex_core::Access::Read), None).await {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
-        assert_eq!(err, "HTTP MCP servers are unavailable below Full access on Linux");
+        assert_eq!(err, "HTTP MCP servers are unavailable below Full access");
 
         crate::linux_jail::set_forced_for_test(false);
         crate::linux_jail::set_state_for_test(None);

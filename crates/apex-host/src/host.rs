@@ -1969,6 +1969,23 @@ impl Host {
         }
         self.ensure_task_read_access(&id, &next)?;
         let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
+        if next.access != current.access {
+            // Step 1: Refuse new tool calls for that bot, and end its turn.
+            handle.approvals.reject_for(&name);
+            handle.runtime.stop(Some(&name));
+
+            // Step 2: Stop the whole process: group kill, then wait until it's reaped.
+            // If step 2 fails, the level stays as it was and the change reports the failure.
+            if let Some(existing) = room.participant(&name) {
+                if let Err(why) = existing.cancel_active_turn().await {
+                    return Err(format!("Could not stop process tree for `{name}`: {why}"));
+                }
+            }
+
+            // Step 3: Drop that bot's MCP links and clear their cached tool lists.
+            self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
+        }
+        // Step 4: Save the new level.
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
                 return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
@@ -4404,6 +4421,102 @@ mod host_tests {
         assert_eq!(settings.len(), 2, "both clients must hear each saved change");
         assert_eq!(settings[1]["payload"]["event"]["participant"], json);
         drop(events);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_failed_stop_keeps_the_old_access_level() {
+        struct StubbornBot {
+            config: ParticipantConfig,
+        }
+        #[async_trait::async_trait]
+        impl apex_core::Participant for StubbornBot {
+            fn config(&self) -> &ParticipantConfig { &self.config }
+            async fn respond(&self, _: apex_core::TurnRequest, _: apex_core::DeltaSink<'_>) -> Result<apex_core::Reply, apex_core::ParticipantError> {
+                Ok(apex_core::Reply { text: "ok".into(), input_tokens: None, output_tokens: None, cost_micros: None, cost_estimated: false })
+            }
+            async fn cancel_active_turn(&self) -> Result<bool, String> {
+                Err("process refused to exit".into())
+            }
+        }
+
+        let (host, runtime, data) = host("failed-stop-keeps-level");
+        let mut bot_cfg = named_bot("bot", "Bot");
+        bot_cfg.access = Access::Full;
+        host.room_create("r".into(), vec![bot_cfg.clone()], RoomOptions::default(), None).unwrap();
+        let stubborn = Arc::new(StubbornBot { config: bot_cfg.clone() });
+        assert!(runtime.block_on(async { host.room("r").unwrap().lock().await.replace_participant(stubborn) }));
+
+        let mut lowered = bot_cfg.clone();
+        lowered.access = Access::Read;
+        let err = runtime.block_on(host.room_update_participant("r".into(), lowered)).unwrap_err();
+        assert!(err.contains("Could not stop process tree for `bot`: process refused to exit"), "{err}");
+
+        let saved = host.store.room("r").unwrap().unwrap().snapshot.participants[0].clone();
+        assert_eq!(saved.access, Access::Full, "stored access must not be downgraded when stop fails");
+
+        let active_access = runtime.block_on(async { host.room("r").unwrap().lock().await.configs()[0].access });
+        assert_eq!(active_access, Access::Full, "active room access must remain unchanged");
+
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lowering_access_level_stops_stdio_mcp_server_before_saving_new_level() {
+        struct McpBot {
+            config: ParticipantConfig,
+            pool: Arc<apex_adapters::api_tools::mcp_client::Pool>,
+        }
+        #[async_trait::async_trait]
+        impl apex_core::Participant for McpBot {
+            fn config(&self) -> &ParticipantConfig { &self.config }
+            async fn respond(&self, _: apex_core::TurnRequest, _: apex_core::DeltaSink<'_>) -> Result<apex_core::Reply, apex_core::ParticipantError> {
+                Ok(apex_core::Reply { text: "ok".into(), input_tokens: None, output_tokens: None, cost_micros: None, cost_estimated: false })
+            }
+            async fn cancel_active_turn(&self) -> Result<bool, String> {
+                self.pool.terminate_all().await
+            }
+        }
+
+        let (host, runtime, data) = host("mcp-level-downgrade");
+        let mut bot_cfg = named_bot("bot", "Bot");
+        bot_cfg.access = Access::Full;
+        host.room_create("r".into(), vec![bot_cfg.clone()], RoomOptions::default(), None).unwrap();
+
+        let pool = Arc::new(apex_adapters::api_tools::mcp_client::Pool::default());
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"t","version":"1"}}}\n' "$id" ;;
+    *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"test","description":"test","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+  esac
+done
+"#;
+        let spec = apex_adapters::api_tools::mcp_client::ServerSpec {
+            name: "sleeper".into(),
+            transport: apex_adapters::api_tools::mcp_client::Transport::Stdio {
+                command: "sh".into(),
+                args: vec!["-c".into(), script.into()],
+                env: vec![],
+            },
+        };
+
+        let conn = runtime.block_on(pool.connect("bot", &spec, None, None, Some(Access::Full), None)).unwrap();
+        assert!(conn.alive(), "server must be alive initially");
+
+        let mcp_bot = Arc::new(McpBot { config: bot_cfg.clone(), pool: Arc::clone(&pool) });
+        assert!(runtime.block_on(async { host.room("r").unwrap().lock().await.replace_participant(mcp_bot) }));
+
+        let mut lowered = bot_cfg.clone();
+        lowered.access = Access::Read;
+        runtime.block_on(host.room_update_participant("r".into(), lowered)).unwrap();
+
+        assert!(!conn.alive(), "server must be dead after level downgrade");
+        let saved = host.store.room("r").unwrap().unwrap().snapshot.participants[0].clone();
+        assert_eq!(saved.access, Access::Read);
+
         let _ = std::fs::remove_dir_all(data);
     }
 

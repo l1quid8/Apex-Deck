@@ -385,6 +385,21 @@ fn group_stop_ends_the_bot_and_everything_that_tried_to_leave() {
 }
 
 #[test]
+fn retiring_setsid_loop_and_double_fork_child_on_level_downgrade() {
+    if !wanted() { return; }
+    let tree = tree("retire");
+    let script = "setsid sh -c 'while true; do sleep 1; done' & (sh -c '(sleep 3202 &)' &); exec sleep 3200";
+    Runtime::new().unwrap().block_on(async {
+        let (mut child, serve) = start(&shell(&tree, script), Stdio::null());
+        until(|| running(&["sleep", "3200"]) >= 1).await;
+        child.terminate_tree().await.unwrap();
+        until(|| running(&["sleep", "3200"]) == 0 && running(&["sleep", "3202"]) == 0).await;
+        ended(serve).await;
+    });
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
 fn a_bot_exit_ends_the_jail_with_its_status() {
     if !wanted() { return; }
     let tree = tree("exit");

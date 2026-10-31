@@ -739,6 +739,11 @@ impl Room {
         true
     }
 
+    /// Find a participant in the room by id.
+    pub fn participant(&self, id: &ParticipantId) -> Option<Arc<dyn Participant>> {
+        self.roster.iter().find(|p| p.config().id == *id).cloned()
+    }
+
     /// Swap in a new version of a participant that is already in the room
     /// (same id), keeping its place in the roster and what it has seen.
     /// Returns false if nobody in the room has that id.

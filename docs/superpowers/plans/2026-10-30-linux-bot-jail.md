@@ -116,9 +116,9 @@
 
 **Files:** Modify `api_tools/mcp_client.rs:515`, the host's participant update path in `crates/apex-host/src/host.rs`
 
-- [ ] Failing tests: `setsid` loop, double fork and stdio MCP server are gone before a lowered level is saved; a failed stop keeps the old level; a cached link isn't reused; API bots below Full get no HTTP MCP.
-- [ ] Implement in the design's five-step order. The map key gains bot and level.
-- [ ] Commit.
+- [x] Failing tests: `setsid` loop, double fork and stdio MCP server are gone before a lowered level is saved; a failed stop keeps the old level; a cached link isn't reused; API bots below Full get no HTTP MCP.
+- [x] Implement in the design's five-step order. The map key gains bot and level.
+- [x] Commit.
 
 ### Task 8: Taint, the Full gate and `project_process()`
 
