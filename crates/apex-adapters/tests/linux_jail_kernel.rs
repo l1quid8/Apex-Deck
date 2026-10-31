@@ -68,6 +68,12 @@ fn poke(tree: &Tree, folder: &Path, writable: bool, files: &[PathBuf]) -> String
 }
 
 fn jail(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str, args: Vec<String>) -> std::process::Output {
+    jail_with(tree, folder, writable, cwd, program, args, paths::standard_protected(&tree.home, &tree.data), |p| std::fs::metadata(p).ok().map(|m| m.is_dir()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn jail_with(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str, args: Vec<String>,
+             protected: Vec<PathBuf>, is_dir: impl Fn(&Path) -> Option<bool>) -> std::process::Output {
     let (read, raw) = filter_pipe();
     let spec = JailSpec {
         program: program.into(),
@@ -77,7 +83,7 @@ fn jail(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str,
         private_home: tree.data.join("jail-homes/r/b"),
         folders: vec![Bind { source: folder.into(), target: folder.into(), writable }],
         read_only: vec!["/usr/local/bin".into()],
-        protected: paths::standard_protected(&tree.home, &tree.data),
+        protected,
         restored: vec![Bind { source: tree.data.join("attachments"), target: tree.data.join("attachments"), writable: false }],
         init: tree.init.clone(),
         path: "/usr/local/bin:/usr/bin:/bin".into(),
@@ -85,7 +91,7 @@ fn jail(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str,
         seccomp_fd: raw,
         control_fd: 0,
     };
-    let args = bwrap_args(&spec, &mounts(), |p| std::fs::metadata(p).ok().map(|m| m.is_dir())).unwrap();
+    let args = bwrap_args(&spec, &mounts(), is_dir).unwrap();
     let mut command = Command::new("bwrap");
     command.env_clear().args(args).envs(jail_env(&spec));
     unsafe {
@@ -185,4 +191,58 @@ fn a_folder_around_the_source_of_home_is_refused_and_hidden() {
     assert!(refused.is_err());
     assert!(hidden.contains(&source.home.join(".ssh")), "{hidden:?}");
     let _ = std::fs::remove_dir_all(&source.root);
+}
+
+#[test]
+fn a_second_view_of_a_mount_inside_a_protected_folder_is_refused_and_hidden() {
+    if !wanted() { return; }
+    let tree = tree("inner");
+    let keys = tree.home.join(".ssh/keys");
+    std::fs::create_dir(&keys).unwrap();
+    assert!(Command::new("mount").args(["-t", "tmpfs", "tmpfs"]).arg(&keys).status().unwrap().success());
+    std::fs::write(keys.join("key"), "secret").unwrap();
+    let alias = tree.project.join("alias");
+    mount(&keys, &alias);
+    let refused = paths::check_writable(&tree.project, &guard(&tree), &mounts());
+    let seen = poke(&tree, &tree.project, false, &[alias.join("key")]);
+    let visible = poke(&tree, &tree.project, false, &[tree.project.join("marker")]);
+    let kept = std::fs::read_to_string(keys.join("key")).unwrap();
+    unmount(&alias);
+    unmount(&keys);
+    assert!(refused.is_err());
+    assert_eq!(seen, "done\n");
+    assert_eq!(visible, "shown\ndone\n");
+    assert_eq!(kept, "secret");
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_project_that_is_its_own_mount_under_home_still_works() {
+    if !wanted() { return; }
+    let tree = tree("own");
+    let disk = tree.root.join("disk");
+    let code = tree.home.join("code");
+    mount(&disk_folder(&disk), &code);
+    let allowed = paths::check_writable(&code, &guard(&tree), &mounts());
+    unmount(&code);
+    assert_eq!(allowed, Ok(code));
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+fn disk_folder(path: &Path) -> PathBuf {
+    std::fs::create_dir_all(path).unwrap();
+    path.to_path_buf()
+}
+
+#[test]
+fn a_hide_that_can_not_be_placed_stops_the_launch() {
+    if !wanted() { return; }
+    let tree = tree("hide");
+    // A read-only bind can't take a new mount point, so this hide can't go in.
+    let mut protected = paths::standard_protected(&tree.home, &tree.data);
+    protected.push(tree.project.join("gone"));
+    let output = jail_with(&tree, &tree.project, false, tree.project.clone(), "/bin/echo", vec!["ran".into()], protected, |_| Some(true));
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("ran"));
+    let _ = std::fs::remove_dir_all(&tree.root);
 }

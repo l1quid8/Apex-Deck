@@ -118,29 +118,37 @@ impl Mounts {
         std::iter::once((folder.to_path_buf(), self.place(folder))).chain(nested).collect()
     }
 
-    /// Where `item` shows inside `folder`, under any name.
-    fn shows(&self, folder: &Path, item: &Path) -> Vec<PathBuf> {
-        let (dev, inner) = self.place(item);
-        self.views(folder).into_iter().filter(|(_, place)| place.0 == dev)
-            .filter_map(|(at, place)| Some(at.join(inner.strip_prefix(&place.1).ok()?)))
+    /// All the content inside a protected item: it and every filesystem mounted
+    /// below it. A view of one of those is the item's content under another name.
+    fn contents(&self, item: &Path) -> Vec<(String, PathBuf)> {
+        self.views(item).into_iter().map(|(_, place)| place).collect()
+    }
+
+    /// Where the content at `place` shows inside `folder`, under any name.
+    fn shows(&self, folder: &Path, place: &(String, PathBuf)) -> Vec<PathBuf> {
+        self.views(folder).into_iter().filter(|(_, view)| view.0 == place.0)
+            .filter_map(|(at, view)| Some(at.join(place.1.strip_prefix(&view.1).ok()?)))
             .collect()
     }
 
-    /// The parts of `folder` that are really content from inside `item`.
-    fn pieces_of(&self, folder: &Path, item: &Path) -> Vec<PathBuf> {
-        let (dev, inner) = self.place(item);
+    /// The parts of `folder` that are really content from inside `place`.
+    fn pieces_of(&self, folder: &Path, place: &(String, PathBuf)) -> Vec<PathBuf> {
         self.views(folder).into_iter()
-            .filter(|(_, place)| place.0 == dev && place.1.starts_with(&inner))
+            .filter(|(_, view)| view.0 == place.0 && view.1.starts_with(&place.1))
             .map(|(at, _)| at).collect()
     }
 }
 
 /// True when a jailed bot must not write to the resolved folder `real`.
 fn unsafe_to_write(real: &Path, guard: &Guard, mounts: &Mounts) -> bool {
-    let holds = |item: &Path| contains(real, item) || !mounts.shows(real, item).is_empty();
+    // Home and PATH folders count only their own content: a project that is
+    // its own mount under home isn't home.
+    let holds = |item: &Path| contains(real, item) || !mounts.shows(real, &mounts.place(item)).is_empty();
     real == Path::new("/") || holds(&resolved(&guard.home))
         || guard.protected.iter().map(|item| resolved(item)).any(|item| {
-            holds(&item) || contains(&item, real) || !mounts.pieces_of(real, &item).is_empty()
+            contains(real, &item) || contains(&item, real) || mounts.contents(&item).iter().any(|place| {
+                !mounts.shows(real, place).is_empty() || !mounts.pieces_of(real, place).is_empty()
+            })
         })
         || guard.path_dirs.iter().chain(&guard.executables).any(|item| holds(&resolved(item)))
 }
@@ -158,14 +166,20 @@ pub fn hidden_in(folder: &Path, protected: &[PathBuf], mounts: &Mounts) -> Resul
     let mut out = Vec::new();
     for item in protected {
         let item = resolved(item);
-        let pieces = mounts.pieces_of(&real, &item);
-        if pieces.contains(&real) || contains(&item, &real) {
+        if contains(&item, &real) {
             return Err(Refused(real));
         }
-        out.extend(mounts.shows(&real, &item).into_iter().chain(pieces));
+        for place in mounts.contents(&item) {
+            let pieces = mounts.pieces_of(&real, &place);
+            if pieces.contains(&real) {
+                return Err(Refused(real));
+            }
+            out.extend(mounts.shows(&real, &place).into_iter().chain(pieces));
+        }
     }
+    // Sorted paths keep a folder's contents straight after it, and hiding it hides them.
     out.sort();
-    out.dedup();
+    out.dedup_by(|item, kept| item.starts_with(&*kept));
     Ok(out)
 }
 
@@ -246,7 +260,7 @@ mod tests {
         let table = table(&["30 21 8:2 /me /alt rw - ext4 /dev/sda2 rw"]);
         let hidden = hidden_in(Path::new("/alt"), &protected(), &table).unwrap();
         assert!(hidden.contains(&PathBuf::from("/alt/.ssh")), "{hidden:?}");
-        assert!(hidden.contains(&PathBuf::from("/alt/.local/share/apex")));
+        assert!(hidden.contains(&PathBuf::from("/alt/.local")), "holds the data folder");
         assert!(unsafe_to_write(Path::new("/alt"), &guard(), &table));
     }
 
@@ -273,6 +287,54 @@ mod tests {
         let line = "30 22 8:2 /me/.ssh/keys /fake/me/work/app/keys rw - ext4 /dev/sda2 rw";
         let project = Path::new("/fake/me/work/app");
         assert_eq!(hidden_in(project, &protected(), &table(&[line])).unwrap(), [project.join("keys")]);
+    }
+
+    /// `~/.ssh/keys` is its own filesystem, so the home's disk says nothing about it.
+    const INNER: &str = "30 22 0:60 / /fake/me/.ssh/keys rw - tmpfs t rw";
+
+    #[test]
+    fn a_second_view_of_a_mount_inside_a_protected_folder_is_caught() {
+        let project = Path::new("/fake/me/work/app");
+        let table = table(&[INNER, "31 22 0:60 / /fake/me/work/app/alias rw - tmpfs t rw"]);
+        assert_eq!(hidden_in(project, &protected(), &table).unwrap(), [project.join("alias")]);
+        assert!(unsafe_to_write(project, &guard(), &table));
+    }
+
+    #[test]
+    fn a_folder_of_such_a_mount_shown_inside_is_caught() {
+        let project = Path::new("/fake/me/work/app");
+        let table = table(&[INNER, "31 22 0:60 /sub /fake/me/work/app/alias rw - tmpfs t rw"]);
+        assert_eq!(hidden_in(project, &protected(), &table).unwrap(), [project.join("alias")]);
+        assert!(unsafe_to_write(project, &guard(), &table));
+    }
+
+    #[test]
+    fn a_folder_around_a_view_of_such_a_mount_is_caught() {
+        // The keys are only a part of /mnt/disk, which is on no protected path.
+        let table = table(&["30 22 0:60 /sub /fake/me/.ssh/keys rw - tmpfs t rw", "31 21 0:60 / /mnt/disk rw - tmpfs t rw"]);
+        assert_eq!(hidden_in(Path::new("/mnt/disk"), &protected(), &table).unwrap(), [PathBuf::from("/mnt/disk/sub")]);
+        assert!(unsafe_to_write(Path::new("/mnt/disk"), &guard(), &table));
+    }
+
+    #[test]
+    fn a_view_of_such_a_mount_can_not_be_a_read_folder() {
+        let table = table(&[INNER, "31 21 0:60 / /alt rw - tmpfs t rw"]);
+        assert!(hidden_in(Path::new("/alt"), &protected(), &table).is_err());
+    }
+
+    #[test]
+    fn a_hide_inside_another_hide_is_dropped() {
+        let table = table(&[INNER]);
+        let hidden = hidden_in(Path::new("/fake/me"), &protected(), &table).unwrap();
+        assert!(hidden.contains(&PathBuf::from("/fake/me/.ssh")));
+        assert!(!hidden.contains(&PathBuf::from("/fake/me/.ssh/keys")), "{hidden:?}");
+    }
+
+    #[test]
+    fn a_project_that_is_its_own_mount_under_home_is_fine() {
+        // Only protected folders count their inner mounts: home's would refuse this.
+        let table = table(&["30 22 8:3 / /fake/me/code rw - ext4 /dev/sda3 rw"]);
+        assert!(!unsafe_to_write(Path::new("/fake/me/code"), &guard(), &table));
     }
 
     #[test]

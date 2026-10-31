@@ -205,7 +205,7 @@ mod tests {
         let args = strings(&bwrap_args(&spec, &none(), |p| Some(p != Path::new("/fake/me/.claude.json"))).unwrap());
         let project = args.windows(3).position(|w| w == ["--ro-bind", "/fake/me", "/fake/me"]).unwrap();
         let ssh = args.windows(2).position(|w| w == ["--tmpfs", "/fake/me/.ssh"]).expect("hidden");
-        let data = args.windows(2).position(|w| w == ["--tmpfs", "/fake/me/.local/share/apex"]).expect("hidden");
+        let data = args.windows(2).position(|w| w == ["--tmpfs", "/fake/me/.local"]).expect("holds the data folder");
         assert!(project < ssh && project < data);
         assert!(args.windows(3).any(|w| w == ["--ro-bind", "/dev/null", "/fake/me/.claude.json"]));
     }
@@ -233,7 +233,7 @@ mod tests {
         let mut spec = spec();
         spec.folders = vec![Bind { source: "/fake/me".into(), target: "/fake/me".into(), writable: false }];
         let args = strings(&bwrap_args(&spec, &none(), all_dirs).unwrap());
-        let hide = args.windows(2).position(|w| w == ["--tmpfs", "/fake/me/.local/share/apex"]).unwrap();
+        let hide = args.windows(2).position(|w| w == ["--tmpfs", "/fake/me/.local"]).unwrap();
         let back = position(&args, "/fake/me/.local/share/apex/attachments").unwrap();
         assert!(hide < back);
     }
