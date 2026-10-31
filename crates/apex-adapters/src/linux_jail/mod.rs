@@ -11,6 +11,7 @@ pub mod init;
 pub mod launch;
 pub mod paths;
 pub mod proxy;
+pub mod refresh;
 pub mod seccomp;
 
 use std::ffi::OsString;

@@ -272,15 +272,20 @@ protected path.
   and send a Full bot's work to another account. Nothing a bot writes can prove who a token
   belongs to, so nothing comes back.
 - **Refreshing is the daemon's job, outside the jail.** A server with only jailed bots has
-  nobody else to do it. Before staging a login that's close to expiry, the daemon runs the
-  provider's own CLI as the person, in an empty scratch folder: Codex's app-server
-  `account/read` with `refreshToken: true`, and for Claude and Gemini the command the
-  signed-in test shows works. A bot can't reach those binaries or that login. Changing folder
-  alone doesn't make that run safe, because the CLI still loads the person's settings, so it
-  runs on Deck's own minimal settings with a cleared, allowlisted environment, and loads no
-  hooks, plugins or MCP servers. A failed refresh refuses the launch with the refresh message.
-  Task 4 isn't finished until a refresh runs by itself. A live session whose access token
-  runs out is restarted on a newly staged login.
+  nobody else to do it. Before staging a login a launch would refuse, the daemon runs the
+  provider's own CLI as the person: Claude's `auth status --json`, and Codex's app-server
+  `account/read` with `refreshToken: true`. It works on a scratch copy of the login in
+  `login-refresh/<provider>` under the hidden data folder, with `HOME`, `CLAUDE_CONFIG_DIR` and
+  `CODEX_HOME` all pointing there. That folder holds Deck's minimal settings, so the person's
+  `apiKeyHelper`, hooks, plugins and MCP servers never load, and the environment is cleared to
+  a short allowlist. Both CLIs replace the refresh token each time, so a run can't be thrown
+  away: the new login is saved whole, only if a launch would accept it and the host's file
+  hasn't changed since the copy. If it has, the other writer's login stays. Refreshes run one
+  at a time, and the scratch folder is removed afterwards. A failed refresh refuses the launch
+  with the refresh message. Gemini has no proven command yet, and its logins last about an
+  hour, so Gemini bots are refused once under 20 minutes until Task 5 settles one. Grok and
+  Muse are the same. A live session whose access token runs out is restarted on a newly staged
+  login.
 - **The home is hostile to the daemon.** A jail can write it, so the daemon opens every path
   in it one name at a time with `O_NOFOLLOW`, reads only ordinary files, replaces anything
   in the way of a generated file, and rewrites every generated file at each launch. A mount
@@ -691,7 +696,7 @@ Signed-in turn, 2026-10-30: Claude and Codex each logged in fresh inside a throw
 and wrote their file from inside the jail (`signed-in.sh`, run with the Human, result checked
 by Null). That run used an empty home and the spike's filter.
 
-Still unproven: a signed-in turn on an access-only Claude login, and the daemon's refresh; Grok, Muse and Antigravity; x86_64, so the x32 rule hasn't run;
+Proven on 2026-10-30 in Docker on arm64, with real sign-ins: Claude and Codex turns on access-only logins with the host login unchanged, and the daemon's unprompted refresh followed by a real turn on each. Still unproven: refresh and turns for Gemini, Grok, Muse and Antigravity; x86_64, so the x32 rule hasn't run;
 unprivileged containers and Ubuntu 24.04 AppArmor. The spike home is empty, not a generated
 one from the allowlist. Gemini needs Node 20 or newer.
 

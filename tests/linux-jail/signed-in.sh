@@ -5,6 +5,8 @@
 #   signed-in.sh test    runs the turns, once Claude and Codex are signed in
 #   signed-in.sh refresh shows which host commands refresh each login, outside the jail
 #   signed-in.sh stop    deletes the server and every login on it
+# The server stops itself after an hour with its logins intact: `docker start jail-home`
+# brings it back. `start` replaces it, so that needs new sign-ins.
 # Sign in on the server as `tester`, so nothing is copied from this Mac:
 #   docker exec -it -u tester jail-home claude auth login
 #   docker exec -it -u tester jail-home codex login --device-auth

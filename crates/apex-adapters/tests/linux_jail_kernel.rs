@@ -3,7 +3,7 @@
 //! see tests/linux-jail/run.sh.
 #![cfg(target_os = "linux")]
 
-use apex_adapters::linux_jail::{channel, home, launch, paths, proxy, Bind, JailSpec, HOOK_PORT, PROXY_PORT};
+use apex_adapters::linux_jail::{channel, home, launch, paths, proxy, refresh, Bind, JailSpec, HOOK_PORT, PROXY_PORT};
 use apex_core::{AgentTool, Backend};
 use apex_adapters::{OwnedProcessChild as OwnedChild, OwnedProcessRegistry as Registry};
 use std::path::{Path, PathBuf};
@@ -532,4 +532,53 @@ fn signed_in_turns_run_on_access_only_logins() {
         assert_eq!(std::fs::read(user.join(login)).unwrap(), host, "{login} changed on the host");
     }
     println!("SIGNED-IN TURNS PASSED");
+}
+
+/// Makes a real login look nearly expired, leaving its refresh token alone.
+fn nearly_expired(path: &Path, tool: AgentTool) {
+    use base64::Engine;
+    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let soon = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 60;
+    match tool {
+        AgentTool::ClaudeCode => doc["claudeAiOauth"]["expiresAt"] = (soon * 1000).into(),
+        _ => {
+            let claims = serde_json::json!({"exp": soon}).to_string();
+            doc["tokens"]["access_token"] = format!("x.{}.y", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims)).into();
+        }
+    }
+    std::fs::write(path, doc.to_string()).unwrap();
+}
+
+/// Run by tests/linux-jail/signed-in.sh. Nobody prompts this refresh: the daemon
+/// sees a login a launch would refuse, renews it outside the jail, and a real
+/// turn then works on the new one.
+#[test]
+fn signed_in_turns_survive_a_refresh_by_the_daemon() {
+    if std::env::var_os("APEX_JAIL_SIGNED_IN").is_none() { return; }
+    let user = PathBuf::from(std::env::var_os("HOME").unwrap());
+    let data = user.join(".local/share/apex");
+    let project = user.join("proj");
+    std::fs::create_dir_all(data.join("attachments")).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let tree = Tree { root: user.clone(), home: user.clone(), data, project: project.clone() };
+    let values = values(&project, &user);
+    let ask = "Run this exact shell command, then reply with only the word finished: echo refreshed > ";
+    let claude = vec!["-p".to_string(), format!("{ask}claude-after.txt"), "--permission-mode".into(), "acceptEdits".into(), "--allowedTools".into(), "Bash".into()];
+    let codex = vec!["exec".to_string(), "--skip-git-repo-check".into(), "--sandbox".into(), "workspace-write".into(), format!("{ask}codex-after.txt")];
+    let runs = [(AgentTool::ClaudeCode, "/usr/local/bin/claude", claude, ".claude/.credentials.json", "claude-after.txt"),
+        (AgentTool::Codex, "/usr/local/bin/codex", codex, ".codex/auth.json", "codex-after.txt")];
+    for (tool, program, args, login, file) in runs {
+        let _ = std::fs::remove_file(project.join(file));
+        nearly_expired(&user.join(login), tool);
+        let stale = home::prepare(&tree.data, "r", file, &agent(tool), &values).unwrap_err();
+        assert!(stale.to_string().contains("needs refreshing"), "{stale}");
+        let before = std::fs::read(user.join(login)).unwrap();
+        Runtime::new().unwrap().block_on(refresh::ensure(&Registry::default(), &tree.data, tool, &values.host, Path::new(program),
+            std::ffi::OsStr::new("/usr/local/bin:/usr/bin:/bin"))).unwrap();
+        assert_ne!(std::fs::read(user.join(login)).unwrap(), before, "{login} wasn't renewed");
+        let made = home::prepare(&tree.data, "r", file, &agent(tool), &values).unwrap();
+        turn(&tree, &made, program, args);
+        assert_eq!(std::fs::read_to_string(project.join(file)).unwrap().trim(), "refreshed", "{file}");
+    }
+    println!("REFRESH PASSED");
 }

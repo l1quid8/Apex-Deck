@@ -287,7 +287,7 @@ fn now() -> u64 {
 
 /// Claude's file is `{"claudeAiOauth": {...}}` beside MCP tokens: only the login
 /// goes in, without `refreshToken`, and it must outlive the same 20 minutes as the others.
-fn claude_access(input: &[u8], now: u64) -> Result<Vec<u8>, apex_core::ParticipantError> {
+pub(super) fn claude_access(input: &[u8], now: u64) -> Result<Vec<u8>, apex_core::ParticipantError> {
     let refresh = || apex_core::ParticipantError::Failed("Claude’s connection needs refreshing. Refresh its sign-in in Claude, then retry. Apex Deck has not changed the login.".into());
     let doc: Value = serde_json::from_slice(input).map_err(|_| refresh())?;
     let login = &doc["claudeAiOauth"];
