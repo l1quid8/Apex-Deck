@@ -19,6 +19,7 @@ try {
   $nodeLiteral=$node.Replace("'","''")
   $smokeLiteral=$smoke.Replace("'","''")
   $daemonLiteral=$Daemon.Replace("'","''")
+  $helperLiteral=(Join-Path (Split-Path $Daemon) 'apex-provenance.exe').Replace("'","''")
   @"
 `$env:TEMP=`$PSScriptRoot
 `$env:TMP=`$PSScriptRoot
@@ -32,6 +33,15 @@ try {
 } catch {
   if (`$_.Exception.InnerException -isnot [UnauthorizedAccessException]) { Write-Output `$_; exit 10 }
 }
+`$held=Start-Process -FilePath ping.exe -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
+& '$helperLiteral' protect-process `$held.Id
+if (`$LASTEXITCODE -ne 0) { Write-Output 'protect-process failed'; exit 11 }
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ApexProbe { [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid); }'
+foreach (`$access in 0x20,0x2,0x40000) {
+  if ([ApexProbe]::OpenProcess(`$access,`$false,`$held.Id) -ne [IntPtr]::Zero) { Write-Output "a standard user opened a protected process with `$access"; exit 12 }
+}
+if ([ApexProbe]::OpenProcess(0x100000,`$false,`$held.Id) -eq [IntPtr]::Zero) { Write-Output 'a protected process could not be waited on'; exit 13 }
+& taskkill.exe /PID `$held.Id /F | Out-Null
 exit 0
 "@ | Set-Content -Path $script -Encoding utf8
   $credential=[PSCredential]::new("$env:COMPUTERNAME\$name",$password)

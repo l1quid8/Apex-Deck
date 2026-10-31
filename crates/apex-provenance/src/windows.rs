@@ -719,22 +719,21 @@ mod tests {
     }
     #[test]
     #[ignore = "requires an elevated Windows token; run by installer CI"]
-    fn a_protected_process_refuses_its_own_user_and_reports_as_closed() {
+    fn a_protected_process_reports_as_closed() {
         let mut child = std::process::Command::new("ping")
             .args(["-n", "30", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let pid = child.id();
-        protect_process(pid).unwrap();
-        assert!(unsafe { OpenProcess(PROCESS_VM_WRITE, 0, pid) }.is_null());
-        assert!(unsafe { OpenProcess(WRITE_DAC, 0, pid) }.is_null());
-        assert!(unsafe { OpenProcess(PROCESS_CREATE_THREAD, 0, pid) }.is_null());
         let reader = unsafe { OpenProcess(READ_CONTROL, 0, pid) };
-        if !reader.is_null() {
-            let reader = unsafe { OwnedHandle::from_raw_handle(reader) };
-            assert!(process_closed(reader.as_raw_handle()).unwrap());
-        }
+        assert!(!reader.is_null());
+        let reader = unsafe { OwnedHandle::from_raw_handle(reader) };
+        assert!(!process_closed(reader.as_raw_handle()).unwrap());
+        protect_process(pid).unwrap();
+        // CI's elevated token ignores this list, so
+        // scripts/windows-authority-standard-user.ps1 proves it refuses a user.
+        assert!(process_closed(reader.as_raw_handle()).unwrap());
         child.kill().unwrap();
         child.wait().unwrap();
     }
