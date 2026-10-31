@@ -275,8 +275,12 @@ protected path.
   nobody else to do it. Before staging a login that's close to expiry, the daemon runs the
   provider's own CLI as the person, in an empty scratch folder: Codex's app-server
   `account/read` with `refreshToken: true`, and for Claude and Gemini the command the
-  signed-in test shows works. A bot can't reach those binaries or that login. A live session
-  whose access token runs out is restarted on a newly staged login.
+  signed-in test shows works. A bot can't reach those binaries or that login. Changing folder
+  alone doesn't make that run safe, because the CLI still loads the person's settings, so it
+  runs on Deck's own minimal settings with a cleared, allowlisted environment, and loads no
+  hooks, plugins or MCP servers. A failed refresh refuses the launch with the refresh message.
+  Task 4 isn't finished until a refresh runs by itself. A live session whose access token
+  runs out is restarted on a newly staged login.
 - **The home is hostile to the daemon.** A jail can write it, so the daemon opens every path
   in it one name at a time with `O_NOFOLLOW`, reads only ordinary files, replaces anything
   in the way of a generated file, and rewrites every generated file at each launch. A mount
