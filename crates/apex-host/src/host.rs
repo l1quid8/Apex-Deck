@@ -218,6 +218,11 @@ impl apex_core::TurnStartHook for StartCheckpoint {
     }
 }
 
+/// The `pty_spawn` agent that signs `tool` in.
+fn sign_in_key(tool: AgentTool) -> &'static str {
+    if matches!(tool, AgentTool::Codex) { "codex" } else { "claude" }
+}
+
 impl Host {
     /// Open the host's data in `paths.data`. Old snapshots are compacted on a
     /// background thread, and agents may read the attachments folder.
@@ -862,10 +867,15 @@ impl Host {
             .into_iter()
             .map(|p| {
                 let check = apex_adapters::chat_profile_ok(&p, path.as_deref());
+                let sign_in = match (&p.backend, &check) {
+                    (apex_core::Backend::Agent { tool, .. }, Ok(())) if agents::needs_sign_in(*tool) => Some(sign_in_key(*tool)),
+                    _ => None,
+                };
                 let p = crate::chat_bots::redacted(p);
-                match check {
-                    Ok(()) => serde_json::json!({ "profile": p, "chatOk": true, "reason": serde_json::Value::Null }),
-                    Err(reason) => serde_json::json!({ "profile": p, "chatOk": false, "reason": reason }),
+                match (check, sign_in) {
+                    (Ok(()), Some(key)) => serde_json::json!({ "profile": p, "chatOk": false, "reason": "Needs sign-in on this machine", "signIn": key }),
+                    (Ok(()), None) => serde_json::json!({ "profile": p, "chatOk": true, "reason": serde_json::Value::Null }),
+                    (Err(reason), _) => serde_json::json!({ "profile": p, "chatOk": false, "reason": reason }),
                 }
             })
             .collect();

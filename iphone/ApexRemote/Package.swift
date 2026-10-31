@@ -6,12 +6,12 @@ import PackageDescription
 // and stays out of git.
 let package = Package(
     name: "ApexRemote",
-    platforms: [.iOS(.v15)],
+    platforms: [.iOS(.v17)],
     products: [.library(name: "ApexRemote", targets: ["ApexRemote"])],
-    dependencies: [.package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.2")],
+    dependencies: [.package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.2"), .package(url: "https://github.com/orlandos-nl/Citadel", exact: "0.12.1")],
     targets: [
         .binaryTarget(name: "ApexRemoteFFI", path: "ApexRemote.xcframework"),
-        .target(name: "ApexRemote", dependencies: ["ApexRemoteFFI", .product(name: "Capacitor", package: "capacitor-swift-pm")],
+        .target(name: "ApexRemote", dependencies: ["ApexRemoteFFI", .product(name: "Capacitor", package: "capacitor-swift-pm"), .product(name: "Citadel", package: "Citadel")],
             linkerSettings: [.linkedFramework("Network"), .linkedFramework("Security"), .linkedFramework("SystemConfiguration"), .linkedLibrary("resolv")])
     ]
 )

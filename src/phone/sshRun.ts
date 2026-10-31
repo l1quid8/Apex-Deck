@@ -45,15 +45,14 @@ export interface SetupDeps {
   rememberKey(hostPort: string, fingerprint: string): void;
   /** Dial the link. `onCode` hears the code; it must resolve before the machine can approve. */
   pair(link: string, onCode: (code: string) => Promise<void>): { done: Promise<Paired>; cancel(): void };
-  /** Puts the machine in the saved list and resolves when it's stored. */
-  save(paired: Paired, label: string, os: string, tools: ToolMarks): void;
-  /** Keep with Face ID. */
+  /** Puts the machine in the saved list. */
+  save(paired: Paired, request: SshRequest, os: string): void;
+  /** Keep with Face ID. Runs before the wipe. */
   keep(request: SshRequest): Promise<void>;
   /** Where to find the release feed. Tests point this at a local server. */
   releases?: string;
 }
 
-export type ToolMarks = Partial<Record<"claude" | "codex", "signin" | "nobwrap" | "missing">>;
 
 const LINUX_ARCH: Record<string, string> = { x86_64: "x86_64", amd64: "x86_64", aarch64: "arm64", arm64: "arm64" };
 
@@ -225,19 +224,14 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     if (remote.code !== 0) throw new StepFailure("start", "Couldn't start Deck", tail(remote) || "Deck didn't answer on the server.");
 
     const tools = report((await ssh.exec(AI_TOOLS, { timeoutS: 300 })).stdout);
-    const marks: ToolMarks = {};
-    for (const tool of ["claude", "codex"] as const) {
-      if (tools[tool] !== "installed") marks[tool] = "missing";
-      else if (tools[`${tool}-login`] !== "yes") marks[tool] = "signin";
-    }
-    if (!bwrap && !marks.codex) marks.codex = "nobwrap";
-    if (!bwrap && marks.codex === "signin") marks.codex = "nobwrap";
-    const waiting = (Object.keys(marks) as (keyof ToolMarks)[]).map((tool) => tool[0].toUpperCase() + tool.slice(1));
-    step("tools", waiting.length ? `AI tools ready; ${waiting.join(" and ")} need${waiting.length === 1 ? "s" : ""} attention` : "AI tools ready");
+    const missing = ["claude", "codex"].filter((tool) => tools[tool] !== "installed");
+    const signIn = ["claude", "codex"].filter((tool) => tools[tool] === "installed" && tools[`${tool}-login`] !== "yes");
+    const named = (list: string[]) => list.map((tool) => tool[0].toUpperCase() + tool.slice(1)).join(" and ");
+    step("tools", [`AI tools ready`, signIn.length ? `${named(signIn)} need${signIn.length === 1 ? "s" : ""} sign-in` : "", missing.length ? `${named(missing)} couldn't be installed` : "", !bwrap && tools.codex === "installed" ? "Codex needs bubblewrap (admin)" : ""].filter(Boolean).join("; "));
 
     const made = await pairOverSsh(ssh, deps, (cancel) => { stopPair = cancel; });
     paired = true;
-    deps.save(made, request.label, "linux", marks);
+    deps.save(made, request, "linux");
     emit({ kind: "paired", name: made.name });
     emit({ kind: "step", id: "pair", text: `Paired and saved as ${request.label || made.name}` });
     if (request.keep) await deps.keep(request);

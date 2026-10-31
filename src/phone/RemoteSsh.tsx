@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Check, Lock, X } from "./icons";
-import { goodPort, MAX_KEY_BYTES, readKey, sshFormError, sshRequest, sshTarget, type SetupEvent, type SshForm, type SshKey, type SshSetup } from "./sshSetup";
+import { goodPort, MAX_KEY_BYTES, readKey, sshFormError, sshRequest, sshTarget, type SetupEvent, type SshForm, type SshKey } from "./sshSetup";
+import type { SetupRuns } from "./sshNative";
 
 const words = (error: unknown) => String(error).replace(/^Error: /, "");
 
@@ -9,18 +10,19 @@ interface Line { id: string; text: string; failed?: boolean }
 
 /**
  * Remote SSH on Add a machine: the form, then a list that runs by itself.
- * Secrets live in this component's state only, so leaving it drops them.
- * `setup` is null until this build can sign in over SSH; Connect then says so.
+ * The form's secrets live in this component's state; Connect hands a copy to
+ * the run, which wipes it. Leaving only detaches: the run keeps going above
+ * this screen, and coming back shows it again. `setup` is null where the app
+ * can't sign in over SSH (a browser); Connect then says so.
  */
-export function RemoteSsh({ setup, onCancel, onDone }: { setup: SshSetup | null; onCancel?: () => void; onDone(): void }) {
+export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null; onCancel?: () => void; onDone(): void }) {
   const [form, setForm] = useState<SshForm>({ label: "", host: "", user: "", port: "22", password: "", key: null, passphrase: "", keep: false });
   const [error, setError] = useState("");
   const [lines, setLines] = useState<Line[] | null>(null);
   const [paired, setPaired] = useState(false);
   const [end, setEnd] = useState<{ failed: boolean; message: string } | null>(null);
-  const run = useRef<{ cancel(): void } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
-  useEffect(() => () => run.current?.cancel(), []);
+  const heardRef = useRef<(event: SetupEvent) => void>(() => {});
 
   const target = sshTarget(form);
   const change = (next: Partial<SshForm>) => { setError(""); setForm({ ...form, ...next }); };
@@ -40,28 +42,35 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SshSetup | null;
   const heard = (event: SetupEvent) => {
     if (event.kind === "step") setLines((list) => [...(list ?? []).filter((line) => line.id !== event.id), { id: event.id, text: event.text }]);
     else if (event.kind === "paired") setPaired(true);
-    else if (event.kind === "done") { run.current = null; setEnd({ failed: false, message: event.message }); }
+    else if (event.kind === "done") setEnd({ failed: false, message: event.message });
     else {
-      run.current = null;
       setLines((list) => [...(list ?? []).filter((line) => line.id !== event.id), { id: event.id, text: event.label, failed: true }]);
       setEnd({ failed: true, message: event.message });
     }
   };
 
+  heardRef.current = heard;
+  useEffect(() => {
+    if (!setup?.current()) return undefined;
+    setLines([]);
+    return setup.watch((event) => heardRef.current(event));
+  }, [setup]);
+
   const connect = () => {
     const wrong = sshFormError(form);
     if (wrong) { setError(wrong); return; }
-    if (!setup) { setError("Remote SSH isn't in this build yet. Use a QR code for now."); return; }
+    if (!setup) { setError("Remote SSH needs the iPhone app. Use a QR code here."); return; }
     setError("");
     setLines([]);
     setPaired(false);
     setEnd(null);
-    run.current = setup(sshRequest(form), heard);
+    setup.start(sshRequest(form));
+    setup.watch((event) => heardRef.current(event));
   };
 
   if (lines) {
     const failed = end?.failed === true;
-    const name = form.label.trim() || target.host;
+    const name = form.label.trim() || target.host || "the server";
     const status = end?.message ?? (paired ? "Paired and saved. Safe to close now." : `Setting up ${name}… If this stops before pairing, nothing is added to this phone. Connect again and it picks up where it left off, never adding a second copy.`);
     return <>
       <div className="ph-list">
@@ -69,8 +78,9 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SshSetup | null;
       </div>
       <p className={`ph-sheet-text${failed ? " ph-red" : " ph-quiet"}`} role={failed ? "alert" : "status"}>{status}</p>
       {failed
-        ? <button type="button" className="primary ph-wide" onClick={() => setLines(null)}>Back</button>
-        : <button type="button" className="primary ph-wide" disabled={!paired} onClick={onDone}>Done</button>}
+        ? <button type="button" className="primary ph-wide" onClick={() => { setup?.clear(); setLines(null); }}>Back</button>
+        : <button type="button" className="primary ph-wide" disabled={!paired} onClick={() => { if (end) setup?.clear(); onDone(); }}>Done</button>}
+      {!paired && !end && <button type="button" className="ph-plain ph-wide" onClick={() => setup?.cancel()}>Stop setup</button>}
     </>;
   }
 

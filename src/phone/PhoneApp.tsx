@@ -70,6 +70,8 @@ import { remotePlugin, type Route } from "./remotePlugin";
 import { clearRemoteMode, defaultAddHow, PAIR_MACHINE_HINT, startAutomatic, whenAutomatic } from "./automatic";
 import { AddHowPicker } from "./AddHow";
 import { RemoteSsh } from "./RemoteSsh";
+import { setupRuns, signInId, sshPlugin, type SetupRuns } from "./sshNative";
+import type { SetupDeps } from "./sshRun";
 import { PairSheet } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
@@ -94,7 +96,7 @@ import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedPr
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
-import { identityFor, parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
+import { identityFor, parsePairingLink, scansAtLaunch, startPairing, withPairedMachine, type Paired } from "./pairing";
 import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, takeScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
 import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
@@ -270,6 +272,12 @@ function usePillPress() {
   };
 }
 
+/** Each SSH server's key as this phone first saw it. Public, so it needn't be secret. */
+const SERVER_KEYS = "apex.phone.serverKeys";
+const readServerKeys = (): Record<string, string> => {
+  try { return JSON.parse(localStorage.getItem(SERVER_KEYS) ?? "{}") as Record<string, string>; } catch { return {}; }
+};
+
 export function PhoneApp() {
   const [appearance, setAppearance] = useState<AppearanceState>(() => {
     try { return loadPhoneAppearance(localStorage); } catch { return defaultAppearanceSettings(); }
@@ -306,6 +314,35 @@ export function PhoneApp() {
     automaticReady.current = startAutomatic(plugin);
   }
   const ready = automaticReady.current;
+  const ssh = useMemo(() => sshPlugin(), []);
+  /** Add a machine over SSH. Lives here so the run outlasts the sheet it started in. */
+  const sshRuns = useMemo<SetupRuns | null>(() => (ssh && plugin ? setupRuns((): SetupDeps => ({
+    connect: (request, known) => ssh.connect(request, known),
+    knownKey: (hostPort) => readServerKeys()[hostPort] ?? null,
+    rememberKey: (hostPort, fingerprint) => { try { localStorage.setItem(SERVER_KEYS, JSON.stringify({ ...readServerKeys(), [hostPort]: fingerprint })); } catch { /* the next connect trusts it again */ } },
+    pair(link, onCode) {
+      let settle: { resolve(paired: Paired): void; reject(error: Error): void };
+      const done = new Promise<Paired>((resolve, reject) => { settle = { resolve, reject }; });
+      let attempt: { cancel(): void } | null = null;
+      let stopped = false;
+      ready.then(() => {
+        if (stopped) return;
+        attempt = startPairing(plugin, link, "iPhone", (state) => {
+          if (state.kind === "code") onCode(state.code).catch((error: Error) => { attempt?.cancel(); settle.reject(error); });
+          else if (state.kind === "done") settle.resolve(state.paired);
+          else if (state.kind === "failed") settle.reject(new Error(state.message));
+        });
+      }, (error: Error) => settle.reject(error));
+      return { done, cancel() { stopped = true; attempt?.cancel(); settle.reject(new Error("Setup was stopped.")); } };
+    },
+    save(paired, request, os) {
+      setMachines((list) => {
+        const made: PairedMachine = { ...identityFor(list, { name: request.label || paired.name, host: paired.hostEndpointId, os }), transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now(), setup: { host: request.host, port: request.port, user: request.user, kept: request.keep } };
+        try { return withPairedMachine(list, made); } catch (error) { setNotice(words(error)); return list; }
+      });
+    },
+    keep: (request) => ssh.keep(signInId(request), request),
+  })) : null), [ssh, plugin, ready]);
   /** Direct or Relayed for each QR-paired machine that's connected. */
   const [routes, setRoutes] = useState<Record<string, Route | null>>({});
   /** The newest saved list, for addresses learned after a connection opened. */
@@ -868,6 +905,17 @@ export function PhoneApp() {
   }, [chatHostsKey, openId === null]);
   const machineIds = machines.map((machine) => machine.id).join("\n");
   useEffect(() => { setCatalog((current) => withoutHosts(current, machineIds ? machineIds.split("\n") : [])); }, [machineIds]);
+  /** A tool signs itself in the first time it runs, so the sign-in happens in a terminal on that machine. */
+  async function signInOn(hostId: string, agent: string) {
+    const host = phoneHost(hostId);
+    if (!host) return;
+    try {
+      await host.backend.ptySpawn({ id: `signin-${crypto.randomUUID()}`, agent, name: "Sign in", cols: 80, rows: 24 });
+      setChatSheet(null);
+      setTab("code");
+    } catch (error) { setNotice(words(error)); }
+  }
+
   async function chatProfilesOn(hostId: string): Promise<ChatProfile[]> {
     const host = phoneHost(hostId);
     if (!host) throw new Error("That machine isn't paired with this phone.");
@@ -2349,6 +2397,17 @@ export function PhoneApp() {
             routes={routes}
             covered={covered}
             pairing={plugin !== null}
+            setup={sshRuns}
+            onRepair={async (machine) => {
+              const setup = machine.setup!;
+              const saved = await ssh!.saved(signInId(setup));
+              sshRuns!.clear();
+              sshRuns!.start({ label: machine.name, host: setup.host, port: setup.port, user: setup.user, keep: true, ...saved });
+            }}
+            onForgetSignIn={(machine) => {
+              void ssh?.forget(signInId(machine.setup!)).catch(() => {});
+              setMachines((list) => list.map((item) => (item.id === machine.id && isPaired(item) && item.setup ? { ...item, setup: { ...item.setup, kept: false } } : item)));
+            }}
             scan={scanner ? scanner.scan : null}
             autoScan={scanAtLaunch}
             onAutoScan={() => setScanAtLaunch(false)}
@@ -2364,7 +2423,12 @@ export function PhoneApp() {
             confirm={confirmUnpair}
             onAdd={(machine) => { setMachines((list) => addMachine(list, machine)); setNotice(`Pairing ${machine.name.trim()}…`); }}
             onEdit={(id, machine) => { setMachines(editMachine(machines, id, machine)); setNotice(`Saved ${machine.name.trim()}. Reconnecting…`); }}
-            onUnpair={(id) => { setMachines((list) => removeMachine(list, id)); setConfirmUnpair(null); }}
+            onUnpair={(id) => {
+              const gone = machines.find((machine) => machine.id === id);
+              if (gone && isPaired(gone) && gone.setup?.kept) void ssh?.forget(signInId(gone.setup)).catch(() => {});
+              setMachines((list) => removeMachine(list, id));
+              setConfirmUnpair(null);
+            }}
             onConfirm={setConfirmUnpair}
             onRetry={(id) => phoneHost(id)?.connection.retryNow()}
             onError={setNotice}
@@ -2685,7 +2749,7 @@ export function PhoneApp() {
           <Sheet title="New chat" onClose={() => setChatSheet(null)}>
             <NewChatBody machines={chatMachines} start={newChatStart(catalog, chatMachines, (hostId) => chatProfiles.current.get(hostId)) ?? (catalog.last ? { hostId: catalog.last.hostId, picked: catalog.last.profiles } : null)}
               saved={(hostId) => catalog.last?.hostId === hostId ? catalog.last.profiles : []}
-              machineIcon={machineIcon} loadProfiles={chatProfilesOn} onStart={startChat} />
+              machineIcon={machineIcon} loadProfiles={chatProfilesOn} onStart={startChat} onSignIn={signInOn} />
           </Sheet>
         )}
         {chatSheet?.kind === "menu" && sheetChat && (
@@ -3620,11 +3684,16 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 /** How a new machine is reached: its QR code, or an address and token typed in. */
 type AddHow = "qr" | "ssh" | "address";
 
-function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
+function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, setup, onRepair, onForgetSignIn, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
   /** The native plugin can pair from a QR code. */
   pairing: boolean;
   /** The camera scanner, when there is one. */
+  /** Runs Add a machine's SSH setup. Null outside the iPhone app. */
+  setup: SetupRuns | null;
+  /** Face ID, then the same setup again with the kept sign-in. */
+  onRepair(machine: PairedMachine): Promise<void>;
+  onForgetSignIn(machine: PairedMachine): void;
   scan: (() => Promise<string>) | null;
   /** Open the camera now, as the first thing: no machine is saved yet. */
   autoScan: boolean;
@@ -3715,7 +3784,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
             <h3>{machineIcon(machine.id, 18)} {machine.name}</h3>
             <p className="ph-muted"><i className={`ph-dot${link?.status === "online" ? " on" : link?.status === "offline" ? " off" : ""}`} />{state} · paired with this phone</p>
             {link && link.status !== "online" && link.status !== "connecting" && <p className={link.problem ? "ph-red" : "ph-muted"}>{downLine(link)}</p>}
-            <p className="ph-path">{paired ? `Paired by QR code · ${machine.hostEndpointId.slice(0, 12)}…` : machine.url}{machine.kind === "server" ? ` · id ${machine.id}` : ""}</p>
+            <p className="ph-path">{paired ? `${machine.setup ? "Set up over SSH" : "Paired by QR code"} · ${machine.hostEndpointId.slice(0, 12)}…` : machine.url}{machine.kind === "server" ? ` · id ${machine.id}` : ""}</p>
             {link && link.status === "offline" && !link.problem && <button type="button" className="ph-wide" onClick={() => onRetry(machine.id)}>Retry now</button>}
             {confirm === machine.id
               ? <>
@@ -3725,6 +3794,10 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
               </>
               : <>
                 <button type="button" className="ph-wide" onClick={() => { setEdit({ name: machine.name, url: paired ? "" : machine.url, token: "", kind: machine.kind, id: machine.kind === "server" ? machine.id : "" }); setEditing(machine.id); onConfirm(null); }}>Edit…</button>
+                {paired && machine.setup?.kept && <>
+                  <button type="button" className="ph-wide" onClick={() => { onRepair(machine).then(() => { setHow("ssh"); setAdding(true); }, (error: unknown) => onError(words(error))); }}>Repair with saved sign-in…</button>
+                  <button type="button" className="ph-plain ph-wide" onClick={() => onForgetSignIn(machine)}>Forget saved sign-in</button>
+                </>}
                 <button type="button" className="ph-plain ph-wide" onClick={() => onConfirm(machine.id)}>Unpair…</button>
               </>}
           </div>
@@ -3737,7 +3810,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           <img className="ph-logo-wide" src="/branding/logo-horizontal.svg" alt="Apex Deck" width="160" height="40" />
           <h3>Add a machine</h3>
           <AddHowPicker pairing={pairing} how={how} onHow={setHow} />
-          <RemoteSsh setup={null} onCancel={machines.length > 0 ? () => setAdding(false) : undefined} onDone={() => setAdding(false)} />
+          <RemoteSsh setup={setup} onCancel={machines.length > 0 ? () => setAdding(false) : undefined} onDone={() => setAdding(false)} />
         </div>
       )}
       {adding && how !== "ssh" && (

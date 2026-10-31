@@ -20,6 +20,8 @@ export interface PairingPreview {
   addrs: string[];
   /** Seconds since 1970 when the code stops working. */
   exp: number;
+  /** `linux`, `macos` or `windows`. Blank from a machine older than 0.9.8. */
+  os: string;
 }
 
 function base64url(text: string): string {
@@ -42,12 +44,12 @@ export function parsePairingLink(text: string, nowS = Date.now() / 1000): Pairin
     throw new Error(NOT_OURS);
   }
   if (!wire || typeof wire !== "object" || wire.v !== 1 || wire.relay !== RELAY) throw new Error(NOT_OURS);
-  const { name, host, addrs, exp, inv, secret } = wire;
+  const { name, host, addrs, exp, inv, secret, os } = wire;
   if (typeof host !== "string" || !/^[0-9a-f]{64}$/.test(host)) throw new Error(NOT_OURS);
   if (typeof name !== "string" || typeof exp !== "number" || typeof inv !== "string" || typeof secret !== "string") throw new Error(NOT_OURS);
   if (!Array.isArray(addrs) || !addrs.every((addr) => typeof addr === "string")) throw new Error(NOT_OURS);
   if (nowS > exp + SKEW_S) throw new Error("This code has expired. Press Pair phone on the machine for a new one.");
-  return { name, host, addrs, exp };
+  return { name, host, addrs, exp, os: typeof os === "string" ? os : "" };
 }
 
 /** What the machine sent once you pressed Approve on it. */
@@ -141,14 +143,14 @@ export function scansAtLaunch(machineCount: number, canScan: boolean): boolean {
 }
 
 /**
- * Who a machine is when it's added from a code, which names it and nothing
- * else. The first machine is the phone's Mac, the rest are servers with an id
- * from their endpoint. Two machines may share a name, so a later one takes a
+ * Who a machine is when it's added from a code. A Linux machine is always a
+ * server with an id from its endpoint; otherwise the first machine is the
+ * phone's Mac and the rest are servers. An older machine's code gives no system. Two machines may share a name, so a later one takes a
  * number. Only this same machine's own entry doesn't count as taking the name:
  * a matching name doesn't prove another entry is this machine, so it stays.
  */
-export function identityFor(list: Machine[], preview: PairingPreview): { kind: MachineKind; id: string; name: string } {
-  const kind: MachineKind = list.some((machine) => machine.kind === "mac") ? "server" : "mac";
+export function identityFor(list: Machine[], preview: Pick<PairingPreview, "name" | "host" | "os">): { kind: MachineKind; id: string; name: string } {
+  const kind: MachineKind = preview.os === "linux" || list.some((machine) => machine.kind === "mac") ? "server" : "mac";
   const others = list.filter((machine) => !isPaired(machine) || machine.hostEndpointId !== preview.host);
   const taken = (name: string) => others.some((machine) => machine.name.trim().toLowerCase() === name.trim().toLowerCase());
   let name = preview.name;
@@ -168,7 +170,7 @@ export function identityFor(list: Machine[], preview: PairingPreview): { kind: M
  */
 export function withPairedMachine(list: Machine[], made: PairedMachine): Machine[] {
   const same = list.findIndex((machine) => isPaired(machine) && machine.hostEndpointId === made.hostEndpointId);
-  if (same >= 0) return list.map((machine, at) => (at === same ? { ...withHints(machine as PairedMachine, made.addrs), pairedAt: made.pairedAt } : machine));
+  if (same >= 0) return list.map((machine, at) => (at === same ? { ...withHints(machine as PairedMachine, made.addrs), pairedAt: made.pairedAt, ...(made.setup ? { setup: made.setup } : {}) } : machine));
   const id = made.id.trim();
   const stale = list.findIndex((machine) => (made.kind === "mac" ? machine.kind === "mac" : !isPaired(machine) && machine.id === id));
   if (stale < 0) return addMachine(list, made);

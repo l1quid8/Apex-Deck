@@ -202,9 +202,6 @@ export interface SshRequest {
   keep: boolean;
 }
 
-/** Runs setup on the server and reports each step. `cancel` stops it at any point. */
-export type SshSetup = (request: SshRequest, onEvent: (event: SetupEvent) => void) => { cancel(): void };
-
 export function sshRequest(form: SshForm): SshRequest {
   const { host, port } = sshTarget(form);
   return { label: form.label.trim(), host, port: Number(port), user: form.user.trim(), password: form.password, key: form.key, passphrase: form.passphrase, keep: form.keep };

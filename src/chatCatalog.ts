@@ -30,7 +30,13 @@ export interface ChatCatalog {
   /** What New chat starts with: the last machine and the saved profiles last picked there. */
   last: { hostId: string; profiles: string[] } | null;
 }
-export interface ChatProfile { profile: ParticipantConfig; ok: boolean; reason: string | null }
+export interface ChatProfile {
+  profile: ParticipantConfig;
+  ok: boolean;
+  reason: string | null;
+  /** The terminal agent that signs this tool in, when that's all that stops it. */
+  signIn?: string;
+}
 
 export const CHAT_CATALOG_KEY = "apex-deck.phone.chats.v1";
 export const emptyCatalog = (): ChatCatalog => ({ version: 1, hosts: {}, last: null });
@@ -152,7 +158,7 @@ export function parseChatProfiles(raw: unknown): ChatProfile[] {
   if (!record(raw) || !Array.isArray(raw.profiles)) throw new Error("The machine sent a bot list this phone can't read.");
   return raw.profiles.flatMap((item) => {
     if (!record(item) || !record(item.profile) || typeof item.profile.id !== "string" || !item.profile.id) return [];
-    return [{ profile: item.profile as unknown as ParticipantConfig, ok: item.chatOk === true, reason: typeof item.reason === "string" ? item.reason : null }];
+    return [{ profile: item.profile as unknown as ParticipantConfig, ok: item.chatOk === true, reason: typeof item.reason === "string" ? item.reason : null, ...(typeof item.signIn === "string" ? { signIn: item.signIn } : {}) }];
   });
 }
 
