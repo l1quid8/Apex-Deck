@@ -542,7 +542,10 @@ impl Pool {
         }
         let user = user_path.as_deref().and_then(read_json);
         let project = project_path.as_deref().and_then(read_json);
-        let lookup = |name: &str| std::env::var(name).ok();
+        // Resolve `${NAME}` from Deck's saved keys first (Keychain or file),
+        // then the environment, so a key saved in Settings reaches MCP servers
+        // exactly like it reaches HTTP backends.
+        let lookup = |name: &str| crate::keys::lookup(name);
         let servers = from_config(user.as_ref(), project.as_ref(), &cwds, &lookup);
         *known = Some((stamp, servers.clone()));
         servers
@@ -580,6 +583,31 @@ mod tests {
         assert_eq!(expand("${MISSING:-x}/${TOKEN}", &env), "x/t0k");
         assert_eq!(expand("${MISSING}", &env), "${MISSING}");
         assert_eq!(expand("no vars", &env), "no vars");
+    }
+
+    #[test]
+    fn a_saved_key_reaches_the_spawned_server_when_the_environment_lacks_it() {
+        // A key Deck saved (Keychain/file) must expand into a server's env
+        // even when the process environment has nothing, like HTTP backends.
+        let dir = std::env::temp_dir().join(format!("apx-mcp-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::keys::use_file(&dir);
+        crate::keys::save("APEX_MCP_TEST_KEY", "sk-saved").unwrap();
+
+        let config = json!({ "mcpServers": {
+            "pomerado": { "command": "pomerado-mcp", "args": ["mint"], "env": { "OPENAI_API_KEY": "${APEX_MCP_TEST_KEY}" } }
+        }});
+        let servers = from_config(Some(&config), None, &[], &|name: &str| crate::keys::lookup(name));
+        let pomerado = servers.iter().find(|s| s.name == "pomerado").expect("pomerado is configured");
+        match &pomerado.transport {
+            Transport::Stdio { env: envs, .. } => {
+                assert!(envs.contains(&("OPENAI_API_KEY".into(), "sk-saved".into())), "saved key reaches the server: {envs:?}");
+            }
+            other => panic!("expected stdio transport, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -937,6 +937,88 @@ mod tests {
         assert!(cut.starts_with('a') && cut.ends_with('b') && cut.contains("characters cut"));
     }
 
+    /// LIVE verification: drives the real API-bot path (Turn + mcp_call) against
+    /// the real ~/.claude.json and the Keychain-saved OPENAI_API_KEY, minting a
+    /// fresh Pomerado job and polling it with get_job. Requires network + key.
+    /// Run by hand on a machine wired for Pomerado; it spends the API key.
+    #[tokio::test]
+    #[ignore = "live: needs network + saved key; run manually"]
+    async fn live_api_bot_calls_example_reader_and_polls_a_real_job() {
+        // Use the real key store: on macOS this is the login Keychain, which is
+        // where Deck saves OPENAI_API_KEY.
+        let data = std::env::temp_dir().join(format!("apx-live-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        crate::keys::use_folder(&data);
+        // Real HOME / ~/.claude.json (don't override), cwd = this project.
+        let dir = std::env::current_dir().unwrap();
+        let tools = ToolBox::new(&crate::BuildContext { cwd: Some(dir.clone()), ..Default::default() });
+        let progress = |_: Progress<'_>| {};
+        let yes = approver(Decision::Approve);
+        let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &yes, &progress);
+
+        // 1. API bot calls the minted integration server example_reader.
+        let reader = turn.run(&call("mcp_call", json!({
+            "server": "example_reader", "tool": "example_reader", "arguments": {"input": {}}
+        }))).await;
+        assert!(reader.contains("Example Domain"), "example_reader failed: {reader}");
+        let paragraphs = reader.matches("paragraphs").count();
+        assert!(paragraphs >= 1, "expected paragraph list in output: {reader}");
+        eprintln!("example_reader returned Example Domain and paragraphs");
+
+        // 2. API bot mints a fresh read-only job on the pomerado server.
+        let run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let integration_name = format!("example_reader_api_bot_verify_{run_id}");
+        let mint = turn.run(&call("mcp_call", json!({
+            "server": "pomerado",
+            "tool": "mint",
+            "arguments": {
+                "name": integration_name,
+                "url": "https://example.com",
+                "intent": "Read-only: extract title, h1 (null if absent), and all paragraphs. No writes.",
+                "effect": "read"
+            }
+        }))).await;
+        assert!(!mint.contains("declined"), "mint was declined: {mint}");
+        assert!(!mint.contains("error"), "mint failed: {mint}");
+        let job_id = mint
+            .lines()
+            .find_map(|l| serde_json::from_str::<Value>(l).ok())
+            .and_then(|v| v["job_id"].as_str().map(str::to_string))
+            .or_else(|| {
+                let start = mint.find("\"job_id\": \"")?;
+                let rest = &mint[start + "\"job_id\": \"".len()..];
+                rest.split('"').next().map(str::to_string)
+            })
+            .expect(&format!("no job_id in mint result: {mint}"));
+        assert!(!job_id.is_empty(), "empty job_id");
+        eprintln!("Pomerado job {job_id}, integration {integration_name}");
+
+        // 3. API bot polls the real job with get_job until it completes.
+        let mut status = String::new();
+        // Minting runs a model call + Chromium and can take a couple minutes.
+        for _ in 0..120 {
+            let poll = turn.run(&call("mcp_call", json!({
+                "server": "pomerado", "tool": "get_job", "arguments": {"job_id": job_id, "wait_seconds": 30}
+            }))).await;
+            assert!(!poll.contains("unknown job"), "get_job lost the job: {poll}");
+            assert!(!poll.contains("error"), "get_job failed: {poll}");
+            status = poll.clone();
+            eprintln!("get_job: {poll}");
+            let view: Value = serde_json::from_str(&poll)
+                .unwrap_or_else(|e| panic!("invalid get_job JSON: {e}: {poll}"));
+            assert_eq!(view["job_id"].as_str(), Some(job_id.as_str()));
+            assert_ne!(view["status"], "input_required", "mint needs human input: {poll}");
+            if view["status"] == "completed" {
+                assert_eq!(view["output"]["build"], "published", "{poll}");
+                break;
+            }
+        }
+        assert!(status.contains("completed"), "job did not complete; last status: {status}");
+        assert!(status.contains("published"), "job build not published: {status}");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
     #[tokio::test]
     async fn shell_tool_runs_in_request_cwd() {
         let dir_context = scratch("ctx");
