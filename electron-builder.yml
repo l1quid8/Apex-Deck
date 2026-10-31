@@ -3,6 +3,7 @@
 # `npm run desktop:win` builds an unsigned Windows installer (NSIS) instead;
 # GitHub's run signs it through scripts/package-win.mjs (APEX_DECK_WIN_SIGN=1).
 appId: dev.apexdeck.app
+afterPack: build/sign-win-resources.cjs
 productName: Apex Deck
 directories:
   output: release

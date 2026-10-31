@@ -109,7 +109,8 @@ test('the build is reachable and CI builds it on Windows', () => {
 
   const workflow = read('.github/workflows/windows-installer.yml');
   assert.match(workflow, /runs-on: windows-latest/);
-  assert.match(workflow, /run: npm run desktop:win/);
+  assert.match(workflow, /run: node scripts\/package-win\.mjs --compile/);
+  assert.match(workflow, /run: node scripts\/package-win\.mjs --package/);
   assert.match(workflow, /actions\/upload-artifact@/);
   assert.ok(!/release:|gh release|--publish (?!never)/.test(workflow), 'it attaches an artifact, it publishes nothing');
   assert.match(workflow, new RegExp(`release/${INSTALLER_NAME.replace(/\./g, '\\.')}`));
