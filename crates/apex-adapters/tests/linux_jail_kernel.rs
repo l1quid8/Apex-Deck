@@ -55,25 +55,7 @@ fn run(tree: &Tree, writable: bool, folder: &Path) -> std::process::Output {
     jail(tree, folder, writable, tree.project.clone(), "/usr/bin/python3", args)
 }
 
-/// Tries to read each file in the jail, and to overwrite it when `writable`.
-fn poke(tree: &Tree, folder: &Path, writable: bool, files: &[PathBuf]) -> String {
-    let write = if writable { "echo broken > \"$f\" 2>/dev/null;" } else { "" };
-    let script = format!("for f in \"$@\"; do {write} cat \"$f\" 2>/dev/null; done; echo done");
-    let mut args = vec!["-c".to_owned(), script, "sh".to_owned()];
-    args.extend(files.iter().map(|f| f.display().to_string()));
-    let output = jail(tree, folder, writable, folder.to_path_buf(), "/bin/sh", args);
-    let out = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(out.ends_with("done\n"), "{out}\n{}", String::from_utf8_lossy(&output.stderr));
-    out
-}
-
 fn jail(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str, args: Vec<String>) -> std::process::Output {
-    jail_with(tree, folder, writable, cwd, program, args, paths::standard_protected(&tree.home, &tree.data), |p| std::fs::metadata(p).ok().map(|m| m.is_dir()))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn jail_with(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: &str, args: Vec<String>,
-             protected: Vec<PathBuf>, is_dir: impl Fn(&Path) -> Option<bool>) -> std::process::Output {
     let (read, raw) = filter_pipe();
     let spec = JailSpec {
         program: program.into(),
@@ -83,7 +65,7 @@ fn jail_with(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: 
         private_home: tree.data.join("jail-homes/r/b"),
         folders: vec![Bind { source: folder.into(), target: folder.into(), writable }],
         read_only: vec!["/usr/local/bin".into()],
-        protected,
+        protected: protected(tree),
         restored: vec![Bind { source: tree.data.join("attachments"), target: tree.data.join("attachments"), writable: false }],
         init: tree.init.clone(),
         path: "/usr/local/bin:/usr/bin:/bin".into(),
@@ -91,7 +73,7 @@ fn jail_with(tree: &Tree, folder: &Path, writable: bool, cwd: PathBuf, program: 
         seccomp_fd: raw,
         control_fd: 0,
     };
-    let args = bwrap_args(&spec, &mounts(), is_dir).unwrap();
+    let args = bwrap_args(&spec, &mounts(), |p| std::fs::metadata(p).ok().map(|m| m.is_dir())).unwrap();
     let mut command = Command::new("bwrap");
     command.env_clear().args(args).envs(jail_env(&spec));
     unsafe {
@@ -120,10 +102,40 @@ fn edit_level_jail_holds() {
 }
 
 #[test]
-fn read_level_jail_around_home_hides_secrets() {
+fn read_level_jail_holds() {
     if !wanted() { return; }
     let tree = tree("read");
-    expect(run(&tree, false, &tree.home));
+    expect(run(&tree, false, &tree.project));
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_read_folder_around_home_is_refused() {
+    if !wanted() { return; }
+    let tree = tree("around");
+    assert!(paths::check_read(&tree.home, &protected(&tree), &mounts()).is_err());
+    assert!(paths::check_read(&tree.root, &protected(&tree), &mounts()).is_err());
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_login_made_after_launch_stays_out_of_a_running_jail() {
+    if !wanted() { return; }
+    let tree = tree("later");
+    let file = tree.home.join(".aws/credentials");
+    let login = {
+        let file = file.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "secret").unwrap();
+        })
+    };
+    let script = format!("sleep 1; cat \"{}\" 2>/dev/null; cat marker; echo done", file.display());
+    let output = jail(&tree, &tree.project, false, tree.project.clone(), "/bin/sh", vec!["-c".into(), script]);
+    login.join().unwrap();
+    assert!(file.exists());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "shown\ndone\n");
     let _ = std::fs::remove_dir_all(&tree.root);
 }
 
@@ -132,18 +144,14 @@ fn a_second_mount_of_home_is_refused() {
     if !wanted() { return; }
     let tree = tree("mount");
     let second = tree.root.join("second");
-    std::fs::create_dir(&second).unwrap();
-    assert!(Command::new("mount").args(["--bind"]).arg(&tree.home).arg(&second).status().unwrap().success());
-    let guard = paths::Guard { home: tree.home.clone(), protected: paths::standard_protected(&tree.home, &tree.data), ..Default::default() };
-    let refused = paths::check_writable(&second, &guard, &mounts());
-    let inside = paths::check_writable(&second.join(".ssh"), &guard, &mounts());
-    let seen = poke(&tree, &second, false, &[second.join(".local/share/apex/gateway.token"), second.join(".ssh/id_ed25519")]);
-    let visible = poke(&tree, &second, false, &[second.join("work/app/marker")]);
+    mount(&tree.home, &second);
+    let table = mounts();
+    let read = paths::check_read(&second, &protected(&tree), &table);
+    let missing = paths::check_read(&second, &[tree.home.join(".aws")], &table);
+    let writable = paths::check_writable(&second, &guard(&tree), &table);
+    let inside = paths::check_writable(&second.join(".ssh"), &guard(&tree), &table);
     unmount(&second);
-    assert!(refused.is_err() && inside.is_err());
-    assert_eq!(seen, "done\n");
-    assert_eq!(visible, "shown\ndone\n", "the mount really was in the jail");
-    assert_eq!(std::fs::read_to_string(tree.data.join("gateway.token")).unwrap(), "secret");
+    assert!(read.is_err() && missing.is_err() && writable.is_err() && inside.is_err());
     let _ = std::fs::remove_dir_all(&tree.root);
 }
 
@@ -154,29 +162,28 @@ fn mount(source: &Path, at: &Path) {
 
 fn unmount(at: &Path) { assert!(Command::new("umount").arg(at).status().unwrap().success()); }
 
+fn protected(tree: &Tree) -> Vec<PathBuf> { paths::standard_protected(&tree.home, &tree.data) }
+
 fn guard(tree: &Tree) -> paths::Guard {
-    paths::Guard { home: tree.home.clone(), protected: paths::standard_protected(&tree.home, &tree.data), ..Default::default() }
+    paths::Guard { home: tree.home.clone(), protected: protected(tree), ..Default::default() }
 }
 
 #[test]
-fn a_data_folder_mounted_inside_a_project_is_refused_and_hidden() {
+fn a_data_folder_mounted_inside_a_project_is_refused() {
     if !wanted() { return; }
     let tree = tree("nested");
     let nested = tree.project.join("nested");
     mount(&tree.data, &nested);
-    let refused = paths::check_writable(&tree.project, &guard(&tree), &mounts());
-    let seen = poke(&tree, &tree.project, false, &[nested.join("gateway.token")]);
-    let visible = poke(&tree, &tree.project, false, &[tree.project.join("marker")]);
+    let table = mounts();
+    let read = paths::check_read(&tree.project, &protected(&tree), &table);
+    let writable = paths::check_writable(&tree.project, &guard(&tree), &table);
     unmount(&nested);
-    assert!(refused.is_err());
-    assert_eq!(seen, "done\n");
-    assert_eq!(visible, "shown\ndone\n");
-    assert_eq!(std::fs::read_to_string(tree.data.join("gateway.token")).unwrap(), "secret");
+    assert!(read.is_err() && writable.is_err());
     let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 #[test]
-fn a_folder_around_the_source_of_home_is_refused_and_hidden() {
+fn a_folder_around_the_source_of_home_is_refused() {
     if !wanted() { return; }
     let source = tree("source");
     // A home that lives elsewhere: the tree's root is no ancestor of it by name.
@@ -184,35 +191,30 @@ fn a_folder_around_the_source_of_home_is_refused_and_hidden() {
     mount(&source.home, &alias);
     let data = alias.join(".local/share/apex");
     let guard = paths::Guard { home: alias.clone(), protected: paths::standard_protected(&alias, &data), ..Default::default() };
-    let refused = paths::check_writable(&source.root, &guard, &mounts());
-    let hidden = paths::hidden_in(&source.root, &guard.protected, &mounts()).unwrap();
+    let table = mounts();
+    let read = paths::check_read(&source.root, &guard.protected, &table);
+    let writable = paths::check_writable(&source.root, &guard, &table);
     unmount(&alias);
     let _ = std::fs::remove_dir(&alias);
-    assert!(refused.is_err());
-    assert!(hidden.contains(&source.home.join(".ssh")), "{hidden:?}");
+    assert!(read.is_err() && writable.is_err());
     let _ = std::fs::remove_dir_all(&source.root);
 }
 
 #[test]
-fn a_second_view_of_a_mount_inside_a_protected_folder_is_refused_and_hidden() {
+fn a_second_view_of_a_mount_inside_a_protected_folder_is_refused() {
     if !wanted() { return; }
     let tree = tree("inner");
     let keys = tree.home.join(".ssh/keys");
     std::fs::create_dir(&keys).unwrap();
     assert!(Command::new("mount").args(["-t", "tmpfs", "tmpfs"]).arg(&keys).status().unwrap().success());
-    std::fs::write(keys.join("key"), "secret").unwrap();
     let alias = tree.project.join("alias");
     mount(&keys, &alias);
-    let refused = paths::check_writable(&tree.project, &guard(&tree), &mounts());
-    let seen = poke(&tree, &tree.project, false, &[alias.join("key")]);
-    let visible = poke(&tree, &tree.project, false, &[tree.project.join("marker")]);
-    let kept = std::fs::read_to_string(keys.join("key")).unwrap();
+    let table = mounts();
+    let read = paths::check_read(&tree.project, &protected(&tree), &table);
+    let writable = paths::check_writable(&tree.project, &guard(&tree), &table);
     unmount(&alias);
     unmount(&keys);
-    assert!(refused.is_err());
-    assert_eq!(seen, "done\n");
-    assert_eq!(visible, "shown\ndone\n");
-    assert_eq!(kept, "secret");
+    assert!(read.is_err() && writable.is_err());
     let _ = std::fs::remove_dir_all(&tree.root);
 }
 
@@ -232,17 +234,4 @@ fn a_project_that_is_its_own_mount_under_home_still_works() {
 fn disk_folder(path: &Path) -> PathBuf {
     std::fs::create_dir_all(path).unwrap();
     path.to_path_buf()
-}
-
-#[test]
-fn a_hide_that_can_not_be_placed_stops_the_launch() {
-    if !wanted() { return; }
-    let tree = tree("hide");
-    // A read-only bind can't take a new mount point, so this hide can't go in.
-    let mut protected = paths::standard_protected(&tree.home, &tree.data);
-    protected.push(tree.project.join("gone"));
-    let output = jail_with(&tree, &tree.project, false, tree.project.clone(), "/bin/echo", vec!["ran".into()], protected, |_| Some(true));
-    assert!(!output.status.success());
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("ran"));
-    let _ = std::fs::remove_dir_all(&tree.root);
 }

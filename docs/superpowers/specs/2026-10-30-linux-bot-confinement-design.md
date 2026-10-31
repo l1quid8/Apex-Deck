@@ -180,7 +180,11 @@ already works. `/run`, `/var/run`, `~/.ssh`, `~/.aws` and the rest aren't there 
 which also removes most host sockets from view. A named PATH folder that overlaps a
 protected path, such as `~/.ssh`, isn't bound.
 
-Hide mounts go last, so they win over anything bound before them.
+Nothing is mounted over a bound folder to hide part of it. Such a hide can't hold: a
+path that's missing at launch has nothing to cover, and the kernel drops a mount from
+every namespace when its path is removed or replaced on the host, which an atomic save
+or a fresh login does. Tested on 7.0: `~/.aws` made later, `.claude.json` replaced by
+rename and `~/.ssh` swapped for a new folder all became readable in a running jail.
 
 ### Writable folders are refused, not patched
 
@@ -189,8 +193,7 @@ because `~/.local/bin/codex` and `.bashrc` are then writable. A list of files to
 back can't be complete: `.zshenv`, `.npmrc`, `.cargo/bin` and so on. So don't try.
 
 Before every jailed launch, each writable path is resolved with `canonicalize`, which
-follows symlinks and `..`. The launch is refused at Edits and Ask, and allowed at Read,
-if the path:
+follows symlinks and `..`. The launch is refused at Edits and Ask if the path:
 
 - is `/` or `$HOME`, or contains `$HOME`;
 - is inside, or contains, a protected path: the data folder, `~/.local`, `~/.config`,
@@ -205,15 +208,16 @@ filesystem mounted inside a protected folder, so a second view of `~/.ssh/keys` 
 tmpfs is that folder's content. Home and `PATH` folders count only their own content, so a
 project that is its own mount under home stays allowed. A bind mount can show the
 same content under an unrelated path, so comparing names, or walking up from a path, misses
-it (Null's Task 1 review reproduced both directions). So a Read folder has the content hidden
-under whatever name it appears, a Read folder that is itself protected content is refused,
-and a writable folder with such a mount anywhere inside is refused. If the table can't be
-read the launch stops. Hard links aren't visible this way: a file hard-linked out of a
-protected folder into a project stays readable. Only a person can make one of those, because
-the jail hides the source, so it's a stated limit. A protected path that doesn't exist at
-launch can't be hidden, so if `~/.aws` is created while a Read bot runs on the whole home, that
-bot can read it until its next launch. The table is read once per launch; mounts made later by
-a person or a Full bot are outside the guarantee. A hide that can't be placed stops the launch.
+it (Null's Task 1 review reproduced both directions).
+
+At Read, a path is refused if it's inside a protected path, holds one, or shows any of its
+content under any name, whether or not that protected path exists yet. So `$HOME`, `/` and
+any folder around a home are refused at Read too. The other three rules above don't
+apply at Read. If the table can't be read the launch stops. Hard links aren't visible this
+way: a file hard-linked out of a protected folder into a project stays readable. Only a
+person can make one of those, because the source isn't in the jail, so it's a stated limit.
+The table is read once per launch; mounts made later by a person or a Full bot are outside
+the guarantee.
 
 Message: "This folder holds your login files. Pick a folder inside it, or use Full."
 A folder pick is rechecked at launch, because a symlink can change after it was chosen.

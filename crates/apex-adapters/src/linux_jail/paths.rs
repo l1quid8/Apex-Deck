@@ -1,5 +1,5 @@
-//! Refuses unsafe writable folders rather than protecting files inside them,
-//! because a list of files to protect can never be complete. Everything is
+//! Refuses unsafe folders rather than protecting files inside them, because a
+//! list of files to protect can never be complete. Everything is
 //! compared by resolved path, by device and inode, and through the mount table,
 //! so a symlink, `..`, a change of case or any bind mount gets the same answer.
 use std::collections::HashSet;
@@ -139,17 +139,21 @@ impl Mounts {
     }
 }
 
+/// True when the resolved folder `real` is inside `item`, holds it, or shows any
+/// of its content under another name. Works for a path that doesn't exist yet.
+fn touches(real: &Path, item: &Path, mounts: &Mounts) -> bool {
+    contains(real, item) || contains(item, real) || mounts.contents(item).iter().any(|place| {
+        !mounts.shows(real, place).is_empty() || !mounts.pieces_of(real, place).is_empty()
+    })
+}
+
 /// True when a jailed bot must not write to the resolved folder `real`.
 fn unsafe_to_write(real: &Path, guard: &Guard, mounts: &Mounts) -> bool {
     // Home and PATH folders count only their own content: a project that is
     // its own mount under home isn't home.
     let holds = |item: &Path| contains(real, item) || !mounts.shows(real, &mounts.place(item)).is_empty();
     real == Path::new("/") || holds(&resolved(&guard.home))
-        || guard.protected.iter().map(|item| resolved(item)).any(|item| {
-            contains(real, &item) || contains(&item, real) || mounts.contents(&item).iter().any(|place| {
-                !mounts.shows(real, place).is_empty() || !mounts.pieces_of(real, place).is_empty()
-            })
-        })
+        || guard.protected.iter().any(|item| touches(real, &resolved(item), mounts))
         || guard.path_dirs.iter().chain(&guard.executables).any(|item| holds(&resolved(item)))
 }
 
@@ -159,28 +163,13 @@ pub fn check_writable(path: &Path, guard: &Guard, mounts: &Mounts) -> Result<Pat
     if unsafe_to_write(&real, guard, mounts) { Err(Refused(real)) } else { Ok(real) }
 }
 
-/// Everything under `folder` that must be hidden, as real paths. Refused when
-/// the folder itself is protected content, because nothing of it could show.
-pub fn hidden_in(folder: &Path, protected: &[PathBuf], mounts: &Mounts) -> Result<Vec<PathBuf>, Refused> {
-    let real = resolved(folder);
-    let mut out = Vec::new();
-    for item in protected {
-        let item = resolved(item);
-        if contains(&item, &real) {
-            return Err(Refused(real));
-        }
-        for place in mounts.contents(&item) {
-            let pieces = mounts.pieces_of(&real, &place);
-            if pieces.contains(&real) {
-                return Err(Refused(real));
-            }
-            out.extend(mounts.shows(&real, &place).into_iter().chain(pieces));
-        }
-    }
-    // Sorted paths keep a folder's contents straight after it, and hiding it hides them.
-    out.sort();
-    out.dedup_by(|item, kept| item.starts_with(&*kept));
-    Ok(out)
+/// The resolved folder if a jailed bot may read it. Nothing is hidden inside a
+/// live bind, because a hide can't hold: a path that's missing has nothing to
+/// cover, and the kernel drops a mount whose path is replaced outside the jail,
+/// which an atomic save or a fresh login does.
+pub fn check_read(path: &Path, protected: &[PathBuf], mounts: &Mounts) -> Result<PathBuf, Refused> {
+    let real = resolved(path);
+    if protected.iter().any(|item| touches(&real, &resolved(item), mounts)) { Err(Refused(real)) } else { Ok(real) }
 }
 
 /// The protected paths every Linux jail starts from, under the real home.
@@ -255,79 +244,56 @@ mod tests {
         assert_eq!(table.place(Path::new("/fake/me")), ("0:40".to_owned(), "/me".into()));
     }
 
-    #[test]
-    fn a_second_mount_of_home_hides_under_its_own_name() {
-        let table = table(&["30 21 8:2 /me /alt rw - ext4 /dev/sda2 rw"]);
-        let hidden = hidden_in(Path::new("/alt"), &protected(), &table).unwrap();
-        assert!(hidden.contains(&PathBuf::from("/alt/.ssh")), "{hidden:?}");
-        assert!(hidden.contains(&PathBuf::from("/alt/.local")), "holds the data folder");
-        assert!(unsafe_to_write(Path::new("/alt"), &guard(), &table));
+    fn refused(folder: &str, table: &Mounts) -> bool {
+        check_read(Path::new(folder), &protected(), table).is_err() && unsafe_to_write(Path::new(folder), &guard(), table)
     }
 
     #[test]
-    fn a_folder_around_the_source_of_home_is_caught() {
+    fn a_second_mount_of_home_is_refused() {
+        assert!(refused("/alt", &table(&["30 21 8:2 /me /alt rw - ext4 /dev/sda2 rw"])));
+    }
+
+    #[test]
+    fn a_folder_around_the_source_of_home_is_refused() {
         // /fake/me is a bind of /srv/homes/me, so /srv is no ancestor of it by name.
-        let table = table(&["30 22 8:1 /srv/homes/me /fake/me rw - ext4 /dev/sda1 rw"]);
-        let hidden = hidden_in(Path::new("/srv"), &protected(), &table).unwrap();
-        assert!(hidden.contains(&PathBuf::from("/srv/homes/me/.ssh")), "{hidden:?}");
-        assert!(unsafe_to_write(Path::new("/srv"), &guard(), &table));
+        assert!(refused("/srv", &table(&["30 22 8:1 /srv/homes/me /fake/me rw - ext4 /dev/sda1 rw"])));
     }
 
     #[test]
-    fn a_protected_folder_mounted_inside_a_project_is_caught() {
-        let line = "30 22 8:2 /me/.local/share/apex /fake/me/work/app/nested rw - ext4 /dev/sda2 rw";
-        let table = table(&[line]);
-        let project = Path::new("/fake/me/work/app");
-        assert_eq!(hidden_in(project, &protected(), &table).unwrap(), [project.join("nested")]);
-        assert!(unsafe_to_write(Path::new("/fake/me/work/app"), &guard(), &table));
+    fn a_protected_folder_mounted_inside_a_project_is_refused() {
+        let table = table(&["30 22 8:2 /me/.local/share/apex /fake/me/work/app/nested rw - ext4 /dev/sda2 rw"]);
+        assert!(refused("/fake/me/work/app", &table));
     }
 
     #[test]
-    fn a_piece_of_a_protected_folder_mounted_inside_is_caught() {
-        let line = "30 22 8:2 /me/.ssh/keys /fake/me/work/app/keys rw - ext4 /dev/sda2 rw";
-        let project = Path::new("/fake/me/work/app");
-        assert_eq!(hidden_in(project, &protected(), &table(&[line])).unwrap(), [project.join("keys")]);
+    fn a_piece_of_a_protected_folder_mounted_inside_is_refused() {
+        let table = table(&["30 22 8:2 /me/.ssh/keys /fake/me/work/app/keys rw - ext4 /dev/sda2 rw"]);
+        assert!(refused("/fake/me/work/app", &table));
     }
 
     /// `~/.ssh/keys` is its own filesystem, so the home's disk says nothing about it.
     const INNER: &str = "30 22 0:60 / /fake/me/.ssh/keys rw - tmpfs t rw";
 
     #[test]
-    fn a_second_view_of_a_mount_inside_a_protected_folder_is_caught() {
-        let project = Path::new("/fake/me/work/app");
-        let table = table(&[INNER, "31 22 0:60 / /fake/me/work/app/alias rw - tmpfs t rw"]);
-        assert_eq!(hidden_in(project, &protected(), &table).unwrap(), [project.join("alias")]);
-        assert!(unsafe_to_write(project, &guard(), &table));
+    fn a_second_view_of_a_mount_inside_a_protected_folder_is_refused() {
+        assert!(refused("/fake/me/work/app", &table(&[INNER, "31 22 0:60 / /fake/me/work/app/alias rw - tmpfs t rw"])));
     }
 
     #[test]
-    fn a_folder_of_such_a_mount_shown_inside_is_caught() {
-        let project = Path::new("/fake/me/work/app");
-        let table = table(&[INNER, "31 22 0:60 /sub /fake/me/work/app/alias rw - tmpfs t rw"]);
-        assert_eq!(hidden_in(project, &protected(), &table).unwrap(), [project.join("alias")]);
-        assert!(unsafe_to_write(project, &guard(), &table));
+    fn a_folder_of_such_a_mount_shown_inside_is_refused() {
+        assert!(refused("/fake/me/work/app", &table(&[INNER, "31 22 0:60 /sub /fake/me/work/app/alias rw - tmpfs t rw"])));
     }
 
     #[test]
-    fn a_folder_around_a_view_of_such_a_mount_is_caught() {
+    fn a_folder_around_a_view_of_such_a_mount_is_refused() {
         // The keys are only a part of /mnt/disk, which is on no protected path.
         let table = table(&["30 22 0:60 /sub /fake/me/.ssh/keys rw - tmpfs t rw", "31 21 0:60 / /mnt/disk rw - tmpfs t rw"]);
-        assert_eq!(hidden_in(Path::new("/mnt/disk"), &protected(), &table).unwrap(), [PathBuf::from("/mnt/disk/sub")]);
-        assert!(unsafe_to_write(Path::new("/mnt/disk"), &guard(), &table));
+        assert!(refused("/mnt/disk", &table));
     }
 
     #[test]
-    fn a_view_of_such_a_mount_can_not_be_a_read_folder() {
-        let table = table(&[INNER, "31 21 0:60 / /alt rw - tmpfs t rw"]);
-        assert!(hidden_in(Path::new("/alt"), &protected(), &table).is_err());
-    }
-
-    #[test]
-    fn a_hide_inside_another_hide_is_dropped() {
-        let table = table(&[INNER]);
-        let hidden = hidden_in(Path::new("/fake/me"), &protected(), &table).unwrap();
-        assert!(hidden.contains(&PathBuf::from("/fake/me/.ssh")));
-        assert!(!hidden.contains(&PathBuf::from("/fake/me/.ssh/keys")), "{hidden:?}");
+    fn a_view_of_such_a_mount_is_refused() {
+        assert!(refused("/alt", &table(&[INNER, "31 21 0:60 / /alt rw - tmpfs t rw"])));
     }
 
     #[test]
@@ -339,15 +305,25 @@ mod tests {
 
     #[test]
     fn a_read_folder_that_is_protected_content_is_refused() {
-        assert!(hidden_in(Path::new("/fake/me/.ssh"), &protected(), &table(&[])).is_err());
+        assert!(check_read(Path::new("/fake/me/.ssh"), &protected(), &table(&[])).is_err());
         let table = table(&["30 21 8:2 /me/.ssh /alt rw - ext4 /dev/sda2 rw"]);
-        assert!(hidden_in(Path::new("/alt"), &protected(), &table).is_err());
+        assert!(check_read(Path::new("/alt"), &protected(), &table).is_err());
+    }
+
+    #[test]
+    fn a_read_folder_around_a_path_that_does_not_exist_yet_is_refused() {
+        // Nothing under /fake exists, so ~/.aws is as missing as a new login's would be.
+        let only_aws = [PathBuf::from("/fake/me/.aws")];
+        let alias = table(&["30 21 8:2 /me /alt rw - ext4 /dev/sda2 rw"]);
+        assert!(check_read(Path::new("/fake/me"), &only_aws, &alias).is_err());
+        assert!(check_read(Path::new("/alt"), &only_aws, &alias).is_err());
+        assert!(check_read(Path::new("/fake/me/work"), &only_aws, &alias).is_ok());
     }
 
     #[test]
     fn an_unrelated_mount_changes_nothing() {
         let table = table(&["30 22 0:50 / /fake/me/work/app/cache rw - tmpfs t rw"]);
-        assert!(hidden_in(Path::new("/fake/me/work/app"), &protected(), &table).unwrap().is_empty());
+        assert!(check_read(Path::new("/fake/me/work/app"), &protected(), &table).is_ok());
         assert!(!unsafe_to_write(Path::new("/fake/me/work/app"), &guard(), &table));
     }
 
