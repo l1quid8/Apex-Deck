@@ -2,6 +2,47 @@
 
 Status: **desktop lifecycle verified; provider/access matrix executed with approval requests and provider blockers**. This is not a blanket all-provider acceptance pass. The old-service blocker is resolved. Current evidence is below; the original run remains as history.
 
+## Review follow-up — 2026-10-31
+
+Task 8 remains **open**. Follow-up branch: `fix/curate-acceptance-review`, starting at report commit `53d82b1f`. No push, merge, installation or service restart is part of this follow-up. The feature implementation was already on local `main`; the earlier “nothing merged” statement applies to the acceptance-report commit, not the complete feature.
+
+### Corrections to the earlier results
+
+- The Ds4 **Ask timeout is contaminated**: its lookup overlapped a Ds4 curator in the other QA room on the same local server. It cannot establish an end-to-end lookup failure or a performance limitation. The Read timeout followed Stop and did not establish an uncontended server either. Both cells require serial retesting. The recorded successful file reads remain evidence of access, separate from response completion.
+- The recorded Ds4 curator duration is not an uncontended performance measurement and must not be used for Task 9 comparisons.
+- Gemini's tool-free path deliberately overrides the usual `agy` discovery and launches `gemini`, avoiding Antigravity's existing service. This Mac has `/Users/tylercaldwell/.local/bin/agy`, but `gemini` is absent from the terminal PATH. The earlier isolation error therefore does not indicate that journal access failed. The follow-up adds executable preflight for the actual isolated route and preserves the isolation boundary; it does not substitute `agy`.
+
+### Source changes and regression evidence
+
+- `curator_profile_ok` checks the actual tool-free Gemini executable before the host starts curation. Missing/non-executable `gemini` is refused with a cause and the handle of another eligible bot when one is present (otherwise generic guidance). A host regression verifies the named alternative and no curation. A Unix adapter test supplies only `agy`, then a non-executable `gemini`, then an executable `gemini`. The original behavior accepted the first configuration; the regression failed against that behavior.
+- An undone note covered by a later `/compact` now describes the restoration historically and says the messages are before the latest summary. It no longer promises bots still see the originals inline. The previous test explicitly required the inaccurate wording; its replacement failed before the fix.
+- The parser rejects a final JSON object identical to the prompt's example, including fenced/whitespace variants. A genuine later answer still wins; the same IDs with a real reason remain valid. Integration coverage verifies that rejecting the example leaves the transcript and curation list untouched and ends the curator turn. The parser regression failed before the fix.
+
+### Queue diagnosis — unresolved, no speculative queue change
+
+The retained raw events for lifecycle room `pane-mvwtcdzq-0` show Grok failing at global event `11136`, `participant_idle` at `11137`, and room `idle` at `11141`. The queue's local items, `failed` flags, `connectionPaused`, reservations, and the Resume click were not captured, so those frames do not identify the local blocker.
+
+New behavioral tests replay an acknowledged normal post, a queued whole-room command, provider failure, participant idle, room idle, and Resume. All three commands (`compact`, `curate`, `curate_undo`) dispatch and clear their reservations in this reproduction. Existing tests separately verify that an *unconfirmed send* requires **Retry send**, and Resume deliberately does not retry it. That is a possible explanation only, not an established cause of the recorded desktop incident. No production queue change is justified by this evidence. Native reproduction with local queue-state capture is still required before calling this finding resolved.
+
+### Serial Ds4 retest — blocked before either lookup
+
+Prepared a serial-only harness using the original curated 54-message QA baseline, with a 600-second limit per lookup, no overlapping curator, no live TCP connections to port 8000 at the initial idle check, and restoration of the QA bot's original Full setting. Both QA rooms were idle. The server currently advertises **65,536** tokens; its configuration was left unchanged.
+
+The service refused the first QA `room_update_participant` call because this mutation requires a protected installed-UI provenance receipt. Computer control found the installed process but could not select its window (`cgWindowNotFound`; the launcher path also timed out). The Human was asked to bring the installed window onscreen. No access setting changed, no new Ds4 model call started, and neither Read nor Ask was rerun. These cells remain pending; this is not a successful serial retest. See [retest-blocker.json](curate-task8-review-2026-10-31/retest-blocker.json).
+
+### Follow-up validation
+
+| Command | Result |
+|---|---|
+| `cargo test -p apex-core` | 217 passed |
+| `TMPDIR=/tmp cargo test -p apex-host` | 864 passed, 9 ignored |
+| `cargo test -p apex-adapters --lib` | 328 passed, 3 ignored |
+| `npm test` | 2,886 passed, 3 skipped |
+| `npx tsc --noEmit` | Passed |
+| `git diff --check` | Passed |
+
+Rust total: **1,409 passed, 12 ignored**. Additional final scoped runs passed 38 core curation tests and 23 host curation tests; these overlap the totals above. TypeScript emitted no diagnostics. [Validation summary](curate-task8-review-2026-10-31/validation.json) and the four red-stage logs beside it retain the measured results. An earlier full host run included the deliberately failing alternative regression before its fix; the final full host run passed. Native acceptance of the new source fixes remains pending because this follow-up does not install them.
+
 ## Current live run — 2026-10-31
 
 Executed on `test/curate-task8-resume`, based on `feff887b`. The installed protected UI and service are 0.9.7; live `hello` reports clean build `861824670088`, boot `8ba7cb0261f71e4005bcbca838388c24`. This is a newer installed build than the originally prepared 0.9.6 upgrade; this run does not independently attest the earlier installer transaction or private-key preservation.
@@ -57,13 +98,13 @@ Selected evidence is retained in [evidence.json](curate-task8-2026-10-31/evidenc
 | Gemini / Forge | P | Q | Q | Q | Not requested | Failed — CLI executable not found |
 | Grok / Gronk | L | N/A | L | L | Not requested | Failed — not signed in |
 | Muse / Muck | P | N/A | P | P | Not requested | P — hid 43 |
-| Local API / Ds4 | R/T | R/T | P | P | Not requested | P — hid 31 |
+| Local API / Ds4 | R/T* | R/T* | P | P | Not requested | P — hid 31 |
 
 - All 22 available provider/access cells were attempted. Grok and Muse do not expose Ask, so no unsupported configuration was injected. Neither provider authentication, subscriptions nor bot permissions were widened to turn a failed cell into a pass.
 - Codex Ask requested approval for a Python command that decoded journal chunks. Claude Ask and Edit requested approval for shell-based reads/searches. The actual approval action text is in the evidence bundle. Read-only Claude used its read/search tools without an approval request.
 - Gemini's later normal turns explicitly reported `Individual quota reached` (exit 3). Its separate tool-free curator failed with `Gateway isolation: CLI executable was not found`; that result is not conflated with quota or a successful curator.
 - Grok reported exit 1, `Not signed in`. Its failure occurs before journal access, so this establishes no Grok lookup capability.
-- Ds4's Read-only and Ask `read` tools completed in 1 ms and 0 ms respectively and returned both markers in the journal output. Those are successful file-access observations; the answer timeouts remain failed end-to-end answer checks. Edit and Full subsequently completed with both markers.
+- **Superseded for end-to-end/latency conclusions by the review follow-up above.** Ds4's Read-only and Ask `read` tools completed in 1 ms and 0 ms respectively and returned both markers in the journal output. Those are successful file-access observations; the answer timeouts remain failed end-to-end answer checks. Edit and Full subsequently completed with both markers.
 - Codex and Claude correctly reconstructed the 4,648-character original in their Read runs. Gemini supplied both correct markers but incorrect length/offset; Muse initially repeated the requested 5,000/3,420 values rather than the measured original. Those numerical claims were rejected. A **P** in this table certifies the two-marker retrieval task, not arbitrary reconstruction accuracy.
 - Successful tool-free curator turns emitted “Choosing what to hide” but **zero `work_step` events**. Retained event ranges cover all six curator attempts, plus Stop/retry runs. The custom CLI refusal produced no curator turn. These are real provider calls, not scripted participants.
 

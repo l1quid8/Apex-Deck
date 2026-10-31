@@ -2202,11 +2202,16 @@ impl Host {
                 .summarizer()
                 .ok_or("add a participant before curating")?;
             config.access = Access::Read;
-            apex_adapters::chat_profile_ok(&config, context.path.as_deref()).map_err(|_| {
-                format!(
-                    "{} can't pick without tools. Message another bot, then run /curate again.",
-                    config.display_name
-                )
+            apex_adapters::curator_profile_ok(&config, context.path.as_deref()).map_err(|error| {
+                let alternative = room.configs().into_iter().find(|candidate| {
+                    candidate.id != config.id
+                        && apex_adapters::curator_profile_ok(candidate, context.path.as_deref()).is_ok()
+                });
+                let next = alternative.map_or_else(
+                    || "Message another bot".to_owned(),
+                    |candidate| format!("Message @{}", candidate.id),
+                );
+                format!("{} can't pick without tools. {error} {next}, then run /curate again.", config.display_name)
             })?;
             let by = config.id.to_string();
             let curator =

@@ -35,8 +35,11 @@ test('a sealed note', () => {
   assert.equal(lines.some(line => line.startsWith('Bots now see')), false);
 });
 
-test('undone wins over sealed, because those messages are already back', () => {
-  assert.deepEqual(noteLines(undone, 'Null', true, time), noteLines(undone, 'Null', false, time));
+test('an undone note becomes historical after compact', () => {
+  const lines = noteLines(undone, 'Null', true, time).join(' ');
+  assert.ok(lines.includes('You restored these messages at 10:52 AM.'));
+  assert.ok(lines.includes('before the latest /compact'));
+  assert.ok(!lines.includes('bots see them again'));
 });
 
 test('several ranges read as a list', () => {

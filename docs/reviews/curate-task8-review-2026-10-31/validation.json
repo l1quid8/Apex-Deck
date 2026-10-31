@@ -1,0 +1,55 @@
+{
+  "results": [
+    {
+      "command": "cargo test -p apex-core",
+      "passed": 217,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p apex-core --test curation",
+      "passed": 38,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "TMPDIR=/tmp cargo test -p apex-host",
+      "passed": 864,
+      "failed": 0,
+      "ignored": 9
+    },
+    {
+      "command": "TMPDIR=/tmp cargo test -p apex-host curation_tests",
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p apex-adapters --lib",
+      "passed": 328,
+      "failed": 0,
+      "ignored": 3
+    },
+    {
+      "command": "npm test",
+      "passed": 2886,
+      "failed": 0,
+      "skipped": 3
+    },
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed"
+    }
+  ],
+  "unique_suite_total": {
+    "rust_passed": 1409,
+    "rust_ignored": 12,
+    "app_passed": 2886,
+    "app_skipped": 3
+  },
+  "note": "Scoped curation reruns overlap the full suite totals. Red-stage failures are retained separately; an earlier full host run included the deliberately failing alternative regression before its fix. The final full host rerun passes."
+}

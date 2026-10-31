@@ -449,3 +449,27 @@ test('with no routing answer, a queue that keeps no failures hands the message b
   assert.deepEqual(q.items, []);
   assert.deepEqual(sent, [{ text: 'next', to: ['b'] }]);
 });
+
+for (const kind of ['compact', 'curate', 'curate_undo']) {
+  test(`Resume dispatches a queued ${kind} after a provider failure and terminal events`, async () => {
+    const sent = [];
+    const q = new ParticipantQueues(async () => ['gronk'], async (text, to, action) => {
+      sent.push(action);
+      if (action === 'message') return; // Acknowledged post; provider fails later via events.
+      q.started('gronk');
+      q.idle('gronk');
+    }, async () => {}, () => {}, () => {}, () => true, true, async () => ['gronk']);
+    await q.send('@gronk test');
+    await q.send(`/${kind}`, kind);
+    q.error('gronk');
+    q.idle('gronk');
+    q.roomIdle();
+    await tick();
+    assert.deepEqual(sent, ['message']);
+    q.resume();
+    await tick();
+    assert.deepEqual(sent, ['message', kind]);
+    assert.deepEqual(q.items, []);
+    assert.equal(q.active, false);
+  });
+}

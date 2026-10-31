@@ -1,0 +1,22 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.09s
+     Running unittests src/lib.rs (target/debug/deps/apex_host-c360ab007ec0a0e2)
+
+running 1 test
+test host::curation_tests::curate_refusal_names_an_available_alternative_without_starting_a_turn ... FAILED
+
+failures:
+
+---- host::curation_tests::curate_refusal_names_an_available_alternative_without_starting_a_turn stdout ----
+
+thread 'host::curation_tests::curate_refusal_names_an_available_alternative_without_starting_a_turn' (842272) panicked at crates/apex-host/src/curation_tests.rs:601:5:
+null can't pick without tools. Custom CLI commands cannot run in talk-only chat rooms because they have no verified tool-free mode. Message another bot, then run /curate again.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    host::curation_tests::curate_refusal_names_an_available_alternative_without_starting_a_turn
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 827 filtered out; finished in 0.53s
+
+error: test failed, to rerun pass `-p apex-host --lib`
