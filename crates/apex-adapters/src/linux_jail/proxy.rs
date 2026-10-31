@@ -172,9 +172,13 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send, N: Net>(mut stream:
     let Some(end) = read_head(&mut stream, &mut seen).await else { return answer(&mut stream, REFUSED).await };
     let Some(host) = target(&seen[..end]) else { return answer(&mut stream, REFUSED).await };
     // One lookup, so what's dialled is what was checked.
-    let answers = match timeout(LOOKUP_TIMEOUT, net.lookup(host)).await {
-        Ok(Ok(answers)) => answers,
-        _ => return answer(&mut stream, FAILED).await,
+    let answers = if let Ok(ip) = host.parse::<IpAddr>() {
+        vec![ip]
+    } else {
+        match timeout(LOOKUP_TIMEOUT, net.lookup(host)).await {
+            Ok(Ok(answers)) => answers,
+            _ => return answer(&mut stream, FAILED).await,
+        }
     };
     let Ok(own) = net.own_addrs() else { return answer(&mut stream, REFUSED).await };
     let mut checked = answers.into_iter().filter(|ip| !refused(*ip, &own)).peekable();

@@ -8,10 +8,20 @@ pub fn run() {
     if std::env::args_os().nth(1).is_some_and(|arg| arg == apex_adapters::linux_jail::INIT_ARG) {
         apex_adapters::linux_jail::init::main();
     }
+    // The jail's side of the start-up probe, run as the jail's program.
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == apex_adapters::linux_jail::probe::PROBE_ARG) {
+        apex_adapters::linux_jail::probe::main();
+    }
     // Codex runs this executable before each MCP call; see the adapters'
     // codex_hook.rs. It answers and exits.
     if std::env::args().nth(1).as_deref() == Some(apex_adapters::CODEX_HOOK_ARG) {
         std::process::exit(apex_adapters::codex_hook_main());
+    }
+    // When invoked from inside a bot jail via INIT_PATH, refuse other commands.
+    if std::env::args().next().as_deref() == Some(apex_adapters::linux_jail::INIT_PATH) {
+        eprintln!("apex-daemon: command refused inside sandbox");
+        std::process::exit(1);
     }
     // Claude and Codex bots run `apex-daemon phone <verb>` to use the shared phone.
     if std::env::args().nth(1).as_deref() == Some("phone") {

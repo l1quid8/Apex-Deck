@@ -3,7 +3,7 @@
 //! see tests/linux-jail/run.sh.
 #![cfg(target_os = "linux")]
 
-use apex_adapters::linux_jail::{channel, home, launch, paths, proxy, refresh, Bind, JailSpec, HOOK_PORT, PROXY_PORT};
+use apex_adapters::linux_jail::{channel, home, launch, paths, probe, proxy, refresh, Bind, JailSpec, HOOK_PORT, PROXY_PORT};
 use apex_core::{AgentTool, Backend};
 use apex_adapters::{OwnedProcessChild as OwnedChild, OwnedProcessRegistry as Registry};
 use std::path::{Path, PathBuf};
@@ -585,4 +585,285 @@ fn signed_in_turns_survive_a_refresh_by_the_daemon() {
         assert_eq!(std::fs::read_to_string(project.join(file)).unwrap().trim(), "refreshed", "{file}");
     }
     println!("REFRESH PASSED");
+}
+
+// The start-up probe, against the real jail and against jails with one wall
+// removed, so each of its checks is shown to catch what it's for.
+
+fn probe_env(tree: &Tree) -> probe::ProbeEnv {
+    probe::ProbeEnv { init: init(), home: tree.home.clone(), data: tree.data.clone() }
+}
+
+fn run_probe(tree: &Tree, bwrap: Option<&Path>) -> probe::JailState {
+    Runtime::new().unwrap().block_on(probe::run(&probe_env(tree), bwrap))
+}
+
+fn wrapper(tree: &Tree, name: &str, body: &str) -> PathBuf {
+    let path = tree.root.join(name);
+    std::fs::write(&path, format!("#!/bin/bash\n{body}\n")).unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(&path).status().unwrap().success());
+    path
+}
+
+/// A bubblewrap that runs with `drop` (and `extra` values after it) removed.
+fn without(tree: &Tree, name: &str, drop: &str, values: usize) -> PathBuf {
+    wrapper(tree, name, &format!(r#"out=(); skip=0
+for a in "$@"; do
+  if [ $skip -gt 0 ]; then skip=$((skip-1)); continue; fi
+  if [ "$a" = "{drop}" ]; then skip={values}; continue; fi
+  out+=("$a")
+done
+exec /usr/bin/bwrap "${{out[@]}}""#))
+}
+
+fn fails_naming(state: probe::JailState, names: &[&str]) {
+    let probe::JailState::Fails(why) = state else { panic!("the probe passed") };
+    for name in names { assert!(why.contains(name), "{name} not in: {why}"); }
+}
+
+#[test]
+fn the_probe_passes_on_a_sound_jail_and_leaves_nothing() {
+    if !wanted() { return; }
+    let tree = tree("probe-good");
+    assert_eq!(run_probe(&tree, Some(Path::new("/usr/bin/bwrap"))), probe::JailState::Works);
+    assert!(!tree.data.join("probe").exists());
+    assert!(std::fs::read_dir("/tmp").unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with("apex-probe")));
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn the_probe_fails_without_bubblewrap() {
+    if !wanted() { return; }
+    let tree = tree("probe-none");
+    fails_naming(run_probe(&tree, None), &[probe::NEEDS_ADMIN]);
+    fails_naming(run_probe(&tree, Some(Path::new("/nope/bwrap"))), &[probe::NEEDS_ADMIN]);
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn the_probe_fails_when_bubblewrap_can_not_start() {
+    if !wanted() { return; }
+    let tree = tree("probe-refused");
+    let blocked = wrapper(&tree, "bwrap", "echo 'bwrap: setting up uid map: Permission denied' >&2; exit 1");
+    fails_naming(run_probe(&tree, Some(&blocked)), &[probe::NEEDS_ADMIN, "uid map"]);
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn the_probe_catches_a_shared_network() {
+    if !wanted() { return; }
+    let tree = tree("probe-net");
+    let open = without(&tree, "bwrap", "--unshare-net", 0);
+    fails_naming(run_probe(&tree, Some(&open)), &["host-loopback"]);
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn the_probe_catches_a_missing_filter() {
+    if !wanted() { return; }
+    let tree = tree("probe-filter");
+    let open = without(&tree, "bwrap", "--seccomp", 1);
+    fails_naming(run_probe(&tree, Some(&open)), &["bound-socket"]);
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn the_probe_catches_a_shared_network_with_no_filter() {
+    if !wanted() { return; }
+    let tree = tree("probe-both");
+    let body = r#"out=(); skip=0
+for a in "$@"; do
+  if [ $skip -gt 0 ]; then skip=$((skip-1)); continue; fi
+  if [ "$a" = "--seccomp" ]; then skip=1; continue; fi
+  if [ "$a" = "--unshare-net" ]; then continue; fi
+  out+=("$a")
+done
+exec /usr/bin/bwrap "${out[@]}""#;
+    let open = wrapper(&tree, "bwrap", body);
+    fails_naming(run_probe(&tree, Some(&open)), &["abstract-socket", "bound-socket"]);
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn the_probe_catches_the_data_folder_in_the_jail() {
+    if !wanted() { return; }
+    let tree = tree("probe-data");
+    let data = tree.data.display();
+    let body = format!(r#"out=()
+for a in "$@"; do
+  if [ "$a" = "--chdir" ]; then out+=(--ro-bind "{data}" "{data}"); fi
+  out+=("$a")
+done
+exec /usr/bin/bwrap "${{out[@]}}""#);
+    let open = wrapper(&tree, "bwrap", &body);
+    fails_naming(run_probe(&tree, Some(&open)), &["data-folder"]);
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn the_probe_fails_when_it_is_cut_off() {
+    if !wanted() { return; }
+    let tree = tree("probe-hang");
+    let stuck = wrapper(&tree, "bwrap", "exec sleep 600");
+    let started = Instant::now();
+    fails_naming(run_probe(&tree, Some(&stuck)), &[probe::NEEDS_ADMIN]);
+    assert!(started.elapsed() < Duration::from_secs(40));
+    assert_eq!(running(&["sleep", "600"]), 0);
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+// The breakout suite: tests/linux-jail/breakout.py tries every way out from
+// inside, against the real proxy with a scripted network behind it.
+
+const OWN: &str = "10.99.0.1";
+
+#[derive(Default)]
+struct ScriptedNet { dialled: std::sync::Mutex<Vec<std::net::SocketAddr>>, rebinds: std::sync::atomic::AtomicUsize }
+
+#[async_trait::async_trait]
+impl proxy::Net for ScriptedNet {
+    type Upstream = tokio::io::DuplexStream;
+
+    async fn lookup(&self, host: &str) -> std::io::Result<Vec<std::net::IpAddr>> {
+        let turn = if host == "rebinds.test" { self.rebinds.fetch_add(1, std::sync::atomic::Ordering::SeqCst) } else { 0 };
+        Ok(match (host, turn) {
+            ("public.test", _) | ("rebinds.test", 0) => vec!["1.1.1.1".parse().unwrap()],
+            ("metadata.test", _) | ("rebinds.test", _) => vec!["169.254.169.254".parse().unwrap()],
+            ("mixed-refused.test", _) => vec!["10.0.0.1".parse().unwrap(), "127.0.0.1".parse().unwrap()],
+            ("own.test", _) => vec![OWN.parse().unwrap()],
+            _ => return Err(std::io::ErrorKind::NotFound.into()),
+        })
+    }
+
+    fn own_addrs(&self) -> std::io::Result<Vec<std::net::IpAddr>> { Ok(vec![OWN.parse().unwrap()]) }
+
+    async fn dial(&self, target: std::net::SocketAddr) -> std::io::Result<tokio::io::DuplexStream> {
+        self.dialled.lock().unwrap().push(target);
+        let (near, mut far) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let mut head = [0u8; 1024];
+            if matches!(far.read(&mut head).await, Ok(1..)) {
+                let _ = far.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://metadata.test:443/\r\nContent-Length: 0\r\n\r\n").await;
+                let _ = far.flush().await;
+            }
+        });
+        Ok(near)
+    }
+}
+
+struct Breakout { net: ScriptedNet }
+
+#[async_trait::async_trait]
+impl channel::Purposes for Breakout {
+    async fn proxy(&self, stream: UnixStream) { proxy::serve(stream, &self.net).await }
+    async fn codex_hook(&self, mut stream: UnixStream) {
+        let mut sink = Vec::new();
+        let _ = stream.read_to_end(&mut sink).await;
+        let _ = stream.write_all(b"hook-only").await;
+        let _ = stream.flush().await;
+    }
+}
+
+/// Everything a bot might try to reach, set up on the host side.
+struct Bait {
+    sockets: Vec<(PathBuf, std::os::unix::net::UnixListener)>,
+    abstracts: Vec<(String, std::os::unix::net::UnixListener)>,
+    loopback: std::net::TcpListener,
+    sleeper: std::process::Child,
+    guarded: Vec<(PathBuf, Vec<u8>)>,
+}
+
+fn abstract_socket(name: &str) -> std::os::unix::net::UnixListener {
+    use std::os::linux::net::SocketAddrExt;
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(name).unwrap();
+    std::os::unix::net::UnixListener::bind_addr(&addr).unwrap()
+}
+
+fn bait(tree: &Tree, tag: &str) -> Bait {
+    let listen = |path: PathBuf| { let _ = std::fs::remove_file(&path); let listener = std::os::unix::net::UnixListener::bind(&path).unwrap(); (path, listener) };
+    let outside = tree.root.join("outside.sock");
+    let mut sockets = vec![listen(tree.project.join("cmd.sock")), listen(PathBuf::from(format!("/usr/local/bin/cmd-{tag}.sock"))), listen(outside.clone())];
+    std::os::unix::fs::symlink(&outside, tree.project.join("link.sock")).unwrap();
+    sockets.push(listen(tree.data.join("daemon.sock")));
+    let _ = std::fs::create_dir_all("/tmp/.X11-unix");
+    sockets.push(listen(PathBuf::from(format!("/tmp/.X11-unix/X{tag}"))));
+    let abstracts = [format!("apex-bait-{tag}"), format!("/tmp/.X11-unix/X{tag}")].map(|name| { let listener = abstract_socket(&name); (name, listener) }).into();
+    let mut guarded = Vec::new();
+    for (path, text) in [
+        (tree.home.join(".bashrc"), "# real\n"),
+        (tree.home.join(".claude/settings.json"), "{}\n"),
+        (tree.home.join(".claude.json"), "{}\n"),
+        (tree.data.join("devices.json"), "[]\n"),
+    ] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        guarded.push((path, text.as_bytes().to_vec()));
+    }
+    let sleeper = Command::new("sleep").arg(format!("3133{}", tag.len())).spawn().unwrap();
+    Bait { sockets, abstracts, loopback: std::net::TcpListener::bind("127.0.0.1:0").unwrap(), sleeper, guarded }
+}
+
+fn breakout(tree: &Tree, level: &str, tag: &str) {
+    let bait = bait(tree, tag);
+    std::fs::write(tree.project.join("breakout.py"), include_str!("../../../tests/linux-jail/breakout.py")).unwrap();
+    for name in ["socket32", "socketx32"] {
+        if let Ok(built) = std::fs::read(format!("/tmp/{name}")) {
+            let at = tree.project.join(name);
+            std::fs::write(&at, built).unwrap();
+            assert!(Command::new("chmod").arg("+x").arg(&at).status().unwrap().success());
+            assert!(Command::new(&at).status().unwrap().success(), "{name} must make a socket outside the jail");
+        }
+    }
+    let quoted = |items: Vec<String>| items.iter().map(|item| format!("{item:?}")).collect::<Vec<_>>().join(",");
+    let mut sockets: Vec<String> = bait.sockets.iter().map(|(path, _)| path.display().to_string()).collect();
+    sockets.push(tree.project.join("link.sock").display().to_string());
+    let facts = format!(
+        r#"{{"home":{:?},"data":{:?},"project":{:?},"sockets":[{}],"abstract":[{}],"loopback":{},"proxy":{PROXY_PORT},"hook":{HOOK_PORT},"own":{OWN:?},"host_marker":"3133{}"}}"#,
+        tree.home.display().to_string(), tree.data.display().to_string(), tree.project.display().to_string(),
+        quoted(sockets), quoted(bait.abstracts.iter().map(|(name, _)| name.clone()).collect()),
+        bait.loopback.local_addr().unwrap().port(), tag.len(),
+    );
+    let writable = level == "edit";
+    let args = vec![tree.project.join("breakout.py").display().to_string(), level.into(), facts];
+    let mut spec = spec(tree, &tree.project, writable, tree.project.clone(), "/usr/bin/python3", args);
+    spec.read_only = vec!["/usr/local/bin".into()];
+    spec.restored = vec![];
+    let net = Arc::new(Breakout { net: ScriptedNet::default() });
+    let output = Runtime::new().unwrap().block_on(async {
+        let mut jailed = launch::jailed_command(&spec, Path::new("/usr/bin/bwrap")).unwrap();
+        jailed.command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (child, control) = jailed.spawn(&Registry::default()).unwrap();
+        tokio::spawn(channel::serve(control, net.clone()));
+        finish(child).await
+    });
+    let text = String::from_utf8_lossy(&output.stdout);
+    println!("{text}");
+    assert!(output.status.success() && text.contains("ALL PASSED"), "status {:?}\n{text}\n{}", output.status, String::from_utf8_lossy(&output.stderr));
+    let dialled = net.net.dialled.lock().unwrap();
+    assert!(dialled.iter().all(|target| target.ip().to_string() == "1.1.1.1"), "{dialled:?}");
+    for (path, text) in &bait.guarded {
+        assert_eq!(&std::fs::read(path).unwrap(), text, "{} changed", path.display());
+    }
+    let mut sleeper = bait.sleeper;
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    for (path, _) in &bait.sockets { let _ = std::fs::remove_file(path); }
+}
+
+#[test]
+fn a_bot_at_edit_finds_no_way_out() {
+    if !wanted() { return; }
+    let tree = tree("breakout-edit");
+    breakout(&tree, "edit", "1");
+    assert!(tree.project.join("wrote-this").exists());
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+#[test]
+fn a_bot_at_read_finds_no_way_out() {
+    if !wanted() { return; }
+    let tree = tree("breakout-read");
+    breakout(&tree, "read", "22");
+    assert!(!tree.project.join("wrote-this").exists());
+    let _ = std::fs::remove_dir_all(&tree.root);
 }

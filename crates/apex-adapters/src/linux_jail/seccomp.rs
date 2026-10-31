@@ -77,6 +77,7 @@ pub fn filter() -> Vec<u8> {
     p.jump(JUMP_SET, X32_BIT, "no_call");
     p.jump(JUMP_EQ, 41, "socket");
     p.jump(JUMP_EQ, 53, "pair");
+    p.jump(JUMP_EQ, 101, "no_perm");
     p.jump(JUMP_EQ, IO_URING_SETUP, "no_call");
     p.step(RETURN, ALLOW);
 
@@ -84,6 +85,7 @@ pub fn filter() -> Vec<u8> {
     p.step(LOAD, NR);
     p.jump(JUMP_EQ, 198, "socket");
     p.jump(JUMP_EQ, 199, "pair");
+    p.jump(JUMP_EQ, 117, "no_perm");
     p.jump(JUMP_EQ, IO_URING_SETUP, "no_call");
     p.step(RETURN, ALLOW);
 
@@ -98,6 +100,7 @@ pub fn filter() -> Vec<u8> {
     p.step(LOAD, ARG1);
     p.step(AND, TYPE_MASK);
     p.jump(JUMP_EQ, SOCK_STREAM, "allow");
+    p.label("no_perm");
     p.step(RETURN, errno(EPERM));
 
     p.label("allow");
@@ -175,6 +178,12 @@ mod tests {
         assert_eq!(run(0x4000_0003, 102, [0, 0]), errno(ENOSYS), "32-bit socketcall");
         assert_eq!(run(0x4000_0028, 1, [0, 0]), errno(ENOSYS), "32-bit Arm");
         assert_eq!(run(AUDIT_ARCH_X86_64, X32_BIT | 41, [AF_UNIX, 1]), errno(ENOSYS), "x32 socket");
+    }
+
+    #[test]
+    fn ptrace_is_refused() {
+        assert_eq!(run(AUDIT_ARCH_X86_64, 101, [0, 0]), errno(EPERM));
+        assert_eq!(run(AUDIT_ARCH_AARCH64, 117, [0, 0]), errno(EPERM));
     }
 
     #[test]

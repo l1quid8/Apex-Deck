@@ -10,6 +10,7 @@ pub mod init;
 #[cfg(target_os = "linux")]
 pub mod launch;
 pub mod paths;
+pub mod probe;
 pub mod proxy;
 pub mod refresh;
 pub mod seccomp;
@@ -112,6 +113,7 @@ pub fn bwrap_args(spec: &JailSpec, mounts: &paths::Mounts, is_dir: impl Fn(&Path
     for item in &spec.restored {
         bind(&mut out, item);
     }
+    out.extend(["--remount-ro".into(), "/".into()]);
     out.extend(["--chdir".into(), spec.cwd.clone().into(), "--".into()]);
     out.extend([INIT_PATH.into(), INIT_ARG.into(), spec.control_fd.to_string().into(), PROXY_PORT.to_string().into()]);
     out.push(spec.program.clone().into());
