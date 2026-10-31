@@ -160,10 +160,13 @@ final class Server {
         }
         do {
           let result = try self.call(params, id: String(describing: id))
-          self.response(id, ["content": [["type": "text", "text": result]]], client)
+          self.response(id, result, client)
         } catch let error as Refusal {
           self.snapshot = nil
-          let fresh = (try? self.ax.capture(epoch: self.latch.state().0))?.output
+          // A screenshot refusal must not do an extra AX read after Stop or
+          // a missing permission; only a successful request exports its pair.
+          let screenshot = params["name"] as? String == "get_screenshot"
+          let fresh = screenshot ? nil : (try? self.ax.capture(epoch: self.latch.state().0))?.output
           self.fail(
             id,
             error.code
@@ -177,7 +180,21 @@ final class Server {
       }
     }
   }
-  func call(_ params: [String: Any], id: String) throws -> String {
+  func call(_ params: [String: Any], id: String) throws -> [String: Any] {
+    if params["name"] as? String == "get_screenshot" {
+      guard (params["arguments"] as? [String: Any] ?? [:]).isEmpty else {
+        throw Refusal("get_screenshot_takes_no_arguments")
+      }
+      try latch.check(id)
+      guard #available(macOS 14.2, *) else { throw Refusal("single_window_screenshot_requires_macOS_14_2") }
+      let (fresh, result) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id)
+      try latch.check(id, epoch: fresh.epoch)
+      snapshot = fresh
+      return result
+    }
+    return ["content": [["type": "text", "text": try callText(params, id: id)]]]
+  }
+  func callText(_ params: [String: Any], id: String) throws -> String {
     let name = params["name"] as? String ?? ""
     let args = params["arguments"] as? [String: Any] ?? [:]
     if name == "read_screen" {
@@ -267,6 +284,7 @@ final class Server {
       tool(
         "read_screen", "Read bounded TextEdit AX list without launching/focusing it.", [:], [], true
       ),
+      ScreenshotPolicy.tool,
       tool(
         "click", "Activate one current numbered AX control.",
         snapshot.merging(["element": ["type": "integer", "minimum": 1]]) { $1 },

@@ -84,6 +84,7 @@ struct Snapshot {
   let focusFingerprint: String?
   let controls: [Control]
   let output: String
+  let screenshotSafe: Bool
 }
 struct Tree {
   let targetPID: pid_t
@@ -93,6 +94,7 @@ struct Tree {
   var roles = [String: Int]()
   var truncated = false
   var actionCount = 0
+  var screenshotSafe = true
   var deadline = ProcessInfo.processInfo.systemUptime + 2
   mutating func walk(_ e: AXUIElement, _ depth: Int = 0) {
     guard depth <= 20, visited.count < 2000, controls.count < 500,
@@ -106,12 +108,15 @@ struct Tree {
     let role = string(e, kAXRoleAttribute) ?? ""
     roles[role, default: 0] += 1
     if pid(e) != targetPID {
+      screenshotSafe = false
       lines.append("foreign-owned surface pid=\(pid(e)); controls omitted")
       return
     }
     let secure = Policy.protectedRole(role, string(e, kAXSubroleAttribute) ?? "")
+    if role == kAXUnknownRole { screenshotSafe = false }
     // Do not inspect protected descendants or fetch their values.
     if secure {
+      screenshotSafe = false
       lines.append("protected control omitted")
       return
     }
@@ -134,7 +139,8 @@ struct Tree {
       return
     }
     var count = 0
-    if AXUIElementGetAttributeValueCount(e, kAXChildrenAttribute as CFString, &count) == .success {
+    let childrenResult = AXUIElementGetAttributeValueCount(e, kAXChildrenAttribute as CFString, &count)
+    if childrenResult == .success {
       var offset = 0
       while offset < count {
         guard ProcessInfo.processInfo.systemUptime < deadline, visited.count < 2000,
@@ -152,9 +158,15 @@ struct Tree {
           truncated = true
           break
         }
-        for child in children as? [AXUIElement] ?? [] { walk(child, depth + 1) }
+        guard let listed = children as? [AXUIElement], listed.count == size else {
+          screenshotSafe = false
+          break
+        }
+        for child in listed { walk(child, depth + 1) }
         offset += size
       }
+    } else if childrenResult != .attributeUnsupported {
+      screenshotSafe = false
     }
   }
 }
@@ -196,7 +208,7 @@ final class Accessibility {
       id: id, app: app, launch: app.launchDate!, window: window,
       document: window.flatMap { string($0, kAXDocumentAttribute) }, focus: focus, value: value,
       range: range, epoch: epoch, focusFingerprint: focusSafe ? fingerprint(focus!) : nil,
-      controls: tree.controls, output: output)
+      controls: tree.controls, output: output, screenshotSafe: tree.screenshotSafe && !tree.truncated)
   }
   func validate(_ s: Snapshot, epoch: UInt64) throws -> AXUIElement {
     guard trusted(), !s.app.isTerminated, s.app.launchDate == s.launch, epoch == s.epoch else {
