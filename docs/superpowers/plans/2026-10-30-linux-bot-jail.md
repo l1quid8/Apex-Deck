@@ -59,9 +59,9 @@
 - Consumes: nothing from Task 1.
 - Produces: `proxy::refused(ip: IpAddr, own: &[IpAddr]) -> bool`; `proxy::serve(stream, resolver, own_addrs)`; `channel::serve(control: UnixStream, purposes: Purposes)`, which hands one fresh fd per request and ends when the jail closes its side.
 
-- [ ] Failing tests: every range in the design in each encoding (IPv4-mapped, NAT64, 6to4), own addresses read per connection, port 80 and 8443 refused, a name with mixed answers dials only checked ones, a name changing between lookups dials only what was checked, a purpose other than `proxy` or `codex-hook` is refused.
-- [ ] Implement, then pass on macOS.
-- [ ] Commit.
+- [x] Failing tests: every range in the design in each encoding (IPv4-mapped, NAT64, 6to4), own addresses read per connection, port 80 and 8443 refused, a name with mixed answers dials only checked ones, a name changing between lookups dials only what was checked, a purpose other than `proxy` or `codex-hook` is refused.
+- [x] Implement, then pass on macOS.
+- [x] Commit.
 
 ### Task 3: In-jail init, launch and group stop
 

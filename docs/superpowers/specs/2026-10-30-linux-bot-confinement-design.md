@@ -218,6 +218,9 @@ way: a file hard-linked out of a protected folder into a project stays readable.
 person can make one of those, because the source isn't in the jail, so it's a stated limit.
 The table is read once per launch; mounts made later by a person or a Full bot are outside
 the guarantee.
+A person who deliberately points a login path into a project, for example by making
+`~/.aws` a symlink to a folder inside it, is also outside this boundary: the path is
+resolved at launch, and that project's bot can see what's written there later.
 
 Message: "This folder holds your login files. Pick a folder inside it, or use Full."
 A folder pick is rechecked at launch, because a symlink can change after it was chosen.

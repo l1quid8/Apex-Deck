@@ -4,7 +4,9 @@
 //! secrets to hide can never be complete.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+pub mod channel;
 pub mod paths;
+pub mod proxy;
 pub mod seccomp;
 
 use std::ffi::OsString;
