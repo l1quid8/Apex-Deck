@@ -19,6 +19,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::windows::named_pipe::{NamedPipeServer, ServerOptions},
+    sync::Semaphore,
 };
 use windows_service::{
     define_windows_service,
@@ -31,6 +32,12 @@ use windows_sys::Win32::{
     Security::SECURITY_ATTRIBUTES, System::Pipes::GetNamedPipeClientProcessId,
 };
 const NAME: &str = "ApexDeckProvenance";
+// Requests run side by side so one slow client cannot hold up the rest. The cap
+// bounds what a flood of connections can cost.
+const MAX_CLIENTS: usize = 64;
+// 0x12019b is read/write access without FILE_CREATE_PIPE_INSTANCE, which GW would
+// grant: clients can connect, but only SYSTEM can add a server end to this name.
+const PIPE_SDDL: &str = "O:SYG:SYD:P(A;;GA;;;SY)(A;;0x12019b;;;AU)";
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Pin {
@@ -129,8 +136,8 @@ impl State {
                 .as_str()
                 .filter(|n| n.len() == 32 && n.bytes().all(|b| b.is_ascii_hexdigit()))
                 .ok_or("Invalid host ownership challenge")?;
-            let directory = win::user_root(sid)?.join("host-locks");
-            win::secure_directory(&directory, false)?;
+            let directory = win::host_locks(sid)?;
+            win::user_directory(&directory, sid)?;
             let binding = serde_json::to_vec(&(0u32, folder)).map_err(|e| e.to_string())?;
             use sha2::{Digest, Sha256};
             let path = directory.join(format!("{:x}", Sha256::digest(binding)));
@@ -167,7 +174,7 @@ impl State {
     }
 }
 fn pipe(first: bool) -> Result<NamedPipeServer, String> {
-    let descriptor = win::descriptor("O:SYG:SYD:P(A;;GA;;;SY)(A;;GRGW;;;AU)")?;
+    let descriptor = win::descriptor(PIPE_SDDL)?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor.0,
@@ -199,94 +206,122 @@ async fn serve(
             return Err("Installed authority build does not match protected pins".into());
         }
     }
+    let config = Arc::new(config);
+    let clients = Arc::new(Semaphore::new(MAX_CLIENTS));
     let mut listener = pipe(true)?;
     running()?;
     while !stop.load(Ordering::Relaxed) {
+        let Ok(permit) =
+            tokio::time::timeout(Duration::from_millis(200), clients.clone().acquire_owned()).await
+        else {
+            continue;
+        };
+        let permit = permit.map_err(|e| e.to_string())?;
         match tokio::time::timeout(Duration::from_millis(200), listener.connect()).await {
             Err(_) => continue,
-            Ok(result) => result.map_err(|e| e.to_string())?,
+            Ok(Ok(())) => (),
+            // A client can vanish before it is accepted. That costs one instance,
+            // never the service.
+            Ok(Err(_)) => {
+                match pipe(false) {
+                    Ok(fresh) => listener = fresh,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+                }
+                continue;
+            }
         }
         // Keep a fresh listening instance alive before retiring the used one.
         // The client also checks this instance's PID against SCM (owner alone
         // cannot identify a server when Windows shares an object's descriptor).
-        let mut stream = std::mem::replace(&mut listener, pipe(false)?);
-        let response = tokio::time::timeout(Duration::from_secs(10), async {
-            let mut pid = 0;
-            if unsafe { GetNamedPipeClientProcessId(stream.as_raw_handle(), &mut pid) } == 0 {
-                return Err("No kernel pipe peer".into());
-            }
-            let process = win::process(pid)?;
-            let sid = win::process_sid(process.as_raw_handle())?;
-            let image = win::process_image(process.as_raw_handle())?;
-            let ui = config.ui.matches(&image);
-            let daemon = config.daemon.matches(&image);
-            let helper = config.helper.matches(&image);
-            if !ui && !daemon && !helper {
-                return Err("Untrusted provenance peer".into());
-            }
-            let mut bytes = Vec::new();
-            BufReader::new((&mut stream).take(MAX_BYTES as u64 + 1))
-                .read_until(b'\n', &mut bytes)
-                .await
-                .map_err(|e| e.to_string())?;
-            if bytes.len() > MAX_BYTES || bytes.last() != Some(&b'\n') {
-                return Err("Invalid authority request frame".into());
-            }
-            if win::pipe_client_sid(stream.as_raw_handle())? != sid {
-                return Err("Pipe and process identities do not match".into());
-            }
-            let mut request: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            if helper && request["op"] != "identity" {
-                return Err("Helper cannot issue or consume authority".into());
-            }
-            let mut state = State::open(&sid)?;
-            if request["op"] == "hello" && ui {
-                let nonce = request["nonce"]
-                    .as_str()
-                    .filter(|value| value.len() == 36)
-                    .ok_or("Invalid UI challenge")?;
-                let hello = sign(
-                    &state.key,
-                    &json!({"domain":DOMAIN,"kind":"hello","nonce":nonce}),
-                )?;
-                let mut bytes = serde_json::to_vec(&hello).map_err(|e| e.to_string())?;
-                bytes.push(b'\n');
-                stream.write_all(&bytes).await.map_err(|e| e.to_string())?;
-                let mut bytes = Vec::new();
-                BufReader::new((&mut stream).take(MAX_BYTES as u64 + 1))
-                    .read_until(b'\n', &mut bytes)
+        let Ok(fresh) = pipe(false) else {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        };
+        let mut stream = std::mem::replace(&mut listener, fresh);
+        let config = config.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let response =
+                tokio::time::timeout(Duration::from_secs(10), answer(&mut stream, &config))
                     .await
-                    .map_err(|e| e.to_string())?;
-                if bytes.len() > MAX_BYTES || bytes.last() != Some(&b'\n') {
-                    return Err("Invalid UI submission frame".into());
-                }
-                if win::pipe_client_sid(stream.as_raw_handle())? != sid {
-                    return Err("UI pipe identity changed".into());
-                }
-                request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            } else if ui {
-                return Err("UI submission requires authority authentication".into());
+                    .unwrap_or_else(|_| Err("Authority client timed out".into()));
+            let wait = Duration::from_millis(if response.is_ok() { 2000 } else { 500 });
+            let response = response.unwrap_or_else(|error: String| json!({"error":error}));
+            if let Ok(mut bytes) = serde_json::to_vec(&response) {
+                bytes.push(b'\n');
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(3), stream.write_all(&bytes)).await;
+                // Keep the server handle alive until the client consumes its frame.
+                // Disconnecting early can discard unread named-pipe output.
+                let mut acknowledgement = [0u8; 1];
+                let _ = tokio::time::timeout(wait, stream.read(&mut acknowledgement)).await;
             }
-            // Open each transaction from durable state. The serial service loop is the
-            // sole writer, so neither disconnected clients nor stale caches lose claims.
-            state.apply(&request, ui, daemon, &sid)
-        })
-        .await
-        .unwrap_or_else(|_| Err("Authority client timed out".into()));
-        let response = response.unwrap_or_else(|error: String| json!({"error":error}));
-        if let Ok(mut bytes) = serde_json::to_vec(&response) {
-            bytes.push(b'\n');
-            let _ = tokio::time::timeout(Duration::from_secs(3), stream.write_all(&bytes)).await;
-            // Keep the server handle alive until the client consumes its frame.
-            // Disconnecting early can discard unread named-pipe output.
-            let mut acknowledgement = [0u8; 1];
-            let _ = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut acknowledgement))
-                .await;
-        }
-        // Retire the used wrapper; Mio retains its completed EOF state.
-        drop(stream);
+            // Retire the used wrapper; Mio retains its completed EOF state.
+            drop(stream);
+        });
     }
     Ok(())
+}
+async fn answer(stream: &mut NamedPipeServer, config: &Config) -> Result<Value, String> {
+    let mut pid = 0;
+    if unsafe { GetNamedPipeClientProcessId(stream.as_raw_handle(), &mut pid) } == 0 {
+        return Err("No kernel pipe peer".into());
+    }
+    let process = win::process(pid)?;
+    let sid = win::process_sid(process.as_raw_handle())?;
+    let image = win::process_image(process.as_raw_handle())?;
+    let ui = config.ui.matches(&image);
+    let daemon = config.daemon.matches(&image);
+    let helper = config.helper.matches(&image);
+    if !ui && !daemon && !helper {
+        return Err("Untrusted provenance peer".into());
+    }
+    let mut bytes = Vec::new();
+    BufReader::new((&mut *stream).take(MAX_BYTES as u64 + 1))
+        .read_until(b'\n', &mut bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_BYTES || bytes.last() != Some(&b'\n') {
+        return Err("Invalid authority request frame".into());
+    }
+    if win::pipe_client_sid(stream.as_raw_handle())? != sid {
+        return Err("Pipe and process identities do not match".into());
+    }
+    let mut request: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if helper && request["op"] != "identity" {
+        return Err("Helper cannot issue or consume authority".into());
+    }
+    if request["op"] == "hello" && ui {
+        let nonce = request["nonce"]
+            .as_str()
+            .filter(|value| value.len() == 36)
+            .ok_or("Invalid UI challenge")?;
+        let hello = sign(
+            &State::open(&sid)?.key,
+            &json!({"domain":DOMAIN,"kind":"hello","nonce":nonce}),
+        )?;
+        let mut bytes = serde_json::to_vec(&hello).map_err(|e| e.to_string())?;
+        bytes.push(b'\n');
+        stream.write_all(&bytes).await.map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        BufReader::new((&mut *stream).take(MAX_BYTES as u64 + 1))
+            .read_until(b'\n', &mut bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_BYTES || bytes.last() != Some(&b'\n') {
+            return Err("Invalid UI submission frame".into());
+        }
+        if win::pipe_client_sid(stream.as_raw_handle())? != sid {
+            return Err("UI pipe identity changed".into());
+        }
+        request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    } else if ui {
+        return Err("UI submission requires authority authentication".into());
+    }
+    // Open each transaction from durable state, with no await before it commits.
+    // The service runs on one thread, so requests that wait on their clients side
+    // by side still reach the journal one at a time and lose no claims.
+    State::open(&sid)?.apply(&request, ui, daemon, &sid)
 }
 define_windows_service!(ffi_main, service_main);
 fn service_main(_args: Vec<OsString>) {
@@ -420,6 +455,22 @@ fn install() -> Result<(), String> {
             .map_err(|e| e.to_string())?,
         Err(error) => return Err(error.to_string()),
     };
+    // A service that stops on an error comes back by itself once the cause clears,
+    // such as another program briefly holding the pipe name.
+    service
+        .update_failure_actions(ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86400)),
+            reboot_msg: None,
+            command: None,
+            actions: Some(Vec::from([5, 5, 30].map(|seconds| ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(seconds),
+            }))),
+        })
+        .map_err(|e| e.to_string())?;
+    service
+        .set_failure_actions_on_non_crash_failures(true)
+        .map_err(|e| e.to_string())?;
     let root = win::root()?;
     win::secure_directory(&root, false)?;
     win::secure_directory(&root.join("users"), false)?;

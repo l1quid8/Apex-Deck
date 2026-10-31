@@ -166,6 +166,11 @@ pub fn user_root(sid: &str) -> Result<PathBuf, String> {
     }
     Ok(root()?.join("users").join(sid))
 }
+// Host locks are taken with a file lock, which read access is enough for, so
+// nobody but their user may open them.
+pub fn host_locks(sid: &str) -> Result<PathBuf, String> {
+    Ok(user_root(sid)?.join("host-locks-v2"))
+}
 pub fn public_path() -> Result<PathBuf, String> {
     Ok(user_root(&current_sid()?)?.join("public-key"))
 }
@@ -372,6 +377,19 @@ pub fn root_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 pub fn secure_directory(path: &Path, private: bool) -> Result<(), String> {
+    create_directory(
+        path,
+        private,
+        if private { PRIVATE_SDDL } else { READ_SDDL },
+    )
+}
+fn user_sddl(sid: &str) -> String {
+    format!("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;{sid})")
+}
+pub fn user_directory(path: &Path, sid: &str) -> Result<(), String> {
+    create_directory(path, false, &user_sddl(sid))
+}
+fn create_directory(path: &Path, private: bool, sddl: &str) -> Result<(), String> {
     // Called only by the elevated installer/service. Refuse existing hostile
     // ancestry; ACL repair is never a way to import user-controlled authority.
     if path.exists() {
@@ -398,7 +416,7 @@ pub fn secure_directory(path: &Path, private: bool) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         protected_handle(&file)?;
     }
-    let descriptor = descriptor(if private { PRIVATE_SDDL } else { READ_SDDL })?;
+    let descriptor = descriptor(sddl)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor.0,
@@ -580,6 +598,15 @@ mod tests {
             "user-writable key was accepted"
         );
         std::fs::remove_dir_all(insecure).unwrap();
+        let sid = current_sid().unwrap();
+        let own = base.join("own");
+        user_directory(&own, &sid).unwrap();
+        atomic(&own.join("lock"), b"").unwrap();
+        protected_handle(&File::open(own.join("lock")).unwrap()).unwrap();
+        assert!(
+            !user_sddl(&sid).contains(";BU)"),
+            "other accounts can open a host lock"
+        );
         std::fs::remove_dir_all(base).unwrap();
     }
 }

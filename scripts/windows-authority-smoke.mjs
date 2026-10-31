@@ -47,5 +47,11 @@ try{
  assert.match(refusal.error,/Untrusted provenance peer/);
  // A rejected client retaining its handle cannot break subsequent service IO.
  assert.equal(identity().publicKey,initial.publicKey);heldSocket.destroy();
+ // Clients that vanish at once or sit silent cannot stop or starve the service.
+ const pipe='\\\\.\\pipe\\ApexDeckProvenance-v1';
+ for(let i=0;i<100;i++)net.createConnection(pipe).on('error',()=>{}).destroy();
+ const silent=Array.from({length:32},()=>net.createConnection(pipe).on('error',()=>{}));
+ assert.equal(identity().publicKey,initial.publicKey);
+ for(const socket of silent)socket.destroy();
  console.log('Installed Windows authority: native identity, production host ownership, protected ledger read, restart, legacy forgery refusal, and untrusted peer refusal passed.');
 }finally{rmSync(root,{recursive:true,force:true});}

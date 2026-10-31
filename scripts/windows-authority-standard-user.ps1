@@ -23,7 +23,16 @@ try {
 `$env:TEMP=`$PSScriptRoot
 `$env:TMP=`$PSScriptRoot
 & '$nodeLiteral' '$smokeLiteral' '$daemonLiteral'
-exit `$LASTEXITCODE
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
+try {
+  `$rogue=[System.IO.Pipes.NamedPipeServerStream]::new('ApexDeckProvenance-v1','InOut',-1)
+  `$rogue.Dispose()
+  Write-Output 'a standard user added a server end to the authority pipe'
+  exit 9
+} catch {
+  if (`$_.Exception.InnerException -isnot [UnauthorizedAccessException]) { Write-Output `$_; exit 10 }
+}
+exit 0
 "@ | Set-Content -Path $script -Encoding utf8
   $credential=[PSCredential]::new("$env:COMPUTERNAME\$name",$password)
   $process=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $probe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$script+'"') -RedirectStandardOutput (Join-Path $probe 'stdout.txt') -RedirectStandardError (Join-Path $probe 'stderr.txt') -PassThru
@@ -31,6 +40,9 @@ exit `$LASTEXITCODE
   Get-Content (Join-Path $probe 'stdout.txt')
   Get-Content (Join-Path $probe 'stderr.txt')
   if ($process.ExitCode -ne 0) { throw "standard-user production authority failed: exit $($process.ExitCode)" }
+  $locks=Join-Path $env:ProgramData "Apex Deck Provenance\users\$($user.SID.Value)\host-locks-v2"
+  $sddl=(Get-Acl $locks).Sddl
+  if ($sddl -match ';BU\)' -or $sddl -notmatch [regex]::Escape($user.SID.Value)) { throw "host locks are open to other accounts: $sddl" }
 } finally {
   if ($user) { Remove-LocalUser -Name $name }
   if (Test-Path $probe) { Remove-Item -Recurse -Force $probe }

@@ -32,7 +32,7 @@ pub(crate) struct ScopeGuard {
     _file: File,
 }
 pub(crate) fn lock_path(sid: &str, folder: &str) -> Result<PathBuf, String> {
-    Ok(windows::user_root(sid)?.join("host-locks").join(format!(
+    Ok(windows::host_locks(sid)?.join(format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&(0u32, folder)).map_err(|e| e.to_string())?)
     )))

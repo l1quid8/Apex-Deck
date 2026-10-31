@@ -90,6 +90,8 @@ jobs:
           Write-Host "the installed app carries the service at $($service.FullName)"
           node scripts/windows-authority-smoke.mjs $service.FullName
           if ($LASTEXITCODE -ne 0) { throw 'installed production authority smoke failed' }
+          $recovery = sc.exe qfailure ApexDeckProvenance | Out-String
+          if ($recovery -notmatch 'RESTART') { throw "the service has no restart on failure: $recovery" }
 
           # Now the case the shutdown step exists for: a service from an earlier
           # build is still running. ping -t is always present and never exits, and
