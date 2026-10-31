@@ -2209,7 +2209,7 @@ impl Host {
                 });
                 let next = alternative.map_or_else(
                     || "Message another bot".to_owned(),
-                    |candidate| format!("Message @{}", candidate.id),
+                    |candidate| format!("Message @{}", apex_core::mention_for(&candidate)),
                 );
                 format!("{} can't pick without tools. {error} {next}, then run /curate again.", config.display_name)
             })?;

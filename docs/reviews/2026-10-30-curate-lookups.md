@@ -2,6 +2,53 @@
 
 Status: **desktop lifecycle verified; provider/access matrix executed with approval requests and provider blockers**. This is not a blanket all-provider acceptance pass. The old-service blocker is resolved. Current evidence is below; the original run remains as history.
 
+## Serial retest and final review follow-up — 2026-10-31
+
+The requested follow-up on `b5c4f9ee` is complete on `fix/curate-alternative-handle`; review remains pending. No push, merge, installation, service restart, or Ds4 server configuration change occurred. This section supersedes the pending serial-retest status below; provider quota, sign-in, and approval limitations in the original matrix still apply.
+
+### Renamed alternative handle
+
+The refusal now uses `apex_core::mention_for(&candidate)` rather than the participant ID. The host regression uses ID `backup` and current name `Renamed Helper`, requires `Message @renamed-helper`, rejects `@backup`, and still verifies that no journal or curation is created. It failed before the one-line fix with `Message @backup`, then passed afterward. This source fix has not been installed.
+
+### Ds4 Read and Ask — serial passes at 65,536
+
+The protected installed window became accessible through its exact TrustedUI application path. Access changes were made there, then verified from fresh `room_state`, on the disposable lookup copy only. Each lookup started from the same 54-message curated baseline, hiding #0–#33. No established TCP connection to port 8000 existed before either lookup; no other Ds4 call or curator was started during these tests. The server advertised 65,536 throughout. The two runs used a 600-second limit and ran one at a time.
+
+| Access | Result | Elapsed | Actual journal tools |
+|---|---|---|---|
+| Read-only | Both markers returned, no approval | 141.58 s | Two Read calls, completed in 3 ms and 1 ms |
+| Ask | Both markers returned, no approval | 95.27 s | One Read call, completed in 2 ms |
+
+Both replies were exactly `COBALT-FERN-7319 AMBER-OTTER-8642`. The Read tool events are 17405–17406 and 17464–17465; its final message is 17655. Ask's tool events are 17992–17993 and final message 18229. Replayed daemon events preserve the actual tool inputs and outputs, not only the step index. The long original remains the measured 4,648-character fixture with its marker at offset 3,204. These are completed two-marker lookups, not a full-context performance benchmark or proof of arbitrary recall.
+
+After each answer the lookup copy was rewound to 54, preventing answer contamination. Its original Full settings were restored through the installed UI and verified from fresh room state. Both QA panes were closed; both rooms were idle. The lifecycle copy remains at its pre-existing Read baseline and retains three new disposable probe messages (#90–#92). Existing conversations and the server were left running.
+
+Evidence: [Read result](curate-task8-review-2026-10-31/serial-retest/ds4-read.json), [Ask result](curate-task8-review-2026-10-31/serial-retest/ds4-ask.json), [actual replayed events](curate-task8-review-2026-10-31/serial-retest/replayed-events.json), and the server/hello/final-state records in the same directory. The earlier contaminated timeouts and curator timing are not used as performance evidence.
+
+### Queue reproduction with and without a failed send
+
+Both cases were exercised in the protected desktop UI in lifecycle room `pane-mvwtcdzq-0`, separately from the Ds4 server:
+
+1. **No unconfirmed send ahead:** send a normal message to unauthenticated Grok, let its acknowledged turn fail and become idle, queue `/curate`, then press its visible Resume button. Curation dispatched (turn_started 17717), failed at Grok sign-in, and left no queued command. This does not reproduce a queue defect.
+2. **Unconfirmed send ahead:** queue a harmless message for the paused bot, edit it to address Null with an unknown tool server, and let the host reject it. Ordinary composer validation refused the same fixture before queueing, so the queued-edit route was required to create a genuine retained send failure. The UI showed `Send unconfirmed for Null` and `Retry send`. Queue `/curate` behind it; the UI showed two queued items and `Paused for Null`. Press Resume: the second line changed to `Queued for Null`, but both items stayed, the failed send kept Retry send, and no curator started. All participants were idle. Both disposable items were removed afterward, and the bot's queue count cleared.
+
+This reproduces the reported symptom under a known condition: Resume clears pause flags but deliberately does not retry or discard an unconfirmed earlier send, which remains a FIFO blocker for the same recipient. Retrying automatically could duplicate an already committed send. `ParticipantQueues.drain` checks `item.failed` before dispatch; `resume` does not clear it. Added behavioral coverage for compact, curate, and curate_undo verifies that Resume leaves the failed send and later command in place, and removal followed by Resume allows the command to dispatch. No production queue behavior was changed. The original incident lacks local state and therefore cannot be conclusively assigned this cause; the matching reproduction and UI explanation are the evidence, not a reconstruction of that history.
+
+Native queue observations are recorded in [queue-observations.json](curate-task8-review-2026-10-31/serial-retest/queue-observations.json). Queue items are renderer-local, so the RPC room snapshot alone is not claimed to capture them. The UI currently labels the blocked command merely “Queued” after Resume; explaining its failed-send blocker more clearly is a follow-up UX limitation.
+
+### Fresh verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p apex-core` | 217 passed |
+| `TMPDIR=/tmp cargo test -p apex-host` | 864 passed, 9 ignored |
+| `cargo test -p apex-daemon authority` | 6 passed |
+| `npm test` | 2,889 passed, 3 skipped |
+| `npx tsc --noEmit` | Passed |
+| `git diff --check` | Passed |
+
+Scoped Rust total: **1,087 passed, 9 ignored**; this is the plan's Task 8 sequence, not the entire workspace. Every command exited 0. The renamed-handle regression was observed failing before its fix and passing afterward. The three added queue cases characterize the existing deliberate retry rule; no speculative queue fix was made. [Validation summary](curate-task8-review-2026-10-31/serial-retest/validation.json).
+
 ## Review follow-up — 2026-10-31
 
 Task 8 remains **open**. Follow-up branch: `fix/curate-acceptance-review`, starting at report commit `53d82b1f`. No push, merge, installation or service restart is part of this follow-up. The feature implementation was already on local `main`; the earlier “nothing merged” statement applies to the acceptance-report commit, not the complete feature.
@@ -98,7 +145,7 @@ Selected evidence is retained in [evidence.json](curate-task8-2026-10-31/evidenc
 | Gemini / Forge | P | Q | Q | Q | Not requested | Failed — CLI executable not found |
 | Grok / Gronk | L | N/A | L | L | Not requested | Failed — not signed in |
 | Muse / Muck | P | N/A | P | P | Not requested | P — hid 43 |
-| Local API / Ds4 | R/T* | R/T* | P | P | Not requested | P — hid 31 |
+| Local API / Ds4 | P (serial retest) | P (serial retest) | P | P | Not requested | P — hid 31 |
 
 - All 22 available provider/access cells were attempted. Grok and Muse do not expose Ask, so no unsupported configuration was injected. Neither provider authentication, subscriptions nor bot permissions were widened to turn a failed cell into a pass.
 - Codex Ask requested approval for a Python command that decoded journal chunks. Claude Ask and Edit requested approval for shell-based reads/searches. The actual approval action text is in the evidence bundle. Read-only Claude used its read/search tools without an approval request.

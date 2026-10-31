@@ -451,6 +451,26 @@ test('with no routing answer, a queue that keeps no failures hands the message b
 });
 
 for (const kind of ['compact', 'curate', 'curate_undo']) {
+  test(`Resume leaves ${kind} behind an unconfirmed send until that send is removed`, async () => {
+    const sent = [];
+    const q = new ParticipantQueues(async () => ['null'], async (_text, _to, action) => {
+      sent.push(action);
+      if (action === 'message') throw new Error('No tool server called missing');
+    }, async () => {}, () => {});
+    const failed = await q.send('@null !missing');
+    await q.send(`/${kind}`, kind);
+    q.resume(); await tick();
+    assert.deepEqual(sent, ['message']);
+    assert.equal(q.items[0].failed, true);
+    assert.equal(q.items[1].kind, kind);
+    assert.equal(q.paused.size, 0);
+    assert.equal(q.active, false);
+    q.remove(failed);
+    q.resume(); await tick();
+    assert.deepEqual(sent, ['message', kind]);
+    assert.deepEqual(q.items, []);
+  });
+
   test(`Resume dispatches a queued ${kind} after a provider failure and terminal events`, async () => {
     const sent = [];
     const q = new ParticipantQueues(async () => ['gronk'], async (text, to, action) => {

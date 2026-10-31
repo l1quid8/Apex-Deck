@@ -594,11 +594,14 @@ fn curate_refusal_names_an_available_alternative_without_starting_a_turn() {
         program: "never-run".into(), args: vec![],
     };
     let other = apex_core::testing::ScriptedParticipant::new("backup", &["unused"]);
-    saved.snapshot.participants.push(apex_core::Participant::config(&other).clone());
+    let mut alternative = apex_core::Participant::config(&other).clone();
+    alternative.display_name = "Renamed Helper".into();
+    saved.snapshot.participants.push(alternative);
     h.store.save_room("r", &saved).unwrap();
     h.room_open("r".into(), vec![], RoomOptions::default(), None, true).unwrap();
     let error = rt.block_on(h.room_curate("r".into())).unwrap_err();
-    assert!(error.contains("Message @backup"), "{error}");
+    assert!(error.contains("Message @renamed-helper"), "{error}");
+    assert!(!error.contains("@backup"), "{error}");
     assert!(!path(&data).exists());
     assert!(rt.block_on(h.handle("r").unwrap().room.lock()).snapshot().curations.is_empty());
     h.shutdown(); drop(h); drop(rt);
