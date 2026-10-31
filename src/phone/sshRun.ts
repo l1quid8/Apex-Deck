@@ -222,7 +222,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     const remote = await ssh.exec(REMOTE_ON, { timeoutS: 40 });
     if (remote.code !== 0) throw new StepFailure("start", "Couldn't start Deck", tail(remote) || "Deck didn't answer on the server.");
 
-    const tools = report((await ssh.exec(AI_TOOLS, { timeoutS: 300 })).stdout);
+    const tools = report((await ssh.exec(AI_TOOLS, { timeoutS: 500 })).stdout);
     const missing = ["claude", "codex"].filter((tool) => tools[tool] !== "installed");
     const signIn = ["claude", "codex"].filter((tool) => tools[tool] === "installed" && tools[`${tool}-login`] !== "yes");
     const named = (list: string[]) => list.map((tool) => tool[0].toUpperCase() + tool.slice(1)).join(" and ");

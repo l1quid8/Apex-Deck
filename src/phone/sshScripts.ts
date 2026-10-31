@@ -29,8 +29,8 @@ exit 0
 `;
 
 /** Print a URL to stdout with whichever fetcher the server has. */
-export const readUrl = (url: string): string =>
-  `if command -v curl >/dev/null 2>&1; then curl -fsSL --max-time 30 ${shellQuote(url)}; else wget -qO- --timeout=30 ${shellQuote(url)}; fi`;
+export const readUrl = (url: string, seconds = 30): string =>
+  `if command -v curl >/dev/null 2>&1; then curl -fsSL --max-time ${seconds} ${shellQuote(url)}; else wget -qO- --timeout=${seconds} ${shellQuote(url)}; fi`;
 
 export interface InstallPlan {
   url: string;
@@ -189,7 +189,7 @@ exit 5
 export const AI_TOOLS = `${PATHS}
 arch=$(uname -m); [ "$arch" = arm64 ] && arch=aarch64
 if ! command -v claude >/dev/null 2>&1; then
-  ${readUrl("https://claude.ai/install.sh")} | bash >/dev/null 2>&1 || true
+  ${readUrl("https://claude.ai/install.sh", 200)} | bash >/dev/null 2>&1 || true
 fi
 if ! command -v codex >/dev/null 2>&1; then
   if command -v npm >/dev/null 2>&1 && [ -w "$(npm prefix -g 2>/dev/null)/lib" ]; then npm install -g @openai/codex >/dev/null 2>&1 || true; fi
@@ -197,7 +197,8 @@ fi
 if ! command -v codex >/dev/null 2>&1; then
   mkdir -p "$HOME/.local/bin"
   tmp=$(mktemp -d)
-  if ${readUrl("https://github.com/openai/codex/releases/latest/download/codex-${arch}-unknown-linux-musl.tar.gz")} | tar -xz -C "$tmp" 2>/dev/null; then
+  url="https://github.com/openai/codex/releases/latest/download/codex-$arch-unknown-linux-musl.tar.gz"
+  if { curl -fsSL --max-time 200 "$url" 2>/dev/null || wget -qO- --timeout=200 "$url"; } | tar -xz -C "$tmp" 2>/dev/null; then
     mv "$tmp/codex-$arch-unknown-linux-musl" "$HOME/.local/bin/codex" 2>/dev/null && chmod 0755 "$HOME/.local/bin/codex"
   fi
   rm -rf "$tmp"
