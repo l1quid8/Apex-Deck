@@ -613,6 +613,33 @@ their key. `prepare_source` and `git apply --check` run before merge.
 
 Null reviews each step. Nothing from step 3 merges before steps 1 and 2 pass.
 
+### Step 1 spike results, 2026-10-30
+
+Scripts are in `tests/linux-jail-spike/`. Ubuntu 24.04, bubblewrap 0.9.0, arm64 Docker
+(privileged, kernel 7.0), Claude Code 2.1.316, Codex 0.166.0. Each run used the real filter
+bytes, a forwarder holding no Unix socket, and a proxy outside the jail.
+
+| Check | Result |
+| --- | --- |
+| `AF_UNIX` socket, datagram and seqpacket pairs, with and without `SOCK_CLOEXEC` | refused |
+| Stream pairs, with and without `SOCK_CLOEXEC`; `AF_INET` | allowed |
+| Plain HTTP, port 8443, metadata address through the proxy | refused |
+| `https://example.com` through the proxy | 200 |
+| Claude, Codex, Gemini with a bad key | request reached the provider; Codex 401, Gemini 400 |
+| Claude one-shot with a scripted model: Bash ran, file written, `/run` and `~/.ssh` absent | pass |
+| Claude live session: stream-json, `--permission-prompt-tool stdio`, Allow answered | pass |
+| Codex scripted turn, `workspace-write` and `danger-full-access` | pass |
+| Codex scripted turn, `read-only`: its own sandbox refused the write inside the jail | pass |
+| `codex app-server` initialize | pass |
+
+Still unproven: a signed-in turn of any provider (`signed-in.sh`, needs a person to log in);
+login refresh and copy-back; Grok, Muse and Antigravity; x86_64, so the x32 rule hasn't run;
+unprivileged containers and Ubuntu 24.04 AppArmor. The spike home is empty, not a generated
+one from the allowlist. Gemini needs Node 20 or newer.
+
+One change for `linux_jail.rs`: the spike's bot inherited the control channel, fd 3. The
+forwarder must hold it alone, so the launcher starts the bot without that fd.
+
 ## Things that stop working below Full, on purpose
 
 - `apex-daemon` and `$APEX_DECK_BIN`.
