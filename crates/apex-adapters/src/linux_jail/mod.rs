@@ -34,7 +34,7 @@ pub struct JailSpec {
     pub folders: Vec<Bind>,
     /// PATH folders and provider or runtime install folders.
     pub read_only: Vec<PathBuf>,
-    /// Always hidden if anything bound above would show them.
+    /// Always hidden wherever anything bound above would show them, under any name.
     pub protected: Vec<PathBuf>,
     /// Put back after hiding: attachments, session history.
     pub restored: Vec<Bind>,
@@ -51,43 +51,46 @@ fn bind(out: &mut Vec<OsString>, item: &Bind) {
     out.push(item.target.clone().into());
 }
 
-fn overlaps(a: &Path, b: &Path) -> bool { a.starts_with(b) || b.starts_with(a) }
-
 /// `is_dir` is `None` for a path that doesn't exist, so tests need no real tree.
-pub fn bwrap_args(spec: &JailSpec, is_dir: impl Fn(&Path) -> Option<bool>) -> Vec<OsString> {
+/// Refused when a folder is itself protected content, so no launch skips the check.
+pub fn bwrap_args(spec: &JailSpec, mounts: &paths::Mounts, is_dir: impl Fn(&Path) -> Option<bool>) -> Result<Vec<OsString>, paths::Refused> {
     let mut out: Vec<OsString> = [
         "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
         "--unshare-cgroup", "--unshare-net", "--proc", "/proc", "--dev", "/dev",
         "--tmpfs", "/tmp",
     ].map(OsString::from).into();
     out.extend(["--seccomp".into(), spec.seccomp_fd.to_string().into()]);
+    // Hides go last, as (real path, where it shows), so they win over every bind.
+    let mut hides: Vec<(PathBuf, PathBuf)> = Vec::new();
     for system in crate::gateway_sandbox::SYSTEM_RO_PATHS.iter().chain(ACCOUNT_FILES) {
-        if is_dir(Path::new(system)).is_some() {
+        if is_dir(Path::new(system)).is_none() {
+            continue;
+        }
+        if let Ok(found) = paths::hidden_in(Path::new(system), &spec.protected, mounts) {
             out.extend(["--ro-bind".into(), (*system).into(), (*system).into()]);
+            hides.extend(found.into_iter().map(|item| (item.clone(), item)));
         }
     }
     out.extend(["--ro-bind".into(), spec.init.clone().into(), INIT_PATH.into()]);
     bind(&mut out, &Bind { source: spec.private_home.clone(), target: spec.home.clone(), writable: true });
-    let mut shown: Vec<&Path> = Vec::new();
     for folder in &spec.read_only {
-        if spec.protected.iter().any(|p| overlaps(folder, p)) || is_dir(folder).is_none() {
-            continue;
+        let clean = paths::hidden_in(folder, &spec.protected, mounts).is_ok_and(|found| found.is_empty());
+        if clean && is_dir(folder).is_some() {
+            out.extend(["--ro-bind".into(), folder.clone().into(), folder.clone().into()]);
         }
-        out.extend(["--ro-bind".into(), folder.clone().into(), folder.clone().into()]);
-        shown.push(folder);
     }
     for folder in &spec.folders {
         bind(&mut out, folder);
-        shown.push(&folder.target);
-    }
-    // Hides go after every bind, so they win over anything bound before them.
-    for item in &spec.protected {
-        if !shown.iter().any(|folder| item.starts_with(folder)) {
-            continue;
+        let source = paths::resolved(&folder.source);
+        for item in paths::hidden_in(&folder.source, &spec.protected, mounts)? {
+            let inside = item.strip_prefix(&source).expect("found under the folder");
+            hides.push((item.clone(), folder.target.join(inside)));
         }
-        match is_dir(item) {
-            Some(true) => out.extend(["--tmpfs".into(), item.clone().into()]),
-            Some(false) => out.extend(["--ro-bind".into(), "/dev/null".into(), item.clone().into()]),
+    }
+    for (real, shown) in hides {
+        match is_dir(&real) {
+            Some(true) => out.extend(["--tmpfs".into(), shown.into()]),
+            Some(false) => out.extend(["--ro-bind".into(), "/dev/null".into(), shown.into()]),
             None => {}
         }
     }
@@ -98,7 +101,7 @@ pub fn bwrap_args(spec: &JailSpec, is_dir: impl Fn(&Path) -> Option<bool>) -> Ve
     out.extend([INIT_PATH.into(), INIT_ARG.into(), spec.control_fd.to_string().into(), PROXY_PORT.to_string().into()]);
     out.push(spec.program.clone().into());
     out.extend(spec.args.iter().map(OsString::from));
-    out
+    Ok(out)
 }
 
 /// Names that hand a bot a way out, whatever a provider's settings ask for.
@@ -138,7 +141,7 @@ mod tests {
     use super::*;
 
     fn spec() -> JailSpec {
-        let home = PathBuf::from("/home/me");
+        let home = PathBuf::from("/fake/me");
         let data = home.join(".local/share/apex");
         JailSpec {
             program: "/usr/bin/claude".into(),
@@ -164,11 +167,13 @@ mod tests {
 
     fn all_dirs(path: &Path) -> Option<bool> { let _ = path; Some(true) }
 
+    fn none() -> paths::Mounts { paths::Mounts::default() }
+
     fn position(args: &[String], item: &str) -> Option<usize> { args.iter().position(|a| a == item) }
 
     #[test]
     fn every_process_boundary_flag_is_there() {
-        let args = strings(&bwrap_args(&spec(), all_dirs));
+        let args = strings(&bwrap_args(&spec(), &none(), all_dirs).unwrap());
         for flag in ["--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--unshare-net"] {
             assert!(args.iter().any(|a| a == flag), "{flag}");
         }
@@ -181,37 +186,55 @@ mod tests {
 
     #[test]
     fn the_program_runs_through_init_after_the_separator() {
-        let args = strings(&bwrap_args(&spec(), all_dirs));
+        let args = strings(&bwrap_args(&spec(), &none(), all_dirs).unwrap());
         let split = position(&args, "--").unwrap();
         assert_eq!(args[split + 1..], [INIT_PATH, INIT_ARG, "12", "18080", "/usr/bin/claude", "-p", "hi"]);
     }
 
     #[test]
     fn a_read_only_folder_overlapping_a_protected_path_is_not_bound() {
-        let args = strings(&bwrap_args(&spec(), all_dirs));
+        let args = strings(&bwrap_args(&spec(), &none(), all_dirs).unwrap());
         assert!(args.iter().any(|a| a == "/opt/node/bin"));
-        assert!(!args.iter().any(|a| a == "/home/me/.ssh/bin"));
+        assert!(!args.iter().any(|a| a == "/fake/me/.ssh/bin"));
     }
 
     #[test]
     fn a_read_project_around_home_files_hides_them_after_it_is_bound() {
         let mut spec = spec();
-        spec.folders = vec![Bind { source: "/home/me".into(), target: "/home/me".into(), writable: false }];
-        let args = strings(&bwrap_args(&spec, |p| Some(p != Path::new("/home/me/.claude.json"))));
-        let project = args.windows(3).position(|w| w == ["--ro-bind", "/home/me", "/home/me"]).unwrap();
-        let ssh = args.windows(2).position(|w| w == ["--tmpfs", "/home/me/.ssh"]).expect("hidden");
-        let data = args.windows(2).position(|w| w == ["--tmpfs", "/home/me/.local/share/apex"]).expect("hidden");
+        spec.folders = vec![Bind { source: "/fake/me".into(), target: "/fake/me".into(), writable: false }];
+        let args = strings(&bwrap_args(&spec, &none(), |p| Some(p != Path::new("/fake/me/.claude.json"))).unwrap());
+        let project = args.windows(3).position(|w| w == ["--ro-bind", "/fake/me", "/fake/me"]).unwrap();
+        let ssh = args.windows(2).position(|w| w == ["--tmpfs", "/fake/me/.ssh"]).expect("hidden");
+        let data = args.windows(2).position(|w| w == ["--tmpfs", "/fake/me/.local/share/apex"]).expect("hidden");
         assert!(project < ssh && project < data);
-        assert!(args.windows(3).any(|w| w == ["--ro-bind", "/dev/null", "/home/me/.claude.json"]));
+        assert!(args.windows(3).any(|w| w == ["--ro-bind", "/dev/null", "/fake/me/.claude.json"]));
+    }
+
+    #[test]
+    fn a_folder_shown_under_another_name_is_hidden_under_that_name() {
+        let mounts = paths::Mounts::parse("1 0 8:1 /fake/me /alt rw - ext4 d rw\n2 0 8:1 /fake/me /fake/me rw - ext4 d rw\n").unwrap();
+        let mut spec = spec();
+        spec.folders = vec![Bind { source: "/alt".into(), target: "/project".into(), writable: false }];
+        let args = strings(&bwrap_args(&spec, &mounts, all_dirs).unwrap());
+        let project = args.windows(3).position(|w| w == ["--ro-bind", "/alt", "/project"]).unwrap();
+        let ssh = args.windows(2).position(|w| w == ["--tmpfs", "/project/.ssh"]).expect("hidden");
+        assert!(project < ssh);
+    }
+
+    #[test]
+    fn a_protected_folder_can_not_be_the_project() {
+        let mut spec = spec();
+        spec.folders = vec![Bind { source: "/fake/me/.ssh".into(), target: "/fake/me/.ssh".into(), writable: false }];
+        assert!(bwrap_args(&spec, &none(), all_dirs).is_err());
     }
 
     #[test]
     fn attachments_come_back_after_the_hide() {
         let mut spec = spec();
-        spec.folders = vec![Bind { source: "/home/me".into(), target: "/home/me".into(), writable: false }];
-        let args = strings(&bwrap_args(&spec, all_dirs));
-        let hide = args.windows(2).position(|w| w == ["--tmpfs", "/home/me/.local/share/apex"]).unwrap();
-        let back = position(&args, "/home/me/.local/share/apex/attachments").unwrap();
+        spec.folders = vec![Bind { source: "/fake/me".into(), target: "/fake/me".into(), writable: false }];
+        let args = strings(&bwrap_args(&spec, &none(), all_dirs).unwrap());
+        let hide = args.windows(2).position(|w| w == ["--tmpfs", "/fake/me/.local/share/apex"]).unwrap();
+        let back = position(&args, "/fake/me/.local/share/apex/attachments").unwrap();
         assert!(hide < back);
     }
 

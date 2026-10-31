@@ -199,6 +199,16 @@ if the path:
 - contains any directory on the launch `PATH`, or the resolved file of the provider,
   a Node or Python runtime it uses, or a configured MCP command.
 
+Protected content is compared through the mount table, as device plus path inside that
+filesystem, and that covers each folder and every mount below it. A bind mount can show the
+same content under an unrelated path, so comparing names, or walking up from a path, misses
+it (Null's Task 1 review reproduced both directions). So a Read folder has the content hidden
+under whatever name it appears, a Read folder that is itself protected content is refused,
+and a writable folder with such a mount anywhere inside is refused. If the table can't be
+read the launch stops. Hard links aren't visible this way: a file hard-linked out of a
+protected folder into a project stays readable. Only a person can make one of those, because
+the jail hides the source, so it's a stated limit.
+
 Message: "This folder holds your login files. Pick a folder inside it, or use Full."
 A folder pick is rechecked at launch, because a symlink can change after it was chosen.
 

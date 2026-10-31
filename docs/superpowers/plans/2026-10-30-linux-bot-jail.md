@@ -24,7 +24,8 @@
 
 ## Review Focus
 
-- A project folder reached by a second path (bind mount, case change, symlink): it's refused the same as the direct path. Pinned in Task 1 by comparing device and inode.
+- A project folder reached by a second path (bind mount, case change, symlink): it's refused the same as the direct path. Pinned in Task 1 by comparing device and inode, and through the mount table.
+- A protected folder mounted inside a project, or shown under another name: refused if writable, hidden under that name if Read. Pinned in Task 1 by `Mounts` and in the kernel test.
 - A Read-level project that contains `~/.ssh` or the data folder: those stay hidden. Pinned in Task 1.
 - `socket()` with a family nobody listed (`AF_VSOCK`, `AF_ALG`): refused. Pinned in Task 1 with an allowlist.
 - A proxy target that resolves to both a public and a refused address: only checked addresses are dialled. Pinned in Task 2.
@@ -42,7 +43,7 @@
 - Test: unit tests in each file; `crates/apex-adapters/tests/linux_jail_kernel.rs` (Linux only)
 
 **Interfaces:**
-- Produces: `seccomp::filter() -> Vec<u8>`; `paths::check_writable(path: &Path, guard: &Guard) -> Result<PathBuf, Refused>`; `paths::Guard { home, protected, path_dirs, executables }`; `JailSpec`; `bwrap_args(&JailSpec, is_dir) -> Vec<OsString>`; `jail_env(&JailSpec) -> Vec<(String, OsString)>`.
+- Produces: `seccomp::filter() -> Vec<u8>`; `paths::Mounts`; `paths::check_writable(path: &Path, guard: &Guard, mounts: &Mounts) -> Result<PathBuf, Refused>`; `paths::hidden_in(folder, protected, mounts) -> Result<Vec<PathBuf>, Refused>`; `paths::Guard { home, protected, path_dirs, executables }`; `JailSpec`; `bwrap_args(&JailSpec, &Mounts, is_dir) -> Result<Vec<OsString>, Refused>`; `jail_env(&JailSpec) -> Vec<(String, OsString)>`.
 
 - [x] Write failing tests. Filter: a small BPF interpreter in the test runs the real bytes for every case in the design. Folders: `/`, `$HOME`, parent of `$HOME`, inside and around each protected path, a PATH folder, a symlink to `$HOME`, `..`, and the same folder by a different case on macOS. Arguments: every process-boundary flag, `--chdir`, hides after binds. Environment: a blocked name passed as a provider key never appears.
 - [x] Run them and see them fail.

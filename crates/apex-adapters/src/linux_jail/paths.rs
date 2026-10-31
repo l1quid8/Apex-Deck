@@ -1,8 +1,9 @@
 //! Refuses unsafe writable folders rather than protecting files inside them,
 //! because a list of files to protect can never be complete. Everything is
-//! compared by resolved path and by device and inode, so a symlink, `..`, a
-//! change of case or a second mount of the same folder gets the same answer.
+//! compared by resolved path, by device and inode, and through the mount table,
+//! so a symlink, `..`, a change of case or any bind mount gets the same answer.
 use std::collections::HashSet;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -57,25 +58,115 @@ fn contains(outer: &Path, inner: &Path) -> bool {
     inner.starts_with(outer) || file_id(outer).is_some_and(|id| chain(inner).contains(&id))
 }
 
+/// One mounted subtree: which filesystem, which folder of it, and where it shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mount { dev: String, root: PathBuf, at: PathBuf }
+
+/// The mount table. A bind mount makes the same content appear under an unrelated
+/// path, and no walk up from a path can see that, so content is compared as
+/// (device, path inside that filesystem). Read fresh for every launch.
+#[derive(Debug, Default, Clone)]
+pub struct Mounts(Vec<Mount>);
+
+/// `/proc/self/mountinfo` writes space, tab, newline and backslash as `\ooo`.
+fn unescape(field: &str) -> PathBuf {
+    let bytes = field.as_bytes();
+    let (mut out, mut at) = (Vec::with_capacity(bytes.len()), 0);
+    while at < bytes.len() {
+        let code = (bytes[at] == b'\\').then(|| bytes.get(at + 1..at + 4)).flatten()
+            .and_then(|o| std::str::from_utf8(o).ok())
+            .and_then(|o| u8::from_str_radix(o, 8).ok());
+        out.push(code.unwrap_or(bytes[at]));
+        at += if code.is_some() { 4 } else { 1 };
+    }
+    std::ffi::OsString::from_vec(out).into()
+}
+
+impl Mounts {
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let mut fields = line.split(' ').skip(2);
+            let (dev, root, at) = (fields.next()?, fields.next()?, fields.next()?);
+            out.push(Mount { dev: dev.to_owned(), root: unescape(root), at: unescape(at) });
+        }
+        Some(Self(out))
+    }
+
+    /// An error here must stop the launch: without the table nothing is proven.
+    #[cfg(target_os = "linux")]
+    pub fn current() -> std::io::Result<Self> {
+        let text = std::fs::read_to_string("/proc/self/mountinfo")?;
+        Self::parse(&text).filter(|table| !table.0.is_empty())
+            .ok_or_else(|| std::io::Error::other("unreadable mount table"))
+    }
+
+    /// Where a path's content really lives. The last of equal mount points wins.
+    fn place(&self, path: &Path) -> (String, PathBuf) {
+        let top = self.0.iter().filter(|m| path.starts_with(&m.at))
+            .max_by_key(|m| m.at.components().count());
+        match top.and_then(|m| Some((m, path.strip_prefix(&m.at).ok()?))) {
+            Some((m, rest)) => (m.dev.clone(), m.root.join(rest)),
+            None => (String::new(), path.to_path_buf()),
+        }
+    }
+
+    /// The folder and every mount below it: all a recursive bind brings along.
+    fn views(&self, folder: &Path) -> Vec<(PathBuf, (String, PathBuf))> {
+        let nested = self.0.iter().filter(|m| m.at != folder && m.at.starts_with(folder))
+            .map(|m| (m.at.clone(), (m.dev.clone(), m.root.clone())));
+        std::iter::once((folder.to_path_buf(), self.place(folder))).chain(nested).collect()
+    }
+
+    /// Where `item` shows inside `folder`, under any name.
+    fn shows(&self, folder: &Path, item: &Path) -> Vec<PathBuf> {
+        let (dev, inner) = self.place(item);
+        self.views(folder).into_iter().filter(|(_, place)| place.0 == dev)
+            .filter_map(|(at, place)| Some(at.join(inner.strip_prefix(&place.1).ok()?)))
+            .collect()
+    }
+
+    /// The parts of `folder` that are really content from inside `item`.
+    fn pieces_of(&self, folder: &Path, item: &Path) -> Vec<PathBuf> {
+        let (dev, inner) = self.place(item);
+        self.views(folder).into_iter()
+            .filter(|(_, place)| place.0 == dev && place.1.starts_with(&inner))
+            .map(|(at, _)| at).collect()
+    }
+}
+
+/// True when a jailed bot must not write to the resolved folder `real`.
+fn unsafe_to_write(real: &Path, guard: &Guard, mounts: &Mounts) -> bool {
+    let holds = |item: &Path| contains(real, item) || !mounts.shows(real, item).is_empty();
+    real == Path::new("/") || holds(&resolved(&guard.home))
+        || guard.protected.iter().map(|item| resolved(item)).any(|item| {
+            holds(&item) || contains(&item, real) || !mounts.pieces_of(real, &item).is_empty()
+        })
+        || guard.path_dirs.iter().chain(&guard.executables).any(|item| holds(&resolved(item)))
+}
+
 /// The resolved folder if a jailed bot may write to it, rechecked at each launch.
-pub fn check_writable(path: &Path, guard: &Guard) -> Result<PathBuf, Refused> {
+pub fn check_writable(path: &Path, guard: &Guard, mounts: &Mounts) -> Result<PathBuf, Refused> {
     let real = path.canonicalize().map_err(|_| Refused(path.to_path_buf()))?;
-    let refuse = || Refused(real.clone());
-    if real == Path::new("/") || contains(&real, &resolved(&guard.home)) {
-        return Err(refuse());
-    }
-    for item in &guard.protected {
+    if unsafe_to_write(&real, guard, mounts) { Err(Refused(real)) } else { Ok(real) }
+}
+
+/// Everything under `folder` that must be hidden, as real paths. Refused when
+/// the folder itself is protected content, because nothing of it could show.
+pub fn hidden_in(folder: &Path, protected: &[PathBuf], mounts: &Mounts) -> Result<Vec<PathBuf>, Refused> {
+    let real = resolved(folder);
+    let mut out = Vec::new();
+    for item in protected {
         let item = resolved(item);
-        if contains(&real, &item) || contains(&item, &real) {
-            return Err(refuse());
+        let pieces = mounts.pieces_of(&real, &item);
+        if pieces.contains(&real) || contains(&item, &real) {
+            return Err(Refused(real));
         }
+        out.extend(mounts.shows(&real, &item).into_iter().chain(pieces));
     }
-    for item in guard.path_dirs.iter().chain(&guard.executables) {
-        if contains(&real, &resolved(item)) {
-            return Err(refuse());
-        }
-    }
-    Ok(real)
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 /// The protected paths every Linux jail starts from, under the real home.
@@ -121,18 +212,95 @@ mod tests {
         Fixture { root, guard }
     }
 
+    fn none() -> Mounts { Mounts::default() }
+
+    /// `/` on one disk, `/fake` on another, plus the mounts a test adds.
+    fn table(extra: &[&str]) -> Mounts {
+        let mut text = "21 1 8:1 / / rw - ext4 /dev/sda1 rw\n22 21 8:2 / /fake rw - ext4 /dev/sda2 rw\n".to_owned();
+        for line in extra { text.push_str(line); text.push('\n'); }
+        Mounts::parse(&text).unwrap()
+    }
+
+    fn guard() -> Guard {
+        let home = PathBuf::from("/fake/me");
+        Guard { protected: standard_protected(&home, &home.join(".local/share/apex")), home, ..Default::default() }
+    }
+
+    fn protected() -> Vec<PathBuf> { guard().protected }
+
+    #[test]
+    fn the_table_reads_real_lines_and_escapes() {
+        let table = Mounts::parse("36 35 98:0 /a\\040b /mnt/x\\134y rw,noatime master:1 - ext3 /dev/r rw\n").unwrap();
+        assert_eq!(table.0, [Mount { dev: "98:0".into(), root: "/a b".into(), at: "/mnt/x\\y".into() }]);
+        assert!(Mounts::parse("36 35\n").is_none());
+    }
+
+    #[test]
+    fn a_later_mount_on_the_same_point_wins() {
+        let table = table(&["30 22 0:40 / /fake rw - tmpfs t rw"]);
+        assert_eq!(table.place(Path::new("/fake/me")), ("0:40".to_owned(), "/me".into()));
+    }
+
+    #[test]
+    fn a_second_mount_of_home_hides_under_its_own_name() {
+        let table = table(&["30 21 8:2 /me /alt rw - ext4 /dev/sda2 rw"]);
+        let hidden = hidden_in(Path::new("/alt"), &protected(), &table).unwrap();
+        assert!(hidden.contains(&PathBuf::from("/alt/.ssh")), "{hidden:?}");
+        assert!(hidden.contains(&PathBuf::from("/alt/.local/share/apex")));
+        assert!(unsafe_to_write(Path::new("/alt"), &guard(), &table));
+    }
+
+    #[test]
+    fn a_folder_around_the_source_of_home_is_caught() {
+        // /fake/me is a bind of /srv/homes/me, so /srv is no ancestor of it by name.
+        let table = table(&["30 22 8:1 /srv/homes/me /fake/me rw - ext4 /dev/sda1 rw"]);
+        let hidden = hidden_in(Path::new("/srv"), &protected(), &table).unwrap();
+        assert!(hidden.contains(&PathBuf::from("/srv/homes/me/.ssh")), "{hidden:?}");
+        assert!(unsafe_to_write(Path::new("/srv"), &guard(), &table));
+    }
+
+    #[test]
+    fn a_protected_folder_mounted_inside_a_project_is_caught() {
+        let line = "30 22 8:2 /me/.local/share/apex /fake/me/work/app/nested rw - ext4 /dev/sda2 rw";
+        let table = table(&[line]);
+        let project = Path::new("/fake/me/work/app");
+        assert_eq!(hidden_in(project, &protected(), &table).unwrap(), [project.join("nested")]);
+        assert!(unsafe_to_write(Path::new("/fake/me/work/app"), &guard(), &table));
+    }
+
+    #[test]
+    fn a_piece_of_a_protected_folder_mounted_inside_is_caught() {
+        let line = "30 22 8:2 /me/.ssh/keys /fake/me/work/app/keys rw - ext4 /dev/sda2 rw";
+        let project = Path::new("/fake/me/work/app");
+        assert_eq!(hidden_in(project, &protected(), &table(&[line])).unwrap(), [project.join("keys")]);
+    }
+
+    #[test]
+    fn a_read_folder_that_is_protected_content_is_refused() {
+        assert!(hidden_in(Path::new("/fake/me/.ssh"), &protected(), &table(&[])).is_err());
+        let table = table(&["30 21 8:2 /me/.ssh /alt rw - ext4 /dev/sda2 rw"]);
+        assert!(hidden_in(Path::new("/alt"), &protected(), &table).is_err());
+    }
+
+    #[test]
+    fn an_unrelated_mount_changes_nothing() {
+        let table = table(&["30 22 0:50 / /fake/me/work/app/cache rw - tmpfs t rw"]);
+        assert!(hidden_in(Path::new("/fake/me/work/app"), &protected(), &table).unwrap().is_empty());
+        assert!(!unsafe_to_write(Path::new("/fake/me/work/app"), &guard(), &table));
+    }
+
     #[test]
     fn a_project_inside_home_is_fine() {
         let f = fixture();
         let project = f.guard.home.join("work/app");
-        assert_eq!(check_writable(&project, &f.guard).unwrap(), project);
+        assert_eq!(check_writable(&project, &f.guard, &none()).unwrap(), project);
     }
 
     #[test]
     fn root_home_and_above_home_are_refused() {
         let f = fixture();
         for path in [Path::new("/").to_path_buf(), f.guard.home.clone(), f.root.join("home"), f.root.clone()] {
-            assert!(check_writable(&path, &f.guard).is_err(), "{path:?}");
+            assert!(check_writable(&path, &f.guard, &none()).is_err(), "{path:?}");
         }
     }
 
@@ -140,7 +308,7 @@ mod tests {
     fn inside_or_around_protected_is_refused() {
         let f = fixture();
         for name in [".ssh", ".local", ".local/bin", "data"] {
-            assert!(check_writable(&f.guard.home.join(name), &f.guard).is_err(), "{name}");
+            assert!(check_writable(&f.guard.home.join(name), &f.guard, &none()).is_err(), "{name}");
         }
     }
 
@@ -148,7 +316,7 @@ mod tests {
     fn a_folder_holding_path_or_a_program_is_refused() {
         let f = fixture();
         for path in [f.guard.home.join("tools"), f.guard.home.join("tools/bin"), f.root.join("srv/app"), f.root.join("srv")] {
-            assert!(check_writable(&path, &f.guard).is_err(), "{path:?}");
+            assert!(check_writable(&path, &f.guard, &none()).is_err(), "{path:?}");
         }
     }
 
@@ -157,15 +325,15 @@ mod tests {
         let f = fixture();
         let link = f.root.join("sneaky");
         symlink(&f.guard.home, &link).unwrap();
-        assert!(check_writable(&link, &f.guard).is_err());
+        assert!(check_writable(&link, &f.guard, &none()).is_err());
         let dots = f.guard.home.join("work/app/../../.ssh");
-        assert!(check_writable(&dots, &f.guard).is_err());
+        assert!(check_writable(&dots, &f.guard, &none()).is_err());
     }
 
     #[test]
     fn a_missing_folder_is_refused() {
         let f = fixture();
-        assert!(check_writable(&f.root.join("gone"), &f.guard).is_err());
+        assert!(check_writable(&f.root.join("gone"), &f.guard, &none()).is_err());
     }
 
     #[test]
@@ -174,7 +342,7 @@ mod tests {
         let mut guard = f.guard.clone();
         guard.protected.push(f.root.join("srv/later/secrets"));
         std::fs::create_dir_all(f.root.join("srv/later")).unwrap();
-        assert!(check_writable(&f.root.join("srv/later"), &guard).is_err());
+        assert!(check_writable(&f.root.join("srv/later"), &guard, &none()).is_err());
     }
 
     #[cfg(target_os = "macos")]
@@ -183,7 +351,7 @@ mod tests {
         let f = fixture();
         let upper = PathBuf::from(f.guard.home.to_string_lossy().to_uppercase().replace("/PRIVATE", "/private"));
         if upper.exists() {
-            assert!(check_writable(&upper, &f.guard).is_err());
+            assert!(check_writable(&upper, &f.guard, &none()).is_err());
         }
     }
 }
