@@ -27,7 +27,7 @@ import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, needsAttestation, requestUpdate } from './provenance.mjs';
-import { Updater, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
+import { Updater, WINDOWS_FEED_URL, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom, windowsInstaller, windowsSigner, windowsVerifier } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
@@ -699,8 +699,8 @@ handle('shell:quitApp', async ({ win }) => {
 // before "Restart to update", which quits only once the broker has queued it.
 
 /** A command's output, or a rejection with what it printed. */
-const runCommand = (command, args) => new Promise((resolve, reject) => {
-  execFile(command, args, { encoding: 'utf8', maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
+const runCommand = (command, args, options = {}) => new Promise((resolve, reject) => {
+  execFile(command, args, { encoding: 'utf8', maxBuffer: 4 << 20, ...options }, (error, stdout, stderr) => {
     if (error) reject(new Error(String(stderr || error.message).trim()));
     else resolve(`${stdout}${stderr}`);
   });
@@ -709,10 +709,30 @@ const runCommand = (command, args) => new Promise((resolve, reject) => {
 /** Null until the app is ready; the window asks again when it hears `updates:changed`. */
 let updater = null;
 
+/** The options that differ on Windows: its feed, its signature check and its installer. */
+async function windowsUpdates() {
+  const signer = app.isPackaged ? await windowsSigner(runCommand, process.execPath) : null;
+  const installed = path.join(process.env.ProgramW6432 ?? process.env.ProgramFiles ?? '', 'Apex Deck', 'Apex Deck.exe');
+  const verify = windowsVerifier({ run: runCommand, signer });
+  return {
+    protectedCopy: process.execPath.toLowerCase() === installed.toLowerCase(),
+    team: signer?.subject ?? null,
+    options: {
+      feedUrl: WINDOWS_FEED_URL,
+      extension: '.exe',
+      resultFile: path.join(app.getPath('userData'), 'no-update-job-result.json'),
+      verify,
+      requestInstall: windowsInstaller({ run: runCommand, verify }),
+    },
+  };
+}
+
 async function startUpdates() {
+  const onWindows = process.platform === 'win32';
   const running = bundlePath(app.getAppPath());
   const signed = app.isPackaged && process.platform === 'darwin';
-  const team = signed ? teamFrom(await runCommand('/usr/bin/codesign', ['-d', '--verbose=2', running]).catch(() => '')) : null;
+  const win32 = onWindows ? await windowsUpdates() : null;
+  const team = win32 ? win32.team : signed ? teamFrom(await runCommand('/usr/bin/codesign', ['-d', '--verbose=2', running]).catch(() => '')) : null;
   const folder = path.join(app.getPath('cache'), 'dev.apexdeck.desktop', 'updates');
   const fetchWithNet = (url, init) => net.fetch(url, init);
   updater = new Updater({
@@ -721,11 +741,12 @@ async function startUpdates() {
     osVersion: process.getSystemVersion(),
     cacheDir: path.join(folder, 'downloads'),
     stateFile: path.join(app.getPath('userData'), 'updates.json'),
-    disabled: disabledReason({ packaged: app.isPackaged, platform: process.platform, dataDir, smoke, protectedCopy: signed && isProtectedCopy(running), team }),
+    disabled: disabledReason({ packaged: app.isPackaged, platform: process.platform, dataDir, smoke, protectedCopy: win32 ? win32.protectedCopy : signed && isProtectedCopy(running), team }),
     fetchJson: fetchManifest(fetchWithNet),
     download: fetchDownload(fetchWithNet),
     verify: packageVerifier({ run: runCommand, team, scratch: path.join(folder, 'checks') }),
     requestInstall: (ready) => requestUpdate(ready),
+    ...win32?.options,
     onChange: (status) => {
       for (const { win } of windows.values()) if (!win.isDestroyed()) win.webContents.send('updates:changed', status);
     },

@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { Writable } from 'node:stream';
 import {
   FEED_URL, RESULT_MESSAGE_LIMIT, RESULT_NOTE_LIMIT, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
-  packageFor, packageVerifier, parseManifest, teamFrom,
+  packageFor, packageVerifier, parseManifest, teamFrom, WINDOWS_FEED_URL, windowsInstaller, windowsSignerFrom, windowsVerifier,
 } from '../desktop/updater.mjs';
 
 const bytes = Buffer.from('apex deck 0.9.1 package');
@@ -337,3 +337,64 @@ test('the package check pins this app’s team and the promised version', async 
   assert.deepEqual(fs.readdirSync(scratch), [], 'each check clears its unpacked copy');
 });
 
+
+test('the Windows feed takes only installers, and a Mac feed never does', () => {
+  const windows = { schemaVersion: 1, version: '0.9.8', packages: [{ arch: 'x64', minimumSystemVersion: '10.0.22000', name: 'Apex-Deck-0.9.8-x64-Setup.exe', size: 10, sha256: 'a'.repeat(64) }] };
+  const manifest = parseManifest(windows, { extension: '.exe' });
+  assert.ok(packageFor(manifest, { arch: 'x64', osVersion: '10.0.26100' }));
+  assert.equal(packageFor(manifest, { arch: 'x64', osVersion: '10.0.19045' }), null);
+  assert.throws(() => parseManifest(windows));
+  assert.throws(() => parseManifest({ ...windows, packages: [{ ...windows.packages[0], name: 'Apex.pkg' }] }, { extension: '.exe' }));
+  assert.match(assetUrl('0.9.8', 'Apex-Deck-0.9.8-x64-Setup.exe', '.exe'), /\/v0\.9\.8\/Apex-Deck-0\.9\.8-x64-Setup\.exe$/);
+  assert.throws(() => assetUrl('0.9.8', 'a/b.exe', '.exe'));
+  assert.notEqual(WINDOWS_FEED_URL, FEED_URL);
+});
+
+test('Windows updates run only from a signed, installed copy', () => {
+  const ok = { packaged: true, platform: 'win32', dataDir: undefined, smoke: false, protectedCopy: true, team: 'CN=Tyler Caldwell' };
+  assert.equal(disabledReason(ok), null);
+  assert.match(disabledReason({ ...ok, team: null }), /isn’t signed/);
+  assert.match(disabledReason({ ...ok, protectedCopy: false }), /protected copy/);
+});
+
+const signature = (fields = {}) => JSON.stringify({
+  status: 'Valid', subject: 'CN=Tyler Caldwell, O=Tyler Caldwell, L=Rancho Cucamonga, S=ca, C=US',
+  issuer: 'CN=Microsoft ID Verified CS AOC CA 01, O=Microsoft Corporation, C=US', version: '0.9.8', ...fields,
+});
+
+test('a Windows signature counts only when Windows calls it valid', () => {
+  assert.equal(windowsSignerFrom(signature()).issuer, 'Microsoft Corporation');
+  for (const bad of [signature({ status: 'NotSigned' }), signature({ status: 'HashMismatch' }), signature({ subject: null }), signature({ issuer: 'CN=Self' }), '', 'nonsense']) {
+    assert.equal(windowsSignerFrom(bad), null, bad);
+  }
+});
+
+test('an installer must match this app\'s publisher and the promised version', async () => {
+  const signer = windowsSignerFrom(signature());
+  const verifying = (output) => windowsVerifier({ run: async () => output, signer });
+  await verifying(signature())('C:/x.exe', { version: '0.9.8' });
+  await assert.rejects(verifying(signature({ subject: 'CN=Tyler Caldwell, O=Someone Else' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ issuer: 'CN=Other, O=Other CA' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ status: 'NotSigned' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ version: '0.9.7' }))('C:/x.exe', { version: '0.9.8' }), /holds version 0\.9\.7/);
+  await assert.rejects(windowsVerifier({ run: async () => signature(), signer: null })('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+});
+
+test('Restart to update checks again, keeps the path out of the script, and survives a No', async () => {
+  const calls = [];
+  const ready = { package: "C:/cache/it's; calc.exe", version: '0.9.8' };
+  const install = windowsInstaller({
+    verify: async (file, facts) => { calls.push(['verify', file, facts.version]); },
+    run: async (command, args, options) => { calls.push(['run', args.join(' '), options.env.APEX_UPDATE_FILE]); },
+  });
+  assert.match(await install(ready), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(calls[0], ['verify', ready.package, '0.9.8']);
+  assert.ok(!calls[1][1].includes('calc.exe'));
+  assert.match(calls[1][1], /-Verb RunAs/);
+  assert.match(calls[1][1], /'\/S','--force-run'/);
+  assert.equal(calls[1][2], ready.package);
+  const declined = windowsInstaller({ verify: async () => {}, run: async () => { throw new Error('canceled'); } });
+  await assert.rejects(declined(ready), /nothing was changed/);
+  const refused = windowsInstaller({ verify: async () => { throw new Error('bad signature'); }, run: async () => { assert.fail('must not start'); } });
+  await assert.rejects(refused(ready), /bad signature/);
+});

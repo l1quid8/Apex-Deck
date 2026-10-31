@@ -19,6 +19,7 @@ on:
       - feat/win-m4-installer
       - feat/windows-11
       - fix/windows-catch-up
+      - feat/windows-auto-update
 
 permissions:
   contents: read
@@ -64,6 +65,8 @@ jobs:
         run: node scripts/package-win.mjs --package
       - name: Test elevated authority ACLs and read-only host locks
         run: cargo test --locked -p apex-provenance --lib -- --ignored
+      - name: Write the update feed
+        run: node scripts/windows-update-manifest.mjs
       - name: Show what was built
         run: Get-ChildItem release | Select-Object Name, Length
       # The shutdown step lives inside the built .exe, so `npm run desktop:win`
@@ -117,6 +120,8 @@ jobs:
                 throw "$file is not validly signed by Tyler Caldwell"
               }
             }
+            node scripts/windows-update-smoke.mjs $setup (Join-Path $env:ProgramFiles 'Apex Deck\Apex Deck.exe')
+            if ($LASTEXITCODE -ne 0) { throw 'the update check refused the installer it should accept' }
           }
           node scripts/windows-authority-smoke.mjs $service.FullName
           if ($LASTEXITCODE -ne 0) { throw 'installed production authority smoke failed' }
@@ -161,5 +166,6 @@ jobs:
           path: |
             release/Apex-Deck-Setup.exe
             release/Apex-Deck-Setup.exe.sha256
+            release/windows-update/apex-deck-update-windows.json
           if-no-files-found: error
           retention-days: 30

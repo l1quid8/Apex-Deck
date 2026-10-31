@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assetName, buildManifest, publishSteps, teamOf } from '../scripts/release-update-manifest.mjs';
 import { assetUrl, packageFor, parseManifest } from '../desktop/updater.mjs';
+import { buildWindowsManifest, windowsAssetName } from '../scripts/windows-update-manifest.mjs';
 
 const facts = { version: '0.9.1', notes: 'Restart to update.', minimumSystemVersion: '13.0', archs: ['arm64'], name: assetName('0.9.1', 'arm64'), size: 1234, sha256: 'a'.repeat(64) };
 
@@ -27,4 +28,11 @@ test('publishing uploads to a draft and checks it before any Deck can see the fe
   assert.match(steps[1], /Apex-Deck-0\.9\.1-arm64\.pkg' '\/r\/v0\.9\.1-assets\/apex-deck-update\.json'/);
   assert.match(steps[2], /shasum/);
   assert.match(steps[3], /--draft=false --latest/);
+});
+
+test('the Windows feed a release writes is what installed copies accept', () => {
+  const manifest = buildWindowsManifest({ version: '0.9.8', size: 10, sha256: 'a'.repeat(64) });
+  const entry = packageFor(parseManifest(JSON.parse(JSON.stringify(manifest)), { extension: '.exe' }), { arch: 'x64', osVersion: '10.0.26100' });
+  assert.equal(entry.name, windowsAssetName('0.9.8'));
+  assert.throws(() => buildWindowsManifest({ version: '0.9.8', size: 10, sha256: 'nope' }));
 });
