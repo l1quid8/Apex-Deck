@@ -40,8 +40,8 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
         <input type="checkbox" aria-label="Enable Unified Computer Use" checked={status?.enabled ?? false} disabled={busy || backend.demo || !status?.available} onChange={e => { void act('computer_set_enabled', { enabled: e.target.checked }); }} />
       </div>
       <div className="settings-row">
-        <div className="settings-label"><strong>Status</strong><small role="status">{backend.demo ? 'Available in the macOS desktop app.' : !status ? 'Checking this host…' : !status.available ? status.reason || 'The bundled helper is unavailable on this host.' : !status.enabled ? 'Off' : status.stopped ? 'Stopped. Send a new message to begin a new turn.' : 'Ready for app requests'}</small></div>
-        <button disabled={busy || backend.demo} onClick={() => { void refresh(); }}>Refresh</button>
+        <div className="settings-label"><strong>Status</strong><small role="status">{backend.demo ? 'Available in the macOS desktop app.' : !status ? 'Checking this host…' : !status.available ? status.reason || 'The bundled helper is unavailable on this host.' : !status.enabled ? 'Off' : status.stopped ? 'Stopped. Resume, then send a new message to begin a new turn.' : 'Ready for app requests'}</small></div>
+        {status?.enabled && status.stopped ? <button disabled={busy || backend.demo} onClick={() => { void act('computer_set_enabled', { enabled: true }); }}>Resume</button> : <button disabled={busy || backend.demo} onClick={() => { void refresh(); }}>Refresh</button>}
       </div>
       <div className="settings-row">
         <div className="settings-label"><strong>Mac permissions</strong><small>Accessibility: {permission(status?.accessibilityTrusted)}<br />Input Monitoring: {permission(status?.listenEventAccess)}<br />Screen Recording: {permission(status?.screenCaptureAccess)}</small></div>

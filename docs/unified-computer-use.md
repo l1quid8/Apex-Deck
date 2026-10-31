@@ -25,7 +25,7 @@ Reading requires an app grant too. Read-only and Plan turns cannot open, focus o
 
 Only one bot controls the desktop at a time. Actions use observations tied to the app and retained native controls. If the screen changes or you use the keyboard or mouse, the bot must observe again. A refusal does not return screen content.
 
-Use **Stop** in Deck's Unified Computer Use settings, the normal thread Stop button, or the helper's independent menu bar control. Stop blocks reads as well as input and invalidates the affected turn. System permission/security applications, password fields and the controller's own surfaces are protected. This is not a sandbox against an unrestricted shell running as your macOS user.
+Use **Stop** in Deck's Unified Computer Use settings, the normal thread Stop button, or the helper's independent menu bar control. Stop blocks reads as well as input and invalidates the affected turn. After a global Stop, choose **Resume** in settings before sending a new message. System permission/security applications, password fields and the controller's own surfaces are protected. This is not a sandbox against an unrestricted shell running as your macOS user.
 
 ## Privacy
 
@@ -41,4 +41,4 @@ Upstream JEV/CLEF decision automation is optional and is not enabled in this rel
 
 ## Release verification
 
-The release handoff records the exact commit, DMG hash, signature results, focused checks and any native behaviors not exercised on the final packaged helper. Installing or replacing the running Deck is a separate human action; packaging does not alter it.
+The release handoff records the exact commit, DMG hash, signature results, focused checks and any native behaviors not exercised on the final packaged helper. The DMG includes the app and a native upgrade installer. Use the included installer to update the protected application, backend and provenance service together; dragging only the app does not update an existing protected service. Installing or replacing the running Deck is a separate human action; packaging does not alter it.
