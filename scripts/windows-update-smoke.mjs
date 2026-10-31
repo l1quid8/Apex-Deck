@@ -6,7 +6,16 @@ import { promisify } from 'node:util';
 import { windowsSigner, windowsVerifier } from '../desktop/updater.mjs';
 
 const exec = promisify(execFile);
-const run = async (command, args, options) => (await exec(command, args, { encoding: 'utf8', ...options })).stdout;
+const run = async (command, args, options) => {
+  try {
+    const { stdout, stderr } = await exec(command, args, { encoding: 'utf8', ...options });
+    console.log(`powershell said: ${stdout.trim()} ${stderr.trim()}`);
+    return stdout;
+  } catch (error) {
+    console.log(`powershell failed: ${error.stderr || error.message}`);
+    throw error;
+  }
+};
 const [installer, installed] = process.argv.slice(2);
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 const signer = await windowsSigner(run, installed);

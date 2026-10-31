@@ -209,12 +209,19 @@ const SIGNATURE_SCRIPT = [
 ].join('; ');
 const INSTALL_SCRIPT = "Start-Process -FilePath $env:APEX_UPDATE_FILE -ArgumentList '/S','--force-run' -Verb RunAs -ErrorAction Stop";
 
-/** Run PowerShell with the file in the environment, so no path is ever parsed as code. */
-const powershell = (run, script, file, systemRoot = process.env.SystemRoot ?? 'C:\\Windows') => run(
-  path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-  ['-NoProfile', '-NonInteractive', '-Command', script],
-  { env: { ...process.env, APEX_UPDATE_FILE: file }, windowsHide: true },
-);
+/**
+ * Run PowerShell with the file in the environment, so no path is ever parsed as
+ * code. A PSModulePath inherited from PowerShell 7 stops Windows PowerShell from
+ * loading its own signature commands.
+ */
+const powershell = (run, script, file, systemRoot = process.env.SystemRoot ?? 'C:\\Windows') => {
+  const { PSModulePath: _inherited, ...env } = process.env;
+  return run(
+    path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    { env: { ...env, APEX_UPDATE_FILE: file }, windowsHide: true },
+  );
+};
 
 /** The publisher behind a valid signature, or null. The issuing CA changes; its organization doesn't. */
 export function windowsSignerFrom(output) {
