@@ -6,14 +6,16 @@ Unified Computer Use lets Deck bots read and control granted Mac applications th
 
 1. Open **Settings → Unified Computer Use** and enable it.
 2. Choose **Open Unified Computer Use**. Grant that exact helper Accessibility and Input Monitoring in macOS when requested. Screenshots also need Screen Recording. macOS may require quitting and reopening the helper after a grant.
-3. Use an API, Claude Code or Codex bot with tools enabled. Ask it to use `apex-computer`, request an app by its bundle identifier, read the screen, and act on a fresh observation. Approve the requested app in the helper's native dialog.
+3. Use an API, Claude Code or Codex bot with tools enabled in a Work thread. Ask it to use `apex-computer`, request an app by its bundle identifier, read the screen, and act on a fresh observation. Approve the requested app in the helper's native dialog. For a first task: “Open TextEdit, create a new document and type Hello Tyler. Do not save it.”
 4. For an API vision model, open the bot's settings and enable **Unified Computer Use: this model can read screenshots**. Leave it off for text-only models.
 
 The helper ships inside `Apex Deck.app/Contents/Resources/Unified Computer Use.app`. Approve the copy inside the installed Deck application, rather than an older prototype or a source-tree build. The macOS permission-list name is **Unified Computer Use**. Changing from the earlier Spike app requires new grants; the old app's grants do not establish permission for this one.
 
 ## Models and apps
 
-The native engine is model-neutral. API models need reliable tool calling, and screenshot use needs image input. Claude Code and Codex receive the same tool server through their existing Deck adapters. Other CLI providers have not been validated for this connection.
+The native engine is model-neutral. API models need reliable tool calling, and screenshot use needs image input. Claude Code and Codex receive the same tool server through their existing Deck adapters. Gemini, Grok, Muse and custom CLI bots do not receive the native capability in this release. Talk-only Chat rooms and personal-assistant text-only inference also do not receive it.
+
+`apex-computer` and `apex_computer` are reserved server names. An existing HTTP MCP server with either name can prevent Codex from starting; rename that external server if Codex reports a transport conflict. Deck does not fall back to trusting that server.
 
 Text-only notice: **This model can’t read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.**
 

@@ -48,12 +48,12 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
         <button disabled={busy || backend.demo || !status?.available} onClick={() => { void act('computer_setup'); }}>Open Unified Computer Use</button>
       </div>
       <div className="settings-row">
-        <div className="settings-label"><strong>Stop computer use</strong><small>Cancels active input and revokes the current turns. The helper also has an independent Stop control in the menu bar.</small></div>
+        <div className="settings-label"><strong>Stop Unified Computer Use</strong><small>Cancels active input and revokes the current turns. The helper also has an independent Stop control in the menu bar.</small></div>
         <button className="danger" disabled={busy || backend.demo || !status?.available} onClick={() => { void act('computer_stop'); }}>Stop</button>
       </div>
     </div>
     <div className="settings-card">
-      <div className="settings-row"><div className="settings-label"><strong>Models and screenshots</strong><small>Use your existing API, Claude Code or Codex bot. Enable screenshot support in an API bot’s settings only when its model accepts images.</small></div></div>
+      <div className="settings-row"><div className="settings-label"><strong>Models and screenshots</strong><small>Use your existing API, Claude Code or Codex bot in a Work thread. Enable screenshot support in an API bot’s settings only when its model accepts images.</small></div></div>
       <div className="settings-row"><div className="settings-label"><strong>Text-only models</strong><small>This model can’t read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.</small></div></div>
       <div className="settings-row"><div className="settings-label"><strong>Privacy</strong><small>Granted app content goes to the model you chose, including its cloud provider. Deck hides computer tool content from its work feed and diagnostics. Providers, CLI transcripts and a bot’s own replies may retain content. Only one bot controls the desktop at a time; using your mouse or keyboard interrupts its next action.</small></div></div>
     </div>
