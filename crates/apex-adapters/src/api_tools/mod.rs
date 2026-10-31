@@ -90,7 +90,10 @@ impl ToolCall {
             return false;
         }
         match serde_json::from_str::<Value>(&self.arguments) {
-            Ok(args) => args["server"].as_str().is_some_and(crate::mcp::is_computer_server),
+            Ok(args) => match args["server"].as_str().filter(|server| !server.trim().is_empty()) {
+                Some(server) => crate::mcp::is_computer_server(server),
+                None => true,
+            },
             Err(_) => true,
         }
     }
@@ -670,7 +673,7 @@ impl<'a> Turn<'a> {
         let name = args["server"].as_str().unwrap_or("").to_string();
         let tool_name = args["tool"].as_str().unwrap_or("").to_string();
         let listing = call.name == "mcp_list_tools";
-        let private = crate::mcp::is_computer_server(&name);
+        let private = call.has_computer_content();
         let label = if private {
             crate::mcp::redacted_step(&tool_name, &args["arguments"]).label
         } else if listing { format!("{name}: list tools") } else { format!("{name}: {tool_name}") };
@@ -946,6 +949,35 @@ done
         assert!(result.contains("weren't valid JSON"));
         assert!(!result.contains("SECRET"));
         assert!(steps.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unidentified_server_dispatch_never_records_private_arguments() {
+        let cases = [
+            ("missing", None), ("null", Some(Value::Null)), ("number", Some(json!(42))),
+            ("object", Some(json!({"text":"SERVER_SECRET"}))), ("array", Some(json!(["SERVER_SECRET"]))),
+            ("empty", Some(json!(""))), ("whitespace", Some(json!(" \t"))),
+        ];
+        for (case, server) in cases {
+            for name in ["mcp_call", "mcp_list_tools"] {
+                let tools = ToolBox::new(&crate::BuildContext::default());
+                let steps = Mutex::new(Vec::new());
+                let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
+                let answers = approver(Decision::Approve);
+                let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full, approver: &answers,
+                    progress: &progress, jobs: shell::Jobs::default(), servers: vec![], cwd: None, roots: tools.roots.clone() };
+                let mut args = json!({"tool":"TOOL_SECRET", "arguments":{"text":"TYPED_SECRET", "credential":"TOKEN_SECRET"}});
+                if let Some(server) = &server { args["server"] = server.clone(); }
+                let result = turn.run(&call(name, args)).await;
+                assert!(result.contains("no MCP server"), "{case}: the model needs a routing error");
+                let steps = steps.lock().unwrap();
+                assert_eq!(steps.len(), 1, "{case}: exercise the real failed dispatch");
+                assert!(!serde_json::to_string(&*steps).unwrap().contains("SECRET"), "{case}: private arguments reached saved steps");
+                assert!(steps[0].detail.is_empty() && steps[0].output.is_none(), "{case}");
+                assert_eq!(steps[0].status, StepStatus::Failed);
+                assert!(answers.asked.lock().unwrap().is_empty(), "{case}: an unidentified server cannot execute");
+            }
+        }
     }
 
     #[test]

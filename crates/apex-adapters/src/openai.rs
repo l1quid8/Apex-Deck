@@ -818,6 +818,31 @@ mod tests {
         assert!(error.to_string().contains("ordinary problem"));
     }
 
+    #[tokio::test]
+    async fn unidentified_server_history_keeps_provider_errors_private() {
+        let cases = [
+            ("missing", None), ("null", Some(Value::Null)), ("number", Some(json!(42))),
+            ("object", Some(json!({"text":"SERVER_SECRET"}))), ("array", Some(json!(["SERVER_SECRET"]))),
+            ("empty", Some(json!(""))), ("whitespace", Some(json!(" \t"))),
+        ];
+        for (case, server) in cases {
+            for name in ["mcp_call", "mcp_list_tools"] {
+                let mut args = json!({"tool":"type_text", "arguments":{"text":"TYPED_SECRET"}});
+                if let Some(server) = &server { args["server"] = server.clone(); }
+                let messages = [json!({"role":"assistant", "tool_calls":[{"id":"failed", "function":{
+                    "name":name, "arguments":args.to_string()
+                }}]})];
+                let mut private = messages_have_computer_content(&messages);
+                assert!(!provider_text("SCREEN_SECRET TOKEN_SECRET", 300, private).contains("SECRET"), "{case}: HTTP diagnostic leaked provider prose");
+                assert!(!tools_refused_diagnostic("model", "SCREEN_SECRET", private).contains("SECRET"), "{case}: refusal diagnostic leaked provider prose");
+                let response = fixture_stream("data: {\"error\":{\"message\":\"SCREEN_SECRET\"}}\n\n".into()).await;
+                let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut private).await.unwrap_err();
+                assert!(!error.to_string().contains("SECRET"), "{case}: SSE diagnostic leaked provider prose");
+                assert!(private, "{case}: unidentified routing must stay private");
+            }
+        }
+    }
+
     #[test]
     fn only_a_real_refusal_turns_tools_off() {
         assert!(refuses_tools("this model does not support tools"));
