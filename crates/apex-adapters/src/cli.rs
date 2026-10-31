@@ -267,7 +267,9 @@ impl CliParticipant {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        self.processes.spawn(&mut command)
+        // An isolated command's environment is the sandbox's, not the daemon's.
+        let spawned = if self.isolation.is_some() { self.processes.spawn_cleared(&mut command) } else { self.processes.spawn(&mut command) };
+        spawned
             .map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     ParticipantError::NotConfigured(format!("program `{program}` was not found"))

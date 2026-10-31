@@ -59,10 +59,22 @@ impl Registry {
             use std::os::unix::process::CommandExt;
             command.as_std_mut().process_group(0);
         }
-        self.start(command)
+        self.start(command, true)
     }
 
-    /// Like `spawn`, but the command leads a new session, so it has no
+    /// Like `spawn`, but the child gets only what was set on the command,
+    /// never this process's environment.
+    pub fn spawn_cleared(&self, command: &mut Command) -> std::io::Result<OwnedChild> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.as_std_mut().process_group(0);
+        }
+        clear_inherited(command);
+        self.start(command, false)
+    }
+
+    /// Like `spawn_cleared`, but the command leads a new session, so it has no
     /// controlling terminal. Its group id still equals its pid, so everything
     /// else here is unchanged. `setsid` fails on a group leader, which is why
     /// this replaces `process_group(0)`, and it goes before the start gate
@@ -77,14 +89,18 @@ impl Registry {
                 Ok(())
             });
         }
-        self.start(command)
+        clear_inherited(command);
+        self.start(command, false)
     }
 
-    fn start(&self, command: &mut Command) -> std::io::Result<OwnedChild> {
+    /// `inherits` is false once `clear_inherited` ran: the gate execs for itself
+    /// and stable Rust can't ask a command whether its environment was cleared.
+    #[cfg_attr(windows, allow(unused_variables))]
+    fn start(&self, command: &mut Command, inherits: bool) -> std::io::Result<OwnedChild> {
         #[cfg(unix)]
         let gate = if self.directory.is_some() {
             let gate = StartGate::new()?;
-            gate.install(command)?;
+            gate.install(command, inherits)?;
             Some(gate)
         } else { None };
 
@@ -473,6 +489,15 @@ fn sync_directory(directory: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Keeps what was set on the command and drops everything inherited.
+fn clear_inherited(command: &mut Command) {
+    let command = command.as_std_mut();
+    let own: Vec<_> = command.get_envs()
+        .filter_map(|(key, value)| Some((key.to_os_string(), value?.to_os_string())))
+        .collect();
+    command.env_clear().envs(own);
+}
+
 #[cfg(unix)]
 struct StartGate { read: i32, write: i32 }
 
@@ -494,7 +519,7 @@ impl StartGate {
         Ok(Self { read: fds[0], write: fds[1] })
     }
 
-    fn install(&self, command: &mut Command) -> std::io::Result<()> {
+    fn install(&self, command: &mut Command, inherits: bool) -> std::io::Result<()> {
         use std::os::unix::process::CommandExt;
         let read = self.read;
         let write = self.write;
@@ -502,7 +527,8 @@ impl StartGate {
         let program = std_command.get_program().to_os_string();
         let args: Vec<_> = std_command.get_args().map(std::ffi::OsStr::to_os_string).collect();
         use std::os::unix::ffi::OsStrExt;
-        let mut environment: std::collections::HashMap<std::ffi::OsString, std::ffi::OsString> = std::env::vars_os().collect();
+        let mut environment: std::collections::HashMap<std::ffi::OsString, std::ffi::OsString> =
+            if inherits { std::env::vars_os().collect() } else { Default::default() };
         for (key, value) in std_command.get_envs() {
             if let Some(value) = value { environment.insert(key.to_os_string(), value.to_os_string()); }
             else { environment.remove(key); }
@@ -585,6 +611,30 @@ mod tests {
             // SAFETY: both only query this child.
             assert_eq!((unsafe { libc::getsid(id) }, unsafe { libc::getpgid(id) }), (id, id));
             child.terminate_tree().await.unwrap();
+        }
+    }
+
+    async fn env_of(spawn: impl FnOnce(&mut Command) -> std::io::Result<OwnedChild>) -> String {
+        let mut command = Command::new("/usr/bin/env");
+        command.env("KEPT", "yes").stdout(std::process::Stdio::piped());
+        let mut child = spawn(&mut command).unwrap();
+        let mut seen = String::new();
+        tokio::io::AsyncReadExt::read_to_string(child.stdout.as_mut().unwrap(), &mut seen).await.unwrap();
+        child.wait().await.unwrap();
+        seen
+    }
+
+    #[tokio::test]
+    async fn cleared_launches_get_only_their_own_environment_with_or_without_the_gate() {
+        let temp = TempDir::new();
+        assert!(std::env::var_os("PATH").is_some(), "the test needs an inherited variable");
+        for registry in [Registry::default(), Registry::new(Some(temp.0.join("workers")))] {
+            for seen in [env_of(|command| registry.spawn_cleared(command)).await, env_of(|command| registry.spawn_session(command)).await] {
+                assert!(seen.lines().any(|line| line == "KEPT=yes"), "{seen}");
+                assert!(!seen.lines().any(|line| line.starts_with("PATH=")), "{seen}");
+            }
+            let inherited = env_of(|command| registry.spawn(command)).await;
+            assert!(inherited.lines().any(|line| line == "KEPT=yes") && inherited.lines().any(|line| line.starts_with("PATH=")), "{inherited}");
         }
     }
 

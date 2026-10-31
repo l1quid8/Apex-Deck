@@ -132,6 +132,34 @@ fn expect(output: std::process::Output) {
     assert!(output.status.success() && out.contains("ALL PASSED"), "status {:?}\n{out}\n{err}", output.status);
 }
 
+/// The registry's start gate execs for itself, so this has to go through it.
+#[test]
+fn only_the_allowlist_reaches_a_bot_through_the_start_gate() {
+    if !wanted() { return; }
+    let tree = tree("environment");
+    let spec = spec(&tree, &tree.project, true, tree.project.clone(), "/usr/bin/env", vec![]);
+    let registry = Registry::new(Some(tree.root.join("workers")));
+    let output = Runtime::new().unwrap().block_on(async {
+        let mut jailed = launch::jailed_command(&spec, Path::new("/usr/bin/bwrap")).unwrap();
+        jailed.command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (child, control) = jailed.spawn(&registry).unwrap();
+        let serve = tokio::spawn(channel::serve(control, Arc::new(Echo)));
+        let output = finish(child).await;
+        ended(serve).await;
+        output
+    });
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8_lossy(&output.stdout);
+    let mut seen: Vec<&str> = out.lines().filter_map(|line| line.split('=').next()).collect();
+    let allowed = apex_adapters::linux_jail::jail_env(&spec);
+    // bubblewrap sets PWD itself after it changes folder.
+    let mut wanted: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).chain(["PWD"]).collect();
+    seen.sort();
+    wanted.sort();
+    assert_eq!(seen, wanted, "{out}");
+    let _ = std::fs::remove_dir_all(&tree.root);
+}
+
 #[test]
 fn edit_level_jail_holds() {
     if !wanted() { return; }
