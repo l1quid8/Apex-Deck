@@ -109,9 +109,7 @@ struct Tree {
       lines.append("foreign-owned surface pid=\(pid(e)); controls omitted")
       return
     }
-    let secure =
-      role.lowercased().contains("secure") || role.lowercased().contains("password")
-      || (string(e, kAXSubroleAttribute) ?? "").lowercased().contains("secure")
+    let secure = Policy.protectedRole(role, string(e, kAXSubroleAttribute) ?? "")
     // Do not inspect protected descendants or fetch their values.
     if secure {
       lines.append("protected control omitted")
