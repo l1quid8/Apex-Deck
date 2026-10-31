@@ -1,5 +1,6 @@
 /** TL;DR mode: a per-chat switch that quietly asks every model for a short
  *  answer. The instruction rides on the message but never shows in the chat. */
+import { carriedFlag } from "./threadState.ts";
 
 export const TLDR_LINE = "[TL;DR mode: answer in 2–4 sentences. Lead with the answer. No preamble, no headings. Expand only if asked.]";
 
@@ -15,6 +16,9 @@ export function splitTldr(text: string): { text: string; tldr: boolean } {
 const key = (pane: string) => `deck.tldr.${pane}`;
 export const loadTldr = (pane: string) => { try { return localStorage.getItem(key(pane)) === "1"; } catch { return false; } };
 export const saveTldr = (pane: string, on: boolean) => { try { on ? localStorage.setItem(key(pane), "1") : localStorage.removeItem(key(pane)); } catch { /* private mode */ } };
+/** TL;DR mode for a thread kept under its machine and id. A switch saved under the thread's old
+ *  bare-id key moves over the first time it is read. */
+export const tldrFor = (pane: string, legacy: string) => carriedFlag(loadTldr, saveTldr, pane, legacy);
 
 /** Shake the text box once when a TL;DR message goes out. Skipped under reduced motion. */
 export function wiggle(box: HTMLElement | null) {

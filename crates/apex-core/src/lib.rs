@@ -11,6 +11,8 @@
 
 mod approval;
 mod concurrent;
+pub mod curation;
+pub use curation::{journal_text, journal_section,Curation, CurationUndo, CurateOutcome, hidden_line, keep_valid, merge_ranges, stands};
 mod mention;
 mod participant;
 mod room;
@@ -26,10 +28,10 @@ pub use mention::{mention_clash, mention_for, mentioned_words, mentions_handle, 
 pub use participant::{
     DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
 };
-pub use room::{ChangeRecord, Compaction, Room, RoomEvent, RoomOptions, RoomSnapshot, TurnPolicy};
+pub use room::{decide_room_action, ChangeRecord, ClientMessageRecord, ClientMessageRequest, ClientMessageState, Compaction, Room, RoomEvent, RoomKind, RoomOptions, RoomSnapshot, TurnPolicy};
 pub use write_gate::{CheckoutWriteGate, WriteLease, WriteWaitError};
 pub use types::{
-    Access, AgentTool, Backend, ContextUse, MediaSettings, Message, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage, Speed,
+    Access, AgentTool, Backend, ContextUse, MediaSettings, Message, MessageOrigin, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage, Speed,
     PlanWindow, ResetCredit, ResetCredits, Speaker, TokenTotals,
 };
 pub use view::{render_prompt, render_view, render_view_after, system_prompt, Role, ViewTurn, PASS_TOKEN};

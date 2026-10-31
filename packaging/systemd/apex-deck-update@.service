@@ -1,0 +1,15 @@
+[Unit]
+Description=Check and safely install published Apex Deck releases for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/apex-deck-update/vps_update.py %i
+TimeoutStartSec=3h
+TimeoutStopSec=90
+UMask=0022
+# Root owns the transaction; the updater drops to %i for Git, Cargo and probes.
+# Canceling this unit also cancels its build children. Daemon agents belong to
+# the daemon's separate service cgroup and are unaffected.
+KillMode=control-group

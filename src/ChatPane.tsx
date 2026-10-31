@@ -1,5 +1,12 @@
+import { RunnerWork } from "./runner/RunnerWork.tsx";
+import { useRunner } from './runner/useRunner.ts';
+import { runnerCommand, runnerAction } from './runner/client.ts';
+import { defaultLimits, type RunnerKind, type RunnerConfig } from './runner/types.ts';
+import { RunnerSetup } from './runner/RunnerSetup.tsx';
 import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
 import { isWindows, pathBase } from "./paths";
+import { RunnerDrawer } from './runner/RunnerDrawer.tsx';
+import './runner/runner.css';
 import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
@@ -19,9 +26,10 @@ import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
+import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, Curation, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
@@ -66,7 +74,7 @@ import { DeckIcon } from "./DeckIcon";
 import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
 import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
-import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
+import { AGENT_LABEL, chipDescription, foldedFor, levelsShown, saveFolded, type ChipParts } from "./botChip";
 import { planOf, usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { HexColorPicker } from "./HexColorPicker";
@@ -104,8 +112,11 @@ import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
+import { ModelMetricPills } from "./ModelMetricPills";
+import { METRICS_CAPABILITY, metricsRequest } from "./modelMetrics.ts";
+import { botGroups, reasoningLevels } from "./phoneRules";
 import { AttachedImages, AttachedVideos } from "./AttachedImages";
-import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
+import { saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, recipientName } from "./recipients";
 import { askerOf, hopNotice, letLabel, liveActions, retryFor, stillHere, type NoticeAction } from "./noticeActions";
@@ -130,6 +141,16 @@ import type {
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from "./speed";
 
 interface Props {
+  talkOnly?: boolean;
+  chatDraft?: string;
+  onChatDraft?: (text: string) => void;
+  onChatSend?: (text: string) => void;
+  chatBlocked?: string | null;
+  chatReadOnly?: boolean;
+  onChatAddBot?: () => void;
+  chatDelivery?: import('react').ReactNode;
+  onChatParticipants?: (bots: ParticipantConfig[]) => void;
+
   voiceSettings?: VoiceSettings;
   onVoiceSettings?: (settings:VoiceSettings)=>void;
   onVoiceFocus?: (roomId:string)=>void;
@@ -219,6 +240,7 @@ type Entry =
   | { kind: "message"; message: Message }
   | { kind: "notice"; notice: Notice }
   | { kind: "summary"; summary: Summary }
+  | { kind: "curation"; curation: Curation }
   | { kind: "low"; low: LowContext };
 
 function messagesOf(entries: Entry[]): Message[] {
@@ -228,6 +250,13 @@ function compactionOf(entries: Entry[]) {
   const summary = entries.filter((entry) => entry.kind === "summary").at(-1);
   return summary?.kind === "summary" ? { upto: summary.summary.upto, summary: summary.summary.summary } : null;
 }
+const noteTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+/** One line of a /curate note: its message numbers bold, the line bots see as code. */
+const noteLine = (line: string, key: number) => (
+  <p key={key}>
+    {line.split(/(^Messages? [^·]+(?= · )|\[#[^\]]+\])/).map((part, i) => i % 2 === 0 ? part : part.startsWith("[") ? <code key={i}>{part}</code> : <strong key={i}>{part}</strong>)}
+  </p>
+);
 
 export { slug };
 
@@ -553,7 +582,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -571,6 +600,21 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const [legacy, setLegacy] = useState<import("./types").RoomState["legacy"]>();
+  const [runner, setRunner, runnerHostOffset] = useRunner(backend, pane.id);
+  const runnerRef=useRef(runner);runnerRef.current=runner;
+  const [runnerMode,setRunnerMode]=useState<RunnerKind|null>(null);
+  const [runnerInterval,setRunnerInterval]=useState('10m');
+  const [runnerLimits,setRunnerLimits]=useState(defaultLimits);
+  const [runnerConfig,setRunnerConfig]=useState<RunnerConfig>({});
+  const [runnerEndRequest,setRunnerEndRequest]=useState(0);
+  const [runnerShowRequest,setRunnerShowRequest]=useState(0);
+  const runnerClear=useRef(false);
+  const runnerUnfinished=!!runner&&!['completed','ended'].includes(runner.phase);
+  const armRunner=(kind:RunnerKind)=>{
+    if(runnerUnfinished){notify(`A ${runner!.kind} is unfinished here. End it first.`);return;}
+    if(planOn){notify('Turn off Plan before selecting Goal or Loop.');return;}
+    setRunnerMode(kind);input.current?.focus();
+  };
   const [pins, setPins] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<AllowedRule[]>([]);
   /** "Removed. Null asks again next time.", shown for a moment after Remove. */
@@ -684,7 +728,11 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const [pendingSettings, setPendingSettings] = useState<Record<string, boolean>>({});
   const closeQuickSettings = () => setQuickSettings(null);
   const [busy, setBusy] = useState(false);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(talkOnly ? chatDraft : "");
+  const chatCallbacks = useRef({onChatDraft, onChatParticipants});
+  chatCallbacks.current = {onChatDraft, onChatParticipants};
+  useEffect(() => { if (talkOnly) chatCallbacks.current.onChatDraft?.(text); }, [text, talkOnly]);
+  useEffect(() => { if (talkOnly) chatCallbacks.current.onChatParticipants?.(participants); }, [participants, talkOnly]);
   const [caret, setCaret] = useState(0);
   const composerMenu = useRef<ComposerMenuHandle>(null);
   const [queued, setQueued] = useState<ParticipantMessage[]>([]);
@@ -769,7 +817,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const [editing, setEditing] = useState<string | null>(null);
   const [roomReady, setReady] = useState(profileMode);
   const hostConnection = useHostConnection(backend);
-  const ready = roomReady && hostCanMutate(hostConnection.status);
+  const ready = roomReady && (talkOnly || hostCanMutate(hostConnection.status));
   const [loadError, setLoadError] = useState("");
   /** Structured attach-mode waiting state: the owner hasn't opened the room yet. Drives the retry loop. */
   const [waitingForOwner, setWaitingForOwner] = useState(false);
@@ -876,10 +924,14 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const [sendingFirst, setSendingFirst] = useState(false);
   /** Where the room was last opened, to tell a move to another machine or folder. */
   const place = useRef<{ backend: Backend; cwd: string } | null>(null);
-  const [tldr, setTldr] = useState(() => loadTldr(pane.id));
-  const [folded, setFolded] = useState(() => loadFolded(pane.id));
-  const toggleFolded = () => setFolded((on) => { saveFolded(pane.id, !on); return !on; });
-  const toggleTldr = () => setTldr((on) => { saveTldr(pane.id, !on); return !on; });
+  /** TL;DR and the folded panel belong to one thread on one machine: two machines can each have a
+   *  thread with the same id. A choice saved under the bare id, before keys named the machine, is
+   *  carried over the first time it is read. */
+  const preferenceKey = JSON.stringify([backend.host?.id ?? "local", pane.id]);
+  const [tldr, setTldr] = useState(() => tldrFor(preferenceKey, pane.id));
+  const [folded, setFolded] = useState(() => foldedFor(preferenceKey, pane.id));
+  const toggleFolded = () => setFolded((on) => { saveFolded(preferenceKey, !on); return !on; });
+  const toggleTldr = () => setTldr((on) => { saveTldr(preferenceKey, !on); return !on; });
   // The thread's Plan switch, as the host keeps it.
   const [planOn, setPlanOn] = useState(false);
   const setPlan = (on: boolean) => backend.roomSetPlan(pane.id, on).catch((error) => notify(`Could not ${on ? "turn Plan on" : "turn Plan off"}: ${String(error)}`, "error"));
@@ -913,6 +965,16 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   activity.current = onActivity;
   const signal = useRef(onSignal);
   signal.current = onSignal;
+  const runnerSignalKey=useRef('');
+  useEffect(()=>{
+    if(!runner)return;
+    const key=`${runner.id}:${runner.phase}:${runner.reason}`;
+    if(runnerSignalKey.current===key)return;runnerSignalKey.current=key;
+    if(runner.phase==='completed')signal.current?.(pane.id,'done',`${runner.kind==='goal'?'Goal':'Loop'} finished`);
+    else if(runner.phase==='waiting'||runner.phase==='paused'&&!['human','recovery','none'].includes(runner.reason))signal.current?.(pane.id,'needs_input',`${runner.kind}: ${runner.reason.replaceAll('_',' ')}`);
+    else if(['running','scheduled'].includes(runner.phase))signal.current?.(pane.id,null);
+  },[runner?.id,runner?.phase,runner?.reason,pane.id]);
+
   const approvals = useRef(onApprovals);
   approvals.current = onApprovals;
   const preview = useRef(profileMode ? undefined : onPreview);
@@ -1136,6 +1198,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           setWorking(({ [event.id]: _gone, ...rest }) => rest);
           notify(`${nameOf(event.id)} had nothing to add.`);
           break;
+        case "journal_warning":
+          notify(event.error, "error");
+          break;
         case "failed":
           turnQueue.error(event.id);
           setDrafts(({ [event.id]: _gone, ...rest }) => rest);
@@ -1164,6 +1229,12 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           forgetContext();
           setCompactions((n) => n + 1);
           break;
+        case "curations_changed":
+          setEntries((list) => withCurationNotes(list, event.curations));
+          // Every model now sees a different chat, so how full each window is
+          // stays unknown until its next turn says.
+          forgetContext();
+          break;
         case "stopped":
           setDrafts({});
           setWorking({});
@@ -1179,7 +1250,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           if (showChangesRef.current) refreshDiff.current();
           // A round the person stopped themselves needs no flag.
           const wants = round.current.stopped ? null : afterRound(round.current.failed, round.current.lastReply);
-          if (wants) signal.current?.(pane.id, wants.kind, wants.note);
+          if (wants && !(wants.kind==='done'&&runnerRef.current&&!['completed','ended'].includes(runnerRef.current.phase))) signal.current?.(pane.id, wants.kind, wants.note);
           round.current = { failed: [], lastReply: null, stopped: false };
           setBusy(turnQueue.active);
           setDrafts({});
@@ -1205,6 +1276,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         if (!alive) return;
         const saved = state.snapshot;
         setLegacy(state.legacy);
+        setRunner(state.runner ?? null);
         setMountHistory(state.mounts ?? []);
         if (state.cwd && state.cwd !== cwd) folderChanged.current?.(state.cwd);
         closeGitCard();
@@ -1234,9 +1306,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         setUsed(saved.usage ?? {});
         setContextFill(savedContext(pane.id));
         contextLoaded.current = true;
-        const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
+        const transcript: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
-        if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
+        if (saved.compaction) transcript.splice(Math.min(saved.compaction.upto, transcript.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
+        const restored = withCurationNotes(transcript, saved.curations ?? []);
         const mounted = state.mounts?.at(-1);
         const mountNotice: Entry[] = mounted ? [{kind:"notice", notice:{key:noticeKey.current++, text:mounted.note ?? `Now working in ${mounted.to.split(/[\\/]/).filter(Boolean).at(-1)}.`, tone:"info", source:"mount"}}] : [];
         setEntries(old => [...restored, ...mountNotice, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load" && e.notice.source !== "mount")]);
@@ -1271,7 +1344,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     const refresh = async () => {
       if (!alive) return;
       const state = backend.host?.connection.get();
-      if (state && state.status.kind !== "connected" && state.status.kind !== "resync") return;
+      if (!talkOnly && state && state.status.kind !== "connected" && state.status.kind !== "resync") return;
       setReady(false);
       recoveredState = null; // a new daemon boot starts its room event numbers over
       await recovery.refresh();
@@ -1283,7 +1356,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       if (!alive) { off(); return; }
       offHub = off;
       // Connected already, or browser demo. Otherwise first connection runs refresh.
-      if (!backend.host || backend.host.connection.get().revision > 0) void refresh();
+      if (talkOnly || !backend.host || backend.host.connection.get().revision > 0) void refresh();
     });
     return () => {
       alive = false;
@@ -1313,6 +1386,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
 
   /** Open a file, folder or web address a message links to. A local server opens in a Preview. */
   const openTarget = (target: string, reveal = false) => {
+    if (talkOnly && !/^https?:\/\//i.test(target)) return;
     const address = /^https?:\/\//i.test(target) ? normalizeAddress(target) : null;
     if (address && isLocalHost(new URL(address).hostname) && preview.current) return preview.current(address, false);
     backend.openTarget(target, cwd || null, reveal).catch((error) => notify(`Could not open ${target}: ${String(error)}`, "error"));
@@ -1322,13 +1396,14 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   // later is picked up when the thread is opened again.
   const pathChecks = useMemo(() => new Map<string, Promise<boolean>>(), [cwd, backend]);
   const pathExists = useCallback((path: string) => {
+    if (talkOnly) return Promise.resolve(false);
     let known = pathChecks.get(path);
     if (!known) {
       known = backend.pathsExist([path], cwd || null).then(([yes]) => Boolean(yes), () => false);
       pathChecks.set(path, known);
     }
     return known;
-  }, [pathChecks, cwd, backend]);
+  }, [pathChecks, cwd, backend, talkOnly]);
 
   // A model's picture lives outside Deck (Codex and Grok keep their own); the
   // Library takes a copy the first time it is shown. One reader per bot, so
@@ -1540,20 +1615,44 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       .catch((error) => notify(`Could not clear the chat: ${String(error)}`, "error"));
   };
 
-  /** Have a model summarize the chat. The models then see the summary in
-   *  place of the messages so far; the person still sees them all. */
-  const compactChat = () => {
+  const contextJob = (command: string, kind: TurnKind) => {
     setText("");
     setReplies([]);
     setBusy(true);
-    void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
+    void turnQueue.send(command, kind).catch(error => notify(String(error), "error"));
   };
+  /** Have a model summarize the chat. The models then see the summary in
+   *  place of the messages so far; the person still sees them all. */
+  const compactChat = () => contextJob("/compact", "compact");
+  /** Have a model pick old messages to hide from the models, or bring them back. */
+  const curateChat = () => contextJob("/curate", "curate");
+  const undoCuration = () => contextJob("/curate undo", "curate_undo");
 
   const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
   dispatch.current = async (message, to, kind, hops) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
+    } else if (kind === "curate" || kind === "curate_undo") {
+      try {
+        if (kind === "curate") {
+          const reply = await backend.roomCurate(pane.id);
+          const notice = curateNotice({ ...reply, by: namesRef.current.get(reply.by) ?? reply.by });
+          if (notice) notify(notice.text, notice.tone);
+        } else {
+          const notice = undoNotice(await backend.roomCurateUndo(pane.id));
+          notify(notice.text, notice.tone);
+        }
+      } catch (error) {
+        notify(failedNotice(message, error), "error");
+        // A failed final save can leave what bots see changed, so show what the host has.
+        const state = await backend.roomState?.(pane.id).catch(() => null);
+        if (state) setEntries((list) => withCurationNotes(list, state.snapshot.curations ?? []));
+      } finally {
+        setDrafts({});
+        setWorking({});
+        to.forEach(id => turnQueue.idle(id));
+      }
     } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
     else await backend.roomPostTo(pane.id, message, to);
   };
@@ -1577,6 +1676,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused. Check whether it arrived before retrying.`, "error"); },
     () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
+    true, // A failed send keeps its message here, so the thread shows it and can retry.
+    // Asked again when a queued message is actually sent, so a rule changed while it waited still applies.
+    (message) => current.current.roomTargets(pane.id, message),
   ));
   useEffect(() => {
     const store = backend.host?.connection;
@@ -1586,7 +1688,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   }, [backend, turnQueue]);
   const voiceHost=backend.host?.id??'local';
   const voiceConfig=readVoiceSettings(voiceSettings);
-  const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,agentVoice:p.voice,roomTitle:pane.title,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
+  const voiceCandidates=profileMode || talkOnly?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,agentVoice:p.voice,roomTitle:pane.title,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
   const voiceWho:VoiceWho=id=>{const p=participants.find(x=>x.id===id),look=appearance(id);return {...look,kind:p?.backend.kind==='agent'?AGENT_LABEL[p.backend.tool]:undefined};};
   const voiceHint=useVoiceHint({candidates:voiceCandidates,settings:voiceConfig});
   const voiceSlot=useVoiceSlot({candidates:voiceCandidates,settings:voiceConfig});
@@ -1598,9 +1700,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     return ()=>{unregisterVoiceThread(key);for(const bridge of voiceBridges.current.values())bridge.dispose();voiceBridges.current.clear();};
   },[backend,pane.id,voiceHost]);
   useEffect(()=>{
-    if(profileMode)return;
+    if(profileMode || talkOnly)return;
     registerVoiceThread(scopeKey({hostId:voiceHost,roomId:pane.id}),{
       candidates:voiceCandidates,settings:voiceConfig,save:s=>voiceLive.current.onVoiceSettings?.(s),focus:()=>voiceLive.current.onVoiceFocus?.(pane.id),
+      realtimeSession: (args) => backend.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args as any),
       bridge:id=>{
         let bridge=voiceBridges.current.get(id);if(bridge)return bridge;
         bridge=createThreadVoiceBridge({backend,scope:{hostId:voiceHost,roomId:pane.id,participantId:id},
@@ -1678,7 +1781,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const forkAt = (title: string, upto: number | null) => {
     if (!onFork) return notify("Forking is available in workspace threads.", "error");
     return flushAnswerStores(backend, pane.id).then(() => onFork(title, upto, upto ?? messagesOf(entries).length))
-      .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
+      .then((name) => notify(talkOnly ? `Copied into the new chat “${name}”.` : `Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
       .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
   };
   const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2" fill="currentColor"/><circle cx="11" cy="2.5" r="1.2" fill="currentColor"/></svg>;
@@ -1742,7 +1845,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     setPicked(null);
     window.getSelection()?.removeAllRanges();
     stuck.current = true;
-    void turnQueue.send(message).catch((error) => notify(String(error), "error"));
+    if (talkOnly && onChatSend) {
+      try { onChatSend(message); } catch (error) { notify(String(error), 'error'); }
+    } else void turnQueue.send(message).catch((error) => notify(String(error), "error"));
   };
   const retryIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
   const revertIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
@@ -1753,7 +1858,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const [goneBack, setGoneBack] = useState(0);
   /** Retry on a bot's reply, Revert on your message: delete from there, put this thread's files back. */
   const goBack = (message: Message) => {
-    if (!ready) return;
+    if (!ready || chatReadOnly) return;
     if (busy) return notify("Stop the bots first.", "error");
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
@@ -1876,13 +1981,13 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         {copiedHere ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}
       </button>,
       message.speaker.kind === "bot" && <ReadAloudAction key="read-aloud" text={message.text} />,
-      canPin && <button key="pin" type="button" className="msg-action pin-action" title={pinLabel} aria-label={pinLabel} aria-pressed={pinned} disabled={unpinning} onClick={togglePin}>
+      canPin && <button key="pin" type="button" className="msg-action pin-action" title={pinLabel} aria-label={pinLabel} aria-pressed={pinned} disabled={unpinning || chatReadOnly} onClick={togglePin}>
         <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={pinned ? "currentColor" : "none"}/><path d="M12 16v6" /></svg>
       </button>,
     ];
     const extra = [
-      goBackKind && <button key="goback" type="button" className={`msg-action ${goBackKind}`} disabled={busy} aria-label={goBackLabel} title={goBackHint} onClick={() => goBack(message)}>{goBackKind === "retry" ? retryIcon : revertIcon}</button>,
-      onFork && <button key="fork" type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>,
+      goBackKind && <button key="goback" type="button" className={`msg-action ${goBackKind}`} disabled={busy || chatReadOnly} aria-label={goBackLabel} title={goBackHint} onClick={() => goBack(message)}>{goBackKind === "retry" ? retryIcon : revertIcon}</button>,
+      onFork && <button key="fork" type="button" className="msg-action fork" aria-label={talkOnly ? "Copy into a new chat" : "Fork from here"} title={talkOnly ? "Copy into a new chat" : "Fork from here"} onClick={fork}>{forkIcon}</button>,
     ];
     // Your messages mirror a model's row: time, chevron, fork, revert, pin, copy, reply.
     const mine = message.speaker.kind === "human";
@@ -1914,7 +2019,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** Save the thread to Downloads as Markdown or JSON, then show the file. */
   const exportAs = (format: "markdown" | "json") => {
     saveExport(format)
-      .then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } })
+      .then((path) => { if (path) { notify(`Exported to ${path}`); void backend.openTarget(path, null, true).catch(error => notify(String(error), "error")); } })
       .catch((error) => notify(`Could not export: ${String(error)}`, "error"));
   };
   const sharePdf = async () => {
@@ -1924,7 +2029,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       const path = await backend.exportPdf(exportFileName(pane.title, "pdf", at), exportHtml(thread, at));
       if (path) {
         notify(`Saved PDF to ${path}`);
-        openTarget(path, true);
+        await backend.openTarget(path, null, true);
         return;
       }
       notify("The PDF was not saved.", "error");
@@ -1943,12 +2048,38 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   /** Commands run locally and never reach the models. */
   const runCommand = (command: Command) => {
+    if (talkOnly && ['diff', 'plan', 'image'].includes(command.name)) {
+      notify('Move to a Work thread to use files, tools or Plan.', 'info'); return;
+    }
+    if (talkOnly && (command.name === 'curate' || command.name === 'curate_undo')) {
+      notify('Move to a Work thread to use /curate.', 'info'); return;
+    }
+    if (chatReadOnly && !['fork', 'export'].includes(command.name)) return;
+
     switch (command.name) {
+      case "goal":
+      case "loop": {
+        void (async()=>{
+          try {
+            const workers=stickyFor(text,turnQueue.items)??await backend.roomTargets(pane.id,command.arg);
+            const result=await runnerCommand(backend,pane.id,command.name,command.arg,workers,runnerLimits,runnerConfig);
+            setRunner(result.snapshot??null);
+            if(result.confirmEnd){runnerClear.current=true;setRunnerEndRequest(v=>v+1);}
+            if(result.show)setRunnerShowRequest(v=>v+1);
+            if(result.message)notify(result.message);
+            setText('');setRunnerMode(null);
+          }catch(error){notify(String(error),'error');}
+        })();return;
+      }
       case "clear":
         if (busy || turnQueue.active) return notify("Wait for the models to finish before clearing the chat.");
         return clearChat();
       case "compact":
         return compactChat();
+      case "curate":
+        return curateChat();
+      case "curate_undo":
+        return undoCuration();
       case "fork":
         setText(""); return void forkAt(command.title || `${pane.title} (fork)`, null);
       case "export":
@@ -1957,7 +2088,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       case "diff":
         setText(""); if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); } return;
       case "plan":
-        setText(""); void setPlan(!planOn); return;
+        setText(""); if(runnerMode){setRunnerMode(null);notify("Goal/Loop start mode cleared; Plan selected.");} void setPlan(!planOn); return;
       case "image": {
         // The picture is posted as your message, so every model can see it,
         // without asking anyone to reply.
@@ -1993,7 +2124,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     else if (menuRequest.action === "share_pdf") void sharePdf();
     else if (menuRequest.action === "copy_markdown") void threadExport().then(thread => onCopy?.(exportMarkdown(thread, new Date()), "markdown")).catch(error => notify(`Could not export: ${String(error)}`, "error"));
     else if (menuRequest.action === "copy_reply") onCopy?.(lastReply(messagesOf(entries)), "reply");
-    else void saveExport("markdown").then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } }).catch((error) => notify(`Could not export: ${String(error)}`, "error"));
+    else void saveExport("markdown").then((path) => { if (path) { notify(`Exported to ${path}`); void backend.openTarget(path, null, true).catch(error => notify(String(error), "error")); } }).catch((error) => notify(`Could not export: ${String(error)}`, "error"));
   }, [menuRequest, ready, loadError]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Artifacts: code from replies, opened on request, saved beside the thread.
@@ -2089,11 +2220,11 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   const cardIn = (message: Message) => (code: { language: string; text: string }) =>
     code.language === CARD_LANGUAGE
-      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={`${hostConnection.revision}:${goneBack}:${cwd}`} executionAllowed={focused && ready} autoStartKey={autoStartKey} readOnly={message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
+      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={`${hostConnection.revision}:${goneBack}:${cwd}`} executionAllowed={!chatReadOnly && focused && ready && hostCanMutate(hostConnection.status)} autoStartKey={autoStartKey} readOnly={chatReadOnly || message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
       : undefined;
 
   const changeArtifacts = (next: ArtifactFile) => {
-    if (followArtifacts) return;
+    if (talkOnly || followArtifacts) return;
     latestArtifacts.current = next;
     setArtifacts(next);
     if (!artifactsReadable.current) return;
@@ -2141,7 +2272,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const announceArtifactLatest = useRef(announceArtifact);
   announceArtifactLatest.current = announceArtifact;
   collectWritten.current = (bot: string) => {
-    if (followArtifacts) return;
+    if (talkOnly || followArtifacts) return;
     const paths = [...written.current].filter(([path, by]) => by === bot && kindForPath(path)).map(([path]) => path);
     for (const path of paths) written.current.delete(path);
     if (paths.length === 0 || !artifactsReadable.current) return;
@@ -2159,7 +2290,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   // HTML or SVG fenced in a live reply opens the same way. Replies loaded
   // with the thread don't: those were seen already.
   collectReply.current = (message) => {
-    if (followArtifacts) return;
+    if (talkOnly || followArtifacts) return;
     if (!artifactsReadable.current || message.speaker.kind !== "bot") return;
     const code = parseBlocks(message.text).flatMap((block) => (block.kind === "code" ? [{ language: block.language, text: block.text }] : []));
     if (code.length === 0) return;
@@ -2202,6 +2333,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const shownVersion = liveView && !liveView.list ? pickVersion(artifacts, liveView.artifactId, liveView.n) : null;
   /** The control for a code block in a finished bot reply, or nothing. */
   const artifactAction = (message: { seq: number; speaker: Speaker }, code: { language: string; text: string }) => {
+    if (talkOnly) return null;
     if (!artifactsLoaded) return null;
     const choices = codeChoices(artifacts, message.seq, code.language, code.text);
     if (!choices) return null;
@@ -2214,14 +2346,14 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const codeRuns = useCodeRuns(backend, pane.id);
   const runKey = (message: { seq: number }, code: CodeInfo) => `${message.seq}:${code.index}`;
   const runAction = (message: { seq: number }, code: CodeInfo) => {
-    if (!codeRunButtons || backend.demo || !isRunnable(code.language, code.text)) return null;
+    if (talkOnly || !codeRunButtons || backend.demo || !isRunnable(code.language, code.text)) return null;
     const command = commandFrom(code.language, code.text);
     if (!command.trim()) return null;
     const key = runKey(message, code);
     return <RunButton command={command} running={codeRuns.runs[key]?.state === "running"} onRun={() => codeRuns.run(key, command, cwd)} />;
   };
   const terminalOpenAction = (code: CodeInfo) => {
-    if (!onOpenTerminal) return null;
+    if (talkOnly || !onOpenTerminal) return null;
     const text = code.text.trim();
     if (!text) return null;
     return (
@@ -2300,6 +2432,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
 
   /** Save each file as soon as it is attached, so sending never waits. */
   const track = (name: string, preview: string | undefined, save: () => Promise<string>) => {
+    if (talkOnly) return;
     const id = `${Date.now()}-${Math.random()}`;
     setAttached((list) => [...list, { id, name, preview }]);
     save()
@@ -2311,6 +2444,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       });
   };
   const attachFiles = (files: Iterable<File>) => {
+    if (talkOnly) return;
     for (const file of files) {
       const name = attachmentName(file.name, file.type);
       const preview = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
@@ -2342,6 +2476,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   // The desktop window takes file drops itself and reports their paths.
   const attachDropped = useRef<(paths: string[], x: number, y: number) => void>(() => {});
   attachDropped.current = (paths, x, y) => {
+    if (talkOnly) return;
     const box = composer.current?.parentElement?.getBoundingClientRect();
     if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
     for (const path of paths) {
@@ -2414,7 +2549,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const copy = composerCopy(busy, participants.length === 0, { quoting: replies.length > 0, to: recipient, tldr, plan: planOn });
   const serverMenuOpen = findTrigger(text, caret)?.kind === "server";
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || talkOnly) return;
     let live = true;
     setServerLists({}); setServerErrors({});
     for (const p of participants) backend.listToolServers(pane.id, p.id).then(names => {
@@ -2475,7 +2610,10 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const sendStep = (step: NextStep, by: string) => {
     dismissSteps(pane.id);
     stuck.current = true;
-    void turnQueue.sendTo(step.prompt, [by]).catch((error) => notify(String(error), "error"));
+    if (talkOnly && onChatSend) {
+      const bot = participants.find(p => p.id === by);
+      try { onChatSend(bot ? `@${mentionFor(bot)} ${step.prompt}` : step.prompt); } catch (error) { notify(String(error), 'error'); }
+    } else void turnQueue.sendTo(step.prompt, [by]).catch((error) => notify(String(error), "error"));
   };
   /** A key in the composer that the form takes. True when it was handled. */
   const formKeys = (key: string) => {
@@ -2496,7 +2634,19 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     return true;
   };
   const send = async (steer = false) => {
-    if (!ready) return;
+    if (!ready || chatReadOnly || chatBlocked) return;
+    if (talkOnly && onChatSend) {
+      const body = text.trim();
+      if (!body) return;
+      const parsed = parseComposer(body);
+      if ('command' in parsed) return runCommand(parsed.command);
+      if (runnerMode) return runCommand({name:runnerMode,arg:runnerMode==='loop'?`${runnerInterval} ${body}`:`start ${body}`});
+      try {
+        onChatSend(withTldr(replyText(postable(parsed.text), replies.length ? replies : null, participants), tldr));
+        setText(''); setReplies([]); stuck.current = true;
+      } catch (error) { notify(String(error), 'error'); }
+      return;
+    }
     panelDismissed.current = false;
     const targetIds = stickyFor(text, turnQueue.items) ?? await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
     const invalid = targetIds.length && targetIds.every(id => serverLists[id] !== undefined)
@@ -2514,6 +2664,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     if ((!body && !sendable.length) || !ready || saving) return;
     const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
+    if (runnerMode) {
+      return runCommand({name:runnerMode,arg:runnerMode==='loop'?`${runnerInterval} ${body}`:`start ${body}`});
+    }
     if (participants.length === 0) return;
     // A picture or video bot needs its picture. Each picture or video is asked for on the bot's own card, before it is made.
     const sends = mediaSendsFor(targetIds, participants, providerModels, sendable.some(a => isImage(a.path!)));
@@ -2718,6 +2871,16 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
     return b?.kind === "open_ai_compatible" ? mediaKind(providerModels[sourceKey(b.base_url, b.api_key_env)]?.find((m) => m.id === b.model)) : null;
   };
   const makesMedia = (p: ParticipantConfig | undefined) => Boolean(mediaOf(p));
+  // What an agent card's benchmark pills ask for: the bot's model, the levels it offers and the one it runs at.
+  const metricsAsk = (p: ParticipantConfig) => {
+    if (makesMedia(p)) return null;
+    const b = p.backend;
+    const listed = b.kind === "open_ai_compatible" ? providerModels[sourceKey(b.base_url, b.api_key_env)] ?? [] : [];
+    const model = "model" in b ? b.model ?? "" : "";
+    const efforts = reasoningLevels(p, botGroups(p, b.kind === "agent" ? reported[b.tool] ?? [] : [], listed), model);
+    const fallback = listed.find(m => m.id === model)?.default_effort ?? (efforts.length ? defaultEffortFor(efforts) : null);
+    return metricsRequest(p, efforts, fallback, backend.supports?.(METRICS_CAPABILITY) === true);
+  };
   /** Stopping only stops Deck waiting: a picture or video the provider already started may still be billed. */
   const chargeWarning = (ids: string[]) => {
     const kinds = new Set(ids.map((id) => mediaOf(configOf(id))).filter(Boolean));
@@ -2745,7 +2908,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   for (const entry of entries) {
     if (entry.kind === "message" && entry.message.speaker.kind === "bot") newestReply.set(entry.message.speaker.id, entry.message.seq);
   }
-  const canCompact = ready && !busy && participants.length > 0;
+  const canCompact = !chatReadOnly && ready && !busy && participants.length > 0;
+  const compactedUpto = compactionOf(entries)?.upto ?? 0;
+  const jumpToMessage = (seq: number) => scroller.current?.querySelector<HTMLElement>(`[data-seq="${seq}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
 
   /** The quick menu's Resets row for `p`'s provider, when it has granted any. */
   const resetsFor = (p: ParticipantConfig | undefined) => {
@@ -2830,10 +2995,11 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const addButton = (<button
             className="ghost"
             onClick={() => {
+              if (talkOnly) return onChatAddBot?.();
               if (adding) return closeForm(draft.preset);
               openNewForm();
             }}
-            disabled={!ready || availablePresets.length === 0}
+            disabled={!ready || chatReadOnly || (talkOnly ? !onChatAddBot : availablePresets.length === 0)}
           >
             {adding ? "Cancel" : profileMode ? "+ New agent" : "+ Add model"}
           </button>);
@@ -2976,7 +3142,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               <span className="hint">{speedHint(tool)}</span>
             </div>
           )}
-          {draft.preset !== "scripted" && (
+          {talkOnly ? <div className="wide access-field">Access · Talk only</div> : draft.preset !== "scripted" && (
             <div className="wide access-field">
               <span className="field-title">Access</span>
               <Segmented
@@ -3152,6 +3318,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** Saved agents not already in this thread, offered as tiles in the add menu. */
   const pickableAgents = availableProfiles.filter((p) => !participants.some((own) => own.id === p.id));
   const openQuickAdd = (where: "dock" | "details", opener?: HTMLElement) => {
+    if (talkOnly) return onChatAddBot?.();
     if (quickAdd === where) return setQuickAdd(null);
     quickAddOpener.current = opener ?? null;
     nameTouched.current = false;
@@ -3351,8 +3518,8 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         <summary className="pins-label">Pinned <span>({pins.length})</span></summary>
         <div className="pins-list">
         {pins.map((pin, index) => <div className="pin" key={pin}>
-          {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => scroller.current?.querySelector<HTMLElement>(`[data-seq="${pinSource(pin)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
-          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning} onClick={() => removePin(index)}>×</button>
+          {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => jumpToMessage(pinSource(pin)!)}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
+          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning || chatReadOnly} onClick={() => removePin(index)}>×</button>
         </div>)}
         </div>
       </details> : <p className="muted">No pinned responses. Use the pin icon on a model response.</p>);
@@ -3422,7 +3589,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         const levels = levelsFor(p.id);
         const shown = levelsShown(levels, chipParts, isLow);
         const queueCount = queued.filter(item => item.to.includes(p.id)).length;
-        const chipAccess = { read: 'Read-only', ask: 'Ask', edits: 'Edit', full: 'Full' }[p.access];
+        const chipAccess = talkOnly ? "Talk only" : { read: 'Read-only', ask: 'Ask', edits: 'Edit', full: 'Full' }[p.access];
         const hasAccess = p.backend.kind === 'agent' || p.backend.kind === 'open_ai_compatible';
         const accessSummary = hasAccess ? ` · Access: ${chipAccess}${pendingSettings[p.id] ? ' · after this reply' : ''}` : '';
         const phase: string = working[p.id] ? working[p.id].phase : "idle";
@@ -3480,7 +3647,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           this seat an empty thread would have no way to add a bot back. */}
       {(participants.length > 0 || entries.length > 0) && (
         <span className="quick-add-wrap roster">
-          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) openNewForm(); else openQuickAdd("dock", e.currentTarget); }}>
+          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready || chatReadOnly || (talkOnly && !onChatAddBot)} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => { if (talkOnly) return onChatAddBot?.(); if (availablePresets.length === 0 && availableProfiles.length === 0) openNewForm(); else openQuickAdd("dock", e.currentTarget); }}>
             <PersonPlus /><span className="chip-add-label">Add bot</span>
           </button>
         </span>
@@ -3499,9 +3666,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && <LegacyImportPanel backend={backend} />}
       {!profileMode && legacy && <div className="legacy-room-marker"><LegacyBadge scope="room" /></div>}
-      {!profileMode && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
+      {!profileMode && !talkOnly && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings textOnly={talkOnly} talkOnly={talkOnly} disabledReason={chatReadOnly ? "This chat moved to a Work thread." : undefined} accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
         if (!saved && attach) throw new Error("This chat isn't open in Deck right now. Return it to Deck and try again.");
@@ -3509,7 +3676,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
         if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
       }} /> }
-      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} cwd={cwd} />} />, details.slot)}
+      {!profileMode && !talkOnly && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} cwd={cwd} />} />, details.slot)}
       {profileMode && !adding && participants.length > 0 && <div className="chat-bar"><div className="chips">{addButton}</div></div>}
 
       {!profileMode && pins.length > 0 && pinControls}
@@ -3528,7 +3695,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         </div>}
         {participants.map((p) => <article className="agent-card" key={p.id}>
           <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="lg" />
-          <div className="agent-card-copy"><h2>{p.display_name}</h2><p className="muted">{chipDescription(p, ALL_PARTS)}</p><p>{p.persona || "No brief added yet."}</p><span className="hint">@{mentionFor(p)} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
+          <div className="agent-card-copy"><h2>{p.display_name}</h2><div className="agent-model-line"><span className="muted">{chipDescription(p, ALL_PARTS)}</span>{(() => { const ask = metricsAsk(p); return ask && <ModelMetricPills backend={backend} {...ask} open={url => openTarget(url)} />; })()}</div><p>{p.persona || "No brief added yet."}</p><span className="hint">@{mentionFor(p)} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
           <div className="agent-card-actions"><button onClick={() => startEditing(p)}>Edit</button><button className="ghost" onClick={() => removeParticipant(p.id)} aria-label={`Delete agent ${p.display_name}`}>Delete</button></div>
         </article>)}
       </div>}
@@ -3567,7 +3734,8 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         )}
         {pane.fork && pane.fork.at === 0 && forkLine}
         {transcriptMounted.current && entries.flatMap((entry) => {
-          const item = entry.kind === "notice" ? (
+          const renderEntry=(entry:(typeof entries)[number])=>{
+            return entry.kind === "notice" ? (
             <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}${entry.notice.action ? " with-action" : ""}`}>
               <span>{entry.notice.text}</span>
               {entry.notice.action && noticeButton(entry.notice.key, entry.notice.action)}
@@ -3583,6 +3751,17 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 {entry.summary.by ? `Summarized by ${names.get(entry.summary.by) ?? entry.summary.by}` : "Summarized"} · the models see this instead of the messages above
               </summary>
               <Markdown text={entry.summary.summary} onOpen={openTarget} pathExists={pathExists} />
+            </details>
+          ) : entry.kind === "curation" ? (
+            <details key={`c${entry.curation.at}-${entry.curation.when}`} className="compacted">
+              <summary>{noteTitle(entry.curation, names.get(entry.curation.by) ?? entry.curation.by)}</summary>
+              <div className="md">
+                {noteLines(entry.curation, names.get(entry.curation.by) ?? entry.curation.by, isSealed(entry.curation, compactedUpto), noteTime).map(noteLine)}
+                <p className="curation-actions">
+                  <button type="button" className="ghost" onClick={() => jumpToMessage(entry.curation.hidden[0][0])}>Show in chat</button>
+                  {entry.curation.undone == null && !isSealed(entry.curation, compactedUpto) && <button type="button" className="ghost" onClick={undoCuration} disabled={!canCompact}>Undo</button>}
+                </p>
+              </div>
             </details>
           ) : entry.message.speaker.kind === "human" ? (
             <div key={`m${entry.message.seq}`} className="message-row human-row" data-seq={entry.message.seq}>
@@ -3604,6 +3783,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 <span className="speaker">
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
+                {entry.message.lateReplyFrom && <p className="late-reply-label">Late reply from {entry.message.lateReplyFrom}</p>}
                 <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}{terminalOpenAction(code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
@@ -3627,6 +3807,16 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               {messageActions(entry.message)}
             </div>
           );
+          };
+          const item=renderEntry(entry);
+          if(runner&&entry.kind==='message'&&runner.replySeqs?.includes(entry.message.seq)){
+            const index=entries.indexOf(entry);
+            const previous=entries[index-1];
+            if(previous?.kind==='message'&&runner.replySeqs.includes(previous.message.seq))return [];
+            const group=[];
+            for(let n=index;n<entries.length;n++){const row=entries[n];if(row.kind!=='message'||!runner.replySeqs.includes(row.message.seq))break;group.push(row);}
+            return [<RunnerWork key={`runner-${entry.message.seq}`} snapshot={runner} count={group.length}>{group.map(row=>renderEntry(row))}</RunnerWork>];
+          }
           // "New since you looked" goes above the first reply you have not seen.
           const after = entry.kind === "message" && entry.message.seq === forkAfter ? [forkLine] : [];
           return entry.kind === "message" && entry.message.seq === dividerAt
@@ -3641,6 +3831,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           const hidden = steps.length - shown.length;
           const config = configOf(id);
           const quiet = turn && !asks[id]?.length && config && isCommandLine(config.backend) ? quietLine(heard.current.get(id) ?? turn.startedAt, now) : null;
+          const curating = isCurating(steps);
           return (
             <div key={`d${id}`} className="bot-row">
               <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
@@ -3650,7 +3841,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 </span>
                 {turn?.work.structured ? (
                   <WorkSteps turn={turn.work} live />
-                ) : steps.length > 0 && (
+                ) : steps.length > 0 && !curating && (
                   <ul className="steps" aria-label="Steps so far">
                     {hidden > 0 && <li className="step done">{hidden === 1 ? "1 earlier step" : `${hidden} earlier steps`}</li>}
                     {shown.map((step, i) => (
@@ -3684,7 +3875,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                     <i />
                     <i />
                   </span>
-                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
+                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (curating ? CURATE_WORKING : planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
                   {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
                   {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${names.get(id) ?? id}`} title={chargeWarning([id]) ? `Stop ${names.get(id) ?? id}. ${chargeWarning([id])}` : `Stop ${names.get(id) ?? id}`} onClick={() => stopBots(id)}><StopSquare /> Stop</button>}
                 </div>
@@ -3705,6 +3896,8 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                     const parsed = parseQueueEdit(e.target.value);
                     if ("text" in parsed) turnQueue.edit(item.id, parsed.text);
                     else if (parsed.command.name === "compact") turnQueue.edit(item.id, "/compact", "compact");
+                    else if (!talkOnly && parsed.command.name === "curate") turnQueue.edit(item.id, "/curate", "curate");
+                    else if (!talkOnly && parsed.command.name === "curate_undo") turnQueue.edit(item.id, "/curate undo", "curate_undo");
                     else { turnQueue.remove(item.id); setText(e.target.value); runCommand(parsed.command); }
                   }} />
               : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{splitTldr(item.text).text}</button>}
@@ -3738,8 +3931,8 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         </button>}
         {unread > 0 && <button type="button" className="transcript-pill" onClick={jumpToLatest}>{newPill(unread)}</button>}
       </div>}
-      {!profileMode && !artifactsHost && panel && narrow && !panel.full && <button type="button" className="artifacts-backdrop" aria-label="Close artifacts" onClick={() => setPanel(null)} />}
-      {!profileMode && !artifactsHost && panel && (
+      {!profileMode && !talkOnly && !artifactsHost && panel && narrow && !panel.full && <button type="button" className="artifacts-backdrop" aria-label="Close artifacts" onClick={() => setPanel(null)} />}
+      {!profileMode && !talkOnly && !artifactsHost && panel && (
         <ArtifactsPanel
           file={artifacts}
           view={panel}
@@ -3753,7 +3946,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           problem={artifactProblem}
         />
       )}
-      {!profileMode && artifactsHost && dockedHere && artifactsHost.slot && createPortal(
+      {!profileMode && !talkOnly && artifactsHost && dockedHere && artifactsHost.slot && createPortal(
         <ArtifactsPanel
           file={artifacts}
           view={{ ...(panel ?? DEFAULT_VIEW), full: artifactsHost.full }}
@@ -3771,7 +3964,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           backend={backend}
           problem={artifactProblem}
         />, artifactsHost.slot)}
-      {!profileMode && !(panel && !artifactsHost) && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
+      {!profileMode && !talkOnly && !(panel && !artifactsHost) && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
       </div>}
 
       {!profileMode && <div className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
@@ -3823,12 +4016,17 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         </div>}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
-        <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />
+        {!talkOnly && <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />}
         <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock"} ref={field}>
           {quickAdd === "dock" && quickAddMenu}
-          <ComposerMenu ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          <RunnerDrawer snapshot={runner} hostNowOffsetMs={runnerHostOffset} composerRef={input} platform="desktop" endRequest={runnerEndRequest} showRequest={runnerShowRequest} onEndCancel={()=>{runnerClear.current=false;}}
+            onAction={(action,limits)=>{if(!runner)return;void runnerAction(backend,pane.id,runner,action,limits,runnerClear.current).then(next=>{runnerClear.current=false;setRunner(next);}).catch(error=>notify(String(error),'error'));}}
+            onReviewChanges={()=>{setTurnPaths(runner?.changedPaths??[]);setFocusPath(null);details?.show("changes");loadDiff();}}/>
+          {runnerMode&&!runnerUnfinished&&<RunnerSetup config={runnerConfig} onConfig={setRunnerConfig} participants={participants.map(p=>({id:p.id,name:p.display_name}))} kind={runnerMode} interval={runnerInterval} onInterval={setRunnerInterval} limits={runnerLimits} onLimits={setRunnerLimits} onCancel={()=>setRunnerMode(null)}/>}
+          <ComposerMenu talkOnly={talkOnly} disabled={chatReadOnly} ref={composerMenu} planOn={planOn} disabledCommands={runnerUnfinished?{goal:`A ${runner!.kind} is unfinished here. End it first.`,loop:`A ${runner!.kind} is unfinished here. End it first.`}:planOn?{goal:'Turn off Plan first',loop:'Turn off Plan first'}:backend.supports?.('room_runner_v1')===false?{goal:'Update this host to use goals and loops',loop:'Update this host to use goals and loops'}:{}} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
             if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)));
+            if (item.kind === "command" && (item.key === 'goal' || item.key === 'loop') && !trigger) { armRunner(item.key); return; }
             if (item.kind === "command" && item.command) {
               const draft = text;
               runCommand(item.command);
@@ -3867,21 +4065,22 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
             }
           }}
           rows={1}
-          placeholder={waitingForOwner ? "Waiting for Deck…" : voiceHint ?? (form.kind === "steps" && !text ? form.offer.steps[0].prompt : copy.placeholder)}
-          disabled={!roomReady || participants.length === 0}
+          placeholder={chatBlocked ?? (waitingForOwner ? "Waiting for Deck…" : voiceHint ?? (form.kind === "steps" && !text ? form.offer.steps[0].prompt : copy.placeholder))}
+          disabled={chatReadOnly || !roomReady || participants.length === 0}
         />
           </div>
-        <ComposerModeControls planOn={planOn && !profileMode} onPlan={() => void setPlan(false)} tldr={tldr} onTldr={() => { toggleTldr(); input.current?.focus(); }} />
+        <ComposerModeControls planOn={planOn && !profileMode && !talkOnly} onPlan={() => void setPlan(false)} tldr={tldr} onTldr={() => { toggleTldr(); input.current?.focus(); }} />
           {/* One round button: the mic while the box is empty, Send once it has something. Each reply keeps its own Stop, and Esc stops them all. */}
           {roundButton.mic && <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />}
           {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
-          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
+          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
             onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
         </ThreadComposerBox>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
+        {chatDelivery}
         {botChips}
         </div>
       </div>}

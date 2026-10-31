@@ -1321,16 +1321,21 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Observed s
 #[tokio::test]
 async fn tool_free_monitor_refuses_custom_cli_before_starting_it() {
     let dir = fake_tool("monitor-custom-cli", "custom-monitor", "#!/bin/sh\necho started > marker\necho unsafe\n");
+    // Exclude system tools so Linux always exercises missing-bwrap admission.
+    let mut context = context_in(&dir);
+    context.path = Some(dir.to_string_lossy().into_owned());
     let bot = CliParticipant::new(config("monitor", Backend::Cli {
         program: "custom-monitor".into(), args: vec![],
-    })).with_context(&context_in(&dir)).with_tools_disabled();
+    })).with_context(&context).with_tools_disabled();
     let (result, _) = ask(&bot, "inspect only").await;
     let expected = if cfg!(target_os = "macos") {
         "verified tool-free mode"
+    } else if cfg!(target_os = "linux") {
+        "Linux process isolation requires bubblewrap (bwrap)"
     } else {
-        "this backend requires the macOS process sandbox on this host"
+        "this backend requires the macOS or Linux process sandbox on this host"
     };
-    assert!(matches!(result, Err(ParticipantError::Failed(message)) if message.contains(expected)));
+    assert!(matches!(&result, Err(ParticipantError::Failed(message)) if message.contains(expected)), "{result:?}");
     assert!(!dir.join("marker").exists(), "unsupported backend started despite tool-free mode");
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -1936,12 +1941,20 @@ async fn tools_disabled_denies_ask_user_question_without_consulting_the_approver
 async fn tools_disabled_fails_closed_without_supported_process_isolation() {
     use apex_core::AgentTool;
     let dir = fake_tool("agent-tools-disabled-unsupported", "codex", "#!/bin/sh\necho ran > invoked\nexit 90\n");
+    // Do not inherit a runner's bubblewrap installation into this negative test.
+    let mut context = context_in(&dir);
+    context.path = Some(dir.to_string_lossy().into_owned());
     for tool in [AgentTool::Codex, AgentTool::Grok, AgentTool::Gemini, AgentTool::Muse] {
         let bot = CliParticipant::new(config("monitor", Backend::Agent { tool, model: None }))
-            .with_context(&context_in(&dir)).with_tools_disabled();
+            .with_context(&context).with_tools_disabled();
         let (result, _) = ask(&bot, "inspect evidence").await;
         let error = result.unwrap_err().to_string();
-        assert!(error.contains("requires the macOS process sandbox"), "{tool:?}: {error}");
+        let expected = if cfg!(target_os = "linux") {
+            "Linux process isolation requires bubblewrap (bwrap)"
+        } else {
+            "requires the macOS or Linux process sandbox"
+        };
+        assert!(error.contains(expected), "{tool:?}: {error}");
         assert!(!dir.join("invoked").exists(), "{tool:?} must fail before process launch");
     }
     std::fs::remove_dir_all(dir).unwrap();
@@ -2812,7 +2825,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let req_nodir = TurnRequest {
         system: "sys".into(),
         turns: vec![ViewTurn { role: Role::User, content: "[Human]: bare first turn".into() }],
-        unseen: vec![apex_core::Message { seq: 0, speaker: Speaker::Human, text: "bare first turn".into(), servers: vec![], at: None }],
+        unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: Speaker::Human, text: "bare first turn".into(), servers: vec![], at: None }],
         access: None,
         effort_override: None,
         plan: false,
@@ -2851,7 +2864,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
         ViewTurn { role: Role::Assistant, content: "ok".into() },
         ViewTurn { role: Role::User, content: "[Human]: second message".into() },
     ];
-    req2.unseen = vec![apex_core::Message { seq: 1, speaker: Speaker::Human, text: "second message".into(), servers: vec![], at: None }];
+    req2.unseen = vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 1, speaker: Speaker::Human, text: "second message".into(), servers: vec![], at: None }];
     let res2 = bot.respond(req2, &|_| {}).await;
     assert_eq!(res2.unwrap().text, "ok");
     let args2 = std::fs::read_to_string(log_dir.join("args_3.txt")).unwrap();
@@ -2871,7 +2884,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
         ViewTurn { role: Role::Assistant, content: "ok".into() },
         ViewTurn { role: Role::User, content: "[Human]: third message".into() },
     ];
-    req3.unseen = vec![apex_core::Message { seq: 2, speaker: Speaker::Human, text: "third message".into(), servers: vec![], at: None }];
+    req3.unseen = vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 2, speaker: Speaker::Human, text: "third message".into(), servers: vec![], at: None }];
     let res3 = bot.respond(req3, &|_| {}).await;
     assert_eq!(res3.unwrap().text, "ok");
     let args3 = std::fs::read_to_string(log_dir.join("args_4.txt")).unwrap();

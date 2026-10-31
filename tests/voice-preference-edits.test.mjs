@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {createRequire} from 'node:module';
 import {registerVoiceThread,voiceRegistration,scopeKey,unregisterVoiceThread} from '../src/voice/coordinator.ts';
-import {readVoiceSettings,withChatPreference,chatVoice,preferenceFor,voiceFor} from '../src/voice/settings.ts';
+import {readVoiceSettings,withChatPreference,chatVoice,preferenceFor,voiceFor,CALL_ENGINES,DEFAULT_REALTIME_MODEL,DEFAULT_REALTIME_VOICE,REALTIME_MODELS,REALTIME_VOICES,readRealtimeModel,readRealtimeVoice,realtimeVoiceLabel} from '../src/voice/settings.ts';
 import {CALL_LOOKS,callClock,callLine,pickNote,pickRows,readCallLook,voiceLabel} from '../src/voice/callView.ts';
 const {transform}=createRequire(import.meta.url)('sucrase');
 const code=transform(fs.readFileSync(new URL('../src/voice/VoiceCallControls.tsx',import.meta.url),'utf8').replace(/^import .*;\n/gm,'').replace(/^export /gm,''),{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
@@ -17,7 +17,7 @@ function harness(){
  const useState=initial=>{const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return [states[i],next=>states[i]=typeof next==='function'?next(states[i]):next];};
  const useRef=initial=>{const i=cursor++;return states[i]??(states[i]={current:initial});};
  const useEffect=(effect)=>{cursor++;effects.push(effect);};
- const bindings={React,useState,useRef,useEffect,useLayoutEffect(){},useSyncExternalStore(){},voiceController:{subscribe(){return()=>{};}},voiceRegistration,warmVoice(){},chatVoice,preferenceFor,voiceFor,withChatPreference,CALL_LOOKS,callClock,callLine,pickNote,pickRows,readCallLook,voiceLabel,Avatar(){},popoverTop(){},createPortal:node=>node};
+ const bindings={React,useState,useRef,useEffect,useLayoutEffect(){},useSyncExternalStore(){},voiceController:{subscribe(){return()=>{};}},voiceRegistration,warmVoice(){},callEngine:()=>'local',CALL_ENGINES,DEFAULT_REALTIME_MODEL,DEFAULT_REALTIME_VOICE,REALTIME_MODELS,REALTIME_VOICES,readRealtimeModel,readRealtimeVoice,realtimeVoiceLabel,chatVoice,preferenceFor,voiceFor,withChatPreference,CALL_LOOKS,callClock,callLine,pickNote,pickRows,readCallLook,voiceLabel,Avatar(){},popoverTop(){},createPortal:node=>node};
  const components=new Function(...Object.keys(bindings),`${code};return {CallSettings,NicknameInput:typeof NicknameInput==='undefined'?null:NicknameInput};`)(...Object.values(bindings));
  return {render(){cursor=0;let tree=components.CallSettings({call:{scope,candidate,state:{voices:['am_michael','af_heart']},name:'Helper'},candidates:[candidate],onPickLook(){}});if(components.NicknameInput){const node=find(tree,node=>node.type===components.NicknameInput);if(node){const rendered=components.NicknameInput(node.props);Object.assign(node,rendered);}}effects.splice(0).forEach(effect=>effect());return tree;}};
 }

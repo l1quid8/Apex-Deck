@@ -62,6 +62,15 @@ contextBridge.exposeInMainWorld('apexDeck', {
     cancel: (requestId) => ipcRenderer.invoke('generated-ui:cancel', requestId),
     onEvent: (cb) => subscribe('generated-ui:event', cb),
   },
+  updates: {
+    status: () => ipcRenderer.invoke('updates:status'),
+    check: () => ipcRenderer.invoke('updates:check'),
+    later: () => ipcRenderer.invoke('updates:later'),
+    dismissResult: () => ipcRenderer.invoke('updates:dismissResult'),
+    restart: () => ipcRenderer.invoke('updates:restart'),
+    unsavedEdit: (file) => ipcRenderer.invoke('updates:unsavedEdit', file),
+    onChange: (cb) => subscribe('updates:changed', cb),
+  },
   googleSignIn: (args) => ipcRenderer.invoke('google:signIn', args),
   daemon: {
     connect: (hostId) => ipcRenderer.invoke('daemon:connect', hostId),

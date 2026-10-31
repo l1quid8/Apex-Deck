@@ -5,14 +5,16 @@ use futures::{FutureExt, pin_mut};
 
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
 
+use crate::curation::{self, Curation, CurateOutcome};
 use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedAction};
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
 use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker, TokenTotals};
-use crate::view::{answers_system_for_capability, GeneratedUiCapability, pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
+use crate::view::{answers_system_for_capability, GeneratedUiCapability, pinned_section, render_view_hiding, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -147,6 +149,8 @@ pub enum RoomEvent {
     Passed { id: ParticipantId },
     /// A participant could not reply.
     Failed { id: ParticipantId, error: String },
+    /// Journal retrieval failed; the room and any successful turn remain usable.
+    JournalWarning { error: String },
     /// Bots kept addressing each other and the room cut them off. `next`
     /// lists who the last replies addressed, so the person can let them answer.
     HopLimitReached {
@@ -156,6 +160,7 @@ pub enum RoomEvent {
     },
     /// The models now see `summary` in place of the first `upto` messages.
     Compacted { id: ParticipantId, summary: String, upto: usize },
+    CurationsChanged { curations: Vec<Curation> },
     /// The human pressed stop.
     Stopped,
     /// The room finished handling the human message.
@@ -204,8 +209,15 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero(value: &usize) -> bool { *value == 0 }
+
 fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
     RoomEvent::plan_for(plan, None)
+}
+
+/// Apply the same approval rules to host-owned work as provider tool calls.
+pub async fn decide_room_action(desk: &ApprovalDesk, id: &ParticipantId, on_event: EventSink<'_>, action: ProposedAction) -> Decision {
+    RoomApprover { desk, id, on_event }.decide(action).await
 }
 
 /// Puts a participant's proposal in front of the person and waits for
@@ -351,9 +363,106 @@ pub(crate) fn remember_checklist(lists: &Checklists, id: &ParticipantId, seq: us
     }
 }
 
+/// Whether a room is a folder-backed Work thread or a folderless, talk-only chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomKind {
+    #[default]
+    Work,
+    Chat,
+}
+
+impl RoomKind {
+    pub fn is_work(&self) -> bool {
+        *self == Self::Work
+    }
+
+    pub fn is_chat(&self) -> bool {
+        *self == Self::Chat
+    }
+}
+
 /// Durable chat data. Running turns and provider processes are never resumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientMessageState { Fenced, Running, Done, Interrupted }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientMessageRecord {
+    pub state: ClientMessageState,
+    #[serde(default)]
+    pub reply_seqs: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_seq: Option<usize>,
+    /// Bind retries to the same request, including across a daemon restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<ClientMessageRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClientMessageRequest {
+    #[serde(rename = "textSha256")]
+    pub text_sha256: String,
+    pub targets: Vec<ParticipantId>,
+    pub voice: bool,
+}
+
+impl ClientMessageRequest {
+    fn fingerprint(text: &str) -> String {
+        format!("{:x}", Sha256::digest(text.as_bytes()))
+    }
+
+    fn new(text: &str, targets: Vec<ParticipantId>, voice: bool) -> Self {
+        Self { text_sha256: Self::fingerprint(text), targets, voice }
+    }
+
+    pub(crate) fn matches_text(&self, text: &str) -> bool {
+        self.text_sha256 == Self::fingerprint(text)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClientMessageRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct SavedRequest {
+            #[serde(default, rename = "textSha256")]
+            text_sha256: Option<String>,
+            #[serde(default)]
+            text: Option<String>,
+            targets: Vec<ParticipantId>,
+            #[serde(default)]
+            voice: bool,
+        }
+        let saved = SavedRequest::deserialize(deserializer)?;
+        // Old ledgers stored the entire body. Migrate while loading so even
+        // untouched records stop duplicating transcript text on the next save.
+        let text_sha256 = match (saved.text_sha256, saved.text) {
+            (Some(fingerprint), _) => fingerprint,
+            (None, Some(text)) => Self::fingerprint(&text),
+            (None, None) => return Err(serde::de::Error::missing_field("textSha256")),
+        };
+        Ok(Self { text_sha256, targets: saved.targets, voice: saved.voice })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomSnapshot {
+    #[serde(default, rename = "nextOriginSeq", skip_serializing_if = "is_zero")]
+    pub next_origin_seq: usize,
+    #[serde(default, rename = "clientMessages", alias = "client_messages", skip_serializing_if = "HashMap::is_empty")]
+    pub client_messages: HashMap<String, ClientMessageRecord>,
+    /// Import identity and its original omissions are atomic with the history.
+    #[serde(default, rename = "importMoveId", skip_serializing_if = "Option::is_none")]
+    pub import_move_id: Option<String>,
+    #[serde(default, rename = "importSkipped", skip_serializing_if = "Vec::is_empty")]
+    pub import_skipped: Vec<serde_json::Value>,
+    /// Saved profile ids are atomic with imports and chat roster edits, even
+    /// if catalog saving fails. Aliases alone cannot recover source profiles.
+    #[serde(default, rename = "importProfiles", skip_serializing_if = "HashMap::is_empty")]
+    pub import_profiles: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "RoomKind::is_work")]
+    pub kind: RoomKind,
     pub participants: Vec<ParticipantConfig>,
     pub transcript: Vec<Message>,
     pub options: RoomOptions,
@@ -363,6 +472,8 @@ pub struct RoomSnapshot {
     pub last_targets: Vec<ParticipantId>,
     #[serde(default)]
     pub compaction: Option<Compaction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curations: Vec<Curation>,
     #[serde(default)]
     pub pins: Vec<String>,
     #[serde(default)]
@@ -385,16 +496,36 @@ pub struct RoomSnapshot {
 }
 
 impl RoomSnapshot {
+    /// Imported IDs are tombstones, never executable claims from another host.
+    pub fn remember_history_ids(&mut self) {
+        for message in &self.transcript {
+            if let Some(id) = &message.client_message_id {
+                self.client_messages.entry(id.clone()).or_insert_with(|| ClientMessageRecord { state: ClientMessageState::Done, human_seq: Some(message.seq), reply_seqs: vec![], request: None });
+            }
+        }
+        for message in &self.transcript {
+            if let Some(record) = message.reply_to_client_message_id.as_ref().and_then(|id| self.client_messages.get_mut(id)) {
+                if !record.reply_seqs.contains(&message.seq) { record.reply_seqs.push(message.seq); }
+            }
+        }
+    }
     /// Copy the first `upto` messages, retaining only context from that point.
     pub fn fork(&self, upto: usize) -> Self {
         let upto = upto.min(self.transcript.len());
         Self {
+            next_origin_seq: self.next_origin_seq,
+            client_messages: HashMap::new(),
+            import_move_id: None,
+            import_skipped: Vec::new(),
+            import_profiles: HashMap::new(),
+            kind: self.kind,
             participants: self.participants.clone(),
             transcript: self.transcript[..upto].to_vec(),
             options: self.options,
             cursors: self.cursors.iter().map(|(id, &seen)| (id.clone(), seen.min(upto))).collect(),
             last_targets: if upto == self.transcript.len() { self.last_targets.clone() } else { Vec::new() },
             compaction: self.compaction.clone().filter(|c| c.upto <= upto),
+            curations: curation::keep_valid(self.curations.clone(), upto),
             pins: self.pins.clone(),
             changes: self.changes.iter().filter(|c| c.seq < upto).cloned().collect(),
             baseline: self.baseline.clone(),
@@ -408,6 +539,13 @@ impl RoomSnapshot {
 
 /// One group chat.
 pub struct Room {
+    next_origin_seq: usize,
+    client_messages: HashMap<String, ClientMessageRecord>,
+    import_move_id: Option<String>,
+    import_skipped: Vec<serde_json::Value>,
+    import_profiles: HashMap<String, String>,
+    reply_client_message_id: Option<String>,
+    kind: RoomKind,
     checklists: Checklists,
     roster: Vec<Arc<dyn Participant>>,
     transcript: Vec<Message>,
@@ -415,6 +553,9 @@ pub struct Room {
     cursors: HashMap<ParticipantId, usize>,
     last_targets: Vec<ParticipantId>,
     compaction: Option<Compaction>,
+    curations: Vec<Curation>,
+    curate_from: usize,
+    journal_path: Arc<Mutex<Option<String>>>,
     pins: Vec<String>,
     changes: Vec<ChangeRecord>,
     baseline: Option<String>,
@@ -439,14 +580,33 @@ impl Room {
         Arc::clone(&self.desk)
     }
 
+    pub fn kind(&self) -> RoomKind {
+        self.kind
+    }
+
+    pub fn with_kind(mut self, kind: RoomKind) -> Self {
+        self.kind = kind;
+        if kind.is_chat() {
+            self.plan.store(false, Ordering::SeqCst);
+        }
+        self
+    }
+
     pub fn snapshot(&self) -> RoomSnapshot {
         RoomSnapshot {
+            next_origin_seq: self.next_origin_seq,
+            client_messages: self.client_messages.clone(),
+            import_move_id: self.import_move_id.clone(),
+            import_skipped: self.import_skipped.clone(),
+            import_profiles: self.import_profiles.clone(),
+            kind: self.kind,
             participants: self.configs(),
             transcript: self.transcript.clone(),
             options: self.options,
             cursors: self.cursors.clone(),
             last_targets: self.last_targets.clone(),
             compaction: self.compaction.clone(),
+            curations: self.curations.clone(),
             pins: self.pins.clone(),
             changes: self.changes.clone(),
             baseline: self.baseline.clone(),
@@ -460,8 +620,20 @@ impl Room {
     pub fn restore(roster: Vec<Arc<dyn Participant>>, snapshot: RoomSnapshot) -> Self {
         let desk = ApprovalDesk::default();
         desk.set_allowed(snapshot.allowed);
+        let plan = !snapshot.kind.is_chat() && snapshot.plan;
+        let next_origin_seq = if snapshot.kind.is_chat() { snapshot.next_origin_seq.max(snapshot.transcript.iter().map(|message| message.origin_seq.unwrap_or(message.seq).saturating_add(1)).max().unwrap_or(0)) } else { 0 };
         Self {
+            next_origin_seq,
+            client_messages: snapshot.client_messages,
+            import_move_id: snapshot.import_move_id,
+            import_skipped: snapshot.import_skipped,
+            import_profiles: snapshot.import_profiles,
+            reply_client_message_id: None,
+            kind: snapshot.kind,
             roster,
+            curations: curation::keep_valid(snapshot.curations, snapshot.transcript.len()),
+            curate_from: 0,
+            journal_path: Arc::default(),
             transcript: snapshot.transcript,
             checklists: Arc::new(Mutex::new(snapshot.checklists)),
             options: snapshot.options,
@@ -473,7 +645,7 @@ impl Room {
             baseline: snapshot.baseline,
             usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
-            plan: Arc::new(AtomicBool::new(snapshot.plan)),
+            plan: Arc::new(AtomicBool::new(plan)),
             // Card guidance is always on.
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(desk),
@@ -482,12 +654,22 @@ impl Room {
 
     pub fn new(roster: Vec<Arc<dyn Participant>>, options: RoomOptions) -> Self {
         Self {
+            next_origin_seq: 0,
+            client_messages: HashMap::new(),
+            import_move_id: None,
+            import_skipped: Vec::new(),
+            import_profiles: HashMap::new(),
+            reply_client_message_id: None,
+            kind: RoomKind::Work,
             roster,
             transcript: Vec::new(),
             checklists: Arc::new(Mutex::new(HashMap::new())),
             cursors: HashMap::new(),
             last_targets: Vec::new(),
             compaction: None,
+            curations: Vec::new(),
+            curate_from: 0,
+            journal_path: Arc::default(),
             pins: Vec::new(),
             changes: Vec::new(),
             baseline: None,
@@ -540,6 +722,14 @@ impl Room {
         self.roster.iter().map(|p| p.config().clone()).collect()
     }
 
+    /// The host supplies machine-owned profile names with chat roster edits.
+    /// Save these with the roster, so a stale catalog cannot reuse an alias.
+    pub fn set_chat_profiles(&mut self, mut profiles: HashMap<String, String>) {
+        if !self.kind.is_chat() { return; }
+        profiles.retain(|alias, _| self.roster.iter().any(|bot| bot.config().id.as_str() == alias));
+        self.import_profiles = profiles;
+    }
+
     /// Add a participant. Returns false if that id is already in the room.
     pub fn add_participant(&mut self, participant: Arc<dyn Participant>) -> bool {
         if self.has(&participant.config().id) {
@@ -586,6 +776,7 @@ impl Room {
     pub fn remove_participant(&mut self, id: &ParticipantId) -> bool {
         let before = self.roster.len();
         self.roster.retain(|p| &p.config().id != id);
+        self.import_profiles.remove(id.as_str());
         self.cursors.remove(id);
         self.checklists.lock().unwrap().remove(id);
         self.last_targets.retain(|t| t != id);
@@ -595,12 +786,15 @@ impl Room {
     /// Forget the conversation but keep the participants and settings.
     /// Participants see only the transcript, so this resets their context.
     pub fn clear(&mut self) {
+        for record in self.client_messages.values_mut() { record.human_seq = None; record.reply_seqs.clear(); }
         self.pins = self.pins.iter().map(|pin| response_pin_parts(pin).map_or_else(|| pin.clone(), |(_, text)| text.to_string())).collect();
         self.transcript.clear();
         self.checklists.lock().unwrap().clear();
         self.cursors.clear();
         self.last_targets.clear();
         self.compaction = None;
+        self.curations.clear();
+        self.curate_from = 0;
         self.changes.clear();
         self.baseline = None;
     }
@@ -611,6 +805,12 @@ impl Room {
         if upto >= self.transcript.len() { return; }
         self.pins.retain(|pin| response_pin_parts(pin).is_none_or(|(seq, _)| seq < upto));
         self.transcript.truncate(upto);
+        self.curate_from = self.curate_from.min(upto);
+        self.curations = curation::keep_valid(std::mem::take(&mut self.curations), upto);
+        for record in self.client_messages.values_mut() {
+            record.human_seq = record.human_seq.filter(|seq| *seq < upto);
+            record.reply_seqs.retain(|seq| *seq < upto);
+        }
         self.checklists.lock().unwrap().retain(|_, list| list.seq < upto);
         for seen in self.cursors.values_mut() { *seen = (*seen).min(upto); }
         self.last_targets.clear();
@@ -671,7 +871,7 @@ impl Room {
         let id = summarizer.config().id.clone();
         // Seen from nobody's side, every message is labelled with its speaker.
         let outsider = ParticipantId::new("");
-        let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
+        let mut turns = render_view_hiding(self.summary(), &self.transcript[self.compacted_upto()..], &self.hidden_ranges(), &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
         let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None };
 
@@ -694,6 +894,181 @@ impl Room {
         self.compaction = Some(Compaction { summary: summary.to_string(), upto });
         on_event(RoomEvent::Compacted { id, summary: summary.to_string(), upto });
         Ok(())
+    }
+
+    /// A between-turn visibility operation. Replies are control data, never chat text.
+    pub async fn curate(
+        &mut self,
+        curator: &dyn Participant,
+        on_event: EventSink<'_>,
+    ) -> Result<CurateOutcome, String> {
+        let hidden = self.hidden_ranges();
+        let eligible: Vec<_> = (self.compacted_upto()
+            ..self.transcript.len().saturating_sub(curation::KEEP_NEWEST))
+            .filter(|n| {
+                !curation::contains(&hidden, *n)
+                    && curation::offerable(&self.transcript[*n])
+                    && !self
+                        .pins
+                        .iter()
+                        .any(|p| response_pin_parts(p).is_some_and(|(seq, _)| seq == *n))
+            })
+            .collect();
+        if eligible.is_empty() {
+            return Err("there is nothing old enough to hide".into());
+        }
+        let mut candidates: Vec<_> = eligible
+            .iter()
+            .copied()
+            .filter(|n| *n >= self.curate_from)
+            .collect();
+        if candidates.is_empty() {
+            candidates = eligible;
+        }
+        let system = curation::CURATE_SYSTEM.to_string() + &pinned_section(&self.pins);
+        let budget = curation::REQUEST_CHARS
+            .saturating_sub(system.chars().count() + curation::OUTPUT_CHARS + 32);
+        if budget < 1_024 {
+            return Err(
+                "Pinned context is too large to curate safely. Reduce pins and try again.".into(),
+            );
+        }
+        let (digest, offered) = curation::digest(
+            &self.transcript,
+            &candidates,
+            self.summary(),
+            &self.configs(),
+            budget,
+        );
+        if offered.is_empty() {
+            return Err(
+                "Pinned context is too large to leave room for a curation candidate.".into(),
+            );
+        }
+        let request = TurnRequest {
+            system,
+            turns: vec![ViewTurn {
+                role: Role::User,
+                content: digest,
+            }],
+            access: Some(crate::Access::Read),
+            ..TurnRequest::default()
+        };
+        let id = curator.config().id.clone();
+        self.stop.store(false, Ordering::SeqCst);
+        on_event(RoomEvent::TurnStarted { id: id.clone() });
+        on_event(RoomEvent::Activity {
+            id: id.clone(),
+            text: curation::CURATE_WORKING.into(),
+        });
+        let progress = |update: Progress<'_>| {
+            if !matches!(update, Progress::Text(_)) {
+                on_event(progress_event(&id, update));
+            }
+        };
+        let outcome = Self::interruptible(
+            curator,
+            request,
+            self.stop.clone(),
+            &progress,
+            &crate::approval::NoApprover,
+        )
+        .await;
+        let result = if self.stopped() {
+            on_event(RoomEvent::Stopped);
+            Ok(CurateOutcome::Stopped)
+        } else {
+            outcome.map_err(|e| e.to_string()).and_then(|reply| {
+                if reply.input_tokens.is_some()
+                    || reply.output_tokens.is_some()
+                    || reply.cost_micros.is_some()
+                {
+                    self.usage.entry(id.clone()).or_default().add_turn(
+                        reply.input_tokens,
+                        reply.output_tokens,
+                        reply.cost_micros,
+                        reply.cost_estimated,
+                    );
+                    on_event(RoomEvent::Usage {
+                        id: id.clone(),
+                        input_tokens: reply.input_tokens,
+                        output_tokens: reply.output_tokens,
+                        cost_micros: reply.cost_micros,
+                        cost_estimated: reply.cost_estimated,
+                    });
+                }
+                let picks = curation::parse_picks(&reply.text, &offered).map_err(|_| {
+                    format!(
+                        "{} did not give a usable list",
+                        curator.config().display_name
+                    )
+                })?;
+                self.curate_from = offered.last().copied().unwrap() + 1;
+                let unchecked = candidates
+                    .iter()
+                    .filter(|n| **n >= self.curate_from)
+                    .count();
+                if picks.hidden.is_empty() {
+                    return Ok(CurateOutcome::Nothing { unchecked });
+                }
+                let curation = Curation {
+                    by: id.clone(),
+                    at: self.transcript.len(),
+                    hidden: picks.hidden,
+                    reason: picks.reason,
+                    when: curation::now(),
+                    undone: None,
+                };
+                let count = curation.count();
+                self.curations.push(curation);
+                on_event(RoomEvent::CurationsChanged {
+                    curations: self.curations.clone(),
+                });
+                Ok(CurateOutcome::Hidden { count, unchecked })
+            })
+        };
+        on_event(RoomEvent::ParticipantIdle { id });
+        result
+    }
+
+    pub fn undo_curation(&mut self, on_event: EventSink<'_>) -> curation::CurationUndo {
+        let upto = self.compacted_upto();
+        let mut outcome = curation::CurationUndo {
+            restored: 0,
+            sealed: 0,
+        };
+        for c in self.curations.iter_mut().filter(|c| c.undone.is_none()) {
+            if c.at <= upto {
+                outcome.sealed += c.count();
+            } else {
+                outcome.restored += c.count();
+                c.undone = Some(curation::now());
+            }
+        }
+        if outcome.restored > 0 {
+            self.curate_from = 0;
+            on_event(RoomEvent::CurationsChanged {
+                curations: self.curations.clone(),
+            });
+        }
+        outcome
+    }
+
+    pub fn set_journal_path(&mut self, path: Option<String>) {
+        *self.journal_path.lock().unwrap() = path;
+    }
+
+    pub fn journal_path_handle(&self) -> Arc<Mutex<Option<String>>> {
+        self.journal_path.clone()
+    }
+
+    fn hidden_ranges(&self) -> Vec<[usize; 2]> {
+        curation::merge_ranges(
+            self.curations
+                .iter()
+                .filter(|c| c.undone.is_none() && c.at > self.compacted_upto())
+                .flat_map(|c| c.hidden.iter().flat_map(|[a, b]| *a..=*b)),
+        )
     }
 
     fn compacted_upto(&self) -> usize {
@@ -750,9 +1125,84 @@ impl Room {
     pub(crate) fn push(&mut self, speaker: Speaker, text: String, on_event: EventSink<'_>) {
         let servers = if speaker == Speaker::Human { crate::server_request::parse_server_requests(&text) } else { vec![] };
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64);
-        let message = Message { servers, seq: self.transcript.len(), speaker, text, at };
+        let reply_to_client_message_id = self.reply_client_message_id.clone();
+        let origin_seq = self.kind.is_chat().then_some(self.next_origin_seq);
+        if self.kind.is_chat() { self.next_origin_seq = self.next_origin_seq.saturating_add(1); }
+        let message = Message { origin_seq, origin: None, client_message_id: None, reply_to_client_message_id: reply_to_client_message_id.clone(), late_reply_from: None, servers, seq: self.transcript.len(), speaker, text, at };
+        if let Some(record) = reply_to_client_message_id.and_then(|id| self.client_messages.get_mut(&id)) { record.reply_seqs.push(message.seq); }
         self.transcript.push(message.clone());
         on_event(RoomEvent::MessageAdded { message });
+    }
+
+    pub(crate) fn client_message(&self, id: &str) -> Option<&ClientMessageRecord> { self.client_messages.get(id) }
+
+    pub(crate) fn set_reply_client_message(&mut self, id: Option<String>) { self.reply_client_message_id = id; }
+
+    pub fn finish_client_message(&mut self, id: &str) {
+        if let Some(record) = self.client_messages.get_mut(id) {
+            if record.state == ClientMessageState::Running { record.state = ClientMessageState::Done; }
+        }
+    }
+
+    pub fn interrupt_client_message(&mut self, id: &str) {
+        if let Some(record) = self.client_messages.get_mut(id) {
+            if record.state == ClientMessageState::Running { record.state = ClientMessageState::Interrupted; }
+        }
+    }
+
+    /// Called while the concurrent room holds its transcript mutex. Saving is
+    /// part of acceptance: a failed commit restores all request state.
+    pub(crate) fn accept_client_message(
+        &mut self, id: &str, text: &str, targets: Vec<ParticipantId>, voice: bool,
+        commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync),
+    ) -> Result<Option<Message>, String> {
+        if id.is_empty() || id.len() > 128 || text.trim().is_empty() { return Err("invalid client message".into()); }
+        let request = ClientMessageRequest::new(text, targets, voice);
+        if let Some(record) = self.client_messages.get(id) {
+            if record.state == ClientMessageState::Fenced { return Err("this message moved to another machine".into()); }
+            if record.request.as_ref().is_some_and(|prior| prior != &request) { return Err("client message ID reused with different content".into()); }
+            return Ok(None);
+        }
+        let previous_targets = self.last_targets.clone();
+        self.last_targets = request.targets.clone();
+        let seq = self.transcript.len();
+        self.client_messages.insert(id.into(), ClientMessageRecord { state: ClientMessageState::Running, reply_seqs: vec![], human_seq: Some(seq), request: Some(request.clone()) });
+        self.push(Speaker::Human, text.into(), &|_| {});
+        self.transcript.last_mut().unwrap().client_message_id = Some(id.into());
+        if let Err(error) = commit(&self.snapshot()) {
+            self.transcript.pop();
+            self.last_targets = previous_targets;
+            self.client_messages.remove(id);
+            return Err(error);
+        }
+        Ok(self.transcript.last().cloned())
+    }
+
+    pub fn claim_client_message(&mut self, id: &str, commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync)) -> Result<ClientMessageRecord, String> {
+        if id.is_empty() || id.len() > 128 { return Err("invalid client message ID".into()); }
+        if let Some(record) = self.client_messages.get(id) { return Ok(record.clone()); }
+        let record = ClientMessageRecord { state: ClientMessageState::Fenced, reply_seqs: vec![], human_seq: None, request: None };
+        self.client_messages.insert(id.into(), record.clone());
+        if let Err(error) = commit(&self.snapshot()) { self.client_messages.remove(id); return Err(error); }
+        Ok(record)
+    }
+
+    /// History-only append, with source identity retained across retries.
+    pub fn merge_history(&mut self, entries: Vec<Message>, commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync)) -> Result<Vec<Message>, String> {
+        if entries.iter().any(|message| message.origin.as_ref().is_none_or(|origin| origin.machine.is_empty() || origin.room.is_empty())) { return Err("every merged entry requires its origin machine, room and seq".into()); }
+        let mut origins: std::collections::HashSet<_> = self.transcript.iter().filter_map(|message| message.origin.clone()).collect();
+        let before = self.transcript.len();
+        for mut message in entries {
+            if !origins.insert(message.origin.clone().unwrap()) { continue; }
+            message.seq = self.transcript.len();
+            self.transcript.push(message);
+        }
+        if self.transcript.len() == before { return Ok(vec![]); }
+        let mut snapshot = self.snapshot();
+        snapshot.remember_history_ids();
+        if let Err(error) = commit(&snapshot) { self.transcript.truncate(before); return Err(error); }
+        self.client_messages = snapshot.client_messages;
+        Ok(self.transcript[before..].to_vec())
     }
 
     /// A host-owned coordination note; it never authorizes a worker turn.
@@ -795,35 +1245,42 @@ impl Room {
         self.request_for_capability(id, self.answers.load(Ordering::SeqCst), GeneratedUiCapability::Unsupported)
     }
 
+    pub(crate) fn turn_system(&self, config: &ParticipantConfig, answers: bool, capability: GeneratedUiCapability, plan: bool) -> String {
+        let mut system = system_prompt(config, &self.configs()) + &pinned_section(&self.pins)
+            + &if curation::stands(&self.curations) { curation::journal_section(self.journal_path.lock().unwrap().as_deref()) } else { String::new() }
+            + &self.checklist_section(&config.id)
+            + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human)
+                .map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
+            // Before Plan mode's text: next_steps_request cuts that off the end.
+            + if answers { answers_system_for_capability(capability) } else { "" };
+        if plan { system.push_str(PLAN_SYSTEM); }
+        system
+    }
+
     pub(crate) fn request_for_capability(&self, id: &ParticipantId, answers: bool, capability: GeneratedUiCapability) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let participant = self.roster.iter().find(|p| &p.config().id == id)?.clone();
-        let answer_guidance = if answers { answers_system_for_capability(capability) } else { "" };
         let configs = self.configs();
+        let plan = self.plan.load(Ordering::SeqCst);
         // What the summary covers counts as seen.
         let start = self.compacted_upto();
         let seen = self.cursors.get(id).copied().unwrap_or(0).max(start).min(self.transcript.len());
+        let hidden = self.hidden_ranges();
         let unseen = self.transcript[seen..]
             .iter()
-            .filter(|m| m.speaker != Speaker::Bot(id.clone()))
+            .filter(|m| m.speaker != Speaker::Bot(id.clone()) && !curation::contains(&hidden, m.seq))
             .cloned()
             .collect();
         let mut request = TurnRequest {
             effort_override: None,
             access: Some(participant.config().access),
-            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.checklist_section(id) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
-                crate::server_request::prompt_section(&m.text)
-            }).unwrap_or_default()
-                // Before Plan mode's text: next_steps_request cuts that off the end.
-                + answer_guidance,
-            turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
+            system: self.turn_system(participant.config(), answers, capability, plan),
+            turns: render_view_hiding(self.summary(), &self.transcript[start..], &hidden, id, &configs),
             unseen,
-            plan: false,
+            plan,
             cwd: None,
         };
-        if self.plan.load(Ordering::SeqCst) {
-            request.plan = true;
+        if plan {
             request.access = Some(crate::Access::Read);
-            request.system.push_str(PLAN_SYSTEM);
         }
         Some((participant, request))
     }

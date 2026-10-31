@@ -74,5 +74,7 @@ PLIST
 /usr/sbin/chown root:wheel "$plist"
 /bin/chmod 644 "$plist"
 /bin/launchctl bootstrap system "$plist"
+# The root update job that "Restart to update" hands off to (scripts/upgrade.py).
+/usr/bin/python3 -I "$app/Contents/Resources/updater/upgrade.py" service
 echo "Installed protected authority. Trusted UI: $app"
 echo 'Original app and user JSON were preserved. Legacy authority is NOT migrated.'

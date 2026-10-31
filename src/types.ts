@@ -37,6 +37,16 @@ export type ParticipantBackend =
 
 export type Speed = "standard" | "fast";
 
+/** A machine-owned saved profile plus the settings a phone may override. */
+export interface ChatBotRequest {
+  profile: string;
+  id?: string;
+  display_name?: string;
+  model?: string | null;
+  effort?: string | null;
+  speed?: Speed | null;
+}
+
 export interface ParticipantConfig {
   id: string;
   display_name: string;
@@ -128,6 +138,45 @@ export interface ApiModel {
   media?: MediaSpec | null;
 }
 
+/** Public benchmark scores for one bot's model, from the daemon's daily Epoch AI download. */
+export interface ModelMetrics {
+  /** Epoch's name for the model, such as "Claude Opus 5.5". */
+  name: string;
+  /** One row per reasoning level the bot offers, or a single "default" row. */
+  rows: LevelRow[];
+  current: string | null;
+  /** Test id → the score on its pill. */
+  pills: Record<string, PillValue>;
+  /** Test id → top score across levels; only for tests run at two or more levels. */
+  best: Record<string, number>;
+  /** Test id, or "eci", → the best score today across every model Epoch lists. */
+  top: Record<string, { value: number; model: string }>;
+  /** Epoch Capabilities Index, one per model. */
+  eci: number | null;
+  /** US dollars per million tokens, input and output. */
+  price: [number, number] | null;
+  /** The scores are for the public model; this bot runs a local copy. */
+  local_note: boolean;
+  /** Unix seconds; 0 = never downloaded. */
+  fetched_at: number;
+  last_error: string | null;
+}
+
+export type LevelState = "measured" | "not_measured";
+
+export interface LevelRow {
+  effort: string;
+  state: LevelState;
+  /** Test id → score from 0 to 100, only for tests run at this level. */
+  scores: Record<string, number>;
+}
+
+/** A pill's score and the level it was measured at, which can differ from the bot's own. */
+export interface PillValue {
+  value: number;
+  from_level: string;
+}
+
 export type TurnPolicy = "mention" | "everyone" | "round_robin";
 
 export interface RoomOptions {
@@ -150,6 +199,9 @@ export interface SideEffect { seq: number; by: string; command: string }
 export interface RevertPlan { available: boolean; note: string | null; files: RevertFile[]; skipped: string[]; effects: SideEffect[] }
 export interface ThreadDiff { files: DiffFile[]; note: string | null }
 export interface RoomSnapshot {
+  kind?: "work" | "chat";
+  /** Durable delivery receipts. Interrupted turns only resume with a new message ID. */
+  clientMessages?: Record<string, { state: "running" | "done" | "fenced" | "interrupted"; replySeqs: number[]; humanSeq?: number }>;
   changes?: ChangeRecord[];
   baseline?: string | null;
   /** Facts every model sees on every turn; kept by /clear and /compact. */
@@ -159,6 +211,8 @@ export interface RoomSnapshot {
   transcript: Message[];
   /** The summary the models see in place of the first `upto` messages, after `/compact`. */
   compaction?: Compaction | null;
+  /** Visibility changes leave every original transcript message intact. */
+  curations?: Curation[];
   /** What the person chose "Always allow" for. */
   allowed?: AllowedRule[];
   /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */
@@ -200,8 +254,26 @@ export interface Compaction {
   upto: number;
 }
 
+export interface Curation {
+  by: string;
+  at: number;
+  /** Inclusive message-number ranges. */
+  hidden: [number, number][];
+  reason: string;
+  when: number;
+  undone?: number;
+}
+export interface CurationUndo { restored: number; sealed: number }
+export type CurateReply = { by: string; unchecked?: number } & (
+  | { status: "hidden"; count: number }
+  | { status: "nothing" }
+  | { status: "stopped" }
+);
+
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  roomRevision?: number;
+  hostNow?: number;
   /** From the protected room manifest; editable transcript files cannot set this. */
   legacy?: import("./legacyImport").LegacyMarker | null;
   cwd?: string | null;
@@ -214,6 +286,7 @@ export interface RoomState {
   next_steps?: { id: string; steps: NextStep[]; pending: boolean } | null;
   plan?: boolean;
   live?: boolean;
+  runner?: import("./runner/types.ts").RunnerSnapshot | null;
 }
 
 export interface AppSession {
@@ -245,6 +318,13 @@ export interface AppSession {
 export type Speaker = { kind: "human" } | { kind: "bot"; id: string };
 
 export interface Message {
+  /** Immutable source position, independent of the visible index after clear/rewind. */
+  originSeq?: number;
+  origin?: { machine: string; room: string; seq: number };
+  clientMessageId?: string;
+  replyToClientMessageId?: string;
+  /** Source machine name for a reply appended after a chat moved. */
+  lateReplyFrom?: string;
   servers?: string[];
   seq: number;
   speaker: Speaker;
@@ -298,10 +378,13 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
+  /** Retrieval warning; does not fail or stop a participant's turn. */
+  | { type: "journal_warning"; error: string }
   /** The room cut off bots answering each other; `next` is who the last replies asked. */
   | { type: "hop_limit_reached"; limit: number; next: string[] }
   /** The models now see `summary` in place of the first `upto` messages. */
   | { type: "compacted"; id: string; summary: string; upto: number }
+  | { type: "curations_changed"; curations: Curation[] }
   | { type: "stopped" }
   | { type: "idle" });
 

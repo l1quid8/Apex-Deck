@@ -53,6 +53,12 @@ mac:
       to: bin/apex-daemon
     - from: target/release/apex-provenance
       to: bin/apex-provenance
+    # The upgrade transaction and its bundle check, run as root by the update job
+    # from the protected copy (scripts/upgrade.py). Sealed by the app's signature.
+    - from: scripts/upgrade.py
+      to: updater/upgrade.py
+    - from: scripts/verify-protected-bundle.sh
+      to: updater/verify-protected-bundle.sh
 dmg:
   # One fixed name, like the installer: each build overwrites the last one
   # instead of leaving release/ full of near-identical disk images. The version

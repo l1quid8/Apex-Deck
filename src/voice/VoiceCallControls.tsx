@@ -3,8 +3,8 @@ import { createPortal } from "react-dom";
 import { Avatar } from "../Avatar";
 import { popoverTop } from "../floating.ts";
 import { CALL_LOOKS, callClock, callLine, pickNote, pickRows, readCallLook, voiceLabel, type CallLook, type WaveMode } from "./callView.ts";
-import { voiceController, voiceRegistration, warmVoice } from "./coordinator.ts";
-import { chatVoice, preferenceFor, voiceFor, withChatPreference } from "./settings.ts";
+import { callEngine, voiceController, voiceRegistration, warmVoice } from "./coordinator.ts";
+import { CALL_ENGINES, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, REALTIME_MODELS, REALTIME_VOICES, chatVoice, preferenceFor, readRealtimeModel, readRealtimeVoice, realtimeVoiceLabel, voiceFor, withChatPreference } from "./settings.ts";
 import type { VoiceCandidate, VoiceSettings } from "./types.ts";
 import "./voice.css";
 
@@ -252,10 +252,13 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
     current.save(withChatPreference(current.settings, scope.hostId, profile, scope.roomId, scope.participantId, patch));
   };
   const look = readCallLook(settings.look);
+  // The running call's engine, not the saved one: Settings can change mid-call.
+  const live = callEngine() === "realtime";
+  const engineLabel = CALL_ENGINES.find((e) => e.id === (live ? "realtime" : "local"))?.label;
   const here = candidates.filter((c) => c.hostId === scope.hostId && c.roomId === scope.roomId);
   return (
     <>
-      <div className="voice-pop-head">Call settings</div>
+      <div className="voice-pop-head">Call settings <span className="voice-engine-tag" data-engine={live ? "realtime" : "local"}>{engineLabel}</span></div>
       {here.length > 1 && (
         <div className="voice-set-row">
           <span>Talking to</span>
@@ -269,26 +272,47 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
           </span>
         </div>
       )}
-      <label className="voice-set-row">
-        <span>{name}'s voice</span>
-        <span className="voice-voice">
-          <select value={picked} disabled={!state.voices.length} onChange={(e) => savePreference({ voice: e.target.value })}>
-            <option value="">Default · {voiceLabel(fallback)}</option>
-            {[...new Set([...(picked ? [picked] : []), ...state.voices])].map((v) => (
-              <option key={v} value={v}>{voiceLabel(v)}</option>
-            ))}
-          </select>
-          <button type="button" className="voice-callbtn boxed" aria-label="Preview voice" title="Preview voice"
-            disabled={!state.voices.includes(speaking)} onClick={() => voiceController.preview(speaking)}>
-            {Icon.play}
-          </button>
-        </span>
-      </label>
-      <label className="voice-set-row col">
-        <span>Pause before reply <b>{settings.silenceMs} ms</b></span>
-        <input type="range" min="100" max="2000" step="50" value={settings.silenceMs}
-          onChange={(e) => saveSettings({ silenceMs: e.target.valueAsNumber })} />
-      </label>
+      {live ? (
+        <>
+          <label className="voice-set-row">
+            <span>Model</span>
+            <select aria-label="GPT-Live model" value={readRealtimeModel(settings.realtimeModel) ?? DEFAULT_REALTIME_MODEL}
+              onChange={(e) => saveSettings({ realtimeModel: e.target.value })}>
+              {REALTIME_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+          </label>
+          <label className="voice-set-row">
+            <span>GPT-Live voice</span>
+            <select aria-label="GPT-Live voice" value={readRealtimeVoice(settings.realtimeVoice) ?? DEFAULT_REALTIME_VOICE}
+              onChange={(e) => saveSettings({ realtimeVoice: e.target.value })}>
+              {REALTIME_VOICES.map((v) => <option key={v} value={v}>{realtimeVoiceLabel(v)}</option>)}
+            </select>
+          </label>
+        </>
+      ) : (
+        <label className="voice-set-row">
+          <span>{name}'s voice</span>
+          <span className="voice-voice">
+            <select value={picked} disabled={!state.voices.length} onChange={(e) => savePreference({ voice: e.target.value })}>
+              <option value="">Default · {voiceLabel(fallback)}</option>
+              {[...new Set([...(picked ? [picked] : []), ...state.voices])].map((v) => (
+                <option key={v} value={v}>{voiceLabel(v)}</option>
+              ))}
+            </select>
+            <button type="button" className="voice-callbtn boxed" aria-label="Preview voice" title="Preview voice"
+              disabled={!state.voices.includes(speaking)} onClick={() => voiceController.preview(speaking)}>
+              {Icon.play}
+            </button>
+          </span>
+        </label>
+      )}
+      {!live && (
+        <label className="voice-set-row col">
+          <span>Pause before reply <b>{settings.silenceMs} ms</b></span>
+          <input type="range" min="100" max="2000" step="50" value={settings.silenceMs}
+            onChange={(e) => saveSettings({ silenceMs: e.target.valueAsNumber })} />
+        </label>
+      )}
       <label className="voice-set-row">
         <span>Nicknames</span>
         <NicknameInput key={JSON.stringify([scope.hostId, profile, scope.roomId, scope.participantId])} aliases={preference.aliases} onChange={aliases => savePreference({ aliases })} />
@@ -308,7 +332,7 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
           ))}
         </span>
       </div>
-      <p className="voice-pop-note">{state.semantic ? "Smart Turn is on" : "Silence only"} · pause applies next call</p>
+      <p className="voice-pop-note">{live ? "OpenAI hears your pauses · model and voice apply next call" : `${state.semantic ? "Smart Turn is on" : "Silence only"} · pause applies next call`}</p>
     </>
   );
 }

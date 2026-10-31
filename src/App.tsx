@@ -81,14 +81,14 @@ import { assistantStatus, assistantWorkItems, delegatedTasksForAssistant, type W
 import { personalTaskKey, projectTaskKey } from "./apexAgentTaskView";
 import { prefillAssistantComposer } from "./assistantComposerDrafts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
-import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { unsavedEditName } from "./unsavedEdits";
+import { ConfirmDialog, type Ask, type Question } from "./ConfirmDialog";
+import { discardQuestion, unsavedEditName } from "./unsavedEdits";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
 import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestions, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning, assistantsRunning } from "./closing";
 import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
@@ -106,6 +106,13 @@ import { RightTerminalTab } from "./RightTerminal";
 import { isWindows, pathBase, pathParts } from "./paths";
 import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
+import { restartQuestions, updateActions, useUpdates } from "./updates.ts";
+import { UpdateNotices } from "./UpdateNotices.tsx";
+import { ipcWords } from "./electronShell";
+import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, workThreadPlace, type ChatPlace } from "./desktopChats.ts";
+import { ChatRail, NewChatDialog } from "./DesktopChatsUI.tsx";
+import { TalkOnlyChat } from "./TalkOnlyChat.tsx";
+import { findRoom, type ChatEntry } from "./chatCatalog.ts";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A terminal counts as working if it produced output this recently. */
@@ -331,6 +338,8 @@ export function App() {
   const [picking, setPicking] = useState(false);
   /** A question waiting for Cancel or go ahead. */
   const [question, setQuestion] = useState<Question | null>(null);
+  /** Automatic updates, from Electron's main process; null where Deck can't update itself. */
+  const updates = useUpdates();
   /** Threads deleted but still inside their undo time, by pane id. */
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
   const deleteTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -440,7 +449,7 @@ export function App() {
   const guardUnsavedEdits = (action: () => void) => {
     const file = unsavedEditName();
     if (!file) { action(); return; }
-    setQuestion({ title: `Discard unsaved changes to ${file}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: action });
+    setQuestion({ ...discardQuestion(file), onConfirm: action });
   };
   const closeDetails = () => guardUnsavedEdits(() => { setDetailsOpen(false); detailsToggle.current?.focus(); });
   const changePanel = (next: RightPanelState) => {
@@ -1901,6 +1910,40 @@ export function App() {
   const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
   const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
+  // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
+  // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
+  const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
+  const chats = useDesktopChats({
+    machines: chatMachines,
+    backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
+    connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
+    onError: (text) => toast(text),
+  });
+  const [openChat, setOpenChatState] = useState<ChatPlace | null>(() => readOpenChat(localStorage));
+  const setOpenChat = (place: ChatPlace | null) => { setOpenChatState(place); saveOpenChat(localStorage, place); };
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  // A restored chat its machine no longer lists (deleted, or moved by the phone) is dropped, not shown empty.
+  useEffect(() => { if (openChat && restoredChat(chats.catalog, openChat) === "drop") setOpenChat(null); }, [openChat, chats.catalog]);
+  const chatShown = !!openChat && mainView.kind === "workspace" && !creatingAssistant;
+  const openChatRow = openChat ? findRoom(chats.catalog, openChat.hostId, openChat.room) : null;
+  // Unsent text per chat (machine + room), kept here so switching chats doesn't drop it.
+  const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({});
+  /** `work` is the machine's own answer to a move, which the list may not hold yet. */
+  const openWorkThread = (row: ChatEntry, workId: string, work?: ChatEntry) => {
+    const place = workThreadPlace(workspaces, panes, row.hostId, work ?? findRoom(chats.catalog, row.hostId, workId), () => newId("ws"), folderName);
+    if (place === "unlisted") { toast(`${chats.machineName(row.hostId)} hasn't listed that Work thread yet. Try again once it's connected.`); return; }
+    if (place === "clash") { toast("A thread with the same id from another machine is open. Close it to open this one."); return; }
+    if (place.added || place.restored) setWorkspaces(place.workspaces);
+    if (place.added) setPanes((list) => list.some((p) => p.id === place.pane.id) ? list : [...list, place.pane]);
+    // Opening a thread of a project still in its Undo window counts as Undo: the project and its threads come back.
+    if (place.restored && undoableRemove?.id === place.restored) {
+      clearTimeout(removeTimer.current);
+      setPanes((list) => reopenThreads(list, undoableRemove.reopen));
+      setUndoableRemove(null);
+    }
+    setOpenChat(null);
+    focusPane(place.pane);
+  };
   const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
   const taskRouteStatus = (id: string) => { try { return hostBackend(id).host?.connection.get().status; } catch { return undefined; } };
   const workspaceTaskProblems = Object.entries(assistantTaskErrors).filter(([id]) => workspaces.some(workspace => workspace.id === id && !workspace.hidden)).map(([id, error]) => `${workspaces.find(workspace => workspace.id === id)?.name ?? id}: ${error}`);
@@ -2353,26 +2396,52 @@ export function App() {
   }, []);
 
   /** Card saves settle before quitting; session writes keep their one-second fallback. */
+  const settleSaves = () => {
+    const sessionSave = Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]);
+    return Promise.allSettled([sessionSave, flushAnswerStores()]);
+  };
+  /** Refused while another window holds unsaved edits. */
   const quitNow = () => {
     if (!backend) return;
-    const sessionSave = Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]);
-    void Promise.allSettled([sessionSave, flushAnswerStores()]).then(() => backend.quitApp());
+    void settleSaves().then(() => backend.quitApp()).catch((error) => toast(`Deck didn't quit: ${ipcWords(error)}`));
+  };
+
+  /** Asks each question in turn, then runs `go`; cancelling any one stops there. */
+  const askInTurn = ([next, ...later]: Ask[], go: () => void) => {
+    if (next) setQuestion({ ...next, onConfirm: () => askInTurn(later, go) });
+    else go();
+  };
+
+  /** Agents, terminals and personal Assistant work on this Mac (an assistant elsewhere's commands included) that quitting, or installing an update, would end. */
+  const busyHere = () => {
+    const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
+    return [
+      ...stillRunning(
+        listed.filter((p) => p.kind === "terminal" && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
+        listed.filter((p) => p.kind === "chat" && !deleting.has(p.id) && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
+      ),
+      ...assistantsRunning(assistants.assistants, assistants.localHostId),
+    ];
+  };
+
+  // "Restart to update": Deck exits without the file editor's unload warning, so
+  // unsaved edits are asked about first. The install stops this Mac's background
+  // service, so busy agents are asked about even when an ordinary quit would leave
+  // them be. Deck quits from main once the update is queued; a refusal keeps it open.
+  const restartToUpdate = () => {
+    askInTurn(restartQuestions(unsavedEditName(), busyHere()), () => {
+      void settleSaves().then(() => updateActions.restart()).catch((error) => toast(`The update didn't start: ${ipcWords(error)}`));
+    });
   };
 
   // Asked to quit: the window's close button, ⌘W, ⌘Q or Quit in the app menu.
-  // The desktop shell holds the quit until this answers (see quit.rs).
+  // The desktop shell holds the quit until this answers (see quit.rs). Deck exits
+  // without the file editor's unload warning, so unsaved edits are asked about first.
   const onQuitRequest = useRef<(request: number) => void>(() => {});
   onQuitRequest.current = (request) => {
     if (!backend) return;
     void backend.quitHeard(request).catch(() => {});
-    const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
-    const busy = stillRunning(
-      listed.filter((p) => p.kind === "terminal" && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
-      listed.filter((p) => p.kind === "chat" && !deleting.has(p.id) && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
-    );
-    const asked = quitQuestion(busy, backend.quitStopsWork);
-    if (asked) setQuestion({ ...asked, onConfirm: quitNow });
-    else quitNow();
+    askInTurn(quitQuestions(unsavedEditName(), busyHere(), backend.quitStopsWork), quitNow);
   };
   // The Electron app's menu: Settings… (⌘,) is a menu item there, so the key never reaches the window.
   useEffect(() => {
@@ -2382,6 +2451,7 @@ export function App() {
     backend.onMenu((action) => {
       if (action === "settings") setSettingsOpen((open) => (open ? null : "general"));
       if (action === "hosts") setSettingsOpen("hosts");
+      if (action === "updates") setSettingsOpen("general");
     }).then((unlisten) => (live ? (stop = unlisten) : unlisten()));
     return () => { live = false; stop?.(); };
   }, [backend]);
@@ -2501,7 +2571,7 @@ export function App() {
         </button>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         </div>
-        <SectionNavigation section={mainView.kind==='workspace'&&!creatingAssistant?section:null} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
+        <SectionNavigation section={mainView.kind==='workspace'&&!creatingAssistant?section:null} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setOpenChat(null); setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
         <LayoutPicker value={layoutPreset} disabled={section === "agents" || visiblePanes.length < 2} onSelect={arrange} />
         {section === "agents" && <button className="primary titlebar-new" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
@@ -2524,8 +2594,10 @@ export function App() {
 
       {monitorPollers.map(({ hostId, backend: hostRoute, version }) => <HostMonitors key={hostId} hostId={hostId} backend={hostRoute} getVersion={monitorHostVersion} onMonitors={acceptHostMonitors(version)} />)}
       {migrationNotice && <div className="connection-banner" role="status">{migrationNotice}<button onClick={() => setMigrationNotice("")}>Dismiss</button></div>}
+      <UpdateNotices updates={updates} onRestart={restartToUpdate} />
+      {newChatOpen && <NewChatDialog chats={chats} onClose={() => setNewChatOpen(false)} onStarted={(row) => { setNewChatOpen(false); setMainView({kind:"workspace"}); setCreatingAssistant(false); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
-      <div className={`body${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
+      <div className={`body${sidePanelFull && !chatShown ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
             backend={backend}
@@ -2534,8 +2606,9 @@ export function App() {
             assistantBackend={ref=>{const host=assistants.hosts.find(host=>host.hostId===ref.hostId);if(!host)return undefined;try{return hostBackend(host.routeHostId);}catch{return undefined;}}}
             selectedAssistant={mainView.kind==='assistant'?mainView.assistant:null}
             rosterProblem={rosterMessage(assistants.assistants,assistants.hosts)}
-            onOpenAssistant={openAssistant}
-            onCreateAssistant={()=>{setCreatingAssistant(true);setMainView({kind:'workspace'});}}
+            onOpenAssistant={ref=>{setOpenChat(null);openAssistant(ref);}}
+            onCreateAssistant={()=>{setOpenChat(null);setCreatingAssistant(true);setMainView({kind:'workspace'});}}
+            chats={<ChatRail chats={chats} openKey={openChat ? chatKey(openChat) : null} onNew={() => setNewChatOpen(true)} onOpen={(row) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
             section={section}
             panes={assistantSidebarPanes(viewPanes,currentAssistantRegistry,keptAssistantThreads)}
             workspaces={workspaces}
@@ -2552,11 +2625,12 @@ export function App() {
             workspaceRename={renameRequests}
             paneMenu={(pane) => paneMenuEntries(pane, "rail")}
             projectMenu={projectMenuEntries}
-            onOpenPane={pane=>{setMainView({kind:"workspace"});focusPane(pane);}}
+            onOpenPane={pane=>{setOpenChat(null);setMainView({kind:"workspace"});focusPane(pane);}}
             onTogglePin={(pane) => { if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId) runPaneMenu(pane, "pin", "rail"); }}
             onRenamePane={(id, title) => { if (viewPanes.find((pane) => pane.id === id && (pane as Pane & { assistantTaskId?: string }).assistantTaskId)) setTaskPaneTitle(id, title); else renamePane(id, title); }}
             onRenameWorkspace={(id, name) => setWorkspaces((list) => renameWorkspace(list, id, name))}
             onProjectClick={(workspace) => {
+              setOpenChat(null);
               setMainView({kind:"workspace"});
               setActiveWorkspace(workspace.id);
               setWorkspaces((list) => setCollapsed(list, workspace.id, !workspace.collapsed));
@@ -2584,8 +2658,13 @@ export function App() {
           />
         )}
 
-        <main ref={canvasRef} className={`canvas section-${section}`} inert={sidePanelFull ? true : undefined} aria-hidden={sidePanelFull ? true : undefined}>
-          <div className="workspace-canvas-content" style={{display:mainView.kind==='workspace'&&!creatingAssistant?'contents':'none'}} inert={mainView.kind!=='workspace'||creatingAssistant?true:undefined}>
+        <main ref={canvasRef} className={`canvas section-${section}`} inert={sidePanelFull && !chatShown ? true : undefined} aria-hidden={sidePanelFull && !chatShown ? true : undefined}>
+          {chatShown && (openChatRow
+            ? <TalkOnlyChat onOpenChat={id => setOpenChat({hostId:openChat!.hostId,room:id})} settings={settings} agents={agents} profiles={profiles} onProfilesChange={saveAgents} key={chatKey(openChat!)} row={openChatRow} chats={chats} onClose={() => setOpenChat(null)}
+                draft={chatDrafts[chatKey(openChat!)] ?? ""} onDraft={(text) => { const key = chatKey(openChat!); setChatDrafts((all) => ({ ...all, [key]: text })); }}
+                onOpenWork={openWorkThread} />
+            : <div className="picker"><p role="status">Opening the chat…</p><button onClick={() => setOpenChat(null)}>Close</button></div>)}
+          <div className="workspace-canvas-content" style={{display:mainView.kind==='workspace'&&!creatingAssistant&&!chatShown?'contents':'none'}} inert={mainView.kind!=='workspace'||creatingAssistant||chatShown?true:undefined}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} voiceSettings={settings.voice} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
@@ -2775,7 +2854,7 @@ export function App() {
         </main>
 
 
-        {detailsOpen && <>
+        {detailsOpen && !chatShown && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close side panel overlay" onClick={closeDetails} />}
           {!sidePanelFull && <SidebarHandle
             which="details"
@@ -2831,7 +2910,7 @@ export function App() {
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}
-        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} onClose={closeSettings} />}
+        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
       {connectionDialog && backend.hosts && <ConnectionDialog mode={connectionDialog} hosts={hostList} api={backend.hosts}

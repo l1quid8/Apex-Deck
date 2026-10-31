@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, restoredLayouts, savedLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning } from "../src/closing.ts";
+import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, restoredLayouts, savedLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning, assistantsRunning } from "../src/closing.ts";
 
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
 const term = (id, extra = {}) => ({ id, workspaceId: "w", kind: "terminal", title: id, ...extra });
@@ -257,6 +257,20 @@ test('quitting asks nothing when the work goes on without this app', () => {
   assert.equal(quitQuestion(busy, false), null);
 });
 
+test('quitting asks about unsaved file edits first, even when the work goes on without this app', async () => {
+  // Deck quits without the file editor's unload warning, so the window asks itself.
+  const { quitQuestions } = await import("../src/closing.ts");
+  const busy = stillRunning([terminal("Codex", true, "working")], []);
+  assert.deepEqual(quitQuestions(null, [], true), []);
+  const [discard] = quitQuestions("notes.md", [], true);
+  assert.equal(discard.title, "Discard unsaved changes to notes.md?");
+  assert.equal(discard.action, "Discard");
+  assert.deepEqual(quitQuestions("notes.md", busy, true).map((q) => q.action), ["Discard", "Quit and end them"]);
+  assert.deepEqual(quitQuestions("notes.md", busy, false).map((q) => q.action), ["Discard"]);
+  assert.deepEqual(quitQuestions(null, busy, true).map((q) => q.action), ["Quit and end them"]);
+  assert.deepEqual(quitQuestions(null, busy, false), []);
+});
+
 test("Remove project… always asks, and says the folder on disk is kept", async () => {
   const { removeProjectQuestion } = await import("../src/closing.ts");
   const idle = { working: 0, waiting: 0, replying: 0, asking: 0, threads: 2 };
@@ -269,4 +283,40 @@ test("Remove project… always asks, and says the folder on disk is kept", async
   assert.match(busy.body, /It ends now\./);
   assert.match(busy.body, /folder on disk isn't deleted/);
   assert.match(removeProjectQuestion("empty", { ...idle, threads: 0 }).body, /^Its folder on disk isn't deleted\.$/);
+});
+
+test("an assistant on this Mac writing a reply or running a task is still running; queued, waiting and held work is not", () => {
+  assert.deepEqual(assistantsRunning([], "mac"), []);
+  const here = { onThisMac: true, offline: false };
+  const idle = { name: "Dot", ...here, personalTasks: [{ goal: "Old job", status: "done" }, { goal: "Later", status: "queued" }, { goal: "Every hour", status: "waiting" }], events: [{ state: "done" }, { state: "held" }, { state: "failed" }] };
+  assert.deepEqual(assistantsRunning([idle], "mac"), []);
+  const busy = { name: "Dot", ...here, personalTasks: [{ goal: "Back up the photos", status: "running" }, { goal: "Gone", status: "running", deletedAt: 5 }], events: [{ state: "processing" }, { state: "processing" }] };
+  assert.deepEqual(assistantsRunning([busy], "mac"), [
+    { name: "Dot", thread: "", workspace: "", state: "replying" },
+    { name: "Dot", thread: "", workspace: "Back up the photos", state: "working" },
+  ]);
+  assert.deepEqual(assistantsRunning([{ ...idle, events: [{ state: "received" }] }], "mac").map((r) => r.state), ["replying"]);
+  assert.equal(assistantsRunning([{ name: "Dot", ...here, personalTasks: [{ goal: "x".repeat(200), status: "running" }], events: [] }], "mac")[0].workspace.length, 60);
+  // A service that isn't answering has nothing running to stop.
+  assert.deepEqual(assistantsRunning([{ ...busy, offline: true }], "mac"), []);
+  // With only Assistant work going, quitting asks too.
+  assert.deepEqual(quitQuestion(assistantsRunning([busy], "mac")).rows, ["Dot · Back up the photos · Working", "Dot · Replying"]);
+});
+
+test("an assistant elsewhere running a command on this Mac is still running; its own replies and work elsewhere are not", () => {
+  const remote = {
+    name: "Ops", onThisMac: false, offline: false,
+    personalTasks: [
+      { goal: "List the repo", status: "running", operation: { host: "mac" } },
+      { goal: "Check the server", status: "running", operation: { host: "vps" } },
+      { goal: "Next", status: "queued", operation: { host: "mac" } },
+      { goal: "Thinking", status: "running" },
+    ],
+    events: [{ state: "processing" }],
+  };
+  assert.deepEqual(assistantsRunning([remote], "mac"), [{ name: "Ops", thread: "", workspace: "List the repo", state: "working" }]);
+  // Until this Mac's own id is known, nothing can be matched to it.
+  assert.deepEqual(assistantsRunning([remote], undefined), []);
+  // Its machine not answering: the command here keeps running and reports back on reconnect.
+  assert.deepEqual(assistantsRunning([{ ...remote, offline: true }], "mac"), [{ name: "Ops", thread: "", workspace: "List the repo", state: "working" }]);
 });

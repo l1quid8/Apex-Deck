@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from 'node:util';
 export const ROOT='/Library/Application Support/Apex Deck Provenance';
 export const SOCKET=process.platform==='win32'?'\\\\.\\pipe\\ApexDeckProvenance-v1':'/var/run/dev.apexdeck.provenance.sock';
 const LIMIT=1024*1024;
-export const protectedCommands=new Set(['assistant_message','assistant_task_action','personal_send','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_project_delegate','personal_project_delegate_ui','personal_avatar_generate','personal_avatar_cancel','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_task_lifecycle','personal_archive','personal_reply_cancel','personal_schedule_cancel','room_create','room_import','room_fork','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply','devices_add','devices_set_tier','devices_set_threads','pair_approve']);
+export const protectedCommands=new Set(['assistant_message','assistant_task_action','personal_send','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_project_delegate','personal_project_delegate_ui','personal_avatar_generate','personal_avatar_cancel','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_task_lifecycle','personal_archive','personal_reply_cancel','personal_schedule_cancel','room_create','room_import','room_fork','chat_promote','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_runner_start','room_runner_action','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply','devices_add','devices_set_tier','devices_set_threads','pair_approve']);
 
 // A remote host enforces its own grant boundary. Linux accepts its existing
 // local/SSH administration; a remote Mac still rejects unsigned grant changes.
@@ -103,4 +103,19 @@ export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKe
   const payload=verifyEnvelope(signed,key),receipt=payload.receipt;
   if(payload.domain!=='apex-provenance-v1' || payload.kind!=='submission' || receipt?.uid!==uid || receipt.dataDir!==dataDir || !isDeepStrictEqual(receipt.command,command))throw new Error('Receipt does not match the submitted command.');
   return {id:frame.id,cmd:'provenance_execute',args:{receipt:signed}};
+}
+
+// "Restart to update": the broker queues the request for the root update job,
+// which checks the package again itself (scripts/upgrade.py). Resolves the
+// job's id once the broker has signed for it.
+export async function requestUpdate(update,{uid=process.getuid(),publicKey:rawKey,issue:send=issue}={}){
+  const request={op:'update_install',version:update.version,package:update.package,sha256:update.sha256,size:update.size};
+  const key=rawKey??publicKey();
+  const signed=await send(request);
+  if(typeof signed?.payload!=='string' || Buffer.byteLength(signed.payload)>LIMIT || typeof signed.signature!=='string')throw new Error('Invalid response from the protected service.');
+  const spki=Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),key]);
+  if(!verify(null,Buffer.from(signed.payload),createPublicKey({key:spki,type:'spki',format:'der'}),Buffer.from(signed.signature,'base64')))throw new Error('Invalid provenance signature.');
+  const payload=JSON.parse(signed.payload);
+  if(payload.domain!=='apex-provenance-v1' || payload.kind!=='update' || payload.uid!==uid || payload.version!==update.version || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(payload.id ?? ''))throw new Error('The protected service did not accept this update.');
+  return payload.id;
 }

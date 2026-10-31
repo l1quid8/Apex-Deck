@@ -2,7 +2,7 @@ import { AssistantTeamRow } from "./AssistantTeamRow";
 import { assistantStatus, type AssistantStatus } from "./assistantStatus";
 import { assistantIdentityKey, type AssistantRef } from "./assistantIdentity";
 import type { PersonalAssistantSummary } from "./usePersonalAssistants";
-import { useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { Backend, HostEntry } from "./backend";
 import type { AppSection, Pane, PaneStatus, ThreadStatus, Workspace } from "./types";
 import { label as flagLabel, workspaceFlag, type Signal } from "./attention";
@@ -63,6 +63,8 @@ export interface ProjectSidebarProps {
   onOpenAppearance(): void;
   onOpenSettings(): void;
   onRestore(pane: Pane): void;
+  /** The Chats section, drawn above Projects. */
+  chats?: ReactNode;
   style?: CSSProperties;
 }
 
@@ -323,6 +325,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         <div className="rail-sec" data-sec="pinned">Pinned</div>
         {lists.pinned.map((pane) => row(pane, "pinned"))}
       </>}
+      {props.chats}
       <div className="rail-sec" data-sec="projects">
         <button className="rail-sec-toggle" aria-expanded={projectsOpen} onClick={() => setProjectsOpen((was) => !was)}>
           Projects <Glyph name={projectsOpen ? "chevDown" : "chevRight"} size={12} />

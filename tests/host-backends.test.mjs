@@ -3,6 +3,28 @@ import assert from 'node:assert/strict';
 const mod=await import('../src/hostBackends.ts').catch(()=>({}));
 const store=await import('../src/hostConnections.ts').catch(()=>({}));
 
+test('curation methods and raw commands reject offline writes without replay', async () => {
+  const connection = store.hostConnectionStore('server','Server');
+  const calls = [];
+  const guarded = mod.guardHostWrites({
+    roomCurate:async id=>{calls.push(['curate',id]);return {by:'null',status:'nothing',unchecked:0};},
+    roomCurateUndo:async id=>{calls.push(['undo',id]);return {restored:2,sealed:1};},
+    call:async command=>{calls.push(command);},
+  }, connection);
+  for (const status of [{kind:'idle'},{kind:'resync'},{kind:'reconnecting',attempt:1}]) {
+    connection.setStatus(status);
+    await assert.rejects(guarded.roomCurate('r'), /nothing was queued/);
+    await assert.rejects(guarded.roomCurateUndo('r'), /nothing was queued/);
+    await assert.rejects(guarded.call('room_curate',{id:'r'}), /nothing was queued/);
+    await assert.rejects(guarded.call('room_curate_undo',{id:'r'}), /nothing was queued/);
+  }
+  connection.setStatus({kind:'connected',hostId:'server'});
+  assert.deepEqual(calls, []);
+  assert.equal((await guarded.roomCurate('r')).status, 'nothing');
+  assert.deepEqual(await guarded.roomCurateUndo('r'), {restored:2,sealed:1});
+  assert.deepEqual(calls, [['curate','r'],['undo','r']]);
+});
+
 test('remote turns always carry card guidance without writing remote app preferences', async () => {
   const calls=[];
   const c=store.hostConnectionStore('at','AT');c.setStatus({kind:'connected',hostId:'at'});
@@ -84,6 +106,23 @@ test('project notebook mutations reject disconnected delivery and never replay o
   assert.deepEqual(calls, []);
   for (const command of commands) assert.deepEqual(await guarded.call(command, args), { saved: true });
   assert.deepEqual(calls, commands.map(command => [command, args]));
+});
+
+test('chat mutations wait for connected state while recovery reads remain available', async () => {
+  const connection = store.hostConnectionStore('server', 'Server');
+  const calls = [];
+  const guarded = mod.guardHostWrites({call:async(command)=>{calls.push(command);return command;}},connection);
+  const commands = ['chat_create','chat_update_meta','chat_add_participant','chat_update_participant','chat_remove_participant','chat_import','chat_message_claim','chat_merge_history','chat_promote'];
+  for (const status of [{kind:'idle'},{kind:'resync'},{kind:'reconnecting',attempt:1}]) {
+    connection.setStatus(status);
+    for (const command of commands) await assert.rejects(guarded.call(command,{}),/nothing was queued/);
+  }
+  assert.deepEqual(calls,[]);
+  assert.equal(await guarded.call('chat_list',{}),'chat_list');
+  assert.equal(await guarded.call('chat_profiles',{}),'chat_profiles');
+  connection.setStatus({kind:'connected'});
+  for (const command of commands) await guarded.call(command,{});
+  assert.deepEqual(calls,['chat_list','chat_profiles',...commands]);
 });
 test('stable host registry starts only requested hosts and keeps preferences on Mac',async()=>{
   assert.equal(typeof mod.createHostBackends,'function');

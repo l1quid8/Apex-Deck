@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PersonalAssistantsCollection } from '../src/usePersonalAssistants.ts';
+import { assistantsRunning } from '../src/closing.ts';
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const ref = (hostId, assistantId = 'asst-1') => ({ hostId, assistantId });
 const record = (hostId, id = 'asst-1', revision = 1) => ({ id, hostId, revision, name: `${hostId}/${id}`, timezone: 'UTC', profile: null, allowedFolders: [], messages: [], tasks: [], style: '', modes: {read:'ask',write:'ask',send:'ask',spend:'ask'},budget:{},privacy:{localOnly:false,allowedEndpoints:[]},contextBudgetChars:1000 });
@@ -21,6 +22,24 @@ test('collection discovers every local and remote record with durable identities
 test('summaries carry paused, tasks and projects for the shared status, not a status string',async()=>{
  const f=fixture();f.lists.local=[{...record('mac'),paused:true,tasks:[{id:'t',status:'needsYou'}],projects:[{project:{hostId:'mac',workspaceId:'w',cwd:'/r'},tools:'ask'}]}];await f.collection.refresh();
  const mac=f.collection.snapshot().assistants[0];assert.equal(mac.paused,true);assert.deepEqual(mac.personalTasks.map(t=>t.id),['t']);assert.equal(mac.projects[0].project.cwd,'/r');assert.equal('status' in mac,false);
+});
+test('summaries say which assistants run on this Mac and pass on the replies they are working on',async()=>{
+ const f=fixture();f.lists.local=[{...record('mac'),events:[{id:'e',requestId:'r',state:'processing'}]}];await f.collection.refresh();
+ const [mac,alpha]=f.collection.snapshot().assistants;
+ assert.equal(mac.onThisMac,true);assert.deepEqual(mac.events.map(e=>e.state),['processing']);
+ assert.equal(alpha.onThisMac,false);assert.deepEqual(alpha.events,[]);
+});
+test('the snapshot names this Mac, so a command an assistant elsewhere runs here can be told apart',async()=>{
+ const f=fixture();assert.equal(f.collection.snapshot().localHostId,undefined);
+ f.lists.a=[{...record('alpha'),tasks:[{id:'t',goal:'List',status:'running',operation:{tool:'host.command',host:'mac',cwd:'/f',argv:['ls']}}]}];await f.collection.refresh();
+ const snap=f.collection.snapshot();assert.equal(snap.localHostId,'mac');
+ const alpha=snap.assistants.find(a=>a.ref.hostId==='alpha');assert.equal(alpha.onThisMac,false);assert.equal(alpha.personalTasks[0].operation.host,snap.localHostId);
+});
+test('a command an assistant elsewhere runs here still counts as running after its machine goes offline',async()=>{
+ const f=fixture();f.lists.a=[{...record('alpha'),tasks:[{id:'t',goal:'List',status:'running',operation:{tool:'host.command',host:'mac',cwd:'/f',argv:['ls']}}]}];await f.collection.refresh();
+ f.offline.add('a');await f.collection.refresh();
+ const snap=f.collection.snapshot();assert.equal(snap.assistants.find(a=>a.ref.hostId==='alpha').offline,true);
+ assert.deepEqual(assistantsRunning(snap.assistants,snap.localHostId),[{name:'alpha/asst-1',thread:'',workspace:'List',state:'working'}]);
 });
 test('offline records retain freshness and selection; successful absence removes them and selects an existing identity',async()=>{
  const f=fixture();await f.collection.refresh();f.collection.select(ref('beta'));const seen=f.collection.snapshot().assistants[3].lastSeen;

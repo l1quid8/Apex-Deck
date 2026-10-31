@@ -170,6 +170,9 @@ that doesn't take tools answers without them and is told it has none.
 - `/pin <fact>` puts a fact in every bot's instructions on every turn.
 - `/compact` summarizes earlier turns; `/clear` empties the chat but keeps
   bots and pins.
+- `/curate` hides selected older messages from bots in desktop Work threads,
+  preserving originals for journal lookup; `/curate undo` restores those newer
+  than the latest `/compact`. [Live-provider acceptance is pending](docs/reviews/2026-10-30-curate-lookups.md).
 - `/diff` shows changes in the project since the thread started.
 - `/fork [name]` copies the conversation into a new thread.
 - `/export` saves Markdown to Downloads; `/export json` saves JSON.

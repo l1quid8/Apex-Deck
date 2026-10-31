@@ -9,8 +9,9 @@ import { mergeParticipant } from "./participantSettings";
 import { mentionTarget } from "./recipients";
 import { mentionFor } from "./slug";
 import { ruleFor, sameRule } from "./allowedRules";
+import { pinSource } from "./messagePins.ts";
 import { electronBackend } from "./electronShell.ts";
-import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PhoneInput, PhoneStatus, PhoneView, PreviewProbe, ProposedAction, ResetCredits, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, Curation, CurationUndo, CurateReply, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PhoneInput, PhoneStatus, PhoneView, PreviewProbe, ProposedAction, ResetCredits, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
 
 export type Unlisten = () => void;
 
@@ -95,6 +96,8 @@ export interface Backend {
   apiBalance(baseUrl: string, apiKeyEnv: string | null): Promise<number | null>;
   /** What one video from `model` costs with these choices, in US dollars, from the provider's own quote. Null when it gives none. */
   apiQuote(baseUrl: string, apiKeyEnv: string | null, model: string, media: import("./types").MediaSettings | null): Promise<number | null>;
+  /** Public benchmark scores for `model` at each of `efforts`. Null when none are published; `local` = served from this Mac or its network. */
+  modelMetrics(model: string, efforts: string[], current: string | null, local: boolean): Promise<import("./types").ModelMetrics | null>;
   /** Models offered to API bot `participant` in thread `room`, asked for with the bot's own saved address and key. */
   roomBotModels?(room: string, participant: string): Promise<ApiModel[]>;
   /** What is left on API bot `participant`'s account, in US dollars. Null when the provider has no balance check. */
@@ -160,6 +163,10 @@ export interface Backend {
   roomClear(id: string): Promise<void>;
   /** Delete every message from `upto` on; only while no bot is working. */
   roomRewind(id: string, upto: number): Promise<void>;
+  onRoomRunnerChanged?(cb: (room: string, snapshot: import("./runner/types.ts").RunnerSnapshot | null) => void): Promise<Unlisten>;
+  roomRunnerState?(id: string): Promise<import("./runner/types.ts").RunnerSnapshot | null>;
+  roomRunnerStart?(id: string, runnerId: string, revision: number, requestId: string, payload: import("./runner/types.ts").RunnerStart): Promise<any>;
+  roomRunnerAction?(roomId: string, runnerId: string, revision: number, requestId: string, action: any): Promise<any>;
   /** What going back to message `at` would put back. `bot` is set for a Retry on that bot's reply. */
   roomRevertPlan(id: string, at: number, bot: string | null): Promise<RevertPlan>;
   /** Put `files` back as they were at message `at`; with `chat`, delete from `at` on. Resolves with files it couldn't put back. */
@@ -197,6 +204,10 @@ export interface Backend {
   /** Have a participant summarize the chat and show the models that summary
    *  in place of the messages so far. The transcript is kept. */
   roomCompact(id: string): Promise<void>;
+  /** Hide older messages from model context while preserving the transcript. */
+  roomCurate(id: string): Promise<CurateReply>;
+  /** Restore all eligible hidden messages; report those sealed by /compact. */
+  roomCurateUndo(id: string): Promise<CurationUndo>;
   roomClose(id: string): Promise<void>;
   roomDelete(id: string): Promise<void>;
   onRoomEvent(cb: (room: string, event: RoomEvent) => void): Promise<Unlisten>;
@@ -210,7 +221,8 @@ export interface Backend {
   onQuitRequested(cb: (request: number) => void): Promise<Unlisten>;
   /** Tell the desktop shell the window got quit request `request`, so it waits for the person. */
   quitHeard(request: number): Promise<void>;
-  /** Quit now, ending every terminal. Nothing asks again. */
+  /** Quit now, ending every terminal. Nothing asks again. Refused while
+   *  another window has unsaved file edits; this window asks about its own. */
   quitApp(): Promise<void>;
   /** False when agents and terminals go on after quitting: on another
    *  machine, or a daemon this app didn't start. */
@@ -326,7 +338,7 @@ function demoBackend(): Backend {
     exitListeners.forEach((cb) => cb(id, code));
   };
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
-  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; usage?: Record<string, TokenTotals>; plan?: boolean; seq: number; stopped: boolean; last: string[] }>();
+  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; curations?: Curation[]; pins?: string[]; allowed?: AllowedRule[]; usage?: Record<string, TokenTotals>; plan?: boolean; seq: number; stopped: boolean; last: string[] }>();
   const cancellations = new Map<string, () => void>();
   const demoCursors = new Map<string, number>();
   const emitData = (id: string, data: string) => {
@@ -757,7 +769,7 @@ function demoBackend(): Backend {
       rooms.set(id, room);
       saveRoom(id);
       setTimeout(() => reportMeters(id, room.participants), 50);
-      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [], allowed: room.allowed ?? [], usage: room.usage ?? {} };
+      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, curations: structuredClone(room.curations ?? []), pins: room.pins ?? [], allowed: room.allowed ?? [], usage: room.usage ?? {} };
     },
     apiModels: async (baseUrl) => {
       if (baseUrl.includes("11434")) return [{ id: "llama3" }, { id: "qwen2.5-coder" }];
@@ -765,6 +777,7 @@ function demoBackend(): Backend {
     },
     apiBalance: async () => null,
     apiQuote: async () => null,
+    modelMetrics: async () => null,
     agentModels: async () => [],
     roomPlanReset: async (room, tool, credit) => {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -939,6 +952,7 @@ function demoBackend(): Backend {
       const length = fork.transcript.length;
       const cutoff = upto === null ? length : Math.max(0, Math.min(length, upto));
       fork.transcript = fork.transcript.slice(0, cutoff);
+      fork.curations = (fork.curations ?? []).filter((c: Curation) => c.at <= cutoff);
       if (fork.compaction?.upto > cutoff) fork.compaction = null;
       if (cutoff < length) fork.last = [];
       if (fork.changes) fork.changes = fork.changes.filter((change: { seq: number }) => change.seq < cutoff);
@@ -958,7 +972,7 @@ function demoBackend(): Backend {
       if (rooms.has(id) || localStorage.getItem(`apex-deck.demo.room.${id}`)) throw new Error("a thread with that id already exists");
       const transcript = snapshot.transcript ?? [];
       localStorage.setItem(`apex-deck.demo.room.${id}`, JSON.stringify({
-        participants: snapshot.participants ?? [], options: snapshot.options, transcript, compaction: snapshot.compaction ?? null,
+        participants: snapshot.participants ?? [], options: snapshot.options, transcript, compaction: snapshot.compaction ?? null, curations: snapshot.curations ?? [],
         pins: snapshot.pins ?? [], seq: transcript.length, stopped: false, last: [],
       }));
     },
@@ -974,6 +988,7 @@ function demoBackend(): Backend {
       if (!room) throw new Error(`no group chat with id ${id}`);
       room.transcript = [];
       room.compaction = null;
+      room.curations = [];
       room.seq = 0;
       room.last = [];
       saveRoom(id);
@@ -983,6 +998,7 @@ function demoBackend(): Backend {
       if (!room) throw new Error(`no group chat with id ${id}`);
       if (upto >= room.transcript.length) return;
       room.transcript = room.transcript.slice(0, upto);
+      room.curations = (room.curations ?? []).filter(c => c.at <= upto);
       if (room.compaction && room.compaction.upto > upto) room.compaction = null;
       room.seq = upto;
       room.last = [];
@@ -994,6 +1010,7 @@ function demoBackend(): Backend {
       if (!room) throw new Error(`no group chat with id ${id}`);
       if (chat && at < room.transcript.length) {
         room.transcript = room.transcript.slice(0, at);
+        room.curations = (room.curations ?? []).filter(c => c.at <= at);
         if (room.compaction && room.compaction.upto > at) room.compaction = null;
         room.seq = at;
         room.last = [];
@@ -1016,6 +1033,61 @@ function demoBackend(): Backend {
       // The summary is far smaller than what it replaces.
       for (const p of room.participants) contextUsed.set(`${id}:${p.id}`, 9_000);
       emitRoom(id, { type: "compacted", id: by.id, summary, upto });
+    },
+    // Preview only: deterministic picks for exercising chat notes, never a model evaluation.
+    roomCurate: async (id) => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      const by = room.participants.find(p => p.id === room.last[0]) ?? room.participants[0];
+      if (!by) throw new Error("add a participant before curating");
+      const upto = room.compaction?.upto ?? 0;
+      const pins = new Set((room.pins ?? []).map(pinSource));
+      const eligible = room.transcript.slice(upto, Math.max(upto, room.transcript.length - 20)).filter(message =>
+        !pins.has(message.seq) && (message.speaker.kind !== "human" || [...message.text].length <= 2_000) &&
+        !(room.curations ?? []).some(c => c.undone == null && c.hidden.some(([a, b]) => a <= message.seq && message.seq <= b)));
+      if (!eligible.length) throw new Error("there is nothing old enough to hide");
+      let stopped = false;
+      const key = `${id}:${by.id}`;
+      const cancel = () => { stopped = true; };
+      cancellations.set(key, cancel);
+      emitRoom(id, { type: "turn_started", id: by.id });
+      emitRoom(id, { type: "activity", id: by.id, text: "Choosing what to hide" });
+      try {
+        await sleep(400);
+        if (stopped || rooms.get(id) !== room) return { by: by.id, status: "stopped" };
+        const picks = eligible.slice(0, Math.ceil(eligible.length / 2));
+        const hidden: [number, number][] = [];
+        for (const message of picks) {
+          const last = hidden.at(-1);
+          if (last && last[1] + 1 === message.seq) last[1] = message.seq;
+          else hidden.push([message.seq, message.seq]);
+        }
+        (room.curations ??= []).push({ by: by.id, at: room.transcript.length, hidden,
+          reason: "Preview picks the oldest half of eligible messages. The desktop app asks a bot to choose.", when: Date.now() });
+        saveRoom(id);
+        emitRoom(id, { type: "curations_changed", curations: structuredClone(room.curations) });
+        return { by: by.id, status: "hidden", count: picks.length, unchecked: 0 };
+      } finally {
+        if (cancellations.get(key) === cancel) cancellations.delete(key);
+        if (rooms.get(id) === room) {
+          emitRoom(id, { type: "participant_idle", id: by.id });
+          emitRoom(id, { type: "idle" });
+        }
+      }
+    },
+    roomCurateUndo: async (id) => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      let restored = 0, sealed = 0;
+      for (const curation of room.curations ?? []) {
+        if (curation.undone != null) continue;
+        const count = curation.hidden.reduce((total, [a, b]) => total + b - a + 1, 0);
+        if (curation.at <= (room.compaction?.upto ?? 0)) sealed += count;
+        else { restored += count; curation.undone = Date.now(); }
+      }
+      saveRoom(id);
+      if (restored > 0) emitRoom(id, { type: "curations_changed", curations: structuredClone(room.curations ?? []) });
+      return { restored, sealed };
     },
     roomClose: async (id) => {
       stopPreview(id);

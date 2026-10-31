@@ -11,9 +11,9 @@ import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { isWindows, showInFileManagerLabel } from "./paths";
 import { providerEnabled } from "./providers";
-import { CALL_VOICES, defaultVoiceOf, readVoiceSettings } from "./voice/settings";
+import { CALL_VOICES, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, REALTIME_MODELS, REALTIME_VOICES, defaultVoiceOf, readVoiceSettings, realtimeVoiceLabel } from "./voice/settings";
 import { VoiceSampleButton } from "./voice/VoiceSampleButton";
-import { voiceLabel } from "./voice/callView";
+import { CALL_LOOKS, voiceLabel } from "./voice/callView";
 import { DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
 import { LegacyImportPanel } from "./LegacyImportScreen";
@@ -22,9 +22,10 @@ import { gatewayOwner } from "./modelGateway";
 import { ModsSettings } from "./ModsSettings";
 import { PhonesSettings } from "./PhonesSettings";
 import { shortcutList } from "./shortcuts";
+import { updateActions, updateNote, type UpdateStatus } from "./updates.ts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "appearance" | "hosts" | "phones" | "providers" | "gateway" | "threads" | "terminal" | "mods" | "shortcuts";
+export type SettingsSection = "general" | "appearance" | "hosts" | "phones" | "providers" | "gateway" | "calls" | "threads" | "terminal" | "mods" | "shortcuts";
 
 const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
@@ -33,6 +34,7 @@ const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "phones", label: "Phones" },
   { id: "providers", label: "Providers" },
   { id: "gateway", label: "Model gateway" },
+  { id: "calls", label: "Calls" },
   { id: "threads", label: "New threads" },
   { id: "terminal", label: "Terminal" },
   { id: "mods", label: "Mods" },
@@ -55,10 +57,13 @@ interface Props {
   agents: AgentInfo[];
   profiles: ParticipantConfig[];
   backend: Backend;
+  /** Null where Deck can't update itself: the phone, the browser preview, older desktops. */
+  updates?: UpdateStatus | null;
+  onRestartToUpdate?: () => void;
   onClose: () => void;
 }
 
-export function SettingsPage({ section, onSection, settings, onChange, agents, profiles, backend, onClose }: Props) {
+export function SettingsPage({ section, onSection, settings, onChange, agents, profiles, backend, updates = null, onRestartToUpdate, onClose }: Props) {
   const appearance = settings.appearance ?? defaultAppearanceSettings();
   // Take focus from the deck, so typing never reaches a terminal underneath.
   const nav = useRef<HTMLElement>(null);
@@ -92,12 +97,13 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
           <h2>{section === "threads" ? "Defaults for new threads" : SECTIONS[index].label}</h2>
           {LEADS[section] && <p>{LEADS[section]}</p>}
         </header>
-        {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} settings={settings} onChange={onChange} />}
+        {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} settings={settings} onChange={onChange} updates={updates} onRestartToUpdate={onRestartToUpdate} />}
         {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onLandingTexture={(landingTexture) => onChange({ ...settings, landingTexture })} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
         {section === "phones" && backend.hosts && <PhonesSettings backend={backend} />}
         {section === "gateway" && <ModelGatewaySettings backend={backend} />}
         {section === "providers" && <Providers settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} />}
+        {section === "calls" && <CallsSettings settings={settings} onChange={onChange} backend={backend} />}
         {section === "threads" && <Threads settings={settings} onChange={onChange} />}
         {section === "terminal" && <TerminalSettings settings={settings} onChange={onChange} />}
         {section === "mods" && <ModsSettings backend={backend} />}
@@ -113,6 +119,7 @@ const LEADS: Partial<Record<SettingsSection, string>> = {
   phones: "Phones you pair with this Mac, whether they can connect, and what each may do.",
   gateway: "Share your model stack through an endpoint you control.",
   providers: "Choose which tools appear when adding terminals and bots.",
+  calls: "Voice calls: which engine handles your mic and speaking.",
   mods: "Claude Code mods that Deck runs itself and draws in its own window, for every bot.",
   threads: "Used when you create a thread. Threads you already have keep their own settings.",
   terminal: "Open terminals update straight away.",
@@ -134,7 +141,7 @@ function Stepper({ value, min, max, unit, label, onChange }: { value: number; mi
   </span>;
 }
 
-function General({ backend, themeName, onAppearance, settings, onChange }: { backend: Backend; themeName: string; onAppearance: () => void; settings: AppSettings; onChange: (s: AppSettings) => void }) {
+function General({ backend, themeName, onAppearance, settings, onChange, updates, onRestartToUpdate }: { backend: Backend; themeName: string; onAppearance: () => void; settings: AppSettings; onChange: (s: AppSettings) => void; updates: UpdateStatus | null; onRestartToUpdate?: () => void }) {
   const [folder, setFolder] = useState("");
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
@@ -172,8 +179,23 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
       <button onClick={() => setImporting(true)}>Review…</button>
     </Row>
     {importing && <LegacyImportPanel backend={backend} startOpen onClose={() => setImporting(false)} />}
-    <Row label="Version" note={`Apex Deck ${__APP_VERSION__}`} />
+    {updates ? <VersionRow updates={updates} onRestart={onRestartToUpdate} /> : <Row label="Version" note={`Apex Deck ${__APP_VERSION__}`} />}
   </div>;
+}
+
+/** The version, how updating stands, and the one button that fits it. */
+function VersionRow({ updates, onRestart }: { updates: UpdateStatus; onRestart?: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  const working = ["checking", "downloading", "verifying", "installing"].includes(updates.state);
+  return <Row label="Version" note={<span role="status">{updateNote(updates, now)}</span>}>
+    {updates.state === "ready" && onRestart
+      ? <button className="primary" onClick={onRestart}>Restart to update</button>
+      : updates.state !== "disabled" && <button disabled={working} onClick={() => void updateActions.check()}>{updates.state === "checking" ? "Checking…" : "Check now"}</button>}
+  </Row>;
 }
 
 /** Picture providers read their keys from these names; each one's /image name is shown beside it. */
@@ -323,6 +345,89 @@ function TerminalSettings({ settings, onChange }: { settings: AppSettings; onCha
       <div className="muted">Tests  256 passed (256)</div>
     </div>
   </>;
+}
+
+function CallsSettings({ settings, onChange, backend }: { settings: AppSettings; onChange: (s: AppSettings) => void; backend: Backend }) {
+  const voice = readVoiceSettings(settings.voice);
+  const [keyState, setKeyState] = useState<KeyState | null>(null);
+  const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const refreshKey = useCallback(() => {
+    backend.apiKeyStatus(["OPENAI_API_KEY"]).then(list => setKeyState(list[0]), () => setKeyState(null));
+  }, [backend]);
+  useEffect(() => { refreshKey(); }, [refreshKey]);
+
+  const canRealtime = keyState === "saved" || keyState === "environment";
+  const setEngine = (engine: "local" | "realtime") => {
+    onChange({ ...settings, voice: { ...voice, engine } });
+  };
+  const setRealtimeVoice = (v: string) => {
+    onChange({ ...settings, voice: { ...voice, realtimeVoice: v } });
+  };
+  const saveKey = async () => {
+    const v = draft.trim(); if (!v || busy) return;
+    setBusy(true); setErr("");
+    try { await backend.apiKeySave("OPENAI_API_KEY", v); setDraft(""); setEditing(false); refreshKey(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  const removeKey = async () => {
+    setBusy(true); setErr("");
+    try { await backend.apiKeyRemove("OPENAI_API_KEY"); refreshKey(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return <div className="settings-card">
+    <Row label="Call engine" note={canRealtime ? "Local uses Whisper+Kokoro on this Mac. GPT-Live uses OpenAI Realtime with delegation to Deck agents in the active thread." : "Add an OpenAI API key to enable GPT-Live."}>
+      <span className="voice-seg" role="group" aria-label="Call engine">
+        <button type="button" aria-pressed={voice.engine !== "realtime"} onClick={() => setEngine("local")}>Local</button>
+        <button type="button" aria-pressed={voice.engine === "realtime"} disabled={!canRealtime} title={!canRealtime ? "Add an OpenAI key first" : undefined} onClick={() => setEngine("realtime")}>GPT-Live</button>
+      </span>
+    </Row>
+    {voice.engine === "realtime" && <Row label="GPT-Live voice" note="Voice GPT-Live speaks with (OpenAI realtime voices).">
+      <select aria-label="GPT-Live voice" value={voice.realtimeVoice ?? DEFAULT_REALTIME_VOICE} onChange={e => setRealtimeVoice(e.target.value)}>
+        {REALTIME_VOICES.map(v => <option key={v} value={v}>{realtimeVoiceLabel(v)}</option>)}
+      </select>
+    </Row>}
+    {voice.engine === "realtime" && <Row label="GPT-Live model" note="OpenAI realtime model. Applies next call.">
+      <select aria-label="GPT-Live model" value={voice.realtimeModel ?? DEFAULT_REALTIME_MODEL} onChange={e => onChange({ ...settings, voice: { ...voice, realtimeModel: e.target.value } })}>
+        {REALTIME_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+      </select>
+    </Row>}
+    <Row label="OpenAI API key" note={err || (keyState ? KEY_STATE_LABEL[keyState] + (keyState === "environment" ? " – remove from shell to replace here." : "") + (keyState !== "missing" ? " Key never shown; only a short-lived token reaches the call." : " Needed for GPT-Live. Realtime requires API key auth; ChatGPT login alone is not enough.") : "Checking…")}>
+      {!editing && <>
+        <button className="ghost" disabled={busy} onClick={() => { setErr(""); setEditing(true); }}>{keyState === "saved" || keyState === "environment" ? "Replace" : "Add key"}</button>
+        {keyState === "saved" && <button className="ghost" disabled={busy} onClick={removeKey}>Remove</button>}
+      </>}
+    </Row>
+    {editing && <Row label="New key" note="Enter saves. Deck never shows it again.">
+      <input type="password" aria-label="OPENAI_API_KEY value" autoComplete="off" spellCheck={false} disabled={busy} value={draft} autoFocus onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); saveKey(); } else if (e.key === "Escape") { setDraft(""); setEditing(false); } }} />
+      <button disabled={!draft.trim() || busy} onClick={saveKey}>{busy ? "Saving…" : "Save"}</button>
+      <button className="ghost" disabled={busy} onClick={() => { setDraft(""); setEditing(false); }}>Cancel</button>
+    </Row>}
+
+    <Row label="Local voice" note="For agents with no voice of their own. Set one agent's voice in its form.">
+      <span className="voice-pick">
+        <select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={(e) => onChange({ ...settings, voice: { ...voice, defaultVoice: e.target.value } })}>
+          {[...new Set([defaultVoiceOf(voice), ...CALL_VOICES])].map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
+        </select>
+        <VoiceSampleButton voice={defaultVoiceOf(voice)} />
+      </span>
+    </Row>
+    <Row label="Pause before reply" note="Silence before agent replies (local calls).">
+      <input type="range" min="100" max="2000" step="50" value={voice.silenceMs} onChange={e => onChange({ ...settings, voice: { ...voice, silenceMs: e.target.valueAsNumber } })} />
+      <span>{voice.silenceMs} ms</span>
+    </Row>
+    <Row label="Call controls" note="How a running call shows. Applies to all chats, including pop-outs.">
+      <span className="voice-seg" role="group" aria-label="Call controls">
+        {CALL_LOOKS.map(l => <button type="button" key={l.id} aria-pressed={l.id === voice.look} onClick={() => onChange({ ...settings, voice: { ...voice, look: l.id as any } })}>{l.label}</button>)}
+      </span>
+    </Row>
+    {!canRealtime && <p className="settings-note">Get a key at platform.openai.com with Realtime access. The long-lived key stays in the daemon (Keychain); the renderer only ever gets an ephemeral client_secret.</p>}
+  </div>;
 }
 
 function Shortcuts() {

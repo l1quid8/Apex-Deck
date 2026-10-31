@@ -1,0 +1,32 @@
+/* Chats on the desktop: the rail section and the open chat. */
+.rail-sec[data-sec="chats"] .chat-new { margin-left: auto; width: 22px; height: 22px; padding: 0; font-size: 14px; }
+.chat-row { gap: 6px; }
+.chat-row .hdot { flex: none; }
+.chat-row-off { opacity: .55; }
+.chat-row-side { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.chat-row-tag { flex: none; padding: 0 5px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; }
+.chat-archived-toggle { display: block; padding: 4px 10px; font-size: 11px; color: var(--muted); }
+
+/* Status and recovery banners above the shared thread pane. */
+.desktop-chat-banner { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12px; }
+.desktop-chat-banner button { margin-left: 6px; }
+.chat-problem { margin: 0; padding: 6px 16px; color: var(--danger, #e5484d); font-size: 12px; }
+
+.new-chat { min-width: 360px; }
+.new-chat-field { display: grid; gap: 4px; margin: 10px 0; font-size: 12px; }
+.new-chat-bots { display: grid; gap: 6px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); font-size: 13px; }
+.new-chat-bots label { display: flex; align-items: center; gap: 8px; }
+.move-to-work { min-width: 420px; max-width: 520px; }
+.move-to-work-folder { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.move-to-work-folder code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.move-to-work-bots { display: grid; gap: 6px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); font-size: 13px; }
+.move-to-work-bot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.move-to-work-bot .segmented .seg { padding: 4px 10px; font-size: 12px; }
+.move-to-work .confirm-actions button { white-space: nowrap; }
+
+/* Shared pane geometry; chats use ChatPane's existing thread transcript and composer. */
+.talk-only-pane { inset: 0; width: 100%; height: 100%; }
+.talk-only-pane > .pane-body { flex: 1; min-height: 0; }
+.chat-delivery-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 12px; color: var(--muted); }
+.chat-delivery-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.chat-delivery-row small { flex: none; }

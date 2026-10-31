@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en" data-theme="clay">
+<head>
+<meta charset="utf-8">
+<title>Model metrics on agent cards — mockup v4 (real data, Cognition coding scores)</title>
+<style>
+  /* Copied from src/styles.css + src/clay-theme.css so the cards match Deck. */
+  :root {
+    --bg: #090d12; --panel: #0e141b; --panel-2: #151e28; --line: #24303d;
+    --text: #e4eaf0; --muted: #91a0af; --accent: #71e6b5; --accent-ink: #04211d;
+    --warn: #f59e0b; --danger: #f87171; --ok: #71e6b5;
+  }
+  html[data-theme="clay"] {
+    --bg: #262421; --panel: rgb(30 28 26); --panel-2: rgb(48 45 41); --line: #3b3732;
+    --text: #efe9e0; --muted: #c2b9ad; --accent: oklch(.83 .08 38); --accent-ink: #2a1e16;
+    --warn: #e6b562; --danger: #f0907f; --ok: #9dc79b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  button, select { font: inherit; color: inherit; }
+  button { cursor: pointer; border: 1px solid var(--line); background: var(--panel-2); border-radius: 6px; padding: 7px 12px; }
+  button.ghost { background: transparent; }
+  button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hint { color: var(--muted); font-size: 12px; }
+  a { color: var(--accent); }
+
+  /* Mockup controls (not part of the design) */
+  .mock-bar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 18px; align-items: center; padding: 12px 22px; background: color-mix(in srgb, var(--bg) 88%, black); border-bottom: 1px dashed var(--line); }
+  .mock-bar strong { font-weight: 600; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: transparent; padding: 5px 10px; color: var(--muted); }
+  .seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
+  .mock-note { margin: 14px 22px 0; max-width: 90ch; color: var(--muted); }
+  .mock-note b { color: var(--text); font-weight: 600; }
+
+  /* Real agent card styles */
+  .agent-library { display: flex; flex-direction: column; gap: 10px; padding: 16px 22px 300px; }
+  .agent-card { display: flex; align-items: flex-start; gap: 18px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .agent-card-copy { flex: 1; min-width: 0; }
+  .agent-card h2 { font-size: 16px; margin: 0 0 3px; }
+  .agent-card p { margin: 0 0 8px; max-width: 65ch; }
+  .agent-card-actions { display: flex; gap: 6px; }
+  .avatar { width: 46px; height: 46px; flex: none; border-radius: 11px; background: #17121d; display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 6px; border: 1px solid #2a2233; }
+  .avatar i { border-radius: 1.5px; }
+
+  /* ---------- New: model line + metric pills ---------- */
+  .model-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 8px; color: var(--muted); }
+  .reasoning { appearance: none; border: 1px dashed transparent; background: transparent; color: var(--muted); padding: 0 4px; margin: 0 -4px; border-radius: 4px; cursor: pointer; field-sizing: content; }
+  .reasoning:hover { border-color: var(--line); }
+
+  .metrics { position: relative; display: inline-flex; flex-wrap: wrap; gap: 5px; }
+  .pill { display: inline-flex; align-items: baseline; gap: 5px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; background: transparent; color: var(--text); line-height: 1.6; }
+  .pill .k { color: var(--muted); font-size: 11px; }
+  .pill .at { color: var(--warn); font-size: 11px; }
+  .pill .at.same { color: var(--muted); }
+  .pill .tier { width: 6px; height: 6px; border-radius: 50%; align-self: center; }
+  .tier.t3 { background: var(--ok); } .tier.t2 { background: var(--warn); } .tier.t1 { background: var(--danger); }
+  .pill.hot { border-color: color-mix(in srgb, var(--accent) 70%, var(--line)); }
+  .none { font-size: 12px; color: var(--muted); font-style: italic; }
+
+  /* Hover card: one per pill group, stays open while the pointer moves into it */
+  .hover-card { display: none; position: absolute; left: 0; top: 100%; z-index: 4; padding-top: 6px; }
+  .metrics:hover .hover-card, .metrics:focus-within .hover-card, .metrics.pinned .hover-card { display: block; }
+  .hover-card-body { width: 400px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); font-size: 12px; line-height: 1.45; box-shadow: 0 14px 36px -18px rgb(0 0 0 / .6); }
+  .hc-what { margin: 0 0 8px; }
+  .hc-what b { font-weight: 600; }
+  .hc-what span { color: var(--muted); }
+  .hover-card table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  .hover-card th { text-align: right; color: var(--muted); font-weight: 500; padding: 2px 6px 5px; }
+  .hover-card th:first-child, .hover-card td:first-child { text-align: left; }
+  .hover-card td { text-align: right; padding: 3px 6px; border-top: 1px solid var(--line); color: var(--muted); }
+  .hover-card td.gap { font-style: italic; opacity: .7; }
+  .hover-card tr.current td { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .hover-card tr.current td:first-child::after { content: " · current"; color: var(--accent); font-size: 11px; }
+  .hover-card td.best::after { content: " ★"; color: var(--accent); font-size: 10px; }
+  .hover-card [data-col].hot { color: var(--text); font-weight: 600; }
+  .hover-card th.hot { color: var(--accent); }
+  .hc-model { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .hc-model b { color: var(--text); font-weight: 500; }
+  .hc-model .hot b { color: var(--accent); }
+  .hc-caveat { margin: 8px 0 0; color: var(--warn); font-size: 11px; }
+  .hc-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 11px; }
+  .src.stale { color: var(--warn); }
+</style>
+</head>
+<body>
+
+<div class="mock-bar" role="toolbar" aria-label="Mockup controls">
+  <strong>Mockup v4 · Pills · real data</strong>
+  <span>Data <span class="seg" data-ctl="data">
+    <button aria-pressed="true" data-v="fresh">Fresh</button><button aria-pressed="false" data-v="stale">3 days old</button><button aria-pressed="false" data-v="offline">Couldn't fetch</button>
+  </span></span>
+  <span>Theme <span class="seg" data-ctl="theme">
+    <button aria-pressed="true" data-v="clay">Clay</button><button aria-pressed="false" data-v="classic">Classic</button>
+  </span></span>
+</div>
+
+<p class="mock-note"><b>Every score here is real</b>, copied by hand on 26 Oct 2026 from Epoch AI's free benchmark download. Prices are from OpenRouter's free price list. <b>New in v4:</b> the Code pill now uses Cognition's FrontierCode test instead of SciCode (SciCode's numbers belong to Artificial Analysis). Cognition tested each model at <b>one reasoning level only</b>, so the Code pill always names that level: grey when it matches the bot's level, amber when it doesn't. <b>Hover any pill</b> to see every reasoning level.</p>
+
+<div class="agent-library" id="cards"></div>
+
+<script>
+const LEVELS = ["low", "medium", "high", "xhigh", "max"];
+// Real numbers. Source: Epoch AI benchmarking hub download, 26 Oct 2026.
+// arc = ARC-AGI-2 % solved (ARC Prize), code = FrontierCode % score, mean of 5 runs (Cognition, one level per model),
+// cursor = CursorBench % solved (Cursor, only Opus tested).
+// eci = Epoch Capabilities Index (one per model). price = OpenRouter $ per 1M tokens in/out.
+// A level missing from `levels` was never tested; `offered` lists the levels the model has.
+const AGENTS = [
+  { id: "null", name: "Null", model: "gpt-6.1-sol", label: "GPT-6.1 Sol", level: "medium", access: "Full access",
+    color: "#9b4dff", brief: "You are Builder, the team's implementation engineer. You turn agreed designs, tickets, and specs into working, maintainable code…",
+    offered: LEVELS,
+    levels: { low: { arc: 76.7 }, medium: { arc: 86.7, code: 50.2 }, high: { arc: 91.7 }, xhigh: { arc: 91.7 }, max: { arc: 94.2 } },
+    eci: 168.4, price: [2, 10] },
+  { id: "jigga", name: "Jigga", model: "claude-opus-5-5", label: "Claude Opus 5.5", level: "high", access: "Full access",
+    color: "#e0794f", brief: "You are Jigga, a senior software architect on the team. You look at the big picture: system boundaries, data flow, coupling…",
+    offered: LEVELS,
+    levels: { low: { arc: 70.1, cursor: 43.7 }, medium: { arc: 87.5, code: 54.6, cursor: 52.5 }, high: { arc: 93.3, cursor: 56.0 }, xhigh: { arc: 92.5, cursor: 56.0 }, max: { arc: 91.7, cursor: 57.8 } },
+    eci: 168.8, price: [4, 20] },
+  { id: "deepgeek", name: "deepgeek", model: "deepseek-flash", label: "DeepSeek V4.1 Flash", level: "medium", access: "Can edit files",
+    color: "#4d8dff", brief: "Reviews plans and diffs for correctness and missing edge cases.",
+    offered: ["low", "medium", "high", "max"],
+    levels: { low: { arc: 60.6 }, high: { arc: 67.5, code: 43.9 }, max: { arc: 72.9 } },
+    eci: 155.9, price: [0.14, 0.42] },
+  { id: "gwen", name: "Gwen", model: "qwen3.5-9b (local)", label: "Qwen3.5 9B", level: null, access: "Read only",
+    color: "#3fbf8f", brief: "Local model for quick drafts. Runs on this Mac.",
+    offered: [], levels: { default: {} }, eci: 139.3, price: null, local: true },
+];
+// Top score on each test today, for the coloured dot.
+const TOP = { arc: [95.0, "GPT-6 Astra max"], code: [54.6, "Claude Opus 5.5 medium"], cursor: [57.8, "Claude Opus 5.5 max"], eci: [168.8, "Claude Opus 5.5"] };
+
+const WHAT = {
+  arc: ["Puzzles · ARC-AGI-2", "Fresh visual logic puzzles the model can't have memorised. % solved."],
+  code: ["Code · FrontierCode (Cognition)", "Real software tasks, scored as an average of 5 runs. Each model was tested at one reasoning level only."],
+  cursor: ["CursorBench", "Real coding tasks done inside the Cursor editor. % solved. Few models tested."],
+  eci: ["Overall · Epoch Capabilities Index", "Blends dozens of tests into one number. One score per model, not per level."],
+  price: ["Price per 1M tokens", "Input / output, from OpenRouter. Same at every level, but higher levels write more tokens."],
+};
+const COLS = [["arc", "Puzzles"], ["code", "Code"], ["cursor", "Cursor"]];
+const testedAt = (a, key) => LEVELS.filter(l => a.levels[l]?.[key] != null);
+// Credit only the groups whose numbers this card shows.
+const credits = (a) => { const g = [["arc", "ARC Prize"], ["code", "Cognition"], ["cursor", "Cursor"]].filter(([k]) => testedAt(a, k).length).map(([, n]) => n); return g.length ? ` · ${g.join(", ")} via Epoch` : ""; };
+
+const q = new URLSearchParams(location.search);
+const state = { data: q.get("data") || "fresh", pinned: q.get("pin") || null };
+
+const pct = (v) => `${Math.round(v)}%`;
+const tier = (key, v) => {
+  if (key === "eci") { const gap = TOP.eci[0] - v; return gap <= 5 ? "t3" : gap <= 15 ? "t2" : "t1"; }
+  const r = v / TOP[key][0]; return r >= 0.88 ? "t3" : r >= 0.75 ? "t2" : "t1";
+};
+const money = (p) => p ? `$${p[0]} / $${p[1]}` : "—";
+const srcText = () => state.data === "stale" ? "3 days old" : "updated 2h ago";
+const hasBench = (a) => state.data !== "offline";
+
+// The bot's level if tested, else the nearest tested level (ties go to the lower one so it never overstates).
+function scoreFor(a, key) {
+  if (a.level == null) { const v = a.levels.default?.[key]; return v == null ? null : { v, at: null }; }
+  const i = LEVELS.indexOf(a.level);
+  const tested = LEVELS.filter(l => a.levels[l]?.[key] != null);
+  if (!tested.length) return null;
+  const at = tested.sort((x, y) => Math.abs(LEVELS.indexOf(x) - i) - Math.abs(LEVELS.indexOf(y) - i) || LEVELS.indexOf(x) - LEVELS.indexOf(y))[0];
+  return { v: a.levels[at][key], at: at === a.level ? null : at, tested: at };
+}
+
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k === "class" ? n.className = v : k.startsWith("on") ? n[k] = v : n.setAttribute(k, v);
+  for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+  return n;
+}
+
+function avatar(color) {
+  const a = el("div", { class: "avatar", "aria-hidden": "true" });
+  const on = [1,3,5,6,7,8,9,11,13,16,18,21,23];
+  for (let i = 0; i < 25; i++) a.append(el("i", { style: `background:${on.includes(i) ? color : "#241c2c"}` }));
+  return a;
+}
+
+function reasoningSelect(a) {
+  if (!a.offered.length) return el("span", {}, "no reasoning levels");
+  const s = el("select", { class: "reasoning", "aria-label": `${a.name} reasoning level (mockup)` });
+  for (const l of a.offered) s.append(el("option", { value: l }, l));
+  s.value = a.level;
+  s.onchange = () => { a.level = s.value; render(); };
+  return s;
+}
+
+function levelTable(a) {
+  const cols = COLS.filter(([c]) => Object.values(a.levels).some(b => b[c] != null));
+  const head = el("tr", {}, el("th", {}, "Reasoning"), cols.map(([c, h]) => el("th", { "data-col": c }, h)));
+  const best = Object.fromEntries(cols.map(([c]) => [c, Math.max(...a.offered.map(l => a.levels[l]?.[c] ?? -1))]));
+  const rows = a.offered.map(l => {
+    const b = a.levels[l];
+    if (!b) return el("tr", { class: l === a.level ? "current" : "" }, el("td", {}, l), el("td", { class: "gap", colspan: cols.length }, "not tested at this level"));
+    return el("tr", { class: l === a.level ? "current" : "" }, el("td", {}, l),
+      cols.map(([c]) => b[c] == null
+        ? el("td", { "data-col": c, class: "gap" }, "—")
+        : el("td", { "data-col": c, class: b[c] === best[c] && testedAt(a, c).length > 1 ? "best" : "" }, `${b[c].toFixed(1)}%`)));
+  });
+  return el("table", { "aria-label": `${a.name} scores at each reasoning level` }, el("thead", {}, head), el("tbody", {}, rows));
+}
+
+function hoverCard(a, cardId) {
+  const what = el("p", { class: "hc-what" });
+  const kids = [what];
+  if (!hasBench(a)) {
+    kids.push(el("p", { class: "none", style: "margin:0" }, "Couldn't fetch benchmarks. Deck keeps showing the last saved numbers when it has some."));
+  } else {
+    if (a.offered.length) kids.push(levelTable(a));
+    kids.push(el("div", { class: "hc-model" },
+      el("span", { "data-col": "eci" }, "Overall ", el("b", {}, a.eci.toFixed(1)), ` · top today ${TOP.eci[0]}`),
+      el("span", { "data-col": "price" }, a.price ? ["Price ", el("b", {}, money(a.price)), " per 1M in / out"] : ["Price ", el("b", {}, "free"), " · runs on this Mac"])));
+    if (a.local) kids.push(el("p", { class: "hc-caveat" }, "The Overall score is for the full public model. Your local copy is likely shrunk to fit the Mac and may score lower. No puzzle score was published for it."));
+    const ns = ["arc", "cursor"].map(c => scoreFor(a, c)).find(s => s?.at);
+    if (ns) kids.push(el("p", { class: "hc-caveat" }, `Some tests never ran at “${a.level}”, so the pills borrow the nearest tested level and name it.`));
+  }
+  kids.push(el("div", { class: "hc-foot" },
+    el("span", {}, a.offered.length ? `${a.label} · ★ best level on each test` : a.label),
+    el("span", { class: "src" + (state.data === "stale" ? " stale" : "") },
+      "Data: ", el("a", { href: "https://epoch.ai/benchmarks", target: "_blank" }, "Epoch AI"), " (CC BY)", credits(a), " · prices: OpenRouter · ", srcText())));
+  return { node: el("div", { class: "hover-card", id: cardId, role: "tooltip" }, el("div", { class: "hover-card-body" }, kids)), what };
+}
+
+function metrics(a) {
+  const cardId = `hc-${a.id}`;
+  const wrap = el("span", { class: "metrics" + (state.pinned === a.id ? " pinned" : "") });
+  const { node, what } = hoverCard(a, cardId);
+
+  // Point at a pill -> say what it means, light up its column in the table.
+  const focus = (key) => {
+    const [t, d] = WHAT[key];
+    const top = TOP[key] ? ` Top today: ${key === "eci" ? TOP[key][0] : pct(TOP[key][0])} (${TOP[key][1]}).` : "";
+    what.replaceChildren(el("b", {}, t), " ", el("span", {}, d + top));
+    wrap.querySelectorAll(".hot").forEach(n => n.classList.remove("hot"));
+    wrap.querySelectorAll(`[data-col="${key}"]`).forEach(n => n.classList.add("hot"));
+    wrap.querySelector(`.pill[data-key="${key}"]`)?.classList.add("hot");
+  };
+  const pill = (key, k, v, opts = {}) => {
+    const p = el("button", { class: "pill", type: "button", "data-key": key,
+      "aria-describedby": cardId, "aria-expanded": String(state.pinned === a.id), "aria-label": `${WHAT[key][0]}: ${v}${opts.at ? `, tested at ${opts.at}` : ""}` },
+      opts.tier ? el("span", { class: `tier ${opts.tier}`, "aria-hidden": "true" }) : null,
+      k ? el("span", { class: "k" }, k) : null, el("span", {}, v),
+      opts.at ? el("span", { class: "at" + (opts.same ? " same" : "") }, `· ${opts.at}`) : null);
+    p.onmouseenter = p.onfocus = () => focus(key);
+    p.onclick = () => { state.pinned = state.pinned === a.id ? null : a.id; render(); };
+    return p;
+  };
+
+  if (!hasBench(a)) wrap.append(el("span", { class: "none" }, "Benchmarks unavailable"));
+  else {
+    const s = scoreFor(a, "arc");
+    if (s) wrap.append(pill("arc", "Puzzles", pct(s.v), { tier: tier("arc", s.v), at: s.at }));
+    // Code always names its one tested level: grey when it matches the bot's level, amber when borrowed.
+    const c = scoreFor(a, "code");
+    wrap.append(c ? pill("code", "Code", pct(c.v), { tier: tier("code", c.v), at: c.tested ?? null, same: !c.at })
+      : pill("code", "Code", "none published"));
+    wrap.append(pill("eci", "Overall", Math.round(a.eci), { tier: tier("eci", a.eci) }));
+    wrap.append(pill("price", "$", a.price ? money(a.price) : "free · local"));
+  }
+  wrap.append(node);
+  focus(hasBench(a) ? (scoreFor(a, "arc") ? "arc" : "code") : "price");
+  return wrap;
+}
+
+function card(a) {
+  const line = el("div", { class: "model-line" }, el("span", {}, a.model), "·", reasoningSelect(a), metrics(a));
+  return el("article", { class: "agent-card" }, avatar(a.color),
+    el("div", { class: "agent-card-copy" }, el("h2", {}, a.name), line, el("p", {}, a.brief),
+      el("span", { class: "hint" }, `@${a.id} · ${a.access}`)),
+    el("div", { class: "agent-card-actions" }, el("button", { type: "button" }, "Edit"), el("button", { class: "ghost", type: "button" }, "Delete")));
+}
+
+function render() {
+  const root = document.getElementById("cards");
+  const focusId = document.activeElement?.getAttribute("aria-label");
+  root.replaceChildren(...AGENTS.map(card));
+  if (focusId) root.querySelector(`[aria-label="${CSS.escape(focusId)}"]`)?.focus();
+}
+
+document.addEventListener("keydown", e => { if (e.key === "Escape" && state.pinned) { state.pinned = null; render(); } });
+document.addEventListener("click", e => { if (state.pinned && !e.target.closest(".metrics")) { state.pinned = null; render(); } });
+document.querySelectorAll(".seg").forEach(seg => seg.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  seg.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  const ctl = seg.dataset.ctl;
+  if (ctl === "theme") document.documentElement.dataset.theme = b.dataset.v;
+  else { state[ctl] = b.dataset.v; render(); }
+}));
+document.querySelectorAll(".seg").forEach(seg => { const v = state[seg.dataset.ctl]; if (v) seg.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.v === v))); });
+render();
+</script>
+</body>
+</html>

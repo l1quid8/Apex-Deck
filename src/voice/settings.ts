@@ -1,5 +1,27 @@
 import { readCallLook } from "./callView.ts";
-import type { VoicePreferences, VoiceSettings } from "./types.ts";
+import type { CallEngine, VoicePreferences, VoiceSettings } from "./types.ts";
+export const REALTIME_VOICES = [
+  "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar",
+] as const;
+export const DEFAULT_REALTIME_VOICE = "verse";
+/** The OpenAI realtime models a GPT-Live call can use; the first is the default. */
+export const REALTIME_MODELS = [
+  { id: "gpt-realtime", label: "GPT Realtime" },
+  { id: "gpt-realtime-2.1", label: "GPT Realtime 2.1" },
+] as const;
+export const DEFAULT_REALTIME_MODEL = REALTIME_MODELS[0].id;
+export const readRealtimeModel = (raw: unknown): string | undefined =>
+  REALTIME_MODELS.some((m) => m.id === raw) ? (raw as string) : undefined;
+/** "verse" → "Verse": GPT-Live voices have no accent tag like the local ones. */
+export const realtimeVoiceLabel = (id: string) => id ? id[0].toUpperCase() + id.slice(1) : id;
+export const CALL_ENGINES: { id: CallEngine; label: string }[] = [
+  { id: "local", label: "Local" },
+  { id: "realtime", label: "GPT-Live" },
+];
+export const readCallEngine = (raw: unknown): CallEngine =>
+  raw === "realtime" ? "realtime" : "local";
+export const readRealtimeVoice = (raw: unknown): string | undefined =>
+  typeof raw === "string" && /^[a-z]{2,20}$/.test(raw.trim().toLowerCase()) ? raw.trim().toLowerCase() : undefined;
 export const DEFAULT_VOICE = "am_michael";
 /** The English Kokoro voices the call helper offers ([ab][fm]_*), for picking one outside a call. */
 export const CALL_VOICES = [
@@ -47,6 +69,8 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
       };
     }
   const defaultVoice = readVoiceId(r.defaultVoice);
+  const realtimeVoice = readRealtimeVoice(r.realtimeVoice);
+  const realtimeModel = readRealtimeModel(r.realtimeModel);
   return {
     enabled: r.enabled === true,
     ...(defaultVoice ? { defaultVoice } : {}),
@@ -56,6 +80,9 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
         : 100,
     look: readCallLook(r.look),
     preferences,
+    engine: readCallEngine(r.engine),
+    ...(realtimeVoice ? { realtimeVoice } : {}),
+    ...(realtimeModel ? { realtimeModel } : {}),
   };
 }
 export function preferenceFor(

@@ -2,12 +2,16 @@
 export type Command =
   | { name: "clear" }
   | { name: "compact" }
+  | { name: "curate" }
+  | { name: "curate_undo" }
   | { name: "fork"; title: string }
   | { name: "export"; format: "markdown" | "json" }
   | { name: "diff" }
   | { name: "image"; provider: string; prompt: string }
   /** Turn the thread's Plan switch on or off. */
   | { name: "plan" }
+  | { name: "goal"; arg: string }
+  | { name: "loop"; arg: string }
   | { name: "unknown"; typed: string };
 
 /** Who `/image` can ask; each needs its own API key. */
@@ -31,6 +35,17 @@ export function parseComposer(body: string): Parsed {
     case "diff":
     case "plan":
       return arg ? { command: { name: "unknown", typed: body } } : { command: { name } as Command };
+    case "curate":
+      if (arg === "") return { command: { name: "curate" } };
+      if (arg.toLowerCase() === "undo") return { command: { name: "curate_undo" } };
+      return { command: { name: "unknown", typed: body } };
+    case "goal":
+    case "loop": {
+      const raw = match[2] ?? "";
+      // keep original spacing for objective but trimmed version for parser logic
+      // For //goal escaping already handled above
+      return { command: { name, arg: raw } as Command };
+    }
     case "fork":
       return { command: { name: "fork", title: arg } };
     case "export":

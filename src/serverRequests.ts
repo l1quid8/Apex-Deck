@@ -1,11 +1,20 @@
 import type { ToolServer } from "./types.ts";
 export const normalizeServer = (name: string) => name.toLowerCase().replace(/[-_.\s]/g, '');
 export const serverToken = (name: string) => name.toLowerCase().replace(/\s+/g, '-');
-/** Preserve offsets while hiding Markdown code and escaped characters. */
+/** Preserve offsets while hiding quoted context, Markdown code and escaped characters. */
 export function proseMask(text: string): string {
   const out = text.split('');
   let delimiter = 0;
   for (let i = 0; i < text.length;) {
+    // A quoted reply is context, not a request to use its tool names. Skip
+    // its backticks too, so a selected code fragment cannot mask later prose.
+    if (i === 0 || text[i - 1] === '\n') {
+      let start = i; while (text[start] === ' ' || text[start] === '\t') start++;
+      if (text[start] === '>') {
+        while (i < text.length && text[i] !== '\n') out[i++] = ' ';
+        continue;
+      }
+    }
     if (!delimiter && text[i] === '\\') { out[i++] = ' '; if (i < text.length) out[i++] = ' '; continue; }
     if (text[i] === '`') {
       let end = i; while (text[end] === '`') end++;

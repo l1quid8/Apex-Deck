@@ -19,13 +19,15 @@ const appMethods = new Set([
 const writes = new Set([
   "roomPost", "roomPostTo", "roomTurn", "roomDecide", "roomAnswer", "roomSetPlan", "roomSetOptions", "roomForgetAllowed", "roomAddParticipant",
   "roomUpdateParticipant", "roomRemoveParticipant", "roomClear", "roomRewind", "roomRevert", "roomPin", "roomUnpin",
-  "roomFork", "roomImport", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
+  "roomFork", "roomImport", "roomCompact", "roomCurate", "roomCurateUndo", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
   "generateImage", "importReplyImage", "libraryRemove", "libraryRename", "artifactsSave", "answerSave",
   "monitorAssign", "monitorMessage", "monitorPause", "monitorCheckNow", "monitorResolve", "monitorSourcesUpdate",
   "botCopiesSetCheck", "worktreeAdd", "worktreeRemove", "worktreeForget", "worktreePrune",
 ]);
 const rawWrites = new Set([...writes].map(key => key.replace(/[A-Z]/g, letter => "_" + letter.toLowerCase())));
 for (const command of ["monitor_assign", "monitor_message", "monitor_react", "monitor_pause", "monitor_check_now", "monitor_resolve",
+  "chat_create", "chat_update_meta", "chat_add_participant", "chat_update_participant", "chat_remove_participant",
+  "chat_import", "chat_message_claim", "chat_merge_history", "chat_promote", "chat_promote_abandon",
   "personal_create", "personal_send", "personal_react", "personal_decide", "personal_cancel", "personal_task_lifecycle", "personal_archive", "personal_reply_cancel", "personal_pause", "personal_schedule_cancel",
   "personal_configure", "personal_workspace_configure", "personal_project_delegate", "personal_avatar_generate", "personal_avatar_cancel", "personal_rule_add", "personal_rule_remove", "personal_memory_add", "personal_memory_correct",
   "personal_memory_forget", "personal_notices_seen", "personal_push_register", "personal_machine_link", "personal_machine_unlink",

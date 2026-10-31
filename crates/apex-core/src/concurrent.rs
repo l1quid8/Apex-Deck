@@ -53,6 +53,7 @@ impl Drop for Ticket {
 /// A chain owns its reservation from human-message acceptance until all hops
 /// finish. Dropping a chain also releases the room-wide busy reservation.
 pub struct TurnBatch {
+    client_message_id: Option<String>,
     tickets: Vec<Ticket>,
     sequential: bool,
     limit: Option<usize>,
@@ -63,6 +64,7 @@ pub struct TurnBatch {
     retain_write_lease: Arc<AtomicBool>,
     answers: bool,
     generated_ui: GeneratedUiCapability,
+    runner_context: Option<(String, bool)>,
 }
 impl TurnBatch {
     /// A client capability belongs to this chain, including queued turns and
@@ -72,8 +74,16 @@ impl TurnBatch {
         self.generated_ui = generated_ui;
         self
     }
+    /// Private host-supplied continuation context, bound to this batch only.
+    pub fn with_runner_context(mut self, context: String, read_only: bool) -> Self {
+        self.runner_context = Some((context, read_only));
+        self.limit = Some(0);
+        self.sequential = true;
+        self
+    }
     /// Whether this chain asked for interactive-answer guidance.
     pub fn answers(&self) -> bool { self.answers }
+    pub fn client_message_id(&self) -> Option<&str> { self.client_message_id.as_deref() }
 }
 impl Drop for TurnBatch {
     fn drop(&mut self) {
@@ -231,6 +241,41 @@ impl ConcurrentRoom {
     ) -> Result<TurnBatch, String> {
         self.begin_post_with_speaker(Speaker::Human, text, targets, sink).await
     }
+
+    /// The room mutex arbitrates posts and fencing. Commit saves both the
+    /// human message and its running claim before a provider can be scheduled.
+    pub async fn begin_client_post(
+        &self, text: &str, targets: Option<Vec<ParticipantId>>, request_id: String,
+        voice: bool, hops: Option<usize>,
+        commit: &(dyn Fn(&crate::RoomSnapshot) -> Result<(), String> + Send + Sync),
+        sink: Sink<'_>,
+    ) -> Result<(Option<TurnBatch>, crate::ClientMessageRecord), String> {
+        let mut room = self.room.lock().await;
+        self.check_open()?;
+        // Check the tombstone before resolving recipients: removed bots and
+        // later roster edits cannot make an old request executable again.
+        if let Some(record) = room.client_message(&request_id) {
+            if record.state == crate::ClientMessageState::Fenced { return Err("this message moved to another machine".into()); }
+            if record.request.as_ref().is_some_and(|prior| !prior.matches_text(text) || prior.voice != voice || targets.as_ref().is_some_and(|ids| ids != &prior.targets)) { return Err("client message ID reused with different content".into()); }
+            return Ok((None, record.clone()));
+        }
+        let targets = targets.unwrap_or_else(|| room.resolve_targets(text));
+        if targets.iter().any(|id| !room.has(id)) { return Err("a message recipient is no longer in this room".into()); }
+        let mut unique = Vec::new();
+        for id in targets { if !unique.contains(&id) { unique.push(id); } }
+        if voice && unique.len() != 1 { return Err("voice requires one recipient".into()); }
+        let message = room.accept_client_message(&request_id, text, unique.clone(), voice, commit)?.expect("new request accepted");
+        let record = room.client_message(&request_id).unwrap().clone();
+        let mut batch = self.batch(unique.clone(), !voice && room.options().policy == TurnPolicy::RoundRobin, if voice { Some(0) } else { hops.or(room.options().max_bot_hops) }, room.configs().into_iter().map(|c| c.id).collect(), !voice && room.answers_handle().load(Ordering::SeqCst));
+        batch.client_message_id = Some(request_id.clone());
+        if voice {
+            let stop = Arc::new(AtomicBool::new(false));
+            self.voice_requests.lock().unwrap().insert(request_id.clone(), (unique[0].clone(), text.into(), stop.clone(), Arc::new(AtomicBool::new(false))));
+            batch.tickets[0].origin = Some((request_id, stop));
+        }
+        sink(RoomEvent::MessageAdded { message });
+        Ok((Some(batch), record))
+    }
     pub async fn begin_post_with_speaker(
         &self,
         speaker: Speaker,
@@ -347,6 +392,7 @@ impl ConcurrentRoom {
             })
             .collect();
         TurnBatch {
+            client_message_id: None,
             tickets,
             sequential,
             limit,
@@ -357,6 +403,7 @@ impl ConcurrentRoom {
             retain_write_lease: Arc::default(),
             answers,
             generated_ui: GeneratedUiCapability::Unsupported,
+            runner_context: None,
         }
     }
     pub fn stop(&self, id: Option<&ParticipantId>) {
@@ -380,7 +427,7 @@ impl ConcurrentRoom {
             if batch.sequential {
                 for ticket in tickets {
                     let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, None).await;
-                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
+                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.client_message_id.clone()).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -412,14 +459,14 @@ impl ConcurrentRoom {
                         let mut ids = Vec::new();
                         for (index, (ticket, prepared)) in writers {
                             let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, prepared).await;
-                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await));
+                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.client_message_id.clone()).await));
                         }
                         ids
                     };
                     let read_turns = futures::future::join_all(readers.into_iter().map(|(index, (ticket, prepared))| {
                         let batch = &batch;
                         async move {
-                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await)
+                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.client_message_id.clone()).await)
                         }
                     }));
                     let (mut results, readers) = futures::join!(write_turns, read_turns);
@@ -432,7 +479,7 @@ impl ConcurrentRoom {
                         tickets
                             .into_iter()
                             .zip(prepared)
-                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui)),
+                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.client_message_id.clone())),
                     )
                     .await
                     {
@@ -527,6 +574,8 @@ impl ConcurrentRoom {
         durable_owner: bool,
         answers: bool,
         generated_ui: GeneratedUiCapability,
+        runner_context: Option<&(String, bool)>,
+        client_message_id: Option<String>,
     ) -> Vec<ParticipantId> {
         let request_stop = ticket.origin.as_ref().map(|(_, stop)| stop.clone()).unwrap_or_else(|| ticket.slot.stop.clone());
         let tagged = |event: RoomEvent| {
@@ -580,6 +629,11 @@ impl ConcurrentRoom {
                 room.approvals_handle(),
             )
         };
+        if let Some((context, read_only)) = runner_context {
+            request.system.push_str("\n\n");
+            request.system.push_str(context);
+            if *read_only { request.access = Some(Access::Read); request.plan = true; }
+        }
         let existing_active_copy = if !request.plan && request.access != Some(Access::Read) {
             if let Some(provider) = &self.copies {
                 provider.active_copy(&ticket.id).await
@@ -645,13 +699,7 @@ impl ConcurrentRoom {
                     let e = configs.iter().find(|c| c.id == held_by).map(|c| c.display_name.clone()).unwrap_or_else(|| held_by.to_string());
                     (b, e)
                 };
-                let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
-                request.system = crate::view::system_prompt(&config, &room.configs())
-                    + &crate::view::pinned_section(room.pins())
-                    + &room.checklist_section(&ticket.id)
-                    + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
-                    + answer_guidance;
-                if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+                request.system = room.turn_system(&config, answers, generated_ui, request.plan);
                 let line = read_only_line(&bot_name, &editor_name, &reason);
                 request.system.push_str("\n\n");
                 request.system.push_str(&line);
@@ -723,6 +771,7 @@ impl ConcurrentRoom {
         }
         desk.reject_for(&ticket.id);
         room.record_changes(changes.into_inner().unwrap());
+        room.set_reply_client_message(client_message_id);
         let next = if cancelled {
             desk.reject_for(&ticket.id);
             if let Ok(reply) = outcome {
@@ -734,6 +783,7 @@ impl ConcurrentRoom {
         } else {
             room.settle(&ticket.id, shown, outcome, sink)
         };
+        room.set_reply_client_message(None);
         drop(editor);
         sink(RoomEvent::ParticipantIdle {
             id: ticket.id.clone(),

@@ -159,6 +159,7 @@ struct Reply {
     result: Result<Value, String>,
     need: Option<authority::Need>,
     session: bool,
+    chat_list: bool,
 }
 
 /// A remote device's session: who it is, and word of revokes.
@@ -266,6 +267,7 @@ fn reply_frame(guard: &Option<Guard>, reply: Reply) -> Result<String, Stop> {
     let value = match (device, reply.result) {
         (_, Err(why)) => return Ok(refusal(json!(reply.id), why)),
         (Some(device), Ok(value)) if reply.session => authority::filter_session(&device.threads, value),
+        (Some(device), Ok(value)) if reply.chat_list => authority::filter_chat_list(&device.threads, value),
         (_, Ok(value)) => value,
     };
     Ok(json!({ "id": reply.id, "ok": value }).to_string())
@@ -354,7 +356,7 @@ where
         "max_frame_bytes": if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME },
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
         // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
-        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1"],
+        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"],
         // The exact build, so a UI can tell two builds of the same version apart.
         "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
     } });
@@ -468,6 +470,32 @@ where
                             }
                         }
                         let is_open = matches!(request, VoiceServerOpen { .. });
+                        let maybe_realtime = match &request {
+                            crate::voice::session::VoiceRequest::VoiceRealtimeSession { model, voice, instructions, tools, room: _, participant: _ } => Some((model.clone(), voice.clone(), instructions.clone(), tools.clone())),
+                            _ => None,
+                        };
+                        if let Some((model, voice_name, instructions, tools)) = maybe_realtime {
+                            // Realtime session mint – never log key or secret.
+                            let api_key = crate::voice::realtime::lookup_key();
+                            let result = match api_key {
+                                None => Err("Missing OpenAI API key. Add OPENAI_API_KEY in Settings → Providers or environment.".to_string()),
+                                Some(key) => {
+                                    let args = crate::voice::realtime::MintArgs { model, voice: voice_name, instructions, tools };
+                                    match crate::voice::realtime::mint(&key, args, None).await {
+                                        Ok(session) => Ok(serde_json::to_value(session).unwrap()),
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                            };
+                            let frame = match result {
+                                Ok(v) => json!({"id":id,"ok":v}).to_string(),
+                                Err(e) => refusal(json!(id), e),
+                            };
+                            if let Err(stop) = send(&mut output, &mut guard, frame).await {
+                                return stop.into();
+                            }
+                            continue;
+                        }
                         let result = match request {
                             VoiceServerStatus {} => Ok(serde_json::to_value(daemon.voice.status()).unwrap()),
                             VoiceServerInstall {} => daemon.voice.install().map(|_| Value::Null),
@@ -507,6 +535,7 @@ where
                                 });
                                 continue;
                             }
+                            crate::voice::session::VoiceRequest::VoiceRealtimeSession { .. } => unreachable!("realtime handled above"),
                         };
                         let frame = match result {
                             Ok(v) => json!({"id":id,"ok":v}).to_string(),
@@ -741,6 +770,7 @@ where
 /// what a device needed to run it (`need`), to be checked again on delivery.
 fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>) {
     let session = matches!(command, Command::SessionLoad {});
+    let chat_list = matches!(command, Command::ChatList {});
     let task = {
         let host = Arc::clone(&host);
         tokio::spawn(async move {
@@ -755,7 +785,7 @@ fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>
             Ok(result) => result,
             Err(_) => Err("the command failed unexpectedly".to_string()),
         };
-        let _ = replies.send(Reply { after: host.events().last_seq(), id, result, need, session });
+        let _ = replies.send(Reply { after: host.events().last_seq(), id, result, need, session, chat_list });
     });
 }
 
@@ -871,7 +901,7 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
     }
     if value["cmd"]
         .as_str()
-        .is_some_and(|c| c.starts_with("voice_server_"))
+        .is_some_and(|c| c.starts_with("voice_server_") || c.starts_with("voice_realtime_"))
     {
         return serde_json::from_value(value)
             .map(|r| (id, Request::Voice(r)))
@@ -1161,7 +1191,7 @@ mod tests {
 
     /// What a welcome lists; phone voice calls only where this daemon can run the helper.
     fn hello_capabilities() -> Value {
-        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1"]);
+        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"]);
         if crate::voice::platform_support().is_ok() {
             caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
         }
@@ -1761,7 +1791,8 @@ mod tests {
         let command: Command = serde_json::from_value(command).unwrap();
         let guard = Guard { devices: Arc::clone(&daemon.devices), id: phone.to_string(), revokes: daemon.devices.subscribe() };
         let session = matches!(command, Command::SessionLoad {});
-        let reply = Reply { after: 0, id: 7, result: Ok(result), need: Some(authority::command_needs(&command)), session };
+        let chat_list = matches!(command, Command::ChatList {});
+        let reply = Reply { after: 0, id: 7, result: Ok(result), need: Some(authority::command_needs(&command)), session, chat_list };
         (Some(guard), reply)
     }
 
@@ -2173,6 +2204,22 @@ mod tests {
         let frame = device.next().await.unwrap();
         assert_eq!(frame["seq"], json!(after), "{}", frame.to_string().chars().take(200).collect::<String>());
         assert!(!session.is_finished());
+    }
+
+    #[test]
+    fn voice_realtime_session_is_routed_to_voice_request() {
+        // Regression for "unknown variant voice_realtime_session" – the cmd
+        // must be parsed as Request::Voice, not Request::Host.
+        let frame = r#"{"id":1,"cmd":"voice_realtime_session","args":{"room":"r","model":"gpt-realtime"}}"#;
+        let (id, req) = read_request(frame).expect("should parse");
+        assert_eq!(id, 1);
+        assert!(matches!(req, Request::Voice(crate::voice::session::VoiceRequest::VoiceRealtimeSession { .. })), "expected VoiceRealtimeSession");
+
+        // voice_server_* still routes to Voice as before.
+        let frame2 = r#"{"id":2,"cmd":"voice_server_status","args":{}}"#;
+        let (id2, req2) = read_request(frame2).expect("should parse");
+        assert_eq!(id2, 2);
+        assert!(matches!(req2, Request::Voice(crate::voice::session::VoiceRequest::VoiceServerStatus { .. })));
     }
 
     #[test]

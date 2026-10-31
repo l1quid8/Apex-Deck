@@ -14,6 +14,7 @@ import { pathBase } from "./paths.ts";
 import { pathPrompt, type PathRequest } from "./typedPath.ts";
 import { recentFiles } from "./recentFiles.ts";
 import type { GeneratedApi } from "./interactiveAnswers/generatedRun.ts";
+import type { UpdatesApi } from "./updates.ts";
 import type { PopoutAction, PopoutSnapshot, PopoutUpdate } from "./popoutModel.ts";
 import { clientCapabilitiesForGeneratedRuntime, type ClientCapabilities } from '../shared/generatedUiCapability.mjs';
 
@@ -28,6 +29,8 @@ export interface DeckBridge {
   };
   /** Absent in older desktops; execution capability is checked in main. */
   generatedUI?: GeneratedApi;
+  /** Absent in older desktops. */
+  updates?: UpdatesApi;
   daemon: {
     connect(hostId: string): Promise<number>;
     send(hostId: string, gen: number, line: string): void;

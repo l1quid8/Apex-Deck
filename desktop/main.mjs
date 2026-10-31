@@ -9,6 +9,7 @@ import { VoiceRuntimeManager } from './voiceRuntime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
@@ -18,14 +19,15 @@ import { openTauriApps, tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
-import { QuitGate } from './quit.mjs';
+import { QuitGate, editsElsewhere, unsavedFile } from './quit.mjs';
 import { answers, daemonBinary, daemonEndpoint, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
 import { installLogonTask, removeLogonTask, startLogonTaskDaemon, usesLogonTask } from './winLogonTask.mjs';
-import { TRUSTED_DAEMON, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
+import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
-import { assertTrustedStartup, attestFrame, needsAttestation } from './provenance.mjs';
+import { assertTrustedStartup, attestFrame, needsAttestation, requestUpdate } from './provenance.mjs';
+import { Updater, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
@@ -635,23 +637,116 @@ async function finishQuit() {
   app.exit(0);
 }
 
-const gate = new QuitGate({ letThrough: () => void finishQuit() });
+/**
+ * A window that never answered can't ask about its unsaved edits, so ask here;
+ * false keeps Deck open. Logging out never comes this way: it is never held.
+ */
+function quitUnanswered() {
+  const file = unsavedFile(unsavedEdits, openWindow);
+  if (file && dialog.showMessageBoxSync({
+    type: 'warning',
+    message: 'Quit and lose unsaved changes?',
+    detail: `${file} has changes that haven't been saved.`,
+    buttons: ['Quit', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+  }) !== 0) return false;
+  void finishQuit();
+}
+
+const gate = new QuitGate({ letThrough: quitUnanswered });
 
 /**
  * Hold a close or quit and ask a window; false when nothing holds it. Quitting
- * asks `entry`, else a window on this Mac (its work is what stops), else the one in front.
+ * asks `entry`, else the window holding unsaved edits (it asks about its own),
+ * else a window on this Mac (its work is what stops), else the one in front.
+ * Edits that window can't ask about stop it before any question.
  */
 function askToQuit(entry) {
-  const request = gate.request();
-  if (request === null) return false;
+  if (gate.confirmed) return false;
   const all = [...windows.values()];
-  const asked = entry ?? all.find((e) => e.host === LOCAL) ?? windows.get(BrowserWindow.getFocusedWindow()?.id) ?? all[0];
+  const asked = entry ?? all.find((e) => unsavedEdits.has(e.win.id)) ?? all.find((e) => e.host === LOCAL) ?? windows.get(BrowserWindow.getFocusedWindow()?.id) ?? all[0];
+  const blocked = asked && editsBlockingQuit(asked.win.id);
+  if (blocked) {
+    void dialog.showMessageBox(asked.win, { type: 'warning', message: "Deck didn't quit", detail: blocked });
+    return true;
+  }
+  const request = gate.request();
   if (asked && !asked.win.isDestroyed()) asked.win.webContents.send('quit-requested', request);
   return true;
 }
 
+/** Each Deck window's file with unsaved edits, by window id. Quitting with app.exit skips the editor's unload warning. */
+const unsavedEdits = new Map();
+handle('updates:unsavedEdit', async ({ win }, file) => {
+  if (typeof file === 'string' && file) unsavedEdits.set(win.id, file.slice(0, 200));
+  else unsavedEdits.delete(win.id);
+});
+const openWindow = (id) => windows.has(id) || popoutWindows.has(id);
+/** Why window `asking` can't quit Deck yet: another open window, pop-outs included, holds unsaved edits. */
+const editsBlockingQuit = (asking) => editsElsewhere(unsavedEdits, asking, openWindow);
+
 handle('shell:quitHeard', async (_entry, request) => gate.heard(Number(request)));
-handle('shell:quitApp', async () => finishQuit());
+// The asking window has already asked about its own unsaved edits and stopping work.
+handle('shell:quitApp', async ({ win }) => {
+  const blocked = editsBlockingQuit(win.id);
+  if (blocked) throw new Error(blocked);
+  await finishQuit();
+});
+
+// ------------------------------------------------------------ updates
+// Checks and downloads run here (updater.mjs); the window shows them and asks
+// before "Restart to update", which quits only once the broker has queued it.
+
+/** A command's output, or a rejection with what it printed. */
+const runCommand = (command, args) => new Promise((resolve, reject) => {
+  execFile(command, args, { encoding: 'utf8', maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
+    if (error) reject(new Error(String(stderr || error.message).trim()));
+    else resolve(`${stdout}${stderr}`);
+  });
+});
+
+/** Null until the app is ready; the window asks again when it hears `updates:changed`. */
+let updater = null;
+
+async function startUpdates() {
+  const running = bundlePath(app.getAppPath());
+  const signed = app.isPackaged && process.platform === 'darwin';
+  const team = signed ? teamFrom(await runCommand('/usr/bin/codesign', ['-d', '--verbose=2', running]).catch(() => '')) : null;
+  const folder = path.join(app.getPath('cache'), 'dev.apexdeck.desktop', 'updates');
+  const fetchWithNet = (url, init) => net.fetch(url, init);
+  updater = new Updater({
+    current: app.getVersion(),
+    arch: process.arch,
+    osVersion: process.getSystemVersion(),
+    cacheDir: path.join(folder, 'downloads'),
+    stateFile: path.join(app.getPath('userData'), 'updates.json'),
+    disabled: disabledReason({ packaged: app.isPackaged, platform: process.platform, dataDir, smoke, protectedCopy: signed && isProtectedCopy(running), team }),
+    fetchJson: fetchManifest(fetchWithNet),
+    download: fetchDownload(fetchWithNet),
+    verify: packageVerifier({ run: runCommand, team, scratch: path.join(folder, 'checks') }),
+    requestInstall: (ready) => requestUpdate(ready),
+    onChange: (status) => {
+      for (const { win } of windows.values()) if (!win.isDestroyed()) win.webContents.send('updates:changed', status);
+    },
+  });
+  updater.start();
+  for (const { win } of windows.values()) if (!win.isDestroyed()) win.webContents.send('updates:changed', updater.status());
+}
+
+handle('updates:status', async () => updater?.status() ?? null);
+handle('updates:check', async () => updater?.check({ manual: true }) ?? null);
+handle('updates:later', async () => updater?.later());
+handle('updates:dismissResult', async () => updater?.dismissResult());
+// The asking window has already asked about its own unsaved edits and stopping
+// work, and saved its session; edits in any other window, pop-outs included, stop the restart.
+handle('updates:restart', async ({ win }) => {
+  if (!updater) throw new Error('Updates are still starting.');
+  const blocked = editsBlockingQuit(win.id);
+  if (blocked) throw new Error(blocked);
+  await updater.restart();
+  void finishQuit();
+});
 
 // ------------------------------------------------------------ the docked browser
 
@@ -678,6 +773,13 @@ function menu() {
       label: app.name,
       submenu: [
         { role: 'about' },
+        {
+          label: 'Check for Updates…',
+          click: () => {
+            void updater?.check({ manual: true });
+            toWindow('updates')();
+          },
+        },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: toWindow('settings') },
         { type: 'separator' },
@@ -1010,6 +1112,7 @@ app.whenReady().then(async () => {
   // Each window a step down from the one before, so none hides another.
   const first = createWindow(LOCAL);
   rememberWindows();
+  startUpdates().catch((e) => console.warn(`updates: ${e.message}`));
   if (smoke) {
     const { runSmoke } = env.APEX_DECK_ANSWERS_SMOKE ? await import('./answers-smoke.mjs') : env.APEX_DECK_MULTI_HOST_ROOT ? { runSmoke: (await import('./multi-host-smoke.mjs')).runMultiHostSmoke } : await import('./smoke.mjs');
     const code = await runSmoke(first.win, { sidecar: () => local, browser: first.browser }).catch((e) => {

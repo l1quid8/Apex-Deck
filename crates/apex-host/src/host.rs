@@ -17,6 +17,14 @@ use crate::quit::QuitGate;
 use crate::storage::{SavedRoom, Store};
 use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images, worktrees};
 
+#[cfg(test)]
+#[path = "curation_tests.rs"]
+mod curation_tests;
+
+#[cfg(test)]
+#[path = "chat_delivery_tests.rs"]
+mod chat_delivery_tests;
+
 // Contention is a construction error before any ledger or worker recovery.
 // Unavailable service may degrade, but owns no descriptor or registry entry.
 fn admit_host_ownership(
@@ -57,6 +65,13 @@ fn reject_registry_link(directory: &Path) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct CurateReply {
+    pub by: String,
+    #[serde(flatten)]
+    pub outcome: apex_core::CurateOutcome,
+}
+
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
     /// Serializes snapshot reads with persistence and numbered event emission.
@@ -71,6 +86,8 @@ pub(crate) struct RoomHandle {
     /// Immutable import attribution read from protected authority when opened.
     legacy: Option<crate::legacy_import::LegacyMarker>,
     pub(crate) deleted: Arc<AtomicBool>,
+    pub(crate) journal: Option<PathBuf>,
+    journal_hint: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
     plan: Arc<AtomicBool>,
@@ -118,6 +135,9 @@ pub struct HostPaths {
     pub downloads: Option<PathBuf>,
 }
 
+#[path = "runner/runtime.rs"]
+mod runner_runtime;
+
 pub struct Host {
     paths: HostPaths,
     /// Protected primary and saved-chat ownership lasts as long as this host.
@@ -154,6 +174,9 @@ pub struct Host {
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
     pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
+    runner_workers: Mutex<std::collections::HashSet<String>>,
+    runner_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(crate) runner_service: Arc<Mutex<crate::runner::service::RunnerService>>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -245,6 +268,8 @@ impl Host {
             );
         }
         let store = Store::new(paths.data.join("saved-chats-v1"));
+        store.interrupt_client_messages()?;
+        store.settle_promotes()?;
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
         let compacting = Arc::clone(&snapshots);
         std::thread::spawn(move || compacting.compact());
@@ -252,6 +277,7 @@ impl Host {
         apex_adapters::keys::use_folder(&paths.data);
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
         let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
+        let runner_service = Arc::new(Mutex::new(crate::runner::service::RunnerService::new(paths.data.clone())));
         let host = Arc::new(Host {
             paths,
             _ownership: ownership,
@@ -281,6 +307,7 @@ impl Host {
             steps: Default::default(),
             phone,
             fold_queue,
+            runner_service, runner_workers: Mutex::default(), runner_gates: Mutex::default(),
         });
 
         let host_for_reconcile = Arc::downgrade(&host);
@@ -297,7 +324,7 @@ impl Host {
                     &host.turn_sink(&thread_id, &handle, &error),
                 ).await?;
                 if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-                checkpoint_room(&handle, &host.store, &thread_id).await?;
+                host.checkpoint_room(&handle, &thread_id).await?;
                 host.run_batch_in_background(thread_id, handle, batch);
                 Ok(())
             })
@@ -399,6 +426,19 @@ impl Host {
         // reads protected state and must wait for an admitted host restart.
         if protected_ledgers_available {
             host.redispatch_recovered_queued()?;
+            // Runner recovery: unfinished runners become paused with reason recovery, no auto-replay
+            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let mut runners = host.runner_service.lock().unwrap();
+            if let Err(error) = runners.recover_paused(now_ms) {
+                // Runner storage is optional for ordinary chat. Never replace
+                // unreadable state with an empty writable ledger or dispatch
+                // anything that did not complete restart recovery.
+                eprintln!("[apex-deck] goals and loops unavailable: runner recovery failed ({error}); saved state retained. Repair the protected runner ledger and restart the host.");
+                runners.disable(error);
+            }
+            drop(runners);
+            let processes=host.paths.data.join("runner-processes");
+            if processes.exists() {apex_adapters::recover_owned_processes(&processes.canonicalize().map_err(|e|e.to_string())?).map_err(|e|format!("Runner check cleanup failed: {e}"))?;}
         }
         Ok(host)
     }
@@ -442,7 +482,7 @@ impl Host {
         let handle = self.handle(id)?;
         let error = Mutex::new(None);
         handle.room.lock().await.append_assistant_note(text, &self.turn_sink(id, &handle, &error));
-        checkpoint_room(&handle, &self.store, id).await?;
+        self.checkpoint_room(&handle, id).await?;
         if let Some(error) = error.into_inner().unwrap() { return Err(error); }
         Ok(())
     }
@@ -467,16 +507,39 @@ impl Host {
 
     pub(crate) fn room_event(&self, room: &str, event: RoomEvent) {
         if let Ok(handle) = self.handle(room) {
-            let mut seq = handle.recovery.lock().unwrap();
-            // Compaction emits before the final full snapshot is saved.
-            if let RoomEvent::Compacted { summary, upto, .. } = &event {
-                handle.checkpoint.lock().unwrap().snapshot.compaction = Some(apex_core::Compaction { summary: summary.clone(), upto: *upto });
-            }
-            *seq += 1;
-            self.emit_room_event(room, event, Some(&handle), Some(*seq));
+            self.room_event_for(room, &handle, event);
         } else {
             self.emit_room_event(room, event, None, None);
         }
+    }
+
+    /// Async control operations keep their original handle across replacement.
+    fn room_event_for(&self, room: &str, handle: &RoomHandle, event: RoomEvent) {
+        let mut seq = handle.recovery.lock().unwrap();
+        {
+            let mut checkpoint = handle.checkpoint.lock().unwrap();
+            if handle.deleted.load(Ordering::SeqCst) {
+                return;
+            }
+            // Context operations emit before the final full snapshot is saved.
+            match &event {
+                RoomEvent::Compacted { summary, upto, .. } => {
+                    checkpoint.snapshot.compaction = Some(apex_core::Compaction {
+                        summary: summary.clone(),
+                        upto: *upto,
+                    })
+                }
+                RoomEvent::CurationsChanged { curations } => {
+                    checkpoint.snapshot.curations = curations.clone()
+                }
+                _ => {}
+            }
+        }
+        if handle.deleted.load(Ordering::SeqCst) {
+            return;
+        }
+        *seq += 1;
+        self.emit_room_event(room, event, Some(handle), Some(*seq));
     }
 
     fn persist_and_emit(&self, id: &str, handle: &RoomHandle, event: RoomEvent) -> Result<(), String> {
@@ -744,20 +807,233 @@ impl Host {
         self.room_open(id, participants, options, cwd, false)
     }
 
+    /// This machine's saved bot profiles, or its detected agents on a
+    /// headless box with none saved. Unredacted: never send these to a phone.
+    pub fn chat_saved_profiles(&self) -> Result<Vec<ParticipantConfig>, String> {
+        self.chat_saved_profiles_from(&agents::detect())
+    }
+
+    fn chat_saved_profiles_from(&self, detected: &[agents::AgentInfo]) -> Result<Vec<ParticipantConfig>, String> {
+        let mut raw_profiles: Vec<ParticipantConfig> = self
+            .session()?
+            .and_then(|s| s.profiles)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        if raw_profiles.is_empty() {
+            for info in detected {
+                if !info.found {
+                    continue;
+                }
+                let tool = match info.key.as_str() {
+                    "claude" | "claude_code" => Some(AgentTool::ClaudeCode),
+                    "codex" => Some(AgentTool::Codex),
+                    "gemini" => Some(AgentTool::Gemini),
+                    "grok" => Some(AgentTool::Grok),
+                    "muse" => Some(AgentTool::Muse),
+                    _ => None,
+                };
+                if let Some(tool) = tool {
+                    raw_profiles.push(ParticipantConfig {
+                        id: ParticipantId::new(info.key.clone()),
+                        display_name: info.label.clone(),
+                        persona: String::new(),
+                        backend: apex_core::Backend::Agent { tool, model: None },
+                        effort: None,
+                        speed: None,
+                        access: Access::Read,
+                        appearance: None,
+                        media: None,
+                        voice: None,
+                    });
+                }
+            }
+        }
+        Ok(raw_profiles)
+    }
+
+    /// Talk-only chat profiles and runnable agents on this machine, with API key env names redacted.
+    pub fn chat_profiles(&self) -> Result<serde_json::Value, String> {
+        let path = agents::login_path();
+        let detected = agents::detect();
+        let profiles: Vec<serde_json::Value> = self
+            .chat_saved_profiles_from(&detected)?
+            .into_iter()
+            .map(|p| {
+                let check = apex_adapters::chat_profile_ok(&p, path.as_deref());
+                let p = crate::chat_bots::redacted(p);
+                match check {
+                    Ok(()) => serde_json::json!({ "profile": p, "chatOk": true, "reason": serde_json::Value::Null }),
+                    Err(reason) => serde_json::json!({ "profile": p, "chatOk": false, "reason": reason }),
+                }
+            })
+            .collect();
+        let backends: Vec<serde_json::Value> = [
+            AgentTool::ClaudeCode,
+            AgentTool::Codex,
+            AgentTool::Gemini,
+            AgentTool::Grok,
+            AgentTool::Muse,
+        ]
+        .into_iter()
+        .map(|tool| match apex_adapters::chat_tool_ok(tool, path.as_deref()) {
+            Ok(()) => serde_json::json!({ "tool": tool, "chatOk": true, "reason": serde_json::Value::Null }),
+            Err(reason) => serde_json::json!({ "tool": tool, "chatOk": false, "reason": reason }),
+        })
+        .collect();
+        let agents_list: Vec<agents::AgentInfo> = detected
+            .into_iter()
+            .map(|mut info| {
+                if info.found {
+                    let tool = match info.key.as_str() {
+                        "claude" | "claude_code" => Some(AgentTool::ClaudeCode),
+                        "codex" => Some(AgentTool::Codex),
+                        "gemini" => Some(AgentTool::Gemini),
+                        "grok" => Some(AgentTool::Grok),
+                        "muse" => Some(AgentTool::Muse),
+                        _ => None,
+                    };
+                    if let Some(tool) = tool {
+                        if apex_adapters::chat_tool_ok(tool, path.as_deref()).is_err() {
+                            info.found = false;
+                        }
+                    }
+                }
+                info
+            })
+            .collect();
+        Ok(serde_json::json!({ "profiles": profiles, "backends": backends, "agents": agents_list }))
+    }
+
+    /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
+    pub fn chat_list(&self) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({ "rooms": self.store.chat_list()? }))
+    }
+
+    /// Create or reopen talk-only chat room `id`.
+    pub fn chat_create(
+        self: &Arc<Self>,
+        id: String,
+        title: Option<String>,
+        bots: Vec<crate::chat_bots::ChatBotRequest>,
+        options: RoomOptions,
+    ) -> Result<RoomSnapshot, String> {
+        let path = agents::login_path();
+        let saved = self.chat_saved_profiles()?;
+        let mut participants = Vec::with_capacity(bots.len());
+        let mut made_from = std::collections::BTreeMap::new();
+        for bot in bots {
+            let profile = bot.profile.clone();
+            let p = crate::chat_bots::resolve(&saved, bot)?;
+            apex_adapters::chat_profile_ok(&p, path.as_deref())?;
+            made_from.insert(p.id.as_str().to_owned(), profile);
+            participants.push(p);
+        }
+        let snapshot = self.room_open_with_kind(
+            id.clone(),
+            apex_core::RoomKind::Chat,
+            participants,
+            options,
+            None,
+            false,
+        )?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.store.update_chat_meta(&id, |meta| {
+            if let Some(t) = title.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                meta.title = t.to_string();
+            } else if meta.title.trim().is_empty() {
+                meta.title = "New chat".to_string();
+            }
+            if meta.updated_at == 0 {
+                meta.updated_at = now;
+            }
+            // Reopening an existing chat keeps its own bots, so only record
+            // the ones it actually holds.
+            for p in &snapshot.participants {
+                if let Some(profile) = made_from.get(p.id.as_str()) {
+                    meta.profiles.entry(p.id.as_str().to_owned()).or_insert_with(|| profile.clone());
+                }
+            }
+        })?;
+        Ok(snapshot)
+    }
+
+    /// Update catalog metadata for a chat room or promoted work room.
+    pub fn chat_update_meta(
+        &self,
+        id: String,
+        title: Option<String>,
+        archived: Option<bool>,
+        moved_to: Option<Option<crate::storage::ChatMovedTo>>,
+    ) -> Result<crate::storage::ChatRoomMeta, String> {
+        if self.store.room(&id)?.is_none() && !self.rooms.lock().unwrap().contains_key(&id) {
+            return Err(format!("no group chat with id {id}"));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.store.update_chat_meta(&id, |meta| {
+            if let Some(t) = title {
+                let trimmed = t.trim();
+                meta.title = if trimmed.is_empty() { "New chat".to_string() } else { trimmed.to_string() };
+            }
+            if let Some(a) = archived {
+                meta.archived = a;
+            }
+            if let Some(m) = moved_to {
+                meta.moved_to = m;
+            }
+            meta.updated_at = meta.updated_at.max(now);
+        })
+    }
+
     /// A read may attach to saved authority, but cannot create a new manifest.
     fn room_open(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>, saved_only: bool) -> Result<RoomSnapshot, String> {
+        self.room_open_with_kind(id, apex_core::RoomKind::Work, participants, options, cwd, saved_only)
+    }
+
+    fn room_open_with_kind(
+        self: &Arc<Self>,
+        id: String,
+        default_kind: apex_core::RoomKind,
+        participants: Vec<ParticipantConfig>,
+        options: RoomOptions,
+        cwd: Option<String>,
+        saved_only: bool,
+    ) -> Result<RoomSnapshot, String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some_and(|entry| entry.is_tombstoned()) { return Err("This execution thread was deleted.".into()); }
         if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
+            let existing = handle.checkpoint.lock().unwrap().snapshot.clone();
+            if default_kind.is_chat() && !existing.kind.is_chat() {
+                return Err("A project thread with that id already exists.".into());
+            }
             // Already open, as when a window that reloaded opens its chats
             // again: keep the room, and any turn it's running, as it is.
-            return Ok(handle.checkpoint.lock().unwrap().snapshot.clone());
+            return Ok(existing);
         }
         let mut saved = self.store.room(&id)?;
         if saved_only && saved.is_none() { return Err(format!("no group chat with id {id}")); }
+        let kind = saved.as_ref().map(|s| s.snapshot.kind).unwrap_or(default_kind);
+        if default_kind.is_chat() && !kind.is_chat() {
+            return Err("A project thread with that id already exists.".into());
+        }
         let legacy = self.store.room_legacy(&id)?;
         if let Some(saved) = saved.as_mut() {
-            if !saved.mounts.is_empty() && saved.cwd.as_ref().is_some_and(|cwd| !Path::new(cwd).is_dir()) {
+            if kind.is_chat() {
+                saved.cwd = None;
+                saved.mounts.clear();
+                saved.snapshot.plan = false;
+                for p in &mut saved.snapshot.participants {
+                    p.access = Access::Read;
+                    p.media = None;
+                }
+            } else if !saved.mounts.is_empty() && saved.cwd.as_ref().is_some_and(|cwd| !Path::new(cwd).is_dir()) {
                 let fallback = saved.mounts.iter().map(|mount| &mount.from).find(|path| Path::new(path).is_dir())
                     .cloned().ok_or("The mounted worktree and original project folder are missing.")?;
                 saved.mounts.push(crate::storage::MountBoundary {change_count:Some(saved.snapshot.changes.len()), seq:saved.snapshot.transcript.len(), from:saved.cwd.clone().unwrap(), to:fallback.clone(), note:Some("The mounted worktree is missing. Now working in the original project folder.".into())});
@@ -765,20 +1041,28 @@ impl Host {
                 self.snapshots.delete(&id);
             }
         }
-        let cwd = saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd);
+        let cwd = if kind.is_chat() {
+            None
+        } else {
+            saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd)
+        };
         self.recover_worker_cleanup(&id)?;
-        let cargo_target_dir = self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from));
+        let cargo_target_dir = if kind.is_chat() {
+            None
+        } else {
+            self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from))
+        };
         let context = BuildContext {
-            codex_hook: if cfg!(unix) { std::env::current_exe().ok() } else { None },
+            codex_hook: if !kind.is_chat() && cfg!(unix) { std::env::current_exe().ok() } else { None },
 
             cwd: cwd.filter(|c| !c.is_empty()).map(PathBuf::from),
             path: agents::login_path(),
             temp: thread_temp_dir(&id).ok(),
-            media_dir: self.attachment_dir(&id).ok(),
+            media_dir: if kind.is_chat() { None } else { self.attachment_dir(&id).ok() },
             attachment_roots: vec![self.attachment_dir(&id)?.canonicalize().map_err(|e| format!("Could not resolve the attachments folder: {e}"))?],
             process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
             cargo_target_dir,
-            phone: if cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
+            phone: if !kind.is_chat() && cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
         };
         let mut seen: Vec<&ParticipantId> = Vec::new();
         for config in &participants {
@@ -787,13 +1071,24 @@ impl Host {
             }
             seen.push(&config.id);
         }
-        let participants = saved.as_ref().map(|s| s.snapshot.participants.clone()).unwrap_or(participants);
+        let mut participants = saved.as_ref().map(|s| s.snapshot.participants.clone()).unwrap_or(participants);
+        if kind.is_chat() {
+            for p in &mut participants {
+                apex_adapters::chat_profile_ok(p, context.path.as_deref())?;
+                p.access = Access::Read;
+                p.media = None;
+            }
+        }
         self.read_plans(&id, &participants, &context);
-        let roster = participants.into_iter().map(|p| apex_adapters::build(p, &context)).collect();
-        let mounts = saved.as_ref().map(|s| s.mounts.clone()).unwrap_or_default();
-        let room = match saved {
+        let roster = participants.into_iter().map(|p| apex_adapters::participant_for_room(kind, p, &context)).collect();
+        let mounts = if kind.is_chat() {
+            Vec::new()
+        } else {
+            saved.as_ref().map(|s| s.mounts.clone()).unwrap_or_default()
+        };
+        let mut room = match saved {
             Some(saved) => Room::restore(roster, saved.snapshot),
-            None => Room::new(roster, options),
+            None => Room::new(roster, options).with_kind(kind),
         };
         let snapshot = room.snapshot();
         let deleted = Arc::<AtomicBool>::default();
@@ -804,7 +1099,12 @@ impl Host {
             let retired = Arc::clone(&deleted);
             std::thread::spawn(move || { let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
         }
-        self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
+        let journal = if kind.is_chat() { None } else { Some(crate::journal::path_for(&self.paths.data.join("attachments"), &id)?) };
+        if let Err(error) = self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }) {
+            return Err(invalidate_journal(&mut room, journal.as_deref(), error));
+        }
+        let journal_warning = sync_journal(&mut room, journal.as_deref(), &snapshot);
+        let journal_hint = room.journal_path_handle();
         let stop = room.stop_handle();
         let plan = room.plan_handle();
         let answers = room.answers_handle();
@@ -848,7 +1148,10 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id.clone(), RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, journal, journal_hint, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+        if let Some(error) = journal_warning {
+            self.room_event(&id, RoomEvent::JournalWarning { error });
+        }
         Ok(snapshot)
     }
 
@@ -863,7 +1166,71 @@ impl Host {
         let snapshot = saved.snapshot;
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
-        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone()}))
+        let runner = self.runner_service.lock().unwrap().state(&id).ok().flatten();
+        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
+
+    }
+
+    pub fn room_runner_state(self: &Arc<Self>, id: String) -> Result<Option<serde_json::Value>, String> {
+        let runner = self.runner_service.lock().unwrap().state(&id)?;
+        runner.map(|s| {let mut value=serde_json::to_value(s).map_err(|e|e.to_string())?;value["hostNow"]=serde_json::json!(runner_runtime::now());Ok(value)}).transpose()
+    }
+
+    pub async fn room_runner_start(self: &Arc<Self>, input: crate::runner::service::RunnerStartInput) -> Result<serde_json::Value, String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let gate = self.runner_gate(&input.id);
+        let _guard = gate.lock().await;
+        if let Some(receipt)=self.runner_service.lock().unwrap().replay(&input.request_id,&input.id)? {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Applied(receipt)).map_err(|e|e.to_string());
+        }
+        let handle = self.handle(&input.id)?;
+        if input.expected_room_revision.is_some_and(|revision|revision!=handle.observation_revision.load(Ordering::SeqCst)) {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Conflict(self.runner_service.lock().unwrap().state(&input.id)?)).map_err(|e|e.to_string());
+        }
+        if handle.plan.load(Ordering::SeqCst) { return Err("Turn off Plan before starting a goal or loop".into()); }
+        let configs = handle.room.lock().await.configs();
+        if input.runner.workers.iter().chain(input.runner.checker.iter()).any(|id| !configs.iter().any(|p| p.id.as_str() == id)) { return Err("Runner participant is not in this room".into()); }
+        let res = self.runner_service.lock().unwrap().start(input.clone(), now_ms)?;
+        if let crate::runner::service::RunnerMutation::Applied(snapshot)=&res {
+            let note=format!("{} started: {}\nWorking: {} · {} turns/runs · {} calls · {} minutes lifetime. Measurable spend cap: ${:.2}, best effort; unavailable costs remain unknown. [Runner {}]",if snapshot.kind==crate::runner::RunnerKind::Goal{"Goal"}else{"Loop"},snapshot.objective.as_deref().or(snapshot.prompt.as_deref()).unwrap_or(""),snapshot.workers.join(", "),snapshot.limits.max_turns.unwrap_or(30),snapshot.limits.max_invocations.unwrap_or(120),snapshot.limits.lifetime_ms/60000,snapshot.limits.max_cost_micros.unwrap_or(0) as f64/1e6,snapshot.id);
+            self.runner_note(&input.id,&handle,&note).await?;
+        }
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.runner_changed(&input.id);
+        self.ensure_runner(input.id.clone());
+        // Cancel/suppress any in-flight next-step suggestion when starting a runner
+        if let Ok(handle) = self.handle(&input.id) {
+            self.room_event(&input.id, RoomEvent::NextSteps { id: ParticipantId::new("runner"), steps: vec![], pending: false });
+            // Also clear live next_steps cache
+            handle.live.lock().unwrap().next_steps = None;
+        }
+        Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
+    }
+
+    pub async fn room_runner_action(self: &Arc<Self>, input: crate::runner::service::RunnerActionInput) -> Result<serde_json::Value, String> {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let room = input.id.clone();
+        let action = input.action.action.clone();
+        let gate = self.runner_gate(&room);
+        let _guard = gate.lock().await;
+        if let Some(receipt)=self.runner_service.lock().unwrap().replay(&input.request_id,&input.id)? {
+            return serde_json::to_value(crate::runner::service::RunnerMutation::Applied(receipt)).map_err(|e|e.to_string());
+        }
+        let res = self.runner_service.lock().unwrap().action(input, now_ms)?;
+        if matches!(res, crate::runner::service::RunnerMutation::Applied(_)) {
+            if matches!(action.as_str(), "pause" | "end") || matches!(&res,crate::runner::service::RunnerMutation::Applied(s) if s.phase==crate::runner::RunnerPhase::Paused) {
+                if let Ok(handle) = self.handle(&room) { handle.runtime.stop(None); if action == "end" { handle.approvals.reject_all(); } }
+            }
+            if action=="end" {
+                if let crate::runner::service::RunnerMutation::Applied(snapshot)=&res {
+                    let handle=self.handle(&room)?;
+                    self.runner_note(&room,&handle,&format!("{} ended. {} turns/runs · {} calls. Progress and history retained. [Runner {} ended]",if snapshot.kind==crate::runner::RunnerKind::Goal{"Goal"}else{"Loop"},snapshot.usage.turns,snapshot.usage.invocations,snapshot.id)).await?;
+                }
+            }
+            self.runner_changed(&room);
+            self.ensure_runner(room);
+        }
+        Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -903,7 +1270,20 @@ impl Host {
         }
     }
 
+    /// A chat that has moved to a Work thread, or is moving now, takes no new
+    /// messages: they would land in the old chat, never in the Work thread.
+    fn refuse_moved_chat(&self, id: &str) -> Result<(), String> {
+        let Some(meta) = self.store.chat_meta(id)? else { return Ok(()) };
+        if meta.promoting.is_some() { return Err("This chat is moving to a Work thread. Send once the move finishes.".into()); }
+        if let Some(to) = meta.promoted_to {
+            let name = self.store.chat_meta(&to)?.map(|meta| meta.title.trim().to_owned()).filter(|title| !title.is_empty()).unwrap_or(to);
+            return Err(format!("This chat moved to {name}. Send it there."));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>) -> Result<TurnBatch, String> {
+        self.refuse_moved_chat(id)?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         {
             let room = handle.room.lock().await;
@@ -928,15 +1308,23 @@ impl Host {
         let error = Mutex::new(None);
         let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        checkpoint_room(handle, &self.store, id).await?;
+        self.checkpoint_room(handle, id).await?;
         Ok(batch)
     }
 
     pub(crate) async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
         let _chain = Chain::start(&self.chains);
+        let client_message_id = batch.client_message_id().map(str::to_owned);
         let error = Mutex::new(None);
         handle.runtime.run(batch, &self.turn_sink(id, handle, &error)).await;
-        checkpoint_room(handle, &self.store, id).await?;
+        if let Some(request_id) = client_message_id.as_deref() {
+            // A failed provider-progress save leaves the durable ID owned but
+            // interrupted; it can never dispatch again under the same ID.
+            let mut room = handle.room.lock().await;
+            if error.lock().unwrap().is_some() { room.interrupt_client_message(request_id); }
+            else { room.finish_client_message(request_id); }
+        }
+        self.checkpoint_room(handle, id).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
             if let Some(cwd) = handle.context.cwd.clone() {
@@ -975,8 +1363,14 @@ impl Host {
 
     pub(crate) async fn room_post_with_answer_guidance(self: &Arc<Self>, id: String, text: String, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), vec![], None, answers, capability).await? { return Ok(()); }
+        let gate = self.runner_gate(&id);
+        let guard = gate.lock().await;
         let handle = self.handle(&id)?;
+        let interrupted = self.runner_service.lock().unwrap().yield_to_human(&id)?;
+        if interrupted { handle.runtime.stop(None); handle.approvals.reject_all(); }
+        self.runner_changed(&id);
         let batch = self.prepare_post(&id, &handle, &text, None).await?.with_answer_guidance(answers, capability);
+        drop(guard);
         self.run_batch(&id, &handle, batch).await
     }
 
@@ -991,25 +1385,360 @@ impl Host {
 
     pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None, answers, capability).await? { return Ok(()); }
+        let gate = self.runner_gate(&id);
+        let guard = gate.lock().await;
         let handle = self.handle(&id)?;
+        let interrupted = self.runner_service.lock().unwrap().yield_to_human(&id)?;
+        if interrupted { handle.runtime.stop(None); handle.approvals.reject_all(); }
+        self.runner_changed(&id);
         let batch = self.prepare_post(&id, &handle, &text, Some(targets)).await?.with_answer_guidance(answers, capability);
+        drop(guard);
         self.run_batch_in_background(id, handle, batch);
         Ok(())
     }
 
-    pub(crate) async fn room_voice_post(self: &Arc<Self>, id: String, text: String, participant: ParticipantId, request_id: String) -> Result<(), String> {
-        if self.assistant_tasks.execution(&id).ok().flatten().is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
-        let handle = self.handle(&id)?;
-        let error = Mutex::new(None);
-        let batch = handle.runtime.begin_voice_post(&text, participant, request_id, &self.turn_sink(&id, &handle, &error)).await?;
-        if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        checkpoint_room(&handle, &self.store, &id).await?;
-        if let Some(batch) = batch {
-            handle.observation_revision.fetch_add(1, Ordering::SeqCst);
-            self.run_batch_in_background(id, handle, batch);
-        }
+    /// The commit closure runs under the transcript mutex, always before a
+    /// human-message event or provider invocation. Claim uses that same mutex.
+    fn commit_client_snapshot(&self, id: &str, handle: &RoomHandle, snapshot: &RoomSnapshot) -> Result<(), String> {
+        let _boundary = handle.recovery.lock().unwrap();
+        let mut checkpoint = handle.checkpoint.lock().unwrap();
+        if handle.deleted.load(Ordering::SeqCst) { return Err("This chat was deleted".into()); }
+        let mut saved = checkpoint.clone();
+        saved.snapshot = snapshot.clone();
+        self.store.save_room(id, &saved)?;
+        *checkpoint = saved;
         Ok(())
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn room_client_post(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<serde_json::Value, String> {
+        if self.assistant_tasks.execution(&id).map_err(|error| error.to_string())?.is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
+        if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
+        let runner_gate = self.runner_gate(&id);
+        let runner_guard = runner_gate.lock().await;
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        // A resend of a message the chat already took still gets its record.
+        let known = handle.checkpoint.lock().unwrap().snapshot.client_messages.contains_key(&request_id);
+        if !known {
+            self.refuse_moved_chat(&id)?;
+            if self.runner_service.lock().unwrap().yield_to_human(&id)? {
+                handle.runtime.stop(None);
+                handle.approvals.reject_all();
+            }
+            self.runner_changed(&id);
+        }
+        // Acceptance already committed this event. Publishing it must not do
+        // a second fallible save and abandon an accepted batch before launch.
+        let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot), &|event| {
+            if let RoomEvent::MessageAdded { message } = &event { update_chat_message_meta(&self.store, &id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message); }
+            self.room_event(&id, event);
+        }).await
+            // A move to a Work thread closes this handle between the check
+            // above and acceptance; say where the chat went, not "reopen".
+            .map_err(|why| if known { why } else { self.refuse_moved_chat(&id).err().unwrap_or(why) })?;
+        drop(runner_guard);
+        if let Some(batch) = batch {
+            handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+            let batch = batch.with_answer_guidance(if voice { Some(false) } else { answers }, capability);
+            if background { self.run_batch_in_background(id.clone(), handle.clone(), batch); }
+            else { self.run_batch(&id, &handle, batch).await?; }
+        }
+        let record = if background { record } else { handle.checkpoint.lock().unwrap().snapshot.client_messages.get(&request_id).cloned().unwrap_or(record) };
+        Ok(serde_json::json!({"clientMessageId":request_id,"state":record.state,"replySeqs":record.reply_seqs}))
+    }
+
+    pub(crate) async fn chat_message_claim(self: &Arc<Self>, id: String, client_message_id: String) -> Result<serde_json::Value, String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        let mut room = handle.room.lock().await;
+        if !room.kind().is_chat() { return Err("This command requires a chat room".into()); }
+        let record = room.claim_client_message(&client_message_id, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot))?;
+        Ok(serde_json::json!({"state":record.state,"replySeqs":record.reply_seqs}))
+    }
+
+    pub(crate) async fn chat_merge_history(self: &Arc<Self>, id: String, entries: Vec<apex_core::Message>) -> Result<serde_json::Value, String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        let mut room = handle.room.lock().await;
+        if !room.kind().is_chat() { return Err("This command requires a chat room".into()); }
+        let added = room.merge_history(entries, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot))?;
+        for message in &added {
+            update_chat_message_meta(&self.store, &id, true, message);
+            self.room_event(&id, RoomEvent::MessageAdded { message: message.clone() });
+        }
+        Ok(serde_json::json!({"added":added.len()}))
+    }
+
+    pub(crate) fn chat_import(&self, id: String, move_id: String, title: Option<String>, participants: Vec<crate::chat_bots::ChatBotRequest>, entries: Vec<apex_core::Message>, options: RoomOptions) -> Result<serde_json::Value, String> {
+        if move_id.is_empty() || move_id.len() > 256 { return Err("invalid move ID".into()); }
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if let Some((existing_id, saved)) = self.store.imported_chat(&move_id)? {
+            let meta = self.store.update_chat_meta(&existing_id, |meta| {
+                // A chat imported before this was recorded has a history but no activity time,
+                // so the list calls it new. Its newest message says when it was last used.
+                if meta.updated_at == 0 {
+                    meta.updated_at = saved.snapshot.transcript.iter().filter_map(|message| message.at).max().unwrap_or_else(now_millis);
+                }
+                if let Some(title) = &title { meta.title = title.clone(); }
+                meta.profiles.retain(|alias, _| saved.snapshot.participants.iter().any(|bot| bot.id.as_str() == alias));
+                for bot in &saved.snapshot.participants {
+                    if let Some(profile) = saved.snapshot.import_profiles.get(bot.id.as_str()) {
+                        meta.profiles.insert(bot.id.as_str().to_owned(), profile.clone());
+                    }
+                }
+            })?;
+            return Ok(serde_json::json!({"id":existing_id,"skipped":saved.snapshot.import_skipped,"room":saved.snapshot,"profiles":meta.profiles}));
+        }
+        if self.rooms.lock().unwrap().contains_key(&id) { return Err("a thread with that id already exists".into()); }
+        let path = agents::login_path();
+        let mut accepted = vec![];
+        let mut skipped = vec![];
+        let saved_profiles = self.chat_saved_profiles()?;
+        let mut made_from = HashMap::new();
+        for bot in participants {
+            let profile = bot.profile.clone();
+            let requested_id = bot.id.clone().unwrap_or_else(|| ParticipantId::new(&profile));
+            let resolved = crate::chat_bots::resolve(&saved_profiles, bot).and_then(|participant| {
+                apex_adapters::chat_profile_ok(&participant, path.as_deref())?;
+                Ok(participant)
+            });
+            match resolved {
+                Ok(participant) => {
+                    if accepted.iter().any(|prior: &ParticipantConfig| prior.id == participant.id) { return Err("two participants share the same id".into()); }
+                    if let Some(why) = apex_core::mention_clash(&participant, &accepted) { return Err(why); }
+                    made_from.insert(participant.id.as_str().to_owned(), profile);
+                    accepted.push(participant);
+                }
+                Err(reason) => skipped.push(serde_json::json!({"participant":requested_id,"reason":reason})),
+            }
+        }
+        let mut snapshot = Room::new(vec![], options).with_kind(apex_core::RoomKind::Chat).snapshot();
+        snapshot.participants = accepted;
+        snapshot.import_move_id = Some(move_id);
+        snapshot.import_skipped = skipped.clone();
+        snapshot.import_profiles = made_from;
+        snapshot.transcript = entries;
+        // When this chat was last used, as its own history says. A phone's older chats carry no
+        // times, so the copy itself is the last moment it was touched.
+        let last_at = snapshot.transcript.iter().filter_map(|message| message.at).max();
+        let mut origins = std::collections::HashSet::new();
+        snapshot.transcript.retain(|message| message.origin.as_ref().is_none_or(|origin| origins.insert(origin.clone())));
+        for (seq, message) in snapshot.transcript.iter_mut().enumerate() { message.seq = seq; }
+        snapshot.remember_history_ids();
+        let saved = SavedRoom { cwd: None, mounts: vec![], snapshot };
+        self.store.import_room(&id, &saved)?;
+        // The room (including moveId) is already durable if metadata fails.
+        let meta = self.store.update_chat_meta(&id, |meta| {
+            meta.title = title.unwrap_or_else(|| "New chat".into());
+            meta.profiles = saved.snapshot.import_profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect();
+            // An imported chat has history, so the list should age it by that rather than call
+            // it new: its newest message, or the copy when the history carries no times.
+            meta.updated_at = meta.updated_at.max(last_at.unwrap_or_else(now_millis));
+        })?;
+        Ok(serde_json::json!({"id":id,"room":saved.snapshot,"skipped":skipped,"profiles":meta.profiles}))
+    }
+    /// Turn a talk-only chat into a Work thread in a folder, in one step: the
+    /// new thread is written and the chat is pointed at it together, and a
+    /// retry with the same `requestId` returns that thread instead of a second
+    /// one. The chat keeps its history; only its bots' tools come back, at the
+    /// Access chosen for each.
+    pub fn chat_promote(
+        &self,
+        source: String,
+        target: String,
+        cwd: String,
+        upto: Option<usize>,
+        access: Option<std::collections::BTreeMap<String, Access>>,
+        request_id: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        if target.trim().is_empty() || target.len() > 200 {
+            return Err("invalid Work thread id".into());
+        }
+        if source == target {
+            return Err("A chat can't be moved onto itself.".into());
+        }
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        let open = self.rooms.lock().unwrap().get(&source).cloned();
+        let saved = match &open {
+            Some(handle) => handle.checkpoint.lock().unwrap().snapshot.clone(),
+            None => self
+                .store
+                .room(&source)?
+                .ok_or_else(|| format!("no group chat with id {source}"))?
+                .snapshot,
+        };
+        if !saved.kind.is_chat() {
+            return Err("Only a chat can become a Work thread.".into());
+        }
+        let mut meta = self.store.chat_meta(&source)?.unwrap_or_default();
+        // One move per chat: a retry returns the thread it already made, and
+        // anything else is refused rather than making a second one.
+        if let Some(to) = meta.promoted_to.clone() {
+            let name = self
+                .store
+                .chat_meta(&to)?
+                .map(|meta| meta.title.trim().to_owned())
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| to.clone());
+            if to != target || meta.promote_request.as_deref() != request_id.as_deref() {
+                return Err(format!("Already moved to {name}"));
+            }
+            return self.promoted_reply(&source, &to);
+        }
+        let cwd = promote_cwd(&cwd, self.store.root())?;
+        let access = access.unwrap_or_default();
+        let saved_profiles = self.chat_saved_profiles()?;
+        let copy = |snapshot: &RoomSnapshot| -> Result<Option<String>, String> {
+            // A bot the chat doesn't have is refused, so a typo can't quietly
+            // give a bot Read only.
+            for bot in access.keys() {
+                if !snapshot.participants.iter().any(|participant| participant.id.as_str() == bot.as_str()) {
+                    return Err(format!("This chat has no bot named `{bot}`, so its access can't be set."));
+                }
+            }
+            // Rebuild every bot from this machine's own saved profiles, at the
+            // Access chosen here: a Work thread gives tools back, so none of
+            // the chat's talk-only settings cross over.
+            let mut participants: Vec<ParticipantConfig> = Vec::with_capacity(snapshot.participants.len());
+            for bot in &snapshot.participants {
+                let profile = meta
+                    .profiles
+                    .get(bot.id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| bot.id.as_str().to_owned());
+                let request = crate::chat_bots::ChatBotRequest {
+                    profile,
+                    id: Some(bot.id.clone()),
+                    display_name: Some(bot.display_name.clone()),
+                    model: bot_model(bot),
+                    effort: bot.effort.clone(),
+                    speed: bot.speed,
+                };
+                let mut rebuilt = crate::chat_bots::resolve(&saved_profiles, request)
+                    .map_err(|why| format!("Can't put `{}` in the Work thread: {why}", bot.display_name))?;
+                rebuilt.access = access.get(bot.id.as_str()).copied().unwrap_or(Access::Read);
+                if participants.iter().any(|prior| prior.id == rebuilt.id) {
+                    return Err(format!("Two bots in this chat are both named `{}`.", rebuilt.display_name));
+                }
+                if let Some(why) = apex_core::mention_clash(&rebuilt, &participants) {
+                    return Err(why);
+                }
+                participants.push(rebuilt);
+            }
+            let upto = upto.unwrap_or(snapshot.transcript.len()).min(snapshot.transcript.len());
+            let mut work = snapshot.fork(upto);
+            work.kind = apex_core::RoomKind::Work;
+            work.participants = participants;
+            work.plan = false;
+            work.allowed = Vec::new();
+            work.import_move_id = None;
+            work.import_skipped = Vec::new();
+            work.import_profiles = meta.profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect();
+            let title = {
+                let trimmed = meta.title.trim();
+                if trimmed.is_empty() { "New work thread".to_string() } else { trimmed.to_string() }
+            };
+            let work = SavedRoom { cwd: Some(cwd.clone()), mounts: vec![], snapshot: work };
+            self.store.promote_chat(&source, &target, &work, request_id.as_deref(), &title)
+        };
+        let already = match open {
+            // Nothing can post to a chat that isn't open without opening it,
+            // and opening waits for the lifecycle lock held here.
+            None => copy(&saved)?,
+            // Copy and close the chat under the lock that accepts messages, as
+            // room_close does: a message either lands before the copy and goes
+            // with it, or finds this handle closed and the chat moved. Never
+            // mid-reply, or the reply would land in the old chat.
+            Some(handle) => {
+                const ANSWERING: &str = "A bot is still answering. Move the chat once it has finished.";
+                if handle.busy() { return Err(ANSWERING.into()); }
+                let already = handle
+                    .runtime
+                    .retire_if_idle(|room| {
+                        let snapshot = room.snapshot();
+                        if snapshot.client_messages.values().any(|record| record.state == apex_core::ClientMessageState::Running) {
+                            return Err(ANSWERING.into());
+                        }
+                        self.commit_client_snapshot(&source, &handle, &snapshot)?;
+                        let already = copy(&snapshot)?;
+                        handle.deleted.store(true, Ordering::SeqCst);
+                        Ok(already)
+                    })
+                    .map_err(|why| if why.starts_with("room-busy") { ANSWERING.into() } else { why })?;
+                self.rooms.lock().unwrap().remove(&source);
+                already
+            }
+        };
+        meta.promoted_to = Some(already.clone().unwrap_or_else(|| target.clone()));
+        self.promoted_reply(&source, meta.promoted_to.as_deref().unwrap_or(&target))
+    }
+
+    /// The phone's "Start over" on a move to a Work thread it never heard back
+    /// about. Waits for any promote already running (they share the lifecycle
+    /// lock), then either reports the Work thread that move made or fences the
+    /// request off so a delayed copy can't make one with the old Access.
+    pub fn chat_promote_abandon(&self, source: String, request_id: String) -> Result<serde_json::Value, String> {
+        if request_id.trim().is_empty() || request_id.len() > 200 {
+            return Err("invalid request id".into());
+        }
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        let chat = match self.rooms.lock().unwrap().get(&source) {
+            Some(handle) => handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(),
+            None => self.store.room(&source)?.ok_or_else(|| format!("no group chat with id {source}"))?.snapshot.kind.is_chat(),
+        };
+        if !chat {
+            return Err("Only a chat can become a Work thread.".into());
+        }
+        match self.store.abandon_promote(&source, &request_id)? {
+            Some(to) => {
+                let mut done = self.promoted_reply(&source, &to)?;
+                done["state"] = "done".into();
+                Ok(done)
+            }
+            None => Ok(serde_json::json!({ "state": "abandoned" })),
+        }
+    }
+
+    /// The folder check behind "Move to a Work thread" on a machine with no
+    /// signed receipt (Linux): a phone may pick a folder, but only inside one
+    /// this machine's own user allowed with `apex-daemon allow-root`. Read from
+    /// disk on every call, so a new folder works without restarting the daemon.
+    pub fn promote_root_allows(&self, cwd: &str) -> Result<(), String> {
+        let folder = std::path::Path::new(cwd.trim());
+        if self.store.promote_root_covering(folder)?.is_some() {
+            return Ok(());
+        }
+        let where_to = if cwd.trim().is_empty() { "that folder".to_string() } else { cwd.trim().to_string() };
+        Err(format!(
+            "This machine hasn't allowed {where_to} for phone moves. On the machine, run `apex-daemon allow-root {where_to}`, then try again."
+        ))
+    }
+
+    /// What a paired phone may do about folders on a machine with no broker.
+    /// `Ok(true)` means the command is this one and is allowed through;
+    /// `Ok(false)` means it isn't a folder command and keeps the usual gate.
+    pub fn device_folder_command(&self, command: &crate::Command) -> Result<bool, String> {
+        let crate::Command::ChatPromote { cwd, .. } = command else { return Ok(false) };
+        self.promote_root_allows(cwd)?;
+        Ok(true)
+    }
+
+    /// The new Work thread and the chat that now points at it.
+    fn promoted_reply(&self, chat: &str, work: &str) -> Result<serde_json::Value, String> {
+        let room = self
+            .store
+            .room(work)?
+            .ok_or_else(|| format!("the Work thread {work} wasn't saved"))?
+            .snapshot;
+        let entries = self.store.chat_list()?;
+        let work_row = entries.iter().find(|entry| entry.id == work).cloned();
+        let chat_row = entries.iter().find(|entry| entry.id == chat).cloned();
+        Ok(serde_json::json!({ "room": room, "work": work_row, "chat": chat_row }))
+    }
+
     pub(crate) fn room_voice_stop(&self, id: String, participant: ParticipantId, request_id: String) -> Result<String, String> {
         let handle = self.handle(&id)?;
         Ok(handle.runtime.stop_request(&participant, &request_id).into())
@@ -1025,6 +1754,7 @@ impl Host {
 
     pub(crate) async fn room_turn_with_answer_guidance(self: &Arc<Self>, id: String, participants: Vec<ParticipantId>, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
         if self.assistant_continue_thread(&id, None, participants.clone(), hops, answers, capability).await? { return Ok(()); }
+        self.refuse_moved_chat(&id)?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(&id)?;
         let batch = handle.runtime.begin_turn(participants, hops).await?.with_answer_guidance(answers, capability);
@@ -1033,18 +1763,27 @@ impl Host {
     }
 
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
+        // Runner: Stop during countdown also pauses
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.runner_service.lock().unwrap().pause_reason(&id, crate::runner::RunnerReason::Human, now_ms);
+        self.runner_changed(&id);
         if let Some(entry) = self.assistant_tasks.execution(&id).ok().flatten() {
             if let Some(run) = self.assistant_runs.lock().unwrap().get(&entry.task_id) { run.stop.store(true, Ordering::SeqCst); }
         }
         if let Ok(handle) = self.handle(&id) {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             handle.runtime.stop(participant.as_ref());
+            // Compact/curate hold the transcript lock but do not reserve a
+            // normal turn slot. Their bubble's Stop must reach the shared flag.
+            if participant.is_none() || !handle.runtime.busy() {
+                handle.stop.store(true, Ordering::SeqCst);
+            }
             if let Some(participant) = participant { handle.approvals.reject_for(&participant); }
             else {
-                handle.stop.store(true, Ordering::SeqCst);
                 handle.approvals.reject_all();
             }
         }
+
     }
 
     /// Turn the thread's Plan switch on or off. Saved at once; every client
@@ -1052,7 +1791,11 @@ impl Host {
     /// with; the next one follows the switch.
     pub fn room_set_plan(&self, id: String, on: bool) -> Result<(), String> {
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Talk-only chat rooms do not use Plan mode.".into());
+        }
         if self.store_plan(&id, &handle, on)? {
+            self.invalidate_room_runner(&id)?;
             self.room_event(&id, RoomEvent::PlanChanged { on });
         }
         Ok(())
@@ -1115,6 +1858,9 @@ impl Host {
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
         self.ensure_task_read_access(&id, &participant)?;
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Use chat_add_participant for talk-only chat rooms.".into());
+        }
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
@@ -1127,9 +1873,53 @@ impl Host {
         if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
             return Err(why);
         }
-        if room.add_participant(apex_adapters::build(participant, &context)) {
+        let built = apex_adapters::participant_for_room(room.kind(), participant, &context);
+        if room.add_participant(built) {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
             self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
+        } else {
+            Err(format!("a participant with the id `{name}` is already in this chat"))
+        }
+    }
+
+    pub async fn chat_add_participant(self: &Arc<Self>, id: String, bot: crate::chat_bots::ChatBotRequest) -> Result<(), String> {
+        let profile = bot.profile.clone();
+        let participant = crate::chat_bots::resolve(&self.chat_saved_profiles()?, bot)?;
+        if !self.rooms.lock().unwrap().contains_key(&id) {
+            self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
+        }
+        let handle = self.handle(&id)?;
+        if !handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("This thread is a project room; use room_add_participant.".into());
+        }
+        let _action = handle.lock_checkout().await?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.require_idle(&id)?;
+        let context = self.room_context(&id)?;
+        apex_adapters::chat_profile_ok(&participant, context.path.as_deref())?;
+        let name = participant.id.clone();
+        self.read_plans(&id, std::slice::from_ref(&participant), &context);
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        self.require_idle(&id)?;
+        if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
+            return Err(why);
+        }
+        let built = apex_adapters::participant_for_room(apex_core::RoomKind::Chat, participant, &context);
+        if room.add_participant(built) {
+            let mut profiles: HashMap<_, _> = self.store.chat_meta(&id).ok().flatten().unwrap_or_default().profiles.into_iter().collect();
+            profiles.extend(room.snapshot().import_profiles);
+            profiles.insert(name.as_str().to_owned(), profile.clone());
+            room.set_chat_profiles(profiles);
+            self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
+            self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+            self.room_event(&id, RoomEvent::ParticipantsChanged { participants: room.configs() });
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            self.store.update_chat_meta(&id, |meta| {
+                meta.updated_at = meta.updated_at.max(now);
+                meta.profiles.insert(name.as_str().to_owned(), profile);
+            })?;
+            Ok(())
         } else {
             Err(format!("a participant with the id `{name}` is already in this chat"))
         }
@@ -1145,6 +1935,9 @@ impl Host {
     /// can omit it and retain the full-replacement behavior.
     pub async fn room_update_participant_from(self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>) -> Result<ParticipantConfig, String> {
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Use chat_update_participant for talk-only chat rooms.".into());
+        }
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         let name = participant.id.clone();
@@ -1163,12 +1956,13 @@ impl Host {
             if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
         }
         self.ensure_task_read_access(&id, &next)?;
-        let replacement = apex_adapters::build(next.clone(), &context);
+        let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
                 return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
             }
         } else { room.replace_participant(replacement); }
+        self.invalidate_room_runner(&id)?;
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
         // Save and broadcast under the same room lock as the merge so concurrent
         // devices cannot emit older settings after newer ones.
@@ -1177,8 +1971,50 @@ impl Host {
         Ok(next)
     }
 
-    pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
+    /// Change a chat bot's name, model, reasoning or Speed. Its backend,
+    /// address, key and Access come from the machine and never change here.
+    pub async fn chat_update_participant(self: &Arc<Self>, id: String, participant: ParticipantId, patch: crate::chat_bots::ChatBotPatch) -> Result<ParticipantConfig, String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) {
+            self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
+        }
         let handle = self.handle(&id)?;
+        if !handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("This thread is a project room; use room_update_participant.".into());
+        }
+        let _action = handle.lock_checkout().await?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        let name = participant;
+        let context = self.room_context(&id)?;
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        let current = room.configs().into_iter().find(|p| p.id == name)
+            .ok_or_else(|| format!("no participant with the id `{name}` is in this chat"))?;
+        let next = crate::chat_bots::apply(&current, patch)?;
+        apex_adapters::chat_profile_ok(&next, context.path.as_deref())?;
+        if next.display_name != current.display_name {
+            if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
+        }
+        let replacement = apex_adapters::participant_for_room(apex_core::RoomKind::Chat, next.clone(), &context);
+        if handle.runtime.busy() {
+            if !room.replace_turn_settings(replacement) {
+                return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
+            }
+        } else { room.replace_participant(replacement); }
+        self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
+        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantChanged { participant: next.clone() })?;
+        self.read_plans(&id, std::slice::from_ref(&next), &context);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let _ = self.store.update_chat_meta(&id, |meta| { meta.updated_at = meta.updated_at.max(now); });
+        Ok(next)
+    }
+
+    pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
+        // Worker removal pauses runner
+        self.invalidate_room_runner(&id)?;
+        let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Use chat_remove_participant for talk-only chat rooms.".into());
+        }
         let _action = handle.lock_checkout().await?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
@@ -1190,8 +2026,38 @@ impl Host {
         self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
     }
 
+    pub async fn chat_remove_participant(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
+        if !self.rooms.lock().unwrap().contains_key(&id) {
+            self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
+        }
+        let handle = self.handle(&id)?;
+        if !handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("This thread is a project room; use room_remove_participant.".into());
+        }
+        let _action = handle.lock_checkout().await?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.require_idle(&id)?;
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        self.require_idle(&id)?;
+        let mut profiles: HashMap<_, _> = self.store.chat_meta(&id).ok().flatten().unwrap_or_default().profiles.into_iter().collect();
+        profiles.extend(room.snapshot().import_profiles);
+        room.set_chat_profiles(profiles);
+        room.remove_participant(&participant);
+        self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
+        self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+        self.room_event(&id, RoomEvent::ParticipantsChanged { participants: room.configs() });
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        self.store.update_chat_meta(&id, |meta| {
+            meta.updated_at = meta.updated_at.max(now);
+            meta.profiles.remove(participant.as_str());
+        })?;
+        Ok(())
+    }
+
     /// Empty a chat's transcript, keeping its participants and settings.
     pub async fn room_clear(&self, id: String) -> Result<(), String> {
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1210,6 +2076,7 @@ impl Host {
 
     /// Retry: delete every message from `upto` on. The caller then runs a turn.
     pub async fn room_rewind(&self, id: String, upto: usize) -> Result<(), String> {
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1237,6 +2104,7 @@ impl Host {
     /// ones that didn't exist), and with `chat`, delete message `at` and
     /// everything after it. Returns the files it couldn't put back.
     pub async fn room_revert(&self, id: String, at: usize, bot: Option<ParticipantId>, chat: bool, files: Vec<String>) -> Result<Vec<String>, String> {
+        self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -1305,19 +2173,104 @@ impl Host {
             self.require_idle(&id)?;
             let mut config = room.summarizer().ok_or("add a participant before compacting")?;
             // Writing a summary needs no edits or commands, and an API bot
-            // needs no tools at all for it.
+            // needs no tools at all for it. Talk-only chat rooms still run
+            // inside their isolated empty directory and never grant tools.
             config.access = Access::Read;
-            let summarizer = apex_adapters::build_without_tools(config, &context);
+            let summarizer = if room.kind().is_chat() {
+                apex_adapters::participant_for_room(apex_core::RoomKind::Chat, config, &context)
+            } else {
+                apex_adapters::build_without_tools(config, &context)
+            };
             room.compact(summarizer.as_ref(), &|event| self.room_event(&id, event)).await?;
         }
         self.save_room(&id).await
     }
 
+    /// Curate between turns with the same verified tool-free builder as talk-only rooms.
+    pub async fn room_curate(&self, id: String) -> Result<CurateReply, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        self.require_idle(&id)?;
+        let context = self.room_context(&id)?;
+        let result = {
+            let mut room = handle.room.lock().await;
+            self.require_idle(&id)?;
+            if room.kind().is_chat() {
+                return Err("Move to a Work thread to use /curate.".into());
+            }
+            let mut config = room
+                .summarizer()
+                .ok_or("add a participant before curating")?;
+            config.access = Access::Read;
+            apex_adapters::chat_profile_ok(&config, context.path.as_deref()).map_err(|_| {
+                format!(
+                    "{} can't pick without tools. Message another bot, then run /curate again.",
+                    config.display_name
+                )
+            })?;
+            let by = config.id.to_string();
+            let curator =
+                apex_adapters::participant_for_room(apex_core::RoomKind::Chat, config, &context);
+            let path = handle
+                .journal
+                .as_deref()
+                .ok_or("This thread has no journal path")?;
+            {
+                // Events reacquire this lock. Release it before awaiting the model.
+                let _checkpoint = handle.checkpoint.lock().unwrap();
+                if handle.deleted.load(Ordering::SeqCst) {
+                    return Err("This chat was deleted".into());
+                }
+                if let Err(error) = crate::journal::write(path, &room.snapshot()) {
+                    return Err(invalidate_journal(&mut room, Some(path), error));
+                }
+                room.set_journal_path(Some(path.display().to_string()));
+            }
+            room.curate(curator.as_ref(), &|event| {
+                self.room_event_for(&id, &handle, event)
+            })
+            .await
+            .map(|outcome| CurateReply { by, outcome })
+        };
+        combine_result(result, self.save_curation(&handle, &id).await)
+    }
+
+    pub async fn room_curate_undo(&self, id: String) -> Result<apex_core::CurationUndo, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        self.require_idle(&id)?;
+        let outcome = {
+            let mut room = handle.room.lock().await;
+            self.require_idle(&id)?;
+            if room.kind().is_chat() {
+                return Err("Move to a Work thread to use /curate.".into());
+            }
+            room.undo_curation(&|event| self.room_event_for(&id, &handle, event))
+        };
+        self.save_curation(&handle, &id).await?;
+        Ok(outcome)
+    }
+
     pub fn room_close(&self, id: String) {
         // Closing a view detaches it. Active jobs and assistant children are host owned.
-        let mut rooms = self.rooms.lock().unwrap();
-        if rooms.get(&id).is_some_and(|h| h.busy()) || self.assistant_tasks.execution(&id).ok().flatten().is_some() { return; }
-        rooms.remove(&id);
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        let Ok(handle) = self.handle(&id) else { return; };
+        if handle.busy() || self.assistant_tasks.execution(&id).ok().flatten().is_some() { return; }
+        // Admission and retirement share the transcript mutex. A command that
+        // cloned this handle before close must never commit under its detached
+        // mutex after a new handle has opened the same durable room.
+        if handle.runtime.retire_if_idle(|room| {
+            let snapshot = room.snapshot();
+            // Core execution releases its pending reservation just before the
+            // host saves the terminal ledger state. Keep this handle attached
+            // throughout that finalization window.
+            if snapshot.client_messages.values().any(|record| record.state == apex_core::ClientMessageState::Running) { return Err("Wait for the accepted messages to finish saving".into()); }
+            self.commit_client_snapshot(&id, &handle, &snapshot)?;
+            handle.deleted.store(true, Ordering::SeqCst);
+            Ok(())
+        }).is_ok() {
+            self.rooms.lock().unwrap().remove(&id);
+        }
     }
 
     /// The models an OpenAI-compatible server offers, for the model picker.
@@ -1617,6 +2570,8 @@ impl Host {
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
+        self.invalidate_room_runner(&id)?;
+        self.runner_service.lock().unwrap().remove(&id)?;
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let handle = self.handle(&id).ok();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
@@ -1640,10 +2595,11 @@ impl Host {
                 let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
             }
         }
-        match handle {
+        let result = match handle {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),
             None => self.store.delete_room(&id),
-        }
+        };
+        combine_result(result, crate::journal::remove(&self.paths.data.join("attachments"), &id))
     }
 
     /// Explicit deletion waits for a task's exact worker attempt before removing its saved room.
@@ -1904,6 +2860,9 @@ impl Host {
             return Err("An assistant worker chat cannot mount another worktree.".into());
         }
         let handle = self.handle(&id)?;
+        if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
+            return Err("Talk-only chat rooms have no project folder. Use Start work in folder to promote this chat.".into());
+        }
         let _action = handle.checkout_action.try_write().map_err(|_| "room-busy: Wait for the current checkout action to finish.")?;
         let from = handle.context.cwd.as_ref().ok_or("This chat has no project folder.")?;
         let target = PathBuf::from(&cwd).canonicalize().map_err(|_| "That worktree folder is missing.")?;
@@ -1936,6 +2895,7 @@ impl Host {
         handle.runtime.stop(None);
         handle.approvals.reject_all();
         self.tool_servers.lock().unwrap().retain(|key, _| !key.starts_with(&format!("{id}:")));
+        self.invalidate_room_runner(&id)?;
         // Complete removal before the new room takes any checkpoints.
         self.snapshots.delete(&id);
         Ok(serde_json::json!({"cwd":target,"mounts":mounts}))
@@ -1948,6 +2908,12 @@ impl Host {
     /// closed, so a failed write leaves it whole and open. Artifacts stay.
     pub fn room_import(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: bool) -> Result<(), String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if snapshot.kind.is_chat() {
+            return Err("Use chat_import for talk-only chat rooms.".into());
+        }
+        if self.store.room(&id)?.is_some_and(|saved| saved.snapshot.kind.is_chat()) {
+            return Err("A talk-only chat room cannot be replaced by room_import.".into());
+        }
         if let Some(entry) = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())? {
             if entry.is_tombstoned() { return Err("This assistant chat was deleted and cannot be restored from a stale session.".into()); }
             if replace { return Err("An assistant worker chat cannot be moved or replaced while its task owns it.".into()); }
@@ -1962,15 +2928,21 @@ impl Host {
             }
             return self.store.import_room(&id, &saved);
         }
+        self.invalidate_room_runner(&id)?;
         match self.handle(&id) {
             // Under the checkpoint lock no event of the old room saves over the
             // new copy, and once it is written none ever will.
             Ok(handle) => {
                 let _checkpoint = handle.checkpoint.lock().unwrap();
+                *handle.journal_hint.lock().unwrap() = None;
+                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
                 self.store.save_room(&id, &saved)?;
                 handle.deleted.store(true, Ordering::SeqCst);
             }
-            Err(_) => self.store.save_room(&id, &saved)?,
+            Err(_) => {
+                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
+                self.store.save_room(&id, &saved)?;
+            },
         }
         // Replacing a room is an explicit lifecycle action, unlike detaching a view.
         if let Some(handle) = self.rooms.lock().unwrap().remove(&id) {
@@ -1984,7 +2956,26 @@ impl Host {
     }
 
     async fn save_room(&self, id: &str) -> Result<(), String> {
-        checkpoint_room(&self.handle(id)?, &self.store, id).await
+        self.checkpoint_room(&self.handle(id)?, id).await
+    }
+
+    pub(crate) async fn checkpoint_room(&self, handle: &RoomHandle, id: &str) -> Result<(), String> {
+        // Deliver warnings after releasing the transcript/recovery/checkpoint locks.
+        if let Some(error) = checkpoint_room(handle, &self.store, id).await? {
+            self.room_event_for(id, handle, RoomEvent::JournalWarning { error });
+        }
+        Ok(())
+    }
+
+    /// A replaced/deleted handle must never checkpoint the new room with the same ID.
+    async fn save_curation(&self, handle: &RoomHandle, id: &str) -> Result<(), String> {
+        let saved = self.checkpoint_room(handle, id).await;
+        let live = if handle.deleted.load(Ordering::SeqCst) {
+            Err("This chat was deleted or replaced while curating. Reopen the chat.".into())
+        } else {
+            Ok(())
+        };
+        combine_result(saved, live)
     }
 
     // ------------------------------------------------------------ quitting
@@ -2062,7 +3053,14 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         RoomEvent::ParticipantChanged { participant } => {
             for p in &mut checkpoint.snapshot.participants { if p.id == participant.id { *p = participant.clone(); } }
         }
-        RoomEvent::MessageAdded { message } => checkpoint.snapshot.transcript.push(message.clone()),
+        RoomEvent::MessageAdded { message } => {
+            if let Some(seq) = message.origin_seq { checkpoint.snapshot.next_origin_seq = checkpoint.snapshot.next_origin_seq.max(seq.saturating_add(1)); }
+            if message.seq == checkpoint.snapshot.transcript.len() { checkpoint.snapshot.transcript.push(message.clone()); }
+            else if checkpoint.snapshot.transcript.get(message.seq) != Some(message) { return Err("message sequence disagrees with saved history".into()); }
+            if let Some(record) = message.reply_to_client_message_id.as_ref().and_then(|id| checkpoint.snapshot.client_messages.get_mut(id)) {
+                if !record.reply_seqs.contains(&message.seq) { record.reply_seqs.push(message.seq); }
+            }
+        }
         RoomEvent::Changed { id, change } => {
             let seq = checkpoint.snapshot.transcript.len();
             checkpoint.snapshot.changes.push(apex_core::ChangeRecord { by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
@@ -2074,14 +3072,52 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         RoomEvent::Usage { id, input_tokens, output_tokens, cost_micros, cost_estimated } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add_turn(*input_tokens, *output_tokens, *cost_micros, *cost_estimated),
         _ => {}
     }
-    store.save_room(id, &checkpoint)
+    store.save_room(id, &checkpoint)?;
+    if let RoomEvent::MessageAdded { message } = event { update_chat_message_meta(store, id, checkpoint.snapshot.kind.is_chat(), message); }
+    Ok(())
 }
 
-async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
-    let room = handle.room.lock().await;
+/// Milliseconds since the Unix epoch, which the chat list sorts and ages by.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn update_chat_message_meta(store: &Store, id: &str, chat: bool, message: &apex_core::Message) {
+    if chat {
+        let now = message.at.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0)
+        });
+        let _ = store.update_chat_meta(id, |meta| {
+            meta.updated_at = meta.updated_at.max(now);
+            if (meta.title.trim().is_empty() || meta.title == "New chat")
+                && matches!(message.speaker, apex_core::Speaker::Human)
+            {
+                let first_line = message
+                    .text
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty() && !line.starts_with("Attached image: "))
+                    .unwrap_or("");
+                if !first_line.is_empty() {
+                    let snippet: String = first_line.chars().take(60).collect();
+                    meta.title = snippet;
+                }
+            }
+        });
+    }
+}
+
+async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<Option<String>, String> {
+    let mut room = handle.room.lock().await;
     let _boundary = handle.recovery.lock().unwrap();
     let mut checkpoint = handle.checkpoint.lock().unwrap();
-    if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
+    if handle.deleted.load(Ordering::SeqCst) { return Ok(None); }
     let snapshot = room.snapshot();
     let len = snapshot.transcript.len();
     if len < checkpoint.snapshot.transcript.len() && !checkpoint.mounts.is_empty() {
@@ -2094,7 +3130,53 @@ async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result
         }
     }
     checkpoint.snapshot = snapshot;
-    store.save_room(id, &checkpoint)
+    if let Err(error) = store.save_room(id, &checkpoint) {
+        return Err(invalidate_journal(&mut room, handle.journal.as_deref(), error));
+    }
+    Ok(sync_journal(&mut room, handle.journal.as_deref(), &checkpoint.snapshot))
+}
+
+fn invalidate_journal(room: &mut Room, path: Option<&Path>, error: String) -> String {
+    room.set_journal_path(None);
+    if let Some(path) = path {
+        if let Err(removal) = crate::journal::invalidate(path) {
+            return format!(
+                "{error}; Journal text may still be readable in {}: {removal}",
+                path.display()
+            );
+        }
+    }
+    error
+}
+
+fn sync_journal(
+    room: &mut Room,
+    path: Option<&Path>,
+    snapshot: &RoomSnapshot,
+) -> Option<String> {
+    let Some(path) = path else {
+        room.set_journal_path(None);
+        return None;
+    };
+    match crate::journal::sync(path, snapshot) {
+        Ok(()) => {
+            room.set_journal_path(
+                apex_core::stands(&snapshot.curations).then(|| path.display().to_string()),
+            );
+            None
+        }
+        Err(crate::journal::SyncError::Gone(why)) => {
+            room.set_journal_path(None);
+            Some(format!("Journal unavailable: {why} Hidden text can't be read right now."))
+        }
+        Err(crate::journal::SyncError::Stale(why)) => {
+            room.set_journal_path(None);
+            Some(format!(
+                "Journal text may still be readable in {}: {why}",
+                path.display()
+            ))
+        }
+    }
 }
 
 fn delete_checkpoint(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
@@ -2319,8 +3401,141 @@ fn copy_folder_attachment(dir: &Path, source: &Path) -> Result<String, String> {
     Ok(format!("{}/", target.to_string_lossy()))
 }
 
+/// The folder a promoted Work thread runs in, checked here rather than trusted
+/// from the phone: a full path to a folder that already exists on this machine
+/// and isn't Deck's own data folder.
+fn promote_cwd(cwd: &str, data: &Path) -> Result<String, String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return Err("Choose the folder this Work thread runs in.".into());
+    }
+    let path = Path::new(cwd);
+    if !path.is_absolute() {
+        return Err("The folder must be a full path on this machine.".into());
+    }
+    let real = std::fs::canonicalize(path).map_err(|_| format!("There's no folder at {cwd} on this machine."))?;
+    if !real.is_dir() {
+        return Err(format!("{cwd} isn't a folder."));
+    }
+    let data_root = std::fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
+    if real.starts_with(&data_root) {
+        return Err("That folder belongs to Deck. Choose a project folder.".into());
+    }
+    Ok(real.to_string_lossy().into_owned())
+}
+
+/// The model a bot is set to, for rebuilding it as a Work thread's bot.
+fn bot_model(bot: &ParticipantConfig) -> Option<String> {
+    match &bot.backend {
+        apex_core::Backend::Agent { model, .. } => model.clone(),
+        apex_core::Backend::OpenAiCompatible { model, .. } => Some(model.clone()),
+        apex_core::Backend::Cli { .. } | apex_core::Backend::Scripted { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    struct RunnerApprovalBot { config:ParticipantConfig, calls:AtomicUsize, acted:AtomicUsize }
+    #[async_trait::async_trait]
+    impl apex_core::Participant for RunnerApprovalBot {
+        fn config(&self)->&ParticipantConfig{&self.config}
+        async fn respond(&self,_:apex_core::TurnRequest,_:apex_core::DeltaSink<'_>)->Result<apex_core::Reply,apex_core::ParticipantError>{unreachable!()}
+        async fn respond_with_approvals(&self,_:apex_core::TurnRequest,_:apex_core::ProgressSink<'_>,approver:&dyn apex_core::Approver)->Result<apex_core::Reply,apex_core::ParticipantError>{
+            self.calls.fetch_add(1,Ordering::SeqCst);
+            let approved=approver.decide(apex_core::ProposedAction{kind:apex_core::ActionKind::Command,title:"Fixture action".into(),detail:"fixture-only action".into(),expires_at:None,risky:false}).await.approved();
+            if approved{self.acted.fetch_add(1,Ordering::SeqCst);}
+            Ok(apex_core::Reply::text("Fixture was cancelled"))
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_pause_resume_reasks_and_end_retires_real_approval() {
+        use apex_core::Participant;
+        use crate::runner::{model::*,service::*};
+        let (mut handle,_,path)=checkpoint_fixture("runner-approval");
+        let mut config=apex_core::testing::ScriptedParticipant::new("w",&[]).config().clone();config.access=apex_core::Access::Ask;
+        let bot=Arc::new(RunnerApprovalBot{config,calls:AtomicUsize::new(0),acted:AtomicUsize::new(0)});
+        handle.runtime=ConcurrentRoom::new(Room::new(vec![bot.clone()],RoomOptions::default()));handle.room=handle.runtime.room();handle.approvals=handle.room.lock().await.approvals_handle();
+        let host=Host::new(HostPaths{data:path.join("data"),downloads:None},tokio::runtime::Handle::current());host.rooms.lock().unwrap().insert("r".into(),handle.clone());
+        host.room_runner_start(RunnerStartInput{id:"r".into(),request_id:"start".into(),expected_room_revision:None,runner:RunnerStartPayload{schema_version:1,kind:RunnerKind::Goal,objective:Some("Fixture approval".into()),prompt:None,interval_seconds:None,workers:vec!["w".into()],checker:None,limits:RunnerLimits::default_limits(),checks:vec![]}}).await.unwrap();
+        async fn pending(host:&Host,old:Option<&str>)->String{
+            tokio::time::timeout(std::time::Duration::from_secs(4),async{loop{let s=host.runner_service.lock().unwrap().state("r").unwrap().unwrap();if s.phase==RunnerPhase::Waiting{if let Some(id)=s.pending_request_id{if Some(id.as_str())!=old{return id;}}}tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}).await.unwrap()
+        }
+        async fn act(host:&Arc<Host>,action:&str){let s=host.runner_service.lock().unwrap().state("r").unwrap().unwrap();host.room_runner_action(RunnerActionInput{id:"r".into(),runner_id:s.id,expected_revision:s.revision,request_id:format!("action-{action}"),action:RunnerActionPayload{action:action.into(),limits:None}}).await.unwrap();}
+        let first=pending(&host,None).await;act(&host,"pause").await;
+        assert_eq!(host.runner_service.lock().unwrap().state("r").unwrap().unwrap().pending_request_id.as_deref(),Some(first.as_str()));
+        act(&host,"resume").await;let second=pending(&host,Some(&first)).await;
+        assert_eq!(bot.acted.load(Ordering::SeqCst),0);act(&host,"end").await;
+        assert!(host.room_decide("r".into(),first,true,None).is_err());assert!(host.room_decide("r".into(),second,true,None).is_err());
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(bot.calls.load(Ordering::SeqCst),2);assert_eq!(bot.acted.load(Ordering::SeqCst),0);assert_eq!(host.runner_service.lock().unwrap().state("r").unwrap().unwrap().phase,RunnerPhase::Ended);
+        host.shutdown();std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_yields_to_client_delivery_once_without_replaying_on_retry() {
+        use crate::runner::{model::*, service::*, scheduler::*};
+        let (_, _, path) = checkpoint_fixture("runner-client-delivery");
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, tokio::runtime::Handle::current());
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        let reserve = |service: &RunnerService, time| {
+            let dispatch = service.reconcile("r", RunnerWake::Timer, time).unwrap().unwrap();
+            service.reserve_dispatch(&dispatch, time).unwrap()
+        };
+        let first = {
+            let service = host.runner_service.lock().unwrap();
+            service.start(RunnerStartInput { id: "r".into(), request_id: "start".into(), expected_room_revision: None, runner: RunnerStartPayload {
+                schema_version: 1, kind: RunnerKind::Goal, objective: Some("Check the result".into()), prompt: None, interval_seconds: None, workers: vec!["w".into()], checker: None, limits: RunnerLimits::default_limits(), checks: vec![],
+            }}, 1000).unwrap();
+            reserve(&service, 1000)
+        };
+        let send = || host.room_client_post("r".into(), "Human steering".into(), Some(vec![]), "human-1".into(), false, false, Some(0), None, apex_core::GeneratedUiCapability::Unsupported);
+        send().await.unwrap();
+        let next = {
+            let service = host.runner_service.lock().unwrap();
+            let yielded = service.state("r").unwrap().unwrap();
+            assert!(yielded.generation > first.generation, "New client messages must invalidate an active runner attempt");
+            assert!(yielded.in_flight.is_none());
+            assert_eq!(yielded.phase, RunnerPhase::Running, "Human delivery must not permanently pause the runner");
+            reserve(&service, 1100)
+        };
+        send().await.unwrap();
+        let after_retry = host.runner_service.lock().unwrap().state("r").unwrap().unwrap();
+        assert_eq!(after_retry.generation, next.generation, "Retry must not interrupt replacement work");
+        assert_eq!(after_retry.in_flight, next.in_flight);
+        host.shutdown();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_host_dispatches_goal_and_completes_from_actual_reply() {
+        use crate::runner::{model::*, service::*};
+        let (mut handle, _, path) = checkpoint_fixture("runner-live");
+        let reply = "Work complete.\n```apex-runner\n{\"version\":1,\"disposition\":\"done\",\"done\":\"Checked the result\",\"next\":\"\",\"blocker\":null,\"criteria\":[{\"id\":\"result\",\"status\":\"done\",\"evidence\":[\"Observed result in this reply\"]}]}\n```";
+        let bot = Arc::new(apex_core::testing::ScriptedParticipant::new("null", &[reply]));
+        handle.runtime = ConcurrentRoom::new(Room::new(vec![bot.clone()], RoomOptions::default()));
+        handle.room = handle.runtime.room();
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, tokio::runtime::Handle::current());
+        host.rooms.lock().unwrap().insert("chat".into(), handle);
+        host.room_runner_start(RunnerStartInput { id: "chat".into(), request_id: "start".into(), expected_room_revision: None, runner: RunnerStartPayload {
+            schema_version: 1, kind: RunnerKind::Goal, objective: Some("Check the result".into()), prompt: None, interval_seconds: None, workers: vec!["null".into()], checker: None, limits: RunnerLimits::default_limits(), checks: vec![],
+        }}).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if host.runner_service.lock().unwrap().state("chat").unwrap().unwrap().phase == RunnerPhase::Completed { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("host must actually dispatch and finish the goal");
+        let requests = bot.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].system.contains("apex-runner"));
+        let snapshot = host.runner_service.lock().unwrap().state("chat").unwrap().unwrap();
+        assert_eq!(snapshot.usage.invocations, 1);
+        assert_eq!(snapshot.usage.turns, 1);
+        host.shutdown();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn direct_host_construction_secures_the_parent_of_saved_rooms_and_checkpoints() {
@@ -2589,7 +3804,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { legacy: None, checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
+        let handle = RoomHandle { legacy: None, journal: None, journal_hint: Arc::default(), checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { mounts: vec![], cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }
@@ -3028,9 +4243,9 @@ mod host_tests {
             // Capture the real room's requests without a provider or live daemon.
             *host.handle("r").unwrap().room.lock().await = Room::new(vec![bot.clone()], RoomOptions::default());
             let verified = apex_core::GeneratedUiCapability::Verified;
-            let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None };
+            let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None, client_message_id: None };
             host.call_with_client_capability_assuming_verified_ui_for_test(post, verified).await.unwrap();
-            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None };
+            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None, client_message_id: None };
             host.call_with_client_capability_assuming_verified_ui_for_test(post_to, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
@@ -3040,7 +4255,7 @@ mod host_tests {
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
             }).await.unwrap();
-            let legacy = crate::Command::RoomPost { id: "r".into(), text: "phone follow-up".into(), interactive_answers: None };
+            let legacy = crate::Command::RoomPost { id: "r".into(), text: "phone follow-up".into(), interactive_answers: None, client_message_id: None };
             host.call_assuming_verified_ui_for_test(legacy).await.unwrap();
             let requests = bot.requests();
             assert_eq!(requests.len(), 4);
@@ -3327,7 +4542,7 @@ mod host_tests {
         let own = host.save_attachment("source", "own.png", png).unwrap();
         let other = host.save_attachment("other", "private.png", png).unwrap();
         let mut saved = host.store.room("source").unwrap().unwrap();
-        saved.snapshot.transcript.push(apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human,
+        saved.snapshot.transcript.push(apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human,
             text: format!("Attached image: {own}\nAttached image: {own}\nAttached image: {other}"), servers: vec![], at: None });
         host.store.save_room("source", &saved).unwrap();
         host.room_fork("source".into(), "fork".into(), None).unwrap();
@@ -3349,7 +4564,7 @@ mod host_tests {
         host.room_create("source".into(), vec![], RoomOptions::default(), None).unwrap();
         let image = host.save_attachment("source", "gone.png", b"image").unwrap();
         let mut saved = host.store.room("source").unwrap().unwrap();
-        saved.snapshot.transcript.push(apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human,
+        saved.snapshot.transcript.push(apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human,
             text: format!("Attached image: {image}"), servers: vec![], at: None });
         host.store.save_room("source", &saved).unwrap();
         std::fs::remove_file(image).unwrap();
@@ -3403,6 +4618,429 @@ mod host_tests {
     }
 
     #[test]
+    fn chat_promote_waits_for_a_send_already_being_accepted() {
+        use serde_json::json;
+        let (host, runtime, data) = host("promote-race");
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({"version":1,"profiles":[serde_json::to_value(&bot).unwrap()]})).unwrap();
+        let ask = serde_json::from_value(json!({"profile":"bot"})).unwrap();
+        let source = "11111111-1111-1111-1111-111111111111";
+        let target = "22222222-2222-2222-2222-222222222222";
+        host.chat_create(source.into(), Some("race".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("project");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = folder.to_string_lossy().into_owned();
+        let handle = host.handle(source).unwrap();
+        runtime.block_on(async {
+            // Pause acceptance at its transcript lock, after the moved check.
+            let room = handle.room.lock().await;
+            let send = host.room_client_post(source.into(), "must survive the move".into(), Some(vec![]), "race-send".into(), false, false, Some(0), None, apex_core::GeneratedUiCapability::Unsupported);
+            futures::pin_mut!(send);
+            assert!(futures::poll!(&mut send).is_pending());
+            // The move can't overtake it: it's refused, and nothing is copied.
+            let refused = host.chat_promote(source.into(), target.into(), folder.clone(), None, None, Some("race-move".into())).unwrap_err();
+            assert!(refused.contains("still answering"), "{refused}");
+            assert!(host.store.room(target).unwrap().is_none());
+            drop(room);
+            send.await.unwrap();
+        });
+        // Pressing Finish the move again sends the same request, which now
+        // carries the message across.
+        host.chat_promote(source.into(), target.into(), folder, None, None, Some("race-move".into())).unwrap();
+        let work = host.store.room(target).unwrap().unwrap();
+        assert!(work.snapshot.transcript.iter().any(|m| m.text == "must survive the move"));
+        // Later sends find the chat moved and are refused.
+        let late = runtime.block_on(host.room_client_post(source.into(), "too late".into(), Some(vec![]), "late-send".into(), false, false, Some(0), None, apex_core::GeneratedUiCapability::Unsupported)).unwrap_err();
+        assert!(!host.store.room(source).unwrap().unwrap().snapshot.transcript.iter().any(|m| m.text == "too late"), "{late}");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn chat_promote_makes_one_work_thread_from_the_machines_own_bots() {
+        use serde_json::json;
+        let (host, runtime, data) = host("chat-promote");
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.access = Access::Read;
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+        host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("denver");
+        std::fs::create_dir_all(&folder).unwrap();
+        let cwd = folder.to_string_lossy().into_owned();
+        let access = || std::collections::BTreeMap::from([("bot".to_string(), Access::Full)]);
+
+        let reply = host
+            .chat_promote(
+                "11111111-1111-1111-1111-111111111111".into(),
+                "22222222-2222-2222-2222-222222222222".into(),
+                cwd.clone(),
+                None,
+                Some(access()),
+                Some("move-1".into()),
+            )
+            .unwrap();
+        assert_eq!(reply["room"]["participants"][0]["access"], "full");
+        assert_eq!(reply["chat"]["promotedTo"], "22222222-2222-2222-2222-222222222222");
+        let real = std::fs::canonicalize(&folder).unwrap().to_string_lossy().into_owned();
+        assert_eq!(reply["work"]["cwd"], real.as_str());
+        assert_eq!(reply["work"]["folderName"], "denver");
+        assert_eq!(reply["work"]["kind"], "work");
+        let work = host.store.room("22222222-2222-2222-2222-222222222222").unwrap().unwrap();
+        assert_eq!(work.snapshot.kind, apex_core::RoomKind::Work);
+        assert_eq!(work.cwd.as_deref(), Some(real.as_str()));
+        // The Access chosen for the move comes back with the bot, and the Work
+        // build is what gives its tools back; the chat keeps Read.
+        assert_eq!(work.snapshot.participants[0].access, Access::Full);
+        assert!(!work.snapshot.plan);
+        let chat = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert_eq!(chat.snapshot.kind, apex_core::RoomKind::Chat);
+        assert_eq!(chat.snapshot.participants[0].access, Access::Read);
+        // A retry with the same request id returns the thread already made.
+        let again = host
+            .chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, None, Some("move-1".into()))
+            .unwrap();
+        assert_eq!(again["work"]["id"], "22222222-2222-2222-2222-222222222222");
+        // Any other move is refused, and makes nothing.
+        let refused = host
+            .chat_promote("11111111-1111-1111-1111-111111111111".into(), "33333333-3333-3333-3333-333333333333".into(), cwd.clone(), None, None, Some("move-2".into()))
+            .unwrap_err();
+        assert!(refused.contains("Already moved to Denver trip"), "{refused}");
+        assert!(host.store.room("33333333-3333-3333-3333-333333333333").unwrap().is_none());
+        // The moved chat takes no new messages; they belong in the Work thread.
+        let late = runtime.block_on(host.room_client_post("11111111-1111-1111-1111-111111111111".into(), "one more".into(), None, "late-1".into(), false, false, Some(0), None, apex_core::GeneratedUiCapability::Unsupported)).unwrap_err();
+        assert!(late.contains("moved to Denver trip"), "{late}");
+        let legacy = runtime.block_on(host.room_post("11111111-1111-1111-1111-111111111111".into(), "one more".into())).unwrap_err();
+        assert!(legacy.contains("moved to Denver trip"), "{legacy}");
+        let chat = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert!(!chat.snapshot.transcript.iter().any(|m| m.text == "one more"));
+        // Only a chat can be moved.
+        let err = host.chat_promote("22222222-2222-2222-2222-222222222222".into(), "44444444-4444-4444-4444-444444444444".into(), cwd.clone(), None, None, None).unwrap_err();
+        assert!(err.contains("Only a chat"), "{err}");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_cancelled_promote_stays_cancelled_after_many_more_and_a_restart() {
+        use serde_json::json;
+        let (first, runtime, data) = host("chat-promote-abandon-many");
+        let host = first;
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+        host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("denver");
+        std::fs::create_dir_all(&folder).unwrap();
+        let cwd = folder.to_string_lossy().into_owned();
+        let chat = || "11111111-1111-1111-1111-111111111111".to_string();
+        let full = || Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Full)]));
+
+        // The Full-access move is cancelled first, then 40 more Start overs follow it.
+        host.chat_promote_abandon(chat(), "move-full".into()).unwrap();
+        for n in 0..40 {
+            host.chat_promote_abandon(chat(), format!("move-{n}")).unwrap();
+        }
+        host.shutdown();
+        drop(host);
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        // Its delayed copy still lands nowhere.
+        let late = host.chat_promote(chat(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, full(), Some("move-full".into())).unwrap_err();
+        assert!(late.contains("cancelled"), "{late}");
+        assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());
+        // Once the chat really moves, the list is no longer needed: every other request is "Already moved".
+        host.chat_promote(chat(), "33333333-3333-3333-3333-333333333333".into(), cwd.clone(), None, None, Some("move-new".into())).unwrap();
+        assert!(host.store.chat_meta(&chat()).unwrap().unwrap().abandoned_promotes.is_empty());
+        let after = host.chat_promote(chat(), "44444444-4444-4444-4444-444444444444".into(), cwd, None, full(), Some("move-full".into())).unwrap_err();
+        assert!(after.contains("cancelled") || after.contains("Already moved"), "{after}");
+        assert!(host.store.room("44444444-4444-4444-4444-444444444444").unwrap().is_none());
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_promote_cut_off_by_a_crash_is_finished_or_undone_on_restart() {
+        use crate::storage::{PromoteCrash, PROMOTE_CRASH};
+        use serde_json::json;
+        for (n, crash) in [PromoteCrash::AfterIntent, PromoteCrash::AfterAuthority, PromoteCrash::AfterRoom].into_iter().enumerate() {
+            for start_over in [false, true] {
+                let (host, runtime, data) = host(&format!("chat-promote-crash-{n}-{start_over}"));
+                let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+                bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+                host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+                let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+                let chat = || "11111111-1111-1111-1111-111111111111".to_string();
+                let work = || "22222222-2222-2222-2222-222222222222".to_string();
+                host.chat_create(chat(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+                let folder = data.join("denver");
+                std::fs::create_dir_all(&folder).unwrap();
+                let cwd = folder.to_string_lossy().into_owned();
+                let full = || Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Full)]));
+
+                PROMOTE_CRASH.with(|at| at.set(Some(crash)));
+                assert!(host.chat_promote(chat(), work(), cwd.clone(), None, full(), Some("move-1".into())).is_err());
+                PROMOTE_CRASH.with(|at| at.set(None));
+                host.shutdown();
+                drop(host);
+                let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+
+                let listed = host.chat_list().unwrap();
+                let rows = listed["rooms"].as_array().unwrap();
+                let source = rows.iter().find(|row| row["id"] == chat()).unwrap();
+                let landed = crash == PromoteCrash::AfterRoom;
+                // Nothing half-made: the Work room exists and is linked and listed, or none of it is there.
+                assert_eq!(host.store.room(&work()).unwrap().is_some(), landed, "{crash:?}");
+                assert_eq!(source["promotedTo"] == work(), landed, "{crash:?}: {source}");
+                assert_eq!(rows.iter().any(|row| row["id"] == work()), landed, "{crash:?}");
+                assert!(host.store.chat_meta(&chat()).unwrap().unwrap().promoting.is_none());
+
+                if start_over {
+                    let over = host.chat_promote_abandon(chat(), "move-1".into()).unwrap();
+                    // Start over never calls a move cancelled while its Work room is there.
+                    assert_eq!(over["state"], if landed { "done" } else { "abandoned" }, "{crash:?}");
+                    if !landed {
+                        let late = host.chat_promote(chat(), work(), cwd.clone(), None, full(), Some("move-1".into())).unwrap_err();
+                        assert!(late.contains("cancelled"), "{late}");
+                        let ask_first = Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Ask)]));
+                        host.chat_promote(chat(), "33333333-3333-3333-3333-333333333333".into(), cwd.clone(), None, ask_first, Some("move-2".into())).unwrap();
+                        assert!(host.store.room(&work()).unwrap().is_none());
+                    }
+                } else {
+                    // The phone's retry of the same move gets that one Work room, with the Access it asked for.
+                    let again = host.chat_promote(chat(), work(), cwd.clone(), None, full(), Some("move-1".into())).unwrap();
+                    assert_eq!(again["work"]["id"], work(), "{crash:?}");
+                    let saved = host.store.room(&work()).unwrap().unwrap();
+                    assert_eq!(saved.snapshot.participants[0].access, Access::Full);
+                    let twice = host.chat_promote(chat(), work(), cwd.clone(), None, full(), Some("move-1".into())).unwrap();
+                    assert_eq!(twice["work"]["id"], work());
+                }
+                host.shutdown();
+                let _ = std::fs::remove_dir_all(data);
+            }
+        }
+    }
+
+    #[test]
+    fn an_abandoned_promote_can_never_land_and_a_finished_one_is_reported() {
+        use serde_json::json;
+        let (host, _runtime, data) = host("chat-promote-abandon");
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+        host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("denver");
+        std::fs::create_dir_all(&folder).unwrap();
+        let cwd = folder.to_string_lossy().into_owned();
+        let chat = || "11111111-1111-1111-1111-111111111111".to_string();
+        let full = || Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Full)]));
+        let ask_first = || Some(std::collections::BTreeMap::from([("bot".to_string(), Access::Ask)]));
+
+        // Start over before the first request arrived: it is fenced off for good.
+        let gone = host.chat_promote_abandon(chat(), "move-1".into()).unwrap();
+        assert_eq!(gone["state"], "abandoned");
+        // The delayed Full-access copy lands afterwards and is refused, making nothing.
+        let late = host.chat_promote(chat(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, full(), Some("move-1".into())).unwrap_err();
+        assert!(late.contains("cancelled"), "{late}");
+        assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());
+        // The fence survives a restart: it is saved with the chat.
+        assert!(host.store.chat_meta(&chat()).unwrap().unwrap().abandoned_promotes.contains(&"move-1".to_string()));
+        // The new choice goes through with the Access picked the second time.
+        let made = host.chat_promote(chat(), "33333333-3333-3333-3333-333333333333".into(), cwd.clone(), None, ask_first(), Some("move-2".into())).unwrap();
+        assert_eq!(made["room"]["participants"][0]["access"], "ask");
+        // Start over after a move already happened reports that thread instead of fencing.
+        let done = host.chat_promote_abandon(chat(), "move-2".into()).unwrap();
+        assert_eq!(done["state"], "done");
+        assert_eq!(done["work"]["id"], "33333333-3333-3333-3333-333333333333");
+        // Only a chat can be asked.
+        let err = host.chat_promote_abandon("33333333-3333-3333-3333-333333333333".into(), "move-3".into()).unwrap_err();
+        assert!(err.contains("Only a chat"), "{err}");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn chat_promote_refuses_unknown_bots_and_folders_it_does_not_have() {
+        use serde_json::json;
+        let (host, _runtime, data) = host("chat-promote-refusals");
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["done"]).config().clone();
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["done".into()] };
+        host.session_save(json!({ "version": 1, "profiles": [ serde_json::to_value(&bot).unwrap() ] })).unwrap();
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "bot" })).unwrap();
+        host.chat_create("11111111-1111-1111-1111-111111111111".into(), None, vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("projects");
+        std::fs::create_dir_all(&folder).unwrap();
+        let cwd = folder.to_string_lossy().into_owned();
+        // A name the chat doesn't have is refused, not quietly given Read only.
+        let ghost = host
+            .chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, Some(std::collections::BTreeMap::from([("ghost".to_string(), Access::Full)])), None)
+            .unwrap_err();
+        assert!(ghost.contains("no bot named `ghost`"), "{ghost}");
+        // Deck's own data folder is not a project folder.
+        let inside_data = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), host.store.root().to_string_lossy().into_owned(), None, None, None).unwrap_err();
+        assert!(inside_data.contains("belongs to Deck"), "{inside_data}");
+        // A folder that isn't there.
+        let missing_folder = data.join("missing-project");
+        let missing = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), missing_folder.to_string_lossy().into_owned(), None, None, None).unwrap_err();
+        assert!(missing.contains("There's no folder"), "{missing}");
+        // None of that made a Work thread or a link.
+        assert!(host.store.room("22222222-2222-2222-2222-222222222222").unwrap().is_none());
+        assert_eq!(host.store.chat_meta("11111111-1111-1111-1111-111111111111").unwrap().unwrap().promoted_to, None);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_phone_may_only_promote_inside_a_folder_the_machine_allowed() {
+        let (host, _runtime, data) = host("promote-roots");
+        let inside = data.join("project");
+        std::fs::create_dir_all(&inside).unwrap();
+        let cwd = inside.to_string_lossy().into_owned();
+        let promote = |cwd: String, target: &str| crate::Command::ChatPromote {
+            source: "chat".into(),
+            target: target.into(),
+            cwd,
+            upto: None,
+            access: None,
+            request_id: None,
+        };
+        // Nothing allowed yet: refused, and the message says how to allow it.
+        let refused = host.device_folder_command(&promote(cwd.clone(), "work-1")).unwrap_err();
+        assert!(refused.contains("apex-daemon allow-root"), "{refused}");
+        // A chat edit isn't a folder command, so it keeps the ordinary gate.
+        assert!(!host.device_folder_command(&crate::Command::ChatList {}).unwrap());
+        // The machine's own user allows the folder: through.
+        host.store.allow_promote_root(std::path::Path::new(&cwd)).unwrap();
+        assert!(host.device_folder_command(&promote(cwd.clone(), "work-1")).unwrap());
+        // A folder outside the grant is still refused.
+        let outside = data.join("somewhere-else");
+        std::fs::create_dir_all(&outside).unwrap();
+        let refused = host.device_folder_command(&promote(outside.to_string_lossy().into_owned(), "work-2")).unwrap_err();
+        assert!(refused.contains("hasn't allowed"), "{refused}");
+    }
+
+    /// A stand-in `codex` that proves it really ran: as `codex app-server` it
+    /// answers the requests a turn makes, and on the turn it runs a real
+    /// command in its working folder and reports what happened.
+    #[cfg(unix)]
+    fn fake_codex(tag: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("apex-fake-codex-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("codex"),
+            r#"#!/bin/sh
+if [ "$1" != app-server ]; then
+  cat >/dev/null
+  echo '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"from exec"}}'
+  exit 0
+fi
+while IFS= read -r line; do
+  case "$line" in
+  *'"initialize"'*) echo '{"id":0,"result":{"userAgent":"fake"}}' ;;
+  *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[],"nextCursor":null}}' ;;
+  *'"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
+  *'"thread/start"'*) echo '{"id":1,"result":{"thread":{"id":"thread-promote"}}}' ;;
+  *'"turn/start"'*)
+    echo '{"id":2,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}'
+    if said=$(sh -c 'echo ran > codex-ran.txt && pwd' 2>&1); then
+      said="Ran a command in $said"
+    else
+      said="Could not run a command: $said"
+    fi
+    echo "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"agentMessage\",\"id\":\"r\",\"text\":\"$said\"}}}"
+    echo '{"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}' ;;
+  *'"account/rateLimits/read"'*) echo '{"id":3,"result":{}}' ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(dir.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    /// The acceptance test for "Move to a Work thread": the bots the work
+    /// thread runs are rebuilt from the machine's own saved profile, and at
+    /// Full access that bot really starts and runs a command in the folder.
+    #[cfg(unix)]
+    #[test]
+    fn a_promoted_codex_bot_at_full_access_really_runs_a_command() {
+        use apex_core::{Role, TurnRequest, ViewTurn};
+        use serde_json::json;
+        let (host, runtime, data) = host("chat-promote-codex");
+        let bin = fake_codex("promote");
+        host.session_save(json!({ "version": 1, "profiles": [{
+            "id": "codex",
+            "display_name": "Codex",
+            "backend": { "kind": "agent", "tool": "codex", "model": "gpt-5-codex" },
+            "access": "read"
+        }] }))
+        .unwrap();
+        let chat = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+        let work = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+        let ask: crate::chat_bots::ChatBotRequest = serde_json::from_value(json!({ "profile": "codex" })).unwrap();
+        host.chat_create(chat.into(), Some("Denver trip".into()), vec![ask], RoomOptions::default()).unwrap();
+        let folder = data.join("project");
+        std::fs::create_dir_all(&folder).unwrap();
+        let promoted = host
+            .chat_promote(
+                chat.into(),
+                work.into(),
+                folder.to_string_lossy().into_owned(),
+                None,
+                Some(std::collections::BTreeMap::from([("codex".to_string(), Access::Full)])),
+                Some("move-codex".into()),
+            )
+            .unwrap();
+        let real = std::fs::canonicalize(&folder).unwrap();
+        assert_eq!(promoted["work"]["kind"], "work");
+        assert_eq!(promoted["work"]["cwd"].as_str(), Some(real.to_string_lossy().as_ref()), "the Work thread runs in the chosen folder");
+
+        // The bot exactly as the Work room saved it, built the way a room builds it.
+        let saved = host.store.room(work).unwrap().unwrap();
+        let config = saved.snapshot.participants[0].clone();
+        assert_eq!(config.access, Access::Full, "the promoted bot keeps the access chosen on the move screen");
+        let turn = || TurnRequest {
+            effort_override: None,
+            access: None,
+            system: "You are Codex.".into(),
+            turns: vec![ViewTurn { role: Role::User, content: "[Human]: run pwd".into() }],
+            unseen: vec![],
+            plan: false,
+            cwd: None,
+        };
+        let context = apex_adapters::BuildContext {
+            cwd: saved.cwd.as_ref().map(PathBuf::from),
+            path: Some(format!("{}:/usr/bin:/bin", bin.display())),
+            codex_hook: None,
+            temp: None,
+            process_registry: None,
+            cargo_target_dir: None,
+            media_dir: None,
+            attachment_roots: Vec::new(),
+            phone: None,
+        };
+        let bot = apex_adapters::participant_for_room(apex_core::RoomKind::Work, config.clone(), &context);
+        let answer = runtime.block_on(async { bot.respond_with_progress(turn(), &|_| {}).await }).expect("the promoted bot answers");
+        println!("work room reply: {}", answer.text);
+        println!("marker left in the folder: {:?}", std::fs::read_to_string(folder.join("codex-ran.txt")));
+        assert!(answer.text.starts_with("Ran a command in"), "the bot really ran a command: {}", answer.text);
+        assert_eq!(std::fs::read_to_string(folder.join("codex-ran.txt")).unwrap().trim(), "ran", "the command ran in the Work thread's own folder");
+
+        // The same bot in the chat that made it doesn't get to run anything.
+        std::fs::remove_file(folder.join("codex-ran.txt")).unwrap();
+        let chat_context = apex_adapters::BuildContext { cwd: None, ..context };
+        let talk = apex_adapters::participant_for_room(apex_core::RoomKind::Chat, config, &chat_context);
+        let refused = runtime.block_on(async { talk.respond_with_progress(turn(), &|_| {}).await });
+        println!("chat room: {refused:?}");
+        println!("marker after the Chat turn: {:?}", std::fs::read_to_string(folder.join("codex-ran.txt")));
+        assert!(!folder.join("codex-ran.txt").exists(), "the chat bot never gets to run a command");
+        let _ = std::fs::remove_dir_all(data);
+        let _ = std::fs::remove_dir_all(&bin);
+    }
+
+    #[test]
     fn settings_load_picks_up_providers_an_old_session_turned_off() {
         use serde_json::json;
         let (host, _runtime, data) = host("migrate");
@@ -3413,11 +5051,204 @@ mod host_tests {
         assert_eq!(host.settings_load().unwrap(), Some(json!({ "disabledProviders": ["venice"], "confirmSteer": false })));
         let _ = std::fs::remove_dir_all(data);
     }
+
+    #[test]
+    fn chat_rooms_enforce_talk_only_and_support_chat_commands() {
+        use serde_json::json;
+        let (host, runtime, data) = host("chat-rooms-task1");
+        host.session_save(json!({
+            "version": 1,
+            "profiles": [
+                {
+                    "id": "api-bot",
+                    "display_name": "API Bot",
+                    "persona": "",
+                    "access": "full",
+                    "backend": { "kind": "open_ai_compatible", "base_url": "https://api.example.com/v1", "model": "gpt-4o", "api_key_env": "SECRET_KEY" }
+                },
+                {
+                    "id": "cli-bot",
+                    "display_name": "CLI Bot",
+                    "persona": "",
+                    "access": "full",
+                    "backend": { "kind": "cli", "program": "echo", "args": [] }
+                },
+                {
+                    "id": "media-bot",
+                    "display_name": "Media Bot",
+                    "persona": "",
+                    "access": "read",
+                    "media": { "aspect_ratio": "16:9" },
+                    "backend": { "kind": "open_ai_compatible", "base_url": "https://api.example.com/v1", "model": "sora" }
+                }
+            ]
+        })).unwrap();
+
+        let profiles_res = host.chat_profiles().unwrap();
+        let profiles = profiles_res["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(profiles[0]["profile"]["id"], "api-bot");
+        assert_eq!(profiles[0]["chatOk"], true);
+        assert_eq!(profiles[0]["profile"]["access"], "read");
+        assert!(profiles[0]["profile"]["backend"].get("api_key_env").is_none() || profiles[0]["profile"]["backend"]["api_key_env"].is_null());
+        assert_eq!(profiles[1]["profile"]["id"], "cli-bot");
+        assert_eq!(profiles[1]["chatOk"], false);
+        assert!(profiles[1]["reason"].as_str().unwrap().contains("tool-free"));
+        assert_eq!(profiles[2]["profile"]["id"], "media-bot");
+        assert_eq!(profiles[2]["chatOk"], false);
+
+        let mut bot = apex_core::testing::ScriptedParticipant::new("bot", &["hello from chat"]).config().clone();
+        bot.access = Access::Full;
+        bot.backend = apex_core::Backend::Scripted { lines: vec!["hello from chat".into()] };
+        let ask = |profile: &str, id: Option<&str>| -> crate::chat_bots::ChatBotRequest {
+            serde_json::from_value(json!({ "profile": profile, "id": id })).unwrap()
+        };
+
+        // A phone names a saved profile; a whole bot it built itself is refused.
+        assert!(serde_json::from_value::<crate::command::Command>(json!({
+            "cmd": "chat_create",
+            "args": { "id": "x", "options": RoomOptions::default(), "participants": [{ "profile": "api-bot", "backend": { "kind": "open_ai_compatible", "base_url": "https://evil.example", "model": "m", "api_key_env": "SECRET_KEY" } }] }
+        })).is_err());
+        assert!(host.chat_create("22222222-2222-2222-2222-222222222222".into(), None, vec![ask("not-saved", None)], RoomOptions::default()).is_err());
+        assert!(host.chat_create("22222222-2222-2222-2222-222222222222".into(), None, vec![ask("cli-bot", None)], RoomOptions::default()).is_err());
+
+        // The API bot keeps the machine's address and key, which the phone never saw.
+        let api_chat = host.chat_create("33333333-3333-3333-3333-333333333333".into(), None, vec![ask("api-bot", Some("api-2"))], RoomOptions::default()).unwrap();
+        assert_eq!(api_chat.participants[0].id.as_str(), "api-2");
+        assert_eq!(api_chat.participants[0].access, Access::Read);
+        assert_eq!(
+            api_chat.participants[0].backend,
+            apex_core::Backend::OpenAiCompatible { base_url: "https://api.example.com/v1".into(), model: "gpt-4o".into(), api_key_env: Some("SECRET_KEY".into()) }
+        );
+        let listed = host.chat_list().unwrap();
+        let api_row = listed["rooms"].as_array().unwrap().iter().find(|r| r["id"] == "33333333-3333-3333-3333-333333333333").unwrap();
+        assert_eq!(api_row["profiles"]["api-2"], "api-bot");
+        assert!(api_row["participants"][0]["backend"]["api_key_env"].is_null());
+        let patched = runtime.block_on(host.chat_update_participant(
+            "33333333-3333-3333-3333-333333333333".into(),
+            ParticipantId::new("api-2"),
+            serde_json::from_value(json!({ "model": "gpt-4.1", "speed": "fast" })).unwrap(),
+        )).unwrap();
+        assert_eq!(
+            patched.backend,
+            apex_core::Backend::OpenAiCompatible { base_url: "https://api.example.com/v1".into(), model: "gpt-4.1".into(), api_key_env: Some("SECRET_KEY".into()) }
+        );
+        assert!(serde_json::from_value::<crate::chat_bots::ChatBotPatch>(json!({ "access": "full" })).is_err());
+
+        // Scripted bots stand in for saved profiles below.
+        let mut profiles = host.session().unwrap().unwrap().profiles.unwrap();
+        profiles.push(serde_json::to_value(&bot).unwrap());
+        let mut bot2 = apex_core::testing::ScriptedParticipant::new("bot2", &["hi"]).config().clone();
+        bot2.access = Access::Edits;
+        bot2.backend = apex_core::Backend::Scripted { lines: vec!["hi".into()] };
+        profiles.push(serde_json::to_value(&bot2).unwrap());
+        host.session_save(json!({ "version": 1, "profiles": profiles })).unwrap();
+
+        let snapshot = host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("First chat".into()), vec![ask("bot", None)], RoomOptions::default()).unwrap();
+        assert_eq!(snapshot.kind, apex_core::RoomKind::Chat);
+        assert_eq!(snapshot.participants.len(), 1);
+        assert_eq!(snapshot.participants[0].access, Access::Read);
+
+        let saved = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert_eq!(saved.snapshot.kind, apex_core::RoomKind::Chat);
+        assert_eq!(saved.cwd, None);
+        assert!(!saved.snapshot.plan);
+        assert_eq!(saved.snapshot.participants[0].access, Access::Read);
+
+        // Talk-only refusals on room_* mutations that could undo talk-only invariants
+        assert!(host.room_set_plan("11111111-1111-1111-1111-111111111111".into(), true).is_err());
+        assert!(host.room_mount("11111111-1111-1111-1111-111111111111".into(), data.to_string_lossy().into_owned()).is_err());
+        assert!(runtime.block_on(host.room_add_participant("11111111-1111-1111-1111-111111111111".into(), bot.clone())).is_err());
+        assert!(runtime.block_on(host.room_update_participant_from("11111111-1111-1111-1111-111111111111".into(), bot.clone(), None)).is_err());
+        assert!(runtime.block_on(host.room_remove_participant("11111111-1111-1111-1111-111111111111".into(), ParticipantId::new("bot"))).is_err());
+        assert!(host.room_import("11111111-1111-1111-1111-111111111111".into(), saved.snapshot.clone(), None, true).is_err());
+
+        // Converting Chat -> Work in place via Store::save_room is refused
+        let mut forged = saved.clone();
+        forged.snapshot.kind = apex_core::RoomKind::Work;
+        assert!(host.store.save_room("11111111-1111-1111-1111-111111111111", &forged).is_err());
+
+        // chat_add_participant, chat_update_participant, chat_remove_participant clamp/refuse non-read access
+        runtime.block_on(host.chat_add_participant("11111111-1111-1111-1111-111111111111".into(), ask("bot2", None))).unwrap();
+        let after_add = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert_eq!(after_add.snapshot.participants.len(), 2);
+        assert!(after_add.snapshot.participants.iter().all(|p| p.access == Access::Read && p.media.is_none()));
+        assert_eq!(host.store.chat_meta("11111111-1111-1111-1111-111111111111").unwrap().unwrap().profiles.get("bot2").map(String::as_str), Some("bot2"));
+
+        runtime.block_on(host.chat_update_participant(
+            "11111111-1111-1111-1111-111111111111".into(),
+            ParticipantId::new("bot2"),
+            serde_json::from_value(json!({ "display_name": "Second bot" })).unwrap(),
+        )).unwrap();
+        let after_update = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        let updated_bot2 = after_update.snapshot.participants.iter().find(|p| p.id.as_str() == "bot2").unwrap();
+        assert_eq!(updated_bot2.display_name, "Second bot");
+        assert_eq!(updated_bot2.access, Access::Read);
+
+        runtime.block_on(host.chat_remove_participant("11111111-1111-1111-1111-111111111111".into(), ParticipantId::new("bot2"))).unwrap();
+        let after_remove = host.store.room("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
+        assert_eq!(after_remove.snapshot.participants.len(), 1);
+        assert!(!host.store.chat_meta("11111111-1111-1111-1111-111111111111").unwrap().unwrap().profiles.contains_key("bot2"));
+
+        // chat_update_meta updates title and archived
+        let updated_meta = host.chat_update_meta("11111111-1111-1111-1111-111111111111".into(), Some("Renamed chat".into()), Some(true), None).unwrap();
+        assert_eq!(updated_meta.title, "Renamed chat");
+        assert!(updated_meta.archived);
+
+        let listed = host.chat_list().unwrap();
+        let rooms = listed["rooms"].as_array().unwrap();
+        assert_eq!(rooms.len(), 2);
+        let first = rooms.iter().find(|r| r["id"] == "11111111-1111-1111-1111-111111111111").unwrap();
+        assert_eq!(first["title"], "Renamed chat");
+        assert_eq!(first["archived"], true);
+
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn host_never_calls_apex_adapters_build_directly_for_room_participants() {
+        let source = include_str!("host.rs");
+        let code_only = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            !code_only.contains("apex_adapters::build("),
+            "host.rs must build room participants through apex_adapters::participant_for_room"
+        );
+    }
 }
 
 #[cfg(test)]
 mod protected_host_ownership_tests {
     use super::*;
+    #[test]
+    fn unreadable_runner_ledger_does_not_stop_host_or_allow_runner_writes() {
+        let root = std::env::temp_dir().join(format!("apex-runner-startup-error-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let ledger = crate::authority_file::fixture_path(&root.join("room-runners-v1.json"));
+        std::fs::write(&ledger, b"{broken").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let host = Host::try_new(HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone())
+            .unwrap_or_else(|e| panic!("Runner recovery must not take down the host: {e}"));
+        assert!(host.settings_load().is_ok(), "Unrelated host commands must remain available");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        runtime.block_on(host.room_post("r".into(), "Ordinary chat still works".into())).unwrap();
+        host.invalidate_room_runner("r").unwrap();
+        let error = host.room_runner_state("r".into()).unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
+        assert_eq!(std::fs::read(&ledger).unwrap(), b"{broken");
+        // Even if storage becomes readable, this host must not dispatch an
+        // unrecovered runner. Only a new startup may reopen the service.
+        std::fs::write(&ledger, br#"{"runners":{},"receipts":{}}"#).unwrap();
+        assert!(host.room_runner_state("r".into()).is_err());
+        assert!(host.runner_service.lock().unwrap().remove("r").is_err());
+        host.shutdown();
+        drop(host);
+        let restarted = Host::try_new(HostPaths { data: root.clone(), downloads: None }, runtime.handle().clone()).unwrap();
+        assert_eq!(restarted.room_runner_state("r".into()).unwrap(), None);
+        restarted.shutdown();
+        drop(restarted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn held_kernel_ownership_is_fatal_instead_of_empty_ledger_fallback() {
         let result = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Held("canonical scope".into()))));
@@ -3457,5 +5288,14 @@ mod protected_host_ownership_tests {
         let (guard, unavailable) = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Unavailable("broker absent".into())))).unwrap();
         assert!(guard.is_none());
         assert!(unavailable.unwrap().contains("broker absent"));
+    }
+}
+
+/// Preserve both the primary operation error and its persistence/cleanup error.
+fn combine_result<T>(result: Result<T, String>, saved: Result<(), String>) -> Result<T, String> {
+    match (result, saved) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(a), Err(b)) => Err(format!("{a}; {b}")),
+        (Err(e), _) | (_, Err(e)) => Err(e),
     }
 }

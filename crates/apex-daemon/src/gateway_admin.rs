@@ -245,25 +245,21 @@ mod tests {
             .contains("Could not start"));
         assert!(failed["baseUrl"].is_null());
         drop(conflict);
-        // The conflicting listener can also be inherited by another test's
-        // fork before exec. Wait for that handle to close, as after stop above.
-        let restart_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        let restarted = loop {
-            let status = start(&daemon, None, config.bind).await.unwrap();
-            if status["enabled"] == true
-                || !status["error"]
-                    .as_str()
-                    .is_some_and(|error| error.starts_with("Could not start model gateway:"))
-                || std::time::Instant::now() >= restart_deadline
-            {
-                break status;
+        // Like the stopped gateway above, the conflict socket can remain in a
+        // concurrent fork until exec. Wait for recovery instead of assuming
+        // dropping our copy makes the port immediately available.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            let recovered = start(&daemon, None, config.bind).await.unwrap();
+            if recovered["enabled"] == true {
+                break;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "gateway did not recover after releasing the conflict socket: {recovered}"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        };
-        assert_eq!(
-            restarted["enabled"], true,
-            "gateway restart failed: {restarted}"
-        );
+        }
         assert!(tokio::net::TcpStream::connect((config.bind, port))
             .await
             .is_ok());

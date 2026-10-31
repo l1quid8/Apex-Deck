@@ -7,17 +7,64 @@ use tokio::process::Command;
 
 pub(crate) struct Isolation {
     root: Staged,
+    #[cfg(target_os = "linux")]
+    bwrap: PathBuf,
 }
 
 fn failed(message: &str) -> ParticipantError {
     ParticipantError::Failed(format!("Gateway isolation: {message}"))
 }
 
+pub(crate) const BWRAP_REQUIRED_MESSAGE: &str =
+    "Linux process isolation requires bubblewrap (bwrap). Install bubblewrap or use Claude Code or an API model.";
+
+pub(crate) fn find_bwrap(path: Option<&str>) -> Option<PathBuf> {
+    let search = path
+        .map(str::to_owned)
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    if let Some(found) = std::env::split_paths(&search)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .find_map(|dir| dir.join("bwrap").canonicalize().ok())
+    {
+        return Some(found);
+    }
+    if path.is_none() {
+        for candidate in ["/usr/bin/bwrap", "/bin/bwrap"] {
+            if let Ok(found) = Path::new(candidate).canonicalize() {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Check whether OS process isolation is available on this host for isolated CLI turns.
+pub fn isolation_available(path: Option<&str>) -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    if cfg!(target_os = "linux") {
+        return find_bwrap(path)
+            .map(|_| ())
+            .ok_or_else(|| BWRAP_REQUIRED_MESSAGE.to_string());
+    }
+    Err("this backend requires the macOS or Linux process sandbox on this host".into())
+}
+
 impl Isolation {
+    #[allow(dead_code)]
     pub fn new(backend: &Backend) -> Result<Self, ParticipantError> {
-        if !cfg!(target_os = "macos") {
+        Self::new_with_path(backend, None)
+    }
+
+    pub fn new_with_path(backend: &Backend, path: Option<&str>) -> Result<Self, ParticipantError> {
+        #[cfg(target_os = "linux")]
+        let bwrap = find_bwrap(path).ok_or_else(|| failed(BWRAP_REQUIRED_MESSAGE))?;
+        #[cfg(not(target_os = "linux"))]
+        let _ = path;
+        if !cfg!(any(target_os = "macos", target_os = "linux")) {
             return Err(failed(
-                "this backend requires the macOS process sandbox on this host",
+                "this backend requires the macOS or Linux process sandbox on this host",
             ));
         }
         let root = Staged::new()?;
@@ -27,7 +74,11 @@ impl Isolation {
         }
         std::fs::create_dir(root.dir.join("work/.git"))
             .map_err(|_| failed("cannot bound project discovery"))?;
-        let isolation = Self { root };
+        let isolation = Self {
+            root,
+            #[cfg(target_os = "linux")]
+            bwrap,
+        };
         let home = std::env::var_os("HOME").map(PathBuf::from);
         if let Some(home) = home {
             match backend {
@@ -129,6 +180,17 @@ impl Isolation {
         Ok(())
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    pub fn command(
+        &self,
+        _program: &str,
+        _args: &[String],
+        _path: Option<&str>,
+    ) -> Result<Command, ParticipantError> {
+        Err(failed("unsupported platform"))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn command(
         &self,
         program: &str,
@@ -149,56 +211,58 @@ impl Isolation {
             .dir
             .canonicalize()
             .map_err(|_| failed("private home disappeared"))?;
-        let quote = |p: &Path| -> Result<String, ParticipantError> {
-            serde_json::to_string(
-                p.to_str()
-                    .ok_or_else(|| failed("non-UTF8 executable path"))?,
-            )
-            .map_err(|_| failed("invalid sandbox path"))
-        };
-        let mut read = format!("(literal {})", quote(&binary)?);
-        // Project discovery may enumerate ancestors, but it cannot read any
-        // files in them. The run itself stays rooted in its private folder.
-        for parent in root.ancestors().skip(1) {
-            read.push_str(&format!(" (literal {})", quote(parent)?));
-        }
-
-        // Muse's installed launcher execs its sibling versioned binary. Grant
-        // exactly those two files; ancestor directories grant no file contents.
-        if program == "muse" {
-            // Muse's safe directory walker opens each ancestor component. Permit
-            // those directories themselves, never their file contents/subtrees.
-            for parent in binary.ancestors().skip(1) {
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            let quote = |p: &Path| -> Result<String, ParticipantError> {
+                serde_json::to_string(
+                    p.to_str()
+                        .ok_or_else(|| failed("non-UTF8 executable path"))?,
+                )
+                .map_err(|_| failed("invalid sandbox path"))
+            };
+            let mut read = format!("(literal {})", quote(&binary)?);
+            // Project discovery may enumerate ancestors, but it cannot read any
+            // files in them. The run itself stays rooted in its private folder.
+            for parent in root.ancestors().skip(1) {
                 read.push_str(&format!(" (literal {})", quote(parent)?));
             }
-            // Optional system Agent Definition discovery must be able to walk
-            // these two directories; no system configuration files are granted.
-            read.push_str(" (literal \"/Library\") (literal \"/Library/Application Support\")");
-            let parent = binary
-                .parent()
-                .ok_or_else(|| failed("invalid Muse launcher"))?;
-            let version_path = parent.join(".muse-version");
-            if let Ok(version) = std::fs::read_to_string(&version_path) {
-                let version = version.trim();
-                if version.is_empty()
-                    || !version
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
-                {
-                    return Err(failed("invalid Muse launcher version"));
+
+            // Muse's installed launcher execs its sibling versioned binary. Grant
+            // exactly those two files; ancestor directories grant no file contents.
+            if program == "muse" {
+                // Muse's safe directory walker opens each ancestor component. Permit
+                // those directories themselves, never their file contents/subtrees.
+                for parent in binary.ancestors().skip(1) {
+                    read.push_str(&format!(" (literal {})", quote(parent)?));
                 }
-                read.push_str(&format!(
-                    " (literal {}) (literal {})",
-                    quote(&version_path)?,
-                    quote(&parent.join(format!("muse-bin-{version}")))?
-                ));
+                // Optional system Agent Definition discovery must be able to walk
+                // these two directories; no system configuration files are granted.
+                read.push_str(" (literal \"/Library\") (literal \"/Library/Application Support\")");
+                let parent = binary
+                    .parent()
+                    .ok_or_else(|| failed("invalid Muse launcher"))?;
+                let version_path = parent.join(".muse-version");
+                if let Ok(version) = std::fs::read_to_string(&version_path) {
+                    let version = version.trim();
+                    if version.is_empty()
+                        || !version
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+                    {
+                        return Err(failed("invalid Muse launcher version"));
+                    }
+                    read.push_str(&format!(
+                        " (literal {}) (literal {})",
+                        quote(&version_path)?,
+                        quote(&parent.join(format!("muse-bin-{version}")))?
+                    ));
+                }
             }
-        }
-        // Permit runtime libraries and this run's private files only.
-        // Absolute paths, symlinks and tool subprocesses
-        // remain subject to this kernel boundary. No inherited keychain access.
-        let profile = format!(
-            r#"(version 1)
+            // Permit runtime libraries and this run's private files only.
+            // Absolute paths, symlinks and tool subprocesses
+            // remain subject to this kernel boundary. No inherited keychain access.
+            let profile = format!(
+                r#"(version 1)
 (deny default)
 (allow process-exec process-fork sysctl-read)
 (allow process-info* (target self))
@@ -222,17 +286,25 @@ impl Isolation {
  (global-name "com.apple.networkd")
  (global-name "com.apple.dnssd.service"))
 "#,
-            quote(&root)?,
-            read,
-            quote(&root)?
-        );
-        self.write("sandbox.sb", &profile)?;
-        let mut command = Command::new("/usr/bin/sandbox-exec");
-        command
-            .args(["-f"])
-            .arg(root.join("sandbox.sb"))
-            .arg(binary)
-            .args(args);
+                quote(&root)?,
+                read,
+                quote(&root)?
+            );
+            self.write("sandbox.sb", &profile)?;
+            let mut command = Command::new("/usr/bin/sandbox-exec");
+            command
+                .args(["-f"])
+                .arg(root.join("sandbox.sb"))
+                .arg(&binary)
+                .args(args);
+            command
+        };
+        #[cfg(target_os = "linux")]
+        let mut command = {
+            let mut command = Command::new(&self.bwrap);
+            command.args(bwrap_args(|p| p.exists(), &root, &binary, program, args)?);
+            command
+        };
         command
             .env_clear()
             .env("PATH", search)
@@ -262,15 +334,105 @@ impl Isolation {
                 "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
                 root.join("gemini-system.json"),
             )
-            // Node launchers must use the system TLS config already inside the boundary.
-            .env("OPENSSL_CONF", "/private/etc/ssl/openssl.cnf")
-            .env("SSL_CERT_FILE", "/private/etc/ssl/cert.pem")
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
             .env("LANG", "en_US.UTF-8")
             .current_dir(root.join("work"));
+        #[cfg(target_os = "macos")]
+        {
+            // Node launchers must use the system TLS config already inside the boundary.
+            command
+                .env("OPENSSL_CONF", "/private/etc/ssl/openssl.cnf")
+                .env("SSL_CERT_FILE", "/private/etc/ssl/cert.pem");
+        }
         Ok(command)
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn bwrap_args(
+    path_exists: impl Fn(&Path) -> bool,
+    root: &Path,
+    binary: &Path,
+    program: &str,
+    args: &[String],
+) -> Result<Vec<std::ffi::OsString>, ParticipantError> {
+    use std::ffi::OsString;
+    const SYSTEM_RO_PATHS: &[&str] = &[
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/nsswitch.conf",
+        "/etc/localtime",
+        "/etc/ssl",
+        "/etc/ca-certificates",
+        "/etc/pki",
+    ];
+    let mut out: Vec<OsString> = vec![
+        "--die-with-parent".into(),
+        "--unshare-ipc".into(),
+        "--unshare-pid".into(),
+        "--proc".into(),
+        "/proc".into(),
+        "--dev".into(),
+        "/dev".into(),
+    ];
+    for sys in SYSTEM_RO_PATHS {
+        if path_exists(Path::new(sys)) {
+            out.push("--ro-bind".into());
+            out.push((*sys).into());
+            out.push((*sys).into());
+        }
+    }
+    out.push("--bind".into());
+    out.push(root.as_os_str().to_owned());
+    out.push(root.as_os_str().to_owned());
+
+    let covered = SYSTEM_RO_PATHS
+        .iter()
+        .any(|sys| path_exists(Path::new(sys)) && binary.starts_with(sys))
+        || binary.starts_with(root);
+    if !covered {
+        out.push("--ro-bind".into());
+        out.push(binary.as_os_str().to_owned());
+        out.push(binary.as_os_str().to_owned());
+    }
+    if program == "muse" {
+        if let Some(parent) = binary.parent() {
+            let version_path = parent.join(".muse-version");
+            if let Ok(version) = std::fs::read_to_string(&version_path) {
+                let version = version.trim();
+                if version.is_empty()
+                    || !version
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+                {
+                    return Err(failed("invalid Muse launcher version"));
+                }
+                let muse_bin = parent.join(format!("muse-bin-{version}"));
+                out.push("--ro-bind".into());
+                out.push(version_path.into_os_string());
+                out.push(parent.join(".muse-version").into_os_string());
+                if path_exists(&muse_bin) {
+                    out.push("--ro-bind".into());
+                    out.push(muse_bin.clone().into_os_string());
+                    out.push(muse_bin.into_os_string());
+                }
+            }
+        }
+    }
+    out.push("--chdir".into());
+    out.push(root.join("work").into_os_string());
+    out.push("--".into());
+    out.push(binary.as_os_str().to_owned());
+    for arg in args {
+        out.push(arg.into());
+    }
+    Ok(out)
 }
 
 /// A private session may use a fresh access credential, never rotate a
@@ -508,28 +670,91 @@ mod tests {
     }
 
 
-    #[cfg(target_os="macos")]
+    #[cfg(any(target_os="macos", target_os="linux"))]
     #[tokio::test]
     async fn assistant_processes_cannot_read_or_write_the_operator_files() {
         use std::os::unix::fs::PermissionsExt;
+        #[cfg(target_os = "linux")]
+        {
+            let Some(bwrap) = find_bwrap(None) else { return; };
+            let probe = std::process::Command::new(&bwrap)
+                .args(["--unshare-pid", "--ro-bind", "/", "/", "/bin/true"])
+                .status();
+            if !probe.is_ok_and(|s| s.success()) {
+                return;
+            }
+        }
         let operator=Staged::new().unwrap();
         let input=operator.dir.join("private-note");let output=operator.dir.join("must-not-exist");
         std::fs::write(&input,"PRIVATE_QA_NOTE").unwrap();
         for program in ["codex","grok","gemini","muse"] {
             let script=operator.dir.join(program);
+            let ssl_check = if cfg!(target_os = "macos") {
+                "[ \"$OPENSSL_CONF\" = /private/etc/ssl/openssl.cnf ] || exit 23"
+            } else {
+                "true"
+            };
+            // Bubblewrap recreates the launcher's parent in its private root.
+            // A write there can succeed without touching the host; assert the
+            // host output remains absent below. Seatbelt must reject the write.
+            let write_check = if cfg!(target_os = "macos") {
+                format!("if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi", output.display())
+            } else {
+                format!("/usr/bin/touch '{}' 2>/dev/null || true", output.display())
+            };
             std::fs::write(&script,format!(r#"#!/bin/sh
 if /bin/cat '{}' >/dev/null 2>&1; then exit 20; fi
-if /usr/bin/touch '{}' 2>/dev/null; then exit 21; fi
+{write_check}
 [ ! -e "$HOME/.codex/config.toml" ] || exit 22
-[ "$OPENSSL_CONF" = /private/etc/ssl/openssl.cnf ] || exit 23
+{ssl_check}
 printf BOUNDARY_OK
-"#,input.display(),output.display())).unwrap();
+"#,input.display())).unwrap();
             std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
             let isolation=Isolation::new(&Backend::Scripted{lines:vec![]}).unwrap();
             let result=isolation.command(program,&[],operator.dir.to_str()).unwrap().output().await.unwrap();
-            assert!(result.status.success(),"{program}: {}",String::from_utf8_lossy(&result.stderr));
+            assert!(result.status.success(),"{program}: status={}, stderr={}",result.status,String::from_utf8_lossy(&result.stderr));
             assert_eq!(result.stdout,b"BOUNDARY_OK");assert!(!output.exists());
         }
+    }
+
+    #[test]
+    fn bwrap_args_mounts_private_root_and_single_binary_without_new_session_or_parent_dir() {
+        let root = Path::new("/tmp/apex-staged-123");
+        let binary = Path::new("/home/operator/.local/bin/codex");
+        let args = bwrap_args(
+            |p| matches!(p.to_str(), Some("/usr" | "/bin" | "/lib" | "/etc/resolv.conf" | "/etc/ssl")),
+            root,
+            binary,
+            "codex",
+            &["exec".into(), "--json".into()],
+        )
+        .unwrap();
+        let strings: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(strings.contains(&"--die-with-parent".to_string()));
+        assert!(
+            !strings.contains(&"--new-session".to_string()),
+            "bwrap must not create a new session so OwnedProcessRegistry retains PGID termination"
+        );
+        assert!(strings.windows(3).any(|w| w == ["--bind", "/tmp/apex-staged-123", "/tmp/apex-staged-123"]));
+        assert!(strings.windows(3).any(|w| w == ["--ro-bind", "/home/operator/.local/bin/codex", "/home/operator/.local/bin/codex"]));
+        assert!(
+            !strings.iter().any(|s| s == "/home/operator/.local/bin" || s == "/home/operator"),
+            "bwrap must never mount the binary's parent directory or operator home"
+        );
+        assert!(strings.windows(2).any(|w| {
+            w[0] == "--chdir" && Path::new(&w[1]) == Path::new("/tmp/apex-staged-123/work")
+        }));
+        let sep = strings.iter().position(|s| s == "--").unwrap();
+        assert_eq!(&strings[sep + 1..], ["/home/operator/.local/bin/codex", "exec", "--json"]);
+    }
+
+    #[test]
+    fn find_bwrap_returns_none_when_explicit_path_has_no_bwrap() {
+        let empty = Staged::new().unwrap();
+        assert!(find_bwrap(empty.dir.to_str()).is_none());
     }
 
     #[cfg(target_os = "macos")]

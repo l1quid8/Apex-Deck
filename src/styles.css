@@ -107,6 +107,13 @@ textarea {
 .muted {
   color: var(--muted);
 }
+
+.late-reply-label {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .spacer {
   flex: 1;
 }
@@ -305,6 +312,46 @@ html[data-platform="windows"] .titlebar {
 .agent-card h2 { font-size: 16px; margin: 0 0 3px; }
 .agent-card p { margin: 0 0 8px; max-width: 65ch; white-space: pre-wrap; }
 .agent-card-actions { display: flex; gap: 6px; }
+/* Benchmark pills after "model · level" (ModelMetricPills.tsx, mockups/model-metrics-v4.html). */
+.agent-model-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 8px; }
+.mm-metrics { position: relative; display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.mm-pill { display: inline-flex; align-items: baseline; gap: 5px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; background: transparent; color: var(--text); line-height: 1.6; cursor: pointer; }
+.mm-pill.hot { border-color: color-mix(in srgb, var(--accent) 70%, var(--line)); }
+.mm-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mm-k { color: var(--muted); font-size: 11px; }
+.mm-at { color: var(--warn); font-size: 11px; }
+.mm-at.same { color: var(--muted); }
+.mm-dot { width: 6px; height: 6px; border-radius: 50%; align-self: center; }
+.mm-dot.t3 { background: #71e6b5; } :root[data-deck-theme="clay"] .mm-dot.t3 { background: #9dc79b; } .mm-dot.t2 { background: var(--warn); } .mm-dot.t1 { background: var(--danger); }
+.mm-none { font-size: 12px; color: var(--muted); font-style: italic; }
+/* One box per card; it stays open while the pointer moves into it. */
+.mm-card { display: none; position: absolute; left: 0; top: 100%; z-index: 4; padding-top: 6px; }
+.mm-metrics:hover .mm-card, .mm-metrics:focus-within .mm-card, .mm-metrics.pinned .mm-card { display: block; }
+/* Glass cards each blur their own backdrop, which would paint the next card over an open box. */
+.agent-card:has(.mm-metrics:hover, .mm-metrics:focus-within, .mm-metrics.pinned) { position: relative; z-index: 5; }
+.mm-card-body { width: min(400px, 80vw); padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); font-size: 12px; line-height: 1.45; box-shadow: 0 14px 36px -18px rgb(0 0 0 / .6); }
+.agent-card .mm-card-body p { margin: 0; max-width: none; white-space: normal; }
+.mm-what { margin-bottom: 8px !important; }
+.mm-what b { font-weight: 600; }
+.mm-what span { color: var(--muted); }
+.mm-card table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.mm-card th { text-align: right; color: var(--muted); font-weight: 500; padding: 2px 6px 5px; }
+.mm-card th:first-child, .mm-card td:first-child { text-align: left; }
+.mm-card td { text-align: right; padding: 3px 6px; border-top: 1px solid var(--line); color: var(--muted); }
+.mm-card td.gap { font-style: italic; color: color-mix(in srgb, var(--muted) 70%, transparent); }
+.mm-card tr.current td { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.mm-card tr.current td:first-child::after { content: " · current"; color: var(--accent); font-size: 11px; }
+.mm-card tr.current td.gap { color: var(--muted); }
+.mm-card td.best::after { content: " ★"; color: var(--accent); font-size: 10px; }
+.mm-card [data-col].hot { color: var(--text); font-weight: 600; }
+.mm-card th.hot { color: var(--accent); }
+.mm-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.mm-model { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.mm-model b { color: var(--text); font-weight: 500; }
+.mm-model .hot b { color: var(--accent); }
+.mm-caveat { margin-top: 8px !important; color: var(--warn); font-size: 11px; }
+.mm-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.mm-src.stale { color: var(--warn); }
 .brand {
   display: inline-flex;
   align-items: center;
@@ -1380,6 +1427,7 @@ html[data-platform="windows"] .titlebar {
 .notice {
   margin: 0;
   align-self: center;
+  text-align: center;
   font-size: 12px;
   color: var(--muted);
 }
@@ -1411,6 +1459,12 @@ html[data-platform="windows"] .titlebar {
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--text);
+}
+.md .curation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 0;
 }
 
 .composer {
@@ -3478,6 +3532,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .composer-box > button.round-send { width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-height: 30px; aspect-ratio: 1; align-self: flex-end; margin-bottom: 3px; padding: 0; border-radius: 50%; border: 0; display: inline-grid; place-items: center; background: var(--accent); color: #fff; flex: none; }
 .composer-box > button.round-send:hover:not(:disabled) { filter: brightness(1.1); }
 .composer-box > button.round-send:disabled { opacity: .4; }
+.talk-only-pane .composer-box > button.round-send:disabled { background: var(--muted); cursor: default; }
 .composer-box > button.round-send.stop { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 55%, transparent); }
 .composer-box > button.round-send.stop:hover { background: color-mix(in srgb, var(--danger) 26%, transparent); filter: none; }
 /* A long placeholder stays on one line in a narrow pane instead of wrapping out of view. */
@@ -4256,3 +4311,11 @@ button.mod-status:hover { color: var(--text); }
 .reset-tip-key { color: var(--muted); font-size: 11px; }
 .reset-tip-value { font-variant-numeric: tabular-nums; }
 .reset-tip-value + .reset-tip-key { margin-top: 4px; }
+
+/* Automatic updates: the ready and after-restart notices are rows under the title bar, never over a composer. */
+.update-banner { flex-wrap: wrap; gap: 8px; }
+.update-banner > span { flex: 1 1 240px; min-width: 0; }
+.update-banner.problem { box-shadow: inset 3px 0 0 var(--warn); }
+.update-notice-words { flex: 1 1 240px; min-width: 0; max-height: 35vh; overflow-y: auto; overflow-wrap: anywhere; }
+.update-notice-words ul { margin: 6px 0 0; padding-left: 18px; }
+.update-notice-words li + li { margin-top: 4px; }

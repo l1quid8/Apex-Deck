@@ -132,6 +132,66 @@ fn second_writer_is_told_why_it_is_read_only() {
 }
 
 #[test]
+fn read_only_turn_keeps_journal_lookup_or_unavailability_guidance() {
+    struct HoldWriter {
+        tx: Mutex<Option<oneshot::Sender<()>>>,
+        rx: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl apex_core::TurnStartHook for HoldWriter {
+        fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                if id.as_str() == "A" {
+                    let rx = self.rx.lock().unwrap().take();
+                    if let Some(rx) = rx { let _ = rx.await; }
+                } else if let Some(tx) = self.tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            })
+        }
+    }
+    for path in [Some("/attachments/deck-journals/r/chat.md"), None] {
+        block_on(async {
+            let make_writer = |id: &str| {
+                let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+                config.access = apex_core::Access::Full;
+                Arc::new(ScriptedParticipant::from_config(config))
+            };
+            let a = make_writer("A");
+            let b = make_writer("B");
+            let mut snapshot = Room::new(vec![a.clone(), b.clone()], RoomOptions {
+                policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0),
+            }).snapshot();
+            snapshot.transcript = (0..30).map(|seq| serde_json::from_value(serde_json::json!({
+                "seq":seq, "speaker":{"kind":"human"}, "text":format!("message {seq}"),
+            })).unwrap()).collect();
+            snapshot.curations = vec![apex_core::Curation {
+                by: ParticipantId::new("A"), at: 30, hidden: vec![[2, 5]],
+                reason: "finished".into(), when: 1, undone: None,
+            }];
+            let mut room = Room::restore(vec![a.clone(), b.clone()], snapshot);
+            room.set_journal_path(path.map(str::to_owned));
+            let (tx, rx) = oneshot::channel();
+            let concurrent = ConcurrentRoom::new(room).with_turn_start(Arc::new(HoldWriter {
+                tx: Mutex::new(Some(tx)), rx: Mutex::new(Some(rx)),
+            }));
+            let batch = concurrent.begin_post("hello", None, &|_| {}).await.unwrap();
+            concurrent.run(batch, &|_| {}).await;
+            assert_eq!(b.requests()[0].access, Some(apex_core::Access::Read));
+            for bot in [a, b] {
+                let requests = bot.requests();
+                let req = &requests[0];
+                assert!(req.turns.iter().any(|t| t.content.contains("[#2–#5 hidden, 4 messages]")));
+                assert!(req.system.contains("never guess what a hidden message said"), "{}", req.system);
+                match path {
+                    Some(path) => assert!(req.system.contains(path)),
+                    None => assert!(req.system.contains("can't be read right now")),
+                }
+            }
+        });
+    }
+}
+
+#[test]
 fn second_writer_gets_copy_and_keeps_write_access() {
     struct FakeProvider {
         copy_path: PathBuf,
