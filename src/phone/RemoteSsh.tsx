@@ -19,6 +19,7 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
   const [form, setForm] = useState<SshForm>({ label: "", host: "", user: "", port: "22", password: "", key: null, passphrase: "", keep: false });
   const [error, setError] = useState("");
   const [lines, setLines] = useState<Line[] | null>(null);
+  const [finishing, setFinishing] = useState(false);
   const [paired, setPaired] = useState(false);
   const [end, setEnd] = useState<{ failed: boolean; message: string; trust?: ServerKey } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -41,6 +42,7 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
 
   const heard = (event: SetupEvent) => {
     if (event.kind === "step") setLines((list) => [...(list ?? []).filter((line) => line.id !== event.id), { id: event.id, text: event.text }]);
+    else if (event.kind === "finishing") setFinishing(true);
     else if (event.kind === "paired") setPaired(true);
     else if (event.kind === "done") setEnd({ failed: false, message: event.message });
     else {
@@ -62,6 +64,7 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
     if (!setup) { setError("Remote SSH needs the iPhone app. Use a QR code here."); return; }
     setError("");
     setLines([]);
+    setFinishing(false);
     setPaired(false);
     setEnd(null);
     const { request, form: emptied } = handOff(form);
@@ -89,7 +92,7 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
       {failed
         ? <button type="button" className="primary ph-wide" onClick={back}>Back</button>
         : <button type="button" className="primary ph-wide" disabled={!paired} onClick={() => { if (end) setup?.clear(); onDone(); }}>Done</button>}
-      {!paired && !end && <button type="button" className="ph-plain ph-wide" onClick={() => setup?.cancel()}>Stop setup</button>}
+      {!paired && !end && <button type="button" className="ph-plain ph-wide" disabled={finishing} onClick={() => setup?.cancel()}>{finishing ? "Finishing pairing" : "Stop setup"}</button>}
     </>;
   }
 

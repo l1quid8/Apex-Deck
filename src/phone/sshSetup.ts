@@ -188,6 +188,8 @@ export interface ServerKey { hostPort: string; fingerprint: string }
 /** One step of the run. A failed step stops it, and nothing after it happens. */
 export type SetupEvent =
   | { kind: "step"; id: string; text: string }
+  /** The approve went out, so the machine may already have paired and Stop no longer applies. */
+  | { kind: "finishing" }
   /** Saved on the phone the moment the machine pairs, so closing the screen can't lose it. */
   | { kind: "paired"; name: string }
   /** `trust` is set when the server's key changed: the key the person may choose to trust. */

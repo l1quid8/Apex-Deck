@@ -250,7 +250,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     const named = (list: string[]) => list.map((tool) => tool[0].toUpperCase() + tool.slice(1)).join(" and ");
     step("tools", [`AI tools ready`, signIn.length ? `${named(signIn)} need${signIn.length === 1 ? "s" : ""} sign-in` : "", missing.length ? `${named(missing)} couldn't be installed` : "", !bwrap && tools.codex === "installed" ? "Codex needs bubblewrap (admin)" : ""].filter(Boolean).join("; "));
 
-    const made = await pairOverSsh(ssh, deps, { onCancel: (cancel) => { stopPair = cancel; }, onCommit: () => { committed = true; } });
+    const made = await pairOverSsh(ssh, deps, { onCancel: (cancel) => { stopPair = cancel; }, onCommit: () => { committed = true; emit({ kind: "step", id: "pair", text: "Finishing pairing" }); emit({ kind: "finishing" }); } });
     paired = true;
     if (request.keep) {
       await deps.keep(request).catch((failure: Error) => {

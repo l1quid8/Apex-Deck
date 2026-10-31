@@ -92,7 +92,7 @@ test("a fresh server runs every step, pairs and signs out", async () => {
   const dependency = deps(box);
   const { steps, done, failed, ask } = await run(box, dependency);
   assert.equal(failed, undefined);
-  assert.deepEqual(steps, ["reach", "key", "signin", "system", "install", "bwrap", "start", "tools", "pair", "signout"]);
+  assert.deepEqual(steps, ["reach", "key", "signin", "system", "install", "bwrap", "start", "tools", "pair", "pair", "signout"]);
   assert.ok(done);
   assert.equal(dependency.saved.length, 1);
   assert.deepEqual(box.written, ["approve 123456\n"]);
@@ -341,6 +341,8 @@ test("once approve is sent, Stop can't strand a machine that paired", async () =
   await started.done;
   assert.equal(dependency.saved.length, 1);
   assert.equal(events.at(-1).kind, "done");
+  const finishing = events.findIndex((event) => event.kind === "finishing");
+  assert.ok(finishing >= 0 && finishing < events.findIndex((event) => event.kind === "paired"));
 });
 
 test("the release feed needs a real version and well-formed entries", () => {
