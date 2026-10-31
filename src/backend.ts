@@ -647,7 +647,7 @@ function demoBackend(): Backend {
 
   return {
     demo: true,
-    listToolServers: async () => ["x-mcp", "hyperliquid", "computer-use"].map(token => ({token, label: token, aliases: []})),
+    listToolServers: async () => ["x-mcp", "hyperliquid", "computer-use", "pomerado", "example_reader"].map(token => ({token, label: token, aliases: []})),
     detectAgents: async () => [
       { key: "claude", label: "Claude Code", program: "claude", found: true },
       { key: "codex", label: "Codex", program: "codex", found: true },
