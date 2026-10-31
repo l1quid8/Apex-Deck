@@ -12,6 +12,12 @@ if let mode = operatorMode, allowed[mode] == nil {
   FileHandle.standardError.write(Data("invalid_operator_mode\n".utf8))
   exit(2)
 }
+let proof: ProofBinding?
+do { proof = operatorMode == nil ? try ProofBinding.environment(ProcessInfo.processInfo.environment) : nil }
+catch {
+  FileHandle.standardError.write(Data("proof_binding_invalid_or_incomplete\n".utf8))
+  exit(2)
+}
 let config = NSWorkspace.OpenConfiguration()
 config.activates = false
 var ready = false
@@ -30,6 +36,17 @@ while Date() < deadline {
 guard fd >= 0 else {
   FileHandle.standardError.write(Data("spike_unavailable\n".utf8))
   exit(1)
+}
+if let proof = proof {
+  Wire.send(["jsonrpc": "2.0", "id": "apex-proof-bind", "method": "spike/bind-proof", "params": proof.arguments], fd: fd)
+  guard let bytes = Wire.firstLine(fd: fd, limit: 65536, timeout: 5),
+    let reply = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+    reply["id"] as? String == "apex-proof-bind",
+    (reply["result"] as? [String: Any])?["proofBound"] as? Bool == true else {
+    FileHandle.standardError.write(Data("proof_host_binding_failed\n".utf8))
+    shutdown(fd, SHUT_RDWR); close(fd)
+    exit(1)
+  }
 }
 if let mode = operatorMode {
   Wire.send(["jsonrpc": "2.0", "id": 1, "method": allowed[mode]!], fd: fd)

@@ -154,7 +154,31 @@ public enum Wire {
   public static func lines(fd: Int32, body: (Data) -> Void) {
     lines(fd: fd, limit: 65536, body: body)
   }
-  private static func lines(fd: Int32, limit: Int, body: (Data) -> Void) {
+  /// Read one small handshake line without consuming any following frame.
+  public static func firstLine(fd: Int32, limit: Int, timeout: TimeInterval) -> Data? {
+    guard limit > 0, timeout.isFinite, timeout > 0 else { return nil }
+    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    var result = Data()
+    while result.count <= limit {
+      let remaining = deadline - ProcessInfo.processInfo.systemUptime
+      guard remaining > 0 else { return nil }
+      var ready = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+      let polled = Darwin.poll(&ready, 1, Int32(min(remaining * 1000, 100).rounded(.up)))
+      if polled < 0 && errno == EINTR { continue }
+      if polled == 0 { continue }
+      guard polled > 0, ready.revents & Int16(POLLIN) != 0 else { return nil }
+      var byte: UInt8 = 0
+      let n = Darwin.recv(fd, &byte, 1, MSG_DONTWAIT)
+      if n < 0 && [EINTR, EAGAIN, EWOULDBLOCK].contains(errno) { continue }
+      guard n == 1 else { return nil }
+      if byte == 10 { return result }
+      guard result.count < limit else { return nil }
+      result.append(byte)
+    }
+    return nil
+  }
+  public static func lines(fd: Int32, limit: Int, body: (Data) -> Void) {
+    guard limit > 0 else { return }
     var pending = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
     while true {

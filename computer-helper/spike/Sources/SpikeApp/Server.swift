@@ -5,6 +5,8 @@ import SpikeCore
 final class Server {
   let ax = Accessibility()
   let latch = Latch()
+  let proofLock = NSLock()
+  var proofHost: ProofHostBridge?
   lazy var activity = ActivityTap(latch)
   lazy var input = Input(ax: ax, latch: latch, activity: activity)
   let queue = DispatchQueue(label: "spike.actions")
@@ -19,6 +21,21 @@ final class Server {
   let probeLock = NSLock()
   var probePresses = 0
   var probeCenter: [Double]?
+  func checkProofHost() throws {
+    proofLock.lock(); let bridge = proofHost; proofLock.unlock()
+    try bridge?.check()
+  }
+  func startIsolatedRun() -> Bool {
+    proofLock.lock(); let bridge = proofHost; proofLock.unlock()
+    if let bridge = bridge { return bridge.startHumanRun() }
+    latch.start()
+    return true
+  }
+  func stopIsolatedRun() {
+    latch.stop()
+    proofLock.lock(); let bridge = proofHost; proofLock.unlock()
+    bridge?.stopFromHuman()
+  }
   func recordProbe(center: [Double]? = nil, pressed: Bool = false) {
     probeLock.lock()
     defer { probeLock.unlock() }
@@ -36,6 +53,7 @@ final class Server {
     probeLock.unlock()
     return [
       "eventCounts": latch.counts(), "syntheticDialog": probe, "accessibilityTrusted": ax.trusted(),
+      "screenCaptureAccess": CGPreflightScreenCaptureAccess(),
       "listenEventAccess": CGPreflightListenEventAccess(), "tapHealthy": state.2,
       "stopped": state.1, "pid": ProcessInfo.processInfo.processIdentifier,
     ]
@@ -83,8 +101,14 @@ final class Server {
     }
   }
   func read(_ client: Int32) {
+    var boundProof: ProofHostBridge?
+    var protocolStarted = false
     defer {
       latch.stop()
+      boundProof?.disconnect()
+      proofLock.lock()
+      if proofHost === boundProof { proofHost = nil }
+      proofLock.unlock()
       queue.async {
         close(client)
         self.connection.lock()
@@ -102,6 +126,27 @@ final class Server {
         return
       }
       guard let id = object["id"] else { return }
+      if method == "spike/bind-proof" {
+        guard !protocolStarted, boundProof == nil else {
+          self.queue.async { self.fail(id, "proof_binding_must_precede_protocol", client) }
+          return
+        }
+        self.latch.stop()
+        do {
+          guard Set(params.keys) == Set(["room", "participant", "socket"]),
+            let room = params["room"] as? String, let participant = params["participant"] as? String,
+            let socket = params["socket"] as? String else { throw Refusal("proof_binding_invalid") }
+          let binding = try ProofBinding(room: room, participant: participant, socket: socket)
+          let bridge = try ProofHostBridge.connect(binding, latch: self.latch)
+          boundProof = bridge
+          self.proofLock.lock(); self.proofHost = bridge; self.proofLock.unlock()
+          try bridge.start()
+          self.response(id, ["proofBound": true], client)
+        } catch let refusal as Refusal { self.fail(id, refusal.code, client) }
+        catch { self.fail(id, "proof_binding_failed", client) }
+        return
+      }
+      if method == "initialize" || method == "tools/list" || method == "tools/call" { protocolStarted = true }
       if method == "spike/status" {
         self.queue.async { self.response(id, self.status(), client) }
         return
@@ -181,6 +226,7 @@ final class Server {
     }
   }
   func observe(id: String, epoch: UInt64? = nil) throws -> Snapshot {
+    try checkProofHost()
     let expected = epoch ?? latch.state().0
     try latch.check(id, epoch: expected)
     let fresh = try ax.capture(epoch: expected)
@@ -188,6 +234,7 @@ final class Server {
     return fresh
   }
   func call(_ params: [String: Any], id: String) throws -> [String: Any] {
+    try checkProofHost()
     if params["name"] as? String == "get_screenshot" {
       guard (params["arguments"] as? [String: Any] ?? [:]).isEmpty else {
         throw Refusal("get_screenshot_takes_no_arguments")
@@ -202,6 +249,7 @@ final class Server {
     return ["content": [["type": "text", "text": try callText(params, id: id)]]]
   }
   func callText(_ params: [String: Any], id: String) throws -> String {
+    try checkProofHost()
     let name = params["name"] as? String ?? ""
     let args = params["arguments"] as? [String: Any] ?? [:]
     try latch.check(id)

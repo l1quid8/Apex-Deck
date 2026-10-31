@@ -55,14 +55,13 @@ final class Delegate: NSObject, NSApplicationDelegate {
     probeButton?.title = "Test button (\(count))"
   }
   @objc func stop() {
-    server.latch.stop()
+    server.stopIsolatedRun()
     item.button?.title = "Spike STOPPED"
     status()
   }
   @objc func start() {
     if server.activity.tap == nil { server.activity.start() }
-    server.latch.start()
-    item.button?.title = "Computer Spike"
+    item.button?.title = server.startIsolatedRun() ? "Computer Spike" : "Spike STOPPED"
     status()
   }
   @objc func status() {
