@@ -9,6 +9,7 @@ import {
   installersIn,
   releaseBuildCommands,
   writeChecksum,
+  builderArgs,
 } from '../scripts/package-win.mjs';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -39,6 +40,13 @@ test('the daemon and authority are built as plain release builds', () => {
   assert.deepEqual(lines, ['cargo build --release -p apex-daemon --features remote', 'cargo build --release -p apex-provenance']);
   assert.ok(lines.every((line) => !line.includes('test-support') && !line.includes('--tests')));
 
+});
+
+test('signing is opt-in and names only the public Azure details', () => {
+  assert.deepEqual(builderArgs({}), ['--win', 'nsis', '--publish', 'never']);
+  const signed = builderArgs({ APEX_DECK_WIN_SIGN: '1' }).join(' ');
+  assert.match(signed, /azureSignOptions\.certificateProfileName=apexdeckpublic/);
+  assert.match(signed, /azureSignOptions\.endpoint=https:\/\/eus\.codesigning\.azure\.net/);
 });
 
 test('the installer name matches the artifact electron-builder writes', () => {

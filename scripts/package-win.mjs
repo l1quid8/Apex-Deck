@@ -3,10 +3,10 @@
 //
 // What it makes: `release/Apex-Deck-Setup.exe`, an NSIS installer with
 // apex-daemon.exe inside it, plus `release/Apex-Deck-Setup.exe.sha256` so a
-// download can be checked. It is UNSIGNED for now, so Windows shows "unknown
-// publisher" until Azure Trusted Signing is wired in (`win.azureSignOptions`).
-// That signing step is the last piece of M4; see
-// docs/superpowers/plans/2026-10-21-windows-11.md.
+// download can be checked. With APEX_DECK_WIN_SIGN=1 it is signed through Azure
+// Artifact Signing, which needs a live Azure login; any other build is unsigned,
+// so Windows shows "unknown publisher". `--compile` and `--package` split the run
+// so CI can sign in right before packaging: its Azure login lasts only minutes.
 //
 // Why Windows only: the service and the app must be compiled for the machine
 // they run on, and this project has no Windows cross-compiler. GitHub's
@@ -36,6 +36,23 @@ export function releaseBuildCommands() {
     ['cargo', ['build', '--release', '-p', 'apex-daemon', '--features', 'remote']],
     ['cargo', ['build', '--release', '-p', 'apex-provenance']],
   ];
+}
+
+/** Public names, not secrets: only the Azure login can use them to sign. */
+export const AZURE_SIGNING = {
+  publisherName: 'Tyler Caldwell',
+  endpoint: 'https://eus.codesigning.azure.net',
+  codeSigningAccountName: 'apexdecksigning',
+  certificateProfileName: 'apexdeckpublic',
+};
+
+/** electron-builder's arguments; signing is opt-in so a local build still works. */
+export function builderArgs(env = process.env) {
+  const args = ['--win', 'nsis', '--publish', 'never'];
+  if (env.APEX_DECK_WIN_SIGN !== '1') return args;
+  return [...args, ...Object.entries(AZURE_SIGNING).map(
+    ([name, value]) => `--config.win.azureSignOptions.${name}=${value}`,
+  )];
 }
 
 /** The installer has to be built where it will run; say so before cargo errors. */
@@ -81,7 +98,7 @@ function run(command, args, options = {}) {
   if (built.status !== 0) throw new Error(`${command} ${args.join(' ')} failed; refusing to package`);
 }
 
-function main() {
+function main(phase = process.argv[2]) {
   assertWindowsHost();
   const release = resolve('release');
   const stamp = readStamp({ env: process.env, git });
@@ -92,13 +109,17 @@ function main() {
   const env = stampEnv(stamp);
   log(`stamping ${stamp.commit}${stamp.dirty ? '-dirty' : ''} into the service and the UI`);
 
-  for (const [command, args] of releaseBuildCommands()) run(command, args, { env });
-  // tsc --noEmit then vite build, so a type error stops the run before packaging.
-  run('npm', ['run', 'build'], { env, shell: process.platform === 'win32' });
-  log('building the unsigned NSIS installer');
+  if (phase !== '--package') {
+    for (const [command, args] of releaseBuildCommands()) run(command, args, { env });
+    // tsc --noEmit then vite build, so a type error stops the run before packaging.
+    run('npm', ['run', 'build'], { env, shell: process.platform === 'win32' });
+  }
+  if (phase === '--compile') return 0;
+  const signed = process.env.APEX_DECK_WIN_SIGN === '1';
+  log(`building the ${signed ? 'signed' : 'unsigned'} NSIS installer`);
   run(
     process.execPath,
-    [resolve('node_modules/electron-builder/cli.js'), '--win', 'nsis', '--publish', 'never'],
+    [resolve('node_modules/electron-builder/cli.js'), ...builderArgs()],
     { env },
   );
 
@@ -116,7 +137,7 @@ function main() {
   if (!existsSync(installer)) throw new Error(`electron-builder reported ${installers[0]} but it is not on disk`);
   log(`wrote ${installer} (${(readFileSync(installer).length / 1048576).toFixed(1)} MB)`);
   log(`sha256 ${writeChecksum(installer)}`);
-  log('this installer is unsigned: Windows will show "unknown publisher" until Azure Trusted Signing is added');
+  if (!signed) log('this installer is unsigned: Windows will show "unknown publisher"');
   return 0;
 }
 

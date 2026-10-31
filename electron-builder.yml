@@ -1,8 +1,7 @@
 # The Electron app. `npm run desktop:package` builds a signed Mac app with
 # apex-daemon inside it and `npm run desktop:dmg` puts that app in a disk image.
 # `npm run desktop:win` builds an unsigned Windows installer (NSIS) instead;
-# signing with Azure Trusted Signing is the last piece of M4 and needs
-# `win.azureSignOptions` plus the Human's Azure secrets in GitHub.
+# GitHub's run signs it through scripts/package-win.mjs (APEX_DECK_WIN_SIGN=1).
 appId: dev.apexdeck.app
 productName: Apex Deck
 directories:

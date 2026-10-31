@@ -3,9 +3,10 @@
 # upload anywhere else. The Human downloads it from the run summary, tries it on
 # a Windows 11 PC, and only then is a real release cut.
 #
-# The installer is UNSIGNED for now, so Windows shows "unknown publisher" and
-# needs "More info -> Run anyway". Azure Trusted Signing (`win.azureSignOptions`
-# plus the Human's Azure secrets) turns this into the signed M4 installer.
+# Runs on fix/windows-catch-up are signed through Azure Artifact Signing as Tyler
+# Caldwell. GitHub proves the branch to Azure, so no key is stored here, and Azure
+# trusts that one branch only. Other branches build an unsigned installer, which
+# Windows shows as "unknown publisher".
 #
 # Runs only for the branches that carry Windows work, because an Electron build
 # is minutes of runner time nobody asked for on every push.
@@ -18,6 +19,13 @@ on:
       - feat/win-m4-installer
       - feat/windows-11
       - fix/windows-catch-up
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  APEX_DECK_WIN_SIGN: ${{ github.ref == 'refs/heads/fix/windows-catch-up' && '1' || '' }}
 
 concurrency:
   group: windows-installer-${{ github.ref }}
@@ -41,8 +49,19 @@ jobs:
           cache-on-failure: true
       - name: Install the app's dependencies
         run: npm ci
-      - name: Build the unsigned installer
-        run: npm run desktop:win
+      - name: Compile the service and the app
+        run: node scripts/package-win.mjs --compile
+      # The Azure login lasts minutes, so it comes after the long compile.
+      - name: Sign in to Azure
+        if: env.APEX_DECK_WIN_SIGN == '1'
+        uses: azure/login@v2
+        with:
+          client-id: 4c7cb8eb-c6e5-4804-80fe-b2164f58af8b
+          tenant-id: 02381f02-2a9b-4968-b74c-dd4b89329434
+          subscription-id: 360e8f4a-285c-46a3-bd01-5f8cddbbaa59
+          allow-no-subscriptions: true
+      - name: Build the installer
+        run: node scripts/package-win.mjs --package
       - name: Test elevated authority ACLs and read-only host locks
         run: cargo test --locked -p apex-provenance --lib -- --ignored
       - name: Show what was built
@@ -88,6 +107,17 @@ jobs:
             throw 'the installed app has no apex-daemon.exe, so it has no service to start'
           }
           Write-Host "the installed app carries the service at $($service.FullName)"
+          if ($env:APEX_DECK_WIN_SIGN -eq '1') {
+            $bin = Split-Path $service.FullName
+            $files = @($setup, (Join-Path $env:ProgramFiles 'Apex Deck\Apex Deck.exe'), $service.FullName, (Join-Path $bin 'apex-provenance.exe'))
+            foreach ($file in $files) {
+              $signature = Get-AuthenticodeSignature -FilePath $file
+              Write-Host "$file $($signature.Status) $($signature.SignerCertificate.Subject)"
+              if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=Tyler Caldwell') {
+                throw "$file is not validly signed by Tyler Caldwell"
+              }
+            }
+          }
           node scripts/windows-authority-smoke.mjs $service.FullName
           if ($LASTEXITCODE -ne 0) { throw 'installed production authority smoke failed' }
           $recovery = sc.exe qfailure ApexDeckProvenance | Out-String
