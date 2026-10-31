@@ -19,6 +19,8 @@ mod claude_usage;
 mod cli;
 mod gemini_usage;
 mod gateway_sandbox;
+#[cfg(unix)]
+pub mod linux_jail;
 mod codex_server;
 pub mod codex_images;
 mod codex_hook;

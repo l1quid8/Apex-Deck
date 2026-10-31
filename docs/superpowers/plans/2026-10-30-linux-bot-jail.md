@@ -1,0 +1,164 @@
+# Linux bot jail Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Every bot below Full on Linux runs in a bubblewrap jail, so that on a machine a person has trusted, a paired device can act.
+
+**Architecture:** One module, `crates/apex-adapters/src/linux_jail/`, builds the jail. All five launch points call it. The bot's only way out is a daemon-run CONNECT proxy reached over one inherited channel. Host trust and device rules live in `apex-daemon` and `apex-host`.
+
+**Tech Stack:** Rust, bubblewrap 0.9+, a hand-built classic BPF seccomp filter, tokio. No new crates.
+
+**Spec:** `docs/superpowers/specs/2026-10-30-linux-bot-confinement-design.md` (revision 6, approved `e7d3b822`).
+
+## Global Constraints
+
+- Nothing below Full launches outside the jail on Linux. There is no fallback and no setting.
+- The set level decides, not the effective level. Full is never jailed.
+- `linux_jail` builds on every Unix so its pure logic is tested on macOS. Kernel behaviour is tested in Docker (`apex-deck-linux-test`) and later on a real VM.
+- No `--new-session`: jailed launches use `setsid()` in the child instead of `process_group(0)`.
+- The bot process never holds the control channel. Only the forwarder does.
+- Refused message for unsafe folders: "This folder holds your login files. Pick a folder inside it, or use Full."
+- Steps 1 and 2 pass before anything from step 3 merges. Null reviews each step.
+- macOS and Windows bots don't change, except the snapshot change, which applies everywhere.
+- Rust tests run with `TMPDIR=/tmp` when inside a Deck pane.
+
+## Review Focus
+
+- A project folder reached by a second path (bind mount, case change, symlink): it's refused the same as the direct path. Pinned in Task 1 by comparing device and inode.
+- A Read-level project that contains `~/.ssh` or the data folder: those stay hidden. Pinned in Task 1.
+- `socket()` with a family nobody listed (`AF_VSOCK`, `AF_ALG`): refused. Pinned in Task 1 with an allowlist.
+- A proxy target that resolves to both a public and a refused address: only checked addresses are dialled. Pinned in Task 2.
+- A bot process killed while its jail is starting: no forwarder or proxy task outlives it. Pinned in Task 3.
+
+---
+
+## Step 1: the jail itself
+
+### Task 1: Filter, arguments, environment, folder refusal
+
+**Files:**
+- Create: `crates/apex-adapters/src/linux_jail/mod.rs`, `seccomp.rs`, `paths.rs`
+- Modify: `crates/apex-adapters/src/lib.rs`, `crates/apex-adapters/src/gateway_sandbox.rs` (share the system path list)
+- Test: unit tests in each file; `crates/apex-adapters/tests/linux_jail_kernel.rs` (Linux only)
+
+**Interfaces:**
+- Produces: `seccomp::filter() -> Vec<u8>`; `paths::check_writable(path: &Path, guard: &Guard) -> Result<PathBuf, Refused>`; `paths::Guard { home, protected, path_dirs, executables }`; `JailSpec`; `bwrap_args(&JailSpec, is_dir) -> Vec<OsString>`; `jail_env(&JailSpec) -> Vec<(String, OsString)>`.
+
+- [x] Write failing tests. Filter: a small BPF interpreter in the test runs the real bytes for every case in the design. Folders: `/`, `$HOME`, parent of `$HOME`, inside and around each protected path, a PATH folder, a symlink to `$HOME`, `..`, and the same folder by a different case on macOS. Arguments: every process-boundary flag, `--chdir`, hides after binds. Environment: a blocked name passed as a provider key never appears.
+- [x] Run them and see them fail.
+- [x] Implement. `socket()` is an allowlist of `AF_INET`, `AF_INET6` and `AF_NETLINK`, which is stricter than the design's `AF_UNIX` refusal.
+- [x] Run unit tests on macOS and the kernel test in Docker, with `git`, Node, Claude and Codex starting under the new filter. Grok, Muse and Gemini start-up move to Task 5.
+- [x] Commit.
+
+### Task 2: Proxy and control channel
+
+**Files:** Create `crates/apex-adapters/src/linux_jail/proxy.rs`, `channel.rs`
+
+**Interfaces:**
+- Consumes: nothing from Task 1.
+- Produces: `proxy::refused(ip: IpAddr, own: &[IpAddr]) -> bool`; `proxy::serve(stream, resolver, own_addrs)`; `channel::serve(control: UnixStream, purposes: Purposes)`, which hands one fresh fd per request and ends when the jail closes its side.
+
+- [ ] Failing tests: every range in the design in each encoding (IPv4-mapped, NAT64, 6to4), own addresses read per connection, port 80 and 8443 refused, a name with mixed answers dials only checked ones, a name changing between lookups dials only what was checked, a purpose other than `proxy` or `codex-hook` is refused.
+- [ ] Implement, then pass on macOS.
+- [ ] Commit.
+
+### Task 3: In-jail init, launch and group stop
+
+**Files:** Create `crates/apex-adapters/src/linux_jail/init.rs`, `launch.rs`. Modify `owned_process.rs` (`Registry::spawn` gains a `setsid` mode), `crates/apex-daemon/src/entry.rs` (`__jail-init` handled before tokio starts).
+
+**Interfaces:**
+- Consumes: Task 1 `JailSpec`, `bwrap_args`, `jail_env`; Task 2 `channel::serve`.
+- Produces: `launch::jailed_command(&JailSpec) -> Result<Jailed, JailError>`, where `Jailed { command, control }`; `init::run(fd, port, argv) -> !`.
+
+- [ ] Failing Linux tests: the bot's `/proc/self/fd` shows only stdio; the forwarder passes bytes under the filter; group kill leaves no process; `setsid` plus double-fork children die with the jail; `TIOCSTI` fails.
+- [ ] Implement. Init forks: the child keeps the control fd and forwards, the parent closes it and `exec`s the bot.
+- [ ] Pass in Docker.
+- [ ] Commit.
+
+### Task 4: Generated provider homes and login copy-back
+
+**Files:** Create `crates/apex-adapters/src/linux_jail/home.rs`
+
+**Interfaces:**
+- Produces: `home::prepare(data_dir, room, bot, &Backend, values: &HomeValues) -> Result<JailHome, JailError>`; `JailHome::copy_back(&self)`.
+
+- [ ] Failing tests: an unknown executable key in host Claude and Codex config doesn't reach the jail home; HTTP MCP entries and tokens are stripped; stdio MCP is carried by name; an extra field in a login file isn't copied back; a host config that doesn't parse gives defaults and a notice; two bots of one provider get separate homes.
+- [ ] Implement per provider, reusing the sign-in document parsers in `gateway_sandbox.rs`.
+- [ ] Real signed-in turn on a generated home, with login refresh, using a fresh login in a throwaway container. Needs the Human for sign-in.
+- [ ] Commit.
+
+### Task 5: Startup probe and breakout suite
+
+**Files:** Create `crates/apex-adapters/src/linux_jail/probe.rs`, `tests/linux-jail/`
+
+**Interfaces:**
+- Produces: `probe::run(&ProbeEnv) -> ProbeResult`; `JailState::{Works, Fails(reason)}`, re-tested at each boot.
+
+- [ ] Write the design's "Must be proven" jail, socket and proxy lists as one Docker suite, including an unprivileged container with AppArmor's restriction on.
+- [ ] Implement the probe: five checks must fail, the sixth must work.
+- [ ] Pass in Docker on arm64 and x86_64. x32 needs the x86_64 run.
+- [ ] Commit, then send step 1 to Null.
+
+## Step 2: route everything through it
+
+### Task 6: All five launch points
+
+**Files:** Modify `crates/apex-adapters/src/cli.rs`, `claude_session.rs`, `codex_server.rs`, `api_tools/shell.rs`, `api_tools/mcp_client.rs`, `phone_env.rs`, `codex_hook.rs`
+
+- [ ] Failing test: each launch point below Full on Linux yields a jailed command, and refuses when the state is Fails. `APEX_DECK_PHONE_SOCKET` is absent. Codex's hook uses the loopback port and a per-launch token.
+- [ ] Implement, list every tool bots reach through `apex-daemon`, and move each to the channel or refuse it.
+- [ ] Commit.
+
+### Task 7: Changing a level, MCP links
+
+**Files:** Modify `api_tools/mcp_client.rs:515`, the host's participant update path in `crates/apex-host/src/host.rs`
+
+- [ ] Failing tests: `setsid` loop, double fork and stdio MCP server are gone before a lowered level is saved; a failed stop keeps the old level; a cached link isn't reused; API bots below Full get no HTTP MCP.
+- [ ] Implement in the design's five-step order. The map key gains bot and level.
+- [ ] Commit.
+
+### Task 8: Taint, the Full gate and `project_process()`
+
+**Files:** Create `crates/apex-host/src/folder_trust.rs`, `crates/apex-host/src/project_process.rs`. Modify `project_check.rs`, `runner/checks.rs`, `bot_copies.rs`, `git_changes.rs`, the desktop and phone card.
+
+- [ ] Failing tests: the design's Lower-writable and Alternate paths lists, and a source-scanning test that fails on a raw project spawn.
+- [ ] Implement. The taint record is synced to disk before the jail starts.
+- [ ] Commit.
+
+### Task 9: Snapshot isolation
+
+**Files:** Modify `crates/apex-host/src/checkpoints.rs`, the Revert path and wording.
+
+- [ ] Failing tests: the design's Snapshots list, on the real `checkpoints.rs` calls.
+- [ ] Implement isolated Git, the once-per-run rebuild under a lock, `info/attributes` and `raw`. A failed rebuild runs no Git.
+- [ ] Run in Docker on Git 2.25 and 2.43, on macOS, and in Windows CI.
+- [ ] Commit, then send step 2 to Null.
+
+## Step 3: trust and devices
+
+### Task 10: `trust-host`, epoch, setup card
+
+**Files:** Create `crates/apex-daemon/src/trust_host.rs`. Modify `devices.rs`, `crates/apex-daemon/src/cli.rs`, `src/phone/sshRun.ts`, `src/phone/RemoteSsh.tsx`, Settings on Mac and phone.
+
+- [ ] Failing tests: the design's Host trust list.
+- [ ] Implement, then commit.
+
+### Task 11: `access_effect` and device rules
+
+**Files:** Modify `crates/apex-daemon/src/authority.rs`, `call_from_device`, `Command`, phone settings screens.
+
+- [ ] Read each "must be proven" row and record the answer with a test.
+- [ ] Failing test: a limited device runs every command with `"access":"full"` fixtures and no level rises.
+- [ ] Implement `access_effect` with no wildcard arm, the five daemon checks under the room lock, and the phone's Face ID step.
+- [ ] Commit, then send step 3 to Null.
+
+## Step 4 and 5: proof and release
+
+### Task 12: Real runs
+
+- [ ] All providers in Docker, then a real Ubuntu 24.04 VM with AppArmor, then a desktop session with X11. Native iPhone checks owed from Add a machine: Stop, trust reset, Face ID, Files picker, QR tab.
+
+### Task 13: Update recipe, then release
+
+- [ ] Change the recipe's expected hashes and `vps-update-allow-test.rs`. The Human runs one command with their key. `prepare_source` and `git apply --check` pass before merge.
+- [ ] Ask the Human for the go on the pre-release.

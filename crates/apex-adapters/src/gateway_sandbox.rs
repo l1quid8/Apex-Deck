@@ -349,6 +349,21 @@ impl Isolation {
     }
 }
 
+pub(crate) const SYSTEM_RO_PATHS: &[&str] = &[
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/localtime",
+    "/etc/ssl",
+    "/etc/ca-certificates",
+    "/etc/pki",
+];
+
 #[allow(dead_code)]
 pub(crate) fn bwrap_args(
     path_exists: impl Fn(&Path) -> bool,
@@ -358,20 +373,6 @@ pub(crate) fn bwrap_args(
     args: &[String],
 ) -> Result<Vec<std::ffi::OsString>, ParticipantError> {
     use std::ffi::OsString;
-    const SYSTEM_RO_PATHS: &[&str] = &[
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/lib64",
-        "/etc/resolv.conf",
-        "/etc/hosts",
-        "/etc/nsswitch.conf",
-        "/etc/localtime",
-        "/etc/ssl",
-        "/etc/ca-certificates",
-        "/etc/pki",
-    ];
     let mut out: Vec<OsString> = vec![
         "--die-with-parent".into(),
         "--unshare-ipc".into(),

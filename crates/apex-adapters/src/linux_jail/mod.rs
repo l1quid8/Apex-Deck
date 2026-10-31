@@ -1,0 +1,231 @@
+//! The jail every bot below Full runs in on Linux. Pure pieces build on every
+//! Unix so they're tested on a Mac; what the kernel does is tested on Linux.
+//! Nothing is present in the jail unless it's named here, because a list of
+//! secrets to hide can never be complete.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
+pub mod paths;
+pub mod seccomp;
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+/// The port the forwarder listens on, on the jail's own loopback.
+pub const PROXY_PORT: u16 = 18080;
+/// Where the daemon's own binary appears, to run the in-jail start-up.
+pub const INIT_PATH: &str = "/.apex/init";
+pub const INIT_ARG: &str = "__jail-init";
+
+/// `/etc` entries beyond the chat sandbox's: names for `getpwuid`, nothing more.
+const ACCOUNT_FILES: &[&str] = &["/etc/passwd", "/etc/group"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bind { pub source: PathBuf, pub target: PathBuf, pub writable: bool }
+
+#[derive(Debug, Clone)]
+pub struct JailSpec {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    /// The real `$HOME`, where `private_home` appears.
+    pub home: PathBuf,
+    pub private_home: PathBuf,
+    /// Project and mounts, already through `paths::check_writable` if writable.
+    pub folders: Vec<Bind>,
+    /// PATH folders and provider or runtime install folders.
+    pub read_only: Vec<PathBuf>,
+    /// Always hidden if anything bound above would show them.
+    pub protected: Vec<PathBuf>,
+    /// Put back after hiding: attachments, session history.
+    pub restored: Vec<Bind>,
+    pub init: PathBuf,
+    pub path: OsString,
+    pub provider_env: Vec<(String, OsString)>,
+    pub seccomp_fd: i32,
+    pub control_fd: i32,
+}
+
+fn bind(out: &mut Vec<OsString>, item: &Bind) {
+    out.push(if item.writable { "--bind" } else { "--ro-bind" }.into());
+    out.push(item.source.clone().into());
+    out.push(item.target.clone().into());
+}
+
+fn overlaps(a: &Path, b: &Path) -> bool { a.starts_with(b) || b.starts_with(a) }
+
+/// `is_dir` is `None` for a path that doesn't exist, so tests need no real tree.
+pub fn bwrap_args(spec: &JailSpec, is_dir: impl Fn(&Path) -> Option<bool>) -> Vec<OsString> {
+    let mut out: Vec<OsString> = [
+        "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        "--unshare-cgroup", "--unshare-net", "--proc", "/proc", "--dev", "/dev",
+        "--tmpfs", "/tmp",
+    ].map(OsString::from).into();
+    out.extend(["--seccomp".into(), spec.seccomp_fd.to_string().into()]);
+    for system in crate::gateway_sandbox::SYSTEM_RO_PATHS.iter().chain(ACCOUNT_FILES) {
+        if is_dir(Path::new(system)).is_some() {
+            out.extend(["--ro-bind".into(), (*system).into(), (*system).into()]);
+        }
+    }
+    out.extend(["--ro-bind".into(), spec.init.clone().into(), INIT_PATH.into()]);
+    bind(&mut out, &Bind { source: spec.private_home.clone(), target: spec.home.clone(), writable: true });
+    let mut shown: Vec<&Path> = Vec::new();
+    for folder in &spec.read_only {
+        if spec.protected.iter().any(|p| overlaps(folder, p)) || is_dir(folder).is_none() {
+            continue;
+        }
+        out.extend(["--ro-bind".into(), folder.clone().into(), folder.clone().into()]);
+        shown.push(folder);
+    }
+    for folder in &spec.folders {
+        bind(&mut out, folder);
+        shown.push(&folder.target);
+    }
+    // Hides go after every bind, so they win over anything bound before them.
+    for item in &spec.protected {
+        if !shown.iter().any(|folder| item.starts_with(folder)) {
+            continue;
+        }
+        match is_dir(item) {
+            Some(true) => out.extend(["--tmpfs".into(), item.clone().into()]),
+            Some(false) => out.extend(["--ro-bind".into(), "/dev/null".into(), item.clone().into()]),
+            None => {}
+        }
+    }
+    for item in &spec.restored {
+        bind(&mut out, item);
+    }
+    out.extend(["--chdir".into(), spec.cwd.clone().into(), "--".into()]);
+    out.extend([INIT_PATH.into(), INIT_ARG.into(), spec.control_fd.to_string().into(), PROXY_PORT.to_string().into()]);
+    out.push(spec.program.clone().into());
+    out.extend(spec.args.iter().map(OsString::from));
+    out
+}
+
+/// Names that hand a bot a way out, whatever a provider's settings ask for.
+fn blocked(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    name.starts_with("APEX_") || name.starts_with("LD_")
+        || matches!(name.as_str(), "SSH_AUTH_SOCK" | "DBUS_SESSION_BUS_ADDRESS" | "XDG_RUNTIME_DIR"
+            | "DISPLAY" | "WAYLAND_DISPLAY" | "XAUTHORITY" | "HTTP_PROXY" | "NO_PROXY"
+            | "HTTPS_PROXY" | "ALL_PROXY" | "PATH" | "HOME" | "BASH_ENV" | "ENV")
+}
+
+/// The whole environment. The caller clears the inherited one first.
+pub fn jail_env(spec: &JailSpec) -> Vec<(String, OsString)> {
+    let proxy = format!("http://127.0.0.1:{PROXY_PORT}");
+    let mut out: Vec<(String, OsString)> = vec![
+        ("PATH".into(), spec.path.clone()),
+        ("HOME".into(), spec.home.clone().into()),
+        ("TMPDIR".into(), "/tmp".into()),
+        ("TERM".into(), "dumb".into()),
+        ("LANG".into(), "C.UTF-8".into()),
+        ("NO_COLOR".into(), "1".into()),
+        ("SSL_CERT_FILE".into(), "/etc/ssl/certs/ca-certificates.crt".into()),
+        ("NODE_USE_ENV_PROXY".into(), "1".into()),
+    ];
+    for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY"] {
+        out.push((name.into(), proxy.clone().into()));
+    }
+    for name in ["NO_PROXY", "no_proxy"] {
+        out.push((name.into(), "127.0.0.1,localhost".into()));
+    }
+    out.extend(spec.provider_env.iter().filter(|(name, _)| !blocked(name)).cloned());
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec() -> JailSpec {
+        let home = PathBuf::from("/home/me");
+        let data = home.join(".local/share/apex");
+        JailSpec {
+            program: "/usr/bin/claude".into(),
+            args: vec!["-p".into(), "hi".into()],
+            cwd: home.join("work/app"),
+            home: home.clone(),
+            private_home: data.join("jail-homes/r/b"),
+            folders: vec![Bind { source: home.join("work/app"), target: home.join("work/app"), writable: true }],
+            read_only: vec!["/opt/node/bin".into(), home.join(".ssh/bin")],
+            protected: paths::standard_protected(&home, &data),
+            restored: vec![Bind { source: data.join("attachments"), target: data.join("attachments"), writable: false }],
+            init: "/usr/local/bin/apex-daemon".into(),
+            path: "/usr/bin:/opt/node/bin".into(),
+            provider_env: vec![("ANTHROPIC_API_KEY".into(), "k".into())],
+            seccomp_fd: 11,
+            control_fd: 12,
+        }
+    }
+
+    fn strings(args: &[OsString]) -> Vec<String> {
+        args.iter().map(|a| a.to_string_lossy().into_owned()).collect()
+    }
+
+    fn all_dirs(path: &Path) -> Option<bool> { let _ = path; Some(true) }
+
+    fn position(args: &[String], item: &str) -> Option<usize> { args.iter().position(|a| a == item) }
+
+    #[test]
+    fn every_process_boundary_flag_is_there() {
+        let args = strings(&bwrap_args(&spec(), all_dirs));
+        for flag in ["--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--unshare-net"] {
+            assert!(args.iter().any(|a| a == flag), "{flag}");
+        }
+        assert!(args.windows(2).any(|w| w == ["--proc", "/proc"]));
+        assert!(args.windows(2).any(|w| w == ["--dev", "/dev"]));
+        assert!(args.windows(2).any(|w| w == ["--seccomp", "11"]));
+        assert!(!args.iter().any(|a| a == "--new-session"), "group stop needs setsid() instead");
+        assert!(!args.iter().any(|a| a == "--share-net"));
+    }
+
+    #[test]
+    fn the_program_runs_through_init_after_the_separator() {
+        let args = strings(&bwrap_args(&spec(), all_dirs));
+        let split = position(&args, "--").unwrap();
+        assert_eq!(args[split + 1..], [INIT_PATH, INIT_ARG, "12", "18080", "/usr/bin/claude", "-p", "hi"]);
+    }
+
+    #[test]
+    fn a_read_only_folder_overlapping_a_protected_path_is_not_bound() {
+        let args = strings(&bwrap_args(&spec(), all_dirs));
+        assert!(args.iter().any(|a| a == "/opt/node/bin"));
+        assert!(!args.iter().any(|a| a == "/home/me/.ssh/bin"));
+    }
+
+    #[test]
+    fn a_read_project_around_home_files_hides_them_after_it_is_bound() {
+        let mut spec = spec();
+        spec.folders = vec![Bind { source: "/home/me".into(), target: "/home/me".into(), writable: false }];
+        let args = strings(&bwrap_args(&spec, |p| Some(p != Path::new("/home/me/.claude.json"))));
+        let project = args.windows(3).position(|w| w == ["--ro-bind", "/home/me", "/home/me"]).unwrap();
+        let ssh = args.windows(2).position(|w| w == ["--tmpfs", "/home/me/.ssh"]).expect("hidden");
+        let data = args.windows(2).position(|w| w == ["--tmpfs", "/home/me/.local/share/apex"]).expect("hidden");
+        assert!(project < ssh && project < data);
+        assert!(args.windows(3).any(|w| w == ["--ro-bind", "/dev/null", "/home/me/.claude.json"]));
+    }
+
+    #[test]
+    fn attachments_come_back_after_the_hide() {
+        let mut spec = spec();
+        spec.folders = vec![Bind { source: "/home/me".into(), target: "/home/me".into(), writable: false }];
+        let args = strings(&bwrap_args(&spec, all_dirs));
+        let hide = args.windows(2).position(|w| w == ["--tmpfs", "/home/me/.local/share/apex"]).unwrap();
+        let back = position(&args, "/home/me/.local/share/apex/attachments").unwrap();
+        assert!(hide < back);
+    }
+
+    #[test]
+    fn nothing_blocked_reaches_the_environment() {
+        let mut spec = spec();
+        for name in ["SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "DISPLAY",
+                     "WAYLAND_DISPLAY", "APEX_DECK_BIN", "APEX_DECK_PHONE_SOCKET", "LD_PRELOAD", "HTTPS_PROXY"] {
+            spec.provider_env.push((name.into(), "/evil".into()));
+        }
+        let env = jail_env(&spec);
+        assert!(env.iter().any(|(n, _)| n == "ANTHROPIC_API_KEY"));
+        assert!(!env.iter().any(|(_, v)| v == "/evil"));
+        let names = env.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>();
+        assert!(names.contains(&"NO_PROXY") && names.contains(&"PATH"));
+    }
+}

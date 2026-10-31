@@ -632,8 +632,11 @@ bytes, a forwarder holding no Unix socket, and a proxy outside the jail.
 | Codex scripted turn, `read-only`: its own sandbox refused the write inside the jail | pass |
 | `codex app-server` initialize | pass |
 
-Still unproven: a signed-in turn of any provider (`signed-in.sh`, needs a person to log in);
-login refresh and copy-back; Grok, Muse and Antigravity; x86_64, so the x32 rule hasn't run;
+Signed-in turn, 2026-10-30: Claude and Codex each logged in fresh inside a throwaway container
+and wrote their file from inside the jail (`signed-in.sh`, run with the Human, result checked
+by Null). That run used an empty home and the spike's filter.
+
+Still unproven: login refresh and copy-back; Grok, Muse and Antigravity; x86_64, so the x32 rule hasn't run;
 unprivileged containers and Ubuntu 24.04 AppArmor. The spike home is empty, not a generated
 one from the allowlist. Gemini needs Node 20 or newer.
 
