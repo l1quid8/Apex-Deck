@@ -179,6 +179,7 @@ function General({ backend, themeName, onAppearance, settings, onChange, updates
       <button onClick={() => setImporting(true)}>Review…</button>
     </Row>
     {importing && <LegacyImportPanel backend={backend} startOpen onClose={() => setImporting(false)} />}
+    {isWindows && <Row label="Windows safety limit" note="On Windows, approvals can’t fully stop a program running under your account. A bot could start or control Apex Deck and approve its own commands. Deck blocks the common ways of doing this, but not all of them, so only run bots you trust here." />}
     {updates ? <VersionRow updates={updates} onRestart={onRestartToUpdate} /> : <Row label="Version" note={`Apex Deck ${__APP_VERSION__}`} />}
   </div>;
 }
