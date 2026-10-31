@@ -32,9 +32,9 @@
 test at tests/curation-notes.test.mjs:38:1
 ✖ an undone note becomes historical after compact (3.660208ms)
   AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
-  
+
     assert.ok(lines.includes('You restored these messages at 10:52 AM.'))
-  
+
       at TestContext.<anonymous> (file:///Users/tylercaldwell/Downloads/apex-deck/tests/curation-notes.test.mjs:40:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1402:25)
