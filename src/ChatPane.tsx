@@ -6,6 +6,7 @@ import { RunnerSetup } from './runner/RunnerSetup.tsx';
 import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
 import { RunnerDrawer } from './runner/RunnerDrawer.tsx';
 import './runner/runner.css';
+import { isWindows, pathBase } from "./paths";
 import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
@@ -3100,7 +3101,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
               <span className="hint">{accessNote}</span>
             </div>
           )}
-          <label className="voice-field">
+          {!isWindows && <label className="voice-field">
             Voice
             <span className="voice-pick">
               <select name="voice" value={draft.voice ?? ""} onChange={(e) => set("voice", e.target.value)}>
@@ -3112,7 +3113,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
               <VoiceSampleButton voice={draft.voice || defaultVoiceOf(voiceConfig)} />
             </span>
             <span className="hint">How it sounds on calls. Default follows Settings. Picking a voice during a call changes only that chat.</span>
-          </label>
+          </label>}
           <PersonaDraft
             key={`persona:${editing ?? "new"}`}
             writers={personaWriters(
@@ -3951,7 +3952,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           {runnerMode&&!runnerUnfinished&&<RunnerSetup config={runnerConfig} onConfig={setRunnerConfig} participants={participants.map(p=>({id:p.id,name:p.display_name}))} kind={runnerMode} interval={runnerInterval} onInterval={setRunnerInterval} limits={runnerLimits} onLimits={setRunnerLimits} onCancel={()=>setRunnerMode(null)}/>}
           <ComposerMenu talkOnly={talkOnly} disabled={chatReadOnly} ref={composerMenu} planOn={planOn} disabledCommands={runnerUnfinished?{goal:`A ${runner!.kind} is unfinished here. End it first.`,loop:`A ${runner!.kind} is unfinished here. End it first.`}:planOn?{goal:'Turn off Plan first',loop:'Turn off Plan first'}:backend.supports?.('room_runner_v1')===false?{goal:'Update this host to use goals and loops',loop:'Update this host to use goals and loops'}:{}} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
-            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
+            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)));
             if (item.kind === "command" && (item.key === 'goal' || item.key === 'loop') && !trigger) { armRunner(item.key); return; }
             if (item.kind === "command" && item.command) {
               const draft = text;
@@ -4003,7 +4004,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
-            onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
+            onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
         </ThreadComposerBox>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
         {chatDelivery}

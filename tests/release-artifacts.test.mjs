@@ -19,6 +19,9 @@ import {
 import { validateOutput } from '../scripts/package-mac-upgrade.mjs';
 
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+// package-mac-upgrade.mjs pins its output to the one release folder named in
+// AGENTS.md, so this can only be exercised on the Mac that rule describes.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the pinned .pkg release folder' };
 const tempRelease = () => fs.mkdtempSync(path.join(os.tmpdir(), 'apex-release-'));
 const write = (target, body) => fs.writeFileSync(target, body);
 
@@ -31,7 +34,7 @@ test('the installable artifact has one fixed name, with one rollback beside it',
   assert.equal(PREVIOUS_PACKAGE_NAME, 'Apex-Deck-upgrade.previous.pkg');
 });
 
-test('the staging name is one the real package builder accepts', () => {
+test('the staging name is one the real package builder accepts', MAC_ONLY, () => {
   // package-mac-upgrade.mjs only writes inside release/ and only to *.pkg, so the
   // staged build has to satisfy that same validator rather than work around it.
   const release = '/Users/tylercaldwell/Downloads/apex-deck/release';

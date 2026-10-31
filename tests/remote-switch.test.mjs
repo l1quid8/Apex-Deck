@@ -6,6 +6,15 @@ import path from 'node:path';
 import {
   callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, readDesktopSettings, setPhoneConnections, writeDesktopSettings,
 } from '../desktop/remoteSwitch.mjs';
+import os from 'node:os';
+
+/**
+ * A scratch folder for one test. Some of these tests listen on a Unix socket, and
+ * a socket path is capped at ~104 bytes, which os.tmpdir() is already too long for
+ * on macOS; POSIX keeps the short /tmp. Windows has no socket files at all, so
+ * there the folder is an ordinary temp one and the socket is a named pipe.
+ */
+const scratchDir = () => fs.mkdtempSync(process.platform === 'win32' ? path.join(os.tmpdir(), 'deck-rs-') : '/tmp/deck-rs-');
 
 /** A stand-in daemon: the saved setting, and whether the file exists yet. */
 function daemonDouble() {
@@ -36,7 +45,7 @@ test('setPhoneConnections asks the daemon without restarting anything', async ()
 });
 
 test('an import writes the daemon setting and deletes only the old key', async () => {
-  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+  const dir = scratchDir();
   const file = path.join(dir, 'desktop-settings.json');
   writeDesktopSettings(file, { remoteAccess: true, theme: 'dark' });
   const daemon = daemonDouble();
@@ -51,8 +60,13 @@ test('an import writes the daemon setting and deletes only the old key', async (
   }
 });
 
-test('a failed key delete, a later off, and a re-sent import ends off', async () => {
-  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+// Making the settings rewrite fail takes a read-only folder, which Windows chmod
+// cannot produce: there chmod only toggles a file's read-only flag, so the key is
+// always deleted on the first import and this scenario cannot arise.
+const POSIX_ONLY = process.platform === 'win32' ? { skip: 'posix-only: a read-only folder fails the rewrite' } : {};
+
+test('a failed key delete, a later off, and a re-sent import ends off', POSIX_ONLY, async () => {
+  const dir = scratchDir();
   const file = path.join(dir, 'desktop-settings.json');
   writeDesktopSettings(file, { remoteAccess: true, theme: 'dark' });
   const daemon = daemonDouble();
@@ -83,7 +97,7 @@ test('a failed key delete, a later off, and a re-sent import ends off', async ()
 });
 
 test('a daemon error during import leaves the old key', async () => {
-  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+  const dir = scratchDir();
   const file = path.join(dir, 'desktop-settings.json');
   writeDesktopSettings(file, { remoteAccess: false });
   try {
@@ -99,7 +113,11 @@ test('a daemon error during import leaves the old key', async () => {
 
 /** A socket that speaks one answer, after an event and the hello. */
 function answeringSocket(dir, frames) {
-  const socketPath = path.join(dir, 'daemon.sock');
+  // Windows has no Unix socket files; the daemon this stands in for listens on a
+  // named pipe there, so the double does too.
+  const socketPath = process.platform === 'win32'
+    ? `\\\\.\\pipe\\apex-deck-rs-${process.pid}-${Math.random().toString(16).slice(2)}`
+    : path.join(dir, 'daemon.sock');
   const seen = [];
   const server = net.createServer((socket) => {
     let buf = '';
@@ -120,7 +138,7 @@ function answeringSocket(dir, frames) {
 }
 
 test('callDaemon says hello, skips other frames, and returns the answer', async () => {
-  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+  const dir = scratchDir();
   const server = answeringSocket(dir, [
     { seq: 4, event: 'room-event', payload: {} },
     { id: 0, ok: { protocol: 1 } },
@@ -141,7 +159,7 @@ test('callDaemon says hello, skips other frames, and returns the answer', async 
 });
 
 test('callDaemon rejects with the daemon words', async () => {
-  const dir = fs.mkdtempSync('/tmp/deck-rs-');
+  const dir = scratchDir();
   const server = answeringSocket(dir, [
     { id: 0, ok: { protocol: 1 } },
     { id: 1, err: 'UDP port 41641 is in use', reason: 'io' },
