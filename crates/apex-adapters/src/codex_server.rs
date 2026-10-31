@@ -237,6 +237,9 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
     let message = params["message"]
         .as_str()
         .filter(|text| !text.trim().is_empty())?;
+    if crate::mcp::is_computer_server(server) {
+        return Some(ProposedAction {kind:ActionKind::Other,title:"Unified Computer Use asks permission".into(),detail:String::new(),expires_at:None,risky:high_risk(params)});
+    }
     let detail = match app {
         Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
         None => message.to_string(),
@@ -1267,6 +1270,16 @@ cat > /dev/null"#;
     }
 
     use super::*;
+
+    #[test]
+    fn computer_elicitation_never_retains_server_supplied_content() {
+        for server in ["apex-computer","apex_computer"] {
+            let question=json!({"serverName":server,"message":"SCREEN_SECRET","requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"app_approval","riskLevel":"high"}});
+            let action=mcp_question(&question).unwrap();
+            assert!(action.detail.is_empty());assert!(action.risky);
+            assert!(!format!("{action:?}").contains("SCREEN_SECRET"));
+        }
+    }
 
     #[test]
     fn mcp_approval_binds_exact_arguments_and_rejects_ambiguous_or_unrelated_forms() {
