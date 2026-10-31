@@ -54,7 +54,8 @@ for a real failure.
 
 1. Reached server.
 2. Server key checked, before any credentials are sent. First use trusts the
-   fingerprint. A changed key stops the flow.
+   fingerprint and saves it at once, even if a later step fails. A changed key
+   stops the flow; only the person can trust the new one, on that failure screen.
 3. Signed in.
 4. Found OS and architecture.
 5. Installed, updated or already up to date. Downloads are checked against the
@@ -162,6 +163,8 @@ as the phone's Mac.
 - A headless machine with no saved bots offers its detected tools. `chat_profiles`
   marks Claude and Codex as needing sign-in from their login files, and Sign in
   opens the tool in a terminal on the machine.
+- A test iPhone build reads the release list from one tag with
+  `VITE_SSH_RELEASE_TAG=v0.9.8`, because a pre-release is never `latest`.
 - Linux binaries must be on the release: pass `--linux arch=path` to
   `scripts/release-update-manifest.mjs`. Until a release has them, setup stops
   with "No Deck download yet".

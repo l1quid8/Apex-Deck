@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { transform } from "sucrase";
 
 import { identityFor, withPairedMachine } from "../src/phone/pairing.ts";
-import { goodHost, goodPort, hostPort, parseHost, readKey, sshFormError, sshRequest, sshTarget } from "../src/phone/sshSetup.ts";
+import { goodHost, goodPort, handOff, hostPort, parseHost, readKey, sshFormError, sshRequest, sshTarget } from "../src/phone/sshSetup.ts";
 
 const require = createRequire(import.meta.url);
 
@@ -196,4 +196,11 @@ test("a Linux machine is a server even when it's the first, and ECDSA keys are r
   assert.equal(identityFor([], preview).kind, "server");
   assert.equal(identityFor([], { ...preview, os: "macos" }).kind, "mac");
   assert.equal(identityFor([], { ...preview, os: "" }).kind, "mac");
+});
+
+test("Connect leaves no secret in the form", () => {
+  const key = { name: "id", text: "PRIVATE", type: "ed25519", locked: true };
+  const { request, form } = handOff({ label: "VPS", host: "203.0.113.1", user: "demo", port: "22", password: "hunter2", key, passphrase: "sesame", keep: true });
+  assert.deepEqual([request.password, request.key, request.passphrase, request.keep], ["hunter2", key, "sesame", true]);
+  assert.deepEqual(form, { label: "VPS", host: "203.0.113.1", user: "demo", port: "22", password: "", key: null, passphrase: "", keep: false });
 });

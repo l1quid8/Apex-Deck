@@ -183,12 +183,15 @@ export function sshFormError(form: SshForm): string | null {
   return null;
 }
 
+export interface ServerKey { hostPort: string; fingerprint: string }
+
 /** One step of the run. A failed step stops it, and nothing after it happens. */
 export type SetupEvent =
   | { kind: "step"; id: string; text: string }
   /** Saved on the phone the moment the machine pairs, so closing the screen can't lose it. */
   | { kind: "paired"; name: string }
-  | { kind: "failed"; id: string; label: string; message: string }
+  /** `trust` is set when the server's key changed: the key the person may choose to trust. */
+  | { kind: "failed"; id: string; label: string; message: string; trust?: ServerKey }
   | { kind: "done"; message: string };
 
 export interface SshRequest {
@@ -205,4 +208,9 @@ export interface SshRequest {
 export function sshRequest(form: SshForm): SshRequest {
   const { host, port } = sshTarget(form);
   return { label: form.label.trim(), host, port: Number(port), user: form.user.trim(), password: form.password, key: form.key, passphrase: form.passphrase, keep: form.keep };
+}
+
+/** Connect moves the secrets to the run: the form keeps only what isn't one. */
+export function handOff(form: SshForm): { request: SshRequest; form: SshForm } {
+  return { request: sshRequest(form), form: { ...form, password: "", key: null, passphrase: "", keep: false } };
 }

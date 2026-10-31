@@ -129,15 +129,40 @@ test("a changed server key stops before anything is sent", async () => {
   assert.equal(ask.password, "");
 });
 
-test("a server's key is saved only once it has paired", async () => {
+test("a server's key is saved as soon as it passes, so a failed try can't trust another", async () => {
   const box = server({ install: { code: 3, stdout: "checksum=bad\n" } });
-  const failed = deps(box);
-  await run(box, failed);
-  assert.deepEqual(failed.keys, {});
-  const good = server();
-  const paired = deps(good);
-  await run(good, paired);
-  assert.equal(paired.keys["203.0.113.1:22"], good.session.fingerprint);
+  const dependency = deps(box);
+  await run(box, dependency);
+  assert.equal(dependency.keys["203.0.113.1:22"], box.session.fingerprint);
+});
+
+test("a key that passed before a refused sign-in is saved too", async () => {
+  const box = server();
+  const dependency = deps(box, { deps: { connect: async () => { throw new ConnectFailure("signin", "No.", "SHA256:seen"); } } });
+  await run(box, dependency);
+  assert.equal(dependency.keys["203.0.113.1:22"], "SHA256:seen");
+});
+
+test("a saved key is never replaced by a run", async () => {
+  const box = server();
+  const dependency = deps(box, { deps: { knownKey: () => box.session.fingerprint } });
+  await run(box, dependency);
+  assert.deepEqual(dependency.keys, {});
+});
+
+test("a changed key offers the new one to trust, and saves nothing itself", async () => {
+  const box = server();
+  const dependency = deps(box, { deps: { connect: async () => { throw new ConnectFailure("key", "changed", "SHA256:new"); }, knownKey: () => "SHA256:old" } });
+  const { failed } = await run(box, dependency);
+  assert.deepEqual(failed?.trust, { hostPort: "203.0.113.1:22", fingerprint: "SHA256:new" });
+  assert.deepEqual(dependency.keys, {});
+});
+
+test("a test build reads the feed from its own tag", async () => {
+  const box = server();
+  await run(box, deps(box, { deps: { releaseTag: "v0.9.8" } }));
+  assert.ok(box.ran.some((command) => command.includes("/download/v0.9.8/apex-deck-update.json")));
+  assert.ok(box.ran.every((command) => !command.includes("/latest/download/apex-deck-update.json")));
 });
 
 test("a refused sign-in fails on its own line and still wipes", async () => {
@@ -231,6 +256,91 @@ test("cancelling before pairing adds nothing and signs out", async () => {
   await started.done;
   assert.equal(dependency.saved.length, 0);
   assert.equal(box.state.closed, true);
+});
+
+/** Runs until `open` is called, then holds it. Returns the run and how to let `open` finish. */
+function stopAtOpen() {
+  const box = server();
+  const realOpen = box.session.open;
+  const paused = {};
+  const opening = new Promise((reached) => {
+    box.session.open = () => new Promise((resolve) => { paused.finish = () => resolve(realOpen()); reached(); });
+  });
+  const dependency = deps(box);
+  const events = [];
+  const started = runSetup(request(), dependency, (event) => events.push(event));
+  return { box, dependency, events, started, opening, paused };
+}
+
+test("Stop while the pairing command opens never approves, even when it opens late", async () => {
+  const { box, dependency, events, started, opening, paused } = stopAtOpen();
+  await opening;
+  started.cancel();
+  await started.done;
+  await paused.finish();
+  await new Promise((settled) => setTimeout(settled, 0));
+  assert.deepEqual(box.written, []);
+  assert.equal(dependency.saved.length, 0);
+  assert.equal(events.at(-1).label, "Stopped");
+});
+
+test("Stop after it opens but before the link settles at once and wipes", async () => {
+  const box = server();
+  box.session.open = async () => ({ listen() {}, async write(text) { box.written.push(text); }, async close() { box.state.streamClosed = true; } });
+  const opened = new Promise((reached) => {
+    const real = box.session.open;
+    box.session.open = async () => { const stream = await real(); setTimeout(reached, 0); return stream; };
+  });
+  const ask = request();
+  const started = runSetup(ask, deps(box), () => {});
+  await opened;
+  started.cancel();
+  await started.done;
+  assert.equal(ask.password, "");
+  assert.equal(box.state.streamClosed, true);
+});
+
+test("Stop while connecting settles without waiting, and a late session is closed", async () => {
+  const box = server();
+  let answer;
+  const dependency = deps(box, { deps: { connect: () => new Promise((resolve) => { answer = resolve; }) } });
+  const ask = request();
+  const started = runSetup(ask, dependency, () => {});
+  started.cancel();
+  await started.done;
+  assert.equal(ask.password, "");
+  answer(box.session);
+  await new Promise((settled) => setTimeout(settled, 0));
+  assert.equal(box.state.closed, true);
+});
+
+test("Stop mid-command reports Stopped, not a failed step", async () => {
+  const box = server();
+  const real = box.session.exec;
+  let started;
+  box.session.exec = async (command, options) => {
+    if (command.includes("uname -s")) { started.cancel(); throw new Error("Signed out."); }
+    return real(command, options);
+  };
+  const events = [];
+  started = runSetup(request(), deps(box), (event) => events.push(event));
+  await started.done;
+  assert.equal(events.at(-1).label, "Stopped");
+});
+
+test("once approve is sent, Stop can't strand a machine that paired", async () => {
+  const box = server();
+  let started;
+  const dependency = deps(box, { deps: { pair(link, onCode) {
+    const done = onCode("123456").then(() => { started.cancel(); return { hostEndpointId: "b".repeat(64), addrs: [], name: "box", tier: "full" }; });
+    box.state.onLine(JSON.stringify({ event: "claim", code: "123456" }));
+    return { done, cancel() {} };
+  } } });
+  const events = [];
+  started = runSetup(request(), dependency, (event) => events.push(event));
+  await started.done;
+  assert.equal(dependency.saved.length, 1);
+  assert.equal(events.at(-1).kind, "done");
 });
 
 test("the release feed needs a real version and well-formed entries", () => {

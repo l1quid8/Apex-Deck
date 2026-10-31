@@ -42,7 +42,9 @@ private final class HostKeyCheck: NIOSSHClientServerAuthenticationDelegate, @unc
 private struct SshError: LocalizedError {
     let stage: Failure
     let message: String
-    init(_ stage: Failure, _ message: String) { self.stage = stage; self.message = message }
+    /// The server key that passed the check, when sign-in failed after it.
+    var seen: String?
+    init(_ stage: Failure, _ message: String, seen: String? = nil) { self.stage = stage; self.message = message; self.seen = seen }
     var errorDescription: String? { message }
 }
 
@@ -147,7 +149,7 @@ public class ApexSshPlugin: CAPPlugin, CAPBridgedPlugin {
     private let connections = Connections()
 
     private func reject(_ call: CAPPluginCall, _ error: Error) {
-        if let error = error as? SshError { call.reject(error.message, error.stage.rawValue) }
+        if let error = error as? SshError { call.reject(error.message, error.stage.rawValue, nil, error.seen.map { ["seen": $0] }) }
         else { call.reject(error.localizedDescription) }
     }
 
@@ -180,7 +182,8 @@ public class ApexSshPlugin: CAPPlugin, CAPBridgedPlugin {
                     client = try await SSHClient.connect(host: host, port: port, authenticationMethod: auth, hostKeyValidator: .custom(check), reconnect: .never, connectTimeout: .seconds(20))
                 } catch {
                     if check.changed { throw SshError(.key, check.seen) }
-                    throw SshError(check.seen.isEmpty ? .reach : .signin, check.seen.isEmpty ? "No answer on port \(port)." : "The server didn't accept this sign-in.")
+                    if check.seen.isEmpty { throw SshError(.reach, "No answer on port \(port).") }
+                    throw SshError(.signin, "The server didn't accept this sign-in.", seen: check.seen)
                 }
                 let handle = await self.connections.add(client)
                 call.resolve(["handle": handle, "fingerprint": check.seen])

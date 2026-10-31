@@ -5,7 +5,7 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 import { ConnectFailure, runSetup, type ConnectStage, type SetupDeps, type SshSession, type SshStream } from "./sshRun.ts";
-import type { SetupEvent, SshRequest } from "./sshSetup.ts";
+import type { ServerKey, SetupEvent, SshRequest } from "./sshSetup.ts";
 
 type SshNote = { stream: number; line?: string; end?: number };
 
@@ -48,9 +48,9 @@ function wrap(native: Native): SshPlugin {
       try {
         opened = await native.connect({ host: request.host, port: request.port, user: request.user, password: request.password || undefined, key: request.key?.text, passphrase: request.passphrase || undefined, known: known ?? undefined });
       } catch (failure) {
-        const { code, message } = failure as { code?: string; message?: string };
+        const { code, message, data } = failure as { code?: string; message?: string; data?: { seen?: string } };
         const stage: ConnectStage = code === "key" || code === "signin" ? code : "reach";
-        throw new ConnectFailure(stage, message ?? "SSH didn't connect.", stage === "key" ? message : undefined);
+        throw new ConnectFailure(stage, message ?? "SSH didn't connect.", stage === "key" ? message : data?.seen);
       }
       const { handle, fingerprint } = opened;
       return {
@@ -96,6 +96,8 @@ export interface SetupRuns {
   watch(heard: (event: SetupEvent) => void): () => void;
   cancel(): void;
   clear(): void;
+  /** Saves a changed server key. Only a person looking at it may call this. */
+  trust(key: ServerKey): void;
 }
 
 export function setupRuns(deps: () => SetupDeps): SetupRuns {
@@ -120,5 +122,6 @@ export function setupRuns(deps: () => SetupDeps): SetupRuns {
     },
     cancel: () => run?.cancel(),
     clear() { run = null; },
+    trust: (key) => deps().rememberKey(key.hostPort, key.fingerprint),
   };
 }

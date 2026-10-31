@@ -4,7 +4,7 @@
 
 import type { Paired } from "./pairing.ts";
 import { AI_TOOLS, FIND_SERVICE, INSTALL_BWRAP, install, PAIR, PROBE, readUrl, REMOTE_ON, report, shellQuote, startPlain, startSystem, startUser, STOP_USER_SERVICE, switchVersion } from "./sshScripts.ts";
-import type { SetupEvent, SshRequest } from "./sshSetup.ts";
+import type { ServerKey, SetupEvent, SshRequest } from "./sshSetup.ts";
 
 export const REPO_RELEASES = "https://github.com/l1quid8/Apex-Deck/releases";
 const SERVER_ONLY = "Remote SSH is for Linux servers. On a Mac, open Deck there and use a QR code.";
@@ -30,6 +30,7 @@ export interface SshSession {
 export type ConnectStage = "reach" | "key" | "signin";
 export class ConnectFailure extends Error {
   readonly stage: ConnectStage;
+  /** The key the server showed. On "signin" it passed the check, so it counts as trusted. */
   readonly seen?: string;
   constructor(stage: ConnectStage, message: string, seen?: string) {
     super(message);
@@ -51,6 +52,8 @@ export interface SetupDeps {
   keep(request: SshRequest): Promise<void>;
   /** Where to find the release feed. Tests point this at a local server. */
   releases?: string;
+  /** Read the feed from this tag, not the latest release. A pre-release is never "latest". */
+  releaseTag?: string;
 }
 
 
@@ -86,28 +89,36 @@ export function olderThan(have: string | undefined, want: string): boolean {
 class StepFailure extends Error {
   readonly id: string;
   readonly label: string;
-  constructor(id: string, label: string, message: string) {
+  readonly trust?: ServerKey;
+  constructor(id: string, label: string, message: string, trust?: ServerKey) {
     super(message);
     this.id = id;
     this.label = label;
+    this.trust = trust;
   }
 }
+
+const stopFailure = () => new StepFailure("cancel", "Stopped", "Setup was stopped. Nothing was added to this phone.");
 
 const tail = (result: ExecResult): string => (result.stderr || result.stdout).trim().split("\n").slice(-2).join(" ").slice(0, 300);
 
 /**
  * Runs the whole list. `emit` hears each step; a failed step stops the run and
  * nothing after it happens. `wipe` runs last whatever happened, so no path
- * leaves a secret behind. `cancel` is only honoured before pairing: after
- * that the machine is on the phone and the run just has to finish cleanly.
+ * leaves a secret behind. A server's key is saved the moment it passes the
+ * check, so a failed try can't trust a different key next time. `cancel` works
+ * until the machine is told to approve: past that the pairing can land on the
+ * machine, so the run has to finish it.
  */
 export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: SetupEvent) => void): { cancel(): void; done: Promise<void> } {
   const secrets = request;
   let cancelled = false;
   let paired = false;
+  let committed = false;
   let stopPair = () => {};
+  let stopConnect = () => {};
   let session: SshSession | null = null;
-  const stopIfCancelled = () => { if (cancelled) throw new StepFailure("cancel", "Stopped", "Setup was stopped. Nothing was added to this phone."); };
+  const stopIfCancelled = () => { if (cancelled) throw stopFailure(); };
   const step = (id: string, text: string) => { stopIfCancelled(); emit({ kind: "step", id, text }); };
   const where = request.label || request.host;
   const hostPort = `${request.host}:${request.port}`;
@@ -116,14 +127,25 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
   const run = async () => {
     const known = deps.knownKey(hostPort);
     try {
-      session = await deps.connect(request, known);
+      const connecting = deps.connect(request, known).then((opened) => {
+        if (!known) deps.rememberKey(hostPort, opened.fingerprint);
+        return opened;
+      });
+      session = await Promise.race([connecting, new Promise<never>((_, reject) => {
+        stopConnect = () => {
+          reject(stopFailure());
+          connecting.then((late) => late.close()).catch(() => {});
+        };
+      })]);
     } catch (failure) {
+      if (failure instanceof StepFailure) throw failure;
       if (!(failure instanceof ConnectFailure)) throw new StepFailure("reach", `Couldn't reach ${where}`, String(failure).replace(/^Error: /, ""));
       if (failure.stage === "key") {
         emit({ kind: "step", id: "reach", text: `Reached ${where}` });
-        throw new StepFailure("key", "Server key changed", `${where}'s key isn't the one this phone saved${failure.seen ? ` (now ${failure.seen})` : ""}. That can mean someone is in the way, so nothing was sent. If the server was rebuilt, unpair it here and add it again.`);
+        throw new StepFailure("key", "Server key changed", `${where}'s key isn't the one this phone saved${failure.seen ? ` (now ${failure.seen})` : ""}. That can mean someone is in the way, so nothing was sent. Only trust the new key if you rebuilt this server.`, failure.seen ? { hostPort, fingerprint: failure.seen } : undefined);
       }
       if (failure.stage === "signin") {
+        if (!known && failure.seen) deps.rememberKey(hostPort, failure.seen);
         emit({ kind: "step", id: "reach", text: `Reached ${where}` });
         emit({ kind: "step", id: "key", text: "Server key checked" });
         throw new StepFailure("signin", `${where} refused the sign-in`, failure.message);
@@ -146,7 +168,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
 
     const running = report((await ssh.exec(FIND_SERVICE)).stdout);
     const versionNow = probe.version;
-    const feed = await fetchFeed(ssh, releases).catch((failure: Error) => {
+    const feed = await fetchFeed(ssh, releases, deps.releaseTag).catch((failure: Error) => {
       if (probe.bin) return null;
       throw new StepFailure("install", "Couldn't check for Deck", failure.message);
     });
@@ -228,10 +250,8 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     const named = (list: string[]) => list.map((tool) => tool[0].toUpperCase() + tool.slice(1)).join(" and ");
     step("tools", [`AI tools ready`, signIn.length ? `${named(signIn)} need${signIn.length === 1 ? "s" : ""} sign-in` : "", missing.length ? `${named(missing)} couldn't be installed` : "", !bwrap && tools.codex === "installed" ? "Codex needs bubblewrap (admin)" : ""].filter(Boolean).join("; "));
 
-    const made = await pairOverSsh(ssh, deps, (cancel) => { stopPair = cancel; });
+    const made = await pairOverSsh(ssh, deps, { onCancel: (cancel) => { stopPair = cancel; }, onCommit: () => { committed = true; } });
     paired = true;
-    // Saved only now, so a server rebuilt after a failed first try can be tried again.
-    deps.rememberKey(hostPort, ssh.fingerprint);
     if (request.keep) {
       await deps.keep(request).catch((failure: Error) => {
         request.keep = false;
@@ -266,8 +286,10 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
       emit({ kind: "done", message: [`${where} is ready.`, notes].filter(Boolean).join(" ") });
       return;
     }
+    // Stopping cuts the connection, so the step it landed in fails for that reason alone.
+    if (cancelled) failure = stopFailure();
     if (failure instanceof StepFailure) {
-      emit({ kind: "failed", id: failure.id, label: failure.label, message: paired ? `${where} is paired, but ${failure.message}` : failure.message });
+      emit({ kind: "failed", id: failure.id, label: failure.label, message: paired ? `${where} is paired, but ${failure.message}` : failure.message, trust: failure.trust });
       return;
     }
     const text = String(failure).replace(/^Error: /, "");
@@ -277,8 +299,9 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
   return {
     done,
     cancel() {
-      if (paired) return;
+      if (paired || committed) return;
       cancelled = true;
+      stopConnect();
       stopPair();
       void (session as SshSession | null)?.close().catch(() => {});
     },
@@ -309,8 +332,9 @@ async function adminRights(ssh: SshSession, password: string, probe: Record<stri
 }
 const refused = async (): Promise<ExecResult> => ({ code: 1, stdout: "", stderr: "No admin rights." });
 
-async function fetchFeed(ssh: SshSession, releases: string): Promise<Feed> {
-  const result = await ssh.exec(readUrl(`${releases}/latest/download/apex-deck-update.json`), { timeoutS: 45 });
+async function fetchFeed(ssh: SshSession, releases: string, tag?: string): Promise<Feed> {
+  const from = tag ? `download/${tag}` : "latest/download";
+  const result = await ssh.exec(readUrl(`${releases}/${from}/apex-deck-update.json`), { timeoutS: 45 });
   if (result.code !== 0) throw new Error("The release list couldn't be reached from the server.");
   return readFeed(result.stdout);
 }
@@ -318,35 +342,51 @@ async function fetchFeed(ssh: SshSession, releases: string): Promise<Feed> {
 /**
  * The machine prints a link, the phone dials it, both work out a code, and the
  * machine approves only the code the phone reports. Whoever got the link first
- * can't pair: their code wouldn't match this dial's.
+ * can't pair: their code wouldn't match this dial's. Stopping works at any point
+ * up to the approve, and settles straight away; `onCommit` marks that point.
  */
-function pairOverSsh(ssh: SshSession, deps: SetupDeps, onCancel: (cancel: () => void) => void): Promise<Paired> {
+function pairOverSsh(ssh: SshSession, deps: SetupDeps, control: { onCancel(cancel: () => void): void; onCommit(): void }): Promise<Paired> {
   return new Promise((resolve, reject) => {
+    let attempt: { done: Promise<Paired>; cancel(): void } | null = null;
+    let stream: SshStream | null = null;
     let waitingCode: ((code: string) => void) | null = null;
     let machineCode: string | null = null;
     let finished = false;
+    let stopped = false;
+    let committed = false;
     const fail = (message: string) => { if (!finished) { finished = true; reject(new StepFailure("pair", "Pairing didn't finish", message)); } };
-    ssh.open(PAIR).then((stream) => {
-      let attempt: { done: Promise<Paired>; cancel(): void } | null = null;
-      onCancel(() => { attempt?.cancel(); void stream.close(); });
-      stream.listen((line) => {
+    control.onCancel(() => {
+      if (committed) return;
+      stopped = true;
+      attempt?.cancel();
+      void stream?.close();
+      if (!finished) { finished = true; reject(stopFailure()); }
+    });
+    ssh.open(PAIR).then((opened) => {
+      if (stopped) { void opened.close(); return; }
+      stream = opened;
+      opened.listen((line) => {
+        if (stopped) return;
         let event: { event?: string; link?: string; code?: string };
         try { event = JSON.parse(line); } catch { return; }
         if (event.event === "link" && event.link) {
           attempt = deps.pair(event.link, (code) => new Promise((go, stop) => {
             const compare = (theirs: string) => {
+              if (stopped) { stop(new Error("Setup was stopped.")); return; }
               if (theirs !== code) { stop(new Error("The codes didn't match.")); return; }
-              stream.write(`approve ${code}\n`).then(go, stop);
+              committed = true;
+              control.onCommit();
+              opened.write(`approve ${code}\n`).then(go, stop);
             };
             if (machineCode) compare(machineCode);
             else waitingCode = compare;
           }));
-          attempt.done.then((paired) => { finished = true; void stream.close(); resolve(paired); }, (error: Error) => { void stream.close(); fail(error.message); });
+          attempt.done.then((paired) => { finished = true; void opened.close(); resolve(paired); }, (error: Error) => { void opened.close(); fail(error.message); });
         } else if (event.event === "claim" && event.code) {
           machineCode = event.code;
           waitingCode?.(event.code);
         }
-      }, (code) => { if (code !== 0) fail("The machine stopped before pairing finished."); });
+      }, (code) => { if (!committed || code !== 0) fail("The machine stopped before pairing finished."); });
     }, (error: Error) => fail(error.message));
   });
 }

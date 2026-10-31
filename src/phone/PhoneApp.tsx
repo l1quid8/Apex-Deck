@@ -318,6 +318,7 @@ export function PhoneApp() {
   /** Add a machine over SSH. Lives here so the run outlasts the sheet it started in. */
   const sshRuns = useMemo<SetupRuns | null>(() => (ssh && plugin ? setupRuns((): SetupDeps => ({
     connect: (request, known) => ssh.connect(request, known),
+    releaseTag: import.meta.env.VITE_SSH_RELEASE_TAG || undefined,
     knownKey: (hostPort) => readServerKeys()[hostPort] ?? null,
     rememberKey: (hostPort, fingerprint) => { try { localStorage.setItem(SERVER_KEYS, JSON.stringify({ ...readServerKeys(), [hostPort]: fingerprint })); } catch { /* the next connect trusts it again */ } },
     pair(link, onCode) {

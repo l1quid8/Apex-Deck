@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Check, Lock, X } from "./icons";
-import { goodPort, MAX_KEY_BYTES, readKey, sshFormError, sshRequest, sshTarget, type SetupEvent, type SshForm, type SshKey } from "./sshSetup";
+import { goodPort, handOff, MAX_KEY_BYTES, readKey, sshFormError, sshTarget, type ServerKey, type SetupEvent, type SshForm, type SshKey } from "./sshSetup";
 import type { SetupRuns } from "./sshNative";
 
 const words = (error: unknown) => String(error).replace(/^Error: /, "");
@@ -10,8 +10,8 @@ interface Line { id: string; text: string; failed?: boolean }
 
 /**
  * Remote SSH on Add a machine: the form, then a list that runs by itself.
- * The form's secrets live in this component's state; Connect hands a copy to
- * the run, which wipes it. Leaving only detaches: the run keeps going above
+ * The form's secrets live in this component's state until Connect moves them to
+ * the run, which wipes them, so a failed try asks for them again. Leaving only detaches: the run keeps going above
  * this screen, and coming back shows it again. `setup` is null where the app
  * can't sign in over SSH (a browser); Connect then says so.
  */
@@ -20,7 +20,7 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
   const [error, setError] = useState("");
   const [lines, setLines] = useState<Line[] | null>(null);
   const [paired, setPaired] = useState(false);
-  const [end, setEnd] = useState<{ failed: boolean; message: string } | null>(null);
+  const [end, setEnd] = useState<{ failed: boolean; message: string; trust?: ServerKey } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const heardRef = useRef<(event: SetupEvent) => void>(() => {});
 
@@ -45,7 +45,7 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
     else if (event.kind === "done") setEnd({ failed: false, message: event.message });
     else {
       setLines((list) => [...(list ?? []).filter((line) => line.id !== event.id), { id: event.id, text: event.label, failed: true }]);
-      setEnd({ failed: true, message: event.message });
+      setEnd({ failed: true, message: event.message, trust: event.trust });
     }
   };
 
@@ -64,8 +64,16 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
     setLines([]);
     setPaired(false);
     setEnd(null);
-    setup.start(sshRequest(form));
+    const { request, form: emptied } = handOff(form);
+    setForm(emptied);
+    setup.start(request);
     setup.watch((event) => heardRef.current(event));
+  };
+
+  const back = () => {
+    setup?.clear();
+    setLines(null);
+    setError("The sign-in was wiped. Type the password or import the key again.");
   };
 
   if (lines) {
@@ -77,8 +85,9 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
         {lines.map((line) => <div key={line.id} className="ph-srow"><span className="ph-srow-icon">{line.failed ? <span className="ph-red"><X size={16} /></span> : <Check size={16} />}</span><span className={`ph-grow${line.failed ? " ph-red" : ""}`}>{line.text}</span></div>)}
       </div>
       <p className={`ph-sheet-text${failed ? " ph-red" : " ph-quiet"}`} role={failed ? "alert" : "status"}>{status}</p>
+      {end?.trust && <button type="button" className="ph-plain ph-wide" onClick={() => { setup?.trust(end.trust!); back(); }}>I rebuilt this server. Trust {end.trust.fingerprint}</button>}
       {failed
-        ? <button type="button" className="primary ph-wide" onClick={() => { setup?.clear(); setLines(null); }}>Back</button>
+        ? <button type="button" className="primary ph-wide" onClick={back}>Back</button>
         : <button type="button" className="primary ph-wide" disabled={!paired} onClick={() => { if (end) setup?.clear(); onDone(); }}>Done</button>}
       {!paired && !end && <button type="button" className="ph-plain ph-wide" onClick={() => setup?.cancel()}>Stop setup</button>}
     </>;
