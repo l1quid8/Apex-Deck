@@ -263,33 +263,31 @@ protected path.
   `~/.codex/sessions` would show a jailed bot every other project's transcript. So a jailed
   bot's sessions don't appear in the person's own `claude --resume`.
 - **Logins go in and never come back.** Every provider gets the gateway's access-only
-  sign-in: the host's named login file, parsed down to known fields, with the refresh token
-  removed. Claude, Codex, Gemini, Grok and Muse all work this way. A launch with under 20
-  minutes left on the login is refused with the refresh message, and leaves no older login in
-  the home. The host's login is the only one that refreshes, and it is never written from a
-  jail home. An earlier revision copied refreshed logins back, checked by expiry and account
-  id. Those checks read files the bot can write, so a jailed bot could replace the host's login
-  and send a Full bot's work to another account. Nothing a bot writes can prove who a token
-  belongs to, so nothing comes back.
-- **Refreshing is the daemon's job, outside the jail.** A server with only jailed bots has
-  nobody else to do it. Before staging a login a launch would refuse, the daemon runs the
-  provider's own CLI as the person: Claude's `auth status --json`, and Codex's app-server
-  `account/read` with `refreshToken: true`. It works on a scratch copy of the login in
-  `login-refresh/<provider>` under the hidden data folder, with `HOME`, `CLAUDE_CONFIG_DIR` and
-  `CODEX_HOME` all pointing there. That folder holds Deck's minimal settings, so the person's
-  `apiKeyHelper`, hooks, plugins and MCP servers never load, and the environment is cleared to
-  a short allowlist. Both CLIs replace the refresh token each time, so a run can't be thrown
-  away: the new login is saved whole, only if a launch would accept it and the host's file
-  hasn't changed since the copy. If it has, the other writer's login stays, even if that spends
-  this run's token and the person must sign in again. The CLIs take no lock Deck can share, so
-  the save is an atomic exchange, not a check then a rename: the swap keeps the old file whole,
-  Deck compares it, and swaps back if it changed. A folder that can't do the exchange is refused
-  before a token is spent. Refreshes run one
-  at a time, and the scratch folder is removed afterwards. A failed refresh refuses the launch
-  with the refresh message. Gemini has no proven command yet, and its logins last about an
-  hour, so Gemini bots are refused once under 20 minutes until Task 5 settles one. Grok and
-  Muse are the same. A live session whose access token runs out is restarted on a newly staged
-  login.
+  sign-in: Deck's own login file, parsed down to known fields, with the refresh token removed.
+  Claude, Codex, Gemini, Grok and Muse all work this way. A launch with under 20 minutes left
+  on the login is refused with the refresh message, and leaves no older login in the home.
+  Nothing a jailed bot writes can prove who a token belongs to, so nothing comes back.
+- **Deck has its own login, separate from the person's.** Jailed bots draw only on
+  `logins/<provider>` under the hidden data folder. It is a separate sign-in, so a separate
+  grant with its own refresh chain, and Deck never reads the person's login for a jail or writes
+  it. Earlier revisions saved refreshed logins into the person's file, last with an atomic
+  exchange. The CLIs take no lock Deck can share and files have no compare-and-swap, so any
+  uncoordinated save could overwrite a concurrent sign-out or account change. The fresh sign-ins
+  on the test server coexisted with the Mac's, which is why the grants can stay separate. Full
+  bots and the person's own CLI keep using the person's login. So a machine needs one extra sign-in per
+  provider used below Full, and the Sign in button for a below-Full bot signs in this login.
+  The account shown for it can differ from the person's, and Settings shows it.
+- **Refreshing is the daemon's job, outside the jail.** Before staging a login a launch would
+  refuse, the daemon runs the provider's own CLI as the person, in that login's folder: Claude's
+  `auth status --json`, and Codex's app-server `account/read` with `refreshToken: true`. `HOME`,
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` all point there, Deck's minimal settings are rewritten
+  around the login first, and the environment is cleared to a short allowlist, so the person's
+  `apiKeyHelper`, hooks, plugins and MCP servers never load. The CLI saves its own new login, so
+  a crash can't strand a spent refresh token. Refreshes run one at a time, and each daemon has
+  its own data folder, so nothing else writes these files. A failed refresh refuses the launch
+  with the refresh message. Gemini has no proven command yet, and its logins last about an hour,
+  so Gemini bots are refused once under 20 minutes until Task 5 settles one. Grok and Muse are
+  the same. A live session whose access token runs out is restarted on a newly staged login.
 - **The home is hostile to the daemon.** A jail can write it, so the daemon opens every path
   in it one name at a time with `O_NOFOLLOW`, reads only ordinary files, replaces anything
   in the way of a generated file, and rewrites every generated file at each launch. A mount
@@ -786,13 +784,13 @@ are all gone before a lowered level is saved; a killed `bwrap` leaves no process
 a cached MCP link isn't reused after a level change.
 
 Also: group stop still works with `setsid()`; Codex's own sandbox works nested in
-bubblewrap; the host login is unchanged after a jailed turn, and the daemon's refresh keeps a jailed bot working; two bots of one provider in one
+bubblewrap; Deck's login is unchanged after a jailed turn, and the daemon's refresh keeps a jailed bot working; two bots of one provider in one
 project don't overwrite each other's private home.
 
 ## Known limits
 
 - A jailed bot can read its own access token and send it anywhere it can reach, until that token
-  expires. It never holds a refresh token, and it can't change the host's login.
+  expires. It never holds a refresh token, and it can't change Deck's login or the person's.
 
 - **The claim covers confined processes and Deck's automatic project operations.** It can't
   stop a person typing `git commit` or `make` in their own terminal, including the Code

@@ -1,17 +1,16 @@
-//! Keeps the person's own logins alive for jailed bots, which hold no refresh
-//! token and can't renew anything. The provider's CLI runs outside the jail, on
-//! a scratch copy of the login in a folder only the daemon can reach, with
-//! Deck's minimal settings and a cleared environment, so none of the person's
-//! hooks, plugins, MCP servers or helper commands load. Both providers replace
-//! the refresh token each time, so the new login has to be saved or it's lost.
-use super::home::{claude_access, HostPaths};
+//! Keeps Deck's own logins alive for jailed bots, which hold no refresh token and
+//! can't renew anything. The provider's CLI runs outside the jail, in the login's
+//! own folder, with Deck's minimal settings and a cleared environment, so none of
+//! the person's hooks, plugins, MCP servers or helper commands load. The CLI saves
+//! its new login itself. The person's own login is a separate grant and isn't
+//! touched: only an owned file can be replaced safely without a shared lock.
+use super::home::{claude_access, login_home};
 use super::JailError;
 use crate::gateway_sandbox::codex_auth_document;
 use crate::owned_process::Registry;
 use apex_core::{AgentTool, ParticipantError};
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -34,20 +33,22 @@ type Stage = fn(&[u8], u64) -> Result<Vec<u8>, ParticipantError>;
 
 struct Login {
     name: &'static str,
-    source: PathBuf,
-    inside: &'static str,
+    home: PathBuf,
+    file: PathBuf,
     /// The same check a launch uses, so "fresh" can't mean two things.
     stage: Stage,
 }
 
 impl Login {
     /// The providers with a refresh command proven against a real login.
-    fn of(tool: AgentTool, host: &HostPaths) -> Option<Self> {
-        match tool {
-            AgentTool::ClaudeCode => Some(Self { name: "claude", source: host.claude_dir.join(".credentials.json"), inside: ".claude/.credentials.json", stage: claude_access }),
-            AgentTool::Codex => Some(Self { name: "codex", source: host.codex_dir.join("auth.json"), inside: ".codex/auth.json", stage: codex_auth_document }),
-            _ => None,
-        }
+    fn of(tool: AgentTool, data_dir: &Path) -> Option<Self> {
+        let (name, inside, stage): (_, _, Stage) = match tool {
+            AgentTool::ClaudeCode => ("claude", ".claude/.credentials.json", claude_access),
+            AgentTool::Codex => ("codex", ".codex/auth.json", codex_auth_document),
+            _ => return None,
+        };
+        let home = login_home(data_dir, name);
+        Some(Self { name, file: home.join(inside), home, stage })
     }
 }
 
@@ -56,85 +57,26 @@ fn now() -> u64 {
 }
 
 fn private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
 
-/// Swaps two paths in one step, so neither file is ever overwritten.
-fn exchange(first: &Path, second: &Path) -> io::Result<()> {
-    let text = |path: &Path| CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
-    let (first, second) = (text(first)?, text(second)?);
-    #[cfg(target_os = "linux")]
-    let done = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, first.as_ptr(), libc::AT_FDCWD, second.as_ptr(), libc::RENAME_EXCHANGE) == 0 };
-    #[cfg(target_os = "macos")]
-    let done = unsafe { libc::renamex_np(first.as_ptr(), second.as_ptr(), libc::RENAME_SWAP) == 0 };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let done = { let _ = (first, second); return Err(io::Error::from(io::ErrorKind::Unsupported)) };
-    if done { Ok(()) } else { Err(io::Error::last_os_error()) }
-}
-
-fn sibling(target: &Path, tag: &str) -> PathBuf {
-    target.with_extension(format!("apex-{tag}-{}", std::process::id()))
-}
-
-/// Proves the login's folder can do the swap, before a refresh token is spent
-/// on a login that couldn't then be saved.
-fn can_swap(target: &Path) -> io::Result<()> {
-    let target = std::fs::canonicalize(target)?;
-    let (first, second) = (sibling(&target, "a"), sibling(&target, "b"));
-    let _ = std::fs::remove_file(&first);
-    let _ = std::fs::remove_file(&second);
-    let swapped = private_file(&first, b"").and_then(|()| private_file(&second, b"")).and_then(|()| exchange(&first, &second));
-    let _ = std::fs::remove_file(&first);
-    let _ = std::fs::remove_file(&second);
-    swapped
-}
-
-/// Puts `after` in place only if the file still holds `before`, and never loses
-/// a change made at the same moment. Nothing can compare and write as one step
-/// against a CLI that takes no lock, so this writes first and looks second: the
-/// swap keeps the old file whole, whatever replaced it. A CLI that opened it to
-/// write has already truncated it, so that shows too, and swapping back hands
-/// that CLI's own file back while it finishes. A sign-out leaves nothing to swap
-/// with, and a later change lands on the new file, so it stays. A crash leaves
-/// the old login or the new one.
-fn swap_in(target: &Path, before: &[u8], after: &[u8]) -> io::Result<bool> {
-    let target = std::fs::canonicalize(target)?;
-    let held = sibling(&target, "swap");
-    let _ = std::fs::remove_file(&held);
-    private_file(&held, after)?;
-    if let Err(error) = exchange(&held, &target) {
-        let _ = std::fs::remove_file(&held);
-        return if error.kind() == io::ErrorKind::NotFound { Ok(false) } else { Err(error) };
-    }
-    let saved = std::fs::read(&held).is_ok_and(|old| old == before);
-    if !saved {
-        // Written over the new login since? Then that's newer, so swap again.
-        let swapped_back = exchange(&held, &target).is_ok();
-        if swapped_back && !std::fs::read(&held).is_ok_and(|ours| ours == after) { let _ = exchange(&held, &target); }
-    }
-    let _ = std::fs::remove_file(&held);
-    if let Some(folder) = target.parent() { std::fs::File::open(folder)?.sync_all()?; }
-    Ok(saved)
-}
-
-fn write_scratch(scratch: &Path, login: &Login, bytes: &[u8]) -> io::Result<()> {
-    let _ = std::fs::remove_dir_all(scratch);
+/// Rewrites Deck's minimal settings around the login and leaves the login alone.
+fn write_settings(home: &Path) -> io::Result<()> {
     let mut folder = std::fs::DirBuilder::new();
     folder.recursive(true).mode(0o700);
-    for inner in [".claude", ".codex", "work"] { folder.create(scratch.join(inner))?; }
-    private_file(&scratch.join(login.inside), bytes)?;
-    private_file(&scratch.join(".claude/settings.json"), b"{}")?;
-    private_file(&scratch.join(".claude/.claude.json"), br#"{"hasCompletedOnboarding":true,"autoUpdates":false}"#)?;
-    private_file(&scratch.join(".codex/config.toml"), b"check_for_update_on_startup = false\ncli_auth_credentials_store = \"file\"\n")
+    for inner in [".claude", ".codex", "work"] { folder.create(home.join(inner))?; }
+    private_file(&home.join(".claude/settings.json"), b"{}")?;
+    private_file(&home.join(".claude/.claude.json"), br#"{"hasCompletedOnboarding":true,"autoUpdates":false}"#)?;
+    private_file(&home.join(".codex/config.toml"), b"check_for_update_on_startup = false\ncli_auth_credentials_store = \"file\"\n")
 }
 
-fn command(program: &Path, path: &OsStr, scratch: &Path) -> Command {
+fn command(program: &Path, path: &OsStr, home: &Path) -> Command {
     let mut command = Command::new(program);
-    command.current_dir(scratch.join("work")).stderr(Stdio::null());
-    let vars: [(&str, OsString); 7] = [("HOME", scratch.into()), ("PATH", path.into()), ("LANG", "C.UTF-8".into()), ("NO_COLOR", "1".into()),
-        ("DISABLE_AUTOUPDATER", "1".into()), ("CLAUDE_CONFIG_DIR", scratch.join(".claude").into()), ("CODEX_HOME", scratch.join(".codex").into())];
+    command.current_dir(home.join("work")).stderr(Stdio::null());
+    let vars: [(&str, OsString); 7] = [("HOME", home.into()), ("PATH", path.into()), ("LANG", "C.UTF-8".into()), ("NO_COLOR", "1".into()),
+        ("DISABLE_AUTOUPDATER", "1".into()), ("CLAUDE_CONFIG_DIR", home.join(".claude").into()), ("CODEX_HOME", home.join(".codex").into())];
     command.envs(vars);
     command
 }
@@ -162,45 +104,35 @@ async fn run_codex(registry: &Registry, mut command: Command) -> io::Result<()> 
     Ok(())
 }
 
-async fn renew(registry: &Registry, login: &Login, program: &Path, path: &OsStr, scratch: &Path, before: &[u8], timeout: Duration) -> io::Result<bool> {
-    can_swap(&login.source)?;
-    write_scratch(scratch, login, before)?;
-    let command = command(program, path, scratch);
+async fn renew(registry: &Registry, login: &Login, program: &Path, path: &OsStr, timeout: Duration) -> io::Result<()> {
+    write_settings(&login.home)?;
+    let command = command(program, path, &login.home);
     let run = async {
         if login.name == "claude" { run_claude(registry, command).await } else { run_codex(registry, command).await }
     };
-    tokio::time::timeout(timeout, run).await.map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
-    let after = std::fs::read(scratch.join(login.inside))?;
-    if (login.stage)(&after, now()).is_err() { return Ok(false); }
-    // Someone else refreshed while this ran. Theirs is what the person's own
-    // tools are using, so it stays, and this launch takes it if it's usable.
-    if std::fs::read(&login.source)? != before { return Ok(false); }
-    swap_in(&login.source, before, &after)
+    tokio::time::timeout(timeout, run).await.map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
 }
 
-/// Renews the person's login if a launch would refuse it, and does nothing for
-/// a provider with no proven refresh command. `program` and `path` must be the
+/// Renews Deck's login if a launch would refuse it, and does nothing for a
+/// provider with no proven refresh command. `program` and `path` must be the
 /// resolved ones a jail can't write. The error is the refresh message a launch
 /// shows, so a failed refresh refuses the launch.
-pub async fn ensure(registry: &Registry, data_dir: &Path, tool: AgentTool, host: &HostPaths, program: &Path, path: &OsStr) -> Result<(), JailError> {
-    ensure_within(registry, data_dir, tool, host, program, path, TIMEOUT).await
+pub async fn ensure(registry: &Registry, data_dir: &Path, tool: AgentTool, program: &Path, path: &OsStr) -> Result<(), JailError> {
+    ensure_within(registry, data_dir, tool, program, path, TIMEOUT).await
 }
 
-async fn ensure_within(registry: &Registry, data_dir: &Path, tool: AgentTool, host: &HostPaths, program: &Path, path: &OsStr, timeout: Duration) -> Result<(), JailError> {
-    let Some(login) = Login::of(tool, host) else { return Ok(()) };
+async fn ensure_within(registry: &Registry, data_dir: &Path, tool: AgentTool, program: &Path, path: &OsStr, timeout: Duration) -> Result<(), JailError> {
+    let Some(login) = Login::of(tool, data_dir) else { return Ok(()) };
     let _held = HELD.lock().await;
-    let before = match std::fs::read(&login.source) {
+    let before = match std::fs::read(&login.file) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
     let Err(refused) = (login.stage)(&before, now()) else { return Ok(()) };
-    let scratch = data_dir.join("login-refresh").join(login.name);
-    let renewed = renew(registry, &login, program, path, &scratch, &before, timeout).await;
-    let _ = std::fs::remove_dir_all(&scratch);
+    let renewed = renew(registry, &login, program, path, timeout).await;
     match renewed {
-        Ok(true) => Ok(()),
-        _ if std::fs::read(&login.source).is_ok_and(|now_there| (login.stage)(&now_there, now()).is_ok()) => Ok(()),
+        Ok(()) if std::fs::read(&login.file).is_ok_and(|after| (login.stage)(&after, now()).is_ok()) => Ok(()),
         _ => Err(JailError::Login(refused.to_string())),
     }
 }
@@ -212,7 +144,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::os::unix::fs::PermissionsExt;
 
-    struct Fixture { root: PathBuf, data: PathBuf, host: HostPaths }
+    struct Fixture { root: PathBuf, data: PathBuf }
 
     impl Drop for Fixture {
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
@@ -223,12 +155,10 @@ mod tests {
         let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!("apex-refresh-{}-{number}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let home = root.join("home");
-        std::fs::create_dir_all(home.join(".claude")).unwrap();
-        std::fs::create_dir_all(home.join(".codex")).unwrap();
         let data = root.join("data");
-        std::fs::create_dir_all(&data).unwrap();
-        Fixture { host: HostPaths::from_env(&home), root, data }
+        std::fs::create_dir_all(data.join("logins/claude/.claude")).unwrap();
+        std::fs::create_dir_all(data.join("logins/codex/.codex")).unwrap();
+        Fixture { root, data }
     }
 
     impl Fixture {
@@ -240,14 +170,12 @@ mod tests {
         }
 
         async fn run(&self, tool: AgentTool, program: &Path, timeout: Duration) -> Result<(), JailError> {
-            ensure_within(&Registry::default(), &self.data, tool, &self.host, program, OsStr::new("/usr/bin:/bin"), timeout).await
+            ensure_within(&Registry::default(), &self.data, tool, program, OsStr::new("/usr/bin:/bin"), timeout).await
         }
 
-        fn claude_file(&self) -> PathBuf { self.host.claude_dir.join(".credentials.json") }
-        fn codex_file(&self) -> PathBuf { self.host.codex_dir.join("auth.json") }
+        fn claude_file(&self) -> PathBuf { self.data.join("logins/claude/.claude/.credentials.json") }
+        fn codex_file(&self) -> PathBuf { self.data.join("logins/codex/.codex/auth.json") }
         fn seen(&self) -> PathBuf { self.root.join("seen") }
-
-        fn gone(&self) -> bool { !self.data.join("login-refresh/claude").exists() && !self.data.join("login-refresh/codex").exists() }
     }
 
     fn claude_login(access: &str, minutes: u64) -> String {
@@ -266,7 +194,7 @@ mod tests {
 
     fn read(path: &Path) -> Value { serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap() }
 
-    /// A fake CLI that writes `login` over the scratch file it was pointed at.
+    /// A fake CLI that saves `login` itself, as the real one does.
     fn writes_claude(login: &str) -> String { format!("cat > \"$CLAUDE_CONFIG_DIR/.credentials.json\" <<'DONE'\n{login}\nDONE") }
 
     #[tokio::test]
@@ -281,7 +209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_expiring_claude_login_is_replaced_whole_and_stays_private() {
+    async fn an_expiring_login_is_renewed_by_the_cli_in_decks_folder() {
         let fixture = fixture();
         std::fs::write(fixture.claude_file(), claude_login("old", 5)).unwrap();
         let cli = fixture.cli(&writes_claude(&claude_login("new", 480)));
@@ -289,12 +217,10 @@ mod tests {
         let saved = read(&fixture.claude_file());
         assert_eq!(saved["claudeAiOauth"]["refreshToken"], "r-new");
         assert_eq!(saved["mcpOAuth"]["server"], "kept");
-        assert_eq!(std::fs::metadata(fixture.claude_file()).unwrap().permissions().mode() & 0o777, 0o600);
-        assert!(fixture.gone());
     }
 
     #[tokio::test]
-    async fn codex_is_asked_over_the_app_server_and_saved() {
+    async fn codex_is_asked_over_the_app_server() {
         let fixture = fixture();
         std::fs::write(fixture.codex_file(), codex_login(5)).unwrap();
         let cli = fixture.cli(&format!(concat!(
@@ -306,26 +232,40 @@ mod tests {
             "cat\n"), codex_login(14400)));
         fixture.run(AgentTool::Codex, &cli, TIMEOUT).await.unwrap();
         assert!(codex_auth_document(&std::fs::read(fixture.codex_file()).unwrap(), now()).is_ok());
-        assert!(fixture.gone());
     }
 
     #[tokio::test]
     async fn the_cli_sees_only_decks_settings_and_environment() {
         let fixture = fixture();
-        let login = claude_login("old", 5);
-        std::fs::write(fixture.claude_file(), &login).unwrap();
-        std::fs::write(fixture.host.claude_dir.join("settings.json"), r#"{"apiKeyHelper":"HOST-ONLY"}"#).unwrap();
+        std::fs::write(fixture.claude_file(), claude_login("old", 5)).unwrap();
+        let home = fixture.data.join("logins/claude");
+        // Whatever was planted in the folder is rewritten before the CLI starts.
+        std::fs::write(home.join(".claude/settings.json"), r#"{"apiKeyHelper":"PLANTED"}"#).unwrap();
         std::env::set_var("APEX_REFRESH_SENTINEL", "1");
         let seen = fixture.seen();
         let cli = fixture.cli(&format!("{{ pwd; ls -A; env | cut -d= -f1 | sort; cat \"$CLAUDE_CONFIG_DIR/settings.json\"; echo; printenv HOME; }} > {}", seen.display()));
         let _ = fixture.run(AgentTool::ClaudeCode, &cli, TIMEOUT).await;
         let text = std::fs::read_to_string(&seen).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        let scratch = fixture.data.join("login-refresh/claude");
-        assert!(lines[0].ends_with("login-refresh/claude/work"), "{text}");
-        assert!(!text.contains("HOST-ONLY") && !text.contains("APEX_REFRESH_SENTINEL") && !text.contains("LD_"), "{text}");
+        assert!(lines[0].ends_with("logins/claude/work"), "{text}");
+        assert!(!text.contains("PLANTED") && !text.contains("APEX_REFRESH_SENTINEL") && !text.contains("LD_"), "{text}");
         assert_eq!(lines[lines.len() - 2], "{}", "{text}");
-        assert_eq!(*lines.last().unwrap(), scratch.to_str().unwrap(), "{text}");
+        assert_eq!(*lines.last().unwrap(), home.to_str().unwrap(), "{text}");
+    }
+
+    #[tokio::test]
+    async fn the_persons_own_login_is_never_read_or_written() {
+        let fixture = fixture();
+        let theirs = fixture.root.join("home/.claude/.credentials.json");
+        std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        let login = claude_login("theirs", 5);
+        std::fs::write(&theirs, &login).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", theirs.parent().unwrap());
+        std::fs::write(fixture.claude_file(), claude_login("old", 5)).unwrap();
+        let cli = fixture.cli(&writes_claude(&claude_login("new", 480)));
+        fixture.run(AgentTool::ClaudeCode, &cli, TIMEOUT).await.unwrap();
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        assert_eq!(std::fs::read_to_string(theirs).unwrap(), login);
     }
 
     #[tokio::test]
@@ -336,79 +276,14 @@ mod tests {
         let error = fixture.run(AgentTool::ClaudeCode, &fixture.cli("exit 1"), TIMEOUT).await.unwrap_err();
         assert!(error.to_string().contains("needs refreshing"), "{error}");
         assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), login);
-        assert!(fixture.gone());
     }
 
     #[tokio::test]
-    async fn a_refresh_that_still_expires_soon_is_not_saved() {
+    async fn a_refresh_that_still_expires_soon_refuses_the_launch() {
         let fixture = fixture();
-        let login = claude_login("old", 5);
-        std::fs::write(fixture.claude_file(), &login).unwrap();
+        std::fs::write(fixture.claude_file(), claude_login("old", 5)).unwrap();
         let cli = fixture.cli(&writes_claude(&claude_login("new", 6)));
         assert!(fixture.run(AgentTool::ClaudeCode, &cli, TIMEOUT).await.is_err());
-        assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), login);
-    }
-
-    #[tokio::test]
-    async fn a_login_changed_meanwhile_is_kept_and_used() {
-        let fixture = fixture();
-        std::fs::write(fixture.claude_file(), claude_login("old", 5)).unwrap();
-        let theirs = claude_login("theirs", 480);
-        let cli = fixture.cli(&format!("printf '%s' '{theirs}' > {}\n{}", fixture.claude_file().display(), writes_claude(&claude_login("new", 480))));
-        fixture.run(AgentTool::ClaudeCode, &cli, TIMEOUT).await.unwrap();
-        assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), theirs);
-    }
-
-    #[test]
-    fn a_login_replaced_in_the_gap_is_put_back() {
-        let fixture = fixture();
-        std::fs::write(fixture.claude_file(), "theirs").unwrap();
-        assert!(!swap_in(&fixture.claude_file(), b"old", b"new").unwrap());
-        assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), "theirs");
-        assert_eq!(std::fs::read_dir(&fixture.host.claude_dir).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn a_write_already_under_way_survives_the_swap() {
-        let fixture = fixture();
-        std::fs::write(fixture.claude_file(), "old").unwrap();
-        let mut writer = std::fs::File::create(fixture.claude_file()).unwrap();
-        assert!(!swap_in(&fixture.claude_file(), b"old", b"new").unwrap());
-        writer.write_all(b"theirs").unwrap();
-        assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), "theirs");
-    }
-
-    #[test]
-    fn a_sign_out_stays_signed_out() {
-        let fixture = fixture();
-        // The swap has nothing to trade with, so nothing can bring a login back.
-        let held = fixture.root.join("held");
-        std::fs::write(&held, "new").unwrap();
-        assert_eq!(exchange(&held, &fixture.claude_file()).unwrap_err().kind(), io::ErrorKind::NotFound);
-        assert!(!fixture.claude_file().exists());
-    }
-
-    #[test]
-    fn an_unchanged_login_is_replaced_and_nothing_is_left_beside_it() {
-        let fixture = fixture();
-        std::fs::write(fixture.claude_file(), "old").unwrap();
-        assert!(swap_in(&fixture.claude_file(), b"old", b"new").unwrap());
-        assert_eq!(std::fs::read_to_string(fixture.claude_file()).unwrap(), "new");
-        assert_eq!(std::fs::metadata(fixture.claude_file()).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(std::fs::read_dir(&fixture.host.claude_dir).unwrap().count(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_folder_that_cant_save_spends_nothing() {
-        if unsafe { libc::geteuid() } == 0 { return; }
-        let fixture = fixture();
-        std::fs::write(fixture.claude_file(), claude_login("old", 5)).unwrap();
-        let cli = fixture.cli(&format!("touch {}", fixture.seen().display()));
-        std::fs::set_permissions(&fixture.host.claude_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let result = fixture.run(AgentTool::ClaudeCode, &cli, TIMEOUT).await;
-        std::fs::set_permissions(&fixture.host.claude_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(result.is_err());
-        assert!(!fixture.seen().exists());
     }
 
     #[tokio::test]
@@ -417,19 +292,6 @@ mod tests {
         std::fs::write(fixture.claude_file(), claude_login("old", 5)).unwrap();
         let error = fixture.run(AgentTool::ClaudeCode, &fixture.cli("exec sleep 60"), Duration::from_millis(200)).await.unwrap_err();
         assert!(error.to_string().contains("needs refreshing"), "{error}");
-        assert!(fixture.gone());
-    }
-
-    #[tokio::test]
-    async fn a_linked_login_stays_linked() {
-        let fixture = fixture();
-        let real = fixture.root.join("real.json");
-        std::fs::write(&real, claude_login("old", 5)).unwrap();
-        std::os::unix::fs::symlink(&real, fixture.claude_file()).unwrap();
-        let cli = fixture.cli(&writes_claude(&claude_login("new", 480)));
-        fixture.run(AgentTool::ClaudeCode, &cli, TIMEOUT).await.unwrap();
-        assert!(std::fs::symlink_metadata(fixture.claude_file()).unwrap().file_type().is_symlink());
-        assert_eq!(read(&real)["claudeAiOauth"]["refreshToken"], "r-new");
     }
 
     #[tokio::test]

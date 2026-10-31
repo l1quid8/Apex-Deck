@@ -44,6 +44,14 @@ impl HostPaths {
     }
 }
 
+/// Deck's own sign-in for a provider, one folder per provider. Only the daemon
+/// writes it and jails never see it. The person's own login is a separate grant
+/// that Deck never reads for a jail or writes, because a CLI takes no lock Deck
+/// could share and each refresh replaces the refresh token.
+pub fn login_home(data_dir: &Path, provider: &str) -> PathBuf {
+    data_dir.join("logins").join(provider)
+}
+
 /// The values Deck itself set for this bot.
 #[derive(Debug, Clone)]
 pub struct HomeValues {
@@ -260,7 +268,7 @@ fn codex_files(tree: &Tree, model: Option<&str>, values: &HomeValues, home: &mut
     Ok(())
 }
 
-fn gemini_files(tree: &Tree, values: &HomeValues, home: &mut JailHome) -> Result<(), JailError> {
+fn gemini_files(tree: &Tree, login: &Path, values: &HomeValues, home: &mut JailHome) -> Result<(), JailError> {
     let host = settings(&values.host.gemini_dir.join("settings.json"), "Gemini", &mut home.notices);
     let host = host.as_ref();
     let selected = host.and_then(|doc| doc["security"]["auth"]["selectedType"].as_str()).unwrap_or("oauth-personal");
@@ -273,7 +281,7 @@ fn gemini_files(tree: &Tree, values: &HomeValues, home: &mut JailHome) -> Result
     }
     tree.write(".gemini/settings.json", json!({"security": {"auth": {"selectedType": selected}},
         "general": {"disableAutoUpdate": true}, "mcpServers": servers}).to_string().as_bytes())?;
-    if let Ok(bytes) = std::fs::read(values.host.gemini_dir.join("google_accounts.json")) {
+    if let Ok(bytes) = std::fs::read(login.join(".gemini/google_accounts.json")) {
         if let Ok(doc) = serde_json::from_slice::<Value>(&bytes) {
             tree.write(".gemini/google_accounts.json", known(&doc, &["active", "old"]).to_string().as_bytes())?;
         }
@@ -305,9 +313,9 @@ fn gemini_access(input: &[u8], now: u64) -> Result<Vec<u8>, apex_core::Participa
     crate::gateway_sandbox::access_only_oauth_document(kept.to_string().as_bytes(), now, "Gemini")
 }
 
-/// Every provider gets an access-only sign-in, as gateway turns do, so the host
-/// stays the only one refreshing and nothing a bot writes can come back. A login
-/// this can't use leaves no older one behind.
+/// Every provider gets an access-only copy of Deck's sign-in, as gateway turns
+/// do, so only the daemon refreshes and nothing a bot writes can come back. A
+/// login this can't use leaves no older one behind.
 fn access_only(tree: &Tree, source: &Path, inside: &str, stage: impl FnOnce(&[u8]) -> Result<Vec<u8>, apex_core::ParticipantError>) -> Result<(), JailError> {
     match std::fs::read(source) {
         Ok(bytes) => match stage(&bytes) {
@@ -343,7 +351,7 @@ pub fn prepare(data_dir: &Path, room: &str, bot: &str, backend: &Backend, values
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&path)?;
     std::fs::set_permissions(&all, std::fs::Permissions::from_mode(0o700))?;
     let tree = Tree::open(&path)?;
-    let host = &values.host;
+    let login = |provider: &str| login_home(data_dir, provider);
     let (tool, model) = match backend {
         Backend::Agent { tool, model } => (Some(*tool), model.as_deref()),
         _ => (None, None),
@@ -353,28 +361,28 @@ pub fn prepare(data_dir: &Path, room: &str, bot: &str, backend: &Backend, values
     match tool {
         Some(AgentTool::ClaudeCode) => {
             home.env = flags(&[("DISABLE_AUTOUPDATER", "1")]);
-            access_only(&tree, &host.claude_dir.join(".credentials.json"), ".claude/.credentials.json", |bytes| claude_access(bytes, now()))?;
+            access_only(&tree, &login("claude").join(".claude/.credentials.json"), ".claude/.credentials.json", |bytes| claude_access(bytes, now()))?;
             claude_files(&tree, model, values, &mut home)?;
         }
         Some(AgentTool::Codex) => {
-            access_only(&tree, &host.codex_dir.join("auth.json"), ".codex/auth.json", |bytes| crate::gateway_sandbox::codex_auth_document(bytes, now()))?;
+            access_only(&tree, &login("codex").join(".codex/auth.json"), ".codex/auth.json", |bytes| crate::gateway_sandbox::codex_auth_document(bytes, now()))?;
             codex_files(&tree, model, values, &mut home)?;
         }
         Some(AgentTool::Gemini) => {
-            access_only(&tree, &host.gemini_dir.join("oauth_creds.json"), ".gemini/oauth_creds.json", |bytes| gemini_access(bytes, now()))?;
-            gemini_files(&tree, values, &mut home)?;
+            access_only(&tree, &login("gemini").join(".gemini/oauth_creds.json"), ".gemini/oauth_creds.json", |bytes| gemini_access(bytes, now()))?;
+            gemini_files(&tree, &login("gemini"), values, &mut home)?;
         }
         Some(AgentTool::Grok) => {
             home.env = flags(&[("GROK_MANAGED_MCPS_ENABLED", "0"), ("GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED", "0"),
                 ("GROK_CLAUDE_MCPS_ENABLED", "0"), ("GROK_CURSOR_MCPS_ENABLED", "0")]);
             tree.write(".grok/requirements.toml", crate::gateway_sandbox::GROK_REQUIREMENTS.as_bytes())?;
             tree.write(".grok/config.toml", crate::gateway_sandbox::GROK_CONFIG.as_bytes())?;
-            access_only(&tree, &host.grok_dir.join("auth.json"), ".grok/auth.json",
+            access_only(&tree, &login("grok").join(".grok/auth.json"), ".grok/auth.json",
                 |bytes| crate::gateway_sandbox::access_only_oauth_document(bytes, now(), "Grok"))?;
         }
         Some(AgentTool::Muse) => {
             home.env = flags(&[("MUSE_NO_AUTO_UPDATE", "1"), ("MUSE_LOGIN", "0")]);
-            access_only(&tree, &host.muse_auth, ".config/muse/auth.json", |bytes| {
+            access_only(&tree, &login("muse").join(".config/muse/auth.json"), ".config/muse/auth.json", |bytes| {
                 crate::gateway_sandbox::muse_auth_document(bytes, || Err(apex_core::ParticipantError::Failed("Muse Keychain sign-in requires macOS".into())))
             })?;
         }
@@ -515,7 +523,7 @@ mod tests {
         let mut login = claude_login("a", soon());
         login["mcpOAuth"] = json!({"slack": {"accessToken": "MCP-SECRET"}});
         login["claudeAiOauth"]["extra"] = "x".into();
-        put(&f.values.host.claude_dir.join(".credentials.json"), &login);
+        put(&f.data.join("logins/claude/.claude/.credentials.json"), &login);
         let home = f.prepare(AgentTool::ClaudeCode);
         let staged = home.path().join(".claude/.credentials.json");
         let mut want = claude_login("a", soon());
@@ -529,10 +537,10 @@ mod tests {
     fn no_provider_home_ever_holds_a_refresh_token() {
         let f = fixture();
         let v = &f.values.host;
-        put(&v.claude_dir.join(".credentials.json"), &claude_login("a", soon()));
-        put(&v.codex_dir.join("auth.json"), &codex_login(3600, "mine"));
-        put(&v.gemini_dir.join("oauth_creds.json"), &json!({"access_token": "a", "refresh_token": "r-gemini", "expiry_date": soon()}));
-        put(&v.grok_dir.join("auth.json"), &json!({"key": "a", "refresh_token": "r-grok", "expires_at": now() + 3600}));
+        put(&f.data.join("logins/claude/.claude/.credentials.json"), &claude_login("a", soon()));
+        put(&f.data.join("logins/codex/.codex/auth.json"), &codex_login(3600, "mine"));
+        put(&f.data.join("logins/gemini/.gemini/oauth_creds.json"), &json!({"access_token": "a", "refresh_token": "r-gemini", "expiry_date": soon()}));
+        put(&f.data.join("logins/grok/.grok/auth.json"), &json!({"key": "a", "refresh_token": "r-grok", "expires_at": now() + 3600}));
         let found = [(AgentTool::ClaudeCode, ".claude/.credentials.json"), (AgentTool::Codex, ".codex/auth.json"),
             (AgentTool::Gemini, ".gemini/oauth_creds.json"), (AgentTool::Grok, ".grok/auth.json")];
         for (tool, file) in found {
@@ -542,9 +550,9 @@ mod tests {
     }
 
     #[test]
-    fn what_a_bot_wrote_never_reaches_the_host_or_its_next_launch() {
+    fn what_a_bot_wrote_never_reaches_decks_login_or_its_next_launch() {
         let f = fixture();
-        let path = f.values.host.codex_dir.join("auth.json");
+        let path = f.data.join("logins/codex/.codex/auth.json");
         let mine = codex_login(3600, "mine");
         put(&path, &mine);
         let home = f.prepare(AgentTool::Codex);
@@ -559,9 +567,9 @@ mod tests {
     fn an_expiring_login_is_refused_and_leaves_no_old_one() {
         let f = fixture();
         let v = &f.values.host;
-        let cases = [(AgentTool::ClaudeCode, v.claude_dir.join(".credentials.json"), ".claude/.credentials.json", claude_login("a", soon()), claude_login("a", (now() + 60) * 1000)),
-            (AgentTool::Codex, v.codex_dir.join("auth.json"), ".codex/auth.json", codex_login(3600, "mine"), codex_login(60, "mine")),
-            (AgentTool::Gemini, v.gemini_dir.join("oauth_creds.json"), ".gemini/oauth_creds.json",
+        let cases = [(AgentTool::ClaudeCode, f.data.join("logins/claude/.claude/.credentials.json"), ".claude/.credentials.json", claude_login("a", soon()), claude_login("a", (now() + 60) * 1000)),
+            (AgentTool::Codex, f.data.join("logins/codex/.codex/auth.json"), ".codex/auth.json", codex_login(3600, "mine"), codex_login(60, "mine")),
+            (AgentTool::Gemini, f.data.join("logins/gemini/.gemini/oauth_creds.json"), ".gemini/oauth_creds.json",
                 json!({"access_token": "a", "refresh_token": "r", "expiry_date": soon()}),
                 json!({"access_token": "a", "refresh_token": "r", "expiry_date": (now() + 60) * 1000}))];
         for (tool, path, inside, good, stale) in cases {
@@ -576,9 +584,9 @@ mod tests {
     }
 
     #[test]
-    fn a_sign_out_on_the_host_clears_the_home_at_the_next_launch() {
+    fn signing_deck_out_clears_the_home_at_the_next_launch() {
         let f = fixture();
-        let path = f.values.host.codex_dir.join("auth.json");
+        let path = f.data.join("logins/codex/.codex/auth.json");
         put(&path, &codex_login(3600, "mine"));
         let home = f.prepare(AgentTool::Codex);
         assert!(home.path().join(".codex/auth.json").exists());
@@ -587,9 +595,18 @@ mod tests {
     }
 
     #[test]
+    fn the_persons_own_login_never_reaches_a_jail() {
+        let f = fixture();
+        put(&f.values.host.claude_dir.join(".credentials.json"), &claude_login("theirs", soon()));
+        put(&f.values.host.codex_dir.join("auth.json"), &codex_login(3600, "theirs"));
+        assert!(!f.prepare(AgentTool::ClaudeCode).path().join(".claude/.credentials.json").exists());
+        assert!(!f.prepare(AgentTool::Codex).path().join(".codex/auth.json").exists());
+    }
+
+    #[test]
     fn links_planted_in_the_home_touch_nothing_outside_it() {
         let f = fixture();
-        put(&f.values.host.claude_dir.join(".credentials.json"), &claude_login("old", soon()));
+        put(&f.data.join("logins/claude/.claude/.credentials.json"), &claude_login("old", soon()));
         let outside = f.root.join("outside");
         std::fs::create_dir(&outside).unwrap();
         std::fs::write(outside.join("settings.json"), "mine").unwrap();
@@ -662,7 +679,7 @@ mod tests {
     #[test]
     fn grok_never_gets_a_refresh_token() {
         let f = fixture();
-        put(&f.values.host.grok_dir.join("auth.json"), &json!({"key": "a", "refresh_token": "SECRET", "expires_at": now() + 3600}));
+        put(&f.data.join("logins/grok/.grok/auth.json"), &json!({"key": "a", "refresh_token": "SECRET", "expires_at": now() + 3600}));
         let home = f.prepare(AgentTool::Grok);
         assert!(!std::fs::read_to_string(home.path().join(".grok/auth.json")).unwrap().contains("SECRET"));
         assert!(!std::fs::read_to_string(home.path().join(".grok/config.toml")).unwrap().is_empty());
@@ -671,7 +688,7 @@ mod tests {
     #[test]
     fn an_expiring_grok_login_explains_itself() {
         let f = fixture();
-        put(&f.values.host.grok_dir.join("auth.json"), &json!({"key": "a", "refresh_token": "r", "expires_at": now() + 60}));
+        put(&f.data.join("logins/grok/.grok/auth.json"), &json!({"key": "a", "refresh_token": "r", "expires_at": now() + 60}));
         let error = prepare(&f.data, "room", "bot", &agent(AgentTool::Grok), &f.values).unwrap_err();
         assert!(error.to_string().contains("needs refreshing"), "{error}");
     }
@@ -680,7 +697,7 @@ mod tests {
     fn gemini_keeps_its_login_fields_and_stdio_servers_only() {
         let f = fixture();
         let v = &f.values.host;
-        put(&v.gemini_dir.join("oauth_creds.json"), &json!({"access_token": "a", "refresh_token": "r", "expiry_date": soon(), "extra": "x"}));
+        put(&f.data.join("logins/gemini/.gemini/oauth_creds.json"), &json!({"access_token": "a", "refresh_token": "r", "expiry_date": soon(), "extra": "x"}));
         put(&v.gemini_dir.join("settings.json"), &json!({"tools": {"discoveryCommand": "evil"}, "mcpServers": {
             "web": {"httpUrl": "https://x"}, "local": {"command": "run", "args": ["a"], "env": {"T": "SECRET"}}}}));
         let home = f.prepare(AgentTool::Gemini);
@@ -693,7 +710,7 @@ mod tests {
     #[test]
     fn an_unreadable_login_stops_the_launch_and_leaves_no_old_one() {
         let f = fixture();
-        let path = f.values.host.claude_dir.join(".credentials.json");
+        let path = f.data.join("logins/claude/.claude/.credentials.json");
         put(&path, &claude_login("a", soon()));
         let home = f.prepare(AgentTool::ClaudeCode);
         std::fs::write(&path, "not json").unwrap();

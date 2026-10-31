@@ -31,6 +31,10 @@ start)
   ;;
 update) build; install_build ;;
 test)
+  # The test logins become Deck's own, in place, so a rotated token can't be stranded.
+  docker exec -u tester jail-home sh -c 'set -e; for f in claude/.claude/.credentials.json codex/.codex/auth.json; do
+    to=$HOME/.local/share/apex/logins/$f; from=$HOME/${f#*/}; mkdir -p "$(dirname "$to")"; chmod -R go-rwx "$HOME/.local/share/apex"
+    if [ -e "$from" ]; then mv "$from" "$to"; fi; done'
   docker exec -u tester -e HOME=/home/tester -e APEX_JAIL_SIGNED_IN=1 -e APEX_JAIL_INIT=/tmp/apex-daemon jail-home \
     /tmp/k signed_in_turns --test-threads=1 --nocapture
   ;;
