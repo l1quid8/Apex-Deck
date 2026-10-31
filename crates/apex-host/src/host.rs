@@ -836,6 +836,7 @@ impl Host {
                 };
                 if let Some(tool) = tool {
                     raw_profiles.push(ParticipantConfig {
+                        can_read_images: false,
                         id: ParticipantId::new(info.key.clone()),
                         display_name: info.label.clone(),
                         persona: String::new(),
@@ -4431,6 +4432,7 @@ mod host_tests {
 
     fn scripted(id: &str, lines: &[&str]) -> apex_core::ParticipantConfig {
         apex_core::ParticipantConfig {
+            can_read_images: false,
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
             persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None

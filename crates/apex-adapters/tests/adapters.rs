@@ -12,6 +12,7 @@ use tokio::net::TcpListener;
 
 fn config(id: &str, backend: Backend) -> ParticipantConfig {
     ParticipantConfig {
+        can_read_images: false,
         id: ParticipantId::new(id),
         display_name: id.to_string(),
         backend,

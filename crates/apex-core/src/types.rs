@@ -97,6 +97,9 @@ pub struct ParticipantConfig {
     pub persona: String,
     #[serde(default)]
     pub access: Access,
+    /// Whether this bot's model accepts computer screenshots. Opt in explicitly.
+    #[serde(default)]
+    pub can_read_images: bool,
     /// How hard the model should think, in the backend's own words (for
     /// example "low" or "high"). `None` leaves the backend's default.
     #[serde(default)]

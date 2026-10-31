@@ -3092,6 +3092,7 @@ mod tests {
 
     fn profile(id: &str, backend: Backend, access: Access) -> ParticipantConfig {
         ParticipantConfig {
+            can_read_images: false,
             id: ParticipantId::new(id),
             display_name: id.into(),
             backend,

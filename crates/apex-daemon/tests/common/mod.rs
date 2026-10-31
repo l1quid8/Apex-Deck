@@ -466,6 +466,7 @@ pub fn shell(id: &str, script: &str) -> Value {
 
 fn participant(id: &str, backend: Backend) -> Value {
     serde_json::to_value(ParticipantConfig {
+        can_read_images: false,
         id: ParticipantId::new(id),
         display_name: id.to_string(),
         backend,

@@ -5,6 +5,7 @@ mod tests {
 
     fn profile(id: &str, media: bool) -> ParticipantConfig {
         ParticipantConfig {
+            can_read_images: false,
             id: ParticipantId::new(id),
             display_name: id.into(),
             backend: Backend::Scripted { lines: vec![] },

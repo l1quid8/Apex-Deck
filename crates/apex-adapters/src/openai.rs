@@ -319,7 +319,7 @@ impl Participant for OpenAiCompatParticipant {
         let mut turn = match &self.tools {
             Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
                 let access = request.access.unwrap_or(self.config.access);
-                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_cwd(request.cwd))
+                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_cwd(request.cwd).with_can_read_images(self.config.can_read_images))
             }
             _ => None,
         };
@@ -348,6 +348,9 @@ impl Participant for OpenAiCompatParticipant {
         // Sticky for this request's entire history, including failed calls and
         // retries that remove tools or reasoning from subsequent requests.
         let mut computer_content = messages_have_computer_content(&messages);
+        // Indices refer only to images produced by tools in this request.
+        // Human attachment parts never enter this queue.
+        let mut computer_images: VecDeque<(usize, usize)> = VecDeque::new();
         'rounds: for round in 0.. {
             // A failure after tools have run keeps what the reply did so far.
             macro_rules! fail {
@@ -474,9 +477,28 @@ impl Participant for OpenAiCompatParticipant {
                 said["reasoning_content"] = json!(streamed.reasoning);
             }
             messages.push(said);
+            let mut image_parts = Vec::new();
+            let image_message = messages.len() + streamed.calls.len();
             for call in &streamed.calls {
                 let result = turn.run(call).await;
-                messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": result}));
+                messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": result.text}));
+                if !result.images.is_empty() {
+                    let snapshot = serde_json::from_str::<Value>(&call.arguments).ok()
+                        .and_then(|args| args["arguments"]["snapshot"].as_str().map(str::to_string));
+                    image_parts.push(json!({"type":"text", "text":format!("Computer image from tool call {}{}", call.id,
+                        snapshot.map(|id| format!(", snapshot {id}")).unwrap_or_default())}));
+                    for image in result.images {
+                        computer_images.push_back((image_message, image_parts.len()));
+                        image_parts.push(json!({"type":"image_url", "image_url":{"url":format!("data:{};base64,{}",image.mime,image.data)}}));
+                    }
+                }
+            }
+            if !image_parts.is_empty() {
+                messages.push(json!({"role":"user", "content":image_parts}));
+            }
+            while computer_images.len() > 2 {
+                let (message, part) = computer_images.pop_front().unwrap();
+                messages[message]["content"][part] = json!({"type":"text", "text":"[older computer image omitted]"});
             }
         }
         if let Some(turn) = turn.as_mut() {
@@ -723,6 +745,169 @@ impl OpenAiCompatParticipant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Real HTTP + stdio MCP boundaries. A missing image collection, wrong
+    // protocol order, over-broad pruning or missing opt-in breaks these tests.
+    #[cfg(unix)]
+    async fn screenshot_roundtrip(can_read_images: bool, server: &str) -> (Vec<Value>, Vec<String>, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let received = bodies.clone();
+        let server_name = server.to_string();
+        let http = tokio::spawn(async move {
+            let mut round = 0;
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let header_end = loop {
+                    let mut buffer = [0; 8192];
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") { break end + 4; }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                let length: usize = headers.lines().find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                }).unwrap_or(0);
+                let models = headers.starts_with("GET ");
+                while bytes.len() < header_end + length {
+                    let mut buffer = [0; 8192];
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buffer[..n]);
+                }
+                if models {
+                    let body = r#"{"data":[]}"#;
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                    continue;
+                }
+                received.lock().unwrap().push(serde_json::from_slice::<Value>(&bytes[header_end..header_end + length]).unwrap());
+                let delta = if round < 3 {
+                    let count = if round == 0 { 2 } else { 1 };
+                    json!({"tool_calls": (0..count).map(|index| json!({"index":index,"id":format!("shot-{round}-{index}"),"type":"function","function":{
+                        "name":"mcp_call","arguments":json!({"server":server_name,"tool":"get_screenshot","arguments":{"snapshot":format!("snapshot-{round}-{index}")}}).to_string()
+                    }})).collect::<Vec<_>>()})
+                } else { json!({"content":"done"}) };
+                let body = format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":delta}]}));
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                round += 1;
+                if round == 4 { break; }
+            }
+        });
+        let script = r#"
+count=0
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) result='{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}' ;;
+    *'"tools/list"'*) result='{"tools":[{"name":"get_screenshot","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}' ;;
+    *'"tools/call"'*)
+      count=$((count+1))
+      case "$count" in
+        1) data='AQ==' ;; 2) data='Ag==' ;; 3) data='Aw==' ;; *) data='BA==' ;;
+      esac
+      result='{"content":[{"type":"text","text":"SCREEN_SECRET"},{"type":"image","mimeType":"image/png","data":"'"$data"'"}]}' ;;
+    *) continue ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done
+"#;
+        let config: ParticipantConfig = serde_json::from_value(json!({"id":"vision", "display_name":"Vision", "backend":{
+            "kind":"open_ai_compatible", "base_url":format!("http://{address}/v1"),"model":"fixture-vision"
+        }, "can_read_images":can_read_images})).unwrap();
+        let tools = ToolBox {
+            mcp: api_tools::mcp_client::fixture_pool(vec![api_tools::mcp_client::ServerSpec { name:server.into(), transport:api_tools::mcp_client::Transport::Stdio{
+                command:"sh".into(), args:vec!["-c".into(),script.into()],env:vec![]
+            }}]),
+            ..ToolBox::new(&crate::BuildContext::default())
+        };
+        let mut bot = OpenAiCompatParticipant::new(config);
+        bot.tools = Some(Arc::new(tools));
+        let path = std::env::temp_dir().join(format!("apex-tool-upload-{}-{}-{server}-{can_read_images}.png",std::process::id(),address.port()));
+        std::fs::write(&path,b"\x89PNG\r\n\x1a\nupload").unwrap();
+        bot = bot.with_attachment_roots(vec![path.parent().unwrap().to_path_buf()]);
+        let request = TurnRequest { effort_override:None,access:None,system:"test".into(),turns:vec![apex_core::ViewTurn{
+            role:Role::User,content:format!("Attached image: {}",path.display())
+        }],unseen:vec![],plan:false,cwd:None };
+        let work = Mutex::new(Vec::new());
+        let reply = bot.respond_with_progress(request,&|progress| if let Progress::Work(step)=progress {
+            work.lock().unwrap().push(serde_json::to_string(step).unwrap());
+        }).await.unwrap();
+        http.await.unwrap();
+        let _ = std::fs::remove_file(path);
+        let bodies = bodies.lock().unwrap().clone();
+        (bodies,work.into_inner().unwrap(),reply.text)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tool_message_stays_text_and_image_follows_as_user_message() {
+        let (bodies,work,reply) = screenshot_roundtrip(true,"apex-computer").await;
+        assert_eq!(reply,"done");
+        let messages = bodies[1]["messages"].as_array().unwrap();
+        assert_eq!(messages[3]["role"],"tool");
+        assert!(messages[3]["content"].is_string());
+        assert_eq!(messages[4]["role"],"tool");
+        assert!(messages[4]["content"].is_string());
+        assert_eq!(messages.len(),6,"tool round must add one image user message");
+        assert_eq!(messages[5]["role"],"user");
+        let images: Vec<_> = messages[5]["content"].as_array().unwrap().iter().filter_map(|p|p["image_url"]["url"].as_str()).collect();
+        assert_eq!(images,["data:image/png;base64,AQ==","data:image/png;base64,Ag=="]);
+        let attribution = messages[5]["content"].to_string();
+        assert!(attribution.contains("shot-0-0") && attribution.contains("shot-0-1"));
+        assert!(work.iter().all(|step| !step.contains("SCREEN_SECRET") && !step.contains("AQ==") && !step.contains("snapshot-")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_the_latest_two_tool_images_stay_in_the_request() {
+        let (bodies,_,_) = screenshot_roundtrip(true,"apex-computer").await;
+        let messages = bodies[3]["messages"].as_array().unwrap();
+        let images: Vec<_> = messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter_map(|p|p["image_url"]["url"].as_str()).collect();
+        assert_eq!(images.len(),3,"one uploaded attachment plus the latest two computer images");
+        assert_eq!(images[0],"data:image/png;base64,iVBORw0KGgp1cGxvYWQ=");
+        assert_eq!(&images[1..],["data:image/png;base64,Aw==","data:image/png;base64,BA=="]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn all_tool_replies_come_before_the_image_message() {
+        let (bodies,_,_) = screenshot_roundtrip(true,"apex-computer").await;
+        for body in bodies.iter().skip(1) {
+            let messages = body["messages"].as_array().unwrap();
+            for (index, message) in messages.iter().enumerate().filter(|(_,m)|m["tool_calls"].is_array()) {
+                for (offset,call) in message["tool_calls"].as_array().unwrap().iter().enumerate() {
+                    assert_eq!(messages[index+offset+1]["role"],"tool","all replies precede image user message");
+                    assert_eq!(messages[index+offset+1]["tool_call_id"],call["id"]);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bot_without_can_read_images_gets_no_image_and_the_notice() {
+        let (bodies,_,_) = screenshot_roundtrip(false,"apex-computer").await;
+        let messages = bodies[3]["messages"].as_array().unwrap();
+        let tool_results: Vec<_> = messages.iter().filter(|m|m["role"]=="tool").collect();
+        assert!(tool_results.iter().all(|m|m["content"].as_str().unwrap().contains("This model can't read screenshots and relies on accessibility text.")));
+        assert!(!bodies[3].to_string().contains("SCREEN_SECRET"),"capture must be refused");
+        let images = messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url").count();
+        assert_eq!(images,1,"only the ordinary uploaded attachment remains");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn images_from_other_servers_stay_text_stubs() {
+        let (bodies,_,_) = screenshot_roundtrip(true,"weather").await;
+        assert!(bodies[3].to_string().contains("[image (image/png, 3 bytes) not shown]"));
+        let messages = bodies[3]["messages"].as_array().unwrap();
+        assert_eq!(messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url").count(),1);
+    }
 
     async fn fixture_stream(body: String) -> reqwest::Response {
         use std::io::{Read, Write};

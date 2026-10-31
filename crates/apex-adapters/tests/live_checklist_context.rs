@@ -89,6 +89,7 @@ async fn live_two_turn_checklist_context() {
         let cwd = output.join(format!("workspace-{name}"));
         std::fs::create_dir_all(&cwd).unwrap();
         let config = ParticipantConfig {
+            can_read_images: false,
             id: ParticipantId::new(name),
             display_name: name.into(),
             backend,

@@ -150,6 +150,7 @@ pub(crate) fn parse_profile(value: Value) -> Result<ParticipantConfig, String> {
             "backend",
             "persona",
             "access",
+            "can_read_images",
             "effort",
             "speed",
             "appearance",
