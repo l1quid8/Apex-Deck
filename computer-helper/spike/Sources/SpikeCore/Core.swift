@@ -7,7 +7,7 @@ public enum Policy {
     for _ in 0..<20 {
       guard let e = cursor else { return false }
       guard let node = read(e) else { return false }
-      if node.0.isEmpty || node.1.lowercased().contains("secure") || node.0.lowercased().contains("password") { return false }
+      if node.0.isEmpty || node.1.lowercased().contains("secure") || node.0.lowercased().contains("secure") || node.0.lowercased().contains("password") { return false }
       if node.0 == "AXApplication" { return true }
       cursor = node.2
     }

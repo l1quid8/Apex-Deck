@@ -67,6 +67,11 @@ final class FinalGuardTests: XCTestCase {
     try latch.dispatch("x", epoch: latch.state().0, validate: {}, post: { sent += 1 })
     XCTAssertEqual(sent, 1)
   }
+  func testSecureRoleWithoutSubroleIsRefused() {
+    XCTAssertFalse(Policy.safeAncestry(0) { n in
+      n == 0 ? ("AXSecureTextField", "", 1) : ("AXApplication", "", nil)
+    })
+  }
   func testFailedParentLookupIsNotSafeAncestry() {
     XCTAssertFalse(Policy.safeAncestry(0) { n in
       n == 0 ? ("AXTextArea", "", 1) : nil

@@ -63,7 +63,7 @@ The parent owns the actual registration and fresh signed backend deployment carr
 
 ## Evidence and remaining experiments
 
-Build/signature checks and thirteen focused safety/protocol tests pass. The no-permission protocol smoke checks initialization, all five truthful schemas, unknown-method rejection, denied screen reading and invalid control refusals without a valid input request. `npx tsc --noEmit` passes. These checks do not prove native UI behavior.
+Build/signature checks and fourteen focused safety/protocol tests pass. The no-permission protocol smoke checks initialization, all five truthful schemas, unknown-method rejection, denied screen reading and invalid control refusals without a valid input request. `npx tsc --noEmit` passes. These checks do not prove native UI behavior.
 
 | Required measurement | Current result |
 |---|---|
