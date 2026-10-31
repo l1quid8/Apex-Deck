@@ -101,6 +101,11 @@ impl Mounts {
             .ok_or_else(|| std::io::Error::other("unreadable mount table"))
     }
 
+    /// True when anything is mounted at or below `folder`, other than what it's on.
+    pub fn nested_in(&self, folder: &Path) -> bool {
+        self.0.iter().any(|m| m.at.starts_with(folder))
+    }
+
     /// Where a path's content really lives. The last of equal mount points wins.
     fn place(&self, path: &Path) -> (String, PathBuf) {
         let top = self.0.iter().filter(|m| path.starts_with(&m.at))

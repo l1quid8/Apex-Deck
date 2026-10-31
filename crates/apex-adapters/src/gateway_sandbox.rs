@@ -15,6 +15,9 @@ fn failed(message: &str) -> ParticipantError {
     ParticipantError::Failed(format!("Gateway isolation: {message}"))
 }
 
+pub(crate) const GROK_REQUIREMENTS: &str = "allowed_mcp_servers = []\nallow_managed_mcp_servers_only = true\n";
+pub(crate) const GROK_CONFIG: &str = "[cli]\nuse_leader = false\nauto_update = false\n[compat.claude]\nmcps = false\n[compat.cursor]\nmcps = false\n[managed_mcps]\nenabled = false\ngateway_tools_enabled = false\n";
+
 pub(crate) const BWRAP_REQUIRED_MESSAGE: &str =
     "Linux process isolation requires bubblewrap (bwrap). Install bubblewrap or use Claude Code or an API model.";
 
@@ -124,11 +127,8 @@ impl Isolation {
                 _ => {}
             }
         }
-        isolation.write(
-            "config/grok/requirements.toml",
-            "allowed_mcp_servers = []\nallow_managed_mcp_servers_only = true\n",
-        )?;
-        isolation.write("config/grok/config.toml", "[cli]\nuse_leader = false\nauto_update = false\n[compat.claude]\nmcps = false\n[compat.cursor]\nmcps = false\n[managed_mcps]\nenabled = false\ngateway_tools_enabled = false\n")?;
+        isolation.write("config/grok/requirements.toml", GROK_REQUIREMENTS)?;
+        isolation.write("config/grok/config.toml", GROK_CONFIG)?;
         isolation.write("gemini-system.json", r#"{"mcp":{"allowed":["__apex_gateway_no_mcp__"]},"mcpServers":{},"tools":{"core":[]},"extensions":{"enabled":false},"security":{"auth":{"selectedType":"oauth-personal"}}}"#)?;
         Ok(isolation)
     }
@@ -438,7 +438,7 @@ pub(crate) fn bwrap_args(
 
 /// A private session may use a fresh access credential, never rotate a
 /// refresh token copied from an independently running canonical CLI.
-fn access_only_oauth_document(input:&[u8],now:u64,provider:&str)->Result<Vec<u8>,ParticipantError> {
+pub(crate) fn access_only_oauth_document(input:&[u8],now:u64,provider:&str)->Result<Vec<u8>,ParticipantError> {
     fn strip(value:&mut serde_json::Value,now:u64,provider:&str,require_fresh:bool)->Result<(),ParticipantError> {
         match value {
             serde_json::Value::Object(object)=>{
@@ -546,7 +546,7 @@ fn muse_meta_secret() -> Result<Vec<u8>, ParticipantError> {
 
 // Resolve exactly Muse's model sign-in in the trusted parent. Never grant the
 // child Keychain access or copy MCP credential slots alongside the model login.
-fn muse_auth_document(
+pub(crate) fn muse_auth_document(
     bytes: &[u8],
     read_meta_secret: impl FnOnce() -> Result<Vec<u8>, ParticipantError>,
 ) -> Result<Vec<u8>, ParticipantError> {

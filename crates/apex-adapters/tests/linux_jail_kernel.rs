@@ -3,7 +3,8 @@
 //! see tests/linux-jail/run.sh.
 #![cfg(target_os = "linux")]
 
-use apex_adapters::linux_jail::{channel, launch, paths, Bind, JailSpec, HOOK_PORT, PROXY_PORT};
+use apex_adapters::linux_jail::{channel, home, launch, paths, proxy, Bind, JailSpec, HOOK_PORT, PROXY_PORT};
+use apex_core::{AgentTool, Backend};
 use apex_adapters::{OwnedProcessChild as OwnedChild, OwnedProcessRegistry as Registry};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -443,4 +444,113 @@ for name, try_it in (("TIOCSTI", lambda: fcntl.ioctl(0, termios.TIOCSTI, b"x")),
     assert_eq!(String::from_utf8_lossy(&output.stdout), "True\nTIOCSTI refused\n/dev/tty refused\n", "{}", String::from_utf8_lossy(&output.stderr));
     unsafe { libc::close(main) };
     let _ = std::fs::remove_dir_all(&tree.root);
+}
+
+fn values(cwd: &Path, host_home: &Path) -> home::HomeValues {
+    home::HomeValues { cwd: cwd.display().to_string(), effort: None, host: home::HostPaths {
+        claude_dir: host_home.join(".claude"), claude_json: host_home.join(".claude.json"), codex_dir: host_home.join(".codex"),
+        gemini_dir: host_home.join(".gemini"), grok_dir: host_home.join(".grok"), muse_auth: host_home.join(".config/muse/auth.json"),
+    }}
+}
+
+fn agent(tool: AgentTool) -> Backend { Backend::Agent { tool, model: None } }
+
+#[test]
+fn claude_and_codex_start_on_a_generated_home_and_see_nothing_of_the_hosts() {
+    if !wanted() { return; }
+    let tree = tree("generated");
+    std::fs::create_dir_all(tree.home.join(".claude")).unwrap();
+    std::fs::create_dir_all(tree.home.join(".codex")).unwrap();
+    std::fs::write(tree.home.join(".claude.json"), r#"{"marker":"HOST-ONLY"}"#).unwrap();
+    std::fs::write(tree.home.join(".claude/settings.json"), r#"{"hooks":"HOST-ONLY"}"#).unwrap();
+    std::fs::write(tree.home.join(".codex/config.toml"), "notify = [\"HOST-ONLY\"]\n").unwrap();
+    let values = values(&tree.project, &tree.home);
+    for (tool, program, files) in [(AgentTool::ClaudeCode, "claude", "~/.claude.json ~/.claude/settings.json"), (AgentTool::Codex, "codex", "~/.codex/config.toml")] {
+        let made = home::prepare(&tree.data, "r", program, &agent(tool), &values).unwrap();
+        made.check(&mounts()).unwrap();
+        let mut spec = shell(&tree, &format!("{program} --version && cat {files} && test ! -e ~/.ssh && test ! -e {} && echo ALL PASSED", made.path().display()));
+        spec.private_home = made.path().into();
+        let output = Runtime::new().unwrap().block_on(async { finish(start(&spec, Stdio::null()).0).await });
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(!text.contains("HOST-ONLY"), "{text}");
+        expect(output);
+    }
+}
+
+struct Web;
+
+#[async_trait::async_trait]
+impl channel::Purposes for Web {
+    async fn proxy(&self, stream: UnixStream) { proxy::serve(stream, &proxy::Internet::default()).await }
+    async fn codex_hook(&self, _: UnixStream) {}
+}
+
+/// One real turn through the real proxy. Returns once the jail has ended.
+fn turn(tree: &Tree, made: &home::JailHome, program: &str, args: Vec<String>) {
+    let mut spec = spec(tree, &tree.project, true, tree.project.clone(), program, args);
+    spec.private_home = made.path().into();
+    spec.provider_env = made.env().to_vec();
+    let output = Runtime::new().unwrap().block_on(async {
+        let mut jailed = launch::jailed_command(&spec, Path::new("/usr/bin/bwrap")).unwrap();
+        jailed.command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (child, control) = jailed.spawn(&Registry::default()).unwrap();
+        let serve = tokio::spawn(channel::serve(control, Arc::new(Web)));
+        let output = tokio::time::timeout(Duration::from_secs(240), finish(child)).await.expect("the turn hung");
+        ended(serve).await;
+        output
+    });
+    let (out, err) = (String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "{program}: {:?}\n{out}\n{err}", output.status);
+}
+
+fn edit_json(path: &Path, change: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
+    let mut doc = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let before = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    change(&mut doc);
+    std::fs::write(path, doc.to_string()).unwrap();
+    before
+}
+
+/// Run by tests/linux-jail/signed-in.sh, after a person signed in as this user.
+/// Each login is made to look old, so the provider must refresh it in the jail;
+/// a second turn then proves the login that came back works.
+#[test]
+fn signed_in_turns_refresh_and_copy_back_on_a_generated_home() {
+    if std::env::var_os("APEX_JAIL_SIGNED_IN").is_none() { return; }
+    let user = PathBuf::from(std::env::var_os("HOME").unwrap());
+    let data = user.join(".local/share/apex");
+    let project = user.join("proj");
+    std::fs::create_dir_all(data.join("attachments")).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let tree = Tree { root: user.clone(), home: user.clone(), data, project: project.clone() };
+    let values = values(&project, &user);
+    let ask = "Run this exact shell command, then reply with only the word finished: echo signed-in > ";
+    let claude = |file: &str| vec!["-p".to_string(), format!("{ask}{file}"), "--permission-mode".into(), "acceptEdits".into(), "--allowedTools".into(), "Bash".into()];
+    let codex = |file: &str| vec!["exec".to_string(), "--skip-git-repo-check".into(), "--sandbox".into(), "workspace-write".into(), format!("{ask}{file}")];
+
+    let login = user.join(".claude/.credentials.json");
+    let old = edit_json(&login, |doc| doc["claudeAiOauth"]["expiresAt"] = 1_000_000_000_000u64.into());
+    let made = home::prepare(&tree.data, "r", "claude", &agent(AgentTool::ClaudeCode), &values).unwrap();
+    turn(&tree, &made, "/usr/local/bin/claude", claude("claude-1.txt"));
+    made.copy_back().unwrap();
+    let new: serde_json::Value = serde_json::from_slice(&std::fs::read(&login).unwrap()).unwrap();
+    assert_ne!(new["claudeAiOauth"]["accessToken"], old["claudeAiOauth"]["accessToken"], "Claude's refresh didn't come back");
+    assert!(new["claudeAiOauth"]["expiresAt"].as_u64() > Some(1_000_000_000_000));
+    let made = home::prepare(&tree.data, "r", "claude", &agent(AgentTool::ClaudeCode), &values).unwrap();
+    turn(&tree, &made, "/usr/local/bin/claude", claude("claude-2.txt"));
+
+    let login = user.join(".codex/auth.json");
+    let old = edit_json(&login, |doc| doc["last_refresh"] = "2020-01-01T00:00:00Z".into());
+    let made = home::prepare(&tree.data, "r", "codex", &agent(AgentTool::Codex), &values).unwrap();
+    turn(&tree, &made, "/usr/local/bin/codex", codex("codex-1.txt"));
+    made.copy_back().unwrap();
+    let new: serde_json::Value = serde_json::from_slice(&std::fs::read(&login).unwrap()).unwrap();
+    assert_ne!(new["tokens"]["access_token"], old["tokens"]["access_token"], "Codex's refresh didn't come back");
+    let made = home::prepare(&tree.data, "r", "codex", &agent(AgentTool::Codex), &values).unwrap();
+    turn(&tree, &made, "/usr/local/bin/codex", codex("codex-2.txt"));
+
+    for file in ["claude-1.txt", "claude-2.txt", "codex-1.txt", "codex-2.txt"] {
+        assert_eq!(std::fs::read_to_string(project.join(file)).unwrap().trim(), "signed-in", "{file}");
+    }
+    println!("SIGNED-IN TURNS PASSED");
 }

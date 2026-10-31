@@ -5,6 +5,7 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 pub mod channel;
+pub mod home;
 pub mod init;
 #[cfg(target_os = "linux")]
 pub mod launch;
@@ -25,6 +26,27 @@ pub const INIT_ARG: &str = "__jail-init";
 
 /// `/etc` entries beyond the chat sandbox's: names for `getpwuid`, nothing more.
 const ACCOUNT_FILES: &[&str] = &["/etc/passwd", "/etc/group"];
+
+#[derive(Debug)]
+pub enum JailError {
+    Refused(paths::Refused),
+    Io(std::io::Error),
+    /// A sign-in that can't be handed to the jail, in words for the person.
+    Login(String),
+}
+
+impl std::fmt::Display for JailError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refused) => refused.fmt(f),
+            Self::Io(error) => write!(f, "could not start the bot's sandbox: {error}"),
+            Self::Login(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<std::io::Error> for JailError { fn from(error: std::io::Error) -> Self { Self::Io(error) } }
+impl From<paths::Refused> for JailError { fn from(refused: paths::Refused) -> Self { Self::Refused(refused) } }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bind { pub source: PathBuf, pub target: PathBuf, pub writable: bool }

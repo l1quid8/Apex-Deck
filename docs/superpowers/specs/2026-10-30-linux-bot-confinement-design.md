@@ -253,13 +253,30 @@ files aren't in the jail's view at all, as the private root already ensures, nor
 custom `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME` or `MUSE_AUTH_PATH`, each treated as a
 protected path.
 
-- **Stdio MCP servers:** carried by name from a person's config and run in the jail.
-- **Directory binds, writable:** session history only, such as `~/.claude/projects` and
-  `~/.codex/sessions`.
+- **Stdio MCP servers:** carried by name, command and arguments from a person's config,
+  and run in the jail. Their `env` stays behind, because a jailed bot can read its own home
+  and those values are usually tokens. A server that needs one fails below Full. A token
+  written in `args` can't be told apart and is carried. Claude, Codex and Gemini only; Grok
+  has no MCP in the jail.
+- **Session history:** stays in the private home, with no bind to the host's. Deck never
+  resumes a provider session by id, and a bind of `~/.claude/projects` or
+  `~/.codex/sessions` would show a jailed bot every other project's transcript. So a jailed
+  bot's sessions don't appear in the person's own `claude --resume`.
 - **Copied back by the daemon when the jail ends, or during it on a change:** only the
-  named login file, rewritten from its known fields after parsing, so an extra field
-  doesn't reach a Full bot. Atomic saves give `EBUSY` on a single-file bind, so login
-  refresh can't use a bind.
+  named login file, for Claude, Codex and Gemini, parsed down to its known fields, so an
+  extra field doesn't reach a Full bot. Those fields are merged into the host's file, which
+  keeps what isn't the login, such as Claude's MCP tokens. A login comes back only if it
+  expires later than the host's and names the same account where the file has one, and
+  never over a sign-out. Atomic saves give `EBUSY` on a single-file bind, so login refresh
+  can't use a bind. Launch runs the same copy first, in case the daemon died holding the
+  only copy of a rotated login.
+- **Grok and Muse:** get the gateway's access-only sign-in and no copy-back, because their
+  files have no fixed shape to rewrite. The host stays the only one refreshing, so a launch
+  with under 20 minutes left on the login is refused with the refresh message.
+- **The home is hostile to the daemon.** A jail can write it, so the daemon opens every path
+  in it one name at a time with `O_NOFOLLOW`, reads only ordinary files, replaces anything
+  in the way of a generated file, and rewrites every generated file at each launch. A mount
+  in or over the home stops the launch. Room and bot ids are encoded into one folder name.
 
 Project config loads as usual inside the jail. `CLAUDE.md`, `AGENTS.md`, `.claude/` and the
 rest stay writable. A hook a bot plants there runs jailed, at the bot's own level.
@@ -756,6 +773,11 @@ bubblewrap; login refresh survives through copy-back; two bots of one provider i
 project don't overwrite each other's private home.
 
 ## Known limits
+
+- A jailed bot can read its own provider login and, below the copy-back check, swap it. Claude
+  and Gemini files name no account, so a bot holding another account's newer login can get it
+  copied to the host, and a Full bot would then send its work to that account. Codex is checked
+  by account id. Fixing this means asking the provider who the token belongs to.
 
 - **The claim covers confined processes and Deck's automatic project operations.** It can't
   stop a person typing `git commit` or `make` in their own terminal, including the Code

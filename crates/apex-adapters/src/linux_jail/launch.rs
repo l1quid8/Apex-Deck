@@ -1,7 +1,7 @@
 //! Turns a `JailSpec` into a command. The launch fails rather than running a
 //! bot outside the jail, so every step here that can fail stops it.
 
-use super::{bwrap_args, jail_env, paths, seccomp, JailSpec};
+use super::{bwrap_args, jail_env, paths, seccomp, JailError, JailSpec};
 use crate::owned_process::{OwnedChild, Registry};
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -11,24 +11,6 @@ use tokio::process::Command;
 
 /// Above any fd the registry's start gate puts in place.
 const LOWEST_INHERITED_FD: RawFd = 10;
-
-#[derive(Debug)]
-pub enum JailError {
-    Refused(paths::Refused),
-    Io(io::Error),
-}
-
-impl std::fmt::Display for JailError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Refused(refused) => refused.fmt(f),
-            Self::Io(error) => write!(f, "could not start the bot's sandbox: {error}"),
-        }
-    }
-}
-
-impl From<io::Error> for JailError { fn from(error: io::Error) -> Self { Self::Io(error) } }
-impl From<paths::Refused> for JailError { fn from(refused: paths::Refused) -> Self { Self::Refused(refused) } }
 
 pub struct Jailed {
     /// Set stdio here; everything else about it belongs to the jail.
