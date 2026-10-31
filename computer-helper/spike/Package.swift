@@ -18,7 +18,7 @@ let package = Package(
       linkerSettings: [.unsafeFlags(["-L", engineLibrary]),
         .linkedFramework("ApplicationServices"), .linkedFramework("AppKit"),
         .linkedFramework("CoreFoundation"), .linkedFramework("CoreGraphics"),
-        .linkedFramework("Carbon"), .linkedLibrary("z"),
+        .linkedFramework("Security"), .linkedFramework("Carbon"), .linkedLibrary("z"),
         .linkedLibrary("iconv")]),
     .executableTarget(name: "SpikeMCP", dependencies: ["SpikeCore"]),
     .executableTarget(name: "SpikeEventProbe", dependencies: ["SpikeCore"]),

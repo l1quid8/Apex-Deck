@@ -28,31 +28,24 @@ final class ServerPrivacyTests: XCTestCase {
     wait(for: [done], timeout: 3)
   }
 
-  func testCancellationReaderDoesNotWaitForBlockedMetadataOutput() throws {
+  func testUnsignedControlPeerCannotRegisterWhileToolDiscoveryWorks() throws {
     signal(SIGPIPE, SIG_IGN)
     let server = Server()
-    server.latch.start(); server.latch.setTap(true)
     var sockets: [Int32] = [-1, -1]
     XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
     let sender = sockets[0], client = sockets[1]
     defer { close(sender) }
     let done = expectation(description: "reader closed")
-    server.output.lock()
     Thread.detachNewThread { server.read(client); done.fulfill() }
-    Wire.send(["jsonrpc": "2.0", "id": 1, "method": "spike/status"], fd: sender)
-    Wire.send(["jsonrpc": "2.0", "method": "notifications/cancelled",
-               "params": ["requestId": "pending"]], fd: sender)
-    let deadline = ProcessInfo.processInfo.systemUptime + 0.5
-    var cancelled = false
-    repeat {
-      do { try server.latch.check("pending") }
-      catch { cancelled = (error as? Refusal)?.code == "cancelled_or_stopped" }
-      if !cancelled { Thread.sleep(forTimeInterval: 0.005) }
-    } while !cancelled && ProcessInfo.processInfo.systemUptime < deadline
-    XCTAssertTrue(cancelled, "cancellation reader waited for an output lock")
-    server.output.unlock()
-    shutdown(sender, SHUT_RDWR)
-    wait(for: [done], timeout: 3)
+    Wire.send(["jsonrpc": "2.0", "id": 1, "method": "unified/register-turn", "params": [
+      "threadId": "thread", "participantId": "agent", "turnToken": String(repeating: "a", count: 64),
+      "enabled": true, "effectiveAccess": "full"]], fd: sender)
+    let bytes = try XCTUnwrap(Wire.firstLine(fd: sender, limit: 65536, timeout: 2))
+    XCTAssertTrue(String(decoding: bytes, as: UTF8.self).contains("authenticated_daemon_required"))
+    Wire.send(["jsonrpc": "2.0", "id": 2, "method": "tools/list"], fd: sender)
+    let listing = try XCTUnwrap(Wire.firstLine(fd: sender, limit: 65536, timeout: 2))
+    XCTAssertTrue(String(decoding: listing, as: UTF8.self).contains("list_apps"))
+    shutdown(sender, SHUT_RDWR); wait(for: [done], timeout: 3)
   }
 
   func testStoppedReadScreenIsRefusedBeforeAccessibilityRead() {
@@ -89,6 +82,6 @@ final class ServerPrivacyTests: XCTestCase {
     let result = try XCTUnwrap(reply["result"] as? [String: Any])
     XCTAssertEqual(result["isError"] as? Bool, true)
     let content = try XCTUnwrap(result["content"] as? [[String: String]])
-    XCTAssertEqual(content, [["type": "text", "text": "cancelled_or_stopped"]])
+    XCTAssertEqual(content, [["type": "text", "text": "turn_unregistered_or_ended"]])
   }
 }

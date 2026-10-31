@@ -4,75 +4,40 @@ import SpikeCore
 
 signal(SIGPIPE, SIG_IGN)
 let operatorMode = CommandLine.arguments.dropFirst().first
-let allowed: [String: String] = [
-  "--status": "spike/status", "--probe-ds4": "spike/probe-ds4",
-  "--show-test-dialog": "spike/show-test-dialog",
-]
-if let mode = operatorMode, allowed[mode] == nil {
-  FileHandle.standardError.write(Data("invalid_operator_mode\n".utf8))
-  exit(2)
-}
-let proof: ProofBinding?
-do { proof = operatorMode == nil ? try ProofBinding.environment(ProcessInfo.processInfo.environment) : nil }
-catch {
-  FileHandle.standardError.write(Data("proof_binding_invalid_or_incomplete\n".utf8))
-  exit(2)
-}
-let config = NSWorkspace.OpenConfiguration()
-config.activates = false
-var ready = false
-NSWorkspace.shared.openApplication(at: Wire.bundle, configuration: config) { app, _ in
-  ready = app != nil
-}
-let deadline = Date().addingTimeInterval(6)
-var fd: Int32 = -1
-while Date() < deadline {
-  RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-  if ready {
-    fd = Wire.connect()
-    if fd >= 0 { break }
+if operatorMode != nil && operatorMode != "--status" { exit(2) }
+let environment = ProcessInfo.processInfo.environment
+let config = NSWorkspace.OpenConfiguration(); config.activates = false
+var fd = Wire.connect()
+if fd < 0 {
+  NSWorkspace.shared.openApplication(at: Wire.bundle, configuration: config) { _, _ in }
+  let deadline = Date().addingTimeInterval(6)
+  while fd < 0 && Date() < deadline {
+    RunLoop.current.run(until: Date().addingTimeInterval(0.02)); fd = Wire.connect()
   }
 }
 guard fd >= 0 else {
-  FileHandle.standardError.write(Data("spike_unavailable\n".utf8))
-  exit(1)
+  FileHandle.standardError.write(Data("unified_computer_use_unavailable\n".utf8)); exit(1)
 }
-if let proof = proof {
-  Wire.send(["jsonrpc": "2.0", "id": "apex-proof-bind", "method": "spike/bind-proof", "params": proof.arguments], fd: fd)
-  guard let bytes = Wire.firstLine(fd: fd, limit: 65536, timeout: 5),
-    let reply = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
-    reply["id"] as? String == "apex-proof-bind",
-    (reply["result"] as? [String: Any])?["proofBound"] as? Bool == true else {
-    FileHandle.standardError.write(Data("proof_host_binding_failed\n".utf8))
-    shutdown(fd, SHUT_RDWR); close(fd)
-    exit(1)
+if operatorMode == "--status" {
+  Wire.send(["jsonrpc": "2.0", "id": 1, "method": "unified/status"], fd: fd)
+  if let line = Wire.firstLine(fd: fd, limit: 65536, timeout: 2) { FileHandle.standardOutput.write(line); FileHandle.standardOutput.write(Data([10])) }
+  close(fd); exit(0)
+}
+if let token = environment["APEX_COMPUTER_TURN_TOKEN"], let thread = environment["APEX_COMPUTER_THREAD_ID"], let participant = environment["APEX_COMPUTER_PARTICIPANT_ID"] {
+  Wire.send(["jsonrpc": "2.0", "id": "bind", "method": "unified/bind-turn", "params": ["threadId": thread, "participantId": participant, "turnToken": token]], fd: fd)
+  guard let data = Wire.firstLine(fd: fd, limit: 65536, timeout: 2),
+    let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+    (reply["result"] as? [String: Any])?["bound"] as? Bool == true else {
+    FileHandle.standardError.write(Data("unified_computer_turn_binding_refused\n".utf8)); close(fd); exit(1)
   }
 }
-if let mode = operatorMode {
-  Wire.send(["jsonrpc": "2.0", "id": 1, "method": allowed[mode]!], fd: fd)
-  Wire.responses(fd: fd) { data in
-    FileHandle.standardOutput.write(data)
-    FileHandle.standardOutput.write(Data([10]))
-    close(fd)
-    exit(0)
-  }
-  exit(1)
-}
+// Missing turn context intentionally leaves discovery available, with every call refused.
 DispatchQueue.global().async {
-  Wire.responses(fd: fd) { data in
-    FileHandle.standardOutput.write(data)
-    FileHandle.standardOutput.write(Data([10]))
-  }
-  close(fd)
-  exit(0)
+  Wire.responses(fd: fd) { data in FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data([10])) }
+  close(fd); exit(0)
 }
-// The reader never waits for an action response: matching cancellation and EOF
-// are delivered to the app while its sequential input worker is occupied.
 Wire.lines(fd: STDIN_FILENO) { data in
-  guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-    return
-  }
+  guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
   Wire.send(object, fd: fd)
 }
-shutdown(fd, SHUT_RDWR)
-close(fd)
+shutdown(fd, SHUT_RDWR); close(fd)

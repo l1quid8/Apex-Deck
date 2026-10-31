@@ -4,7 +4,7 @@ import Foundation
 public enum Policy {
   public static func protectedRole(_ role: String, _ subrole: String) -> Bool {
     let role = role.lowercased()
-    return role.isEmpty || role.contains("secure") || role.contains("password") || subrole.lowercased().contains("secure")
+    return role.isEmpty || role.contains("secure") || role.contains("password") || (subrole.lowercased().contains("secure") || subrole.lowercased().contains("password"))
   }
   public static func safeAncestry<E>(_ start: E, read: (E) -> (String, String, E?)?) -> Bool {
     var cursor: E? = start
@@ -17,24 +17,37 @@ public enum Policy {
     }
     return false
   }
-  public static func target(_ s: String) -> Bool { s == "com.apple.TextEdit" }
+  public static func target(_ s: String) -> Bool {
+    let protected = ["com.apple.systempreferences", "com.apple.systemsettings", "com.apple.securityagent",
+      "com.apple.loginwindow", "com.apple.coreautha", "com.apple.authorizationhost",
+      "com.apple.keychainaccess", "com.apple.passwords", "dev.apexdeck.unified-computer-use"]
+    let lower = s.lowercased()
+    return s.count <= 255 && s.contains(".") && !s.hasSuffix(".") && !protected.contains(lower) && !lower.hasPrefix("com.apple.authenticationservices") && !lower.hasPrefix("com.apple.authkit")
+      && s.unicodeScalars.allSatisfy { CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_").contains($0) }
+  }
   public static func key(_ s: String) -> (UInt16, UInt64)? {
-    let cmd: UInt64 = 1 << 20
-    let shift: UInt64 = 1 << 17
-    return [
-      "Cmd-N": (45, cmd), "Shift-Cmd-T": (17, cmd | shift), "Cmd-S": (1, cmd),
-      "Shift-Cmd-G": (5, cmd | shift), "Return": (36, 0), "Escape": (53, 0), "Tab": (48, 0),
-      "Left": (123, 0), "Right": (124, 0), "Down": (125, 0), "Up": (126, 0),
-    ][s]
+    let parts = s.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+    guard let key = parts.last, !key.isEmpty, Set(parts).count == parts.count else { return nil }
+    var flags: UInt64 = 0
+    for modifier in parts.dropLast() {
+      guard let flag: UInt64 = ["Cmd": 1 << 20, "Shift": 1 << 17, "Alt": 1 << 19, "Control": 1 << 18][modifier] else { return nil }
+      flags |= flag
+    }
+    let codes: [String: UInt16] = ["A":0,"S":1,"D":2,"F":3,"H":4,"G":5,"Z":6,"X":7,"C":8,"V":9,
+      "B":11,"Q":12,"W":13,"E":14,"R":15,"Y":16,"T":17,"1":18,"2":19,"3":20,"4":21,"6":22,"5":23,
+      "9":25,"7":26,"8":28,"0":29,"O":31,"U":32,"I":34,"P":35,"Return":36,"L":37,"J":38,"K":40,
+      "N":45,"M":46,"Tab":48,"Space":49,"Backspace":51,"Escape":53,"Delete":117,"Home":115,"End":119,
+      "PageUp":116,"PageDown":121,"Minus":27,"Equal":24,"LeftBracket":33,"RightBracket":30,"Backslash":42,
+      "Semicolon":41,"Quote":39,"Comma":43,"Period":47,"Slash":44,"Grave":50,
+      "F1":122,"F2":120,"F3":99,"F4":118,"F5":96,"F6":97,"F7":98,"F8":100,"F9":101,"F10":109,"F11":103,"F12":111,"Left":123,"Right":124,"Down":125,"Up":126]
+    return codes[key].map { ($0, flags) }
   }
   public static func text(_ s: String) -> Bool {
-    s.count <= 256
-      && !s.unicodeScalars.contains {
-        $0.value < 32 || (127...159).contains($0.value) || $0.value == 0x2028 || $0.value == 0x2029
-      }
+    s.utf8.count <= 65_536 && !s.unicodeScalars.contains { $0.value == 0 || ($0.value < 32 && $0.value != 9 && $0.value != 10 && $0.value != 13) || (127...159).contains($0.value) }
   }
 }
 public enum Wire {
+  public static let requestLineLimit = 400 * 1024
   public static let screenshotResponseLineLimit = ((5 * 1024 * 1024 + 2) / 3) * 4 + 256 * 1024
   public static func responses(fd: Int32, body: (Data) -> Void) {
     lines(fd: fd, limit: screenshotResponseLineLimit, body: body)
@@ -93,8 +106,13 @@ public enum Wire {
     }
   }
   public static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-    "Library/Application Support/Apex Computer Spike")
-  public static let bundle = root.appendingPathComponent("Apex Computer Spike.app")
+    "Library/Application Support/Apex Unified Computer Use")
+  public static var bundle: URL {
+    // The relay always launches the signed bundle that contains its own binary.
+    var url = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.resolvingSymlinksInPath()
+    while url.path != "/" { if url.pathExtension == "app" { return url }; url.deleteLastPathComponent() }
+    return Bundle.main.bundleURL
+  }
   public static let socketPath = root.appendingPathComponent("control.sock").path
   public static func connect() -> Int32 {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -152,7 +170,7 @@ public enum Wire {
   }
 
   public static func lines(fd: Int32, body: (Data) -> Void) {
-    lines(fd: fd, limit: 65536, body: body)
+    lines(fd: fd, limit: requestLineLimit, body: body)
   }
   /// Read one small handshake line without consuming any following frame.
   public static func firstLine(fd: Int32, limit: Int, timeout: TimeInterval) -> Data? {

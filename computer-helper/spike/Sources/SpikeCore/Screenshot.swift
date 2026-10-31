@@ -66,12 +66,12 @@ public enum ScreenshotPolicy {
     let width = properties[kCGImagePropertyPixelWidth] as! Int
     let height = properties[kCGImagePropertyPixelHeight] as! Int
     let f = window.frame
-    let metadata = "\nimage_snapshot: \(snapshot)\nwindow_id: \(window.id)\npid: \(window.pid)\napp: \(window.bundle)\nframe_points: \(f.origin.x),\(f.origin.y),\(f.width),\(f.height)\npixels: \(width)x\(height)\nscale_xy: \(Double(width)/f.width),\(Double(height)/f.height)\nwindow-only JPEG; no coordinate input is supported"
+    let metadata = "\nimage_snapshot: \(snapshot)\nwindow_id: \(window.id)\npid: \(window.pid)\napp: \(window.bundle)\nframe_points: \(f.origin.x),\(f.origin.y),\(f.width),\(f.height)\npixels: \(width)x\(height)\nscale_xy: \(Double(width)/f.width),\(Double(height)/f.height)\nwindow-only JPEG; click_point takes x/y in these image pixels and requires image_snapshot"
     return ["content": [["type": "text", "text": text + metadata],
       ["type": "image", "mimeType": "image/jpeg", "data": jpeg.base64EncodedString()]]]
   }
   public static var tool: [String: Any] {
-    ["name": "get_screenshot", "description": "Read one verified TextEdit window as bounded JPEG; never launches/focuses or requests permission.",
+    ["name": "get_screenshot", "description": "Read one verified granted app window as bounded JPEG; never launches/focuses or requests permission.",
       "inputSchema": ["type": "object", "properties": [String: Any](), "required": [String](), "additionalProperties": false],
       "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]]
   }

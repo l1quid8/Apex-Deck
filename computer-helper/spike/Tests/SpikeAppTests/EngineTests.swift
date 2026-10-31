@@ -18,7 +18,7 @@ final class EngineTests: XCTestCase {
   }
   func testTypeRejectsUnboundedPayloadBeforeCallingNativeEngine() {
     let engine = NativeEngine()
-    XCTAssertThrowsError(try engine.type(observation: "old", ref: "@e1", text: String(repeating: "x", count: 257), check: {})) { error in
+    XCTAssertThrowsError(try engine.type(observation: "old", ref: "@e1", text: String(repeating: "x", count: 65_537), check: {})) { error in
       XCTAssertEqual((error as? Refusal)?.code, "invalid_text")
     }
   }
@@ -56,6 +56,14 @@ final class EngineSessionTests: XCTestCase {
 }
 
 final class EngineMutationPolicyTests: XCTestCase {
+  func testScreenshotPointsMapExactPixelsAndRefuseNonfiniteOrOutsideCoordinates() throws {
+    let scope = ScreenshotScope(snapshot: "image", windowID: 1, frame: CGRect(x: 100, y: 200, width: 800, height: 600), width: 400, height: 300)
+    XCTAssertEqual(try scope.point(x: 200, y: 150), CGPoint(x: 500, y: 500))
+    for (x, y) in [(-1.0, 0.0), (400.0, 0.0), (0.0, 300.0), (Double.nan, 0.0), (0.0, Double.infinity)] {
+      XCTAssertThrowsError(try scope.point(x: x, y: y))
+    }
+  }
+
   func testSubroleDistinguishesExplicitAbsenceFromFailedRead() {
     XCTAssertEqual(EngineSubrole.decode(status: .attributeUnsupported, value: nil), "")
     XCTAssertEqual(EngineSubrole.decode(status: .noValue, value: nil), "")

@@ -1,6 +1,6 @@
 # Embedded agent-desktop source
 
-Apex Computer embeds the native Rust core and macOS adapter from
+Unified Computer Use embeds the native Rust core and macOS adapter from
 [vercel-labs/agent-desktop](https://github.com/vercel-labs/agent-desktop), pinned to
 commit `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc` (version 1.0.2), copied on
 2026-10-31. Upstream files retain their copyright notices. The Apache-2.0
@@ -29,17 +29,16 @@ Apex changes to vendored source:
   corresponding upstream slice expectation is adjusted.
 - `macos/src/input/keyboard/keyboard_event.rs`: check revocation before each
   input chunk/key-down budget preflight. Key-up release remains unconditional.
-  The bridge itself selects headless semantic action policy and exposes no
-  physical input method.
+  The bridge selects this bounded, interruptible PID-targeted Unicode path for
+  typing; click and scroll retain semantic policy. No clipboard path is exposed.
 
 Runtime boundary:
 
-- Only `capture`, retained-ref semantic `click`, and retained-ref semantic
-  `type` JSON requests are accepted by the C bridge; unknown fields/operations
+- Only `capture`, retained-ref `click`, `type`, and `scroll` JSON requests are accepted by the C bridge; unknown fields/operations
   are rejected. Reset drops in-memory observations and retained objects.
 - `RetainedRefSession`, adapter operations and RefMaps remain on one dedicated
   `std::thread`; Swift Dispatch queues do not own Rust native identity.
-- Capture enumerates the TextEdit bundle's windows only, checks the exact PID
+- Capture enumerates the explicitly granted app bundle's windows only, checks the exact PID
   and window number, uses a 2-second read budget, and retains only surfaced
   safe refs. Observation reads are bounded to 2,000 nodes, 4,000 edges,
   500 children per node, 800 bytes per field and 128,000 text bytes. Rendered
@@ -49,8 +48,31 @@ Runtime boundary:
   by the bridge. The interaction lock may create a content-free upstream
   `interaction.lock`; screen trees and native refs stay in memory.
 - Swift preserves ScreenCaptureKit and permission/activity/turn checks. It
-  validates actual mutation-target TextEdit PID and protected/unknown ancestry
+  validates the actual mutation-target app identity/PID and protected/unknown ancestry
   with a bounded guard before returning authorization to Rust.
+- The Swift helper authenticates the daemon with the kernel peer audit token,
+  Team `75N5HW62JH`, and signing identifier `apex-daemon`. It strictly validates
+  its enclosing `dev.apexdeck.app` signature and nested code, then pins the peer
+  CDHash to that bundle's sibling `Resources/bin/apex-daemon`. Kernel argv must
+  select `serve`; signed stdio and Codex-hook relay modes cannot register turns.
+  A standalone helper fails closed. Its persistent
+  control connection registers a random per-turn token. EOF, end-turn, Stop,
+  replacement by a newer turn, and access changes revoke that turn.
+- Every MCP client owns its in-memory snapshot and cancellation latch. A
+  60-second token lease spans writable observations and actions, with one
+  shared action queue. Read/Plan sessions only observe and never claim input.
+  Native modeless grant prompts are per-app/per-turn and cancellable.
+- The native `press_key` path validates named key combinations, target app,
+  focus, retained window, protected ancestry, and activity immediately before
+  paired event dispatch. Screenshots use one verified granted window through
+  ScreenCaptureKit, encoded in memory with bounded JPEG transport. A screenshot-
+  scoped `click_point` maps bounded image pixels to that exact window's frame,
+  rechecks AX ownership/protected ancestry and WindowServer stacking, then
+  dispatches tagged mouse events with cancellation before down/up. A mouse-up
+  cleanup releases any held button after interruption; it does not authorize
+  another click. Screenshot scope is consumed after the action.
+- Protected security apps and password surfaces are refused before content
+  publication. No permission is granted by normal launch or tool discovery.
 - Actions consume their observation. Results return only delivery, retry and
   verification-scope metadata. Post-state values, errors and other content
   remain private; application commit/file save is explicitly not verified.

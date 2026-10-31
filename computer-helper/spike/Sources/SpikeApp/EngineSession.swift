@@ -7,6 +7,7 @@ import SpikeCore
 /// element actions use only an observation that has passed this exact binding.
 final class EngineSession {
   private let engine = NativeEngine()
+  var authorization: (() throws -> Void)?
   private(set) var current: EngineSnapshot?
   private var lastAction: [String: Any]?
 
@@ -15,6 +16,7 @@ final class EngineSession {
     !terminated && currentPID == pid && currentLaunch == launch && frontmostPID == pid
   }
   private func checkContinuation(_ s: Snapshot, id: String, latch: Latch) throws {
+    try authorization?()
     try latch.check(id, epoch: s.epoch)
     guard Self.continuationMatches(pid: s.app.processIdentifier, launch: s.launch,
       currentPID: s.app.processIdentifier, currentLaunch: s.app.launchDate,
@@ -35,6 +37,8 @@ final class EngineSession {
     guard let lastAction = lastAction, !code.contains("delivery=") else { return code }
     return code + "; " + Self.actionSummary(lastAction)
   }
+
+  func recordUnverifiedInput() { lastAction = ["delivery": "delivered_unverified", "verification_scope": "unavailable"] }
 
   func invalidate() { current = nil; lastAction = nil; engine.invalidate() }
 
@@ -90,6 +94,18 @@ final class EngineSession {
   }
 
   @discardableResult
+  func scroll(element: Int, direction: String, amount: Int, s: Snapshot, id: String, latch: Latch, ax: Accessibility) throws -> [String: Any] {
+    try latch.check(id, epoch: s.epoch)
+    let ref = try reference(element: element, snapshot: s.id)
+    _ = try ax.validate(s, epoch: s.epoch)
+    current = nil
+    let result = try engine.scroll(observation: s.id, ref: ref, direction: direction, amount: amount) {
+      try self.checkContinuation(s, id: id, latch: latch)
+    }
+    lastAction = result
+    return result
+  }
+  @discardableResult
   func type(text: String, s: Snapshot, id: String, latch: Latch, ax: Accessibility) throws -> [String: Any] {
     try latch.check(id, epoch: s.epoch)
     guard let current = current, current.id == s.id, let ref = current.focusedRef,
@@ -97,7 +113,7 @@ final class EngineSession {
     else { throw Refusal("engine_focused_ref_unavailable") }
     guard Policy.text(text) else { throw Refusal("invalid_text") }
     let focus = try ax.validate(s, epoch: s.epoch)
-    guard let value = s.value, value.utf16.count <= 4096,
+    guard let value = s.value, value.utf16.count <= 1_048_576,
       string(focus, kAXValueAttribute) == value,
       let expected = s.range, let live = selectedRange(focus),
       expected.location >= 0, expected.length >= 0,

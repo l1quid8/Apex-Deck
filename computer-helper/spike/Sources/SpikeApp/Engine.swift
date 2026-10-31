@@ -25,7 +25,7 @@ enum EngineSubrole {
     }
   }
   static func read(_ element: AXUIElement) -> String? {
-    guard let deadline = Thread.current.threadDictionary["axDeadline"] as? Double else { return nil }
+    let deadline = Thread.current.threadDictionary["axDeadline"] as? Double ?? (ProcessInfo.processInfo.systemUptime + 0.3)
     let remaining = deadline - ProcessInfo.processInfo.systemUptime
     guard remaining > 0,
       AXUIElementSetMessagingTimeout(element, Float(min(remaining, 0.1))) == .success
@@ -105,8 +105,8 @@ final class NativeEngine {
     snapshots.removeAll()
     guard let app = NSRunningApplication(processIdentifier: pid),
       !app.isTerminated, Policy.target(app.bundleIdentifier ?? "")
-    else { throw Refusal("only_TextEdit_allowed") }
-    var request: [String: Any] = ["op": "capture", "pid": pid]
+    else { throw Refusal("protected_or_invalid_app") }
+    var request: [String: Any] = ["op": "capture", "pid": pid, "app": app.bundleIdentifier!]
     if let windowID = windowID { request["window_id"] = windowID }
     let value = try invoke(request, pid: pid, check: check)
     guard let id = value["id"] as? String, let text = value["text"] as? String,
@@ -130,6 +130,14 @@ final class NativeEngine {
     guard Policy.text(text) else { throw Refusal("invalid_text") }
     guard let expectedTarget = expectedTarget else { throw Refusal("engine_typing_target_required") }
     return try action("type", observation: observation, ref: ref, text: text, expectedTarget: expectedTarget, check: check)
+  }
+  @discardableResult
+  func scroll(observation: String, ref: String, direction: String, amount: Int,
+    check: @escaping () throws -> Void) throws -> [String: Any] {
+    try check()
+    guard let snapshot = snapshots.removeValue(forKey: observation), snapshot.refs.contains(ref) else { throw Refusal("stale_observation") }
+    return try invoke(["op": "scroll", "pid": snapshot.pid, "observation": observation, "ref": ref,
+      "direction": direction, "amount": amount], pid: snapshot.pid, check: check)
   }
   private func action(_ op: String, observation: String, ref: String, text: String?, expectedTarget: AXUIElement? = nil,
     check: @escaping () throws -> Void) throws -> [String: Any] {

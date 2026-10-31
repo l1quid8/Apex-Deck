@@ -31,7 +31,7 @@ final class ScreenshotTests: XCTestCase {
     }
   }
   // Catches selecting a same-name app, duplicate windows, protected/foreign scope or stale geometry.
-  func testSelectionRequiresUniqueExactTextEditWindow() throws {
+  func testSelectionRequiresUniqueExactEligibleWindow() throws {
     let frame = CGRect(x: 10, y: 20, width: 800, height: 600)
     func candidate(_ id: UInt32 = 42, pid: Int32 = 123, bundle: String = "com.apple.TextEdit",
                    title: String = "Fixture", rect: CGRect? = nil, safe: Bool = true) -> ScreenshotWindow {
@@ -39,7 +39,7 @@ final class ScreenshotTests: XCTestCase {
     }
     XCTAssertEqual(try ScreenshotPolicy.select([candidate(), candidate(50, pid: 321)], pid: 123, title: "Fixture", frame: frame).id, 42)
     for candidates in [[], [candidate(), candidate(43)], [candidate(pid: 321)],
-      [candidate(bundle: "local.ds4.app")], [candidate(title: "Other")],
+      [candidate(bundle: "com.apple.SecurityAgent")], [candidate(title: "Other")],
       [candidate(rect: frame.offsetBy(dx: 1, dy: 0))], [candidate(safe: false)]] {
       XCTAssertThrowsError(try ScreenshotPolicy.select(candidates, pid: 123, title: "Fixture", frame: frame))
     }

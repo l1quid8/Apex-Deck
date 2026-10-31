@@ -1,6 +1,21 @@
 import AppKit
 import ScreenCaptureKit
+import ImageIO
 import SpikeCore
+
+struct ScreenshotScope {
+  let snapshot: String
+  let windowID: UInt32
+  let frame: CGRect
+  let width: Int
+  let height: Int
+  func point(x: Double, y: Double) throws -> CGPoint {
+    guard x.isFinite, y.isFinite, x >= 0, y >= 0, x < Double(width), y < Double(height),
+      width > 0, height > 0 else { throw Refusal("image_point_out_of_bounds") }
+    return CGPoint(x: frame.minX + x * frame.width / Double(width),
+      y: frame.minY + y * frame.height / Double(height))
+  }
+}
 
 // Callback results stay in memory. Late completion after Stop/timeout is dropped;
 // no fallback API, capture stream, file output, or permission request is used.
@@ -69,15 +84,15 @@ final class WindowScreenshot {
     }
   }
 
-  func capture(id: String) throws -> (Snapshot, [String: Any]) {
+  func capture(id: String) throws -> (Snapshot, [String: Any], ScreenshotScope) {
     let epoch = latch.state().0
     return try ScreenshotPolicy.guarded(latch: latch, id: id) {
       guard ax.trusted() else {
-        throw Refusal("Accessibility is off. In System Settings → Privacy & Security → Accessibility, enable the exact Apex Computer Spike.app; relaunch it if macOS requires.")
+        throw Refusal("Accessibility is off. In System Settings → Privacy & Security → Accessibility, enable the exact Unified Computer Use.app; relaunch it if macOS requires.")
       }
       // Preflight is deliberately nonprompting and precedes all SCK requests.
       guard CGPreflightScreenCaptureAccess() else {
-        throw Refusal("Screen Recording is off. In System Settings → Privacy & Security → Screen & System Audio Recording (Screen Recording on older macOS), enable the exact Apex Computer Spike.app; relaunch it if macOS requires. No permission prompt was requested.")
+        throw Refusal("Screen Recording is off. In System Settings → Privacy & Security → Screen & System Audio Recording (Screen Recording on older macOS), enable the exact Unified Computer Use.app; relaunch it if macOS requires. No permission prompt was requested.")
       }
       let deadline = ProcessInfo.processInfo.systemUptime + 8
       let observation = try ax.capture(epoch: epoch)
@@ -123,7 +138,12 @@ final class WindowScreenshot {
         fresh.app.processIdentifier == chosen.pid, fresh.document == observation.document
       else { throw Refusal("window_changed_or_protected") }
       try guardWindow(fresh, id, title: title, frame: frame, deadline: deadline)
-      return (fresh, try ScreenshotPolicy.reply(text: fresh.output, snapshot: fresh.id, window: chosen, jpeg: jpeg))
+      guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+        let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
+        let height = properties[kCGImagePropertyPixelHeight as String] as? Int else { throw Refusal("image_geometry_unavailable") }
+      let scope = ScreenshotScope(snapshot: fresh.id, windowID: chosen.id, frame: frame, width: width, height: height)
+      return (fresh, try ScreenshotPolicy.reply(text: fresh.output, snapshot: fresh.id, window: chosen, jpeg: jpeg), scope)
     }
   }
 }

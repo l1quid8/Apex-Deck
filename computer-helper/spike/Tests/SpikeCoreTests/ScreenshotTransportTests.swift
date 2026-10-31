@@ -15,16 +15,16 @@ final class ScreenshotTransportTests: XCTestCase {
     let content = try XCTUnwrap(((try JSONSerialization.jsonObject(with: XCTUnwrap(received.first))) as? [String: Any])?["result"] as? [String: Any])
     XCTAssertEqual((content["content"] as? [[String: Any]])?.count, 2)
   }
-  // Catches broadening inbound requests while allowing bounded response images.
-  func testRequestLimitStaysSmallAndResponseLimitIsBounded() throws {
-    XCTAssertEqual(try readFrame(Data(repeating: 65, count: 65536), response: false).first?.count, 65536)
-    XCTAssertEqual(try readFrame(Data(repeating: 65, count: 70_000), response: false).count, 0)
+  // Requests accommodate bounded multiline typing; image responses have a separate ceiling.
+  func testRequestAndResponseLimitsAreBounded() throws {
+    XCTAssertEqual(try readFrame(Data(repeating: 65, count: Wire.requestLineLimit), response: false).first?.count, Wire.requestLineLimit)
+    XCTAssertEqual(try readFrame(Data(repeating: 65, count: Wire.requestLineLimit + 1), response: false).count, 0)
     XCTAssertEqual(try readFrame(Data(repeating: 65, count: Wire.screenshotResponseLineLimit), response: true).first?.count,
       Wire.screenshotResponseLineLimit)
     XCTAssertEqual(try readFrame(Data(repeating: 65, count: Wire.screenshotResponseLineLimit + 1), response: true).count, 0)
   }
   func testLimitsApplyToEachLineAcrossBufferBoundaries() throws {
-    for (response, limit) in [(false, 65536), (true, Wire.screenshotResponseLineLimit)] {
+    for (response, limit) in [(false, Wire.requestLineLimit), (true, Wire.screenshotResponseLineLimit)] {
       let first = Data(repeating: 65, count: limit - 16)
       let second = Data(repeating: 66, count: 128)
       var stream = first; stream.append(10); stream.append(second); stream.append(10)
@@ -32,7 +32,7 @@ final class ScreenshotTransportTests: XCTestCase {
     }
   }
   func testOversizeLinePreservesEarlierFramesButCannotReleaseLaterFrames() throws {
-    for (response, limit) in [(false, 65536), (true, Wire.screenshotResponseLineLimit)] {
+    for (response, limit) in [(false, Wire.requestLineLimit), (true, Wire.screenshotResponseLineLimit)] {
       var stream = Data("first\n".utf8)
       stream.append(Data(repeating: 65, count: limit + 1))
       stream.append(Data("\nlater\n".utf8))

@@ -4,13 +4,27 @@ import SpikeCore
 
 final class ActivityTap {
   let latch: Latch
+  private let listenersLock = NSLock()
+  private var listeners = [UUID: Latch]()
   let tag = Int64.random(in: 1...Int64.max)
   var tap: CFMachPort?
   var source: CFRunLoopSource?
   init(_ latch: Latch) { self.latch = latch }
+  func add(_ value: Latch) -> UUID {
+    let key = UUID(); listenersLock.lock(); listeners[key] = value; listenersLock.unlock()
+    value.setTap(latch.state().2); return key
+  }
+  func remove(_ key: UUID) { listenersLock.lock(); listeners.removeValue(forKey: key); listenersLock.unlock() }
+  private func all(_ body: (Latch) -> Void) {
+    listenersLock.lock(); let values = Array(listeners.values); listenersLock.unlock()
+    body(latch); for value in values { body(value) }
+  }
+  func invalidateObservations() { all { $0.event() } }
+  func stopAll() { all { $0.stop() } }
+  private func health(_ healthy: Bool) { all { $0.setTap(healthy) } }
   func start() {
     guard CGPreflightListenEventAccess() else {
-      latch.setTap(false)
+      health(false)
       return
     }
     let types: [CGEventType] = [
@@ -27,23 +41,24 @@ final class ActivityTap {
         let owner = Unmanaged<ActivityTap>.fromOpaque(context).takeUnretainedValue()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
           owner.latch.count("tapDisabled")
-          owner.latch.event(broken: true)
+          owner.all { $0.event(broken: true) }
         } else {
           let own = event.getIntegerValueField(.eventSourceUserData) == owner.tag
+            || event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(ProcessInfo.processInfo.processIdentifier)
           let keyboard = type == .keyDown || type == .keyUp || type == .flagsChanged
           owner.latch.count((own ? "ownTagged" : "other") + (keyboard ? "Keyboard" : "Mouse"))
-          if !own { owner.latch.event() }
+          if !own { owner.all { $0.event() } }
         }
         return Unmanaged.passUnretained(event)
       }, userInfo: Unmanaged.passUnretained(self).toOpaque())
     guard let tap = tap else {
-      latch.setTap(false)
+      health(false)
       return
     }
     source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
     CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
     CGEvent.tapEnable(tap: tap, enable: true)
-    latch.setTap(true)
+    health(true)
   }
 }
 final class Input {
@@ -197,5 +212,53 @@ final class Input {
       down.post(tap: .cgSessionEventTap)
       up.post(tap: .cgSessionEventTap)
     })
+  }
+}
+
+extension Input {
+  private func pointGuard(_ point: CGPoint, scope: ScreenshotScope, s: Snapshot, id: String, deadline: Double) throws {
+    _ = try guardState(s, id, deadline)
+    guard s.screenshotSafe, let window = s.window, rect(window) == scope.frame,
+      (attr(window, "AXWindowNumber") as? NSNumber)?.uint32Value == scope.windowID else { throw Refusal("screenshot_window_changed") }
+    var target: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(ax.system, Float(point.x), Float(point.y), &target) == .success,
+      let target = target, pid(target) == s.app.processIdentifier, safe(target) else { throw Refusal("point_foreign_secure_or_unknown") }
+    var cursor: AXUIElement? = target
+    var matched = false
+    for _ in 0..<20 {
+      guard let current = cursor else { break }
+      if same(current, window) { matched = true; break }
+      cursor = element(current, kAXParentAttribute)
+    }
+    guard matched else { throw Refusal("point_window_mismatch") }
+    // AX hit testing and WindowServer stacking must independently agree.
+    guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]],
+      let top = windows.first(where: { entry in
+        guard let bounds = entry[kCGWindowBounds as String] as? [String: Any],
+          let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+          (entry[kCGWindowAlpha as String] as? Double ?? 0) > 0 else { return false }
+        return frame.contains(point)
+      }), (top[kCGWindowNumber as String] as? UInt32) == scope.windowID,
+      (top[kCGWindowOwnerPID as String] as? Int32) == s.app.processIdentifier else { throw Refusal("point_occluded_or_unverified") }
+    try latch.check(id, epoch: s.epoch)
+  }
+  func point(x: Double, y: Double, scope: ScreenshotScope, s: Snapshot, id: String) throws {
+    let point = try scope.point(x: x, y: y)
+    let deadline = ProcessInfo.processInfo.systemUptime + 2
+    Thread.current.threadDictionary["axDeadline"] = deadline
+    defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
+    guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+      let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else { throw Refusal("event_creation_failed") }
+    for event in [down, up] { event.flags = []; event.setIntegerValueField(.eventSourceUserData, value: activity.tag) }
+    try latch.dispatch(id, epoch: s.epoch, validate: {
+      try self.pointGuard(point, scope: scope, s: s, id: id, deadline: deadline)
+    }, post: { down.post(tap: .cgSessionEventTap) })
+    var released = false
+    defer { if !released { up.post(tap: .cgSessionEventTap) } } // Release a held mouse button even after revocation.
+    do {
+      try latch.dispatch(id, epoch: s.epoch, validate: {
+        try self.pointGuard(point, scope: scope, s: s, id: id, deadline: deadline)
+      }, post: { up.post(tap: .cgSessionEventTap); released = true })
+    } catch { throw Refusal("point_interrupted; delivery=delivery_uncertain; retry=unsafe") }
   }
 }

@@ -31,7 +31,7 @@ func safe(_ e: AXUIElement) -> Bool {
   let expectedPID = pid(e)
   return Policy.safeAncestry(e) { current in
     guard pid(current) == expectedPID, let role = string(current, kAXRoleAttribute) else { return nil }
-    let subrole = string(current, kAXSubroleAttribute) ?? ""
+    guard let subrole = EngineSubrole.read(current), role != kAXUnknownRole else { return nil }
     // Only a verified application root terminates ancestry. A failed parent
     // read on an ordinary control cannot establish that its ancestry is safe.
     let parent = role == kAXApplicationRole ? nil : element(current, kAXParentAttribute)
@@ -112,7 +112,8 @@ struct Tree {
       lines.append("foreign-owned surface pid=\(pid(e)); controls omitted")
       return
     }
-    let secure = Policy.protectedRole(role, string(e, kAXSubroleAttribute) ?? "")
+    guard let subrole = EngineSubrole.read(e) else { screenshotSafe = false; return }
+    let secure = Policy.protectedRole(role, subrole)
     if role == kAXUnknownRole { screenshotSafe = false }
     // Do not inspect protected descendants or fetch their values.
     if secure {
@@ -171,6 +172,8 @@ struct Tree {
   }
 }
 final class Accessibility {
+  var targetBundle = ""
+  var verifyIdentity: ((NSRunningApplication) throws -> Void)?
   let system = AXUIElementCreateSystemWide()
   init() { AXUIElementSetMessagingTimeout(system, 0.1) }
   func trusted() -> Bool {
@@ -188,7 +191,9 @@ final class Accessibility {
   }
   func capture(epoch: UInt64) throws -> Snapshot {
     guard trusted() else { throw Refusal("accessibility_not_trusted") }
-    let app = try running("com.apple.TextEdit")
+    guard Policy.target(targetBundle) else { throw Refusal("app_grant_required") }
+    let app = try running(targetBundle)
+    try verifyIdentity?(app)
     let root = AXUIElementCreateApplication(app.processIdentifier)
     let window = element(root, kAXFocusedWindowAttribute)
     let focus = element(root, kAXFocusedUIElementAttribute)
@@ -197,6 +202,7 @@ final class Accessibility {
     var tree = Tree(targetPID: app.processIdentifier)
     if let window = window { tree.walk(window) }
     if let menu = element(root, kAXMenuBarAttribute) { tree.walk(menu) }
+    guard tree.screenshotSafe, !tree.truncated else { throw Refusal("protected_or_unverified_surface") }
     let id = UUID().uuidString
     let focusSafe = focus.map { safe($0) && pid($0) == app.processIdentifier } ?? false
     let value = focusSafe ? string(focus!, kAXValueAttribute) : nil
@@ -211,7 +217,8 @@ final class Accessibility {
       controls: tree.controls, output: output, screenshotSafe: tree.screenshotSafe && !tree.truncated)
   }
   func validate(_ s: Snapshot, epoch: UInt64) throws -> AXUIElement {
-    guard trusted(), !s.app.isTerminated, s.app.launchDate == s.launch, epoch == s.epoch else {
+    try verifyIdentity?(s.app)
+    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, s.app.launchDate == s.launch, epoch == s.epoch else {
       throw Refusal("target_or_activity_changed")
     }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier,

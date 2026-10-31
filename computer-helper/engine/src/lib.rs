@@ -1,6 +1,6 @@
 //! Narrow, in-process Apex bridge. Native objects never cross the worker thread.
 use agent_desktop_core::{
-    Action, ActionRequest, AdapterError, CommandContext, Deadline, DeliverySemantics,
+    Action, ActionRequest, AdapterError, CommandContext, Deadline, DeliverySemantics, Direction,
     ObservationBudget, ObservationOps, RefMap, TreeOptions, WindowFilter,
 };
 use agent_desktop_macos::{MacOSAdapter, RetainedRefSession};
@@ -14,8 +14,7 @@ use std::{
     thread,
 };
 
-const APP: &str = "com.apple.TextEdit";
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_REQUEST_BYTES: usize = 400 * 1024;
 const MAX_OUTPUT_BYTES: usize = 23_800;
 
 #[derive(Deserialize)]
@@ -23,6 +22,7 @@ const MAX_OUTPUT_BYTES: usize = 23_800;
 enum Request {
     Capture {
         pid: i32,
+        app: String,
         #[serde(default)]
         window_id: Option<String>,
     },
@@ -30,6 +30,13 @@ enum Request {
         pid: i32,
         observation: String,
         r#ref: String,
+    },
+    Scroll {
+        pid: i32,
+        observation: String,
+        r#ref: String,
+        direction: String,
+        amount: u32,
     },
     Type {
         pid: i32,
@@ -44,18 +51,40 @@ fn parse_request(raw: &str) -> Result<Request, ()> {
     }
     let request: Request = serde_json::from_str(raw).map_err(|_| ())?;
     let pid = match &request {
-        Request::Capture { pid, .. } | Request::Click { pid, .. } | Request::Type { pid, .. } => {
-            *pid
-        }
+        Request::Capture { pid, .. }
+        | Request::Click { pid, .. }
+        | Request::Type { pid, .. }
+        | Request::Scroll { pid, .. } => *pid,
     };
     if pid <= 0 {
         return Err(());
     }
     if let Request::Type { text, .. } = &request {
-        if text.chars().count() > 256
+        if text.len() > 65_536
             || text
                 .chars()
-                .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+                .any(|c| c == '\0' || (c.is_control() && !['\n', '\r', '\t'].contains(&c)))
+        {
+            return Err(());
+        }
+    }
+    if let Request::Capture { app, .. } = &request {
+        if app.is_empty()
+            || app.len() > 255
+            || !app.contains('.')
+            || !app
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
+        {
+            return Err(());
+        }
+    }
+    if let Request::Scroll {
+        direction, amount, ..
+    } = &request
+    {
+        if !["up", "down", "left", "right"].contains(&direction.as_str())
+            || !(1..=20).contains(amount)
         {
             return Err(());
         }
@@ -106,7 +135,26 @@ impl EngineState {
             return adapter_failure(error);
         }
         match request {
-            Request::Capture { pid, window_id } => self.capture(pid, window_id),
+            Request::Capture {
+                pid,
+                app,
+                window_id,
+            } => self.capture(pid, &app, window_id),
+            Request::Scroll {
+                pid,
+                observation,
+                r#ref,
+                direction,
+                amount,
+            } => {
+                let dir = match direction.as_str() {
+                    "up" => Direction::Up,
+                    "left" => Direction::Left,
+                    "right" => Direction::Right,
+                    _ => Direction::Down,
+                };
+                self.action(pid, &observation, &r#ref, Action::Scroll(dir, amount))
+            }
             Request::Click {
                 pid,
                 observation,
@@ -126,14 +174,14 @@ impl EngineState {
             retained.retain(&HashSet::new());
         }
     }
-    fn capture(&mut self, pid: i32, window_id: Option<String>) -> Value {
+    fn capture(&mut self, pid: i32, app: &str, window_id: Option<String>) -> Value {
         self.clear();
         let adapter = MacOSAdapter::new();
         let work = || -> Result<_, AdapterError> {
             let deadline = Deadline::after(2_000)?;
             let mut windows = adapter.list_windows(
                 &WindowFilter {
-                    app: Some(APP.into()),
+                    app: Some(app.into()),
                     focused_only: false,
                 },
                 deadline,
@@ -174,7 +222,7 @@ impl EngineState {
             agent_desktop_core::snapshot::build_with_budget(
                 &adapter,
                 &opts,
-                Some(APP),
+                Some(app),
                 Some(&window.id),
                 deadline,
                 budget,
@@ -206,7 +254,7 @@ impl EngineState {
             return failure("scope_mismatch", DeliverySemantics::not_delivered());
         }
         let id = observation_id();
-        let mut text = format!("snapshot: {id}\napp: {APP}\nwindow: {}\n", result.window.id);
+        let mut text = format!("snapshot: {id}\napp: {app}\nwindow: {}\n", result.window.id);
         let mut refs = Vec::new();
         let mut focused = None;
         let render_truncated = render(
@@ -261,10 +309,19 @@ impl EngineState {
                 DeliverySemantics::not_delivered(),
             );
         }
+        let request = if let Action::TypeText(text) = &action {
+            // The upstream physical keyboard path checks cancellation between
+            // bounded Unicode chunks; a single AX value write cannot do that.
+            let timeout =
+                (2_000 + text.encode_utf16().count().div_ceil(32) as u64 * 400).max(30_000);
+            ActionRequest::headed(action).with_timeout_ms(Some(timeout))
+        } else {
+            ActionRequest::headless(action).with_timeout_ms(Some(2_000))
+        };
         let result = agent_desktop_core::ref_action::execute_entry_with_context(
             &MacOSAdapter::new(),
             entry,
-            ActionRequest::headless(action).with_timeout_ms(Some(2_000)),
+            request,
             &CommandContext::default(),
         );
         self.clear();
@@ -566,7 +623,8 @@ mod tests {
         let engine = apex_engine_create();
         assert!(!engine.is_null());
         for _ in 0..2 {
-            let request = CString::new(r#"{"op":"capture","pid":123}"#).unwrap();
+            let request =
+                CString::new(r#"{"op":"capture","pid":123,"app":"com.apple.TextEdit"}"#).unwrap();
             let raw = unsafe {
                 apex_engine_call(
                     engine,
@@ -593,7 +651,7 @@ mod tests {
     #[test]
     fn protocol_rejects_unknown_fields_and_overlarge_text_before_native_work() {
         assert!(parse_request(r#"{"op":"capture","pid":123,"extra":"bad"}"#).is_err());
-        assert!(parse_request(&json!({"op":"type", "pid":123, "observation":"1", "ref":"@e1", "text":"x".repeat(257)}).to_string()).is_err());
+        assert!(parse_request(&json!({"op":"type", "pid":123, "observation":"1", "ref":"@e1", "text":"x".repeat(65_537)}).to_string()).is_err());
     }
 
     #[test]
@@ -611,7 +669,8 @@ mod tests {
     fn cancellation_rejects_a_capture_before_accessibility_is_read() {
         let _scope =
             agent_desktop_core::cancellation::CancellationScope::enter(Box::new(|_| false));
-        let request = parse_request(r#"{"op":"capture","pid":123}"#).unwrap();
+        let request =
+            parse_request(r#"{"op":"capture","pid":123,"app":"com.apple.TextEdit"}"#).unwrap();
         let value = EngineState::default().execute(request);
         assert_eq!(value["error"], "engine_cancelled");
         assert_eq!(value["delivery"], "not_delivered");

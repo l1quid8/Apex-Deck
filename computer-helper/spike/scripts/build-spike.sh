@@ -1,26 +1,25 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-identity="Developer ID Application: Tyler Caldwell (75N5HW62JH)"
-security find-identity -v -p codesigning | /usr/bin/grep -F "$identity" >/dev/null || { echo 'Required Deck Developer ID unavailable' >&2; exit 1; }
-# The Rust library is embedded in SpikeApp, not packaged as another helper.
+if [[ $# -ne 1 || "$1" != /* || "$1" != *.app ]]; then
+  echo 'Usage: build-spike.sh /absolute/output/Unified Computer Use.app' >&2
+  exit 2
+fi
+bundle="$1"
+identity="${APEX_DECK_SIGN_IDENTITY:-Developer ID Application: Tyler Caldwell (75N5HW62JH)}"
+# Never installs, launches, replaces, or changes permissions on an existing app.
+if [[ -e "$bundle" ]]; then echo 'Output already exists; choose a fresh build directory' >&2; exit 1; fi
 cargo build --locked --manifest-path ../engine/Cargo.toml --release -p apex-computer-engine --lib
-swift build -c release
-root="$HOME/Library/Application Support/Apex Computer Spike"
-bundle="$root/Apex Computer Spike.app"
-# Never replace executable code underneath the running stable app.
-if /usr/bin/pgrep -f "^$bundle/Contents/MacOS/SpikeApp" >/dev/null; then echo 'Quit the spike before rebuilding' >&2; exit 1; fi
+swift build -c release --product SpikeApp
+swift build -c release --product SpikeMCP
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Helpers" "$bundle/Contents/Resources"
-chmod 700 "$root"
 cp Resources/Info.plist "$bundle/Contents/Info.plist"
 cp ../engine/vendor/LICENSE-agent-desktop "$bundle/Contents/Resources/LICENSE-agent-desktop"
 cp ../engine/PROVENANCE.md "$bundle/Contents/Resources/agent-desktop-PROVENANCE.md"
+git rev-parse HEAD > "$bundle/Contents/Resources/source-commit.txt"
 cp .build/release/SpikeApp "$bundle/Contents/MacOS/SpikeApp"
 cp .build/release/SpikeMCP "$bundle/Contents/Helpers/SpikeMCP"
-cp .build/release/SpikeEventProbe "$bundle/Contents/Helpers/SpikeEventProbe"
-codesign --force --options runtime --timestamp --sign "$identity" "$bundle/Contents/Helpers/SpikeEventProbe"
-codesign --force --options runtime --timestamp --sign "$identity" "$bundle/Contents/Helpers/SpikeMCP"
+codesign --force --identifier dev.apexdeck.unified-computer-use.mcp --options runtime --timestamp --sign "$identity" "$bundle/Contents/Helpers/SpikeMCP"
 codesign --force --options runtime --timestamp --sign "$identity" "$bundle"
 codesign --verify --deep --strict --verbose=2 "$bundle"
-codesign -d -r- --verbose=2 "$bundle"
 echo "$bundle"

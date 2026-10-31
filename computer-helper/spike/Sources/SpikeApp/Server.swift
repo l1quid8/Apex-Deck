@@ -2,230 +2,183 @@ import AppKit
 import Darwin
 import SpikeCore
 
+final class ClientSession {
+  let latch = Latch()
+  var token: String?
+  var target = ""
+  var imageScope: ScreenshotScope?
+  var snapshot: Snapshot?
+  let engine = EngineSession()
+}
 final class Server {
   let ax = Accessibility()
-  let latch = Latch()
-  let proofLock = NSLock()
-  var proofHost: ProofHostBridge?
+  var latch: Latch { activeState.latch }
+  let turns = TurnRegistry()
   lazy var activity = ActivityTap(latch)
-  lazy var input = Input(ax: ax, latch: latch, activity: activity)
-  let queue = DispatchQueue(label: "spike.actions")
-  let connection = NSLock()
-  var connectionOpen = false
+  var input: Input { Input(ax: ax, latch: latch, activity: activity) }
+  let queue = DispatchQueue(label: "unified-computer.actions")
+  let lease = ActionLease()
   let output = NSLock()
   let activeLock = NSLock()
   var activeID: String?
-  var snapshot: Snapshot?
-  let engineSession = EngineSession()
+  var activeState = ClientSession()
+  var snapshot: Snapshot? { get { activeState.snapshot } set { activeState.snapshot = newValue } }
+  var engineSession: EngineSession { activeState.engine }
   var fd: Int32 = -1
   var showDialog: (() -> Void)?
-  let probeLock = NSLock()
-  var probePresses = 0
-  var probeCenter: [Double]?
+  var showSetup: (() -> Void)?
   func checkProofHost() throws {
-    proofLock.lock(); let bridge = proofHost; proofLock.unlock()
-    try bridge?.check()
+    try turns.check(activeState.token)
+    if !activeState.target.isEmpty, let token = activeState.token {
+      let identity = try turns.identity(activeState.target, token: token)
+      let app = try ax.running(activeState.target)
+      try identity.validate(app)
+    }
   }
-  func startIsolatedRun() -> Bool {
-    proofLock.lock(); let bridge = proofHost; proofLock.unlock()
-    if let bridge = bridge { return bridge.startHumanRun() }
-    latch.start()
-    return true
-  }
+  func startIsolatedRun() -> Bool { false } // Session authority always comes from the signed daemon.
   func stopIsolatedRun() {
-    latch.stop()
-    proofLock.lock(); let bridge = proofHost; proofLock.unlock()
-    bridge?.stopFromHuman()
-  }
-  func recordProbe(center: [Double]? = nil, pressed: Bool = false) {
-    probeLock.lock()
-    defer { probeLock.unlock() }
-    if let center = center { probeCenter = center }
-    if pressed { probePresses += 1 }
+    activity.stopAll()
+    lease.releaseAll()
+    for turn in turns.stopAll() {
+      guard let fd = turn["control"] as? Int32, fd >= 0, let params = turn["params"] as? [String: Any] else { continue }
+      DispatchQueue.global().async { self.send(["jsonrpc": "2.0", "method": "unified/stop", "params": params], fd); close(fd) }
+    }
   }
   func start() {
     activity.start()
     DispatchQueue.global().async { self.listen() }
   }
   func status() -> [String: Any] {
-    let state = latch.state()
-    probeLock.lock()
-    let probe: [String: Any] = ["presses": probePresses, "center": probeCenter as Any? ?? NSNull()]
-    probeLock.unlock()
-    return [
-      "eventCounts": latch.counts(), "syntheticDialog": probe, "accessibilityTrusted": ax.trusted(),
-      "screenCaptureAccess": CGPreflightScreenCaptureAccess(),
-      "listenEventAccess": CGPreflightListenEventAccess(), "tapHealthy": state.2,
-      "stopped": state.1, "pid": ProcessInfo.processInfo.processIdentifier,
-    ]
+    let state = activity.latch.state()
+    return ["accessibilityTrusted": ax.trusted(), "screenCaptureAccess": CGPreflightScreenCaptureAccess(),
+      "listenEventAccess": CGPreflightListenEventAccess(), "tapHealthy": state.2, "stopped": turns.isStopped,
+      "pid": ProcessInfo.processInfo.processIdentifier]
   }
-  func send(_ value: [String: Any], _ client: Int32) {
-    output.lock()
-    defer { output.unlock() }
-    Wire.send(value, fd: client)
-  }
-  func response(_ id: Any, _ result: [String: Any], _ client: Int32) {
-    send(["jsonrpc": "2.0", "id": id, "result": result], client)
-  }
-  func fail(_ id: Any, _ code: String, _ client: Int32) {
-    response(id, ["isError": true, "content": [["type": "text", "text": code]]], client)
-  }
+  func send(_ value: [String: Any], _ client: Int32) { output.lock(); defer { output.unlock() }; Wire.send(value, fd: client) }
+  func response(_ id: Any, _ result: [String: Any], _ client: Int32) { send(["jsonrpc": "2.0", "id": id, "result": result], client) }
+  func fail(_ id: Any, _ code: String, _ client: Int32) { response(id, ["isError": true, "content": [["type": "text", "text": code]]], client) }
   func listen() {
     signal(SIGPIPE, SIG_IGN)
+    do {
+      try FileManager.default.createDirectory(at: Wire.root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+      let attrs = try FileManager.default.attributesOfItem(atPath: Wire.root.path)
+      guard attrs[.type] as? FileAttributeType == .typeDirectory,
+        attrs[.ownerAccountID] as? UInt32 == getuid() else { return }
+      chmod(Wire.root.path, 0o700)
+    } catch { return }
+    // A second instance must never replace a live server's socket.
+    let existing = Wire.connect()
+    if existing >= 0 { close(existing); return }
     unlink(Wire.socketPath)
     fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { return }
-    var address = sockaddr_un()
-    address.sun_family = sa_family_t(AF_UNIX)
+    var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
     let bytes = Array(Wire.socketPath.utf8) + [0]
     guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else { return }
     withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
-    let ok = withUnsafePointer(to: &address) {
-      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-        bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-      }
-    }
-    guard ok == 0, Darwin.listen(fd, 2) == 0 else { return }
+    let ok = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+    guard ok == 0, Darwin.listen(fd, 16) == 0 else { return }
     chmod(Wire.socketPath, 0o600)
     while true {
       let client = accept(fd, nil, nil)
       if client < 0 { return }
-      connection.lock()
-      let admitted = !connectionOpen
-      if admitted { connectionOpen = true }
-      connection.unlock()
-      guard admitted else {
-        close(client)
-        continue
-      }
       DispatchQueue.global().async { self.read(client) }
     }
   }
   func read(_ client: Int32) {
-    var boundProof: ProofHostBridge?
+    let state = ClientSession()
+    let listener = activity.add(state.latch)
+    var controlToken: String?
+    let authenticated = TurnRegistry.authenticatedDaemon(client)
     var protocolStarted = false
     defer {
-      latch.stop()
-      boundProof?.disconnect()
-      proofLock.lock()
-      if proofHost === boundProof { proofHost = nil }
-      proofLock.unlock()
-      queue.async {
-        close(client)
-        self.connection.lock()
-        self.connectionOpen = false
-        self.connection.unlock()
-      }
+      if let token = controlToken { turns.end(token); if lease.release(token) { activity.invalidateObservations() } }
+      state.latch.stop()
+      if let token = state.token { _ = lease.release(token) }
+      activity.remove(listener)
+      shutdown(client, SHUT_RDWR)
+      queue.async { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); close(client) }
     }
     Wire.lines(fd: client) { data in
-      guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-        let method = object["method"] as? String
-      else { return }
+      guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let method = object["method"] as? String else { return }
       let params = object["params"] as? [String: Any] ?? [:]
-      if method == "notifications/cancelled" {
-        if let id = params["requestId"] { self.latch.cancel(String(describing: id)) }
-        return
-      }
+      if method == "notifications/cancelled" { if let id = params["requestId"] { state.latch.cancel(String(describing: id)) }; return }
       guard let id = object["id"] else { return }
-      if method == "spike/bind-proof" {
-        guard !protocolStarted, boundProof == nil else {
-          self.queue.async { self.fail(id, "proof_binding_must_precede_protocol", client) }
-          return
-        }
-        self.latch.stop()
+      if method == "unified/register-turn" {
         do {
-          guard Set(params.keys) == Set(["room", "participant", "socket"]),
-            let room = params["room"] as? String, let participant = params["participant"] as? String,
-            let socket = params["socket"] as? String else { throw Refusal("proof_binding_invalid") }
-          let binding = try ProofBinding(room: room, participant: participant, socket: socket)
-          let bridge = try ProofHostBridge.connect(binding, latch: self.latch)
-          boundProof = bridge
-          self.proofLock.lock(); self.proofHost = bridge; self.proofLock.unlock()
-          try bridge.start()
-          self.response(id, ["proofBound": true], client)
-        } catch let refusal as Refusal { self.fail(id, refusal.code, client) }
-        catch { self.fail(id, "proof_binding_failed", client) }
+          guard authenticated, !protocolStarted, controlToken == nil, state.token == nil else { throw Refusal("authenticated_daemon_required") }
+          controlToken = try self.turns.register(params, control: client)
+          if let owner = self.lease.currentOwner, (try? self.turns.check(owner)) == nil,
+            self.lease.release(owner) { self.activity.invalidateObservations() }
+          self.response(id, ["registered": true], client)
+        } catch let error as Refusal { self.fail(id, error.code, client) } catch { self.fail(id, "registration_failed", client) }
         return
       }
-      if method == "initialize" || method == "tools/list" || method == "tools/call" { protocolStarted = true }
-      if method == "spike/status" {
-        self.queue.async { self.response(id, self.status(), client) }
+      if method == "unified/end-turn" {
+        guard authenticated, let token = controlToken, params["turnToken"] as? String == token else { self.fail(id, "authenticated_turn_required", client); return }
+        self.turns.end(token); if self.lease.release(token) { self.activity.invalidateObservations() }; self.response(id, ["ended": true], client); return
+      }
+      if method == "unified/bind-turn" {
+        do {
+          guard !protocolStarted, state.token == nil, controlToken == nil else { throw Refusal("binding_must_precede_protocol") }
+          state.token = try self.turns.bind(params, latch: state.latch)
+          self.response(id, ["bound": true], client)
+        } catch let error as Refusal { self.fail(id, error.code, client) } catch { self.fail(id, "binding_failed", client) }
         return
       }
-      if method == "spike/show-test-dialog" {
-        self.queue.async {
-          DispatchQueue.main.sync { self.showDialog?() }
-          self.response(id, self.status(), client)
-        }
-        return
+      if method == "spike/bind-proof" { self.fail(id, "proof_binding_must_precede_protocol", client); return }
+      if method == "unified/status" || method == "spike/status" { self.response(id, self.status(), client); return }
+      if method == "unified/setup" {
+        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        DispatchQueue.main.async { self.showSetup?() }
+        self.response(id, ["shown": true], client); return
       }
-      if method == "spike/probe-ds4" {
-        self.queue.async {
-          do { self.response(id, try self.ax.probeDS4(), client) } catch let error as Refusal {
-            self.fail(id, error.code, client)
-          } catch { self.fail(id, "probe_failed", client) }
-        }
-        return
+      if method == "unified/resume" {
+        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        self.turns.resume(); self.response(id, ["resumed": true], client); return
       }
+      if method == "unified/stop-all" {
+        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        self.stopIsolatedRun(); self.response(id, ["stopped": true], client); return
+      }
+      protocolStarted = true
       if method == "initialize" {
-        self.queue.async { self.response(
-          id,
-          [
-            "protocolVersion": "2025-06-18", "capabilities": ["tools": [:]],
-            "serverInfo": ["name": "apex-computer", "version": "0.1.0-spike"],
-          ], client) }
-        return
+        self.queue.async { self.response(id, ["protocolVersion": "2025-06-18", "capabilities": ["tools": [:]], "serverInfo": ["name": "unified-computer-use", "version": "1.0.0"]], client) }; return
       }
-      if method == "ping" {
-        self.queue.async { self.response(id, [:], client) }
-        return
-      }
-      if method == "tools/list" {
-        self.queue.async { self.response(id, ["tools": Self.tools], client) }
-        return
-      }
-      if method != "tools/call" {
-        self.queue.async { self.send(
-          ["jsonrpc": "2.0", "id": id, "error": ["code": -32601, "message": "Method not found"]],
-          client) }
-        return
-      }
+      if method == "ping" { self.queue.async { self.response(id, [:], client) }; return }
+      if method == "tools/list" { self.queue.async { self.response(id, ["tools": Self.tools], client) }; return }
+      guard method == "tools/call", controlToken == nil else { self.fail(id, "unsupported_method", client); return }
       self.activeLock.lock()
       let busy = self.activeID != nil
       if !busy { self.activeID = String(describing: id) }
       self.activeLock.unlock()
-      if busy {
-        self.queue.async { self.fail(id, "action_busy", client) }
-        return
-      }
+      if busy { self.queue.async { self.fail(id, "action_busy", client) }; return }
       self.queue.async {
-        defer {
-          self.activeLock.lock()
-          self.activeID = nil
-          self.activeLock.unlock()
+        self.activeState = state
+        state.engine.authorization = { [weak server = self, weak clientState = state] in
+          guard let server = server, let state = clientState, let token = state.token else { throw Refusal("helper_unavailable") }
+          try server.turns.check(token)
+          if try server.turns.canControl(token) { try server.lease.check(token) }
         }
+        defer { self.activeLock.lock(); self.activeID = nil; self.activeLock.unlock() }
         do {
-          let requestID = String(describing: id)
-          let result = try self.call(params, id: requestID)
-          guard let epoch = self.snapshot?.epoch else { throw Refusal("observation_unavailable") }
-          // All successful tools export a screen observation. Recheck after
-          // waiting for the output lock and throughout a backpressured write.
-          _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": result],
-            fd: client, output: self.output,
-            check: { try self.latch.check(requestID, epoch: epoch) },
-            invalidate: { self.snapshot = nil; self.engineSession.invalidate(); self.latch.stop() })
+          try self.turns.check(state.token)
+          self.ax.targetBundle = state.target
+          self.ax.verifyIdentity = { app in
+            try self.turns.check(state.token)
+            guard let token = state.token else { throw Refusal("turn_unregistered_or_ended") }
+            try self.turns.identity(app.bundleIdentifier ?? "", token: token).validate(app)
+          }
+          let request = String(describing: id)
+          let result = try self.call(params, id: request)
+          let epoch = params["name"] as? String == "list_apps" ? state.latch.state().0 : (self.snapshot?.epoch ?? state.latch.state().0)
+          _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": result], fd: client, output: self.output,
+            check: { try self.turns.check(state.token); try state.latch.check(request, epoch: epoch) },
+            invalidate: { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); state.latch.stop() })
         } catch let error as Refusal {
-          let code = self.engineSession.failureCode(error.code)
-          self.snapshot = nil
-          self.engineSession.invalidate()
-          // A refusal never performs another AX read or exports screen text.
-          // The caller must explicitly request a new observation while active.
-          self.fail(id, code, client)
-        } catch {
-          self.snapshot = nil
-          self.engineSession.invalidate()
-          self.fail(id, "internal_error", client)
-        }
+          let code = state.engine.failureCode(error.code)
+          state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); self.fail(id, code, client)
+        } catch { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); self.fail(id, "internal_error", client) }
       }
     }
   }
@@ -238,162 +191,133 @@ final class Server {
     return fresh
   }
   func call(_ params: [String: Any], id: String) throws -> [String: Any] {
-    try checkProofHost()
-    if params["name"] as? String == "get_screenshot" {
-      guard (params["arguments"] as? [String: Any] ?? [:]).isEmpty else {
-        throw Refusal("get_screenshot_takes_no_arguments")
-      }
-      try latch.check(id)
-      guard #available(macOS 14.2, *) else { throw Refusal("single_window_screenshot_requires_macOS_14_2") }
-      let (fresh, capturedResult) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id)
-      try latch.check(id, epoch: fresh.epoch)
-      snapshot = fresh
-      engineSession.invalidate()
-      var result = capturedResult
-      // A screenshot has a native capture id, not a retained engine ref set.
-      // It may be inspected, but a new explicit read is required for action.
-      var content = result["content"] as? [[String: Any]] ?? []
-      content = content.map { item in
-        var item = item
-        if item["type"] as? String == "text" {
-          let original = item["text"] as? String ?? ""
-          let metadata = original.range(of: "\nimage_snapshot:").map { String(original[$0.lowerBound...]) } ?? ""
-          item["text"] = "Screenshot captured. Call read_screen to get a fresh snapshot before any action." + metadata
-        }
-        return item
-      }
-      result["content"] = content
+    try turns.check(activeState.token)
+    try latch.check(id)
+    let name = params["name"] as? String ?? ""
+    let args = params["arguments"] as? [String: Any] ?? [:]
+    guard let token = activeState.token else { throw Refusal("turn_unregistered_or_ended") }
+    if name == "click_point" { try lease.check(token) }
+    if name != "list_apps", try turns.canControl(token), try lease.claim(token) {
+      activity.invalidateObservations()
+    }
+    if name == "list_apps" {
+      guard args.isEmpty else { throw Refusal("unexpected_arguments") }
+      let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy != .prohibited && Policy.target($0.bundleIdentifier ?? "") }
+      let rows = apps.prefix(100).map { ["app": $0.bundleIdentifier ?? "", "name": $0.localizedName ?? ""] }
+      let bytes = try JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys])
+      return ["content": [["type": "text", "text": String(data: bytes, encoding: .utf8) ?? "[]"]]]
+    }
+    if name == "request_app" { try requestApp(args, token: token, id: id) }
+    else { try checkProofHost() }
+    if name == "get_screenshot" {
+      guard args.isEmpty else { throw Refusal("unexpected_arguments") }
+      guard #available(macOS 14.2, *) else { throw Refusal("screenshot_requires_macOS_14_2") }
+      let (fresh, result, scope) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id)
+      snapshot = fresh; activeState.imageScope = scope; engineSession.invalidate()
       return result
     }
-    _ = try callText(params, id: id)
+    if name == "click_point" {
+      guard try turns.canControl(token), Set(args.keys) == ["snapshot", "x", "y"],
+        let s = snapshot, args["snapshot"] as? String == s.id, let scope = activeState.imageScope,
+        scope.snapshot == s.id, let x = args["x"] as? Double, let y = args["y"] as? Double else { throw Refusal("current_screenshot_and_control_required") }
+      activeState.imageScope = nil
+      try input.point(x: x, y: y, scope: scope, s: s, id: id)
+      engineSession.recordUnverifiedInput()
+      snapshot = try observe(id: id, epoch: s.epoch)
+    } else if name != "request_app" { _ = try callText(params, id: id) }
+    activeState.imageScope = nil
     guard let native = snapshot else { throw Refusal("observation_unavailable") }
     let bound = try engineSession.capture(native: native, id: id, latch: latch, ax: ax)
     snapshot = bound
     return ["content": [["type": "text", "text": bound.output]]]
   }
+  func requestApp(_ args: [String: Any], token: String, id: String) throws {
+    guard Set(args.keys) == ["app"], let bundle = args["app"] as? String, Policy.target(bundle),
+      let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { throw Refusal("protected_or_unavailable_app") }
+    let identity = try AppIdentity.capture(url, bundle: bundle)
+    if (try? turns.identity(bundle, token: token)) != identity {
+      let control = try turns.canControl(token)
+      let owner = try turns.requester(token)
+      let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nThis turn may \(control ? "read and control" : "read") \(Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? bundle).\n\n\(bundle)\n\(identity.path)\n\nAccess ends when the turn ends or you press Stop. Password fields and system security settings are protected.")
+      DispatchQueue.main.async { prompt.show() }
+      defer { DispatchQueue.main.async { prompt.dismiss() } }
+      let deadline = ProcessInfo.processInfo.systemUptime + 120
+      while prompt.decision() == nil {
+        try turns.check(token); try latch.check(id)
+        guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("app_grant_deadline") }
+        Thread.sleep(forTimeInterval: 0.02)
+      }
+      let allowed = prompt.decision() == true
+      try turns.check(token)
+      guard allowed else { throw Refusal("app_grant_denied") }
+      try turns.grant(identity, token: token)
+    }
+    let control = try turns.canControl(token)
+    if control, try lease.claim(token) { activity.invalidateObservations() }
+    let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter { !$0.isTerminated }
+    guard running.count <= 1 else { throw Refusal("target_ambiguous") }
+    if control {
+      let completion = DispatchSemaphore(value: 0)
+      DispatchQueue.main.async {
+        guard (try? self.turns.check(token)) != nil else { completion.signal(); return }
+        let config = NSWorkspace.OpenConfiguration(); config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in completion.signal() }
+      }
+      let deadline = ProcessInfo.processInfo.systemUptime + 5
+      while completion.wait(timeout: .now() + 0.02) != .success {
+        try turns.check(token); try latch.check(id)
+        guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("launch_deadline") }
+      }
+    } else if running.isEmpty { throw Refusal("read_access_cannot_launch_app") }
+    try turns.check(token)
+    activeState.target = bundle; ax.targetBundle = bundle
+    let app = try ax.running(bundle); try identity.validate(app)
+    // User grant/focus changes deliberately require a fresh activity epoch.
+    snapshot = try observe(id: id)
+  }
   func callText(_ params: [String: Any], id: String) throws -> String {
+    try latch.check(id)
     try checkProofHost()
     let name = params["name"] as? String ?? ""
     let args = params["arguments"] as? [String: Any] ?? [:]
-    try latch.check(id)
-    if name == "read_screen" {
-      guard args.isEmpty else { throw Refusal("read_screen_takes_no_arguments") }
-      let s = try observe(id: id)
-      snapshot = s
-      return s.output
+    if name == "read_screen" { guard args.isEmpty else { throw Refusal("unexpected_arguments") }; snapshot = try observe(id: id); return snapshot!.output }
+    guard let token = activeState.token, try turns.canControl(token) else { throw Refusal("observation_only_access") }
+    guard let s = snapshot, args["snapshot"] as? String == s.id, engineSession.current?.id == s.id else { throw Refusal("fresh_snapshot_required") }
+    switch name {
+    case "click":
+      guard Set(args.keys) == ["snapshot", "element"], let number = args["element"] as? Int else { throw Refusal("invalid_arguments") }
+      try engineSession.click(element: number, s: s, id: id, latch: latch, ax: ax)
+    case "type_text":
+      guard Set(args.keys) == ["snapshot", "text"], let text = args["text"] as? String else { throw Refusal("invalid_arguments") }
+      try engineSession.type(text: text, s: s, id: id, latch: latch, ax: ax)
+    case "press_key":
+      guard Set(args.keys) == ["snapshot", "key"], let key = args["key"] as? String else { throw Refusal("invalid_arguments") }
+      try input.key(key, s: s, id: id)
+      engineSession.recordUnverifiedInput()
+    case "scroll":
+      guard Set(args.keys) == ["snapshot", "element", "direction", "amount"], let number = args["element"] as? Int,
+        let direction = args["direction"] as? String, let amount = args["amount"] as? Int,
+        ["up", "down", "left", "right"].contains(direction), (1...20).contains(amount) else { throw Refusal("invalid_arguments") }
+      try engineSession.scroll(element: number, direction: direction, amount: amount, s: s, id: id, latch: latch, ax: ax)
+    default: throw Refusal("unknown_tool")
     }
-    try latch.check(id)
-    guard ax.trusted() else { throw Refusal("accessibility_not_trusted") }
-    if name == "request_app" {
-      let epoch = latch.state().0
-      guard let bundle = args["app"] as? String, Policy.target(bundle),
-        let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle)
-      else { throw Refusal("only_TextEdit_allowed") }
-      guard
-        NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter({
-          !$0.isTerminated
-        }).count <= 1
-      else { throw Refusal("target_ambiguous") }
-      let semaphore = DispatchSemaphore(value: 0)
-      var launched: NSRunningApplication?
-      DispatchQueue.main.async {
-        guard (try? self.latch.check(id, epoch: epoch)) != nil else {
-          semaphore.signal()
-          return
-        }
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: config) { app, _ in
-          launched = app
-          semaphore.signal()
-        }
-      }
-      guard semaphore.wait(timeout: .now() + 5) == .success, launched != nil else {
-        throw Refusal("launch_failed")
-      }
-      try latch.check(id, epoch: epoch)
-      let end = ProcessInfo.processInfo.systemUptime + 2
-      while NSWorkspace.shared.frontmostApplication?.bundleIdentifier != bundle
-        && ProcessInfo.processInfo.systemUptime < end
-      {
-        try latch.check(id, epoch: epoch)
-        Thread.sleep(forTimeInterval: 0.02)
-      }
-      let fresh = try prepareTextEdit(id: id, epoch: epoch)
-      snapshot = fresh
-      return fresh.output
-    } else {
-      guard let s = snapshot, args["snapshot"] as? String == s.id,
-        engineSession.current?.id == s.id else {
-        throw Refusal("fresh_snapshot_required")
-      }
-      switch name {
-      case "click":
-        guard let number = args["element"] as? Int else { throw Refusal("element_required") }
-        try engineSession.click(element: number, s: s, id: id, latch: latch, ax: ax)
-      case "type_text":
-        guard let text = args["text"] as? String else { throw Refusal("text_required") }
-        try engineSession.type(text: text, s: s, id: id, latch: latch, ax: ax)
-      case "press_key":
-        guard let key = args["key"] as? String else { throw Refusal("key_required") }
-        if key == "Cmd-N" {
-          let fresh = try createNewTextEditDocument(previous: s, id: id, epoch: s.epoch)
-          snapshot = fresh
-          return fresh.output
-        }
-        try input.key(key, s: s, id: id)
-      default: throw Refusal("unknown_tool")
-      }
-    }
-    let s = try observe(id: id, epoch: snapshot?.epoch)
-    snapshot = s
-    return s.output
+    snapshot = try observe(id: id, epoch: s.epoch)
+    return snapshot!.output
   }
   static var tools: [[String: Any]] {
-    func tool(
-      _ name: String, _ description: String, _ properties: [String: Any], _ required: [String],
-      _ read: Bool = false
-    ) -> [String: Any] {
-      [
-        "name": name, "description": description,
-        "inputSchema": [
-          "type": "object", "properties": properties, "required": required,
-          "additionalProperties": false,
-        ], "annotations": ["readOnlyHint": read, "destructiveHint": false, "openWorldHint": false],
-      ]
+    func tool(_ name: String, _ description: String, _ properties: [String: Any], _ required: [String], _ read: Bool = false) -> [String: Any] {
+      ["name": name, "description": description, "inputSchema": ["type": "object", "properties": properties, "required": required, "additionalProperties": false],
+        "annotations": ["readOnlyHint": read, "destructiveHint": false, "openWorldHint": false]]
     }
     let str: [String: Any] = ["type": "string"]
-    let snapshot: [String: Any] = ["snapshot": str]
-    var screenshotTool = ScreenshotPolicy.tool
-    screenshotTool["description"] = (screenshotTool["description"] as? String ?? "")
-      + " Call read_screen after capture before using any action."
-    return [
-      tool(
-        "request_app", "Launch/focus only com.apple.TextEdit for this isolated native proof.",
-        ["app": ["type": "string", "enum": ["com.apple.TextEdit"]]], ["app"]),
-      tool(
-        "read_screen", "Read bounded TextEdit AX list without launching/focusing it.", [:], [], true
-      ),
-      screenshotTool,
-      tool(
-        "click", "Activate one current numbered retained engine control.",
-        snapshot.merging(["element": ["type": "integer", "minimum": 1]]) { $1 },
-        ["snapshot", "element"]),
-      tool(
-        "type_text", "Type at most 256 characters into the focused retained native field; returns element delivery verification.",
-        snapshot.merging(["text": ["type": "string", "maxLength": 2048]]) { $1 },
-        ["snapshot", "text"]),
-      tool(
-        "press_key", "Fixed TextEdit task shortcut only.",
-        snapshot.merging([
-          "key": [
-            "type": "string",
-            "enum": [
-              "Cmd-N", "Shift-Cmd-T", "Cmd-S", "Shift-Cmd-G", "Return", "Escape", "Tab", "Left",
-              "Right", "Up", "Down",
-            ],
-          ]
-        ]) { $1 }, ["snapshot", "key"]),
-    ]
+    let snap: [String: Any] = ["snapshot": str]
+    return [tool("list_apps", "List running eligible native apps. Requires an enabled active session.", [:], [], true),
+      tool("request_app", "Request a native per-app session grant by bundle ID. Observation-only sessions cannot launch or focus apps.", ["app": str], ["app"]),
+      tool("read_screen", "Read the granted app's current verified window and retained element references.", [:], [], true), ScreenshotPolicy.tool,
+      tool("click", "Activate one retained numbered control in a fresh snapshot.", snap.merging(["element": ["type": "integer", "minimum": 1]]) { $1 }, ["snapshot", "element"]),
+      tool("click_point", "Click a point in the current granted window screenshot. x/y are image pixels; requires its image_snapshot and a writable session.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
+      tool("type_text", "Type text into the verified focused field. Reports element delivery; application commit is not verified.", snap.merging(["text": ["type": "string", "maxLength": 65536]]) { $1 }, ["snapshot", "text"]),
+      tool("press_key", "Press a named key with optional Cmd-, Shift-, Alt-, Control- modifiers on the verified app.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
+      tool("scroll", "Scroll one retained native control in a fresh snapshot.", snap.merging(["element": ["type": "integer", "minimum": 1], "direction": ["type": "string", "enum": ["up", "down", "left", "right"]], "amount": ["type": "integer", "minimum": 1, "maximum": 20]]) { $1 }, ["snapshot", "element", "direction", "amount"])]
   }
 }
