@@ -57,10 +57,18 @@ public final class Latch {
     defer { lock.unlock() }
     return (activity, stopped, tapHealthy)
   }
-  public func check(_ id: String) throws {
+  public func dispatch(_ id: String, epoch: UInt64, validate: () throws -> Void, post: () throws -> Void) throws {
+    try check(id, epoch: epoch)
+    try validate()
+    // A cancellation or event during the final AX query invalidates dispatch.
+    try check(id, epoch: epoch)
+    try post()
+  }
+  public func check(_ id: String, epoch: UInt64? = nil) throws {
     lock.lock()
     defer { lock.unlock() }
     if stopped || cancelled.contains(id) { throw Refusal("cancelled_or_stopped") }
     if !tapHealthy { throw Refusal("human_event_tap_unavailable") }
+    if let epoch = epoch, epoch != activity { throw Refusal("human_activity_changed") }
   }
 }

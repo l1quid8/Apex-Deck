@@ -1,0 +1,80 @@
+import XCTest
+import Darwin
+import Foundation
+@testable import SpikeCore
+
+final class FinalGuardTests: XCTestCase {
+  func testNonblockingReaderWaitsForDelayedFrameAndEOF() {
+    var sockets: [Int32] = [-1, -1]
+    XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+    let sender = sockets[0], receiver = sockets[1]
+    defer { close(receiver) }
+    fcntl(receiver, F_SETFL, fcntl(receiver, F_GETFL) | O_NONBLOCK)
+    let done = expectation(description: "sender closed")
+    Thread.detachNewThread {
+      Thread.sleep(forTimeInterval: 0.05)
+      Wire.send(["fixture": "ready"], fd: sender)
+      close(sender); done.fulfill()
+    }
+    var frames: [Data] = []
+    Wire.lines(fd: receiver) { frames.append($0) }
+    wait(for: [done], timeout: 1)
+    XCTAssertEqual(frames.count, 1)
+    XCTAssertEqual((try? JSONSerialization.jsonObject(with: frames.first ?? Data())) as? [String: String], ["fixture": "ready"])
+  }
+  func testSlowSocketReaderCannotHoldOutput() {
+    signal(SIGPIPE, SIG_IGN)
+    var sockets: [Int32] = [-1, -1]
+    XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+    let sender = sockets[0], receiver = sockets[1]
+    defer { close(sender) }
+    var size: Int32 = 1024
+    setsockopt(sender, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+    let done = expectation(description: "receiver released")
+    Thread.detachNewThread {
+      Thread.sleep(forTimeInterval: 0.6)
+      close(receiver); done.fulfill()
+    }
+    let started = ProcessInfo.processInfo.systemUptime
+    Wire.send(["fixture": String(repeating: "x", count: 512_000)], fd: sender, timeout: 0.05)
+    XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.4)
+    wait(for: [done], timeout: 1)
+  }
+  func testStopDuringLastQueryPreventsDispatch() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    var sent = false
+    XCTAssertThrowsError(try latch.dispatch("x", epoch: epoch, validate: { latch.stop() }, post: { sent = true }))
+    XCTAssertFalse(sent)
+  }
+  func testHumanActivityDuringLastQueryPreventsDispatch() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    var sent = false
+    XCTAssertThrowsError(try latch.dispatch("x", epoch: epoch, validate: { latch.event() }, post: { sent = true }))
+    XCTAssertFalse(sent)
+  }
+  func testCancellationDuringLastQueryPreventsDispatch() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    var sent = false
+    XCTAssertThrowsError(try latch.dispatch("x", epoch: epoch, validate: { latch.cancel("x") }, post: { sent = true }))
+    XCTAssertFalse(sent)
+  }
+  func testUnchangedQueryDispatchesOnce() throws {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    var sent = 0
+    try latch.dispatch("x", epoch: latch.state().0, validate: {}, post: { sent += 1 })
+    XCTAssertEqual(sent, 1)
+  }
+  func testFailedParentLookupIsNotSafeAncestry() {
+    XCTAssertFalse(Policy.safeAncestry(0) { n in
+      n == 0 ? ("AXTextArea", "", 1) : nil
+    })
+    XCTAssertFalse(Policy.safeAncestry(0) { _ in ("AXWindow", "", nil as Int?) })
+    XCTAssertTrue(Policy.safeAncestry(0) { n in
+      n == 0 ? ("AXTextArea", "", 1) : ("AXApplication", "", nil)
+    })
+    XCTAssertFalse(Policy.safeAncestry(0) { _ in ("AXTextField", "AXSecureTextField", nil as Int?) })
+  }
+}

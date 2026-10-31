@@ -63,7 +63,7 @@ The parent owns the actual registration and fresh signed backend deployment carr
 
 ## Evidence and remaining experiments
 
-Build/signature checks and six pure safety tests pass. The no-permission protocol smoke checks initialization, all five truthful schemas, unknown-method rejection, denied screen reading and invalid control refusals without a valid input request. `npx tsc --noEmit` passes. These checks do not prove native UI behavior.
+Build/signature checks and thirteen focused safety/protocol tests pass. The no-permission protocol smoke checks initialization, all five truthful schemas, unknown-method rejection, denied screen reading and invalid control refusals without a valid input request. `npx tsc --noEmit` passes. These checks do not prove native UI behavior.
 
 | Required measurement | Current result |
 |---|---|
@@ -79,4 +79,18 @@ Build/signature checks and six pure safety tests pass. The no-permission protoco
 | Tagged vs hardware vs untagged events; tap CPU | pending |
 | Saved Deck history/diagnostic privacy inspection | pending fresh protected backend and live proof |
 
-DS4 has not finished the experiment. Do not proceed to Task 3/production helper work on the basis of this build.
+DS4 has not finished the experiment. Minimal Task 3 image transport may be staged before the first signed backend upgrade to avoid two privileged installs. DS4 proof still runs before the vision proof; production helper work remains behind both successful proofs.
+
+## Review corrections before the permission request
+
+The input dispatch gate rechecks Stop/cancel, tap health and the original activity epoch after its final accessibility query. Key events, pointer input and AXPress all use it. Action AX reads inherit the action deadline. An unresolved ancestor now refuses; only a verified same-process AXApplication root ends ancestry safely. Both TextEdit and DS4 traversal start with the explicitly selected application's PID, so a foreign-owned root cannot become the allowed scope.
+
+Output uses nonblocking socket writes with a two-second deadline and shuts down a stalled peer so the independent reader can latch Stop. Its read loop tolerates nonblocking EAGAIN without abandoning a live connection. A real socket-pair backpressure regression and final-query Stop/cancel/activity regressions cover these boundaries; none posts native input.
+
+### Normal approval setup for the supervised proof
+
+A normal approval click in Deck changes focus/activity and must invalidate an old snapshot. Keep the helper STOPPED while preparing ordinary per-tool **Always allow** rules in the isolated one-bot proof room; the Human makes each choice in its real card. Never edit the approval store or disable activity/focus guards.
+
+Prime **Request app access**, **Click a control**, and **Press a key** using harmless refused calls, plus **Type N characters** for every planned whole-field Unicode-scalar length. The document text `Apex computer test DS4` has 22 scalars. Use fixed-width run numbers 01–05 and precompute each full save-path/filename length; require the model to type each field in one call. Variable typing lengths create new cards and need a fresh refusal/setup cycle. Confirm rules in thread details, establish the persistent relay, then the Human starts the isolated run. `request_app` focuses TextEdit and produces a fresh observation after setup activity; leave the Mac hands-off during measured runs. These are ordinary scoped rules, never a production grant or approval bypass. Remove temporary rules/registration after proof.
+
+A disabled event tap remains fail-closed. If the existing tap object was disabled, quit/relaunch the same signed spike and recheck status rather than assuming the menu Start repaired it. No successful native event/cancellation behavior has been claimed yet.

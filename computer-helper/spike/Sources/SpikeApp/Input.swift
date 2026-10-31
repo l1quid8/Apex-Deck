@@ -60,11 +60,14 @@ final class Input {
     try latch.check(id)
     guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("action_deadline") }
     let focus = try ax.validate(s, epoch: latch.state().0)
-    try latch.check(id)
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier else {
+      throw Refusal("foreign_focus")
+    }
+    try latch.check(id, epoch: s.epoch)
     guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("action_deadline") }
     return focus
   }
-  func pair(code: UInt16, flags: CGEventFlags = [], unicode: [UniChar]? = nil) throws {
+  func pair(code: UInt16, flags: CGEventFlags = [], unicode: [UniChar]? = nil, snapshot: Snapshot, id: String, deadline: Double) throws {
     guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
       let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
     else { throw Refusal("event_creation_failed") }
@@ -77,12 +80,18 @@ final class Input {
         }
       }
     }
-    down.post(tap: .cgSessionEventTap)
-    up.post(tap: .cgSessionEventTap)
+    try latch.dispatch(id, epoch: snapshot.epoch, validate: {
+      _ = try self.guardState(snapshot, id, deadline)
+    }, post: {
+      down.post(tap: .cgSessionEventTap)
+      up.post(tap: .cgSessionEventTap)
+    })
   }
   func key(_ key: String, s: Snapshot, id: String) throws {
     guard let (code, flags) = Policy.key(key) else { throw Refusal("unsupported_key") }
     let deadline = ProcessInfo.processInfo.systemUptime + 2
+    Thread.current.threadDictionary["axDeadline"] = deadline
+    defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
     let focus = try guardState(s, id, deadline)
     if let value = s.value {
       guard string(focus, kAXValueAttribute) == value else {
@@ -94,7 +103,7 @@ final class Input {
         live.length == range.length
       else { throw Refusal("selection_changed") }
     }
-    try pair(code: code, flags: CGEventFlags(rawValue: flags))
+    try pair(code: code, flags: CGEventFlags(rawValue: flags), snapshot: s, id: id, deadline: deadline)
   }
   func text(_ text: String, s: Snapshot, id: String) throws -> Int {
     guard Policy.text(text) else { throw Refusal("text_limit_or_control_character") }
@@ -102,6 +111,8 @@ final class Input {
     var selection = s.range
     var delivered = 0
     let deadline = ProcessInfo.processInfo.systemUptime + 10
+    Thread.current.threadDictionary["axDeadline"] = deadline
+    defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
     guard let initial = expected, initial.utf16.count <= 4096, selection != nil else {
       throw Refusal("editable_value_or_selection_unavailable")
     }
@@ -118,7 +129,7 @@ final class Input {
           in: NSRange(location: range.location, length: range.length), with: chunk)
         let next = CFRange(location: range.location + chunk.utf16.count, length: 0)
         _ = try guardState(s, id, deadline)
-        try pair(code: 0, unicode: Array(chunk.utf16))
+        try pair(code: 0, unicode: Array(chunk.utf16), snapshot: s, id: id, deadline: deadline)
         delivered += 1
         let verifyDeadline = min(deadline, ProcessInfo.processInfo.systemUptime + 0.6)
         var confirmed = false
@@ -143,19 +154,21 @@ final class Input {
     guard number > 0, number <= s.controls.count else { throw Refusal("unknown_element") }
     let control = s.controls[number - 1]
     let deadline = ProcessInfo.processInfo.systemUptime + 2
+    Thread.current.threadDictionary["axDeadline"] = deadline
+    defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
     _ = try guardState(s, id, deadline)
     guard pid(control.e) == s.app.processIdentifier, safe(control.e),
       fingerprint(control.e) == control.fingerprint,
       attr(control.e, kAXEnabledAttribute) as? Bool == true
     else { throw Refusal("element_changed_disabled_or_protected") }
     if control.press {
-      try latch.check(id)
-      guard ProcessInfo.processInfo.systemUptime < deadline else {
-        throw Refusal("action_deadline")
-      }
-      guard AXUIElementPerformAction(control.e, kAXPressAction as CFString) == .success else {
-        throw Refusal("press_failed")
-      }
+      try latch.dispatch(id, epoch: s.epoch, validate: {
+        _ = try self.guardState(s, id, deadline)
+      }, post: {
+        guard AXUIElementPerformAction(control.e, kAXPressAction as CFString) == .success else {
+          throw Refusal("press_failed")
+        }
+      })
       return
     }
     guard
@@ -178,7 +191,11 @@ final class Input {
       event.flags = []
       event.setIntegerValueField(.eventSourceUserData, value: activity.tag)
     }
-    down.post(tap: .cgSessionEventTap)
-    up.post(tap: .cgSessionEventTap)
+    try latch.dispatch(id, epoch: s.epoch, validate: {
+      _ = try self.guardState(s, id, deadline)
+    }, post: {
+      down.post(tap: .cgSessionEventTap)
+      up.post(tap: .cgSessionEventTap)
+    })
   }
 }

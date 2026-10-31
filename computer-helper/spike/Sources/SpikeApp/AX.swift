@@ -28,19 +28,15 @@ func pid(_ e: AXUIElement) -> pid_t {
   return p
 }
 func safe(_ e: AXUIElement) -> Bool {
-  var cursor: AXUIElement? = e
-  for _ in 0..<20 {
-    guard let current = cursor else { return true }
-    let role = string(current, kAXRoleAttribute) ?? ""
-    let sub = string(current, kAXSubroleAttribute) ?? ""
-    if role.isEmpty || sub.lowercased().contains("secure") || role.lowercased().contains("password")
-      || role.lowercased().contains("secure")
-    {
-      return false
-    }
-    cursor = element(current, kAXParentAttribute)
+  let expectedPID = pid(e)
+  return Policy.safeAncestry(e) { current in
+    guard pid(current) == expectedPID, let role = string(current, kAXRoleAttribute) else { return nil }
+    let subrole = string(current, kAXSubroleAttribute) ?? ""
+    // Only a verified application root terminates ancestry. A failed parent
+    // read on an ordinary control cannot establish that its ancestry is safe.
+    let parent = role == kAXApplicationRole ? nil : element(current, kAXParentAttribute)
+    return (role, subrole, parent)
   }
-  return false
 }
 func selectedRange(_ e: AXUIElement) -> CFRange? {
   guard let v = attr(e, kAXSelectedTextRangeAttribute), CFGetTypeID(v) == AXValueGetTypeID() else {
@@ -90,7 +86,7 @@ struct Snapshot {
   let output: String
 }
 struct Tree {
-  var targetPID: pid_t?
+  let targetPID: pid_t
   var controls = [Control]()
   var lines = [String]()
   var visited = Set<AXUIElement>()
@@ -109,7 +105,6 @@ struct Tree {
     AXUIElementSetMessagingTimeout(e, 0.1)
     let role = string(e, kAXRoleAttribute) ?? "AXUnknown"
     roles[role, default: 0] += 1
-    if targetPID == nil { targetPID = pid(e) }
     if pid(e) != targetPID {
       lines.append("foreign-owned surface pid=\(pid(e)); controls omitted")
       return
@@ -189,7 +184,7 @@ final class Accessibility {
     let focus = element(root, kAXFocusedUIElementAttribute)
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 2
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
-    var tree = Tree()
+    var tree = Tree(targetPID: app.processIdentifier)
     if let window = window { tree.walk(window) }
     if let menu = element(root, kAXMenuBarAttribute) { tree.walk(menu) }
     let id = UUID().uuidString
@@ -245,7 +240,7 @@ final class Accessibility {
     let root = AXUIElementCreateApplication(app.processIdentifier)
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 2
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
-    var tree = Tree()
+    var tree = Tree(targetPID: app.processIdentifier)
     // Operator-only: collect roles/actions without exporting labels or values.
     if let window = element(root, kAXFocusedWindowAttribute) { tree.walk(window) }
     let menu = element(root, kAXMenuBarAttribute)
