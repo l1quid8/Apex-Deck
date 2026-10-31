@@ -2,12 +2,16 @@ import Darwin
 import Foundation
 
 public enum Policy {
+  public static func protectedRole(_ role: String, _ subrole: String) -> Bool {
+    let role = role.lowercased()
+    return role.isEmpty || role.contains("secure") || role.contains("password") || subrole.lowercased().contains("secure")
+  }
   public static func safeAncestry<E>(_ start: E, read: (E) -> (String, String, E?)?) -> Bool {
     var cursor: E? = start
     for _ in 0..<20 {
       guard let e = cursor else { return false }
       guard let node = read(e) else { return false }
-      if node.0.isEmpty || node.1.lowercased().contains("secure") || node.0.lowercased().contains("secure") || node.0.lowercased().contains("password") { return false }
+      if protectedRole(node.0, node.1) { return false }
       if node.0 == "AXApplication" { return true }
       cursor = node.2
     }

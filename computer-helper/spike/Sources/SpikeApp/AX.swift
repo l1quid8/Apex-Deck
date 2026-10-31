@@ -103,7 +103,7 @@ struct Tree {
     }
     guard visited.insert(e).inserted else { return }
     AXUIElementSetMessagingTimeout(e, 0.1)
-    let role = string(e, kAXRoleAttribute) ?? "AXUnknown"
+    let role = string(e, kAXRoleAttribute) ?? ""
     roles[role, default: 0] += 1
     if pid(e) != targetPID {
       lines.append("foreign-owned surface pid=\(pid(e)); controls omitted")
