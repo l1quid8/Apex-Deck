@@ -93,6 +93,9 @@ Cases:
 
 ## Open decision: who can act on a Linux machine
 
+Design for the answer: `2026-10-30-linux-bot-confinement-design.md`. It also corrects
+this section: no provider has an outer sandbox in Work threads on Linux, not only Claude.
+
 This is the Human's call and needs Null's review. It comes before the SSH work,
 because every machine that work adds lands here.
 
