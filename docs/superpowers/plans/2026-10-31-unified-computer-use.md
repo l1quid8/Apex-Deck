@@ -2,7 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status:** Revision 5, incorporating Null's revision 4 review and independent implementation preflight. The Human authorized the initial proof stage on 2026-10-31 and explicitly retained the Task 4 approval gate. The order remains API privacy, DS4 proof, minimal image path, vision proof, then the Human's go/no-go before Tasks 5–11. Continue authorized proof preparation without repeated build permission requests; required macOS grants and failed proofs remain real blockers. No live proof is claimed by this plan.
+> **Status:** Revision 6, incorporating Null's revision 4 review and independent implementation preflight. The Human authorized the initial proof stage on 2026-10-31 and explicitly retained the Task 4 approval gate. The order remains API privacy, DS4 proof, minimal image path, vision proof, then the Human's go/no-go before Tasks 5–11. Continue authorized proof preparation without repeated build permission requests; required macOS grants and failed proofs remain real blockers. No live proof is claimed by this plan.
+
+## Authorized engine integration amendment (2026-10-31)
+
+The Human explicitly approved integrating pinned agent-desktop now, before the initial proof gate, to shorten delivery. This supersedes the earlier ordering that postponed engine integration. The Task 4 Human gate still blocks broader production rollout; current single-connection TextEdit-only proof is not the production session/grant system.
+
+- Vendor upstream `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc` core/macOS code with Apache-2.0 license, provenance and documented narrow modifications. Load a static Rust bridge inside the existing signed Swift helper; do not launch or expose the unrestricted CLI.
+- Reuse memory-only observation construction, retained native controls on one OS thread, exact action resolution and post-action verification. Keep Deck's bounded in-memory ScreenCaptureKit capture.
+- Thread cancellation and actual-target checks through native mutation/wait boundaries. Keep existing TextEdit-only scope, protected/secure-field checks, conservative human-activity guard and content-free refusals. Report uncertain/partial delivery accurately.
+- For the isolated proof only, bind the relay to the exact running Deck room and participant. Existing Deck Stop/turn completion and daemon disconnect must latch helper Stop; helper Stop calls the existing host Stop path. Host events never restart it. This does not claim authenticated per-turn production capabilities.
+- Validate a native typing task inside running Deck, then screenshots/vision as permissions permit. Verify actual observations, exact typed output, stopped reads, refusal privacy and Stop behavior before claiming a pass. Broader app/provider/session controls remain behind Task 4.
 
 **Goal:** Give Deck's API, Claude and Codex bots one shared way to see and control Mac apps, including models that cannot read images.
 

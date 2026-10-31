@@ -16,6 +16,7 @@ final class Server {
   let activeLock = NSLock()
   var activeID: String?
   var snapshot: Snapshot?
+  let engineSession = EngineSession()
   var fd: Int32 = -1
   var showDialog: (() -> Void)?
   let probeLock = NSLock()
@@ -212,14 +213,17 @@ final class Server {
           _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": result],
             fd: client, output: self.output,
             check: { try self.latch.check(requestID, epoch: epoch) },
-            invalidate: { self.snapshot = nil; self.latch.stop() })
+            invalidate: { self.snapshot = nil; self.engineSession.invalidate(); self.latch.stop() })
         } catch let error as Refusal {
+          let code = self.engineSession.failureCode(error.code)
           self.snapshot = nil
+          self.engineSession.invalidate()
           // A refusal never performs another AX read or exports screen text.
           // The caller must explicitly request a new observation while active.
-          self.fail(id, error.code, client)
+          self.fail(id, code, client)
         } catch {
           self.snapshot = nil
+          self.engineSession.invalidate()
           self.fail(id, "internal_error", client)
         }
       }
@@ -241,12 +245,31 @@ final class Server {
       }
       try latch.check(id)
       guard #available(macOS 14.2, *) else { throw Refusal("single_window_screenshot_requires_macOS_14_2") }
-      let (fresh, result) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id)
+      let (fresh, capturedResult) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id)
       try latch.check(id, epoch: fresh.epoch)
       snapshot = fresh
+      engineSession.invalidate()
+      var result = capturedResult
+      // A screenshot has a native capture id, not a retained engine ref set.
+      // It may be inspected, but a new explicit read is required for action.
+      var content = result["content"] as? [[String: Any]] ?? []
+      content = content.map { item in
+        var item = item
+        if item["type"] as? String == "text" {
+          let original = item["text"] as? String ?? ""
+          let metadata = original.range(of: "\nimage_snapshot:").map { String(original[$0.lowerBound...]) } ?? ""
+          item["text"] = "Screenshot captured. Call read_screen to get a fresh snapshot before any action." + metadata
+        }
+        return item
+      }
+      result["content"] = content
       return result
     }
-    return ["content": [["type": "text", "text": try callText(params, id: id)]]]
+    _ = try callText(params, id: id)
+    guard let native = snapshot else { throw Refusal("observation_unavailable") }
+    let bound = try engineSession.capture(native: native, id: id, latch: latch, ax: ax)
+    snapshot = bound
+    return ["content": [["type": "text", "text": bound.output]]]
   }
   func callText(_ params: [String: Any], id: String) throws -> String {
     try checkProofHost()
@@ -300,19 +323,17 @@ final class Server {
       snapshot = fresh
       return fresh.output
     } else {
-      guard let s = snapshot, args["snapshot"] as? String == s.id else {
+      guard let s = snapshot, args["snapshot"] as? String == s.id,
+        engineSession.current?.id == s.id else {
         throw Refusal("fresh_snapshot_required")
       }
       switch name {
       case "click":
         guard let number = args["element"] as? Int else { throw Refusal("element_required") }
-        try input.click(number, s: s, id: id)
+        try engineSession.click(element: number, s: s, id: id, latch: latch, ax: ax)
       case "type_text":
         guard let text = args["text"] as? String else { throw Refusal("text_required") }
-        let count = try input.text(text, s: s, id: id)
-        let fresh = try observe(id: id, epoch: s.epoch)
-        snapshot = fresh
-        return "delivered_clusters: \(count)\n" + fresh.output
+        try engineSession.type(text: text, s: s, id: id, latch: latch, ax: ax)
       case "press_key":
         guard let key = args["key"] as? String else { throw Refusal("key_required") }
         if key == "Cmd-N" {
@@ -343,6 +364,9 @@ final class Server {
     }
     let str: [String: Any] = ["type": "string"]
     let snapshot: [String: Any] = ["snapshot": str]
+    var screenshotTool = ScreenshotPolicy.tool
+    screenshotTool["description"] = (screenshotTool["description"] as? String ?? "")
+      + " Call read_screen after capture before using any action."
     return [
       tool(
         "request_app", "Launch/focus only com.apple.TextEdit for this isolated native proof.",
@@ -350,13 +374,13 @@ final class Server {
       tool(
         "read_screen", "Read bounded TextEdit AX list without launching/focusing it.", [:], [], true
       ),
-      ScreenshotPolicy.tool,
+      screenshotTool,
       tool(
-        "click", "Activate one current numbered AX control.",
+        "click", "Activate one current numbered retained engine control.",
         snapshot.merging(["element": ["type": "integer", "minimum": 1]]) { $1 },
         ["snapshot", "element"]),
       tool(
-        "type_text", "Type at most 256 grapheme clusters; no clipboard or control characters.",
+        "type_text", "Type at most 256 characters into the focused retained native field; returns element delivery verification.",
         snapshot.merging(["text": ["type": "string", "maxLength": 2048]]) { $1 },
         ["snapshot", "text"]),
       tool(

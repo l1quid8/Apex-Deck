@@ -89,7 +89,7 @@ def main():
     parser.add_argument("--live", action="store_true", help="wait for Human Start, then type the fixture")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
-    evidence = {"test": "native-relay-typing", "model_driven": False, "passed": False}
+    evidence = {"test": "embedded-agent-desktop-relay-typing", "model_driven": False, "engine_pin": "5261b5287b5208e7c4bf3713df6f66faaaf2c4cc", "passed": False}
     client = Client()
     try:
         state = client.request("spike/status")
@@ -120,9 +120,11 @@ def main():
         started = time.monotonic()
         opened = client.tool("request_app", {"app": "com.apple.TextEdit"})
         current = snapshot(opened)
-        evidence["request_app_reached_editor"] = "AXTextArea" in text(opened)
+        focused = re.search(r"(?m)^focused_ref: (@e[0-9]+)$", text(opened))
+        evidence["request_app_reached_editor"] = bool(focused and re.search(
+            rf"(?m)^ *element: [0-9]+ {re.escape(focused.group(1))} textfield(?: |$)", text(opened)))
         assert evidence["request_app_reached_editor"], "request_app_has_no_editor"
-        window_pattern = r"(?m)^\d+\. AXWindow .+$"
+        window_pattern = r"(?m)^window: w-[0-9]+$"
         old_window = re.search(window_pattern, text(opened))
         assert old_window, "initial_window_missing"
         activity = client.request("spike/status")["eventCounts"]
@@ -132,7 +134,7 @@ def main():
         document_deadline = time.monotonic() + 3
         while True:
             new_window = re.search(window_pattern, text(created))
-            if new_window and new_window.group() != old_window.group() and "AXTextArea" in text(created):
+            if new_window and new_window.group() != old_window.group() and re.search(r"(?m)^focused_ref: @e[0-9]+$", text(created)):
                 break
             assert time.monotonic() < document_deadline, "new_scratch_document_not_confirmed"
             time.sleep(0.05)
@@ -143,7 +145,7 @@ def main():
             assert after_activity.get(category, 0) == activity.get(category, 0), "human_activity_during_setup"
         typed = client.tool("type_text", {"snapshot": current, "text": FIXTURE})
         snapshot(typed)
-        assert f"delivered_clusters: {len(FIXTURE)}\n" in text(typed), "partial_typing"
+        assert "last_action: delivery=delivered_verified verification_scope=element_value application_commit=not_verified\n" in text(typed), "native_element_typing_not_verified"
         assert FIXTURE in text(typed), "typed_value_missing"
         reread = client.tool("read_screen", {})
         snapshot(reread)
@@ -151,7 +153,8 @@ def main():
         refused(client.tool("press_key", {"snapshot": "invalid", "key": "Return"}), "fresh_snapshot_required")
         evidence.update({"typing_verified": True, "reread_verified": True,
                          "active_refusal_has_no_screen": True,
-                         "delivered_clusters": len(FIXTURE),
+                         "delivery": "delivered_verified", "verification_scope": "element_value",
+                         "application_commit": "not_verified", "fixture_characters": len(FIXTURE),
                          "fixture_sha256": hashlib.sha256(FIXTURE.encode()).hexdigest(),
                          "active_seconds": round(time.monotonic() - started, 3)})
         print("PASS: request_app reached editor; scratch-document typing and reread verified; refusal has no screen", flush=True)

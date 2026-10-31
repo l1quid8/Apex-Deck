@@ -1,6 +1,15 @@
 # Native computer-use spike (Task 2, throwaway)
 
-Status on 2026-10-31: **built, signed and source-reviewed; supervised proof pending Accessibility setup and a protected backend update.** This is not a production helper, grant/lease system, or evidence that DS4 can complete the task. No live TextEdit input has been sent. The Task 4 Human go/no-go remains required before Tasks 5–11.
+Status on 2026-10-31: **embedded agent-desktop engine built, signed and source-reviewed; stopped/refusal checks passed live; model-driven input proof pending Deck approvals and Human menu Start.** This is not a production helper, grant/lease system, or evidence that DS4 can complete the task. No successful model-driven TextEdit input is claimed. The installed Deck backend is `326f28926989`; actual Accessibility and Input Monitoring checks passed on the replacement helper, while Screen Recording remains off. The Task 4 Human go/no-go remains required before Tasks 5–11.
+
+
+## Embedded engine proof candidate (2026-10-31)
+
+The signed stable helper now statically embeds agent-desktop core/macOS at `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc`. It reuses memory-only snapshots, retained controls and native action verification, retaining Swift screenshot capture and proof guards. No agent-desktop app or CLI is installed. See `computer-helper/engine/PROVENANCE.md` and `computer-helper/spike/PROOF-HOST-BRIDGE.md`.
+
+Verification: 69 combined Swift tests, 49 scoped Rust tests, TypeScript, a release build and strict bundle signature verification pass. Fresh live relay tests confirm stopped reads/control refuse without returning a screen. These checks do not establish native-task success. Signed artifact hashes and current permission evidence: `/tmp/apex-agent-engine-signed-artifacts.json`; source review: `/tmp/apex-agent-engine-integration-review.md`.
+
+Proof room `pane-mvwz3alu-1` in isolated `proof-project` has only the DS4 API bot (`dsfoe`). Computer-tool registration is local to that independent disposable Git root. Prepare the three normal Deck approvals while stopped, then start a fresh bound relay during the native proof turn and have the Human select **Start new isolated run**. Host Stop/turn completion revoke the proof binding; no automatic restart. Broader authenticated sessions/providers/app grants remain behind Task 4.
 
 ## Artifact and identity
 
