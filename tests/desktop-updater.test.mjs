@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { Writable } from 'node:stream';
 import {
   FEED_URL, RESULT_MESSAGE_LIMIT, RESULT_NOTE_LIMIT, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
-  packageFor, packageVerifier, parseManifest, teamFrom, WINDOWS_FEED_URL, windowsInstaller, windowsSignerFrom, windowsVerifier,
+  packageFor, packageVerifier, parseManifest, teamFrom, WINDOWS_FEED_URL, windowsInstaller, windowsLauncher, windowsSignerFrom, windowsVerifier,
 } from '../desktop/updater.mjs';
 
 const bytes = Buffer.from('apex deck 0.9.1 package');
@@ -380,21 +380,41 @@ test('an installer must match this app\'s publisher and the promised version', a
   await assert.rejects(windowsVerifier({ run: async () => signature(), signer: null })('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
 });
 
-test('Restart to update checks again, keeps the path out of the script, and survives a No', async () => {
-  const calls = [];
+test('Restart to update checks again, waits for Windows, and survives a No', async () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-win-update-'));
+  const resultFile = path.join(folder, 'result.json');
   const ready = { package: "C:/cache/it's; calc.exe", version: '0.9.8' };
-  const install = windowsInstaller({
-    verify: async (file, facts) => { calls.push(['verify', file, facts.version]); },
-    run: async (command, args, options) => { calls.push(['run', args.join(' '), options.env.APEX_UPDATE_FILE]); },
+  const timers = { setTimeout: (done) => setImmediate(done) };
+  const installing = (answer, extra = {}) => windowsInstaller({
+    verify: async () => {},
+    launch: (_file, env) => { if (answer) fs.writeFileSync(env.APEX_UPDATE_STARTED, answer); },
+    resultFile, app: 'C:/Deck.exe', timers, ...extra,
   });
-  assert.match(await install(ready), /^[0-9a-f-]{36}$/);
+  const calls = [];
+  const id = await installing('started', {
+    verify: async (file, facts) => { calls.push(['verify', file, facts.version]); },
+  })(ready);
+  assert.match(id, /^[0-9a-f-]{36}$/);
   assert.deepEqual(calls[0], ['verify', ready.package, '0.9.8']);
-  assert.ok(!calls[1][1].includes('calc.exe'));
-  assert.match(calls[1][1], /-Verb RunAs/);
-  assert.match(calls[1][1], /'\/S','--force-run'/);
-  assert.equal(calls[1][2], ready.package);
-  const declined = windowsInstaller({ verify: async () => {}, run: async () => { throw new Error('canceled'); } });
-  await assert.rejects(declined(ready), /nothing was changed/);
-  const refused = windowsInstaller({ verify: async () => { throw new Error('bad signature'); }, run: async () => { assert.fail('must not start'); } });
-  await assert.rejects(refused(ready), /bad signature/);
+  await assert.rejects(installing('declined')(ready), /nothing was changed/);
+  let time = 0;
+  await assert.rejects(installing('', { now: () => (time += 1000), promptWait: 3000 })(ready), /nothing was changed/);
+  let launched = false;
+  await assert.rejects(installing('started', { verify: async () => { throw new Error('bad signature'); }, launch: () => { launched = true; } })(ready), /bad signature/);
+  assert.equal(launched, false);
+  fs.rmSync(folder, { recursive: true, force: true });
+});
+
+test('the update script runs apart from Deck and never holds the path as code', () => {
+  const started = [];
+  const unref = () => started.push('unref');
+  windowsLauncher((command, args, options) => { started.push({ command, args, options }); return { unref }; })("C:/cache/it's; calc.exe", { APEX_UPDATE_ID: 'one' });
+  const { args, options } = started[0];
+  assert.equal(options.detached, true);
+  assert.equal(started[1], 'unref');
+  assert.ok(!args.join(' ').includes('calc.exe'));
+  assert.match(args.join(' '), /-Verb RunAs/);
+  assert.match(args.join(' '), /'\/S','--updated','--force-run'/);
+  assert.equal(options.env.APEX_UPDATE_FILE, "C:/cache/it's; calc.exe");
+  assert.equal(options.env.APEX_UPDATE_ID, 'one');
 });

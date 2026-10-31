@@ -27,6 +27,8 @@ test('packaged provenance refuses code injection switches and development URLs',
   assert.equal(typeof mod.assertTrustedStartup,'function');
   assert.throws(()=>mod.assertTrustedStartup(true,['app','--remote-debugging-port=9222'],{}));
   assert.throws(()=>mod.assertTrustedStartup(true,['app','-remote-debugging-port=9222'],{},'win32'));
+  for(const name of ['apex_daemon_bin','Apex_Deck_Dev_Url','electron_run_as_node','node_options'])assert.throws(()=>mod.assertTrustedStartup(true,['app'],{[name]:'x'},'win32'),undefined,name);
+  assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app'],{apex_deck_data_dir:'/iso'},'win32'));
   assert.throws(()=>mod.assertTrustedStartup(true,['app','/remote-debugging-port=9222'],{},'win32'));
   assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app','C:\\work\\project'],{},'win32'));
   assert.throws(()=>mod.assertTrustedStartup(true,['app'],{APEX_DECK_DEV_URL:'http://localhost:5173'}));

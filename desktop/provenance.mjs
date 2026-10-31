@@ -23,7 +23,9 @@ export function needsAttestation(cmd, remote = false) {
 
 export function assertTrustedStartup(packaged,argv,env,platform=process.platform){
   if (!packaged) return;
-  const badEnv=Object.keys(env).some(k=>((k.startsWith('APEX_') && k!=='APEX_DECK_DATA_DIR') || k.startsWith('ELECTRON_') || k==='NODE_OPTIONS' || k.startsWith('DYLD_')) && env[k]);
+  // Windows reads variable names in any case, so apex_daemon_bin is APEX_DAEMON_BIN.
+  const named=(k)=>platform==='win32'?k.toUpperCase():k;
+  const badEnv=Object.keys(env).some(k=>{const n=named(k);return ((n.startsWith('APEX_') && n!=='APEX_DECK_DATA_DIR') || n.startsWith('ELECTRON_') || n==='NODE_OPTIONS' || n.startsWith('DYLD_')) && env[k];});
   // Packaged trusted UI has no developer-command or URL escape hatch. Only
   // ordinary file/open event arguments and approved OS launch flags are allowed.
   if(env.APEX_DECK_DATA_DIR && !path.isAbsolute(env.APEX_DECK_DATA_DIR)) throw new Error('Apex data directory must be absolute.');

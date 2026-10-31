@@ -118,9 +118,14 @@ versioned installer and the feed to the same draft release as the Mac files.
 Deck downloads the installer, checks its size and checksum, then asks Windows
 for its signature. It must be valid, come from the same publisher as the running
 app, and carry the promised version. **Restart to update** checks that again and
-starts the installer silently with `--force-run`. Windows shows its usual
-permission prompt once; declining leaves everything as it was, and accepting
-quits Deck, replaces it, and opens the new version.
+starts the installer silently through a small script that outlives Deck. Windows
+shows its usual permission prompt once; declining leaves everything as it was.
+Accepting quits Deck, replaces it, and opens the new version. The script records
+how the installer ended for the next launch, and reopens Deck if it failed.
+
+A program running under the same account can swap the verified installer in the
+moment before it starts, for example for an older signed one. Closing that gap
+needs an update job with system rights, as on the Mac.
 
 There is no privileged update job on Windows, so no new code runs with system
 rights, and an update needs someone there to answer the prompt. The first version

@@ -207,19 +207,32 @@ const SIGNATURE_SCRIPT = [
   '$signature = Get-AuthenticodeSignature -LiteralPath $file',
   '[pscustomobject]@{ status = "$($signature.Status)"; subject = $signature.SignerCertificate.Subject; issuer = $signature.SignerCertificate.Issuer; version = (Get-Item -LiteralPath $file).VersionInfo.ProductVersion } | ConvertTo-Json -Compress',
 ].join('; ');
-const INSTALL_SCRIPT = "Start-Process -FilePath $env:APEX_UPDATE_FILE -ArgumentList '/S','--force-run' -Verb RunAs -ErrorAction Stop";
+/**
+ * Outlives Deck: starts the installer, says whether Windows allowed it, then
+ * records how it ended for the next launch and reopens Deck if it failed.
+ */
+const INSTALL_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "try { $installer = Start-Process -FilePath $env:APEX_UPDATE_FILE -ArgumentList '/S','--updated','--force-run' -Verb RunAs -PassThru; $null = $installer.Handle; Set-Content -LiteralPath $env:APEX_UPDATE_STARTED -Value started } catch { Set-Content -LiteralPath $env:APEX_UPDATE_STARTED -Value declined; exit 1 }",
+  '$installer.WaitForExit()',
+  "$outcome = if ($installer.ExitCode -eq 0) { 'installed' } else { 'failed' }",
+  '[pscustomobject]@{ id = $env:APEX_UPDATE_ID; outcome = $outcome } | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:APEX_UPDATE_RESULT -Encoding ascii',
+  "if ($outcome -ne 'installed') { Start-Process -FilePath $env:APEX_UPDATE_APP }",
+].join('; ');
+/** Long enough to read Windows' prompt and answer it. */
+const PROMPT_WAIT_MS = 5 * 60 * 1000;
 
 /**
  * Run PowerShell with the file in the environment, so no path is ever parsed as
  * code. A PSModulePath inherited from PowerShell 7 stops Windows PowerShell from
  * loading its own signature commands.
  */
-const powershell = (run, script, file, systemRoot = process.env.SystemRoot ?? 'C:\\Windows') => {
+const powershell = (run, script, file, extra = {}) => {
   const { PSModulePath: _inherited, ...env } = process.env;
   return run(
-    path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
     ['-NoProfile', '-NonInteractive', '-Command', script],
-    { env: { ...env, APEX_UPDATE_FILE: file }, windowsHide: true },
+    { env: { ...env, ...extra, APEX_UPDATE_FILE: file }, windowsHide: true, stdoutOnly: true },
   );
 };
 
@@ -246,17 +259,34 @@ export function windowsVerifier({ run, signer }) {
   };
 }
 
-/** Check again, then start the installer. Windows shows its permission prompt here. */
-export function windowsInstaller({ run, verify }) {
+/**
+ * Check again, then start the installer. Windows shows its permission prompt
+ * here. Resolves once it's allowed, so Deck quits only for an update that's running.
+ */
+export function windowsInstaller({ launch, verify, resultFile, app, files = fs, timers = globalThis, now = () => Date.now(), promptWait = PROMPT_WAIT_MS }) {
   return async (ready) => {
     await verify(ready.package, { version: ready.version });
-    try {
-      await powershell(run, INSTALL_SCRIPT, ready.package);
-    } catch {
-      throw new Error('Windows didn’t start the update, so nothing was changed. Choose Yes when it asks for permission.');
+    const id = crypto.randomUUID();
+    const started = `${resultFile}.started`;
+    files.rmSync(started, { force: true });
+    files.rmSync(resultFile, { force: true });
+    launch(ready.package, { APEX_UPDATE_ID: id, APEX_UPDATE_RESULT: resultFile, APEX_UPDATE_STARTED: started, APEX_UPDATE_APP: app });
+    for (const end = now() + promptWait; now() < end;) {
+      let answer = '';
+      try { answer = files.readFileSync(started, 'utf8').trim(); } catch { /* not answered yet */ }
+      if (answer === 'started') return id;
+      if (answer) break;
+      await new Promise((done) => timers.setTimeout(done, 250));
     }
-    return crypto.randomUUID();
+    throw new Error('Windows didn’t start the update, so nothing was changed. Choose Yes when it asks for permission.');
   };
+}
+
+/** Start the update script so that it outlives Deck. */
+export function windowsLauncher(spawn) {
+  return (file, extra) => powershell((command, args, { env, windowsHide }) => {
+    spawn(command, args, { env, windowsHide, detached: true, stdio: 'ignore' }).unref();
+  }, INSTALL_SCRIPT, file, extra);
 }
 
 /** The installer's result as a short reason plus every account note, whole. */
@@ -474,7 +504,8 @@ export class Updater {
     let entries = [];
     try { entries = this.files.readdirSync(this.cacheDir); } catch { return; }
     for (const name of entries) {
-      if (name !== keep) this.files.rmSync(path.join(this.cacheDir, name), { recursive: true, force: true });
+      // An installer still closing locks its file; the next start clears it.
+      if (name !== keep) try { this.files.rmSync(path.join(this.cacheDir, name), { recursive: true, force: true }); } catch { /* left for later */ }
     }
   }
 

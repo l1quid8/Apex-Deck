@@ -9,7 +9,7 @@ import { VoiceRuntimeManager } from './voiceRuntime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
@@ -27,7 +27,7 @@ import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, needsAttestation, protectWindowsProcess, requestUpdate } from './provenance.mjs';
-import { Updater, WINDOWS_FEED_URL, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom, windowsInstaller, windowsSigner, windowsVerifier } from './updater.mjs';
+import { Updater, WINDOWS_FEED_URL, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom, windowsInstaller, windowsLauncher, windowsSigner, windowsVerifier } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
@@ -700,10 +700,10 @@ handle('shell:quitApp', async ({ win }) => {
 // before "Restart to update", which quits only once the broker has queued it.
 
 /** A command's output, or a rejection with what it printed. */
-const runCommand = (command, args, options = {}) => new Promise((resolve, reject) => {
+const runCommand = (command, args, { stdoutOnly = false, ...options } = {}) => new Promise((resolve, reject) => {
   execFile(command, args, { encoding: 'utf8', maxBuffer: 4 << 20, ...options }, (error, stdout, stderr) => {
     if (error) reject(new Error(String(stderr || error.message).trim()));
-    else resolve(`${stdout}${stderr}`);
+    else resolve(stdoutOnly ? stdout : `${stdout}${stderr}`);
   });
 });
 
@@ -715,15 +715,16 @@ async function windowsUpdates() {
   const signer = app.isPackaged ? await windowsSigner(runCommand, process.execPath) : null;
   const installed = path.join(process.env.ProgramW6432 ?? process.env.ProgramFiles ?? '', 'Apex Deck', 'Apex Deck.exe');
   const verify = windowsVerifier({ run: runCommand, signer });
+  const resultFile = path.join(app.getPath('userData'), 'windows-update-result.json');
   return {
     protectedCopy: process.execPath.toLowerCase() === installed.toLowerCase(),
     team: signer?.subject ?? null,
     options: {
       feedUrl: WINDOWS_FEED_URL,
       extension: '.exe',
-      resultFile: path.join(app.getPath('userData'), 'no-update-job-result.json'),
+      resultFile,
       verify,
-      requestInstall: windowsInstaller({ run: runCommand, verify }),
+      requestInstall: windowsInstaller({ launch: windowsLauncher(spawn), verify, resultFile, app: process.execPath }),
     },
   };
 }
