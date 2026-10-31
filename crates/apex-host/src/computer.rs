@@ -132,7 +132,8 @@ async fn verified_bundle() -> Result<PathBuf, String> {
     let output = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::process::Command::new("/usr/bin/codesign")
-            .args(["--verify", "--strict", "--deep", "-R", &requirement])
+            .args(["--verify", "--strict", "--deep"])
+            .arg(format!("-R={requirement}"))
             .arg(&path)
             .output(),
     )
