@@ -77,6 +77,7 @@ fn codex_mcp_disable_flags(listing: &[u8]) -> Result<Vec<String>, ParticipantErr
 /// Deck knows are run in their event modes instead, so the reply arrives as
 /// it is written, along with what the agent is doing and what it used; see
 /// `events.rs`.
+#[derive(Clone)]
 pub struct CliParticipant {
     config: ParticipantConfig,
     timeout: Duration,
@@ -96,11 +97,12 @@ pub struct CliParticipant {
     attachment_roots: Vec<PathBuf>,
     /// Deck's shared phone, for Claude and Codex bots. See phone_env.rs.
     phone: Option<PhoneEnv>,
+    computer: Option<apex_core::ComputerTurn>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, computer: None }
     }
 
     /// Start a text-only turn with tools disabled at both the CLI and
@@ -206,6 +208,11 @@ impl CliParticipant {
                     safe.extend(["--safe-mode", "--restricted", "--tools", "", "--strict-mcp-config", "--setting-sources", ""].into_iter().map(str::to_owned));
                     args = safe;
                 }
+                if *tool == AgentTool::ClaudeCode && !self.mcp_disabled && !self.tools_disabled {
+                    if let Some(computer) = &self.computer {
+                        args.extend(["--mcp-config".into(),crate::computer::claude_config(computer).to_string()]);
+                    }
+                }
                 Ok((program.clone(), args, output_format(*tool, &program)))
             }
             _ => Err(ParticipantError::NotConfigured("backend is not a command-line tool".into())),
@@ -228,6 +235,10 @@ impl CliParticipant {
             command
         };
         command.envs(env.iter().map(|(name, value)| (*name, value)));
+        for key in crate::computer::ENV_KEYS { command.env_remove(key); }
+        if !self.tools_disabled && !self.mcp_disabled {
+            if let Some(computer)=&self.computer {command.envs(crate::computer::env(computer));}
+        }
         // Claude and Codex bots get the phone command; see phone_env.rs.
         // A text-only monitor turn has no tools, so it gets nothing.
         command.envs(phone_env::phone_vars(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
@@ -289,6 +300,7 @@ impl CliParticipant {
     ) -> Result<Reply, ParticipantError> {
         let program = "codex";
         let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
+        if let Some(computer)=self.computer.as_ref().filter(|_|!self.mcp_disabled && !self.tools_disabled) {args.extend(crate::computer::codex_flags(computer));}
         args.extend(phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
         if self.mcp_disabled {
             let mut inventory_args: Vec<String> = GATEWAY_CODEX_FLAGS.iter().map(|s|(*s).into()).collect();
@@ -332,6 +344,7 @@ impl CliParticipant {
             plan: self.plan.is_some(),
             mcp_disabled: self.mcp_disabled,
             tools_disabled: self.tools_disabled,
+            trusted_computer: self.computer.is_some() && !self.mcp_disabled && !self.tools_disabled,
         };
         match codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await {
             Ok(reply) => Ok(reply),
@@ -339,6 +352,7 @@ impl CliParticipant {
                 Err(ParticipantError::Failed(format!("Codex app server unavailable ({why}); this turn did not run because MCP approvals require it.")))
             }
             Err(TurnError::Failed(why)) => {
+                let why=if self.computer.is_some() {"Computer tool session failed; private content hidden".into()} else {why};
                 eprintln!("[apex-deck] `{program}` turn failed: {why}");
                 let summary = last_lines(&why).unwrap_or(why);
                 let hint = sign_in_hint(program, &summary).map(|h| format!(" {h}")).unwrap_or_default();
@@ -450,10 +464,11 @@ impl CliParticipant {
         stderr_text: &str,
         reader: EventReader,
     ) -> Result<Reply, ParticipantError> {
-        let shown = reader.streamed().to_string();
+        let private=self.computer.is_some() || reader.has_computer_content();
+        let shown = if private {"[computer content hidden]".into()} else {reader.streamed().to_string()};
         let outcome = reader.outcome();
         if !success || outcome.error.is_some() {
-            let detail = AnsiStripper::default().push(stderr_text.trim());
+            let detail = if private {"[computer content hidden]".into()} else {AnsiStripper::default().push(stderr_text.trim())};
             // The full output can run to pages; keep it in the app's log
             // and show the chat only the part that says what went wrong.
             eprintln!(
@@ -462,11 +477,11 @@ impl CliParticipant {
             );
             // A tool's own statement of what went wrong beats anything
             // picked out of its log.
-            let summary = outcome
+            let summary = if private {"Computer tool session failed; private content hidden".into()} else {outcome
                 .error
                 .as_deref()
                 .and_then(last_lines)
-                .unwrap_or_else(|| failure_summary(&detail, &shown));
+                .unwrap_or_else(|| failure_summary(&detail, &shown))};
             let hint = sign_in_hint(program, &summary).map(|h| format!(" {h}")).unwrap_or_default();
             let how = if success { "reported an error".to_string() } else { format!("exited with {status}") };
             return Err(ParticipantError::Failed(format!("`{program}` {how}: {summary}{hint}")));
@@ -493,7 +508,7 @@ impl CliParticipant {
     ) -> Result<Reply, ParticipantError> {
         let child = self.start(program, args)?;
         let cwd = self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned());
-        let finished = claude_session::run_with_images(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled, images)
+        let finished = claude_session::run_with_computer(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled, images, self.computer.is_some() && !self.mcp_disabled && !self.tools_disabled)
             .await
             .map_err(|e| ParticipantError::Failed(format!("talking to `{program}` failed: {e}")))?;
         if let Some(error) = finished.cleanup_error { return Err(ParticipantError::CleanupIncomplete(error)); }
@@ -700,6 +715,11 @@ impl Participant for CliParticipant {
         if self.tools_disabled && (request.access.is_some_and(|access| access != Access::Read) || request.plan) {
             return Err(ParticipantError::Failed("Text-only turns cannot request workspace access or planning tools.".into()));
         }
+        let computer = request.computer.clone().filter(|_| !self.tools_disabled && !self.mcp_disabled);
+        if computer != self.computer {
+            let mut scoped=self.clone(); scoped.computer=computer;
+            return scoped.respond_with_approvals(request,on_progress,approver).await;
+        }
         let effective_cwd = request.cwd.clone().or_else(|| self.cwd.clone());
         if effective_cwd != self.cwd {
             let scoped = Self {
@@ -717,6 +737,7 @@ impl Participant for CliParticipant {
                 cargo_target_dir: self.cargo_target_dir.clone(),
                 attachment_roots: self.attachment_roots.clone(),
                 phone: self.phone.clone(),
+                computer: self.computer.clone(),
             };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
@@ -724,7 +745,7 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -735,7 +756,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone() };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -746,7 +767,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         if self.mcp_disabled && self.isolation.is_none() && (self.tools_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) || !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })) {
@@ -756,7 +777,7 @@ impl Participant for CliParticipant {
             let isolation = tokio::task::spawn_blocking(move || crate::gateway_sandbox::Isolation::new_with_path(&backend, path.as_deref()))
                 .await.map_err(|_| ParticipantError::Failed("Gateway isolation setup failed".into()))??;
             let isolation = std::sync::Arc::new(isolation);
-            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None };
+            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, computer: None };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
@@ -882,7 +903,7 @@ mod tests {
         let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"}})).unwrap();
         let mut bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:folder.dir.to_str().map(str::to_owned),..Default::default()}).with_tools_disabled();
         bot.isolation=Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&apex_core::Backend::Scripted{lines:vec![]}).unwrap()));
-        let request=apex_core::TurnRequest{system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false,cwd:None};
+        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false,cwd:None};
         let call=bot.respond(request,&|_|{});tokio::pin!(call);
         let mut owned=false;
         for _ in 0..100 {
@@ -897,7 +918,7 @@ mod tests {
         use apex_core::Participant;
         let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"},"access":"full"})).unwrap();
         let bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:Some("/no-assistant-executables".into()),..Default::default()}).with_tools_disabled();
-        let request=apex_core::TurnRequest{system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None};
+        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None};
         let result=bot.respond(request,&|_|{}).await;
         assert!(matches!(result,Err(ref why) if why.to_string().contains("Text-only turns cannot")),"workspace escalation must refuse before launching any provider");
     }

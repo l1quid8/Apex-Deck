@@ -2,6 +2,7 @@
 //! drive it; neither owns any logic of its own.
 
 mod authority_file;
+mod computer;
 mod journal;
 #[cfg(feature="test-support")]
 pub mod test_support;

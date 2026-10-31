@@ -173,6 +173,7 @@ pub struct Host {
     steps: crate::step_buffers::StepBuffers,
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
+    pub(crate) computer: Arc<crate::computer::Computer>,
     pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
     runner_workers: Mutex<std::collections::HashSet<String>>,
     runner_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -278,8 +279,10 @@ impl Host {
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
         let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
         let runner_service = Arc::new(Mutex::new(crate::runner::service::RunnerService::new(paths.data.clone())));
+        let computer = crate::computer::Computer::new(&paths.data);
         let host = Arc::new(Host {
             paths,
+            computer,
             _ownership: ownership,
             runtime,
             events: Bus::default(),
@@ -1113,7 +1116,7 @@ impl Host {
         answers.store(true, Ordering::SeqCst);
         let approvals = room.approvals_handle();
         let checkpoint = Arc::new(Mutex::new(SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
-        let mut runtime = ConcurrentRoom::new(room);
+        let mut runtime = ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(crate::computer::TurnHook { host: Arc::downgrade(self), computer: Arc::clone(&self.computer), thread: id.clone(), work_room: !kind.is_chat() }));
         if let Some(cwd) = &context.cwd {
             runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
             let this = Arc::downgrade(self);
@@ -1763,7 +1766,13 @@ impl Host {
         Ok(())
     }
 
+    pub(crate) fn computer_participant_supported(&self,thread:&str,id:&ParticipantId)->bool {
+        self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| matches!(p.backend,apex_core::Backend::OpenAiCompatible {..} | apex_core::Backend::Agent {tool:apex_core::AgentTool::ClaudeCode | apex_core::AgentTool::Codex,..})))
+    }
+    pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
+
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
+        self.computer.revoke(Some(&id),participant.as_ref().map(ParticipantId::as_str));
         // Runner: Stop during countdown also pauses
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         let _ = self.runner_service.lock().unwrap().pause_reason(&id, crate::runner::RunnerReason::Human, now_ms);
@@ -1791,6 +1800,7 @@ impl Host {
     /// hears `plan_changed`. A turn already running keeps the mode it began
     /// with; the next one follows the switch.
     pub fn room_set_plan(&self, id: String, on: bool) -> Result<(), String> {
+        if on {self.computer.revoke(Some(&id),None);}
         let handle = self.handle(&id)?;
         if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
             return Err("Talk-only chat rooms do not use Plan mode.".into());
@@ -1957,6 +1967,7 @@ impl Host {
             if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
         }
         self.ensure_task_read_access(&id, &next)?;
+        if next.access != current.access { self.computer.revoke(Some(&id),Some(name.as_str())); }
         let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
@@ -2010,6 +2021,7 @@ impl Host {
     }
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
+        self.computer.revoke(Some(&id),Some(participant.as_str()));
         // Worker removal pauses runner
         self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
@@ -2253,6 +2265,7 @@ impl Host {
     }
 
     pub fn room_close(&self, id: String) {
+        self.computer.revoke(Some(&id),None);
         // Closing a view detaches it. Active jobs and assistant children are host owned.
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let Ok(handle) = self.handle(&id) else { return; };
@@ -2571,6 +2584,7 @@ impl Host {
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
+        self.computer.revoke(Some(&id),None);
         self.invalidate_room_runner(&id)?;
         self.runner_service.lock().unwrap().remove(&id)?;
         let _lifecycle = self.room_lifecycle.lock().unwrap();
@@ -5002,6 +5016,7 @@ done
         let config = saved.snapshot.participants[0].clone();
         assert_eq!(config.access, Access::Full, "the promoted bot keeps the access chosen on the move screen");
         let turn = || TurnRequest {
+            computer: None,
             effort_override: None,
             access: None,
             system: "You are Codex.".into(),

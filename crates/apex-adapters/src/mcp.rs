@@ -6,7 +6,7 @@ const RISKY: &[&str] = &["order", "trade", "buy", "sell", "swap", "transfer", "w
 
 /// Conservative privacy matching only. This never confers approval or trust.
 pub(crate) fn is_computer_server(name: &str) -> bool {
-    name == "apex-computer"
+    matches!(name,"apex-computer"|"apex_computer")
 }
 
 /// Safe presentation metadata: no argument values or tool output are retained.
@@ -64,7 +64,13 @@ pub(crate) fn claude_tool(tool: &str) -> Option<(&str, &str)> {
     tool.strip_prefix("mcp__")?.split_once("__")
 }
 
+pub(crate) fn computer_tool(name:&str)->Option<&str> {
+    let (server,tool)=claude_tool(name)?;
+    is_computer_server(server).then_some(tool)
+}
+
 pub(crate) fn action(server: &str, tool: &str, arguments: &Value) -> ProposedAction {
+    if is_computer_server(server) {return ProposedAction {kind:ActionKind::Tool,title:redacted_step(tool,arguments).label,detail:String::new(),expires_at:None,risky:needs_approval(tool)};}
     ProposedAction { kind: ActionKind::Tool, title: format!("{server}: {tool}"), detail: serde_json::to_string_pretty(arguments).expect("JSON value"), expires_at: None, risky: needs_approval(tool) }
 }
 

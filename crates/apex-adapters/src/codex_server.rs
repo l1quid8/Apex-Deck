@@ -68,6 +68,7 @@ pub(crate) struct Turn<'a> {
     pub plan: bool,
     pub mcp_disabled: bool,
     pub tools_disabled: bool,
+    pub trusted_computer: bool,
 }
 
 /// Why a turn through the app server did not produce a reply.
@@ -707,7 +708,7 @@ pub(crate) async fn run_with_images(
     let mut reader = EventReader::new(OutputFormat::CodexServer, turn.cwd.clone());
     reader.own_thread(thread);
     let mut pending_mcp = HashMap::new();
-    let mut gates = Gates::default();
+    let mut gates = Gates::default().with_computer(turn.trusted_computer);
     let mut listening = hook;
     // Set once the reply is written but helper agents it started are still
     // working. The server must stay open for them to finish, and then a
@@ -821,8 +822,12 @@ pub(crate) async fn run_with_images(
                         let params = &message["params"];
                         // Only the fields that decide which buttons the card shows.
                         let meta = &params["_meta"];
-                        eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
-                            params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
+                        if params["serverName"].as_str().is_some_and(crate::mcp::is_computer_server) {
+                            eprintln!("[apex-deck] computer permission request (private content hidden)");
+                        } else {
+                            eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
+                                params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
+                        }
                         let decision = if turn.mcp_disabled || params["threadId"] != thread {
                             Decision::Reject
                         } else if let Some(action) = mcp_question(params) {
@@ -837,7 +842,9 @@ pub(crate) async fn run_with_images(
                             let catalog_approval = crate::mcp::catalog_approval(&tool_catalog, &call.server, &call.tool);
                             // High upstream risk and explicit mutating annotations must
                             // reach the person before either automatic or cached approval.
-                            let automatic = if high_risk(params) || catalog_approval == Some(true) {
+                            let automatic = if turn.trusted_computer && call.server == crate::computer::SERVER {
+                                Some(Decision::Approve)
+                            } else if high_risk(params) || catalog_approval == Some(true) {
                                 None
                             } else if catalog_approval == Some(false) {
                                 Some(Decision::Approve)
@@ -1148,7 +1155,7 @@ cat > /dev/null"#;
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
         let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, tools_disabled: false };
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, trusted_computer: false, tools_disabled: false };
         let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
         match result {
             Ok(reply) => assert_eq!(reply.text, "Private MCP denied."),
@@ -1177,7 +1184,7 @@ cat > /dev/null"#;
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
         let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, tools_disabled: true };
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, trusted_computer: false, tools_disabled: true };
         let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
         assert!(matches!(result,Err(TurnError::Failed(ref why)) if why.contains("tool was requested")),"assistant mode must stop unexpected tools before accepting any reply");
     }
@@ -1391,7 +1398,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         let policy = thread_start(&turn)["params"]["approvalPolicy"].clone();
@@ -1405,7 +1412,7 @@ cat > /dev/null"#;
 
     #[test]
     fn thread_start_sends_the_service_tier_only_when_chosen() {
-        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, tools_disabled: false, plan: false };
+        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, trusted_computer: false, tools_disabled: false, plan: false };
         assert_eq!(thread_start(&turn)["params"]["serviceTier"], "priority");
         turn.service_tier = None;
         assert!(thread_start(&turn)["params"].get("serviceTier").is_none());
@@ -1419,7 +1426,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Edits,
             cwd: Some("/work".into()),
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1434,7 +1441,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Ask,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1447,7 +1454,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Read,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1460,7 +1467,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1576,7 +1583,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         let reply = match run(child, turn, "go", &sink, &apex_core::NoApprover, None).await {

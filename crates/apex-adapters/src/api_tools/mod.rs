@@ -145,6 +145,7 @@ pub(crate) struct Turn<'a> {
     /// The bot's own access level.
     own: Access,
     can_read_images: bool,
+    trusted_computer: bool,
     approver: &'a dyn Approver,
     progress: ProgressSink<'a>,
     jobs: shell::Jobs,
@@ -169,7 +170,22 @@ impl<'a> Turn<'a> {
             progress(Progress::ToolServers(&menu));
         }
         let roots = tools.roots.clone();
-        Self { tools, access, plan, own, can_read_images: false, approver, progress, jobs: shell::Jobs::default(), servers, cwd: None, roots }
+        Self { tools, access, plan, own, can_read_images: false, trusted_computer: false, approver, progress, jobs: shell::Jobs::default(), servers, cwd: None, roots }
+    }
+
+    pub fn with_computer(mut self, computer: Option<&apex_core::ComputerTurn>) -> Self {
+        if let Some(computer) = computer {
+            self.servers.retain(|s| s.name != crate::computer::SERVER);
+            self.servers.push(mcp_client::ServerSpec { name: crate::computer::SERVER.into(), transport: mcp_client::Transport::Stdio {
+                command: computer.relay.to_string_lossy().into_owned(), args: vec![], env: crate::computer::env(computer)
+            }});
+            self.trusted_computer = true;
+            let menu: Vec<apex_core::server_request::ToolServer> = self.servers.iter().map(|s| if s.name == crate::computer::SERVER {
+                apex_core::server_request::ToolServer {token:s.name.clone(),label:"Unified Computer Use".into(),aliases:vec![]}
+            } else {s.name.clone().into()}).collect();
+            (self.progress)(Progress::ToolServers(&menu));
+        }
+        self
     }
 
     pub fn with_can_read_images(mut self, can_read_images: bool) -> Self {
@@ -752,7 +768,9 @@ impl<'a> Turn<'a> {
         let arguments = if args["arguments"].is_object() { args["arguments"].clone() } else { json!({}) };
         let catalog = [json!({"name": name, "tools": {tool_name.clone(): definition}})];
         let risky = crate::mcp::catalog_approval(&catalog, &name, &tool_name).unwrap_or_else(|| crate::mcp::needs_approval(&tool_name));
-        let need = if !risky {
+        let need = if self.trusted_computer && name == crate::computer::SERVER {
+            Need::Free
+        } else if !risky {
             Need::Free
         } else if self.plan {
             Need::Refuse(format!("Plan mode is on, and `{tool_name}` could change things. Include it in the plan instead."))
@@ -900,7 +918,7 @@ done
         let servers = vec![mcp_client::ServerSpec { name: server.into(), transport: mcp_client::Transport::Stdio {
             command: "sh".into(), args: vec!["-c".into(), script.into()], env: vec![],
         }}];
-        let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images, approver: &answers,
+        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images, approver: &answers,
             progress: &progress, jobs: shell::Jobs::default(), servers, cwd: None, roots: tools.roots.clone() };
         let result = turn.run(&call("mcp_call", json!({"server": server, "tool": tool,
             "arguments": {"text":"TYPED_SECRET", "app":"APP_SECRET", "snapshot":"SNAPSHOT_SECRET"}}))).await;
@@ -987,7 +1005,7 @@ done
     async fn screenshot_is_refused_before_connecting_or_capturing() {
         let tools = ToolBox::new(&crate::BuildContext::default());
         let progress = |_: Progress<'_>| {};
-        let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full,
+        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full,
             can_read_images: false, approver: &NoApprover, progress: &progress, jobs: shell::Jobs::default(),
             cwd: None, roots: tools.roots.clone(), servers: vec![mcp_client::ServerSpec {
                 name: "apex-computer".into(), transport: mcp_client::Transport::Unsupported("connection attempted".into())
@@ -1002,7 +1020,7 @@ done
         let tools = ToolBox::new(&crate::BuildContext::default());
         let steps = Mutex::new(Vec::new());
         let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
-        let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
+        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
             progress: &progress, jobs: shell::Jobs::default(), cwd: None, roots: tools.roots.clone(),
             servers: vec![mcp_client::ServerSpec { name: "apex-computer".into(),
                 transport: mcp_client::Transport::Unsupported("SCREEN_SECRET TOKEN_SECRET".into()) }] };
@@ -1019,7 +1037,7 @@ done
         let tools = ToolBox::new(&crate::BuildContext::default());
         let steps = Mutex::new(Vec::new());
         let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
-        let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
+        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
             progress: &progress, jobs: shell::Jobs::default(), servers: vec![], cwd: None, roots: tools.roots.clone() };
         let call = ToolCall { name: "mcp_call".into(), arguments: r#"{"server":"apex-computer","arguments":{"text":"TYPED_SECRET"},"broken":"#.into(), ..Default::default() };
         assert!(call.has_computer_content());
@@ -1042,7 +1060,7 @@ done
                 let steps = Mutex::new(Vec::new());
                 let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
                 let answers = approver(Decision::Approve);
-                let mut turn = Turn { tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &answers,
+                let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &answers,
                     progress: &progress, jobs: shell::Jobs::default(), servers: vec![], cwd: None, roots: tools.roots.clone() };
                 let mut args = json!({"tool":"TOOL_SECRET", "arguments":{"text":"TYPED_SECRET", "credential":"TOKEN_SECRET"}});
                 if let Some(server) = &server { args["server"] = server.clone(); }

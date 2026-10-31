@@ -154,6 +154,8 @@ pub fn command_needs(command: &Command) -> Need {
         ArtifactExport { .. } => full(Global),
         ExportThread { .. } => full(Global),
 
+        // Desktop control and permission setup belong to this Mac.
+        ComputerStatus {} | ComputerSetup {} | ComputerSetEnabled { .. } | ComputerStop {} => Need::Never,
         // Never remote.
         DataFolder {} => Need::Never,
         EnvPresent { .. } => Need::Never,
@@ -502,6 +504,10 @@ mod tests {
             ("mod_fs_stat", None, json!({ "path": "x" })),
             ("mod_env_get", None, json!({ "name": "HOME" })),
             // The phone is this Mac's simulator; paired devices can't drive it.
+            ("computer_status", None, json!({})),
+            ("computer_setup", None, json!({})),
+            ("computer_set_enabled", None, json!({"enabled":true})),
+            ("computer_stop", None, json!({})),
             ("phone_status", None, json!({})),
             ("phone_start", None, json!({})),
             ("phone_stop", None, json!({})),

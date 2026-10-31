@@ -319,7 +319,7 @@ impl Participant for OpenAiCompatParticipant {
         let mut turn = match &self.tools {
             Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
                 let access = request.access.unwrap_or(self.config.access);
-                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_cwd(request.cwd).with_can_read_images(self.config.can_read_images))
+                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_computer(request.computer.as_ref()).with_cwd(request.cwd).with_can_read_images(self.config.can_read_images))
             }
             _ => None,
         };
@@ -830,7 +830,7 @@ done
         let path = std::env::temp_dir().join(format!("apex-tool-upload-{}-{}-{server}-{can_read_images}.png",std::process::id(),address.port()));
         std::fs::write(&path,b"\x89PNG\r\n\x1a\nupload").unwrap();
         bot = bot.with_attachment_roots(vec![path.parent().unwrap().to_path_buf()]);
-        let request = TurnRequest { effort_override:None,access:None,system:"test".into(),turns:vec![apex_core::ViewTurn{
+        let request = TurnRequest { computer: None, effort_override:None,access:None,system:"test".into(),turns:vec![apex_core::ViewTurn{
             role:Role::User,content:format!("Attached image: {}",path.display())
         }],unseen:vec![],plan:false,cwd:None };
         let work = Mutex::new(Vec::new());
@@ -1087,7 +1087,7 @@ done
 
     #[test]
     fn effort_is_only_in_the_request_when_set() {
-        let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false, cwd: None };
+        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false, cwd: None };
         assert!(request_body("m", None, &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert!(request_body("m", Some("  "), &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert_eq!(request_body("m", Some("high"), &request, &[]).unwrap()["reasoning_effort"], "high");
@@ -1133,7 +1133,7 @@ done
         let path = std::env::temp_dir().join(format!("apex-vision-{}.png", std::process::id()));
         std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
         let text = format!("Describe this\nAttached image: {}", path.display());
-        let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
+        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false, cwd: None };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
@@ -1146,7 +1146,7 @@ done
         let path = std::env::temp_dir().join(format!("apex-user-image-{}.png", std::process::id()));
         std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
         let text = format!("Attached image: {}", path.display());
-        let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
+        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text.clone() },
                 apex_core::ViewTurn { role: Role::Assistant, content: text.clone() }],
             unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false, cwd: None };

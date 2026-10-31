@@ -90,6 +90,9 @@ pub(crate) fn claude_step(
     input: &Value,
     cwd: Option<&str>,
 ) -> WorkStep {
+    if let Some(tool)=crate::mcp::computer_tool(tool) {
+        return running(id,parent,StepKind::Tool,&crate::mcp::redacted_step(tool,input).label,"");
+    }
     let field = |key: &str| input[key].as_str().map(str::trim).filter(|s| !s.is_empty());
     let path = field("file_path").or(field("notebook_path")).or(field("path"));
     let named = |verb: &str| match path {
@@ -319,6 +322,10 @@ pub(crate) fn codex_step(
                 q => format!("Search the web for {q}"),
             };
             running(key, parent, StepKind::Web, &label, query)
+        }
+        "mcpToolCall" if item["server"].as_str().is_some_and(crate::mcp::is_computer_server) => {
+            let label=crate::mcp::redacted_step(item["tool"].as_str().unwrap_or(""),&item["arguments"]).label;
+            running(key,parent,StepKind::Tool,&label,"")
         }
         "mcpToolCall" => {
             let label = format!("{} {}", text("server").unwrap_or(""), text("tool").unwrap_or(""));

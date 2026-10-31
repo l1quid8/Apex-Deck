@@ -1044,6 +1044,7 @@ async fn handle_chat_completions(
     };
 
     let turn_request = TurnRequest {
+        computer: None,
         access: Some(Access::Read),
         effort_override: effort,
         system: flattened.system,

@@ -634,6 +634,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
         || !matches!(
             name,
             "personal-assistants.json"
+                | "computer-enabled.json"
                 | "assistant-tasks-v1.json"
                 | "assistant-conversations-v1.json"
                 | "room-authority-v1.json"
@@ -652,7 +653,8 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
 pub fn protected(name: &str) -> bool {
     matches!(
         name,
-        "assistant_message"
+        "computer_setup" | "computer_set_enabled"
+            | "assistant_message"
             | "assistant_task_action"
             | "personal_send"
             | "personal_decide"

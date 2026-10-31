@@ -55,6 +55,7 @@ fn context() -> BuildContext {
 
 fn request(content: String, think: bool) -> TurnRequest {
     TurnRequest {
+        computer: None,
         effort_override: None,
         access: None,
         system: if think {

@@ -44,6 +44,7 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
 
 fn request(text: &str) -> TurnRequest {
     TurnRequest {
+        computer: None,
         effort_override: None,
         access: None,
         system: "You are a test bot.".into(),

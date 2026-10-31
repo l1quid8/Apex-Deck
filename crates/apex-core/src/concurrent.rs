@@ -96,6 +96,12 @@ impl Drop for TurnBatch {
 pub trait TurnStartHook: Send + Sync {
     fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, ()>;
 }
+/// Paired host lifecycle work after the scheduler decides effective access.
+/// The returned lease is dropped on every completion, error or cancellation.
+pub trait TurnLifecycleHook: Send + Sync {
+    fn revoke(&self, _id: Option<&ParticipantId>) {}
+    fn start<'a>(&'a self, id: &'a ParticipantId, request: &'a mut TurnRequest, access: Access) -> BoxFuture<'a, Option<Box<dyn Send>>>;
+}
 pub trait CopyProvider: Send + Sync {
     fn copy_for<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Result<PathBuf, String>>;
     fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> BoxFuture<'a, ()>;
@@ -114,6 +120,7 @@ pub struct ConcurrentRoom {
     write_owner: Option<String>,
     cleanup_holds: Arc<Mutex<HashMap<ParticipantId, (String, bool)>>>,
     turn_start: Option<Arc<dyn TurnStartHook>>,
+    turn_lifecycle: Option<Arc<dyn TurnLifecycleHook>>,
     copies: Option<Arc<dyn CopyProvider>>,
     voice_requests: VoiceRequests,
 }
@@ -133,6 +140,7 @@ impl ConcurrentRoom {
             write_owner: None,
             cleanup_holds: Arc::default(),
             turn_start: None,
+            turn_lifecycle: None,
             copies: None,
             voice_requests: Arc::default(),
         }
@@ -149,6 +157,10 @@ impl ConcurrentRoom {
     /// Await `hook` before each participant starts a turn.
     pub fn with_turn_start(mut self, hook: Arc<dyn TurnStartHook>) -> Self {
         self.turn_start = Some(hook);
+        self
+    }
+    pub fn with_turn_lifecycle(mut self, hook: Arc<dyn TurnLifecycleHook>) -> Self {
+        self.turn_lifecycle = Some(hook);
         self
     }
     /// Attach the host's checkout-wide gate. `owner` is a stable task id;
@@ -331,7 +343,7 @@ impl ConcurrentRoom {
         match requests.get(request_id) {
             Some((by, _, _, _)) if by != id => "mismatch",
             Some((_, _, _, done)) if done.load(Ordering::SeqCst) => "already-ended",
-            Some((_, _, stop, _)) => { stop.store(true, Ordering::SeqCst); "stopped" },
+            Some((_, _, stop, _)) => { if let Some(hook)=&self.turn_lifecycle {hook.revoke(Some(id));} stop.store(true, Ordering::SeqCst); "stopped" },
             None => "mismatch",
         }
     }
@@ -407,6 +419,7 @@ impl ConcurrentRoom {
         }
     }
     pub fn stop(&self, id: Option<&ParticipantId>) {
+        if let Some(hook)=&self.turn_lifecycle {hook.revoke(id);}
         for (by, _, stop, done) in self.voice_requests.lock().unwrap().values() {
             if (id.is_none() || id == Some(by)) && !done.load(Ordering::SeqCst) { stop.store(true, Ordering::SeqCst); }
         }
@@ -720,6 +733,14 @@ impl ConcurrentRoom {
                 return Vec::new();
             }
         }
+        let effective_access = if request.plan { Access::Read } else { request.access.unwrap_or(participant.config().access) };
+        let _turn_lease = if let Some(hook) = &self.turn_lifecycle {
+            hook.start(&ticket.id, &mut request, effective_access).await
+        } else { None };
+        if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) {
+            sink(RoomEvent::ParticipantIdle { id: ticket.id.clone() });
+            return Vec::new();
+        }
         if ticket.origin.is_some() { request.system.push_str("\nThis is a voice call. Begin with a concise speakable sentence. End with a short plain-language result. Keep code in the thread.\n"); }
         sink(RoomEvent::TurnStarted {
             id: ticket.id.clone(),
@@ -752,6 +773,7 @@ impl ConcurrentRoom {
             &approver,
         )
         .await;
+        drop(_turn_lease);
         let cleanup_error = match &outcome {
             Err(crate::ParticipantError::CleanupIncomplete(error)) => Some(error.clone()),
             _ => None,

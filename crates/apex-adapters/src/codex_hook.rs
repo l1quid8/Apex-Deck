@@ -217,18 +217,23 @@ fn unix_ms() -> u64 {
 /// never a second call through the same gate.
 #[derive(Default)]
 pub(crate) struct Gates {
+    trusted_computer: bool,
     approved_at_hook: Vec<McpCall>,
     approved_at_codex: Vec<McpCall>,
 }
 
 impl Gates {
+    pub(crate) fn with_computer(mut self, trusted: bool) -> Self {self.trusted_computer=trusted;self}
+
     /// The answer at the hook when nobody needs asking.
     pub(crate) fn at_hook(&mut self, call: &McpCall) -> Option<Decision> {
+        if self.trusted_computer && crate::computer::trusted_name(&call.server) {return Some(Decision::Approve);}
         Self::check(call, &mut self.approved_at_codex)
     }
 
     /// The answer to Codex's own request when nobody needs asking.
     pub(crate) fn at_codex(&mut self, call: &McpCall) -> Option<Decision> {
+        if self.trusted_computer && call.server == crate::computer::SERVER {return Some(Decision::Approve);}
         Self::check(call, &mut self.approved_at_hook)
     }
 
@@ -600,6 +605,15 @@ mod tests {
         assert_eq!(hook.command, "'/a/apex-deck' --codex-hook");
         drop(hook);
         assert!(!folder.exists());
+    }
+
+    #[test]
+    fn computer_name_alone_never_bypasses_approval() {
+        let call=McpCall::from_hook("mcp__apex_computer__type_text",json!({"text":"private"}));
+        assert_eq!(Gates::default().at_hook(&call),None);
+        assert_eq!(Gates::default().with_computer(true).at_hook(&call),Some(Decision::Approve));
+        let other=McpCall::from_hook("mcp__untrusted__type_text",json!({}));
+        assert_eq!(Gates::default().with_computer(true).at_hook(&other),None);
     }
 
     #[test]

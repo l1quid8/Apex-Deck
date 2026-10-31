@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn transcript_paths_without_host_authority_are_rejected() {
         let path = fixture("outside.png", PNG);
-        let request = TurnRequest { system: String::new(), turns: vec![apex_core::ViewTurn {
+        let request = TurnRequest { computer: None, system: String::new(), turns: vec![apex_core::ViewTurn {
             role: Role::User, content: format!("Attached image: {}", path.display())
         }], unseen: vec![], effort_override: None, access: None, plan: false, cwd: None };
         let result = for_request(&request, &[]);
@@ -192,7 +192,7 @@ mod tests {
         let roots = vec![own.canonicalize().unwrap()];
         for speaker in [apex_core::Speaker::Human, apex_core::Speaker::Bot(apex_core::ParticipantId::new("image-bot"))] {
             for folder in [&own, &sibling, &library] {
-                let request = TurnRequest { system: String::new(), turns: vec![], unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+                let request = TurnRequest { computer: None, system: String::new(), turns: vec![], unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                     seq: 1, speaker: speaker.clone(), text: format!("Attached image: {}", folder.join("picture.png").display()),
                     servers: vec![], at: None,
                 }], effort_override: None, access: None, plan: false, cwd: None };
@@ -247,6 +247,7 @@ mod tests {
             path.display()
         );
         let request = TurnRequest {
+            computer: None,
             system: String::new(),
             turns: vec![apex_core::ViewTurn {
                 role: Role::User,

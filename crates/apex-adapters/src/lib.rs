@@ -28,6 +28,7 @@ mod grok_images;
 mod grok_usage;
 pub mod keys;
 mod mcp;
+mod computer;
 pub mod media;
 pub mod model_metrics;
 mod muse_server;
