@@ -1,25 +1,20 @@
 //! Each jailed bot's private provider home. It's generated, not copied: Deck's
 //! own values plus a short allowlist per provider, so a setting nobody listed
 //! can't arrive by default. The jail can write here, so the daemon treats
-//! everything already in this folder as hostile: it never follows a link in it,
-//! and a sign-in comes back only as known fields, checked against the host's.
+//! everything already in this folder as hostile: it never follows a link in it
+//! and reads nothing back. A sign-in only ever goes in, without its refresh
+//! token, because nothing a bot can write can prove which account it belongs to.
 use super::{paths, JailError};
 use crate::api_tools::mcp_client::{self, Transport};
 use apex_core::{AgentTool, Backend};
 use serde_json::{json, Map, Value};
 use std::ffi::{CString, OsString};
-use std::io::{self, Read};
+use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
 
-/// Far above any real sign-in or settings file.
-const MAX_FILE: u64 = 1024 * 1024;
-
-/// Two bots of one provider finish together: only one rewrites the host's file.
-static COPY_BACK: Mutex<()> = Mutex::new(());
 static TEMP: AtomicU32 = AtomicU32::new(0);
 
 /// Where the person's own provider files are. Never visible in the jail.
@@ -134,18 +129,6 @@ impl Tree {
         Ok((parts, last))
     }
 
-    /// `None` for anything but an ordinary file: a pipe here would hang the daemon.
-    fn read(&self, file: &str) -> Option<Vec<u8>> {
-        let (parts, last) = Self::split(file).ok()?;
-        let fd = self.parent(&parts, false).ok()?.at(&last, libc::O_RDONLY | libc::O_NONBLOCK, 0).ok()?;
-        let file = std::fs::File::from(fd);
-        let meta = file.metadata().ok()?;
-        if !meta.is_file() || meta.len() > MAX_FILE { return None; }
-        let mut bytes = Vec::new();
-        file.take(MAX_FILE).read_to_end(&mut bytes).ok()?;
-        Some(bytes)
-    }
-
     fn write(&self, file: &str, bytes: &[u8]) -> io::Result<()> {
         let (parts, last) = Self::split(file)?;
         let dir = self.parent(&parts, true)?;
@@ -165,56 +148,6 @@ impl Tree {
     }
 }
 
-/// One sign-in, reduced to the fields a provider's login needs.
-struct Fields {
-    value: Value,
-    /// Unix seconds. Zero never counts as newer.
-    expires: u64,
-    /// The account, where the file names one.
-    account: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind { Claude, Codex, Gemini }
-
-impl Kind {
-    fn name(self) -> &'static str {
-        match self { Self::Claude => "Claude", Self::Codex => "Codex", Self::Gemini => "Gemini" }
-    }
-
-    fn fields(self, doc: &Value) -> Option<Fields> {
-        match self {
-            Self::Claude => {
-                let login = &doc["claudeAiOauth"];
-                filled(&login["accessToken"])?;
-                let kept = known(login, &["accessToken", "refreshToken", "expiresAt", "scopes", "subscriptionType", "rateLimitTier"]);
-                Some(Fields { value: json!({"claudeAiOauth": kept}), expires: login["expiresAt"].as_u64().unwrap_or(0) / 1000, account: None })
-            }
-            Self::Codex => {
-                if let Some(key) = filled(&doc["OPENAI_API_KEY"]) {
-                    if matches!(doc["auth_mode"].as_str(), None | Some("apikey" | "api_key" | "apiKey")) {
-                        return Some(Fields { value: json!({"OPENAI_API_KEY": key}), expires: 0, account: None });
-                    }
-                }
-                let tokens = &doc["tokens"];
-                if doc["auth_mode"] != "chatgpt" { return None; }
-                let access = filled(&tokens["access_token"])?;
-                filled(&tokens["id_token"])?;
-                let account = filled(&tokens["account_id"])?.to_owned();
-                let mut value = json!({"auth_mode": "chatgpt", "OPENAI_API_KEY": null,
-                    "tokens": known(tokens, &["access_token", "id_token", "refresh_token", "account_id"])});
-                if let Some(last) = doc["last_refresh"].as_str() { value["last_refresh"] = last.into(); }
-                Some(Fields { value, expires: token_expiry(access).unwrap_or(0), account: Some(account) })
-            }
-            Self::Gemini => {
-                filled(&doc["access_token"])?;
-                let kept = known(doc, &["access_token", "refresh_token", "scope", "token_type", "id_token", "expiry_date"]);
-                Some(Fields { value: kept, expires: doc["expiry_date"].as_u64().unwrap_or(0) / 1000, account: None })
-            }
-        }
-    }
-}
-
 fn filled(value: &Value) -> Option<&str> {
     value.as_str().filter(|text| !text.is_empty())
 }
@@ -227,53 +160,14 @@ fn known(source: &Value, names: &[&str]) -> Value {
     Value::Object(out)
 }
 
-fn token_expiry(token: &str) -> Option<u64> {
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(token.split('.').nth(1)?.trim_end_matches('=')).ok()?;
-    serde_json::from_slice::<Value>(&bytes).ok()?["exp"].as_u64()
-}
-
-/// The host's file keeps what isn't ours: Claude's holds MCP tokens beside the login.
-fn merged(host: &mut Value, new: &Value) {
-    match (host.as_object_mut(), new.as_object()) {
-        (Some(host), Some(new)) => for (name, value) in new { merged(host.entry(name.clone()).or_insert(Value::Null), value); },
-        _ => *host = new.clone(),
-    }
-}
-
-/// A sign-in that can come back: its place in the jail home and on the host.
-struct Login { kind: Kind, inside: &'static str, host: PathBuf }
-
-impl Login {
-    fn host_doc(&self) -> Option<Value> {
-        serde_json::from_slice(&std::fs::read(&self.host).ok()?).ok()
-    }
-}
-
-fn write_host(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    // A dotfiles link stays a link, and the file behind it gets the new login.
-    let path = path.canonicalize()?;
-    let temp = path.with_file_name(format!(".apex-{}-{}", std::process::id(), TEMP.fetch_add(1, Ordering::Relaxed)));
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
-    io::Write::write_all(&mut file, bytes)?;
-    drop(file);
-    std::fs::rename(&temp, &path).inspect_err(|_| { let _ = std::fs::remove_file(&temp); })
-}
-
 #[derive(Debug)]
 pub struct JailHome {
     path: PathBuf,
-    logins: Vec<Login>,
     env: Vec<(String, OsString)>,
     /// Stdio MCP commands, for the launch to resolve and bind read-only.
     pub mcp_commands: Vec<String>,
     /// Things the person should see, in their words.
     pub notices: Vec<String>,
-}
-
-impl std::fmt::Debug for Login {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.kind.name()) }
 }
 
 impl JailHome {
@@ -286,42 +180,6 @@ impl JailHome {
     /// Stops a launch if anything has been mounted in or over the home.
     pub fn check(&self, mounts: &paths::Mounts) -> Result<(), JailError> {
         if mounts.nested_in(&self.path) { return Err(paths::Refused(self.path.clone()).into()); }
-        Ok(())
-    }
-
-    /// Takes a refreshed sign-in back to the host. Run when the jail ends and
-    /// during it on a change. Only a newer login for the same account comes
-    /// back, and never over a sign-out.
-    pub fn copy_back(&self) -> Result<(), JailError> {
-        let _one = COPY_BACK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let tree = Tree::open(&self.path)?;
-        for login in &self.logins {
-            let Some(mut host) = login.host_doc() else { continue };
-            let Some(old) = login.kind.fields(&host) else { continue };
-            let Some(new) = tree.read(login.inside).and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .and_then(|doc: Value| login.kind.fields(&doc)) else { continue };
-            if new.expires <= old.expires || new.account != old.account { continue; }
-            merged(&mut host, &new.value);
-            write_host(&login.host, &serde_json::to_vec(&host).map_err(io::Error::other)?)?;
-        }
-        Ok(())
-    }
-
-    fn stage(&mut self, tree: &Tree) -> Result<(), JailError> {
-        for login in &self.logins {
-            let bytes = match std::fs::read(&login.host) {
-                Ok(bytes) => bytes,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => { tree.delete(login.inside)?; continue; }
-                Err(error) => return Err(error.into()),
-            };
-            match serde_json::from_slice(&bytes).ok().and_then(|doc: Value| login.kind.fields(&doc)) {
-                Some(fields) => tree.write(login.inside, &serde_json::to_vec(&fields.value).map_err(io::Error::other)?)?,
-                None => {
-                    tree.delete(login.inside)?;
-                    self.notices.push(format!("{} sign-in couldn't be read, so this bot needs sign-in.", login.kind.name()));
-                }
-            }
-        }
         Ok(())
     }
 }
@@ -427,14 +285,38 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_secs()).unwrap_or(0)
 }
 
-/// Grok and Muse files have no fixed shape to rewrite safely, so they get the
-/// gateway's access-only sign-in and the host stays the only one refreshing.
+/// Claude's file is `{"claudeAiOauth": {...}}` beside MCP tokens: only the login
+/// goes in, without `refreshToken`, and it must outlive the same 20 minutes as the others.
+fn claude_access(input: &[u8], now: u64) -> Result<Vec<u8>, apex_core::ParticipantError> {
+    let refresh = || apex_core::ParticipantError::Failed("Claude’s connection needs refreshing. Refresh its sign-in in Claude, then retry. Apex Deck has not changed the login.".into());
+    let doc: Value = serde_json::from_slice(input).map_err(|_| refresh())?;
+    let login = &doc["claudeAiOauth"];
+    filled(&login["accessToken"]).ok_or_else(refresh)?;
+    let remaining = login["expiresAt"].as_u64().and_then(|ms| (ms / 1000).checked_sub(now));
+    if !remaining.is_some_and(|left| left > 20 * 60) { return Err(refresh()); }
+    let kept = known(login, &["accessToken", "expiresAt", "scopes", "subscriptionType", "rateLimitTier"]);
+    serde_json::to_vec(&json!({"claudeAiOauth": kept})).map_err(|_| refresh())
+}
+
+fn gemini_access(input: &[u8], now: u64) -> Result<Vec<u8>, apex_core::ParticipantError> {
+    let refresh = || apex_core::ParticipantError::Failed("Gemini’s connection needs refreshing. Refresh its sign-in in Gemini, then retry. Apex Deck has not changed the login.".into());
+    let doc: Value = serde_json::from_slice(input).map_err(|_| refresh())?;
+    let kept = known(&doc, &["access_token", "refresh_token", "scope", "token_type", "id_token", "expiry_date"]);
+    crate::gateway_sandbox::access_only_oauth_document(kept.to_string().as_bytes(), now, "Gemini")
+}
+
+/// Every provider gets an access-only sign-in, as gateway turns do, so the host
+/// stays the only one refreshing and nothing a bot writes can come back. A login
+/// this can't use leaves no older one behind.
 fn access_only(tree: &Tree, source: &Path, inside: &str, stage: impl FnOnce(&[u8]) -> Result<Vec<u8>, apex_core::ParticipantError>) -> Result<(), JailError> {
     match std::fs::read(source) {
-        Ok(bytes) => {
-            let staged = stage(&bytes).map_err(|error| JailError::Login(error.to_string()))?;
-            Ok(tree.write(inside, &staged)?)
-        }
+        Ok(bytes) => match stage(&bytes) {
+            Ok(staged) => Ok(tree.write(inside, &staged)?),
+            Err(error) => {
+                tree.delete(inside)?;
+                Err(JailError::Login(error.to_string()))
+            }
+        },
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(tree.delete(inside)?),
         Err(error) => Err(error.into()),
     }
@@ -466,24 +348,22 @@ pub fn prepare(data_dir: &Path, room: &str, bot: &str, backend: &Backend, values
         Backend::Agent { tool, model } => (Some(*tool), model.as_deref()),
         _ => (None, None),
     };
-    let logins = match tool {
-        Some(AgentTool::ClaudeCode) => vec![Login { kind: Kind::Claude, inside: ".claude/.credentials.json", host: host.claude_dir.join(".credentials.json") }],
-        Some(AgentTool::Codex) => vec![Login { kind: Kind::Codex, inside: ".codex/auth.json", host: host.codex_dir.join("auth.json") }],
-        Some(AgentTool::Gemini) => vec![Login { kind: Kind::Gemini, inside: ".gemini/oauth_creds.json", host: host.gemini_dir.join("oauth_creds.json") }],
-        _ => Vec::new(),
-    };
-    let mut home = JailHome { path, logins, env: Vec::new(), mcp_commands: Vec::new(), notices: Vec::new() };
-    // The daemon may have died mid-run with the only copy of a rotated login here.
-    home.copy_back()?;
-    home.stage(&tree)?;
+    let mut home = JailHome { path, env: Vec::new(), mcp_commands: Vec::new(), notices: Vec::new() };
     let flags = |names: &[(&str, &str)]| names.iter().map(|(name, value)| ((*name).to_owned(), OsString::from(value))).collect();
     match tool {
         Some(AgentTool::ClaudeCode) => {
             home.env = flags(&[("DISABLE_AUTOUPDATER", "1")]);
+            access_only(&tree, &host.claude_dir.join(".credentials.json"), ".claude/.credentials.json", |bytes| claude_access(bytes, now()))?;
             claude_files(&tree, model, values, &mut home)?;
         }
-        Some(AgentTool::Codex) => codex_files(&tree, model, values, &mut home)?,
-        Some(AgentTool::Gemini) => gemini_files(&tree, values, &mut home)?,
+        Some(AgentTool::Codex) => {
+            access_only(&tree, &host.codex_dir.join("auth.json"), ".codex/auth.json", |bytes| crate::gateway_sandbox::codex_auth_document(bytes, now()))?;
+            codex_files(&tree, model, values, &mut home)?;
+        }
+        Some(AgentTool::Gemini) => {
+            access_only(&tree, &host.gemini_dir.join("oauth_creds.json"), ".gemini/oauth_creds.json", |bytes| gemini_access(bytes, now()))?;
+            gemini_files(&tree, values, &mut home)?;
+        }
         Some(AgentTool::Grok) => {
             home.env = flags(&[("GROK_MANAGED_MCPS_ENABLED", "0"), ("GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED", "0"),
                 ("GROK_CLAUDE_MCPS_ENABLED", "0"), ("GROK_CURSOR_MCPS_ENABLED", "0")]);
@@ -534,6 +414,8 @@ mod tests {
         fn prepare(&self, tool: AgentTool) -> JailHome { prepare(&self.data, "room", "bot", &agent(tool), &self.values).unwrap() }
     }
 
+    fn soon() -> u64 { (now() + 3600) * 1000 }
+
     fn claude_login(access: &str, expires_ms: u64) -> Value {
         json!({"claudeAiOauth": {"accessToken": access, "refreshToken": format!("r-{access}"), "expiresAt": expires_ms,
             "scopes": ["user:inference"], "subscriptionType": "max"}})
@@ -545,6 +427,7 @@ mod tests {
     }
 
     fn codex_login(exp: u64, account: &str) -> Value {
+        let exp = now() + exp;
         json!({"auth_mode": "chatgpt", "OPENAI_API_KEY": null, "last_refresh": "then",
             "tokens": {"access_token": jwt(exp), "id_token": "id", "refresh_token": format!("r{exp}"), "account_id": account}})
     }
@@ -627,67 +510,76 @@ mod tests {
     }
 
     #[test]
-    fn a_login_is_staged_private_with_only_its_known_fields() {
+    fn a_login_goes_in_private_with_only_its_known_fields_and_no_refresh_token() {
         let f = fixture();
-        let mut login = claude_login("a", 5_000_000);
+        let mut login = claude_login("a", soon());
         login["mcpOAuth"] = json!({"slack": {"accessToken": "MCP-SECRET"}});
         login["claudeAiOauth"]["extra"] = "x".into();
         put(&f.values.host.claude_dir.join(".credentials.json"), &login);
         let home = f.prepare(AgentTool::ClaudeCode);
         let staged = home.path().join(".claude/.credentials.json");
-        let doc = read_json(staged.clone());
-        assert_eq!(doc, claude_login("a", 5_000_000));
+        let mut want = claude_login("a", soon());
+        want["claudeAiOauth"].as_object_mut().unwrap().remove("refreshToken");
+        want["claudeAiOauth"]["expiresAt"] = read_json(staged.clone())["claudeAiOauth"]["expiresAt"].clone();
+        assert_eq!(read_json(staged.clone()), want);
         assert_eq!(std::fs::metadata(staged).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]
-    fn a_refreshed_login_comes_back_as_known_fields_and_keeps_the_hosts_other_entries() {
+    fn no_provider_home_ever_holds_a_refresh_token() {
         let f = fixture();
-        let path = f.values.host.claude_dir.join(".credentials.json");
-        let mut host = claude_login("old", 5_000_000);
-        host["mcpOAuth"] = json!({"slack": {"accessToken": "keep"}});
-        put(&path, &host);
-        let home = f.prepare(AgentTool::ClaudeCode);
-        let mut refreshed = claude_login("new", 9_000_000);
-        refreshed["helper"] = "planted".into();
-        refreshed["claudeAiOauth"]["helper"] = "planted".into();
-        put(&home.path().join(".claude/.credentials.json"), &refreshed);
-        home.copy_back().unwrap();
-        let doc = read_json(path.clone());
-        assert_eq!(doc["claudeAiOauth"]["accessToken"], "new");
-        assert_eq!(doc["claudeAiOauth"]["refreshToken"], "r-new");
-        assert_eq!(doc["mcpOAuth"]["slack"]["accessToken"], "keep");
-        assert!(!doc.to_string().contains("planted"), "{doc}");
-        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+        let v = &f.values.host;
+        put(&v.claude_dir.join(".credentials.json"), &claude_login("a", soon()));
+        put(&v.codex_dir.join("auth.json"), &codex_login(3600, "mine"));
+        put(&v.gemini_dir.join("oauth_creds.json"), &json!({"access_token": "a", "refresh_token": "r-gemini", "expiry_date": soon()}));
+        put(&v.grok_dir.join("auth.json"), &json!({"key": "a", "refresh_token": "r-grok", "expires_at": now() + 3600}));
+        let found = [(AgentTool::ClaudeCode, ".claude/.credentials.json"), (AgentTool::Codex, ".codex/auth.json"),
+            (AgentTool::Gemini, ".gemini/oauth_creds.json"), (AgentTool::Grok, ".grok/auth.json")];
+        for (tool, file) in found {
+            let staged = std::fs::read_to_string(f.prepare(tool).path().join(file)).unwrap();
+            assert!(!staged.contains("r-"), "{file}: {staged}");
+        }
     }
 
     #[test]
-    fn an_older_login_a_sign_out_or_another_account_never_overwrite_the_host() {
+    fn what_a_bot_wrote_never_reaches_the_host_or_its_next_launch() {
         let f = fixture();
         let path = f.values.host.codex_dir.join("auth.json");
-        put(&path, &codex_login(5000, "mine"));
+        let mine = codex_login(3600, "mine");
+        put(&path, &mine);
         let home = f.prepare(AgentTool::Codex);
         let inside = home.path().join(".codex/auth.json");
-        put(&inside, &codex_login(4000, "mine"));
-        home.copy_back().unwrap();
-        assert_eq!(read_json(path.clone()), codex_login(5000, "mine"));
-        put(&inside, &codex_login(9000, "theirs"));
-        home.copy_back().unwrap();
-        assert_eq!(read_json(path.clone()), codex_login(5000, "mine"));
-        put(&inside, &json!({"OPENAI_API_KEY": "attacker"}));
-        home.copy_back().unwrap();
-        assert_eq!(read_json(path.clone()), codex_login(5000, "mine"));
-        put(&inside, &codex_login(9000, "mine"));
-        std::fs::remove_file(&path).unwrap();
-        home.copy_back().unwrap();
-        assert!(!path.exists(), "a sign-out stays signed out");
+        put(&inside, &codex_login(999_999, "mine"));
+        let next = f.prepare(AgentTool::Codex);
+        assert_eq!(read_json(path), mine);
+        assert_eq!(read_json(next.path().join(".codex/auth.json"))["tokens"]["access_token"], mine["tokens"]["access_token"]);
+    }
+
+    #[test]
+    fn an_expiring_login_is_refused_and_leaves_no_old_one() {
+        let f = fixture();
+        let v = &f.values.host;
+        let cases = [(AgentTool::ClaudeCode, v.claude_dir.join(".credentials.json"), ".claude/.credentials.json", claude_login("a", soon()), claude_login("a", (now() + 60) * 1000)),
+            (AgentTool::Codex, v.codex_dir.join("auth.json"), ".codex/auth.json", codex_login(3600, "mine"), codex_login(60, "mine")),
+            (AgentTool::Gemini, v.gemini_dir.join("oauth_creds.json"), ".gemini/oauth_creds.json",
+                json!({"access_token": "a", "refresh_token": "r", "expiry_date": soon()}),
+                json!({"access_token": "a", "refresh_token": "r", "expiry_date": (now() + 60) * 1000}))];
+        for (tool, path, inside, good, stale) in cases {
+            put(&path, &good);
+            let home = f.prepare(tool);
+            put(&path, &stale);
+            let error = prepare(&f.data, "room", "bot", &agent(tool), &f.values).unwrap_err();
+            assert!(error.to_string().contains("needs refreshing"), "{error}");
+            assert!(!home.path().join(inside).exists(), "{inside}");
+            assert_eq!(read_json(path), stale, "the host's file is left as it was");
+        }
     }
 
     #[test]
     fn a_sign_out_on_the_host_clears_the_home_at_the_next_launch() {
         let f = fixture();
         let path = f.values.host.codex_dir.join("auth.json");
-        put(&path, &codex_login(5000, "mine"));
+        put(&path, &codex_login(3600, "mine"));
         let home = f.prepare(AgentTool::Codex);
         assert!(home.path().join(".codex/auth.json").exists());
         std::fs::remove_file(&path).unwrap();
@@ -695,49 +587,28 @@ mod tests {
     }
 
     #[test]
-    fn a_login_rotated_before_a_crash_is_saved_at_the_next_launch() {
+    fn links_planted_in_the_home_touch_nothing_outside_it() {
         let f = fixture();
-        let path = f.values.host.codex_dir.join("auth.json");
-        put(&path, &codex_login(5000, "mine"));
-        let home = f.prepare(AgentTool::Codex);
-        put(&home.path().join(".codex/auth.json"), &codex_login(9000, "mine"));
-        drop(home);
-        let next = f.prepare(AgentTool::Codex);
-        assert_eq!(read_json(path)["tokens"]["refresh_token"], "r9000");
-        assert_eq!(read_json(next.path().join(".codex/auth.json"))["tokens"]["refresh_token"], "r9000");
-    }
-
-    #[test]
-    fn links_and_pipes_planted_in_the_home_touch_nothing_outside_it() {
-        let f = fixture();
-        let path = f.values.host.claude_dir.join(".credentials.json");
-        put(&path, &claude_login("old", 5_000_000));
+        put(&f.values.host.claude_dir.join(".credentials.json"), &claude_login("old", soon()));
         let outside = f.root.join("outside");
         std::fs::create_dir(&outside).unwrap();
         std::fs::write(outside.join("settings.json"), "mine").unwrap();
-        put(&outside.join(".credentials.json"), &claude_login("planted", 9_000_000));
+        std::fs::write(outside.join(".credentials.json"), "mine").unwrap();
         let home = f.prepare(AgentTool::ClaudeCode);
         let claude = home.path().join(".claude");
         std::fs::remove_dir_all(&claude).unwrap();
         symlink(&outside, &claude).unwrap();
-        home.copy_back().unwrap();
-        assert_eq!(read_json(path.clone()), claude_login("old", 5_000_000), "followed a folder link");
 
         let again = f.prepare(AgentTool::ClaudeCode);
         assert_eq!(std::fs::read_to_string(outside.join("settings.json")).unwrap(), "mine");
+        assert_eq!(std::fs::read_to_string(outside.join(".credentials.json")).unwrap(), "mine");
         assert!(!std::fs::symlink_metadata(&claude).unwrap().file_type().is_symlink());
 
         let inside = again.path().join(".claude/.credentials.json");
         std::fs::remove_file(&inside).unwrap();
         symlink(outside.join(".credentials.json"), &inside).unwrap();
-        again.copy_back().unwrap();
-        assert_eq!(read_json(path.clone()), claude_login("old", 5_000_000), "followed a file link");
-
-        std::fs::remove_file(&inside).unwrap();
-        let name = CString::new(inside.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        again.copy_back().unwrap();
-        assert_eq!(read_json(path), claude_login("old", 5_000_000));
+        f.prepare(AgentTool::ClaudeCode);
+        assert_eq!(std::fs::read_to_string(outside.join(".credentials.json")).unwrap(), "mine");
     }
 
     #[test]
@@ -809,7 +680,7 @@ mod tests {
     fn gemini_keeps_its_login_fields_and_stdio_servers_only() {
         let f = fixture();
         let v = &f.values.host;
-        put(&v.gemini_dir.join("oauth_creds.json"), &json!({"access_token": "a", "refresh_token": "r", "expiry_date": 5_000_000, "extra": "x"}));
+        put(&v.gemini_dir.join("oauth_creds.json"), &json!({"access_token": "a", "refresh_token": "r", "expiry_date": soon(), "extra": "x"}));
         put(&v.gemini_dir.join("settings.json"), &json!({"tools": {"discoveryCommand": "evil"}, "mcpServers": {
             "web": {"httpUrl": "https://x"}, "local": {"command": "run", "args": ["a"], "env": {"T": "SECRET"}}}}));
         let home = f.prepare(AgentTool::Gemini);
@@ -820,15 +691,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_login_leaves_no_old_one_and_says_so() {
+    fn an_unreadable_login_stops_the_launch_and_leaves_no_old_one() {
         let f = fixture();
         let path = f.values.host.claude_dir.join(".credentials.json");
-        put(&path, &claude_login("a", 5_000_000));
+        put(&path, &claude_login("a", soon()));
         let home = f.prepare(AgentTool::ClaudeCode);
         std::fs::write(&path, "not json").unwrap();
-        let next = f.prepare(AgentTool::ClaudeCode);
+        assert!(prepare(&f.data, "room", "bot", &agent(AgentTool::ClaudeCode), &f.values).is_err());
         assert!(!home.path().join(".claude/.credentials.json").exists());
-        assert!(next.notices.iter().any(|notice| notice.contains("needs sign-in")), "{:?}", next.notices);
     }
 
     #[test]

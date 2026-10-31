@@ -76,16 +76,17 @@
 - [x] Pass in Docker.
 - [x] Commit.
 
-### Task 4: Generated provider homes and login copy-back
+### Task 4: Generated provider homes and access-only logins
 
 **Files:** Create `crates/apex-adapters/src/linux_jail/home.rs`
 
 **Interfaces:**
-- Produces: `home::prepare(data_dir, room, bot, &Backend, values: &HomeValues) -> Result<JailHome, JailError>`; `JailHome::copy_back(&self)`.
+- Produces: `home::prepare(data_dir, room, bot, &Backend, values: &HomeValues) -> Result<JailHome, JailError>`.
 
-- [x] Failing tests: an unknown executable key in host Claude and Codex config doesn't reach the jail home; HTTP MCP entries and tokens are stripped; stdio MCP is carried by name; an extra field in a login file isn't copied back; a host config that doesn't parse gives defaults and a notice; two bots of one provider get separate homes.
+- [x] Failing tests: an unknown executable key in host Claude and Codex config doesn't reach the jail home; HTTP MCP entries and tokens are stripped; stdio MCP is carried by name; an extra field in a login file isn't staged; a host config that doesn't parse gives defaults and a notice; two bots of one provider get separate homes.
 - [x] Implement per provider, reusing the sign-in document parsers in `gateway_sandbox.rs`.
-- [ ] Real signed-in turn on a generated home, with login refresh, using a fresh login in a throwaway container. Needs the Human for sign-in.
+- [ ] Real signed-in turn on a generated home with an access-only login, host login unchanged, using a fresh login in a throwaway container. Needs the Human for sign-in.
+- [ ] Daemon-owned refresh outside the jail, using the commands `signed-in.sh refresh` shows work.
 - [ ] Commit.
 
 ### Task 5: Startup probe and breakout suite

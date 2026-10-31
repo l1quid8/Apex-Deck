@@ -471,7 +471,7 @@ pub(crate) fn access_only_oauth_document(input:&[u8],now:u64,provider:&str)->Res
 /// A disposable Codex process never receives the canonical refresh credential.
 /// The original Codex installation remains the sole refresh owner. Its JWT
 /// must outlive our 300s turn, Codex's 5min proactive-refresh window and startup.
-fn codex_auth_document(input:&[u8],now:u64)->Result<Vec<u8>,ParticipantError> {
+pub(crate) fn codex_auth_document(input:&[u8],now:u64)->Result<Vec<u8>,ParticipantError> {
     use base64::Engine;
     let refresh=||failed("Codex’s connection needs refreshing. Refresh its sign-in in Codex, then retry. Apex Deck has not changed the existing login.");
     let source:serde_json::Value=serde_json::from_slice(input).map_err(|_|refresh())?;

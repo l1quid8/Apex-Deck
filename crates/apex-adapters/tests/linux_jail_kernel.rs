@@ -503,19 +503,11 @@ fn turn(tree: &Tree, made: &home::JailHome, program: &str, args: Vec<String>) {
     assert!(output.status.success(), "{program}: {:?}\n{out}\n{err}", output.status);
 }
 
-fn edit_json(path: &Path, change: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
-    let mut doc = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    let before = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    change(&mut doc);
-    std::fs::write(path, doc.to_string()).unwrap();
-    before
-}
-
 /// Run by tests/linux-jail/signed-in.sh, after a person signed in as this user.
-/// Each login is made to look old, so the provider must refresh it in the jail;
-/// a second turn then proves the login that came back works.
+/// A bot works from an access-only login, and the host's login stays exactly as
+/// it was: nothing in the jail can refresh it or write to it.
 #[test]
-fn signed_in_turns_refresh_and_copy_back_on_a_generated_home() {
+fn signed_in_turns_run_on_access_only_logins() {
     if std::env::var_os("APEX_JAIL_SIGNED_IN").is_none() { return; }
     let user = PathBuf::from(std::env::var_os("HOME").unwrap());
     let data = user.join(".local/share/apex");
@@ -525,32 +517,19 @@ fn signed_in_turns_refresh_and_copy_back_on_a_generated_home() {
     let tree = Tree { root: user.clone(), home: user.clone(), data, project: project.clone() };
     let values = values(&project, &user);
     let ask = "Run this exact shell command, then reply with only the word finished: echo signed-in > ";
-    let claude = |file: &str| vec!["-p".to_string(), format!("{ask}{file}"), "--permission-mode".into(), "acceptEdits".into(), "--allowedTools".into(), "Bash".into()];
-    let codex = |file: &str| vec!["exec".to_string(), "--skip-git-repo-check".into(), "--sandbox".into(), "workspace-write".into(), format!("{ask}{file}")];
-
-    let login = user.join(".claude/.credentials.json");
-    let old = edit_json(&login, |doc| doc["claudeAiOauth"]["expiresAt"] = 1_000_000_000_000u64.into());
-    let made = home::prepare(&tree.data, "r", "claude", &agent(AgentTool::ClaudeCode), &values).unwrap();
-    turn(&tree, &made, "/usr/local/bin/claude", claude("claude-1.txt"));
-    made.copy_back().unwrap();
-    let new: serde_json::Value = serde_json::from_slice(&std::fs::read(&login).unwrap()).unwrap();
-    assert_ne!(new["claudeAiOauth"]["accessToken"], old["claudeAiOauth"]["accessToken"], "Claude's refresh didn't come back");
-    assert!(new["claudeAiOauth"]["expiresAt"].as_u64() > Some(1_000_000_000_000));
-    let made = home::prepare(&tree.data, "r", "claude", &agent(AgentTool::ClaudeCode), &values).unwrap();
-    turn(&tree, &made, "/usr/local/bin/claude", claude("claude-2.txt"));
-
-    let login = user.join(".codex/auth.json");
-    let old = edit_json(&login, |doc| doc["last_refresh"] = "2020-01-01T00:00:00Z".into());
-    let made = home::prepare(&tree.data, "r", "codex", &agent(AgentTool::Codex), &values).unwrap();
-    turn(&tree, &made, "/usr/local/bin/codex", codex("codex-1.txt"));
-    made.copy_back().unwrap();
-    let new: serde_json::Value = serde_json::from_slice(&std::fs::read(&login).unwrap()).unwrap();
-    assert_ne!(new["tokens"]["access_token"], old["tokens"]["access_token"], "Codex's refresh didn't come back");
-    let made = home::prepare(&tree.data, "r", "codex", &agent(AgentTool::Codex), &values).unwrap();
-    turn(&tree, &made, "/usr/local/bin/codex", codex("codex-2.txt"));
-
-    for file in ["claude-1.txt", "claude-2.txt", "codex-1.txt", "codex-2.txt"] {
+    let claude = vec!["-p".to_string(), format!("{ask}claude.txt"), "--permission-mode".into(), "acceptEdits".into(), "--allowedTools".into(), "Bash".into()];
+    let codex = vec!["exec".to_string(), "--skip-git-repo-check".into(), "--sandbox".into(), "workspace-write".into(), format!("{ask}codex.txt")];
+    let runs = [(AgentTool::ClaudeCode, "/usr/local/bin/claude", claude, ".claude/.credentials.json", "claude.txt"),
+        (AgentTool::Codex, "/usr/local/bin/codex", codex, ".codex/auth.json", "codex.txt")];
+    for (tool, program, args, login, file) in runs {
+        let _ = std::fs::remove_file(project.join(file));
+        let host = std::fs::read(user.join(login)).unwrap();
+        let made = home::prepare(&tree.data, "r", file, &agent(tool), &values).unwrap();
+        let staged = std::fs::read_to_string(made.path().join(login)).unwrap();
+        assert!(!staged.contains("refreshToken") && staged.matches("refresh_token\":\"\"").count() == staged.matches("refresh_token").count(), "{login} went in with a refresh token");
+        turn(&tree, &made, program, args);
         assert_eq!(std::fs::read_to_string(project.join(file)).unwrap().trim(), "signed-in", "{file}");
+        assert_eq!(std::fs::read(user.join(login)).unwrap(), host, "{login} changed on the host");
     }
     println!("SIGNED-IN TURNS PASSED");
 }

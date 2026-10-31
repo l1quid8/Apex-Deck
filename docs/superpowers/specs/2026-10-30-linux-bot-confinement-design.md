@@ -262,17 +262,21 @@ protected path.
   resumes a provider session by id, and a bind of `~/.claude/projects` or
   `~/.codex/sessions` would show a jailed bot every other project's transcript. So a jailed
   bot's sessions don't appear in the person's own `claude --resume`.
-- **Copied back by the daemon when the jail ends, or during it on a change:** only the
-  named login file, for Claude, Codex and Gemini, parsed down to its known fields, so an
-  extra field doesn't reach a Full bot. Those fields are merged into the host's file, which
-  keeps what isn't the login, such as Claude's MCP tokens. A login comes back only if it
-  expires later than the host's and names the same account where the file has one, and
-  never over a sign-out. Atomic saves give `EBUSY` on a single-file bind, so login refresh
-  can't use a bind. Launch runs the same copy first, in case the daemon died holding the
-  only copy of a rotated login.
-- **Grok and Muse:** get the gateway's access-only sign-in and no copy-back, because their
-  files have no fixed shape to rewrite. The host stays the only one refreshing, so a launch
-  with under 20 minutes left on the login is refused with the refresh message.
+- **Logins go in and never come back.** Every provider gets the gateway's access-only
+  sign-in: the host's named login file, parsed down to known fields, with the refresh token
+  removed. Claude, Codex, Gemini, Grok and Muse all work this way. A launch with under 20
+  minutes left on the login is refused with the refresh message, and leaves no older login in
+  the home. The host's login is the only one that refreshes, and it is never written from a
+  jail home. An earlier revision copied refreshed logins back, checked by expiry and account
+  id. Those checks read files the bot can write, so a jailed bot could replace the host's login
+  and send a Full bot's work to another account. Nothing a bot writes can prove who a token
+  belongs to, so nothing comes back.
+- **Refreshing is the daemon's job, outside the jail.** A server with only jailed bots has
+  nobody else to do it. Before staging a login that's close to expiry, the daemon runs the
+  provider's own CLI as the person, in an empty scratch folder: Codex's app-server
+  `account/read` with `refreshToken: true`, and for Claude and Gemini the command the
+  signed-in test shows works. A bot can't reach those binaries or that login. A live session
+  whose access token runs out is restarted on a newly staged login.
 - **The home is hostile to the daemon.** A jail can write it, so the daemon opens every path
   in it one name at a time with `O_NOFOLLOW`, reads only ordinary files, replaces anything
   in the way of a generated file, and rewrites every generated file at each launch. A mount
@@ -683,7 +687,7 @@ Signed-in turn, 2026-10-30: Claude and Codex each logged in fresh inside a throw
 and wrote their file from inside the jail (`signed-in.sh`, run with the Human, result checked
 by Null). That run used an empty home and the spike's filter.
 
-Still unproven: login refresh and copy-back; Grok, Muse and Antigravity; x86_64, so the x32 rule hasn't run;
+Still unproven: a signed-in turn on an access-only Claude login, and the daemon's refresh; Grok, Muse and Antigravity; x86_64, so the x32 rule hasn't run;
 unprivileged containers and Ubuntu 24.04 AppArmor. The spike home is empty, not a generated
 one from the allowlist. Gemini needs Node 20 or newer.
 
@@ -769,15 +773,13 @@ are all gone before a lowered level is saved; a killed `bwrap` leaves no process
 a cached MCP link isn't reused after a level change.
 
 Also: group stop still works with `setsid()`; Codex's own sandbox works nested in
-bubblewrap; login refresh survives through copy-back; two bots of one provider in one
+bubblewrap; the host login is unchanged after a jailed turn, and the daemon's refresh keeps a jailed bot working; two bots of one provider in one
 project don't overwrite each other's private home.
 
 ## Known limits
 
-- A jailed bot can read its own provider login and, below the copy-back check, swap it. Claude
-  and Gemini files name no account, so a bot holding another account's newer login can get it
-  copied to the host, and a Full bot would then send its work to that account. Codex is checked
-  by account id. Fixing this means asking the provider who the token belongs to.
+- A jailed bot can read its own access token and send it anywhere it can reach, until that token
+  expires. It never holds a refresh token, and it can't change the host's login.
 
 - **The claim covers confined processes and Deck's automatic project operations.** It can't
   stop a person typing `git commit` or `make` in their own terminal, including the Code
