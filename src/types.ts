@@ -53,6 +53,8 @@ export interface ParticipantConfig {
   backend: ParticipantBackend;
   persona: string;
   access: Access;
+  /** Explicitly allow screenshots from Unified Computer Use for this model. */
+  can_read_images?: boolean;
   /** How hard the model should think, in the backend's own words. Null leaves its default. */
   effort: string | null;
   /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */

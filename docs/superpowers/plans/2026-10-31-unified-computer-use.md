@@ -2,7 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status:** Revision 6, incorporating Null's revision 4 review and independent implementation preflight. The Human authorized the initial proof stage on 2026-10-31 and explicitly retained the Task 4 approval gate. The order remains API privacy, DS4 proof, minimal image path, vision proof, then the Human's go/no-go before Tasks 5–11. Continue authorized proof preparation without repeated build permission requests; required macOS grants and failed proofs remain real blockers. No live proof is claimed by this plan.
+> **Status:** Revision 7. Tyler has explicitly authorized completing the production integration and packaging a signed versioned DMG for him to test. This supersedes all Task 4 and intermediate demonstration approval gates below. Preserve existing work, reuse the pinned native engine, complete permissions/Stop/privacy and existing provider connections, and verify a concise build/package check. Do not replace the installed app or publish publicly. Native macOS grants still require the human. No live proof is claimed by this plan.
+
+## Production completion amendment
+
+The product and its user-facing helper are named **Unified Computer Use**. Agent Desktop is an attributed dependency, pinned at `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc`.
+
+Complete the existing helper with native reading, retained targets and verified actions for granted Mac applications. Bundle the signed helper inside Deck; expose it automatically through the existing API, Claude Code and Codex connections with per-turn credentials. Add Settings → Unified Computer Use for enablement, permissions and Stop, and an explicit screenshot setting for API bots. Default enablement is off. Reading also requires an app grant. Read-only and Plan turns cannot mutate the desktop.
+
+Use focused lifecycle/privacy regression checks and upstream coverage, not a new large test framework. Package the candidate under `/Users/tylercaldwell/Downloads/apex-deck/release/` and record its exact commit, signature and remaining live checks. Do not interrupt existing bots or replace the installed application for a demonstration.
+
+The optional JEV/CLEF helper is separate from native control. Upstream's `scripts/jev/policy.mjs` uses a structured decisions protocol with `TYPESAFE_BASE_URL` and `TYPESAFE_MODEL`; that protocol is not an ordinary chat-completions request. Reuse Deck's existing provider connections for the product. Do not add another credential/model layer or claim arbitrary endpoint compatibility without validating that protocol.
+
+Earlier staged steps remain below as historical design context; the production completion amendment takes precedence wherever their approval process or TextEdit-only scope conflicts.
 
 ## Authorized engine integration amendment (2026-10-31)
 

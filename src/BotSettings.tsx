@@ -13,7 +13,7 @@ import { mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media
 import { dollars, mediaMenuLine, pictureLine, quoteFor } from './mediaPrice';
 
 /** What a save can carry. */
-type Change = { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings };
+type Change = { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings; can_read_images?: boolean };
 
 interface Props {
   config: ParticipantConfig;
@@ -241,6 +241,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       if (left.speed === sent.speed) delete left.speed;
       if (left.access === sent.access) delete left.access;
       if (left.media === sent.media) delete left.media;
+      if (left.can_read_images === sent.can_read_images) delete left.can_read_images;
       touched.current = left;
       setSettled(n => n + 1);
     }
@@ -337,6 +338,10 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
         {accessPending && <p className="muted bot-access-note" role="status">Applies after this reply.</p>}
       </>}
       {resets}
+      {api && !mediaType && !talkOnly && <div className="bot-computer">
+        <label className="check-label"><input type="checkbox" checked={touched.current.can_read_images ?? config.can_read_images ?? false} onChange={e => { void apply({ can_read_images: e.target.checked }); }} /> Unified Computer Use: this model can read screenshots</label>
+        <p className="muted">{(touched.current.can_read_images ?? config.can_read_images) ? 'Enable only for a vision model. Granted app screenshots are sent to your model provider.' : 'This model can’t read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.'}</p>
+      </div>}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}
       {note && <p className="muted">{note}</p>}

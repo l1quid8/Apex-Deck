@@ -352,6 +352,7 @@ interface Draft {
   keyEnv: string;
   /** A key typed into the form and not yet saved. Saved to the machine, never into the bot's settings. */
   apiKey?: string;
+  canReadImages?: boolean;
   command: string;
   persona: string;
   access: Access;
@@ -410,7 +411,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", speed: config.speed ?? ("" as const), voice: config.voice ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, canReadImages: config.can_read_images ?? false, effort: config.effort ?? "", speed: config.speed ?? ("" as const), voice: config.voice ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -442,7 +443,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.voice ? { voice: draft.voice } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, can_read_images: draft.canReadImages ?? false, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.voice ? { voice: draft.voice } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */

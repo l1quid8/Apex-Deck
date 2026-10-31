@@ -44,6 +44,13 @@ function main() {
     ? null : spawnSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' });
   const identity = pickIdentity(discovery?.status === 0 ? discovery.stdout : '', process.env);
   console.log(signingMessage(identity));
+  // The native engine is statically linked into the signed permission holder.
+  // Build it here so a DMG cannot silently contain an obsolete external spike.
+  const helper = spawnSync('bash', ['computer-helper/spike/scripts/build-spike.sh', resolve('build/unified-computer-use/Unified Computer Use.app')], {
+    stdio: 'inherit', env: { ...process.env, APEX_DECK_SIGN_IDENTITY: identity },
+  });
+  if (helper.error) throw helper.error;
+  if (helper.status !== 0) throw new Error('Unified Computer Use helper build failed; refusing to package');
   const args = ['--mac', ...process.argv.slice(2)];
   if (identity !== '-') args.push(`-c.mac.identity=${identity}`);
   const result = spawnSync(resolve('node_modules/.bin/electron-builder'), args, { stdio: 'inherit' });

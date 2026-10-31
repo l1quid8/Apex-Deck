@@ -20,11 +20,12 @@ import { ModelGatewaySettings } from "./ModelGatewaySettings";
 import { gatewayOwner } from "./modelGateway";
 import { ModsSettings } from "./ModsSettings";
 import { PhonesSettings } from "./PhonesSettings";
+import { ComputerUseSettings } from "./ComputerUseSettings";
 import { shortcutList } from "./shortcuts";
 import { updateActions, updateNote, type UpdateStatus } from "./updates.ts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "appearance" | "hosts" | "phones" | "providers" | "gateway" | "calls" | "threads" | "terminal" | "mods" | "shortcuts";
+export type SettingsSection = "general" | "appearance" | "hosts" | "phones" | "providers" | "gateway" | "calls" | "threads" | "terminal" | "mods" | "shortcuts" | "computer";
 
 const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
@@ -32,6 +33,7 @@ const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "hosts", label: "Hosts" },
   { id: "phones", label: "Phones" },
   { id: "providers", label: "Providers" },
+  { id: "computer", label: "Unified Computer Use" },
   { id: "gateway", label: "Model gateway" },
   { id: "calls", label: "Calls" },
   { id: "threads", label: "New threads" },
@@ -100,6 +102,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
         {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onLandingTexture={(landingTexture) => onChange({ ...settings, landingTexture })} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
         {section === "phones" && backend.hosts && <PhonesSettings backend={backend} />}
+        {section === "computer" && <ComputerUseSettings backend={backend} />}
         {section === "gateway" && <ModelGatewaySettings backend={backend} />}
         {section === "providers" && <Providers settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} />}
         {section === "calls" && <CallsSettings settings={settings} onChange={onChange} backend={backend} />}
@@ -118,6 +121,7 @@ const LEADS: Partial<Record<SettingsSection, string>> = {
   phones: "Phones you pair with this Mac, whether they can connect, and what each may do.",
   gateway: "Share your model stack through an endpoint you control.",
   providers: "Choose which tools appear when adding terminals and bots.",
+  computer: "Let your existing bots read and control apps on this Mac, with your permission.",
   calls: "Voice calls: which engine handles your mic and speaking.",
   mods: "Claude Code mods that Deck runs itself and draws in its own window, for every bot.",
   threads: "Used when you create a thread. Threads you already have keep their own settings.",
