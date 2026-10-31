@@ -2,6 +2,7 @@ import type { Backend } from './backend.ts';
 import type { AgentTool, ModelChoice, ParticipantConfig } from './types.ts';
 import type { PersonalAssistantRecord, PersonalLane } from './personalAssistant.ts';
 import { supportsSpeed } from './speed.ts';
+import './paths.ts';
 
 export function assistantRuntimeUsage(record: Pick<PersonalAssistantRecord, 'costs' | 'contextBudgetChars'>) {
   const costs = record.costs ?? [];

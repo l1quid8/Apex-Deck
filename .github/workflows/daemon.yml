@@ -45,13 +45,19 @@ jobs:
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path crates/iroh-mobile/Cargo.toml
 
   # Windows compilation and runtime failures fail CI, just like Unix failures.
+  # The Electron app's Node checks run here too, because the desktop app is a
+  # Windows target now and nothing else tests it there.
   test-windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       # Keep LF line endings so files match the Mac and Linux checkouts.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -67,6 +73,37 @@ jobs:
       - name: Test provenance platform boundary
         if: ${{ !cancelled() }}
         run: cargo test --locked -p apex-provenance --lib
+      - name: Install the app's Node dependencies
+        if: ${{ !cancelled() }}
+        run: npm ci
+      # `require('electron')` downloads and unzips dist/electron.exe on the first
+      # import; npm ci does not, because this repo's install-script allowlist
+      # skips electron's postinstall (the "Downloading Electron binary..." line
+      # in the readback is that first import). Two test files importing it at the
+      # same moment both ran the download, and whoever finished first got
+      # `spawn EBUSY` on an electron.exe the other was still writing. Extract it
+      # once, before any test file starts.
+      - name: Fetch the Electron binary once, so the tests cannot race for it
+        if: ${{ !cancelled() }}
+        run: node -e "import('electron').then((m) => console.log(m.default))"
+      - name: Type-check the app
+        if: ${{ !cancelled() }}
+        run: npx tsc --noEmit
+      - name: Test the app
+        # Blocking. The suite never ran off this Mac until M4: it started at
+        # 2,468 of 2,550 failing on run 40233880246, and the merged Windows
+        # branch now reads 0 failures (run 40253047144: 2,529 of 2,564 passed,
+        # 35 gated). What it took, in case a future break looks familiar:
+        #   - electron unzips itself on the first import, so the step above
+        #     fetches it once instead of letting test files race for it.
+        #   - 30 macOS-only suites and 1 posix-only premise are gated, not
+        #     deleted, so they still run where they mean something.
+        #   - /tmp is not a folder on Windows (it is C:\tmp, if anything);
+        #     fixtures that need a short socket path keep /tmp on posix.
+        # Two test files at a time: four cores booting four Chromiums at once
+        # crashed scenarios silently, which reads as a failure with no output.
+        if: ${{ !cancelled() }}
+        run: node --experimental-strip-types --test --test-concurrency=2 tests/*.test.mjs
 
   build:
     needs: test

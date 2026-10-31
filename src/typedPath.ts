@@ -1,6 +1,7 @@
 // Asking for a folder or file on a host on another machine, where this Mac's
 // file dialog can't look. PathPrompt.tsx shows it, browsing the host's folders.
 
+import { pathDir } from "./paths.ts";
 import type { FolderListing } from "./types";
 
 export interface PathRequest {
@@ -36,8 +37,8 @@ function childPath(dir: string, name: string): string {
 }
 
 function parentPath(path: string): string {
-  const cut = path.replace(/\/+$/, "").lastIndexOf("/");
-  return cut <= 0 ? "/" : path.slice(0, cut);
+  const dir = pathDir(path);
+  return dir || "/";
 }
 
 export function pathPromptStore() {

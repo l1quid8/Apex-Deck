@@ -3,6 +3,7 @@
 // and receipt (crates/apex-host/src/personal.rs).
 
 import { usePersonalAssistants, type PersonalAssistantsOptions } from "./usePersonalAssistants.ts";
+import "./paths.ts";
 import type { Backend } from "./backend";
 import type { ParticipantConfig } from "./types";
 import type { AssistantLook, AssistantProjectBinding } from "./assistantIdentity.ts";

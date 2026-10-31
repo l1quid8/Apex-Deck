@@ -10,6 +10,7 @@ import { hostConnectionStore } from "./hostConnections.ts";
 import { connection } from "./connection.ts";
 import { DaemonClient, type Connect, type Link } from "./daemon/client.ts";
 import { daemonTransport, fromBase64, toBase64 } from "./daemon/transport.ts";
+import { pathBase } from "./paths.ts";
 import { pathPrompt, type PathRequest } from "./typedPath.ts";
 import { recentFiles } from "./recentFiles.ts";
 import type { GeneratedApi } from "./interactiveAnswers/generatedRun.ts";
@@ -182,7 +183,7 @@ export function electronShell(
       },
       copyAttachment: async (room, path) => {
         const bytes = await shell.readLocalFile(host.id ?? "local", path);
-        return transport.saveAttachment(room, path.split("/").pop() || "file", bytes);
+        return transport.saveAttachment(room, pathBase(path) || "file", bytes);
       },
     };
   }
