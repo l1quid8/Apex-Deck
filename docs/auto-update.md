@@ -96,7 +96,10 @@ later version can then arrive through **Restart to update**.
 
 ## Publishing a version
 
-1. Bump the version, commit, and build in the main folder:
+1. Bump the version, refresh the phone bridge's own lockfile with
+   `cargo metadata --format-version 1 --manifest-path crates/iroh-mobile/Cargo.toml > /dev/null`
+   (it pins the workspace crates too, and CI tests it with `--locked`), commit,
+   wait for the `daemon` workflow to pass, and build in the main folder:
    `npm run desktop:dmg` (Developer ID signed; the script refuses ad hoc).
 2. `node scripts/release-update-manifest.mjs --notes "One line on what changed"`
    writes `release/v<version>-assets/Apex-Deck-<version>-arm64.pkg` and
