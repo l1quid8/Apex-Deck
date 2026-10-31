@@ -1,8 +1,9 @@
 # Linux: confine bots below Full, then let paired devices act
 
-Status: revision 3, for Null's review. No Deck code yet; the "Spike" results below came
-from throwaway Docker runs. Answers "Who can act on a Linux machine" in
-`2026-10-30-add-a-machine-ssh-design.md`. Earlier revisions: `7bc63529`, `4227a3e5`.
+Status: revision 4, for Null's review. No Deck code yet; the "Spike" results below came
+from throwaway Docker runs against revision 3, and nothing new here has been run.
+Answers "Who can act on a Linux machine" in `2026-10-30-add-a-machine-ssh-design.md`.
+Earlier revisions: `7bc63529`, `4227a3e5`, `9812b519`.
 
 ## The problem in one picture
 
@@ -100,6 +101,12 @@ bubblewrap's `--seccomp`, refuses:
 The filter is a small fixed BPF program for x86_64 and arm64, built by `linux_jail.rs`
 with no new library. It is inherited by every descendant and can't be removed.
 
+Three details, from Null's review. Checks on `socketpair` mask the type's flag bits, so
+`SOCK_DGRAM|SOCK_CLOEXEC` can't pass as an unknown value; the rule allows `SOCK_STREAM` and
+refuses everything else, rather than listing what's bad. Checking the architecture isn't
+enough on x86_64, because x32 calls share `AUDIT_ARCH_X86_64`, so the filter also refuses
+any syscall number with bit 30 set. These two are new since the spike and are untested.
+
 Spike result under this filter: the host-socket connect is refused; `git`, `npm`, Node
 child processes, a Node server on the jail's loopback, and `claude` and `codex` start-up
 all work. A real signed-in turn is still unproven, so step 1 tests it per provider.
@@ -196,60 +203,87 @@ A folder pick is rechecked at launch, because a symlink can change after it was 
 
 ### Provider config
 
-Revision 1 said settings read-only, login and session files writable "named one by
-one". That fails for two reasons found while checking this review:
+Revision 3 copied the host's config into a private home, then scanned it for automatic
+commands against a table of known keys. Null's finding: a test on sample configs can't see
+a key that a later provider version adds. **The scan is gone,** along with its refusal of
+Edits and the read-only project-config placeholders. Two facts replace them:
 
-- **Claude's `~/.claude.json`** holds user `mcpServers` (checked on this Mac), and
-  Claude writes to that file constantly. A jailed bot able to write it could add a
-  server that runs in the next Full bot, outside the jail.
-- **Single-file binds break atomic saves.** Saving by rename onto a bind mount gives
-  `EBUSY`, so a refreshed login token can't be saved that way.
+- Code that runs inside the jail can't reach device authority, however it got started, so
+  automatic commands in the jail don't need refusing.
+- The danger is lower-writable code running outside the jail, and Lower-writable folders
+  below closes that for hooks, `.git/hooks` and everything else in one rule.
 
-So each jailed bot gets a private provider home, `jail-homes/<room>/<bot>/`, under the
-data folder and visible only to its jail:
+Each jailed bot gets a private provider home, `jail-homes/<room>/<bot>/`, under the data
+folder and visible only to its jail. It's **generated, not copied**: Deck writes a minimal
+config from the values it set itself (model, reasoning, Deck's own hook) plus an allowlist
+per provider. A setting not on the list isn't carried, so an unknown key can't arrive by
+default. The host's `~/.claude`, `~/.claude.json`, `config.toml`, plugins and instruction
+files aren't in the jail's view at all, as the private root already ensures, nor is a
+custom `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME` or `MUSE_AUTH_PATH`, each treated as a
+protected path.
 
-- **Copied in, never copied back:** settings, hooks, plugins, commands, instruction
-  files, `~/.claude.json`, `config.toml` and the Gemini, Grok and Muse versions.
-  Changes die with the jail.
+- **Stdio MCP servers:** carried by name from a person's config and run in the jail.
 - **Directory binds, writable:** session history only, such as `~/.claude/projects` and
   `~/.codex/sessions`.
 - **Copied back by the daemon when the jail ends, or during it on a change:** only the
-  named login file, after checking it parses as that provider's login format.
+  named login file, rewritten from its known fields after parsing, so an extra field
+  doesn't reach a Full bot. Atomic saves give `EBUSY` on a single-file bind, so login
+  refresh can't use a bind.
 
-Custom homes count: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, `MUSE_AUTH_PATH`.
-The builder resolves them per launch and treats them as protected paths.
+Project config loads as usual inside the jail. `CLAUDE.md`, `AGENTS.md`, `.claude/` and the
+rest stay writable. A hook a bot plants there runs jailed, at the bot's own level.
 
-**Project-local config.** Claude and others load config from the project, which a jailed
-bot can write. A hook placed there runs automatically in a Full bot.
+Costs: below Full, plugins and custom hooks don't load, and a new provider setting needs
+adding to the list before jailed bots see it. A provider that won't start on a generated
+home is "can't run below Full on this machine", found in step 1.
 
-- These names are mounted read-only inside writable folders: `.claude/`, `.codex/`,
-  `.gemini/`, `.grok/`, `.muse/`, `.mcp.json`. Missing ones get an empty placeholder as
-  the mount point, removed when the jail ends and swept at the next launch if a crash
-  left one. `CLAUDE.md` and `AGENTS.md` stay writable: they are instructions, not code,
-  and bots edit them for real.
+### Lower-writable folders
 
-**Automatic commands are refused, not protected.** Null's finding: a read-only `hook.py`
-can import a writable `helper.py`. Checking this further makes it worse. A hook running
-`prettier` from `/usr/local/bin` loads `prettier.config.js` from the project, and `npx`
-prefers the project's `node_modules`. So a hook can sit wholly outside the folder and
-still run code a jailed bot wrote. Reading a command can't show what it will load.
+**New in this revision.** Null's finding, and checking it found more than `.git/hooks`.
+Deck itself runs things in project folders outside any jail:
 
-Revision 2's read-only mounts of hook targets are dropped. Before each jailed launch
-with a writable folder, the builder reads every provider's user and project config. An
-automatic command means anything a provider starts without a person asking: hooks, a
-plugin's hooks, stdio MCP servers, `statusLine`, `apiKeyHelper` and similar helpers.
+- `project_check.rs:113` runs a project command with `sh`, and `runner/checks.rs:33` runs
+  configured checks. Starting a runner is only Chat tier (`authority.rs:172`).
+- `bot_copies.rs:520` runs `git status` with no hardening, so a `core.fsmonitor` a jailed bot
+  put in `.git/config` runs outside the jail. Only some paths set `core.fsmonitor=false`
+  (`git_changes.rs:66`, `monitor_evidence.rs:396`, `personal_worker.rs:148`), and that
+  flag doesn't cover `diff.external` or a `filter.*.clean` driver, so it can't be completed.
 
-- Deck's own hook is exempt. Deck builds it, and its binary is outside every writable
-  folder.
-- If any other automatic command exists, Edits and Ask are refused in that folder, for
-  every bot of that provider's config. The message names the entry. Read still works,
-  because the jail can't write there. So does Full, which is the person's own choice.
-- The list of config keys lives per provider in one table, and a test on each provider's
-  sample config fails on a key not in the table. Unparseable config counts as a refusal.
+One rule covers these, hooks and project scripts alike:
 
-This is blunt on purpose. On a server from Add a machine none of these exist, so nothing
-is lost there. It costs most on a Linux desktop with plugins or MCP servers set up, where
-Edits needs those removed or the bot moved to Full.
+> **Nothing Deck starts outside the jail runs in a folder a jailed bot could write, unless
+> a person has accepted that folder.**
+
+**Taint.** A jail with a writable folder records that folder, resolved, in the data folder.
+The record is on disk before the jail starts, and it is never cleared by Deck.
+Read-only jails record nothing, so Full alongside Read has no gate.
+
+**Deck's own work always jails.** Every project-folder spawn goes through one function,
+`project_process()`. On a tainted folder it runs the command in a jail at Edits, accepted or
+not: `git` in `bot_copies.rs`, changes, runner and project checks. A test fails on a raw
+spawn outside it. `checkpoints.rs:95` is exempt, because its `GIT_DIR` is Deck's own store
+and it reads no repository config; a test holds that.
+
+**Full bots are gated.** A Full launch, or a mount, on a folder overlapping a tainted one
+is refused until a person accepts it:
+
+    This folder has bots with lower access writing to it.
+    A Full bot here can run code they wrote, as you.
+    [ Accept this folder ]   [ Keep Full out ]
+
+Acceptance is per folder and standing, because Full and Edits in one project is a normal
+team, and asking at each launch would train people to click. It's recorded with who and
+when, listed in the machine's settings, and can be withdrawn. The gate works the other way
+too: an Edits launch in a folder with a live, unaccepted Full bot gets the same card.
+
+Acceptance authorizes like raising access, see below. A bot can't press it: jailed ones
+can't reach the daemon, and Full is the person.
+
+**What this costs.** One tap per shared folder, Linux only. Project checks fail if they need
+something the jail lacks, such as a local socket, and say why.
+
+**The stated claim** now reads: a bot below Full can't gain device authority through
+anything Deck starts, unless a person accepted that folder. Known limits covers what's left.
 
 ## Changing a bot's level
 
@@ -288,54 +322,88 @@ local server. Deck can't tell what such a server can do, so:
 A per-machine list of trusted MCP servers, set by a person, is the way to add this back
 later. It isn't in this build.
 
-## Machine state: jail works, or no bot below Full runs
+## Machine state: two separate facts
 
-At start the daemon runs a real jailed probe that tries to read a marker in the data
-folder, connect to the socket, reach a loopback listener and an abstract socket it
+**Changed from revision 3,** which let one passing probe do two jobs. Null's finding: a
+probe shows the sandbox works today. It says nothing about what unjailed bots left behind.
+
+- **Jail works.** Re-tested at each boot, nothing carried over.
+- **Host trusted.** A person's decision, recorded once per data folder.
+
+| Jail | Host | Bots below Full | Paired devices |
+|---|---|---|---|
+| Fails | either | don't start | refused |
+| Works | not trusted | jailed | chat only, as today |
+| Works | trusted | jailed | act, under the rule below |
+
+Full bots run in every row, because Full is the person.
+
+**The probe.** At start the daemon runs a real jailed probe that tries to read a marker in
+the data folder, connect to the socket, reach a loopback listener and an abstract socket it
 opened, connect to a Unix socket it put in a bound test folder, and reach the outside
-through the proxy. The first five must fail, the last must work. The answer is one state:
+through the proxy. The first five must fail, the last must work. It fails where there's no
+bubblewrap or user namespaces are blocked, as Ubuntu 24.04's AppArmor setting can do, and
+setup shows "needs bubblewrap (admin)".
 
-- **Confined.** Every below-Full launch is jailed, and a launch that fails to jail fails
-  the turn. Paired devices may act, under the rule below.
-- **Not confined** (no bubblewrap, or user namespaces blocked, as Ubuntu 24.04's
-  AppArmor setting can do). **Bots below Full don't start.** Paired devices stay refused.
-  Full bots run, because Full is the person. Setup shows "needs bubblewrap (admin)".
+A below-Full launch has one path, through the jail, whatever the state says, so a failed
+probe can't leave anything new behind. Talk-only chats already refuse in this case
+(`isolation_available`). A machine with bubblewrap gets jailed on update, and a machine
+without it loses its below-Full bots until an admin fixes it. That's the cost. No setting
+turns this on, so there's nothing for a bot to flip.
 
-**Changed from revision 2,** which let bots run unjailed here, as public releases do.
-Null's finding: an unjailed bot can write the device list or trusted config, and that
-survives a later good probe. The rule from the top of this document now has no exception.
-A below-Full launch has one path, through the jail, whatever the state says. The state
-only decides what devices may do and what the screen shows. Each boot re-probes, and
-nothing is carried over.
+### What the epoch can and can't do
 
-On update, a Linux machine without working bubblewrap loses its below-Full bots until an
-admin fixes it. That's the cost. Talk-only chats already refuse in this case
-(`isolation_available`).
+Two different things can survive from the unjailed past:
 
-### Devices paired before the jail
+- **A live process.** It runs as the user, so it already has more than any device key
+  gives: it can run anything. No record in the data folder can defend against it, and
+  no software step can prove it's gone. Stopping it is a job for a person, and only a
+  rebuilt machine is certain.
+- **A planted record.** A device key an old bot wrote into `devices.json` and kept a copy
+  of. If the bot is later jailed, it can dial in through the relay on port 443 and press its
+  own Allow. That is a real jail escape, and this is what the epoch stops.
 
-Finding 1 also covers history. Every Linux machine has already run unjailed bots, so an
-existing device record proves nothing, and a first good probe doesn't change that.
+So `confined_epoch` is a random value written only by a trust step below, and only a record
+carrying it can act. It's never found and adopted: a file already sitting there means
+nothing. The stored record is `HMAC(TRUST_SALT, epoch)`, where `TRUST_SALT` is a random
+constant fixed when the first jail release is built, so a file planted on an older build
+can't be a valid record. The salt is public once that release is out, so this covers plants
+made before then; `trust-host` replaces the epoch regardless.
 
-- At the first passing probe the daemon creates `confined_epoch`, a random value in the
-  data folder.
-- Pairing on a Confined machine writes that value into the new device record.
-- Only a record with the current epoch can act. Older records keep working as they do
-  today: chat, no authority.
+The hidden data folder is enough protection for the epoch afterwards, because every
+below-Full bot from then on is jailed and only Full, which is the person, can read it.
 
-A record forged before the first probe can't contain a value that didn't exist yet. So
-Apex-Terminal's phone has to pair again to gain Allow. Add a machine isn't affected, as
-long as setup reaches Confined before it pairs. Setup that ends Not confined still pairs,
-with no epoch, and the machine row says why.
+### Trust steps
 
-The state shows on the machine's row. No setting turns this on, so there is nothing for
-a bot to flip. Machines with bubblewrap get jailed on update, which can break a bot's
-workflow; that's the cost.
+**Clean install.** Add a machine's script checks for the data folder before it installs
+Deck. If there is none, no Deck bot ever ran on that account, so the first passing probe
+writes the epoch and the trust record before any bot can start, and pairing follows.
+A server that fails the probe stays untrusted and pairs without an epoch; when the probe
+later passes it still needs no person, because no below-Full bot could have run there
+meanwhile. The record `clean_install` says so, and only the setup script can start it.
+
+**Existing machine.** A person runs `apex-daemon trust-host` in their own shell:
+
+1. It stops the daemon, which ends every bot.
+2. It prints what could outlive that: the user's other processes, crontab, user systemd
+   units, autostart entries, and shell start-up files changed since the first bot ran.
+3. It asks the person to look, and to reboot. A reboot ends detached processes; anything
+   persistent is on the list from step 2.
+4. On the next start, before any bot launches, the daemon writes a new epoch and the trust
+   record. Every existing device record is left without an epoch.
+
+The wording says what this is: "Deck can't check this machine for you. Only continue if you
+trust what bots did here before." A hostile live process could run this command itself, but
+by the argument above that gives it nothing new.
+
+Apex-Terminal takes this path, then its phone pairs again. On Add a machine, a server that
+already has a data folder finishes setup and its row reads "Not trusted yet", with the command.
 
 ## Who can do what from a paired device
 
-Only on a Confined machine, only for a device with the current epoch, and only through
-the iroh path in `call_from_device`, which has the verified device. `authority.rs` already sets the tiers:
+Only on a machine that is Confined and trusted, only for a device with the current epoch,
+and only through the iroh path in `call_from_device`, which has the verified device.
+`authority.rs` already sets the tiers:
 
 | Action | Tier |
 |---|---|
@@ -363,6 +431,7 @@ Classified as able to raise, from reading `Command`:
 | `RoomRunnerStart`, `PersonalProjectDelegate`, `AssistantHandoffPrepare` | must be proven not to create or restore a bot at a higher level |
 | `SessionSave`, `SettingsSave` | a saved session or default could carry levels |
 | `RoomDecide` | must be proven that no choice raises a level, such as a "don't ask again" that changes mode |
+| `FolderAccept` (new) | lets a Full bot run lower bots' code; same rule as a raise |
 
 A limited device is refused on every route that can raise. Step 3 starts by reading
 each "must be proven" row and recording the answer with a test.
@@ -381,7 +450,7 @@ Under the same room lock as the write, the daemon checks:
 
 1. The call came over iroh from a device in the device list, so the key was verified.
 2. That device is Full tier with all threads.
-3. The machine is Confined and the device record has the current epoch.
+3. The machine is Confined and trusted, and the device record has the current epoch.
 4. The request's `old_level` equals the saved level, or it's refused as stale. The
    check and the write are one atomic step.
 5. For Full, the request names a folder that equals the thread's folder.
@@ -420,22 +489,25 @@ dropped.
 
 - The Linux branch of `call_from_device` changes openly, and the recipe's expected hashes
   are updated to match.
-- The hashed set adds the new helper, `authority::access_effect`, the Confined state and
+- The hashed set adds the new helper, `authority::access_effect`, the machine state and
   the epoch check.
-- `vps-update-allow-test.rs` asserts both sides: Not confined refuses every device
-  action, Confined allows only what the tier table says and still refuses socket callers.
+- `vps-update-allow-test.rs` asserts each machine state: Not confined and Confined but not
+  trusted refuse every device action, Confined and trusted allows only what the tier table
+  says and still refuses socket callers.
 
 Order: update the installed recipe and test first, with one command the Human runs with
 their key. `prepare_source` and `git apply --check` run before merge.
 
 ## Build order
 
-1. `linux_jail.rs`, the seccomp filter, the forwarder, the proxy, the startup probe, the
-   breakout tests. First a spike: does a real signed-in turn of each provider work behind
-   the proxy, under the filter, in a private home?
-2. Route all five launch points. Change-level order, MCP key. List every tool bots reach
-   through `apex-daemon`, then move each to the turn's channel or refuse it.
-3. `access_effect`, paired-device rules, raising rule, phone Face ID step.
+1. `linux_jail.rs`, the seccomp filter, the forwarder, the proxy, the generated home, the
+   startup probe, the breakout tests. First a spike: does a real signed-in turn of each
+   provider work behind the proxy, under the filter, on a generated home?
+2. Route all five launch points. Change-level order, MCP key. Taint record and the Full
+   gate. `project_process()` and every project-folder spawn moved onto it. List every tool
+   bots reach through `apex-daemon`, then move each to the turn's channel or refuse it.
+3. Host trust: clean-install path, `trust-host`, epoch and salt. Then `access_effect`,
+   paired-device rules, raising rule, phone Face ID step.
 4. Real runs on Docker and a real VM, all providers, including Ubuntu 24.04 AppArmor and
    a desktop session with X11.
 5. Updater recipe change, then release.
@@ -454,7 +526,10 @@ Null reviews each step. Nothing from step 3 merges before steps 1 and 2 pass.
 - HTTP on any port, and HTTPS on any port but 443.
 - HTTP MCP servers.
 - Everything below Full, on a machine where the jail doesn't work.
-- Edits and Ask in a folder where a hook, plugin or stdio MCP server is configured.
+- Provider plugins, hooks and any setting not on the generated list, for bots below Full.
+- A Full bot in a folder a lower bot can write, until a person accepts that folder.
+- Paired devices acting on a machine with bots in its past, until `trust-host` has run.
+- Project checks and runner checks that need something the jail doesn't have.
 - `sudo`.
 - Edits and Ask in `$HOME` or `/`.
 
@@ -462,30 +537,44 @@ Null reviews each step. Nothing from step 3 merges before steps 1 and 2 pass.
 
 From inside the jail, as each level: read the data folder, gateway token and device
 list; connect to the socket; `systemd-run --user`; write `settings.json`, `.bashrc`,
-crontab, `~/.claude.json`, `.claude/settings.json` in the project, and a file a hook names;
+crontab, and the host's `~/.claude.json`;
 signal or ptrace the daemon; reach an abstract socket, X11, `127.0.0.1` and the cloud
 metadata address; pair a device; `TIOCSTI` on any terminal; find an inherited descriptor.
 
 Sockets: connect to a host command socket placed in the project, in a PATH folder and at
 a symlinked path; make an `AF_UNIX` socket through `socket()`, `socketpair(SOCK_DGRAM)`,
-io_uring, and a 32-bit and x32 binary; open a connection on the forwarder for a purpose
-other than the two allowed.
+the same with `SOCK_CLOEXEC` and `SOCK_NONBLOCK` set, io_uring, and a 32-bit and x32 binary;
+call a socket syscall by its x32 number from a 64-bit binary; open a connection on the
+forwarder for a purpose other than the two allowed.
 
 Proxy: every refused range in each encoding, the machine's own public address, a name
 that changes answer between lookups, a redirect from a public URL to a refused address,
 port 80, and a port on the machine's public address.
 
-State: bubblewrap removed, then restart: no below-Full bot starts, and a Full bot does. A
-device record without the epoch can't act on a Confined machine, and neither can a record
-written from the old format with a guessed value.
+State: bubblewrap removed, then restart: no below-Full bot starts, and a Full bot does.
+Host trust: a device record without the epoch can't act; a planted epoch file and a record
+built from it are ignored on a machine with a data folder from before the jail; a file
+without the release salt isn't a trust record; `trust-host` replaces the epoch, voids every
+device, and refuses to finish until the reboot has happened; a probe failure after trust
+runs no below-Full bot and keeps trust; a clean install reaches trust before any bot starts.
 
-Hooks: a hook that imports a writable helper, a `prettier`-style hook outside the folder,
-a plugin hook, stdio MCP in user config, unparseable config. Each refuses Edits and allows
-Read.
+Generated home: an unknown executable setting in the host's Claude and Codex config, on
+the real launch path, doesn't appear in the jail's home; the same setting in project config
+runs jailed and fails every check in the first paragraph of this section; a host config
+that doesn't parse launches with the generated defaults and says so.
+
+Lower-writable folders: a Full launch and a Full mount on a folder a jail could write are
+refused until accepted, including parent and child folders; the taint is on disk before the
+jail starts, and survives a crash at that moment; an Edits launch beside a live Full bot
+gets the same gate; a limited device can't accept. With `core.fsmonitor`, `diff.external`,
+a `filter.*.clean` driver, `.git/hooks/*` and a project check all planted by a jail: every
+Deck-run path (changes, bot copies, runner, project check) runs them in the jail or not at
+all. A test fails on a raw project-folder spawn outside `project_process()`.
 
 Alternate paths: a symlink in the project to the data folder, a bind or symlink project
 that resolves to `$HOME`, `..` in a mount, a symlink swapped between check and launch,
-a project on a case-insensitive or second mount of the same folder.
+a project on a case-insensitive or second mount of the same folder. The same set against
+the taint check.
 
 Retiring: a bot's `setsid` background loop, a double-forked child and a stdio MCP server
 are all gone before a lowered level is saved; a killed `bwrap` leaves no process behind;
@@ -497,14 +586,22 @@ project don't overwrite each other's private home.
 
 ## Known limits
 
-- **The biggest limit:** a jailed bot can edit project files that run later: `.git/hooks`,
-  `package.json` scripts, a `Makefile`. If a person or a Full bot then runs them, or just
-  runs `git commit`, that code runs outside the jail and could pair a device. So a Full bot
-  sharing a folder with an Edits bot is only as safe as that folder's contents. Only
-  automatic start-up is covered. Same on any machine, and the safe habit is to keep Full
-  bots out of folders that lower bots write to.
-- Trusted config changed before the first Confined boot can't be detected; only device
-  records are reset.
+- **The claim is about what Deck starts.** Lower-writable folders below stops Deck
+  running a lower bot's code outside the jail without a person's say-so. It can't stop a
+  person typing `git commit` or `make` in their own terminal, including the Code tab, or
+  a Full bot in another folder using `cd` to reach one. Those run as the person. The Code
+  tab shows a banner in such a folder; nothing else can be done from here.
+- **An accepted folder is a chosen bridge.** Once a person accepts a folder, a lower bot's
+  code can reach a Full bot there, and from it a device key.
+- **Host trust is a statement.** On a machine that ran unjailed bots, `trust-host` records
+  a person's decision. It proves nothing about what is still on the account. A rebuilt
+  server or a new Linux user is the only clean answer.
+- **Going back to a pre-jail build** runs unjailed bots that can read the epoch, and the
+  later jail build can't detect that. Run `trust-host` again after any such rollback.
+- **A root-owned record would be stronger.** Mac grants live in a root broker
+  (`devices.rs:4`), out of a same-user process's reach. Linux keeps the owner-only
+  registry here, because no-sudo installs must work too. A later step could use root
+  where setup has it.
 - Session history is writable, so a jailed bot could plant text a Full bot reads on
   resume. That's misleading text, not code.
 - Network stays open to public addresses, so a jailed bot can send out what it can read.
