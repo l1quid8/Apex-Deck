@@ -3,10 +3,10 @@
 # upload anywhere else. The Human downloads it from the run summary, tries it on
 # a Windows 11 PC, and only then is a real release cut.
 #
-# Runs on fix/windows-catch-up are signed through Azure Artifact Signing as Tyler
-# Caldwell. GitHub proves the branch to Azure, so no key is stored here, and Azure
-# trusts that one branch only. Other branches build an unsigned installer, which
-# Windows shows as "unknown publisher".
+# Runs on fix/windows-catch-up and feat/windows-auto-update are signed through
+# Azure Artifact Signing as Tyler Caldwell. GitHub proves the branch to Azure, so
+# no key is stored here, and Azure trusts those branches only. Other branches build
+# an unsigned installer, which Windows shows as "unknown publisher".
 #
 # Runs only for the branches that carry Windows work, because an Electron build
 # is minutes of runner time nobody asked for on every push.
@@ -26,7 +26,7 @@ permissions:
   id-token: write
 
 env:
-  APEX_DECK_WIN_SIGN: ${{ github.ref == 'refs/heads/fix/windows-catch-up' && '1' || '' }}
+  APEX_DECK_WIN_SIGN: ${{ (github.ref == 'refs/heads/fix/windows-catch-up' || github.ref == 'refs/heads/feat/windows-auto-update') && '1' || '' }}
 
 concurrency:
   group: windows-installer-${{ github.ref }}
