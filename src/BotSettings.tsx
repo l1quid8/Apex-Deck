@@ -245,7 +245,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       touched.current = left;
       setSettled(n => n + 1);
     }
-    catch (error) { if (version === saveVersion.current) { setError(String(error)); delete touched.current.access; setSettled(n => n + 1); requested.current = { model: '\0', effort: '\0' }; } }
+    catch (error) { if (version === saveVersion.current) { setError(String(error)); delete touched.current.access; delete touched.current.can_read_images; setSettled(n => n + 1); requested.current = { model: '\0', effort: '\0' }; } }
     if (version === saveVersion.current) setSaving(false);
   };
   useEffect(() => {
