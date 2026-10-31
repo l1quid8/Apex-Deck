@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn pair_and_remote_take_their_own_words_and_the_data_dir() {
         let cli = parse(&["pair", "--tier", "full", "--data-dir", "/d"]).unwrap();
-        assert_eq!(cli, Cli { action: Action::Pair(crate::pair_cli::PairOptions { tier: crate::devices::Tier::Full, threads: None }), data_dir: Some(PathBuf::from("/d")) });
+        assert_eq!(cli, Cli { action: Action::Pair(crate::pair_cli::PairOptions { tier: crate::devices::Tier::Full, threads: None, json: false }), data_dir: Some(PathBuf::from("/d")) });
         assert_eq!(parse(&["remote", "info"]).unwrap().action, Action::Remote(crate::pair_cli::RemoteAction::Info));
         assert_eq!(parse(&["remote", "advertise", "--clear"]).unwrap().action, Action::Remote(crate::pair_cli::RemoteAction::Advertise(vec![])));
         assert_eq!(parse(&["pair", "--help"]).unwrap().action, Action::PairHelp);

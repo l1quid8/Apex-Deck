@@ -13,6 +13,8 @@ pub struct Invite {
     pub inv: [u8; 16],
     pub secret: [u8; 32],
     pub exp: u64,
+    /// `linux`, `macos` or `windows`. Blank in a link from an older machine.
+    pub os: String,
 }
 
 const PREFIX: &str = "apexdeck://pair?p=";
@@ -28,6 +30,8 @@ struct Wire {
     inv: String,
     secret: String,
     exp: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    os: String,
 }
 
 fn hex(b: &[u8]) -> String {
@@ -61,6 +65,7 @@ impl Invite {
             inv: B64.encode(self.inv),
             secret: B64.encode(self.secret),
             exp: self.exp,
+            os: self.os.clone(),
         };
         let json = serde_json::to_vec(&w).expect("wire struct serializes");
         format!("{PREFIX}{}", B64.encode(json))
@@ -88,6 +93,7 @@ impl Invite {
             inv: unb64("inv", &w.inv)?,
             secret: unb64("secret", &w.secret)?,
             exp: w.exp,
+            os: w.os,
         })
     }
 }
@@ -106,7 +112,14 @@ mod tests {
             inv: [7; 16],
             secret: [9; 32],
             exp: 1_000_000,
+            os: "macos".into(),
         }
+    }
+
+    #[test]
+    fn a_link_from_an_older_machine_has_no_os() {
+        let l = json_with(|v| { v.as_object_mut().unwrap().remove("os"); });
+        assert_eq!(Invite::parse_link(&l, 0).unwrap().os, "");
     }
 
     fn link_from(json: &str) -> String {

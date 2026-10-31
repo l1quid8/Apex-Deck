@@ -21,16 +21,21 @@ use crate::local_call::{Client, Refused};
 use crate::{ipc, paths, remote_config};
 
 pub const USAGE: &str = "\
-usage: apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID]
+usage: apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID] [--json]
        apex-daemon remote info
+       apex-daemon remote on
        apex-daemon remote advertise <host:port>… | --clear
 
   pair       show a QR code for the Apex Deck phone app to scan, then approve the
              phone that claims it (the daemon must be running with --remote)
   --tier     what the phone may do: read_only, chat (default) or full
   --threads  which threads it may reach: all (default) or a list of IDs
+  --json     for a program: one JSON event per line instead of the QR and prompt.
+             After the claim event, `approve CODE` on stdin approves that phone;
+             a different code or anything else cancels
   remote info
              whether remote access is on, its endpoint ID, UDP port and advertised addresses
+  remote on  turn remote access on, now and at every start
   remote advertise
              addresses a phone may also dial (a DDNS name with a forwarded UDP port, say);
              they go into the QR code. --clear removes them";
@@ -40,11 +45,15 @@ pub struct PairOptions {
     pub tier: Tier,
     /// `None` is every thread.
     pub threads: Option<Vec<String>>,
+    /// One JSON event per line, for a program driving this over SSH.
+    pub json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteAction {
     Info,
+    /// Turn remote access on and save that.
+    On,
     /// Replace the advertised addresses; empty clears them.
     Advertise(Vec<String>),
 }
@@ -55,7 +64,7 @@ fn usage(why: impl std::fmt::Display) -> String {
 
 /// Read what follows `pair`.
 pub fn parse(args: &[String]) -> Result<PairOptions, String> {
-    let mut options = PairOptions { tier: Tier::Chat, threads: None };
+    let mut options = PairOptions { tier: Tier::Chat, threads: None, json: false };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = || args.next().cloned().ok_or_else(|| usage(format!("{arg} needs a value")));
@@ -68,6 +77,7 @@ pub fn parse(args: &[String]) -> Result<PairOptions, String> {
                     return Err(usage("--threads needs all or a list of thread IDs"));
                 }
             }
+            "--json" => options.json = true,
             other => return Err(usage(format!("unknown argument {other}"))),
         }
     }
@@ -78,12 +88,13 @@ pub fn parse(args: &[String]) -> Result<PairOptions, String> {
 pub fn parse_remote(args: &[String]) -> Result<RemoteAction, String> {
     match args.first().map(String::as_str) {
         Some("info") if args.len() == 1 => Ok(RemoteAction::Info),
+        Some("on") if args.len() == 1 => Ok(RemoteAction::On),
         Some("advertise") if args.len() == 2 && args[1] == "--clear" => Ok(RemoteAction::Advertise(Vec::new())),
         Some("advertise") if args.len() >= 2 && !args[1..].iter().any(|a| a == "--clear") => {
             let addrs = remote_config::check_all(&args[1..]).map_err(usage)?;
             Ok(RemoteAction::Advertise(addrs))
         }
-        _ => Err(usage("say remote info, remote advertise <host:port>… or remote advertise --clear")),
+        _ => Err(usage("say remote info, remote on, remote advertise <host:port>… or remote advertise --clear")),
     }
 }
 
@@ -93,12 +104,18 @@ pub fn run_remote(data_dir: Option<PathBuf>, action: RemoteAction) -> Result<(),
     let paths = paths::host_paths(data_dir)?;
     let request = match &action {
         RemoteAction::Info => json!({ "cmd": "remote_info", "args": {} }),
+        RemoteAction::On => json!({ "cmd": "remote_set", "args": { "enabled": true } }),
         RemoteAction::Advertise(addrs) => json!({ "cmd": "remote_advertise", "args": { "addrs": addrs } }),
     };
     let answer = match ipc::endpoint(&paths.data).and_then(|path| ipc::connect_blocking(&path)) {
         Ok(socket) => local_call::through_daemon(socket, request)?,
         Err(_) => match action {
             RemoteAction::Info => json!({ "enabled": false, "endpoint_id": null, "port": remote_config::port(&paths.data), "advertise": remote_config::advertised(&paths.data) }),
+            RemoteAction::On => {
+                std::fs::create_dir_all(&paths.data).map_err(|e| format!("could not create {}: {e}", paths.data.display()))?;
+                crate::remote_settings::save(&paths.data, true)?;
+                json!({ "enabled": false, "saved": true })
+            }
             RemoteAction::Advertise(addrs) => {
                 std::fs::create_dir_all(&paths.data).map_err(|e| format!("could not create {}: {e}", paths.data.display()))?;
                 json!({ "advertise": remote_config::set_advertised(&paths.data, &addrs)? })
@@ -174,6 +191,9 @@ where
     W: Write,
     R: BufRead + Send + 'static,
 {
+    if options.json {
+        return pair_json(client, options, out, stdin, interrupted).await;
+    }
     let say = |out: &mut W, text: &str| -> Result<(), String> {
         out.write_all(text.as_bytes()).and_then(|()| out.flush()).map_err(|e| e.to_string())
     };
@@ -230,6 +250,58 @@ where
     say(out, &format!("Paired {label} with {} access. Manage it with `apex-daemon devices`.\n", tier_name(serde_json::from_value(device["tier"].clone()).unwrap_or(options.tier))))
 }
 
+/// `pair --json`: the same steps for a program. It reads the link, dials it
+/// itself, and approves only the code it worked out, so a stranger who got the
+/// link first is cancelled instead of paired.
+#[cfg(feature = "remote")]
+async fn pair_json<W, R>(client: &mut Client, options: &PairOptions, out: &mut W, stdin: R, interrupted: impl std::future::Future<Output = ()>) -> Result<(), String>
+where
+    W: Write,
+    R: BufRead + Send + 'static,
+{
+    let emit = |out: &mut W, event: Value| -> Result<(), String> {
+        writeln!(out, "{event}").and_then(|()| out.flush()).map_err(|e| e.to_string())
+    };
+    let threads = options.threads.as_ref().map_or(json!("all"), |t| json!(t));
+    let started = client.call("pair_start", json!({ "tier": options.tier, "threads": threads })).await.map_err(|r| r.err)?;
+    let invitation = started["invitation"].clone();
+    emit(out, json!({ "event": "link", "link": started["link"], "expires_at": started["expires_at"] }))?;
+
+    tokio::pin!(interrupted);
+    let waiting = client.send("pair_wait", json!({ "invitation": invitation })).await.map_err(|r| r.err)?;
+    let claim = tokio::select! {
+        claim = client.reply(waiting) => claim,
+        _ = &mut interrupted => {
+            cancel(client, &invitation).await;
+            return Err("cancelled; no phone was paired".into());
+        }
+    };
+    let claim = claim.map_err(|Refused { err, .. }| err)?;
+    let code = claim["code"].as_str().unwrap_or_default().to_string();
+    emit(out, json!({ "event": "claim", "label": claim["label"], "code": code }))?;
+
+    let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut stdin = stdin;
+        let mut line = String::new();
+        let read = stdin.read_line(&mut line).map(|_| line);
+        let _ = answer_tx.send(read.ok());
+    });
+    let answer = tokio::select! {
+        answer = answer_rx => answer.ok().flatten().unwrap_or_default(),
+        _ = &mut interrupted => {
+            cancel(client, &invitation).await;
+            return Err("cancelled; the phone was not paired".into());
+        }
+    };
+    if code.is_empty() || answer.trim() != format!("approve {code}") {
+        cancel(client, &invitation).await;
+        return Err("not approved; the phone was not paired".into());
+    }
+    client.call("pair_approve", json!({ "invitation": invitation, "claim_id": claim["claim_id"] })).await.map_err(|r| r.err)?;
+    emit(out, json!({ "event": "paired" }))
+}
+
 /// Give the invitation up; a phone holding it is told at once.
 #[cfg(feature = "remote")]
 async fn cancel(client: &mut Client, invitation: &Value) {
@@ -259,9 +331,10 @@ mod tests {
 
     #[test]
     fn pair_takes_a_tier_and_threads() {
-        assert_eq!(parse(&[]), Ok(PairOptions { tier: Tier::Chat, threads: None }));
-        assert_eq!(parse(&["--tier", "full", "--threads", "all"]), Ok(PairOptions { tier: Tier::Full, threads: None }));
-        assert_eq!(parse(&["--threads", "r1, r2", "--tier", "read_only"]), Ok(PairOptions { tier: Tier::ReadOnly, threads: Some(vec!["r1".into(), "r2".into()]) }));
+        assert_eq!(parse(&[]), Ok(PairOptions { tier: Tier::Chat, threads: None, json: false }));
+        assert!(parse(&["--json"]).unwrap().json);
+        assert_eq!(parse(&["--tier", "full", "--threads", "all"]), Ok(PairOptions { tier: Tier::Full, threads: None, json: false }));
+        assert_eq!(parse(&["--threads", "r1, r2", "--tier", "read_only"]), Ok(PairOptions { tier: Tier::ReadOnly, threads: Some(vec!["r1".into(), "r2".into()]), json: false }));
     }
 
     #[test]
@@ -276,6 +349,7 @@ mod tests {
     #[test]
     fn remote_info_and_advertise() {
         assert_eq!(parse_remote(&["info"]), Ok(RemoteAction::Info));
+        assert_eq!(parse_remote(&["on"]), Ok(RemoteAction::On));
         assert_eq!(parse_remote(&["advertise", "--clear"]), Ok(RemoteAction::Advertise(vec![])));
         assert_eq!(parse_remote(&["advertise", "MyHome.ddns.net:41641", "[::1]:2"]), Ok(RemoteAction::Advertise(vec!["myhome.ddns.net:41641".into(), "[::1]:2".into()])));
         assert!(parse_remote(&["advertise", "nonsense"]).unwrap_err().contains("host:port"));
@@ -298,7 +372,7 @@ mod tests {
     #[cfg(feature = "remote")]
     fn qr_width(addrs: &[&str]) -> usize {
         let addrs = addrs.iter().map(|a| a.to_string()).collect();
-        let invite = crate::pairing::Invite { v: 1, host: [7; 32], name: "Tyler's Mac Studio".into(), relay: crate::remote::RELAY.into(), addrs, inv: [1; 16], secret: [2; 32], exp: 1_791_400_000 };
+        let invite = crate::pairing::Invite { v: 1, host: [7; 32], name: "Tyler's Mac Studio".into(), relay: crate::remote::RELAY.into(), addrs, inv: [1; 16], secret: [2; 32], exp: 1_791_400_000, os: "macos".into() };
         let code = qr(&invite.to_link()).unwrap();
         assert_eq!(code.lines().count() * 2, code.lines().map(|l| l.chars().count()).max().unwrap() + 1, "square, two rows per line");
         code.lines().map(|l| l.chars().count()).max().unwrap()
@@ -380,12 +454,16 @@ mod tests {
         /// Run `pair` against the daemon's socket with `stdin`; the lines it
         /// prints come out of the receiver.
         async fn run_cli(socket: &Path, options: PairOptions, stdin: &'static str, interrupted: tokio::sync::oneshot::Receiver<()>) -> (tokio::task::JoinHandle<Result<(), String>>, mpsc::UnboundedReceiver<String>) {
+            run_cli_with(socket, options, std::io::Cursor::new(stdin), interrupted).await
+        }
+
+        async fn run_cli_with<R: BufRead + Send + 'static>(socket: &Path, options: PairOptions, stdin: R, interrupted: tokio::sync::oneshot::Receiver<()>) -> (tokio::task::JoinHandle<Result<(), String>>, mpsc::UnboundedReceiver<String>) {
             let stream = ipc::connect(socket).await.unwrap();
             let (tx, rx) = mpsc::unbounded_channel();
             let cli = tokio::spawn(async move {
                 let mut client = Client::hello(stream).await.map_err(|r| r.err)?;
                 let mut screen = Screen(tx, String::new());
-                pair(&mut client, &options, &mut screen, std::io::Cursor::new(stdin), async move {
+                pair(&mut client, &options, &mut screen, stdin, async move {
                     if interrupted.await.is_err() {
                         std::future::pending::<()>().await;
                     }
@@ -419,7 +497,7 @@ mod tests {
             let (daemon, socket, at, endpoint_id) = live_daemon(&data.0).await;
             remote_config::set_advertised(&data.0, &["myhome.ddns.net:41641".into()]).unwrap();
             let (_never, interrupted) = tokio::sync::oneshot::channel();
-            let options = PairOptions { tier: Tier::Full, threads: Some(vec!["r1".into()]) };
+            let options = PairOptions { tier: Tier::Full, threads: Some(vec!["r1".into()]), json: false };
             let (cli, mut screen) = run_cli(&socket, options, "y\n", interrupted).await;
             let invite = link_from(&mut screen).await;
             assert_eq!(&invite.host, &endpoint_id);
@@ -437,12 +515,48 @@ mod tests {
             assert_eq!((device.label.as_str(), device.tier, device.threads), ("Tyler's iPhone", Tier::Full, Threads::Only(vec!["r1".into()])));
         }
 
+        /// What `--json` printed so far, one event per line.
+        async fn event(screen: &mut mpsc::UnboundedReceiver<String>) -> Value {
+            let line = tokio::time::timeout(std::time::Duration::from_secs(10), screen.recv()).await.expect("an event in time").expect("the CLI printed");
+            serde_json::from_str(&line).unwrap()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn json_mode_approves_only_the_code_it_is_given() {
+            for (answer, paired) in [("right", true), ("approve 000000\n", false), ("", false)] {
+                let data = crate::devices::tests::folder();
+                let (daemon, socket, at, _) = live_daemon(&data.0).await;
+                let (_never, interrupted) = tokio::sync::oneshot::channel();
+                let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+                let reader = std::io::BufReader::new(reader);
+                let (cli, mut screen) = run_cli_with(&socket, PairOptions { tier: Tier::Full, threads: None, json: true }, reader, interrupted).await;
+                let link = event(&mut screen).await;
+                assert_eq!(link["event"], "link");
+                let invite = Invite::parse_link(link["link"].as_str().unwrap(), crate::devices::now_ms() / 1000).unwrap();
+                assert_eq!(invite.os, std::env::consts::OS);
+                let phone = SecretKey::generate();
+                let dial = { let (phone, invite) = (phone.clone(), invite.clone()); tokio::spawn(async move { pair_dial(phone, at, &invite).await }) };
+                let claim = event(&mut screen).await;
+                assert_eq!(claim["event"], "claim");
+                let text = if answer == "right" { format!("approve {}\n", claim["code"].as_str().unwrap()) } else { answer.to_string() };
+                writer.write_all(text.as_bytes()).unwrap();
+                drop(writer);
+                let finished = tokio::time::timeout(std::time::Duration::from_secs(10), cli).await.unwrap().unwrap();
+                let _ = dial.await;
+                assert_eq!(finished.is_ok(), paired, "{answer:?}: {finished:?}");
+                assert_eq!(daemon.devices.get(&phone.public().to_string()).is_some(), paired);
+                if paired {
+                    assert_eq!(event(&mut screen).await["event"], "paired");
+                }
+            }
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn anything_but_y_denies_the_phone() {
             let data = crate::devices::tests::folder();
             let (daemon, socket, at, _endpoint_id) = live_daemon(&data.0).await;
             let (_never, interrupted) = tokio::sync::oneshot::channel();
-            let (cli, mut screen) = run_cli(&socket, PairOptions { tier: Tier::Chat, threads: None }, "\n", interrupted).await;
+            let (cli, mut screen) = run_cli(&socket, PairOptions { tier: Tier::Chat, threads: None, json: false }, "\n", interrupted).await;
             let invite = link_from(&mut screen).await;
             let phone = SecretKey::generate();
             let refused = pair_dial(phone.clone(), at, &invite).await.expect_err("denied");
@@ -456,7 +570,7 @@ mod tests {
             let data = crate::devices::tests::folder();
             let (daemon, socket, at, _endpoint_id) = live_daemon(&data.0).await;
             let (interrupt, interrupted) = tokio::sync::oneshot::channel();
-            let (cli, mut screen) = run_cli(&socket, PairOptions { tier: Tier::Chat, threads: None }, "y\n", interrupted).await;
+            let (cli, mut screen) = run_cli(&socket, PairOptions { tier: Tier::Chat, threads: None, json: false }, "y\n", interrupted).await;
             let invite = link_from(&mut screen).await;
             interrupt.send(()).unwrap();
             assert!(cli.await.unwrap().unwrap_err().contains("cancelled"));
@@ -480,7 +594,7 @@ mod tests {
             tokio::spawn(protocol::serve(off, Trust::Local, input, output));
             let mut client = Client::hello(ours).await.unwrap();
             let mut out = Vec::new();
-            let err = pair(&mut client, &PairOptions { tier: Tier::Chat, threads: None }, &mut out, std::io::Cursor::new(""), std::future::pending()).await.unwrap_err();
+            let err = pair(&mut client, &PairOptions { tier: Tier::Chat, threads: None, json: false }, &mut out, std::io::Cursor::new(""), std::future::pending()).await.unwrap_err();
             assert!(err.contains("apex-daemon serve --remote"), "{err}");
         }
     }
