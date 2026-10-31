@@ -9,6 +9,8 @@ import {upgradeScripts,validateManifest,validateOutput} from '../scripts/package
 // macOS-only: the signed .pkg upgrade. Windows has no such API, and the app refuses
 // protected records there instead of pretending the check passed.
 const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the signed .pkg upgrade' };
+// upgrade.py runs under fake system calls here, which needs /usr/bin/python3 and POSIX files.
+const POSIX_ONLY = process.platform === 'win32' ? { skip: 'upgrade.py is macOS-only' } : {};
 const manifest={id:'12345678-1234-1234-1234-123456789abc',version:'0.8.2',ui:'a'.repeat(40),daemon:'b'.repeat(40),broker:'c'.repeat(40)};
 function python(program){
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'apex-upgrade-test-'));
@@ -179,7 +181,7 @@ def fake_run(*args,required=True):
 u.run=fake_run
 `;
 
-test('another signed-in account’s background service stops for the install and starts again on the new copy',()=>python(accountsFixture+String.raw`
+test('another signed-in account’s background service stops for the install and starts again on the new copy',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 u.install()
 assert (u.TRUSTED/'version').read_text()=='new'
 # Both services are down before the broker is, and the other account's comes back
@@ -190,7 +192,7 @@ assert not loaded[501] and loaded[502]
 shutil.rmtree(directory)
 `));
 
-test('a rolled-back install starts the other account’s background service again on the old copy',()=>python(accountsFixture+String.raw`
+test('a rolled-back install starts the other account’s background service again on the old copy',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 fail.append('injected broker failure')
 try:u.install()
 except RuntimeError as error:assert 'injected' in str(error),error
@@ -201,7 +203,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('another account’s service that isn’t its own regular file is refused before anything stops',()=>python(accountsFixture+String.raw`
+test('another account’s service that isn’t its own regular file is refused before anything stops',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 other_agent.unlink();other_agent.symlink_to(agent)
 try:u.install()
 except RuntimeError as error:assert 'another account' in str(error),error
@@ -210,7 +212,7 @@ assert events==[] and loaded=={501:True,502:True},events
 shutil.rmtree(directory)
 `));
 
-test('a background service the update can’t stop says so instead of a vague “still running”',()=>python(accountsFixture+String.raw`
+test('a background service the update can’t stop says so instead of a vague “still running”',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 stray[0]=True
 try:u.install()
 except RuntimeError as error:assert "couldn't stop" in str(error) and 'nothing was installed' in str(error),error
@@ -220,7 +222,7 @@ assert ('start',502,str(other_agent),'old') in events,'the stopped services are 
 shutil.rmtree(directory)
 `));
 
-test('an account that signs out as the update starts is skipped, not a reason to refuse',()=>python(accountsFixture+String.raw`
+test('an account that signs out as the update starts is skipped, not a reason to refuse',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 real=u.run
 def signed_out(*args,required=True):
  if list(map(str,args[:3]))==['/bin/launchctl','bootout','gui/502/dev.apexdeck.daemon']:
@@ -235,7 +237,7 @@ assert not any(e[:2]==('start',502) for e in events if isinstance(e,tuple)),'not
 shutil.rmtree(directory)
 `));
 
-test('another account’s service that won’t stop refuses the update by name',()=>python(accountsFixture+String.raw`
+test('another account’s service that won’t stop refuses the update by name',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 real=u.run
 def stuck(*args,required=True):
  if list(map(str,args[:3]))==['/bin/launchctl','bootout','gui/502/dev.apexdeck.daemon']:
@@ -251,7 +253,7 @@ assert ('start',501,str(agent),'old') in events,events
 shutil.rmtree(directory)
 `));
 
-test('a rollback that needs checking names the other accounts whose service stays off',()=>python(accountsFixture+String.raw`
+test('a rollback that needs checking names the other accounts whose service stays off',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 # pop() takes from the end: the install's broker start fails, then the rollback's.
 fail.extend(['rollback broker failure','injected broker failure'])
 notes=[]
@@ -264,7 +266,7 @@ assert len(notes)==1 and '"Other Person"' in notes[0] and 'stays off' in notes[0
 shutil.rmtree(directory)
 `));
 
-test('a directory account that getpwall leaves out is still found by its running background service',()=>python(accountsFixture+String.raw`
+test('a directory account that getpwall leaves out is still found by its running background service',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 net=base/'net';(net/'Library/LaunchAgents').mkdir(parents=True);net_agent=net/'Library/LaunchAgents/dev.apexdeck.daemon.plist';net_agent.write_text('net agent')
 directory_user=types.SimpleNamespace(pw_uid=503,pw_dir=str(net),pw_name='net',pw_gecos='Network Person')
 u.pwd.getpwuid=lambda uid:directory_user if uid==503 else (_ for _ in ()).throw(KeyError(uid))
@@ -280,7 +282,7 @@ assert 503 in found and found[503][0]=='Network Person',found
 shutil.rmtree(directory)
 `));
 
-test('a background service run by an account nobody can look up refuses the update',()=>python(accountsFixture+String.raw`
+test('a background service run by an account nobody can look up refuses the update',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 u.pwd.getpwuid=lambda uid:(_ for _ in ()).throw(KeyError(uid))
 real=u.run
 u.run=lambda *args,required=True:subprocess.CompletedProcess(list(map(str,args)),0,'  777 /x/apex-daemon\n','') if str(args[0])=='/bin/ps' else real(*args,required=required)
@@ -291,7 +293,7 @@ assert events==[],events
 shutil.rmtree(directory)
 `));
 
-test('Deck opened in another account as the update starts says so',()=>python(accountsFixture+String.raw`
+test('Deck opened in another account as the update starts says so',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 u.app_running=lambda uid=None:uid is None
 try:u.install()
 except RuntimeError as error:assert 'in another account' in str(error) and 'opened again' not in str(error),error
@@ -300,7 +302,7 @@ assert (u.TRUSTED/'version').read_text()=='old'
 shutil.rmtree(directory)
 `));
 
-test('a rollback whose own service file vanished still starts the other account’s background service again',()=>python(accountsFixture+String.raw`
+test('a rollback whose own service file vanished still starts the other account’s background service again',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 # The requester's plist disappears while the update is staged, which stops the install.
 u.validate_bundle=lambda p:agent.unlink() if 'upgrade-' in str(p) else None
 try:u.install()
@@ -313,7 +315,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('an account whose background service won’t start again is named, with what brings it back',()=>python(accountsFixture+String.raw`
+test('an account whose background service won’t start again is named, with what brings it back',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 refuse_start.add(502)
 notes=[]
 u.install(notes)
@@ -323,7 +325,7 @@ assert len(notes)==1 and '"Other Person"' in notes[0] and "didn't start again" i
 shutil.rmtree(directory)
 `));
 
-test('a clean rollback also names an account whose background service won’t start again',()=>python(accountsFixture+String.raw`
+test('a clean rollback also names an account whose background service won’t start again',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 refuse_start.add(502);fail.append('injected broker failure')
 notes=[]
 try:u.install(notes)
@@ -334,7 +336,7 @@ assert len(notes)==1 and '"Other Person"' in notes[0],notes
 shutil.rmtree(directory)
 `));
 
-test('broker startup may fold journal.log into journal.json after the stopped-writer snapshot',()=>python(accountsFixture+String.raw`
+test('broker startup may fold journal.log into journal.json after the stopped-writer snapshot',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 (u.ROOT/'journal.log').write_bytes(b'pending signed entries\n')
 def restart(pid,socket):
  (u.ROOT/'journal.json').write_bytes(b'folded snapshot')
@@ -368,7 +370,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('retry after a rolled-back install retains old evidence and uses a fresh backup and staging path',()=>python(accountsFixture+String.raw`
+test('retry after a rolled-back install retains old evidence and uses a fresh backup and staging path',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 fail.append('injected broker failure')
 try:u.install()
 except RuntimeError:pass
@@ -387,7 +389,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('a changed signing key still fails after broker startup and rolls back',()=>python(accountsFixture+String.raw`
+test('a changed signing key still fails after broker startup and rolls back',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 def restart(pid,socket):
  (u.ROOT/'private-key').write_bytes(b'changed key')
  return 222
@@ -401,7 +403,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('an unresolved recovery lock blocks retry before creating another backup or stopping services',()=>python(accountsFixture+String.raw`
+test('an unresolved recovery lock blocks retry before creating another backup or stopping services',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 (u.UPGRADES/'install.lock').mkdir()
 (u.UPGRADES/'install.lock/recovery-needed.txt').write_text('inspect prior failure')
 try:u.install()
@@ -412,7 +414,7 @@ assert events==[]
 shutil.rmtree(directory)
 `));
 
-test('rollback never rewrites the journal or swaps apps if the replacement broker cannot be stopped',()=>python(accountsFixture+String.raw`
+test('rollback never rewrites the journal or swaps apps if the replacement broker cannot be stopped',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 def restart(pid,socket):
  (u.ROOT/'journal.json').write_bytes(b'live folded snapshot')
  (u.ROOT/'journal.log').write_bytes(b'live log')

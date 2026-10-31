@@ -1,7 +1,10 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+
+// The acceptance harness is a bash script for the macOS install.
+const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 
 const script = readFileSync(new URL('../scripts/acceptance-provenance.sh', import.meta.url), 'utf8');
 const check = script.slice(script.indexOf('positive_runner_startup() {'), script.indexOf('\ntamper_forged_json() {'));

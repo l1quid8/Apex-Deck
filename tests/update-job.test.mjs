@@ -1,11 +1,14 @@
 // The update job's half of scripts/upgrade.py: the root job the provenance
 // broker starts for "Restart to update". Every system call is faked; nothing
 // here touches /Library, launchd, codesign or the real app.
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { upgradeScripts } from '../scripts/package-mac-upgrade.mjs';
+
+// The job is macOS's (root launchd, /usr/bin/python3); Windows updates through its installer.
+const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 
 const transaction = fileURLToPath(new URL('../scripts/upgrade.py', import.meta.url));
 
