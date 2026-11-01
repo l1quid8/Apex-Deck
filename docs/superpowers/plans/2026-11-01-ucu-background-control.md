@@ -139,7 +139,7 @@ This is separate from same-session control. It's the only route to a real pointe
 | Second macOS user on this Mac | Not usefully | Needs a separate session with a usable display. Not tested | No |
 | **macOS VM** (Apple Virtualization) | **Yes** | [Two macOS guests at once](https://eclecticlight.co/2026/04/29/virtualisation-on-apple-silicon-macs-is-different/), own disk and memory, own app installs, logins and permissions. Tyler's signed-in sessions aren't there | **Best later option** |
 | **Second Mac** | **Yes** | Hardware cost. Deck's machines feature may carry it, but that isn't checked | Best if reliability matters more than cost |
-| Linux VM or server | **Yes** | Browsers and Linux apps only, no Mac apps | Web only; Pomerado already covers much of this |
+| Linux VM or server | **Yes** | Browsers and Linux apps only, no Mac apps | Web only |
 
 **Recommendation:** don't build this now. In a VM, physical input can't compete with Tyler, so the deleted foreground paths would belong there, in a helper running inside the guest. Decide once the same-session refusal logs show which apps need it.
 
