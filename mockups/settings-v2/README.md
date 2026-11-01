@@ -82,14 +82,14 @@ Audited against `src/AppearanceSettings.tsx`, `src/themes.ts`, `src/SettingsPage
 | Endpoint ID, UDP port, advertised addresses, Save | Same group | Sample identity/port, input and Save dialog |
 | UCU enable/status/refresh/setup/stop/resume | Unified Computer Use and Access, status & recovery | Switch plus prototype actions |
 | UCU per-thread approval and revoke | Access and Access, status & recovery | New direction represented, sample grants only |
-| Cursor visibility, optional labels and duration | Cursor indicator | Interactive tab-local controls |
-| Cursor style presets (default/simple/ring-only/custom) | Cursor indicator → style | Preset buttons, simple disables ripple/highlight, ring-only best-effort |
-| Cursor size 0.5–4.0 | Cursor indicator → Preview & size | Slider, upstream range validated |
-| Fill/accent/outline colors | Cursor indicator → Colors | Color inputs, hex validation #FFF/#FFFFFF, fallback to accent |
-| Ripple and target-highlight toggles | Cursor indicator → Effects | Two toggles, affect rendered overlay |
-| Motion/travel and dwell timing, bow/overshoot/tremor | Cursor indicator → Customize cursor | Sliders: travel min/max 30–600, dwell 0–300, bow 0–3, overshoot 0–0.15, tremor 0–4, budget 700ms |
-| Action labels off by default | Cursor indicator → labels toggle | Checkbox, false default, persists via host prefs |
-| Custom PNG cursor image + reset | Cursor indicator → Custom PNG | File picker, PNG signature check, ≤2MiB, ≤1024 per side, persisted in app data /computer-cursor/, degrade to default if missing |
+| Cursor visibility, optional labels and duration | Cursor indicator | Interactive tab-local controls, Swift helper implemented |
+| Cursor style presets (default/simple/ring-only/custom) | Cursor indicator → style | Preset buttons, simple disables ripple/highlight, ring-only truly hides arrow (Swift renderer), atomic save, helper ack surfaced |
+| Cursor size 0.5–4.0 | Cursor indicator → Preview & size | Slider, upstream range validated, Swift scaling 44pt * size, failure surfaces |
+| Fill/accent/outline colors | Cursor indicator → Colors | Color inputs, hex validation #FFF/#FFFFFF, fallback to accent, Swift uses fill/rim/accent with validation |
+| Ripple and target-highlight toggles | Cursor indicator → Effects | Two toggles, Swift renderer skips layers when false; ring-only forces both true |
+| Motion/travel and dwell timing, bow/overshoot/tremor | Cursor indicator → Customize cursor | Sliders: travel min/max 30–600, dwell 0–300, bow 0–3, overshoot 0–0.15, tremor 0–4, budget 700ms validated in Rust + Swift, dwell affects auto-hide |
+| Action labels off by default | Cursor indicator → labels toggle | Checkbox, false default, atomic save + helper unified/set-action-labels ack, error surfaced on RPC failure |
+| Custom PNG cursor image + reset | Cursor indicator → Custom PNG | File picker, PNG signature check, ≤2MiB, ≤1024 per side, persisted in app data /computer-cursor/ (hash name, not temp), Swift validates file existence/size/PNG magic via validateImageFile, degrade to default, reset uses unified/reset-cursor-overlay |
 | Permission/model/privacy explanations | Mac permissions & privacy | Retained; no global model-specific enable gate |
 | Gateway endpoint on-off/URL copy/listen/port/save | Model gateway, Network configuration and Endpoint actions | Sample values, switch and action dialogs |
 | Gateway API keys/providers/refresh | Endpoint actions & provider readiness | Both key and provider functions represented |

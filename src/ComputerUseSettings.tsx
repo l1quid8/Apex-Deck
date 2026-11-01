@@ -117,21 +117,30 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
   };
 
   const commitPrefs = async (next: CursorOverlayPrefs) => {
+    const prev = prefs;
     setPrefs(next);
     setBusy(true); setError('');
     try {
       const s = await backend.call<ComputerStatus>('computer_set_cursor_overlay', { prefs: next as any });
       setStatus(s);
-      // optimistic already set, but sync from response
-      if (s.cursorOverlay) {
-        // keep local unless helper gave different
-        const hp = s.cursorOverlayFromHelper ?? s.cursorOverlay;
-        if (hp) {
-          // merge but preserve what we just set for immediate feedback
-        }
+      // Sync from helper ack (atomic validated persistence) – helper is now source of truth when reachable
+      const hp = (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? s.cursorOverlay;
+      if (hp) {
+        setPrefs({
+          ...DEFAULT_PREFS,
+          ...hp,
+          motion: { ...DEFAULT_PREFS.motion, ...(hp.motion ?? {}) },
+          preset: (hp.preset as any) ?? next.preset,
+          labelsEnabled: (s.cursorOverlayLabelsEnabled ?? hp.labelsEnabled) as any ?? next.labelsEnabled,
+          customImage: (hp as any).customImage ?? next.customImage ?? null,
+        });
       }
     } catch (e: any) {
-      setError(e?.message || 'Could not save cursor settings.');
+      setError(e?.message || 'Could not save cursor settings. Helper acknowledgement failed; host prefs kept but helper may be offline.');
+      // rollback optimistic to previous validated state if save failed
+      setPrefs(prev);
+      // refresh status to get ground truth
+      try { const s = await backend.call<ComputerStatus>('computer_status'); setStatus(s); } catch {}
     } finally { setBusy(false); }
   };
 
@@ -173,7 +182,18 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     try {
       const s = await backend.call<ComputerStatus>('computer_set_cursor_image', { image_base64: base64 });
       setStatus(s);
-      setPrefs(s.cursorOverlay ?? { ...prefs, preset: 'custom', customImage: { path: 'custom', hotspotX: 0, hotspotY: 0 } });
+      const hp = (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? s.cursorOverlay;
+      if (hp) {
+        setPrefs({
+          ...DEFAULT_PREFS,
+          ...hp,
+          motion: { ...DEFAULT_PREFS.motion, ...(hp.motion ?? {}) },
+          preset: (hp.preset as any) ?? 'custom',
+          labelsEnabled: (s.cursorOverlayLabelsEnabled ?? hp.labelsEnabled) as any ?? prefs.labelsEnabled,
+        });
+      } else {
+        setPrefs(prev => ({ ...prev, preset: 'custom' }));
+      }
     } catch (e: any) {
       setError(e?.message || 'Could not save custom cursor. Falls back to built-in.');
     } finally { setBusy(false); }

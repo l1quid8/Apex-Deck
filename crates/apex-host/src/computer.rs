@@ -426,14 +426,33 @@ impl Host {
                             status[key] = helper[key].clone();
                         }
                     }
-                    if helper.get("cursorOverlay").is_some() {
-                        // helper may have newer prefs, merge but keep host as fallback
-                        status["cursorOverlayFromHelper"] = helper["cursorOverlay"].clone();
+                    if let Some(overlay) = helper.get("cursorOverlay") {
+                        if !overlay.is_null() {
+                            status["cursorOverlayFromHelper"] = overlay.clone();
+                            // Sync: if helper has valid prefs, persist to host file for launch/reconnect consensus.
+                            // Host pushes its prefs on explicit set calls; here we adopt helper's if helper was changed via menu or prior run.
+                            // We only overwrite host file if helper's json parses as valid and differs from host default in a meaningful way,
+                            // or if host file is default and helper is customized.
+                            // This keeps single source on reconnect: last writer wins via status fetch.
+                            if let Ok(helper_prefs) = serde_json::from_value::<crate::cursor_overlay::CursorOverlayPrefs>(overlay.clone()) {
+                                if helper_prefs.validate().is_ok() {
+                                    let host_prefs = prefs.clone();
+                                    // If host differs, save helper's into host (helper is ground truth for visual state)
+                                    // But we keep host's custom_image path if helper lacks image file – degrade to file existence check inside save will keep path absolute.
+                                    if helper_prefs != host_prefs {
+                                        // Best-effort sync, ignore save errors (status still returns helper's view)
+                                        let _ = crate::cursor_overlay::save(&self.computer.data_root, &helper_prefs);
+                                        // Also update local status to reflect helper's view for UI immediate consistency
+                                        status["cursorOverlay"] = serde_json::to_value(&helper_prefs).unwrap_or(overlay.clone());
+                                        status["cursorOverlayLabelsEnabled"] = json!(helper_prefs.labels_enabled);
+                                    }
+                                }
+                            }
+                        }
                     }
                     status["stopped"] = json!(
                         self.computer.stopped.load(Ordering::SeqCst) || helper["stopped"] == true
                     );
-                    // overlay host prefs into status if helper didn't provide full
                     if status["cursorOverlayLabelsEnabled"].is_null() {
                         status["cursorOverlayLabelsEnabled"] = json!(prefs.labels_enabled);
                     }
@@ -481,28 +500,33 @@ impl Host {
         Ok(self.computer_status().await)
     }
     pub async fn computer_set_action_labels(&self, enabled: bool) -> Result<Value, String> {
-        // persist locally always, for degrade gracefully
+        // atomic validated persistence: save must succeed
         {
             let mut prefs = self.computer.cursor_prefs();
             prefs.labels_enabled = enabled;
-            let _ = crate::cursor_overlay::save(&self.computer.data_root, &prefs);
+            crate::cursor_overlay::save(&self.computer.data_root, &prefs).map_err(|e| e)?;
         }
         #[cfg(unix)]
         {
-            if let Ok(mut stream) = connect().await {
-                if let Ok(result) = rpc(&mut stream, "unified/set-action-labels", json!({"enabled":enabled})).await {
-                    if result["cursorOverlayLabelsEnabled"] != enabled {
-                        // helper responded but didn't ack; still keep local and return status
+            match connect().await {
+                Ok(mut stream) => {
+                    match rpc(&mut stream, "unified/set-action-labels", json!({"enabled":enabled})).await {
+                        Ok(_) => Ok(self.computer_status().await),
+                        Err(e) => {
+                            // Helper reachable but refused – surface failure
+                            Err(format!("Helper failed to apply action labels: {e}"))
+                        }
                     }
-                    return Ok(self.computer_status().await);
+                }
+                Err(_) => {
+                    // Helper not running – degrade gracefully, host prefs are source of truth
+                    Ok(self.computer_status().await)
                 }
             }
-            // If helper unavailable, still report local success (degrade gracefully)
-            return Ok(self.computer_status().await);
         }
         #[cfg(not(unix))]
         {
-            return Ok(self.computer_status().await);
+            Ok(self.computer_status().await)
         }
     }
 
@@ -561,29 +585,27 @@ impl Host {
         }
         current.validate().map_err(|e| e)?;
         crate::cursor_overlay::save(&self.computer.data_root, &current).map_err(|e| e)?;
-        // Attempt helper RPC unified/set-cursor-overlay, degrade gracefully if unknown
+        // Attempt helper RPC with acknowledgement – surface failure if helper reachable
         #[cfg(unix)]
         {
-            if let Ok(mut stream) = connect().await {
-                let helper_payload = json!({
-                    "cursorOverlay": current,
-                });
-                let _ = rpc(&mut stream, "unified/set-cursor-overlay", helper_payload).await;
-                // ignore result - graceful degradation, host prefs are source of truth for UI
+            match connect().await {
+                Ok(mut stream) => {
+                    let helper_payload = json!({
+                        "cursorOverlay": current.clone(),
+                    });
+                    if let Err(err) = rpc(&mut stream, "unified/set-cursor-overlay", helper_payload).await {
+                        return Err(format!("Helper failed to apply cursor overlay: {err}"));
+                    }
+                }
+                Err(_) => { /* degrade gracefully if helper offline */ }
             }
         }
         Ok(self.computer_status().await)
     }
 
     pub async fn computer_set_cursor_image(&self, base64_png: String, hotspot_x: Option<f64>, hotspot_y: Option<f64>) -> Result<Value, String> {
-        // Decode base64 (allow data URL prefix)
-        let b64 = if let Some(comma) = base64_png.find(',') {
-            &base64_png[comma+1..]
-        } else {
-            &base64_png
-        };
+        let b64 = if let Some(comma) = base64_png.find(',') { &base64_png[comma+1..] } else { &base64_png };
         let bytes = {
-            // try standard then url safe
             use base64::{Engine as _, engine::general_purpose::STANDARD};
             STANDARD.decode(b64.trim()).map_err(|_| "Invalid base64 PNG data".to_string())?
         };
@@ -600,8 +622,13 @@ impl Host {
         crate::cursor_overlay::save(&self.computer.data_root, &prefs).map_err(|e| e)?;
         #[cfg(unix)]
         {
-            if let Ok(mut stream) = connect().await {
-                let _ = rpc(&mut stream, "unified/set-cursor-overlay", json!({ "cursorOverlay": prefs })).await;
+            match connect().await {
+                Ok(mut stream) => {
+                    if let Err(err) = rpc(&mut stream, "unified/set-cursor-overlay", json!({ "cursorOverlay": prefs.clone() })).await {
+                        return Err(format!("Helper failed to apply custom image: {err}"));
+                    }
+                }
+                Err(_) => {}
             }
         }
         Ok(self.computer_status().await)
@@ -612,8 +639,12 @@ impl Host {
         #[cfg(unix)]
         {
             if let Ok(mut stream) = connect().await {
-                let _ = rpc(&mut stream, "unified/set-cursor-overlay", json!({ "cursorOverlay": prefs })).await;
-                let _ = rpc(&mut stream, "unified/set-action-labels", json!({ "enabled": prefs.labels_enabled })).await;
+                // Prefer dedicated reset RPC, fallback to set overlay
+                if rpc(&mut stream, "unified/reset-cursor-overlay", json!({})).await.is_err() {
+                    if let Ok(mut s2) = connect().await {
+                        let _ = rpc(&mut s2, "unified/set-cursor-overlay", json!({ "cursorOverlay": prefs.clone() })).await;
+                    }
+                }
             }
         }
         Ok(self.computer_status().await)

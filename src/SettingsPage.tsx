@@ -129,7 +129,9 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
   const [searchResults, setSearchResults] = useState<CatalogEntry[]>([]);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [focusedResultIdx, setFocusedResultIdx] = useState(-1);
   const saveGen = useRef(0);
+  const lastSettingsJson = useRef<string>('');
   const expandedAdvanced = useRef<Set<string>>(new Set());
 
   // Visible section ids based on backend capabilities
@@ -147,7 +149,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
 
   useEffect(() => { navFocusRef.current?.querySelector<HTMLButtonElement>("button.active")?.focus(); }, [resolvedSection]);
 
-  // Keyboard: Escape clears search before closing, Cmd+F focuses search, Arrow nav
+  // Keyboard: Escape clears search before closing, Cmd+F focuses search, Arrow nav for results
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       const meta = event.metaKey || event.ctrlKey;
@@ -155,13 +157,49 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
         event.preventDefault();
         searchRef.current?.focus();
         searchRef.current?.select();
+        setFocusedResultIdx(searchResults.length ? 0 : -1);
         return;
+      }
+      // Search result keyboard navigation when search active
+      if (searchQuery && searchResults.length) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          setFocusedResultIdx(prev => {
+            const next = prev < 0 ? 0 : Math.min(prev + 1, searchResults.length - 1);
+            // focus the button element
+            requestAnimationFrame(() => {
+              const btn = mainRef.current?.querySelectorAll('.search-result')[next] as HTMLElement | undefined;
+              btn?.focus();
+            });
+            return next;
+          });
+          return;
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          setFocusedResultIdx(prev => {
+            const next = prev <= 0 ? searchResults.length - 1 : prev - 1;
+            requestAnimationFrame(() => {
+              const btn = mainRef.current?.querySelectorAll('.search-result')[next] as HTMLElement | undefined;
+              btn?.focus();
+            });
+            return next;
+          });
+          return;
+        }
+        if (event.key === 'Enter' && focusedResultIdx >= 0) {
+          event.preventDefault();
+          const entry = searchResults[focusedResultIdx];
+          if (entry) navigateToResult(entry);
+          return;
+        }
       }
       if (event.key === 'Escape' && !event.defaultPrevented) {
         if (searchQuery) {
           event.preventDefault();
           setSearchQuery('');
           setSearchResults([]);
+          setFocusedResultIdx(-1);
           searchRef.current?.focus();
           return;
         }
@@ -178,13 +216,14 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [onClose, searchQuery]);
+  }, [onClose, searchQuery, searchResults, focusedResultIdx]);
 
   const handleSearch = useCallback((q: string) => {
     setSearchQuery(q);
-    if (!q.trim()) { setSearchResults([]); return; }
+    if (!q.trim()) { setSearchResults([]); setFocusedResultIdx(-1); return; }
     const results = catalogSearch(q, CATALOG_ENTRIES, visibleSections);
     setSearchResults(results);
+    setFocusedResultIdx(results.length ? 0 : -1);
   }, [visibleSections]);
 
   const navigateToResult = useCallback((entry: CatalogEntry) => {
@@ -217,20 +256,43 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
     });
   }, [onSection, resolvedSection]);
 
-  // Save feedback — watches settings changes
-  const prevSettingsRef = useRef(settings);
+  // Save feedback — tied to latest edit generation; prevents stale Saved
+  // We keep "Saving…" immediately on change, then "Saved" only if no newer edit arrived and no storage error event.
+  // Actual persistence errors are surfaced via storageError listener from App.tsx if present.
   useEffect(() => {
-    if (prevSettingsRef.current === settings) return;
-    prevSettingsRef.current = settings;
+    const json = (() => { try { return JSON.stringify(settings); } catch { return ''; } })();
+    if (lastSettingsJson.current === json) return;
+    lastSettingsJson.current = json;
+    if (lastSettingsJson.current === '') return;
+    // Skip initial mount
+    if (json === '' || saveGen.current === 0 && lastSettingsJson.current !== '') {
+      // first real settings set – don't flash saving, but set gen
+      // We'll still mark initial gen to avoid false comparison on next edit
+      if (saveGen.current === 0) { saveGen.current = 1; return; }
+    }
     const gen = ++saveGen.current;
     setSaveState('saving');
     const timer = setTimeout(() => {
-      if (gen !== saveGen.current) return;
+      if (gen !== saveGen.current) return; // stale completion must not overwrite newer edit
+      // Only show Saved if no newer edit queued
       setSaveState('saved');
       setTimeout(() => { if (gen === saveGen.current) setSaveState('idle'); }, 1800);
-    }, 500);
+    }, 600);
     return () => clearTimeout(timer);
   }, [settings]);
+
+  // Listen for storage save errors to surface "Could not save" tied to latest gen
+  useEffect(() => {
+    const onStorageError = (e: Event) => {
+      const detail = (e as CustomEvent).detail as string | undefined;
+      if (!detail || detail.toLowerCase().includes('settings')) {
+        setSaveState('error');
+      }
+    };
+    window.addEventListener('settings-save-error' as any, onStorageError);
+    // Also listen to generic storage-error bubbling from App toast pattern via MutationObserver of body text? Fallback: window error event
+    return () => window.removeEventListener('settings-save-error' as any, onStorageError);
+  }, []);
 
   const currentSec = CATALOG_SECTIONS.find(s=>s.id===resolvedSection) ?? CATALOG_SECTIONS[0];
   const index = CATALOG_SECTIONS.findIndex(s=>s.id===resolvedSection);

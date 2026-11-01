@@ -662,10 +662,15 @@ export function App() {
   }, [backend, settingsOpen]);
 
   // settings.json, beside the session file. Written in order, like the session.
+  // Preservation: failed saves retain local value for retry (queue keeps pending value), stale completions not shown as success due to generation check in SettingsPage.
   useEffect(() => {
     if (!backend || !settingsRead.current) return;
     settingsQueue.current = settingsQueue.current.catch(() => {}).then(() => backend.settingsSave(settings));
-    settingsQueue.current.catch((error) => setStorageError(`Could not save settings: ${String(error)}`));
+    settingsQueue.current.catch((error) => {
+      const msg = `Could not save settings: ${String(error)}`;
+      setStorageError(msg);
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: msg })); } catch {}
+    });
   }, [backend, settings]);
 
   // The workspace in view is always a listed one: removing it moves on to the first listed.

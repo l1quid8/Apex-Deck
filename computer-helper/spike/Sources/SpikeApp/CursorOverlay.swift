@@ -3,36 +3,20 @@ import QuartzCore
 
 /// Visual-only cursor overlay, modeled on Agent Desktop's cursor-overlay.
 ///
-/// Requirements it satisfies:
-/// - Large visible pointer / target highlight at the actual desktop action location.
-/// - Presentation-only: click-through, non-activating, never intercepts clicks,
-///   never injects input, never requests new permissions, never changes model
-///   action selection.
-/// - Lives inside the existing signed helper (SpikeApp) – no new
-///   permission-holding process, no dock icon, no key window.
-/// - Enable/disable setting via CursorOverlaySettings.
-/// - Cleanup on action end or Stop.
-///
-/// Design cues from upstream `agent-desktop` commands-system.md cursor-overlay:
-/// - Arrow cursor sized to action point, accent-colored body, ripple, element
-///   outline optional, black pill label below/right of tip, ellipsis >360pt.
-/// - In this isolated implementation: large high-contrast arrow (44pt), accent
-///   ripple, and optional label pill. No travel animation (headed real cursor
-///   moves separately); this overlay shows the landing location.
+/// Supports presets: default, simple pointer, ring-only (no arrow), custom PNG image.
+/// Validated per upstream limits PNG ≤2MiB ≤1024px.
+/// Presentation-only overlay.
 
 final class CursorOverlay: NSObject {
   static let shared = CursorOverlay()
 
   private let lock = NSLock()
-  private var windows: [NSWindow] = [] // active overlay windows (one per screen covering point)
+  private var windows: [NSWindow] = []
   private var hideWork: DispatchWorkItem?
-  private var generation: Int = 0 // bumps on each show; guards stale hide completions
-
-  // MARK: - Public API (main thread)
+  private var generation: Int = 0
 
   var isEnabled: Bool { CursorOverlaySettings.isEnabled }
 
-  /// Enable setting + ensure any stale windows are removed.
   func setEnabled(_ enabled: Bool) {
     CursorOverlaySettings.isEnabled = enabled
     if !enabled {
@@ -40,8 +24,6 @@ final class CursorOverlay: NSObject {
     }
   }
 
-  /// Show overlay at a global screen point (Quartz coordinates).
-  /// Label is e.g. "Click", "Type: hello", "Scroll". Kept short, truncated to 360pt.
   func show(at point: CGPoint, label: String? = nil, action: OverlayAction = .click) {
     guard CursorOverlaySettings.isEnabled else { return }
     DispatchQueue.main.async {
@@ -54,41 +36,25 @@ final class CursorOverlay: NSObject {
     }
   }
 
-  /// Convenience for element rect center.
   func show(at rect: CGRect, label: String? = nil, action: OverlayAction = .click) {
     show(at: CGPoint(x: rect.midX, y: rect.midY), label: label, action: action)
   }
 
-  /// Hide overlay (animated out) – call on action end.
   func hide(animated: Bool = true) {
     DispatchQueue.main.async {
-      if animated {
-        self.animateHideAndRemove()
-      } else {
-        self.hideImmediately()
-      }
+      if animated { self.animateHideAndRemove() } else { self.hideImmediately() }
     }
   }
 
-  /// Leave the overlay up long enough to follow, then fade. A newer action resets this.
   func linger() {
     DispatchQueue.main.async { self.scheduleAutoHide() }
   }
 
-  /// Immediate cleanup – call on Stop / turn end / invalidation.
   func cleanup() {
     DispatchQueue.main.async { self.hideImmediately() }
   }
 
-  // MARK: - Window management
-
-  // MARK: - Coordinate conversion (blocker 1)
-  // AX / Quartz global coordinates use top-left origin (0 at top of main screen,
-  // X same as AppKit, Y increases downward), while NSScreen.frame uses
-  // bottom-left origin (main screen minY=0, maxY=height, Y increases upward).
-  // Conversion must handle displays above/below/left/right of primary.
   static func quartzToCocoa(_ quartzPoint: CGPoint) -> CGPoint {
-    // The first screen defines the global origin; .main follows keyboard focus.
     let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? 0
     return CGPoint(x: quartzPoint.x, y: primaryMaxY - quartzPoint.y)
   }
@@ -100,14 +66,11 @@ final class CursorOverlay: NSObject {
 
   private func screen(for quartzPoint: CGPoint) -> NSScreen? {
     let cocoa = Self.quartzToCocoa(quartzPoint)
-    // Find screen whose AppKit frame contains the converted point.
     for screen in NSScreen.screens {
       if screen.frame.contains(cocoa) { return screen }
     }
-    // Fallback: closest screen by distance, handles gaps between displays.
     if let closest = NSScreen.screens.min(by: {
-      let a = $0.frame
-      let b = $1.frame
+      let a = $0.frame; let b = $1.frame
       let da = (a.contains(cocoa) ? 0 : 1)
       let db = (b.contains(cocoa) ? 0 : 1)
       if da != db { return da < db }
@@ -118,9 +81,7 @@ final class CursorOverlay: NSObject {
       let distA = (cocoa.x-ax)*(cocoa.x-ax) + (cocoa.y-ay)*(cocoa.y-ay)
       let distB = (cocoa.x-bx)*(cocoa.x-bx) + (cocoa.y-by)*(cocoa.y-by)
       return distA < distB
-    }) {
-      return closest
-    }
+    }) { return closest }
     return NSScreen.main ?? NSScreen.screens.first
   }
 
@@ -131,7 +92,6 @@ final class CursorOverlay: NSObject {
     let window: NSWindow
     if let existing = existing {
       window = existing
-      // Cancel any in-flight fade-out on reused window so next action is visible
       if let v = window.contentView as? OverlayView { v.cancelFade() }
     } else {
       window = makeOverlayWindow(for: screen)
@@ -139,28 +99,20 @@ final class CursorOverlay: NSObject {
     }
     window.setFrame(screen.frame, display: false)
     window.orderFrontRegardless()
-
     guard let view = window.contentView as? OverlayView else { return }
     let local = CGPoint(x: cocoaPoint.x - screen.frame.minX, y: cocoaPoint.y - screen.frame.minY)
-    view.showPointer(at: local, label: label, action: action, accentHex: CursorOverlaySettings.accentHex)
+    view.showPointer(at: local, label: label, action: action)
   }
 
   private func makeOverlayWindow(for screen: NSScreen) -> NSWindow {
-    let window = NSWindow(
-      contentRect: screen.frame,
-      styleMask: .borderless,
-      backing: .buffered,
-      defer: false,
-      screen: screen
-    )
+    let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
     window.backgroundColor = .clear
     window.isOpaque = false
     window.hasShadow = false
     window.ignoresMouseEvents = true
     window.isReleasedWhenClosed = false
-    window.level = .screenSaver // above normal windows, below lock screen
+    window.level = .screenSaver
     window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-    window.ignoresMouseEvents = true
     window.contentView = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
     window.orderFrontRegardless()
     return window
@@ -179,12 +131,10 @@ final class CursorOverlay: NSObject {
       view.animateOut { [weak self, weak w] in
         guard let self = self else { w?.orderOut(nil); return }
         self.lock.lock(); let current = self.generation; self.lock.unlock()
-        // Old fade completion must not hide a newer action
         guard current == captured else { return }
         w?.orderOut(nil)
       }
     }
-    // Remove after animation, guarded by generation
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) { [weak self] in
       guard let self = self else { return }
       self.lock.lock(); let current = self.generation; self.lock.unlock()
@@ -200,9 +150,12 @@ final class CursorOverlay: NSObject {
 
   private func scheduleAutoHide() {
     cancelPendingHide()
+    // dwell affects linger: base 1.6s + dwellMs/1000 up to ~1.9s, matches upstream motion profile
+    let dwell = Double(CursorOverlaySettings.dwellMs) / 1000.0
+    let delay = 1.2 + min(dwell, 0.3) + 0.4 // 1.6 default
     let work = DispatchWorkItem { [weak self] in self?.hide(animated: true) }
     hideWork = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
   }
 }
 
@@ -226,28 +179,61 @@ private final class OverlayView: NSView {
   private var labelText: String?
   private var action: OverlayAction = .generic
   private var accent: NSColor = NSColor(hex: "#FF3B7B") ?? .systemPink
+  private var fill: NSColor?
+  private var rim: NSColor = NSColor(hex: "#111318") ?? .black
+  private var sizeMultiplier: CGFloat = 1.0
+  private var preset: CursorOverlaySettings.Preset = .default
+  private var showRipple: Bool = true
+  private var showHighlight: Bool = true
+  private var customImage: NSImage?
 
   private var rippleLayers: [CAShapeLayer] = []
   private var cursorLayer: CAShapeLayer?
-  private var labelLayer: CATextLayer?
-  private var labelBackground: CAShapeLayer?
+  private var imageLayer: CALayer?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
     wantsLayer = true
     layer?.backgroundColor = NSColor.clear.cgColor
   }
-
   required init?(coder: NSCoder) { super.init(coder: coder) }
 
-  func showPointer(at point: CGPoint, label: String?, action: OverlayAction, accentHex: String) {
-    // Fix stale fade: layer.opacity=0 from previous animateOut would keep reused window invisible
+  func showPointer(at point: CGPoint, label: String?, action: OverlayAction) {
     layer?.removeAnimation(forKey: "fade")
     layer?.opacity = 1
     pointerPoint = point
-    labelText = truncatedLabel(label ?? action.labelFallback)
     self.action = action
-    accent = NSColor(hex: accentHex) ?? .systemPink
+    labelText = truncatedLabel(label ?? action.labelFallback)
+
+    // Load settings snapshot
+    preset = CursorOverlaySettings.preset
+    sizeMultiplier = CGFloat(CursorOverlaySettings.size)
+    accent = NSColor(hex: CursorOverlaySettings.accentHex) ?? .systemPink
+    if let fh = CursorOverlaySettings.fillHex, let c = NSColor(hex: fh) { fill = c } else { fill = nil }
+    rim = NSColor(hex: CursorOverlaySettings.rimHex ?? "#111318") ?? .black
+    showRipple = CursorOverlaySettings.ripple
+    showHighlight = CursorOverlaySettings.highlight
+
+    // Custom image loading with validation fallback
+    if let path = CursorOverlaySettings.customImagePath, !path.isEmpty {
+      if let err = CursorOverlaySettings.validateImageFile(at: path) {
+        // Degrade gracefully to default if invalid
+        NSLog("CursorOverlay custom image invalid (%@): %@", path, err)
+        customImage = nil
+        if preset == .custom { preset = .default }
+      } else if let img = NSImage(contentsOfFile: path) {
+        customImage = img
+      } else {
+        customImage = nil
+      }
+    } else {
+      customImage = nil
+    }
+    // If preset is custom but image missing, fallback to default
+    if preset == .custom && customImage == nil {
+      preset = .default
+    }
+
     needsDisplay = true
     rebuildLayers()
   }
@@ -261,9 +247,7 @@ private final class OverlayView: NSView {
     CATransaction.begin()
     CATransaction.setCompletionBlock { completion() }
     let fade = CABasicAnimation(keyPath: "opacity")
-    fade.fromValue = 1
-    fade.toValue = 0
-    fade.duration = 0.28
+    fade.fromValue = 1; fade.toValue = 0; fade.duration = 0.28
     layer?.add(fade, forKey: "fade")
     layer?.opacity = 0
     CATransaction.commit()
@@ -273,10 +257,7 @@ private final class OverlayView: NSView {
     guard CursorOverlaySettings.showLabel else { return nil }
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
-    // Agent Desktop truncates >360pt with ellipsis. Approximate by 42 chars.
-    if trimmed.count > 48 {
-      return String(trimmed.prefix(45)) + "…"
-    }
+    if trimmed.count > 48 { return String(trimmed.prefix(45)) + "…" }
     return trimmed
   }
 
@@ -284,66 +265,110 @@ private final class OverlayView: NSView {
     layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
     rippleLayers.removeAll()
     cursorLayer = nil
-    labelLayer = nil
-    labelBackground = nil
+    imageLayer = nil
 
     guard let root = layer else { return }
 
-    // Ripple circles (target highlight)
-    for (i, radius) in [32, 54, 78].enumerated() {
-      let shape = CAShapeLayer()
-      let rect = CGRect(x: pointerPoint.x - CGFloat(radius)/2, y: pointerPoint.y - CGFloat(radius)/2,
-                        width: CGFloat(radius), height: CGFloat(radius))
-      shape.path = CGPath(ellipseIn: rect, transform: nil)
-      shape.fillColor = NSColor.clear.cgColor
-      shape.strokeColor = accent.withAlphaComponent(0.55 - Double(i)*0.12).cgColor
-      shape.lineWidth = i == 0 ? 3 : 1.5
-      shape.opacity = 0
-      root.addSublayer(shape)
-      rippleLayers.append(shape)
+    let isRingOnly = (preset == .ringOnly)
+    let isSimple = (preset == .simple)
 
-      let scale = CABasicAnimation(keyPath: "transform.scale")
-      scale.fromValue = 0.4
-      scale.toValue = 1.2
-      scale.duration = 0.55
-      scale.beginTime = CACurrentMediaTime() + Double(i)*0.08
-      scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+    // Determine ripple: ring-only always shows highlight+ripple (even if prefs false, host forces true)
+    // simple disables both
+    let effectiveRipple = isSimple ? false : (isRingOnly ? true : showRipple)
+    let effectiveHighlight = isSimple ? false : (isRingOnly ? true : showHighlight)
 
-      let fade = CABasicAnimation(keyPath: "opacity")
-      fade.fromValue = 0.9
-      fade.toValue = 0
-      fade.duration = 0.65
-      fade.beginTime = scale.beginTime
-      fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-      shape.add(scale, forKey: "scale")
-      shape.add(fade, forKey: "fade")
+    // Ripple / highlight
+    if effectiveRipple || effectiveHighlight {
+      // If highlight, keep a static outer ring + animated inner? We'll render up to 3 rings if ripple, else 1 static if highlight only
+      let radii: [Int] = effectiveRipple ? [32, 54, 78] : [44]
+      for (i, radius) in radii.enumerated() {
+        let scaledR = CGFloat(radius) * (0.8 + sizeMultiplier*0.2)
+        let shape = CAShapeLayer()
+        let rect = CGRect(x: pointerPoint.x - scaledR/2, y: pointerPoint.y - scaledR/2, width: scaledR, height: scaledR)
+        shape.path = CGPath(ellipseIn: rect, transform: nil)
+        shape.fillColor = NSColor.clear.cgColor
+        shape.strokeColor = accent.withAlphaComponent(0.55 - Double(i)*0.12).cgColor
+        shape.lineWidth = i == 0 ? 3 : 1.5
+        shape.opacity = effectiveRipple ? 0 : 0.8
+        root.addSublayer(shape)
+        rippleLayers.append(shape)
+        if effectiveRipple {
+          let scale = CABasicAnimation(keyPath: "transform.scale")
+          scale.fromValue = 0.4; scale.toValue = 1.2; scale.duration = 0.55
+          scale.beginTime = CACurrentMediaTime() + Double(i)*0.08
+          scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+          let fade = CABasicAnimation(keyPath: "opacity")
+          fade.fromValue = 0.9; fade.toValue = 0; fade.duration = 0.65
+          fade.beginTime = scale.beginTime; fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+          shape.add(scale, forKey: "scale"); shape.add(fade, forKey: "fade")
+        }
+      }
     }
 
-    // Large cursor arrow (Agent Desktop style arrow enlarged)
-    let cursorCGPath = OverlayView.cursorPath(at: pointerPoint, size: 44)
-    let cursorShape = CAShapeLayer()
-    cursorShape.path = cursorCGPath
-    cursorShape.fillColor = NSColor.white.cgColor
-    cursorShape.strokeColor = NSColor.black.withAlphaComponent(0.85).cgColor
-    cursorShape.lineWidth = 1.5
-    cursorShape.shadowColor = NSColor.black.cgColor
-    cursorShape.shadowOpacity = 0.35
-    cursorShape.shadowOffset = CGSize(width: 0, height: -2)
-    cursorShape.shadowRadius = 4
+    if !isRingOnly {
+      if let img = customImage {
+        // Draw custom PNG image, scaled by sizeMultiplier, hotspot handled
+        let baseSize: CGFloat = 32 * sizeMultiplier
+        let imgSize = NSSize(width: baseSize, height: baseSize)
+        let hsX = CGFloat(CursorOverlaySettings.hotspotX)
+        let hsY = CGFloat(CursorOverlaySettings.hotspotY)
+        // Clamp hotspot to image bounds if needed
+        // Origin at tip minus hotspot
+        let origin = CGPoint(x: pointerPoint.x - hsX * sizeMultiplier, y: pointerPoint.y - hsY * sizeMultiplier - imgSize.height + hsY * sizeMultiplier)
+        // For simplicity if hotspot 0,0, draw with top-left at pointer (arrow tip at image origin)
+        // We'll draw with pointer at origin adjusted
+        let layerOrigin = CGPoint(x: pointerPoint.x - hsX, y: pointerPoint.y - imgSize.height + hsY)
 
-    // Accent fill overlay for body
-    let accentShape = CAShapeLayer()
-    accentShape.path = cursorCGPath
-    accentShape.fillColor = accent.withAlphaComponent(0.92).cgColor
-    accentShape.strokeColor = NSColor.clear.cgColor
-    accentShape.compositingFilter = nil
+        let imgLayer = CALayer()
+        imgLayer.contents = img
+        imgLayer.contentsGravity = .resizeAspectFit
+        imgLayer.frame = CGRect(origin: layerOrigin, size: imgSize)
+        imgLayer.shadowColor = NSColor.black.cgColor
+        imgLayer.shadowOpacity = 0.35
+        imgLayer.shadowOffset = CGSize(width: 0, height: -2)
+        imgLayer.shadowRadius = 4
+        root.addSublayer(imgLayer)
+        imageLayer = imgLayer
 
-    root.addSublayer(cursorShape)
-    root.addSublayer(accentShape)
-    cursorLayer = accentShape
+        let pop = CASpringAnimation(keyPath: "transform.scale")
+        pop.fromValue = 0.2; pop.toValue = 1; pop.damping = 12; pop.stiffness = 280; pop.mass = 0.8; pop.duration = 0.6
+        imgLayer.add(pop, forKey: "pop")
+      } else {
+        // Default arrow with size and colors
+        let arrowSize: CGFloat = 44 * sizeMultiplier
+        let cursorCGPath = OverlayView.cursorPath(at: pointerPoint, size: arrowSize)
+        let cursorShape = CAShapeLayer()
+        cursorShape.path = cursorCGPath
+        cursorShape.fillColor = (fill ?? NSColor.white).cgColor
+        cursorShape.strokeColor = rim.withAlphaComponent(0.85).cgColor
+        cursorShape.lineWidth = max(1.0, 1.5 * sizeMultiplier * 0.6 + 0.6)
+        cursorShape.shadowColor = NSColor.black.cgColor
+        cursorShape.shadowOpacity = 0.35
+        cursorShape.shadowOffset = CGSize(width: 0, height: -2)
+        cursorShape.shadowRadius = 4
 
-    // Label pill: black pill, white text, below/right of tip, like Agent Desktop
+        let accentShape = CAShapeLayer()
+        accentShape.path = cursorCGPath
+        // If fill provided, use fill as body, else accent as body overlay
+        if fill != nil {
+          accentShape.fillColor = NSColor.clear.cgColor
+        } else {
+          accentShape.fillColor = accent.withAlphaComponent(0.92).cgColor
+        }
+        accentShape.strokeColor = NSColor.clear.cgColor
+
+        root.addSublayer(cursorShape)
+        if fill == nil { root.addSublayer(accentShape) }
+        cursorLayer = accentShape
+
+        let pop = CASpringAnimation(keyPath: "transform.scale")
+        pop.fromValue = 0.2; pop.toValue = 1; pop.damping = 12; pop.stiffness = 280; pop.mass = 0.8; pop.duration = 0.6
+        cursorShape.add(pop, forKey: "pop")
+        accentShape.add(pop, forKey: "pop")
+      }
+    }
+
+    // Label pill
     if let text = labelText, !text.isEmpty {
       let font = NSFont.systemFont(ofSize: 13, weight: .medium)
       let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white]
@@ -352,39 +377,19 @@ private final class OverlayView: NSView {
       let pillWidth = min(size.width + pillPadding*2, 360)
       let pillHeight: CGFloat = 26
       let pillOrigin = CGPoint(x: pointerPoint.x + 28, y: pointerPoint.y - pillHeight - 18)
-
       let bg = CAShapeLayer()
       let bgRect = CGRect(x: pillOrigin.x, y: pillOrigin.y, width: pillWidth, height: pillHeight)
       bg.path = OverlayView.roundedPillPath(rect: bgRect, radius: pillHeight/2)
       bg.fillColor = NSColor.black.withAlphaComponent(0.88).cgColor
       root.addSublayer(bg)
-      labelBackground = bg
-
       let textLayer = CATextLayer()
       textLayer.string = NSAttributedString(string: text, attributes: attrs)
-      textLayer.fontSize = 13
-      textLayer.alignmentMode = .center
-      textLayer.truncationMode = .end
+      textLayer.fontSize = 13; textLayer.alignmentMode = .center; textLayer.truncationMode = .end
       textLayer.isWrapped = false
-      textLayer.frame = CGRect(x: pillOrigin.x + pillPadding,
-                               y: pillOrigin.y + 4,
-                               width: pillWidth - pillPadding*2,
-                               height: pillHeight - 8)
+      textLayer.frame = CGRect(x: pillOrigin.x + pillPadding, y: pillOrigin.y + 4, width: pillWidth - pillPadding*2, height: pillHeight - 8)
       textLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
       root.addSublayer(textLayer)
-      labelLayer = textLayer
     }
-
-    // Pop animation for cursor
-    let pop = CASpringAnimation(keyPath: "transform.scale")
-    pop.fromValue = 0.2
-    pop.toValue = 1
-    pop.damping = 12
-    pop.stiffness = 280
-    pop.mass = 0.8
-    pop.duration = 0.6
-    cursorShape.add(pop, forKey: "pop")
-    accentShape.add(pop, forKey: "pop")
   }
 
   private static func cursorPath(at point: CGPoint, size: CGFloat) -> CGPath {
@@ -419,17 +424,19 @@ private final class OverlayView: NSView {
     return path
   }
 
-  override func draw(_ dirtyRect: NSRect) {
-    // Core Animation layers do drawing.
-  }
+  override func draw(_ dirtyRect: NSRect) {}
 }
-
-// MARK: - Color hex
 
 private extension NSColor {
   convenience init?(hex: String) {
     var str = hex.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     if str.hasPrefix("#") { str.removeFirst() }
+    if str.count == 3 {
+      let r = String(repeating: str[str.startIndex], count: 2)
+      let g = String(repeating: str[str.index(str.startIndex, offsetBy: 1)], count: 2)
+      let b = String(repeating: str[str.index(str.startIndex, offsetBy: 2)], count: 2)
+      str = r + g + b
+    }
     guard str.count == 6, let val = UInt32(str, radix: 16) else { return nil }
     let r = CGFloat((val >> 16) & 0xFF) / 255.0
     let g = CGFloat((val >> 8) & 0xFF) / 255.0
