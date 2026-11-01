@@ -244,7 +244,8 @@ final class Accessibility {
   }
   func validate(_ s: Snapshot, epoch: UInt64) throws -> AXUIElement {
     try verifyIdentity?(s.app)
-    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, s.app.launchDate == s.launch, epoch == s.epoch else {
+    guard s.app.launchDate == s.launch else { throw Refusal("target_or_activity_changed") }
+    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, epoch == s.epoch else {
       throw Refusal("target_or_activity_changed")
     }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier,

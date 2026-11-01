@@ -15,6 +15,10 @@ final class EngineSession {
     currentLaunch: Date?, terminated: Bool, frontmostPID: Int32?) -> Bool {
     !terminated && currentPID == pid && currentLaunch == launch && frontmostPID == pid
   }
+  static func continuationMatchesBackground(pid: Int32, launch: Date?, currentPID: Int32?,
+    currentLaunch: Date?, terminated: Bool) -> Bool {
+    !terminated && currentPID == pid && currentLaunch == launch
+  }
   private func checkContinuation(_ s: Snapshot, id: String, latch: Latch) throws {
     try authorization?()
     try latch.check(id, epoch: s.epoch)
@@ -22,6 +26,14 @@ final class EngineSession {
       currentPID: s.app.processIdentifier, currentLaunch: s.app.launchDate,
       terminated: s.app.isTerminated, frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
     else { throw Refusal("engine_target_or_foreground_changed") }
+  }
+  private func checkContinuationBackground(_ s: Snapshot, id: String, latch: Latch) throws {
+    try authorization?()
+    try latch.check(id, epoch: s.epoch)
+    guard Self.continuationMatchesBackground(pid: s.app.processIdentifier, launch: s.launch,
+      currentPID: s.app.processIdentifier, currentLaunch: s.app.launchDate,
+      terminated: s.app.isTerminated)
+    else { throw Refusal("engine_target_changed") }
   }
 
   static func actionSummary(_ value: [String: Any]) -> String {
@@ -56,22 +68,34 @@ final class EngineSession {
 
   func invalidate() { current = nil; lastAction = nil; engine.invalidate() }
 
-  func capture(native: Snapshot, id: String, latch: Latch, ax: Accessibility) throws -> Snapshot {
+  func capture(native: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = false) throws -> Snapshot {
     current = nil
     let epoch = native.epoch
     try latch.check(id, epoch: epoch)
     guard let window = native.window, let number = windowNumber(window)
     else { throw Refusal("engine_exact_window_number_unavailable") }
     let expectedWindow = "w-\(number)"
-    _ = try ax.validate(native, epoch: epoch)
+    if allowBackground {
+      _ = try ax.validateBackground(native, epoch: epoch)
+    } else {
+      _ = try ax.validate(native, epoch: epoch)
+    }
     let captured = try engine.capture(pid: native.app.processIdentifier, windowID: expectedWindow) {
-      try self.checkContinuation(native, id: id, latch: latch)
+      if allowBackground {
+        try self.checkContinuationBackground(native, id: id, latch: latch)
+      } else {
+        try self.checkContinuation(native, id: id, latch: latch)
+      }
     }
     try latch.check(id, epoch: epoch)
     guard captured.pid == native.app.processIdentifier, captured.windowID == expectedWindow,
       windowNumber(window) == number
     else { throw Refusal("engine_window_identity_changed") }
-    _ = try ax.validate(native, epoch: epoch)
+    if allowBackground {
+      _ = try ax.validateBackground(native, epoch: epoch)
+    } else {
+      _ = try ax.validate(native, epoch: epoch)
+    }
     current = captured
     var output = captured.text
     if !captured.complete { output += "reading: partial; scroll or read a smaller area for more\n" }
@@ -87,6 +111,11 @@ final class EngineSession {
       output: output, screenshotSafe: native.screenshotSafe)
   }
 
+  // Background-aware entry point – uses target-only validation and no frontmost requirement
+  func captureBackground(native: Snapshot, id: String, latch: Latch, ax: Accessibility) throws -> Snapshot {
+    try capture(native: native, id: id, latch: latch, ax: ax, allowBackground: true)
+  }
+
   func reference(element: Int, snapshot: String) throws -> String {
     guard let current = current, current.id == snapshot else { throw Refusal("stale_engine_observation") }
     guard element > 0, element <= current.refs.count else { throw Refusal("invalid_engine_element") }
@@ -94,23 +123,38 @@ final class EngineSession {
   }
 
   @discardableResult
-  func click(element: Int, s: Snapshot, id: String, latch: Latch, ax: Accessibility) throws -> [String: Any] {
+  func click(element: Int, s: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = true) throws -> [String: Any] {
     try latch.check(id, epoch: s.epoch)
     let ref = try reference(element: element, snapshot: s.id)
-    _ = try ax.validate(s, epoch: s.epoch)
+    // Background AX click (AX Press) can work without stealing focus – use identity-only validation
+    if allowBackground {
+      _ = try ax.validateBackground(s, epoch: s.epoch)
+      try ax.requireVisibleIfMinimized(s, op: "click")
+    } else {
+      _ = try ax.validate(s, epoch: s.epoch)
+    }
     current = nil
     let result = try engine.click(observation: s.id, ref: ref, overlayLabel: "Click \(element)", overlayAction: .click) {
-      try self.checkContinuation(s, id: id, latch: latch)
+      if allowBackground {
+        try self.checkContinuationBackground(s, id: id, latch: latch)
+      } else {
+        try self.checkContinuation(s, id: id, latch: latch)
+      }
     }
     lastAction = result
     return result
   }
 
   @discardableResult
-  func scroll(element: Int, direction: String, amount: Int, s: Snapshot, id: String, latch: Latch, ax: Accessibility) throws -> [String: Any] {
+  func scroll(element: Int, direction: String, amount: Int, s: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = false) throws -> [String: Any] {
+    // Corrected: scroll now uses headed wheel events in engine and Jigga's branch – requires foreground.
+    // Background AX scroll via headless request is not valid after merge.
     try latch.check(id, epoch: s.epoch)
     let ref = try reference(element: element, snapshot: s.id)
     _ = try ax.validate(s, epoch: s.epoch)
+    if let minimized = s.window.map({ BackgroundSupport.isMinimized($0) }), minimized {
+      throw Refusal("window_minimized_needs_restore; restore the window before scroll")
+    }
     current = nil
     let result = try engine.scroll(observation: s.id, ref: ref, direction: direction, amount: amount, overlayLabel: "Scroll \(direction)", overlayAction: .generic) {
       try self.checkContinuation(s, id: id, latch: latch)
@@ -119,12 +163,17 @@ final class EngineSession {
     return result
   }
   @discardableResult
-  func type(text: String, s: Snapshot, id: String, latch: Latch, ax: Accessibility) throws -> [String: Any] {
+  func type(text: String, s: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = false) throws -> [String: Any] {
+    // Corrected: engine TypeText uses ActionRequest::headed with physical keyboard chunks – foreground required.
+    // No background AX value-write path; claiming background type by skipping focus check was invalid.
     try latch.check(id, epoch: s.epoch)
     guard let current = current, current.id == s.id, let ref = current.focusedRef,
       current.refs.contains(ref)
     else { throw Refusal("engine_focused_ref_unavailable") }
     guard Policy.text(text) else { throw Refusal("invalid_text") }
+    if let minimized = s.window.map({ BackgroundSupport.isMinimized($0) }), minimized {
+      throw Refusal("window_minimized_needs_restore; restore the window before type_text")
+    }
     let focus = try ax.validate(s, epoch: s.epoch)
     guard let value = s.value, value.utf16.count <= 1_048_576,
       string(focus, kAXValueAttribute) == value,
@@ -133,9 +182,6 @@ final class EngineSession {
       expected.location + expected.length <= value.utf16.count,
       live.location == expected.location, live.length == expected.length
     else { throw Refusal("editable_state_changed") }
-    // Validate the pre-action value/selection once. Native verification owns
-    // expected state after dispatch, so our own mutation cannot fail a stale
-    // static-value check inside the final host callback.
     self.current = nil
     let result = try engine.type(observation: s.id, ref: ref, text: text, expectedTarget: focus, overlayLabel: "Type", overlayAction: .type) {
       try self.checkContinuation(s, id: id, latch: latch)

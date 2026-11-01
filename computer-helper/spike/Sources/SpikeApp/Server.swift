@@ -210,13 +210,28 @@ final class Server {
       }
     }
   }
-  func observe(id: String, epoch: UInt64? = nil) throws -> Snapshot {
+  func observe(id: String, epoch: UInt64? = nil, allowBackground: Bool = true) throws -> Snapshot {
     try checkProofHost()
     let expected = epoch ?? latch.state().0
     try latch.check(id, epoch: expected)
-    let fresh = try ax.capture(epoch: expected)
-    try latch.check(id, epoch: expected)
-    return fresh
+    // Foreground path first (focused window), fallback to background enumeration if allowed
+    do {
+      let fresh = try ax.capture(epoch: expected)
+      try latch.check(id, epoch: expected)
+      return fresh
+    } catch {
+      if allowBackground {
+        // Try background-aware capture (explicit window selection without requiring focus)
+        let bg = try ax.captureBestAvailable(epoch: expected)
+        try latch.check(id, epoch: expected)
+        return bg
+      }
+      throw error
+    }
+  }
+
+  func observeBackground(id: String, epoch: UInt64? = nil) throws -> Snapshot {
+    try observe(id: id, epoch: epoch, allowBackground: true)
   }
   func call(_ params: [String: Any], id: String) throws -> [String: Any] {
     try turns.check(activeState.token)
@@ -237,9 +252,26 @@ final class Server {
     }
     if name == "request_app" { try requestApp(args, token: token, id: id) }
     else { try checkProofHost() }
+    // Background support: list_windows enumerates windows of granted app with minimized state
+    if name == "list_windows" {
+      guard args.isEmpty else { throw Refusal("unexpected_arguments") }
+      let infos = try ax.listWindowInfos()
+      let rows: [[String: Any]] = infos.enumerated().map { (idx, info) in
+        var row: [String: Any] = ["index": idx+1, "minimized": info.minimized, "focused": info.focused]
+        if let t = info.title { row["title"] = t.prefix(200).description }
+        if let n = info.windowNumber { row["windowID"] = "w-\(n)" }
+        if let f = info.frame { row["frame"] = ["x": f.minX, "y": f.minY, "w": f.width, "h": f.height] }
+        return row
+      }
+      let bytes = try JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys])
+      return ["content": [["type": "text", "text": String(data: bytes, encoding: .utf8) ?? "[]"]]]
+    }
     if name == "get_screenshot" {
       guard args.isEmpty else { throw Refusal("unexpected_arguments") }
       guard #available(macOS 14.2, *) else { throw Refusal("screenshot_requires_macOS_14_2") }
+      if let s = snapshot, let w = s.window, BackgroundSupport.isMinimized(w) {
+        throw Refusal("window_minimized_needs_restore; restore the window before screenshot")
+      }
       let session = engineSession
       let (fresh, result, scope) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id) { [ax, latch] in
         try session.capture(native: $0, id: id, latch: latch, ax: ax)
@@ -251,6 +283,10 @@ final class Server {
       guard try turns.canControl(token), Set(args.keys) == ["snapshot", "x", "y"],
         let s = snapshot, args["snapshot"] as? String == s.id, let scope = activeState.imageScope,
         scope.snapshot == s.id, let x = args["x"] as? Double, let y = args["y"] as? Double else { throw Refusal("current_screenshot_and_control_required") }
+      // Physical pointer path – MUST remain foreground-only per spec
+      if let w = s.window, BackgroundSupport.isMinimized(w) {
+        throw Refusal("window_minimized_needs_restore; restore the window before click_point")
+      }
       // Visual overlay: show target before physical click
       CursorOverlayIntegration.showAtImagePoint(x: x, y: y, scope: scope, label: "Click (\(Int(x)),\(Int(y)))", action: .point)
       activeState.imageScope = nil
@@ -259,12 +295,23 @@ final class Server {
       snapshot = try observe(id: id, epoch: s.epoch)
       CursorOverlayIntegration.hideAfterAction()
     } else if name != "request_app" {
+      // press_key stays foreground-only (global keyboard), other AX actions allow background
+      if name == "press_key", let s = snapshot, let w = s.window, BackgroundSupport.isMinimized(w) {
+        throw Refusal("window_minimized_needs_restore; restore the window before press_key")
+      }
       _ = try callText(params, id: id)
       CursorOverlayIntegration.hideAfterAction()
     }
     activeState.imageScope = nil
     guard let native = snapshot else { throw Refusal("observation_unavailable") }
-    let bound = try engineSession.capture(native: native, id: id, latch: latch, ax: ax)
+    // Background reading: engine capture can work without frontmost
+    let bound: Snapshot
+    do {
+      bound = try engineSession.capture(native: native, id: id, latch: latch, ax: ax)
+    } catch {
+      // Retry with background-allowed validation (identity-only) for AX tree
+      bound = try engineSession.captureBackground(native: native, id: id, latch: latch, ax: ax)
+    }
     snapshot = bound
     return ["content": [["type": "text", "text": bound.output]]]
   }
@@ -357,11 +404,13 @@ final class Server {
     let snap: [String: Any] = ["snapshot": str]
     return [tool("list_apps", "List running eligible native apps. Requires an enabled active session.", [:], [], true),
       tool("request_app", "Request a native per-app session grant by bundle ID. Observation-only sessions cannot launch or focus apps.", ["app": str], ["app"]),
-      tool("read_screen", "Read the granted app's current verified window and retained element references.", [:], [], true), ScreenshotPolicy.tool,
-      tool("click", "Activate one retained numbered control in a fresh snapshot.", snap.merging(["element": ["type": "integer", "minimum": 1]]) { $1 }, ["snapshot", "element"]),
-      tool("click_point", "Click a point in the current granted window screenshot. x/y are image pixels; requires its image_snapshot and a writable session.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
-      tool("type_text", "Type text into the verified focused field. Reports element delivery; application commit is not verified.", snap.merging(["text": ["type": "string", "maxLength": 65536]]) { $1 }, ["snapshot", "text"]),
-      tool("press_key", "Press a named key on the verified app, such as Return, PageDown or Cmd-T. Modifiers are Cmd-, Shift-, Alt- and Control-.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
-      tool("scroll", "Scroll one retained native control in a fresh snapshot.", snap.merging(["element": ["type": "integer", "minimum": 1], "direction": ["type": "string", "enum": ["up", "down", "left", "right"]], "amount": ["type": "integer", "minimum": 1, "maximum": 20]]) { $1 }, ["snapshot", "element", "direction", "amount"])]
+      tool("read_screen", "Read the granted app's current verified window and retained element references. Background windows are discovered when focused window is unavailable.", [:], [], true),
+      tool("list_windows", "List windows of the granted app with minimized/focused state for explicit app/window selection without stealing focus.", [:], [], true),
+      ScreenshotPolicy.tool,
+      tool("click", "Activate one retained numbered control in a fresh snapshot. Background AX Press supported where platform allows without focus steal; validates window still present and document unchanged; minimized returns needs_restore.", snap.merging(["element": ["type": "integer", "minimum": 1]]) { $1 }, ["snapshot", "element"]),
+      tool("click_point", "Click a point in the current granted window screenshot. x/y are image pixels; requires its image_snapshot and a writable session. Requires foreground visible window; minimized returns needs_restore.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
+      tool("type_text", "Type text into the verified focused field. Requires foreground visible window; engine uses headed physical keyboard path, not background AX value write. Minimized returns needs_restore.", snap.merging(["text": ["type": "string", "maxLength": 65536]]) { $1 }, ["snapshot", "text"]),
+      tool("press_key", "Press a named key with optional Cmd-, Shift-, Alt-, Control- modifiers on the verified app. Requires foreground for global keyboard; minimized returns needs_restore.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
+      tool("scroll", "Scroll one retained native control in a fresh snapshot. Requires foreground; headed wheel events, not background AX. Minimized returns needs_restore.", snap.merging(["element": ["type": "integer", "minimum": 1], "direction": ["type": "string", "enum": ["up", "down", "left", "right"]], "amount": ["type": "integer", "minimum": 1, "maximum": 20]]) { $1 }, ["snapshot", "element", "direction", "amount"])]
   }
 }
