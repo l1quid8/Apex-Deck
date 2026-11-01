@@ -10,7 +10,7 @@
 
 **Spec:** Product brief and acceptance criteria embedded in this document, based on the live twelve-section settings review and Tyler's direction.
 
-**Status:** Planned, not implemented. The clickable mockup has not yet been created.
+**Status:** Product implementation is queued. An interactive prototype exists at `mockups/settings-v2/index.html`; it uses sample data only and does not change Apex Deck settings.
 
 ## Product brief
 
@@ -23,7 +23,9 @@ Tyler specifically requested a comprehensive plan to execute AFTER Unified Compu
 - Do not start settings product implementation while Unified Computer Use remains the active implementation/release task.
 - First deliver a clickable mockup for review before changing the product UI.
 - Preserve existing saved chats, keys, phone pairings, host definitions, model configuration and skins.
-- Existing controls retain their behavior unless this plan explicitly changes it.
+- Simplification must not remove any existing settings feature, option, value range or workflow. Reorganize behind named, searchable groups; preserve a control-by-control coverage map.
+- Existing controls retain their behavior unless Tyler explicitly requests a behavior change.
+- Dark mode uses a true black (#000000) canvas and sidebar, with neutral near-black elevated surfaces; no blue-gray base tint. Light mode remains separate and unaffected.
 - Main window and pop-outs must agree on appearance and global preferences.
 - Keep per-thread and per-agent controls in their respective details; settings explains defaults and global configuration.
 - No new UI framework, backend rewrite, test framework or broad component rewrite.
@@ -64,7 +66,7 @@ Rename Hosts to Computers and Mods to Extensions in the mockup, while retaining 
 
 **Files:** Create `mockups/settings-v2/index.html` and, only if needed, adjacent local assets. Reference `src/SettingsPage.tsx` and existing settings components. Create `docs/superpowers/specs/2026-10-31-settings-usability.md` when the mockup direction is accepted.
 
-- [ ] Inventory every existing control: source component, storage owner, scope, default, restart requirement, visibility condition and destination in the new navigation.
+- [ ] Audit every existing control against the prototype coverage map; never omit a feature to simplify the page. Inventory: source component, storage owner, scope, default, restart requirement, visibility condition and destination in the new navigation.
 - [ ] Build a clickable mockup with grouped navigation, search results, basic/advanced disclosures, save feedback, and Light/Dark/System selection. Use fake configuration and keys, never live credentials.
 - [ ] Include representative populated, empty, disconnected, saving and failed-save states; show both a narrow window and the current desktop width.
 - [ ] Make the mockup demonstrate Appearance, Calls, provider setup, thread defaults and Unified Computer Use in enough detail to assess the hierarchy.
@@ -156,7 +158,8 @@ Rename Hosts to Computers and Mods to Extensions in the mockup, while retaining 
 
 ## Definition of done
 
-- All existing settings are accounted for, with everyday and advanced controls clearly separated.
+- Every existing settings feature, option, range and workflow is retained and mapped to a prototype/product location; everyday and advanced controls are clearly separated.
+- Dark mode has a true black canvas/sidebar with neutral near-black panels; Light mode remains unaffected.
 - Search reaches the right visible control and communicates its scope.
 - Light/Dark/System is prominent, persistent and consistent across windows.
 - No duplicate voice editor, no global chip styling hidden under New threads, no misleading provider or model status.
