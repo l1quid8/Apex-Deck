@@ -3,13 +3,15 @@
 
 import { useRef, useState, type KeyboardEvent } from "react";
 
+import { SaveDialog, StudioStatus, type Naming } from "./AppearanceStatus";
+
 import { CustomizePanel, MaterialPanel, Segmented } from "./AppearanceControls";
 import { AppearanceDetails } from "./AppearanceDetails";
 import { AppearancePresetRow } from "./AppearancePresetRow";
 import { AppearancePreview, type PreviewScene } from "./AppearancePreview";
-import { deckLabel, displayName, draftTheme, editedKeys, pickPreset, pickTheme } from "./appearanceDraft";
+import { displayName, draftTheme, editedKeys, pickTheme } from "./appearanceDraft";
 import type { AppSettings } from "./settings";
-import { builtinFor, effectiveLightFromMode, type AppearanceValues, type ColorMode, type PresetRef, type ThemeId } from "./themes";
+import { builtinFor, effectiveLightFromMode, type AppearanceValues, type ColorMode, type ThemeId } from "./themes";
 import type { AppearanceStudioState } from "./useAppearanceDraft";
 
 export type StudioTab = "customize" | "material" | "details" | "share";
@@ -29,7 +31,7 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
   const light = effectiveLightFromMode(draft.colorMode, systemDark, draft.values.light);
   const name = displayName(draft.source);
   const edits = editedKeys(draft, saved).length;
-  const isSaved = draft.source.kind === "saved";
+  const presetName = draft.source.kind === "saved" ? draft.source.name : null;
   const ctx = {
     draft, saved, onEdit: studio.edit,
     patch: (change: Partial<AppearanceValues>) => {
@@ -38,7 +40,7 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
       studio.edit({ ...draft, values });
     },
   };
-  const onPick = (ref: PresetRef) => studio.edit(pickPreset(draft, ref, saved));
+  const [naming, setNaming] = useState<Naming | null>(null);
   const onTheme = (next: ThemeId) => studio.edit(pickTheme(draft, next, saved));
   const onTabKey = (event: KeyboardEvent, index: number) => {
     const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
@@ -50,18 +52,7 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
   };
 
   return <div className="studio">
-    <section className="studio-status" aria-label="What Deck is using, and what you are previewing">
-      <div className="studio-id-text">
-        <p className="studio-id-line">{deckLabel(settings, systemDark)}</p>
-        <p className="studio-id-line">{name}</p>
-      </div>
-      <div className="studio-actions">
-        <button type="button" className="studio-btn" disabled={!studio.pending.length} onClick={studio.discard}>Discard draft</button>
-        {isSaved && <button type="button" className="studio-btn" disabled={!edits}>Save as new…</button>}
-        <button type="button" className="studio-btn" disabled={!edits} onClick={isSaved ? studio.update : undefined}>{isSaved ? `Update ${name}` : "Save as preset…"}</button>
-        <button type="button" className="studio-btn studio-primary" disabled={!studio.pending.length} onClick={studio.apply}>{studio.pending.length ? "Apply to Deck" : "Applied"}</button>
-      </div>
-    </section>
+    <StudioStatus studio={studio} settings={settings} systemDark={systemDark} light={light} askName={setNaming} />
 
     <div className="studio-workspace">
       <section className="studio-editor" aria-label="Appearance controls" tabIndex={-1}>
@@ -75,11 +66,16 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
             <span className="studio-row-label" id="studio-h-theme">Theme</span>
             <Segmented name="studio-theme" labelledBy="studio-h-theme" options={THEMES} value={theme} onChange={onTheme} />
           </div>
-          <AppearancePresetRow theme={theme} saved={saved} selected={draft.source} light={light} onPick={onPick} />
+          <AppearancePresetRow theme={theme} saved={saved} selected={draft.source} light={light} onPick={studio.pick} />
           <div className="studio-preset-meta">
             <span className="studio-preset-owner">{draft.source.kind === "saved" ? `${name}: yours, based on ${builtinFor(draft.values).name}` : `${name}: built-in, can't be changed`}</span>
             <span className="studio-preset-actions">
-              {edits > 0 && <button type="button" className="studio-link-btn" aria-label={`Clear edits, back to ${name}`} onClick={studio.clear}>Clear edits</button>}
+              {edits > 0 && <button type="button" className="studio-link-btn studio-clear-edits" aria-label={`Clear edits, back to ${name}`} onClick={studio.clear}>Clear edits</button>}
+              {presetName && <>
+                <button type="button" className="studio-link-btn" onClick={() => setNaming({ rename: presetName })}>Rename</button>
+                <button type="button" className="studio-link-btn" onClick={() => setTab("share")}>Export</button>
+                <button type="button" className="studio-link-btn studio-danger" onClick={() => { studio.remove(presetName); document.querySelector<HTMLElement>("input[name=studio-theme]:checked")?.focus(); }}>Delete</button>
+              </>}
             </span>
           </div>
         </div>
@@ -104,5 +100,6 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
         <AppearancePreview draft={draft} systemDark={systemDark} scene={scene} />
       </aside>
     </div>
+    {naming && <SaveDialog naming={naming} studio={studio} saved={saved} onClose={() => setNaming(null)} />}
   </div>;
 }

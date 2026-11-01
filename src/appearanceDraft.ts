@@ -59,6 +59,8 @@ function baseValues(ref: PresetRef, saved: SkinFile[]): AppearanceValues {
   return { ...(found ?? BUILTIN_SKINS[0].appearance) };
 }
 
+export const baseValuesOf = (draft: AppearanceDraft, saved: SkinFile[]) => baseValues(draft.source, saved);
+
 /** The theme a draft is on follows its preset, so Liquid's Solid panels stays Liquid. */
 export function draftTheme(draft: AppearanceDraft, saved: SkinFile[]): ThemeId {
   return themeFamily(baseValues(draft.source, saved));

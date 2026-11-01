@@ -202,6 +202,16 @@ label:has(> .studio-vh:focus-visible) { outline: 2px solid var(--accent); outlin
 p { margin: 0; }
 button { font: inherit; }
 .studio-preset-strip { position: relative; }
+.studio-id-copy { display: flex; align-items: center; gap: 10px; min-width: 0; position: relative; }
+.studio-id-line { margin: 0; }
+.studio-id-tag { flex: 0 0 50px; font-size: 11.5px; color: var(--muted); }
+.studio-pop-section + .studio-pop-section { margin-top: 12px; }
+dialog.studio-dialog { color: var(--text); background: var(--panel-2); border: 1px solid var(--studio-edge); border-radius: var(--radius); padding: 18px; width: min(400px, calc(100vw - 32px)); }
+dialog.studio-dialog::backdrop { background: rgb(0 0 0 / .45); }
+dialog.studio-dialog h3 { margin: 0 0 4px; font-size: 16px; }
+dialog.studio-dialog label { display: block; margin-top: 10px; font-weight: 500; }
+#studio-save-name { display: block; width: 100%; margin: 4px 0 8px; padding: 5px 8px; color: var(--text); background: var(--studio-code); border: 1px solid var(--studio-edge); border-radius: 6px; }
+.studio-row-actions.studio-end { justify-content: flex-end; margin-top: 14px; }
 .studio-preview-tools { flex: none; min-width: 0; }
 .studio-text { display: block; width: 100%; margin-top: 6px; padding: 5px 8px; background: var(--studio-code); border: 1px solid var(--studio-edge); border-radius: 6px; color: var(--text); font: 12px/1.45 ui-monospace, "SF Mono", Menlo, monospace; resize: vertical; }
 .studio-notice { margin-top: 8px; font-size: 12px; color: var(--muted); }
@@ -218,6 +228,7 @@ button { font: inherit; }
   .settings-main.studio-main { overflow: auto; }
   .studio { display: block; height: auto; }
   .studio-status { height: auto; min-height: 52px; padding: 7px 14px; }
+  .studio-id-line { flex-wrap: wrap; }
   .studio-actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 15; flex-wrap: wrap; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--studio-edge); }
   .studio-actions .studio-btn { flex: 1 1 auto; max-width: none; min-height: 44px; min-width: 0; }
   .studio-workspace { display: flex; flex-direction: column-reverse; }

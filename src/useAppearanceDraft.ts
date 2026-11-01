@@ -5,10 +5,11 @@
 import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react";
 
 import {
-  appliedName, applyDraft, clearEdits, deckLabel, deletePreset, discardDraft, displayName, editedKeys, pendingChanges, renamePreset,
+  applyDraft, clearEdits, deckLabel, deletePreset, discardDraft, displayName, editedKeys, pendingChanges, pickPreset, renamePreset,
   revertPending, savePreset, storeDraft, updatePreset, workingDraft, type AppearanceDraft, type PendingChange, type PendingLabel,
 } from "./appearanceDraft.ts";
 import type { AppSettings } from "./settings.ts";
+import { deriveSource, type PresetRef } from "./themes.ts";
 
 const APPEARANCE_KEYS = ["appearance", "appearanceDraft", "botChips", "landingTexture"] as const;
 
@@ -26,6 +27,7 @@ export interface AppearanceStudioState {
   draft: AppearanceDraft;
   pending: PendingChange[];
   edit(next: AppearanceDraft): void;
+  pick(ref: PresetRef): void;
   apply(): void;
   discard(): void;
   revert(label: PendingLabel): void;
@@ -43,12 +45,21 @@ export function useAppearanceDraft(settings: AppSettings, setSettings: Dispatch<
   const pending = useMemo(() => pendingChanges(settings, draft, systemDark), [settings, draft, systemDark]);
   const saved = settings.appearance?.saved ?? [];
 
-  const undoTo = useCallback((earlier: AppSettings) => () => setSettings((now) => restore(now, earlier)), [setSettings]);
+  const undoTo = useCallback((earlier: AppSettings) => () => {
+    setSettings((now) => restore(now, earlier));
+    // The Undo button leaves with its toast, so nobody is left focused on nothing.
+    requestAnimationFrame(() => { if (document.activeElement === document.body) document.querySelector<HTMLElement>(".studio-editor, .appearance-draft-bar, .rail")?.focus(); });
+  }, [setSettings]);
 
   return {
     draft,
     pending,
     edit: (next) => setSettings((now) => storeDraft(now, next)),
+    pick: (ref) => {
+      const left = editedKeys(draft, saved).length > 0;
+      setSettings((now) => storeDraft(now, pickPreset(workingDraft(now), ref, now.appearance?.saved ?? [])));
+      if (left) toast(`Left unsaved changes to ${displayName(draft.source)}.`, undoTo(settings));
+    },
     apply: () => {
       if (!pending.length) return;
       const unsaved = editedKeys(draft, saved).length > 0;
@@ -70,7 +81,7 @@ export function useAppearanceDraft(settings: AppSettings, setSettings: Dispatch<
       toast(`${name.trim()} saved to your presets.`);
     },
     update: () => {
-      const usedByDeck = appliedName(settings).startsWith(displayName(draft.source));
+      const usedByDeck = settings.appearance !== undefined && displayName(deriveSource(settings.appearance)) === displayName(draft.source);
       setSettings((now) => updatePreset(now));
       toast(usedByDeck ? `${displayName(draft.source)} updated. Deck keeps the earlier version until you apply.` : `${displayName(draft.source)} updated.`);
     },
