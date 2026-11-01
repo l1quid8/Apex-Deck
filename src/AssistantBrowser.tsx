@@ -1,4 +1,5 @@
 import { PersonalBrowser, type BrowserPresentation } from './PersonalBrowser.tsx';
+import { SharedBrowser } from './SharedBrowser.tsx';
 import type { PersonalLane } from './personalAssistant.ts';
 
 export type AssistantBrowserPresentation = BrowserPresentation | 'closed';
@@ -17,7 +18,7 @@ export function AssistantBrowser({ lane, presentation, onExpand, onReturnToChat,
   const owner = JSON.stringify([lane.ref?.hostId ?? lane.assistant?.hostId ?? lane.hostName, lane.ref?.assistantId ?? lane.assistant?.id ?? lane.draftKey]);
   return (
     <div className={`assistant-browser assistant-browser-${presentation}`} hidden={presentation === 'closed'}>
-      <PersonalBrowser key={owner} lane={lane} active={presentation !== 'closed'} presentation={presentation === 'expanded' ? 'expanded' : 'popup'} onExpand={onExpand} onReturnToChat={onReturnToChat} onClose={onClose} />
+      {lane.browserCall && presentation === 'expanded' ? <SharedBrowser call={lane.browserCall} hostName={lane.hostName} visible assistantFirst assistantName={lane.assistant?.name ?? 'Assistant'} roomName={() => undefined} /> : <PersonalBrowser key={owner} lane={lane} active={presentation !== 'closed'} presentation={presentation === 'expanded' ? 'expanded' : 'popup'} onExpand={onExpand} onReturnToChat={onReturnToChat} onClose={onClose} />}
     </div>
   );
 }

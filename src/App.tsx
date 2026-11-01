@@ -52,7 +52,7 @@ import { TerminalPane } from "./TerminalPane";
 import { PreviewPane, type ServerChoice } from "./PreviewPane";
 import { isRunning, ptyIdFor, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
 import { nextTitle, programTitle } from "./terminalTitle";
-import { hostLabel, sameServer } from "./previewAddress";
+import { hostLabel } from "./previewAddress";
 import { copyMenuItems, paneMenuItems, projectMenuItems, type CopyKind, type PaneMenuAction, type ProjectMenuAction } from "./paneMenu";
 import { ProjectSidebar } from "./Sidebar";
 import { ConnectionDialog, type ConnectionMode } from "./ConnectionDialog";
@@ -66,7 +66,7 @@ import { dotState } from "./hostFacts.ts";
 import { MoveRefused, forkThread as importThreadFork, historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
 import { flushAnswerStores } from "./interactiveAnswers/answerStore.ts";
 import { loadRoomState } from "./roomRecovery.ts";
-import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
+import { grid, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { followedTabPane, orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles, type ChatBundle, type PaneSpot, type PopoutAction, type PopoutSnapshot, type PopoutUpdate, type TabSpot } from "./popoutModel.ts";
 import { useRestorePopouts, type PopoutIdentity } from "./useRestorePopouts.ts";
 import { TAB_LABEL } from "./RightPanel";
@@ -99,6 +99,8 @@ import { WorkspaceTaskDetails } from "./WorkspaceTaskDetails";
 import { collectWorkspaceTasks, workspaceTaskHostMatches, type WorkspaceTaskRow } from "./workspaceTasks";
 import type { DashboardDestination } from "./dashboardModel";
 import { placeDashboardPane } from "./dashboardNavigation";
+import { SharedBrowser } from "./SharedBrowser";
+import { browserHostFor } from "./browserTabs";
 import { RightBrowser } from "./RightBrowser";
 import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
@@ -171,9 +173,9 @@ function withPoppedTabs(state: RightPanelState, out: { tab: PanelTab; spot: TabS
 function tabTitle(tab: PanelTab): string {
   if (tab.kind === "browser" && tab.url) {
     try {
-      return new URL(tab.url).host || "Browser";
+      return new URL(tab.url).host || "Preview";
     } catch {
-      return "Browser";
+      return "Preview";
     }
   }
   return TAB_LABEL[tab.kind];
@@ -912,6 +914,8 @@ export function App() {
 
   const renamePane = (id: string, title: string) => setPanes(list => list.map(p => p.id === id ? {...p, title} : p));
 
+  const [browserAddress, setBrowserAddress] = useState<{ url: string; anyPage?: boolean; hostId?: string } | null>(null);
+  const [browserPin, setBrowserPin] = useState<{ hostId: string; focus: string } | null>(null);
   const addPane = (kind: Pane["kind"], title: string, agent?: string, workspaceId = activeWorkspace) => {
     if (!workspaceId) return;
     // A second terminal or preview of the same name in a workspace is numbered: "Codex 2", "Preview 2".
@@ -977,42 +981,20 @@ export function App() {
       return source ? [{ address, source: source.title, sourceId: id }] : [];
     });
 
+  /** Where the person is. A link's machine stays in the side panel until this changes. */
+  const browserFocus = `${mainView.kind}:${focusedPane ?? ""}:${activeWorkspace ?? ""}`;
   /**
-   * Show a server in a Preview right of the terminal or thread it came from,
-   * on that pane's deck, or focus the Preview already showing it there.
-   * `auto` is a thread's bot naming a new server: the thread's own Preview
-   * moves to it (unless it already shows that server), or one opens, and focus stays where you are.
+   * A local server or link opens in the side panel's Browser, on the tab already showing it if
+   * there is one. `auto` is a thread's bot naming a new server: any page of it counts as showing it.
    */
   const openPreview = (address: string, sourceId: string, auto = false) => {
-    const source = panes.find((p) => p.id === sourceId);
-    if (!source) return;
-    const deck = paneSection(source);
-    const existing = panes.find((p) => p.kind === "preview" && p.workspaceId === source.workspaceId && paneSection(p) === deck && p.url === address);
-    if (existing) {
-      if (!auto) focusPane(existing);
-      return;
-    }
-    const own = auto ? panes.find((p) => p.kind === "preview" && !p.closed && p.servedBy === sourceId && paneSection(p) === deck) : undefined;
-    if (own) {
-      // Another page on the server it already shows is left alone: bots name
-      // paths in passing, and the page you're on shouldn't jump.
-      if (own.url && sameServer(own.url, address)) return;
-      setPreviewAddress(own.id, address, sourceId);
-      return;
-    }
-    const id = newId("pane");
-    const title = nextTitle("Preview", panes.filter((p) => p.workspaceId === source.workspaceId && p.kind === "preview").map((p) => p.title));
-    const preview: Pane = { id, workspaceId: source.workspaceId, kind: "preview", title, url: address, servedBy: sourceId };
-    if (deck === "threads") preview.deck = "threads";
-    const key = layoutKey(null, deck);
-    setPanes((list) => [...list, preview]);
-    setLayouts((all) => (all[key] && leafIds(all[key]).includes(sourceId) ? { ...all, [key]: insertBeside(all[key], sourceId, id, "right") } : all));
-    if (auto) return;
-    setActiveWorkspace(source.workspaceId);
-    setSection(deck);
-    setPicking(false);
-    setFocusedPane(id);
-    setMaximized(null);
+    const source = panes.find((item) => item.id === sourceId);
+    const home = workspaces.find((item) => item.id === source?.workspaceId);
+    // "localhost" means the machine the thread runs on, whichever thread is in front now.
+    const hostId = home ? workspaceHost(home) : undefined;
+    setBrowserAddress({ url: address, anyPage: auto, hostId });
+    if (hostId) setBrowserPin({ hostId, focus: browserFocus });
+    setPanel((current) => openTab({ ...current, open: true }, "assistantbrowser", Date.now()));
   };
 
   const forkThread = async (source: Pane, title: string, upto: number | null, at: number) => {
@@ -2014,7 +1996,6 @@ export function App() {
   /** The Browser card opens the assistant's browser as a tab beside Details, not a pop-up (§5.3). */
   const openAssistantBrowserTab=()=>{setPanel(current=>openTab(current,'assistantbrowser',Date.now()));};
   /** Closing that tab returns to Details; it leaves whoever controls the page in control. */
-  const closeAssistantBrowserTab=()=>{const tab=panel.tabs.find(item=>item.kind==='assistantbrowser');if(tab)changePanel(closeTab(panel,tab.id));};
   /** Starts the assistant's voice call. The strip and Details share this one path. */
   const startAssistantCall = () => {
     if (!selectedAssistant) return;
@@ -2731,7 +2712,7 @@ export function App() {
                     {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : pane.kind === "preview" ? previewStatus[pane.id] ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     {(pane.kind === "terminal" || pane.kind === "chat") && servers[pane.id] && (
-                      <button className="server-chip" onPointerDown={(event) => event.stopPropagation()} onClick={() => openPreview(servers[pane.id], pane.id)} title={pane.kind === "chat" ? "Open in Preview, beside this thread" : "Open in Preview, beside this terminal"}>
+                      <button className="server-chip" onPointerDown={(event) => event.stopPropagation()} onClick={() => openPreview(servers[pane.id], pane.id)} title="Open in the Browser tab">
                         {hostLabel(servers[pane.id])}
                       </button>
                     )}
@@ -2884,10 +2865,23 @@ export function App() {
                 let route: Backend | null = null; try { route = hostBackend(row.routeHostId); } catch { /* Keep the last known owner visible. */ }
                 return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes} onOpenThread={id => { const workspace = row.project ? resolveAssistantProject(row.project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace) : null; const pane = workspace ? viewPanes.find(item => item.id === id && item.workspaceId === workspace.id) : undefined; if (pane) focusPane(pane); }} />;
               }} />,
-              browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
-              assistantbrowser: (_tab, visible) => mainView.kind === "assistant" && selectedAssistant
-                ? <AssistantBrowser lane={selectedAssistant} presentation={visible ? "expanded" : "closed"} onClose={closeAssistantBrowserTab} />
-                : <p className="muted right-panel-empty">Open an assistant to see its browser.</p>,
+              browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onShare={(url) => { setBrowserAddress({ url, hostId: "local" }); setBrowserPin({ hostId: "local", focus: browserFocus }); setPanel((current) => openTab({ ...current, open: true }, "assistantbrowser", Date.now())); }} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
+              assistantbrowser: (_tab, visible) => {
+                const pane = listed.find((item) => item.id === focusedPane);
+                const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
+                const focusedHost = workspace ? workspaceHost(workspace) : "local";
+                const assistantView = mainView.kind === "assistant" && !!selectedAssistant;
+                const browserHost = browserHostFor(focusedHost, browserAddress, browserPin, browserFocus);
+                // A link shows its own machine, and the thread in front can only share tabs on that thread's machine.
+                const inAssistant = assistantView && !browserAddress?.hostId && browserPin?.focus !== browserFocus;
+                let route: Backend | null = null;
+                try { route = inAssistant ? assistantBackend : hostBackend(browserHost); } catch { /* show the offline state */ }
+                if (!route) return <p className="muted right-panel-empty">Connect to a machine to use its browser.</p>;
+                const browserRoute = route;
+                const browserName = inAssistant ? selectedAssistant!.hostName : hostNameFor(browserHost);
+                return <SharedBrowser key={inAssistant ? `assistant:${browserName}` : browserHost} call={(cmd, args) => browserRoute.call(cmd, args)} hostId={inAssistant ? `assistant:${browserName}` : browserHost} hostName={browserName} visible={visible} assistantFirst={inAssistant} assistantName={selectedAssistant?.assistant?.name ?? "Assistant"}
+                  thread={!inAssistant && browserHost === focusedHost && pane?.kind === "chat" ? { id: pane.id, title: pane.title } : null} roomName={(id) => panes.find((item) => item.id === id)?.title} open={browserAddress} onOpened={() => setBrowserAddress(null)} onStopAll={() => { void browserRoute.call("computer_stop").catch(() => {}); }} />;
+              },
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
               terminal: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);

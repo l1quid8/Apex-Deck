@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as Reac
 import { FIXED, KINDS, TAB_GAP, activate, closeTab, fitTabs, moveTab, openTab, outsideViewport, tabIndexAt, tabReleaseAction, type PanelTab, type RightPanelState, type TabFit, type TabKind } from "./rightPanelModel";
 import "./right-panel.css";
 
-export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", artifacts: "Artifacts", browser: "Browser", assistantbrowser: "Browser", files: "Files", worktrees: "Worktrees", phone: "Phone", terminal: "Terminal" };
+export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", artifacts: "Artifacts", browser: "Preview", assistantbrowser: "Browser", files: "Files", worktrees: "Worktrees", phone: "Phone", terminal: "Terminal" };
 
 /** Tab-strip line icons, drawn on the same 24-unit grid / 1.7 stroke as SidebarIcons. Kept local so the tab strip has no extra imports. */
 const TAB_PATHS: Record<TabKind, ReactNode> = {
@@ -61,7 +61,7 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
   // The window listeners below outlive the render that attached them.
   const live = useRef({ state, onChange, onPopoutDragOut });
   live.current = { state, onChange, onPopoutDragOut };
-  const labelOf = (tab: PanelTab) => tab.kind === "browser" && tab.url ? hostOf(tab.url) : TAB_LABEL[tab.kind];
+  const labelOf = (tab: PanelTab) => tab.kind === "browser" && tab.url ? `Preview · ${hostOf(tab.url)}` : TAB_LABEL[tab.kind];
   const labels = state.tabs.map(labelOf);
   const fitKey = `${labels.join("\n")}\n${state.active}`;
   const fitRef = useRef<() => void>(() => {});
@@ -222,5 +222,5 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
 }
 
 function hostOf(url: string): string {
-  try { return new URL(url).host || "Browser"; } catch { return "Browser"; }
+  try { return new URL(url).host || "Preview"; } catch { return "Preview"; }
 }

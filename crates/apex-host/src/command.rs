@@ -91,19 +91,21 @@ pub enum Command {
     PersonalMachineAllowed {},
     PersonalExecuteLocal { assistant_id: String, assistant_host_id: String, operation: crate::personal::OperationSpec },
     PersonalConnectors {},
-    PersonalBrowserView {},
-    PersonalBrowserTakeOver { on: bool },
-    PersonalBrowserInput { input: crate::personal_worker::browser::Input },
-    BrowserTabs {},
-    BrowserTabOpen { #[serde(default)] url: Option<String> },
-    BrowserTabClose { tab: String },
-    BrowserTabControl { tab: String, take: bool },
-    BrowserTabShare { tab: String, thread: String, share: bool },
-    BrowserTabFrame { tab: String, after: u64 },
-    BrowserTabInput { tab: String, events: Vec<crate::personal_worker::browser::Event> },
-    BrowserTabResize { tab: String, width: u32, height: u32, scale: f64 },
-    BrowserTabUpload { tab: String, name: String, data: String },
-    BrowserTabStop { tab: String },
+    /// Opens the person's browser surface. Needs a protected receipt or a verified device.
+    PersonalBrowserSession {},
+    PersonalBrowserView { session: String },
+    PersonalBrowserTakeOver { session: String, on: bool },
+    PersonalBrowserInput { session: String, input: crate::personal_worker::browser::Input },
+    BrowserTabs { session: String },
+    BrowserTabOpen { session: String, #[serde(default)] url: Option<String> },
+    BrowserTabClose { session: String, tab: String },
+    BrowserTabControl { session: String, tab: String, take: bool },
+    BrowserTabShare { session: String, tab: String, thread: String, share: bool },
+    BrowserTabFrame { session: String, tab: String, after: u64 },
+    BrowserTabInput { session: String, tab: String, events: Vec<crate::personal_worker::browser::Event> },
+    BrowserTabResize { session: String, tab: String, width: u32, height: u32, scale: f64 },
+    BrowserTabUpload { session: String, tab: String, name: String, data: String },
+    BrowserTabStop { session: String, tab: String },
     ComputerStatus {},
     ComputerSetup {},
     ComputerSetEnabled { enabled: bool },
@@ -286,7 +288,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -366,6 +368,10 @@ impl Host {
             // receipt to check here, so the machine's own folder list is the
             // authorization — see `apex-daemon allow-root`.
             if self.device_folder_command(&command)? {
+                return self.dispatch_command(command, capability).await;
+            }
+            // The daemon already checked this device's full grant, and it's all a receipt would prove here.
+            if matches!(command, Command::PersonalBrowserSession {}) {
                 return self.dispatch_command(command, capability).await;
             }
             return self.call_with_client_capability(command, capability).await;
@@ -486,19 +492,20 @@ impl Host {
             PersonalMachineAllowed {} => reply(self.personal_machine_allowed()?),
             PersonalExecuteLocal { assistant_id, assistant_host_id, operation } => reply(self.personal_execute_local(&assistant_id, &assistant_host_id, operation).await?),
             PersonalConnectors {} => reply(blocking(|| Ok(crate::personal_worker::connectors::status())).await?),
-            PersonalBrowserView {} => reply(self.personal_browser_view().await?),
-            PersonalBrowserTakeOver { on } => reply(self.personal_browser_take_over(on).await?),
-            PersonalBrowserInput { input } => reply(self.personal_browser_input(input).await?),
-            BrowserTabs {} => reply(self.browser_tabs().await?),
-            BrowserTabOpen { url } => reply(self.browser_tab_open(url).await?),
-            BrowserTabClose { tab } => reply(self.browser_tab_close(tab).await?),
-            BrowserTabControl { tab, take } => reply(self.browser_tab_control(tab, take).await?),
-            BrowserTabShare { tab, thread, share } => reply(self.browser_tab_share(tab, thread, share).await?),
-            BrowserTabFrame { tab, after } => reply(self.browser_tab_frame(tab, after).await?),
-            BrowserTabInput { tab, events } => reply(self.browser_tab_input(tab, events).await?),
-            BrowserTabResize { tab, width, height, scale } => reply(self.browser_tab_resize(tab, width, height, scale).await?),
-            BrowserTabUpload { tab, name, data } => reply(self.browser_tab_upload(tab, name, data).await?),
-            BrowserTabStop { tab } => reply(self.browser_tab_stop(tab).await?),
+            PersonalBrowserSession {} => reply(serde_json::json!({ "session": crate::personal_worker::browser::session_open() })),
+            PersonalBrowserView { session } => { crate::personal_worker::browser::session_check(&session)?; reply(self.personal_browser_view().await?) }
+            PersonalBrowserTakeOver { session, on } => { crate::personal_worker::browser::session_check(&session)?; reply(self.personal_browser_take_over(on).await?) }
+            PersonalBrowserInput { session, input } => { crate::personal_worker::browser::session_check(&session)?; reply(self.personal_browser_input(input).await?) }
+            BrowserTabs { session } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tabs().await?) }
+            BrowserTabOpen { session, url } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_open(url).await?) }
+            BrowserTabClose { session, tab } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_close(tab).await?) }
+            BrowserTabControl { session, tab, take } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_control(tab, take).await?) }
+            BrowserTabShare { session, tab, thread, share } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_share(tab, thread, share).await?) }
+            BrowserTabFrame { session, tab, after } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_frame(tab, after).await?) }
+            BrowserTabInput { session, tab, events } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_input(tab, events).await?) }
+            BrowserTabResize { session, tab, width, height, scale } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_resize(tab, width, height, scale).await?) }
+            BrowserTabUpload { session, tab, name, data } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_upload(tab, name, data).await?) }
+            BrowserTabStop { session, tab } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_stop(tab).await?) }
             ComputerStatus {} => reply(self.computer_status().await),
             ComputerSetup {} => reply(self.computer_setup().await?),
             ComputerSetActionLabels { enabled } => reply(self.computer_set_action_labels(enabled).await?),
@@ -880,10 +887,43 @@ mod tests {
         assert!(dup.is_err(), "duplicate alias fields must be rejected by serde");
     }
 
+    /// The socket is open to anything running as this user, including bots with a shell.
+    #[tokio::test]
+    async fn a_raw_local_caller_cannot_reach_the_persons_browser() {
+        let folder = std::env::temp_dir().join(format!("apex-browser-authority-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let host = Host::new(crate::HostPaths { data: folder.clone(), downloads: None }, tokio::runtime::Handle::current());
+        let session = Command::from_json(serde_json::json!({ "cmd": "personal_browser_session" })).unwrap();
+        assert!(host.call(session).await.unwrap_err().contains("protected provenance receipt"));
+        for (cmd, args) in [
+            ("browser_tabs", serde_json::json!({})),
+            ("browser_tab_open", serde_json::json!({})),
+            ("browser_tab_share", serde_json::json!({ "tab": "t", "thread": "r", "share": true })),
+            ("browser_tab_control", serde_json::json!({ "tab": "t", "take": true })),
+            ("browser_tab_frame", serde_json::json!({ "tab": "t", "after": 0 })),
+            ("browser_tab_input", serde_json::json!({ "tab": "t", "events": [{ "kind": "reload" }] })),
+            ("browser_tab_stop", serde_json::json!({ "tab": "t" })),
+            ("personal_browser_view", serde_json::json!({})),
+            ("personal_browser_take_over", serde_json::json!({ "on": true })),
+            ("personal_browser_input", serde_json::json!({ "input": { "kind": "back" } })),
+        ] {
+            let mut args = args;
+            assert!(Command::from_json(serde_json::json!({ "cmd": cmd, "args": args })).is_err(), "{cmd} needs a session");
+            args["session"] = serde_json::json!("guessed");
+            let command = Command::from_json(serde_json::json!({ "cmd": cmd, "args": args })).unwrap();
+            assert_eq!(host.call(command).await.unwrap_err(), "browser_session_required", "{cmd}");
+        }
+        let issued = host.call_assuming_verified_ui_for_test(Command::PersonalBrowserSession {}).await.unwrap();
+        let session = issued["session"].as_str().unwrap();
+        let reply = host.call(Command::BrowserTabFrame { session: session.into(), tab: "missing".into(), after: 0 }).await;
+        assert_eq!(reply.unwrap_err(), "tab_not_found", "the UI's session passes the gate");
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 212);
+        assert_eq!(names.len(), 213);
         for name in [
             "room_curate",
             "room_curate_undo",

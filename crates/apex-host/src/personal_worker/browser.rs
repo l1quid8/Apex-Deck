@@ -27,6 +27,12 @@ static STATE: tokio::sync::Mutex<Option<Running>> = tokio::sync::Mutex::const_ne
 /// Which browser process is running; a target id only means something within one.
 static INSTANCE: AtomicU64 = AtomicU64::new(0);
 static NEXT_TAB: AtomicU64 = AtomicU64::new(0);
+/// Giving a tab a target shares this; comparing the registry with the browser takes it alone,
+/// so neither side sees a tab halfway through getting its target. Never held across page work.
+static LIFECYCLE: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+/// Live human sessions, newest last. In memory only, so a restarted service asks again.
+static SESSIONS: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
+const SESSION_LIMIT: usize = 16;
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
 const VIEWER_IDLE: Duration = Duration::from_secs(5);
 const UPLOAD_LIMIT: usize = 6 * 1024 * 1024;
@@ -57,6 +63,39 @@ mod windows_discovery_tests {
         }
     }
 }
+
+/// A session for a caller the host has already verified as the person's own UI or device.
+pub fn session_open() -> String {
+    let session = work::snapshot_id();
+    let mut held = SESSIONS.lock().unwrap();
+    held.push_back(session.clone());
+    while held.len() > SESSION_LIMIT { held.pop_front(); }
+    session
+}
+
+/// The person's browser surface can read and drive every signed-in site, so a caller proves
+/// it's them. Local socket access alone doesn't, and neither does device authority by itself.
+pub fn session_check(session: &str) -> Result<(), String> {
+    let held = SESSIONS.lock().unwrap();
+    let same = |known: &String| known.len() == session.len() && known.bytes().zip(session.bytes()).fold(0, |all, (a, b)| all | (a ^ b)) == 0;
+    if held.iter().any(same) { Ok(()) } else { Err("browser_session_required".into()) }
+}
+
+#[cfg(test)]
+static PAUSES: LazyLock<Mutex<HashMap<&'static str, (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>> = LazyLock::new(Mutex::default);
+
+/// Stops a lifecycle step at a named point so a test can run a rival against it.
+#[cfg(test)]
+async fn pause(point: &'static str) {
+    let hook = PAUSES.lock().unwrap().remove(point);
+    if let Some((reached, resume)) = hook {
+        reached.notify_one();
+        resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause(_point: &'static str) {}
 
 struct Running {
     child: tokio::process::Child,
@@ -223,6 +262,8 @@ pub(crate) struct Tab {
     /// Moves on anything that can change the page, so an older reading can't be acted on.
     epoch: AtomicU64,
     dialog: Arc<AtomicBool>,
+    /// What the open dialog says, for the person only. It stays in memory and bots never see it.
+    question: Mutex<Option<Value>>,
     page: tokio::sync::Mutex<Option<Page>>,
     monitor: tokio::sync::Mutex<Option<Monitor>>,
     frames: tokio::sync::watch::Sender<Option<Frame>>,
@@ -324,8 +365,10 @@ fn primary() -> Arc<Tab> {
 /// opened by itself, like sign-in popups, join the scope of the tab that opened them.
 async fn reconcile() -> Result<(), String> {
     if STATE.lock().await.is_none() { return Ok(()); }
+    let _lifecycle = LIFECYCLE.write().await;
     let port = ensure().await?;
     let live = targets(port).await?;
+    pause("reconcile").await;
     let instance = INSTANCE.load(Ordering::SeqCst);
     let tabs = all_tabs();
     let mut changed = false;
@@ -375,14 +418,16 @@ fn main_frame(tab: &std::sync::Weak<Tab>) -> Value {
 
 impl Tab {
     fn new(id: String, info: Info) -> Arc<Self> {
-        Arc::new(Self { id, info: Mutex::new(info), ops: tokio::sync::Mutex::const_new(()), epoch: AtomicU64::new(0), dialog: Arc::new(AtomicBool::new(false)),
+        Arc::new(Self { id, info: Mutex::new(info), ops: tokio::sync::Mutex::const_new(()), epoch: AtomicU64::new(0), dialog: Arc::new(AtomicBool::new(false)), question: Mutex::new(None),
             page: tokio::sync::Mutex::const_new(None), monitor: tokio::sync::Mutex::const_new(None), frames: tokio::sync::watch::channel(None).0, viewed: Mutex::new(Instant::now()) })
     }
 
     fn bump(&self) { self.epoch.fetch_add(1, Ordering::SeqCst); }
 
     fn summary(&self) -> Value {
-        self.info.lock().unwrap().summary(&self.id, self.dialog.load(Ordering::SeqCst), Instant::now())
+        let dialog = self.dialog.load(Ordering::SeqCst);
+        let question = self.question.lock().unwrap().clone().filter(|_| dialog);
+        self.info.lock().unwrap().summary(&self.id, dialog, question, Instant::now())
     }
 
     /// The tab's address is always current, so a crash reopens it where it was.
@@ -457,7 +502,10 @@ impl Tab {
                 };
                 let Ok(value) = serde_json::from_str::<Value>(&frame) else { continue };
                 match value["method"].as_str() {
-                    Some("Page.javascriptDialogOpening") => dialog.store(true, Ordering::SeqCst),
+                    Some("Page.javascriptDialogOpening") => {
+                        if let Some(tab) = tab.upgrade() { *tab.question.lock().unwrap() = Some(tabs::dialog_question(&value["params"])); }
+                        dialog.store(true, Ordering::SeqCst);
+                    }
                     Some("Page.javascriptDialogClosed") => dialog.store(false, Ordering::SeqCst),
                     Some("Page.screencastFrame") => {
                         let params = &value["params"];
@@ -517,6 +565,7 @@ impl Tab {
             page.dialog_open = self.dialog.load(Ordering::SeqCst);
             return Ok(tokio::sync::MutexGuard::map(held, |page| page.as_mut().unwrap()));
         }
+        let lifecycle = LIFECYCLE.read().await;
         let port = ensure().await?;
         let instance = INSTANCE.load(Ordering::SeqCst);
         let live = targets(port).await?;
@@ -528,16 +577,18 @@ impl Tab {
             return Err("tab_closed".into());
         }
         let target = match found { Some(target) => target, None => new_target(port, &address).await? };
+        pause("assign").await;
         {
             let mut info = self.info.lock().unwrap();
             info.target = Some(target.id.clone());
             info.instance = instance;
         }
+        drop(lifecycle);
         let url = target.web_socket_debugger_url.ok_or("The browser has no page.")?;
         self.watch(&target.id, &url).await?;
         let (socket, _) = tokio_tungstenite::connect_async(url.as_str()).await.map_err(|e| format!("Could not reach the browser: {e}"))?;
         let (width, height, scale) = { let info = self.info.lock().unwrap(); (info.width, info.height, info.scale) };
-        let mut page = Page { socket, next: 0, url: target.url, title: target.title, instance, dialog: self.dialog.clone(), dialog_open: self.dialog.load(Ordering::SeqCst), dead: false, width, height };
+        let mut page = Page { socket, next: 0, url: target.url, title: target.title, instance, dialog: self.dialog.clone(), dialog_open: self.dialog.load(Ordering::SeqCst), dead: false, width, height, frames: HashMap::new() };
         self.bump();
         if !page.dialog_open {
             for (method, params) in [("Emulation.setFocusEmulationEnabled", json!({ "enabled": true })), ("Emulation.setDeviceMetricsOverride", json!({ "width": width, "height": height, "deviceScaleFactor": scale, "mobile": false }))] {
@@ -586,13 +637,22 @@ struct Page {
     dead: bool,
     width: u32,
     height: u32,
+    /// Frames running in their own process, by frame id, with the session that reaches each.
+    frames: HashMap<String, String>,
 }
 
 impl Page {
     async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.call_in(None, method, params).await
+    }
+
+    /// `session` reaches a frame in another process; none means this tab's own page.
+    async fn call_in(&mut self, session: Option<&str>, method: &str, params: Value) -> Result<Value, String> {
         self.next += 1;
         let id = self.next;
-        if let Err(error) = self.socket.send(Message::Text(json!({ "id": id, "method": method, "params": params }).to_string().into())).await {
+        let mut message = json!({ "id": id, "method": method, "params": params });
+        if let Some(session) = session { message["sessionId"] = json!(session); }
+        if let Err(error) = self.socket.send(Message::Text(message.to_string().into())).await {
             self.dead = true;
             return Err(error.to_string());
         }
@@ -615,6 +675,18 @@ impl Page {
                 self.dialog_open = true;
                 return Err("browser_dialog_requires_take_over".into());
             }
+            match value["method"].as_str() {
+                Some("Target.attachedToTarget") if value["params"]["targetInfo"]["type"] == "iframe" => {
+                    if let (Some(frame), Some(session)) = (value["params"]["targetInfo"]["targetId"].as_str(), value["params"]["sessionId"].as_str()) {
+                        self.frames.insert(frame.to_owned(), session.to_owned());
+                    }
+                }
+                Some("Target.detachedFromTarget") => {
+                    let gone = value["params"]["sessionId"].as_str().unwrap_or_default();
+                    self.frames.retain(|_, session| session != gone);
+                }
+                _ => {}
+            }
             if value["id"] == json!(id) {
                 if let Some(error) = value.get("error") {
                     return Err(format!("The browser refused {method}: {}", error["message"].as_str().unwrap_or("unknown error")));
@@ -633,6 +705,36 @@ impl Page {
     async fn eval(&mut self, expression: &str) -> Result<Value, String> {
         let result = self.call("Runtime.evaluate", json!({ "expression": expression, "returnByValue": true })).await?;
         Ok(result["result"]["value"].clone())
+    }
+
+    /// The selection in the frame that has the keyboard, which may be nested in other frames
+    /// or run in another process. It fails rather than answer with some other frame's text.
+    async fn selection(&mut self) -> Result<String, String> {
+        const UNAVAILABLE: &str = "browser_selection_unavailable";
+        let (mut session, mut context) = (None::<String>, None::<i64>);
+        for _ in 0..MAX_FRAME_DEPTH {
+            let mut asked = json!({ "expression": FOCUSED_FRAME });
+            if let Some(context) = context { asked["contextId"] = json!(context); }
+            let answer = self.call_in(session.as_deref(), "Runtime.evaluate", asked).await.map_err(|_| UNAVAILABLE)?;
+            let Some(frame) = answer["result"]["objectId"].as_str() else {
+                let mut asked = json!({ "expression": SELECTION, "returnByValue": true });
+                if let Some(context) = context { asked["contextId"] = json!(context); }
+                let answer = self.call_in(session.as_deref(), "Runtime.evaluate", asked).await.map_err(|_| UNAVAILABLE)?;
+                return answer["result"]["value"].as_str().map(str::to_owned).ok_or_else(|| UNAVAILABLE.to_owned());
+            };
+            let node = self.call_in(session.as_deref(), "DOM.describeNode", json!({ "objectId": frame })).await.map_err(|_| UNAVAILABLE)?;
+            let frame = node["node"]["frameId"].as_str().ok_or(UNAVAILABLE)?.to_owned();
+            // This also reports frames already running elsewhere; the second call collects any that arrive after its answer.
+            self.call_in(session.as_deref(), "Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true })).await.map_err(|_| UNAVAILABLE)?;
+            self.call_in(session.as_deref(), "Runtime.evaluate", json!({ "expression": "0" })).await.map_err(|_| UNAVAILABLE)?;
+            if let Some(own) = self.frames.get(&frame) {
+                (session, context) = (Some(own.clone()), None);
+            } else {
+                let world = self.call_in(session.as_deref(), "Page.createIsolatedWorld", json!({ "frameId": frame, "worldName": "deck-selection" })).await.map_err(|_| UNAVAILABLE)?;
+                context = Some(world["executionContextId"].as_i64().ok_or(UNAVAILABLE)?);
+            }
+        }
+        Err(UNAVAILABLE.into())
     }
 
     async fn settle(&mut self) {
@@ -917,6 +1019,10 @@ pub enum Event {
     Dialog { accept: bool, #[serde(default)] text: Option<String> },
 }
 
+/// Frames deeper than this aren't followed for Copy and Cut.
+const MAX_FRAME_DEPTH: usize = 8;
+/// The focused frame's element, in this document, if focus went into one.
+const FOCUSED_FRAME: &str = "(()=>{let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;return a&&(a.tagName==='IFRAME'||a.tagName==='FRAME')?a:null})()";
 const SELECTION: &str = "(()=>{let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;if(a&&a.type==='password')return'';if(a&&typeof a.selectionStart==='number')return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection())})()";
 
 /// Apply the person's input to one tab. Touching a free tab takes it; pointer movement never
@@ -966,9 +1072,12 @@ pub async fn tab_input(id: &str, events: Vec<Event>) -> Result<Value, String> {
             Event::Back => { page.eval("history.back()").await?; }
             Event::Forward => { page.eval("history.forward()").await?; }
             Event::Reload => { page.call("Page.reload", json!({})).await?; }
-            Event::Copy => { copied = page.eval(SELECTION).await?.as_str().map(str::to_owned); }
+            Event::Copy => { copied = Some(page.selection().await?); }
             Event::Cut => {
-                copied = page.eval(SELECTION).await?.as_str().map(str::to_owned);
+                let text = page.selection().await?;
+                // Nothing is removed that didn't reach the clipboard, which also spares password fields.
+                if text.is_empty() { continue; }
+                copied = Some(text);
                 page.call("Input.dispatchKeyEvent", json!({ "type": "rawKeyDown", "key": "x", "code": "KeyX", "windowsVirtualKeyCode": 88, "commands": ["delete"] })).await?;
                 page.call("Input.dispatchKeyEvent", json!({ "type": "keyUp", "key": "x", "code": "KeyX", "windowsVirtualKeyCode": 88 })).await?;
             }
@@ -983,9 +1092,10 @@ pub async fn tab_input(id: &str, events: Vec<Event>) -> Result<Value, String> {
 /// Fit a tab to the person's view. A bot's coordinates stay fixed while it holds the tab.
 pub async fn tab_resize(id: &str, width: u32, height: u32, scale: f64) -> Result<Value, String> {
     let tab = find(id)?;
-    if !matches!(tab.info.lock().unwrap().holder(Instant::now()), Control::Free | Control::Human) { return Ok(tab.summary()); }
     let (width, height, scale) = (width.clamp(320, 2560), height.clamp(240, 1600), scale.clamp(1.0, 2.0));
+    // Bots claim under this same lock, so nothing can take the tab between the check and the change.
     let _ops = tab.ops.lock().await;
+    if !matches!(tab.info.lock().unwrap().holder(Instant::now()), Control::Free | Control::Human) { return Ok(tab.summary()); }
     let mut page = tab.page().await?;
     page.call("Emulation.setDeviceMetricsOverride", json!({ "width": width, "height": height, "deviceScaleFactor": scale, "mobile": false })).await?;
     (page.width, page.height) = (width, height);

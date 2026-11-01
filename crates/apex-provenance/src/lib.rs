@@ -682,6 +682,8 @@ pub fn protected(name: &str) -> bool {
             | "personal_archive"
             | "personal_reply_cancel"
             | "personal_schedule_cancel"
+            // Mints the session for the person's browser surface: one receipt, not one per frame.
+            | "personal_browser_session"
             | "room_create"
             | "room_import"
             | "room_fork"

@@ -208,7 +208,7 @@ fn secure_field(attributes: &[String]) -> bool {
     })
 }
 
-fn snapshot_id() -> String {
+pub(super) fn snapshot_id() -> String {
     use ring::rand::{SecureRandom, SystemRandom};
     let mut random = [0u8; 16];
     SystemRandom::new().fill(&mut random).expect("system random");

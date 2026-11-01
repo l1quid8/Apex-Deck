@@ -93,7 +93,7 @@ impl Info {
         matches!(self.holder(now), Control::Bot { owner: held, .. } if held == owner)
     }
 
-    pub fn summary(&self, id: &str, dialog: bool, now: Instant) -> Value {
+    pub fn summary(&self, id: &str, dialog: bool, question: Option<Value>, now: Instant) -> Value {
         let control = match self.holder(now) {
             Control::Free => json!({ "kind": "free" }),
             Control::Human => json!({ "kind": "human" }),
@@ -101,8 +101,13 @@ impl Info {
             Control::Bot { thread, participant, label, .. } => json!({ "kind": "bot", "thread": thread, "participant": participant, "label": label }),
         };
         json!({ "id": id, "url": self.url, "title": self.title, "control": control, "rooms": self.scope.rooms, "assistant": self.scope.assistant,
-            "popup": self.popup, "dialogOpen": dialog, "fileChooser": self.file_chooser.is_some(), "width": self.width, "height": self.height })
+            "popup": self.popup, "dialogOpen": dialog, "dialog": question, "fileChooser": self.file_chooser.is_some(), "width": self.width, "height": self.height })
     }
+}
+
+/// What a page's dialog asks, from the browser's report of it.
+pub fn dialog_question(params: &Value) -> Value {
+    json!({ "type": params["type"], "message": params["message"], "defaultPrompt": params["defaultPrompt"], "url": params["url"] })
 }
 
 /// One tab on disk. Reopened at its address on demand, and never with a holder.
@@ -189,9 +194,16 @@ mod tests {
     fn a_summary_names_the_holder_and_only_what_the_ui_needs() {
         let (mut info, now) = (tab(), Instant::now());
         info.claim(&bot("secret-token"), now).unwrap();
-        let summary = info.summary("t1", false, now);
+        let summary = info.summary("t1", false, None, now);
         assert_eq!(summary["control"]["label"], "Jigga");
         assert!(!summary.to_string().contains("secret-token"), "turn tokens stay in the host");
+    }
+
+    #[test]
+    fn a_dialog_keeps_its_own_words_and_nothing_else() {
+        let question = dialog_question(&json!({ "type": "prompt", "message": "Your name?", "defaultPrompt": "Sam", "url": "https://a.b/", "frameId": "F" }));
+        assert_eq!(question, json!({ "type": "prompt", "message": "Your name?", "defaultPrompt": "Sam", "url": "https://a.b/" }));
+        assert_eq!(tab().summary("t1", true, Some(question), Instant::now())["dialog"]["message"], "Your name?");
     }
 
     #[test]

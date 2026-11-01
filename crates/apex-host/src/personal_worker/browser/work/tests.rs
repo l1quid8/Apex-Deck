@@ -225,6 +225,14 @@ async fn site() -> String {
                 format!("<title>Second</title><p>Reached {path}</p><button onclick=\"document.title='pressed'\" style='position:fixed;left:10px;top:10px;width:120px;height:40px'>Point</button><div style='height:4000px'></div><a href='#end'>Far link</a>")
             } else if path.starts_with("/popup") {
                 "<title>Opener</title><button onclick=\"window.open('/two?popup=1')\">Sign in</button>".to_owned()
+            } else if path.starts_with("/questions") {
+                r#"<title>Questions</title><script>setTimeout(()=>{alert('alert words');const yes=confirm('confirm words');const said=prompt('prompt words','the default');document.title=yes+':'+said},200)</script>"#.to_owned()
+            } else if path.starts_with("/nested") {
+                // Reports its own field to the page around it, which can't look inside.
+                r#"<input id=box aria-label=Inner value="frame words" style="position:fixed;left:0;top:0;width:200px;height:40px"><input id=hidden type=password value="frame secret" style="position:fixed;left:0;top:60px;width:200px;height:40px"><script>setInterval(()=>parent.postMessage(box.value+'|'+hidden.value,'*'),20)</script>"#.to_owned()
+            } else if path.starts_with("/parent") {
+                let frame = path.split("frame=").nth(1).unwrap_or("/nested").to_owned();
+                format!(r#"<title>Parent</title><p id=mine>parent words</p><iframe src="{frame}" style="position:fixed;left:0;top:100px;width:400px;height:200px;border:0"></iframe><script>getSelection().selectAllChildren(mine);onmessage=(e)=>document.title=e.data</script>"#)
             } else if path.starts_with("/input") {
                 "<title>Typing</title><input id=box autofocus aria-label=Box><script>setInterval(()=>{document.title=box.value||'Typing'},20)</script>".to_owned()
             } else {
@@ -407,4 +415,169 @@ async fn the_shared_browser_works_for_real() {
     let saved = std::fs::read_to_string(profile.join("browser-tabs.json")).unwrap();
     assert!(saved.contains("framed") && !saved.contains("ucu-secret-marker") && !saved.contains("\"bot\":"), "{saved}");
     let _ = std::fs::remove_dir_all(profile);
+}
+
+#[tokio::test]
+#[ignore = "starts a real headless browser"]
+async fn dialogs_show_their_own_words_to_the_person_only() {
+    let _serial = SERIAL.lock().await;
+    reset();
+    let profile = std::env::temp_dir().join(format!("apex-work-dialog-{}", std::process::id()));
+    service::use_profile(profile.join("assistant-browser"));
+    let site = site().await;
+    let opened = service::tab_open(Some(format!("{site}/questions"))).await.unwrap();
+    let id = opened["id"].as_str().unwrap().to_owned();
+    let tab = service::find(&id).unwrap();
+    tab.info.lock().unwrap().scope.rooms.insert("room".into());
+    let asked = async |kind: &str| {
+        for _ in 0..100 {
+            let summary = tab.summary();
+            if summary["dialog"]["type"] == kind { return summary["dialog"].clone(); }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("no {kind} dialog: {}", tab.summary());
+    };
+    let answer = async |accept: bool, text: Option<&str>| {
+        service::tab_input(&id, vec![service::Event::Dialog { accept, text: text.map(str::to_owned) }]).await.unwrap()
+    };
+    assert_eq!(asked("alert").await["message"], "alert words");
+    let bot = turn("bot", "room", &live);
+    let listed = call(&bot, "browser_tabs", &json!({})).await.unwrap().to_string();
+    assert!(!listed.contains("alert words"), "a bot never reads the dialog: {listed}");
+    answer(true, None).await;
+    assert_eq!(asked("confirm").await["message"], "confirm words");
+    answer(true, None).await;
+    let prompt = asked("prompt").await;
+    assert_eq!((prompt["message"].as_str(), prompt["defaultPrompt"].as_str()), (Some("prompt words"), Some("the default")));
+    answer(true, Some("my answer")).await;
+    for _ in 0..100 {
+        if tab.summary()["dialogOpen"] == false && tab.page().await.unwrap().eval("document.title").await.unwrap() == "true:my answer" { break; }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(tab.page().await.unwrap().eval("document.title").await.unwrap(), "true:my answer");
+    assert!(tab.summary()["dialog"].is_null(), "the words go when the dialog does");
+    let saved = std::fs::read_to_string(profile.join("browser-tabs.json")).unwrap_or_default();
+    assert!(!saved.contains("words"), "dialogs are never written down");
+    kill_browser().await;
+    let _ = std::fs::remove_dir_all(profile);
+}
+
+#[tokio::test]
+#[ignore = "starts a real headless browser"]
+async fn copy_and_cut_use_the_frame_with_the_keyboard() {
+    let _serial = SERIAL.lock().await;
+    reset();
+    let profile = std::env::temp_dir().join(format!("apex-work-cut-{}", std::process::id()));
+    service::use_profile(profile.join("assistant-browser"));
+    let site = site().await;
+    // Same site shares a process with the page; localhost and 127.0.0.1 don't.
+    let other = site.replace("127.0.0.1", "localhost");
+    for frame in ["/nested".to_owned(), format!("{other}/nested")] {
+        let opened = service::tab_open(Some(format!("{site}/parent?frame={frame}"))).await.unwrap();
+        let id = opened["id"].as_str().unwrap().to_owned();
+        let tab = service::find(&id).unwrap();
+        let title = async || tab.page().await.unwrap().eval("document.title").await.unwrap().as_str().unwrap().to_owned();
+        for _ in 0..100 { if title().await.contains('|') { break; } tokio::time::sleep(Duration::from_millis(50)).await; }
+        assert_eq!(title().await, "frame words|frame secret", "{frame}");
+        let click = |y: f64| vec![
+            service::Event::Mouse { action: "down".into(), x: 50.0, y, button: "left".into(), buttons: 1, clicks: 1, modifiers: 0 },
+            service::Event::Mouse { action: "up".into(), x: 50.0, y, button: "left".into(), buttons: 0, clicks: 1, modifiers: 0 },
+            service::Event::Key { action: "down".into(), key: "a".into(), code: "KeyA".into(), vk: 65, text: String::new(), modifiers: 4, commands: vec!["selectAll".into()] },
+        ];
+
+        // A password stays where it is, and the parent's own selection isn't offered instead.
+        service::tab_input(&id, click(180.0)).await.unwrap();
+        let cut = service::tab_input(&id, vec![service::Event::Cut]).await.unwrap();
+        assert!(cut["copied"].is_null(), "{frame}: {cut}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(title().await, "frame words|frame secret", "{frame}");
+
+        service::tab_input(&id, click(120.0)).await.unwrap();
+        let copy = service::tab_input(&id, vec![service::Event::Copy]).await.unwrap();
+        assert_eq!(copy["copied"], "frame words", "{frame}");
+        assert_eq!(title().await, "frame words|frame secret", "{frame}: Copy changes nothing");
+        let cut = service::tab_input(&id, vec![service::Event::Cut]).await.unwrap();
+        assert_eq!(cut["copied"], "frame words", "{frame}");
+        for _ in 0..100 { if title().await == "|frame secret" { break; } tokio::time::sleep(Duration::from_millis(50)).await; }
+        assert_eq!(title().await, "|frame secret", "{frame}: the frame lost what the clipboard got");
+        service::tab_close(&id).await.unwrap();
+    }
+    kill_browser().await;
+    let _ = std::fs::remove_dir_all(profile);
+}
+
+fn pause_at(point: &'static str) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let (reached, resume) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+    service::PAUSES.lock().unwrap().insert(point, (reached.clone(), resume.clone()));
+    (reached, resume)
+}
+
+#[tokio::test]
+async fn a_held_tab_keeps_its_size_when_a_resize_was_already_waiting() {
+    let _serial = SERIAL.lock().await;
+    reset();
+    let tab = room_tab("room");
+    let id = tab.id.clone();
+    let ops = tab.ops.lock().await;
+    let resize = tokio::spawn({ let id = id.clone(); async move { service::tab_resize(&id, 900, 700, 1.0).await } });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let holder = Holder { owner: "bot".into(), thread: "room".into(), participant: "bot".into(), label: "bot".into() };
+    tab.info.lock().unwrap().claim(&holder, Instant::now()).unwrap();
+    drop(ops);
+    resize.await.unwrap().unwrap();
+    let info = tab.info.lock().unwrap();
+    assert_eq!((info.width, info.height), (super::super::tabs::WIDTH, super::super::tabs::HEIGHT), "a bot's coordinates stay put");
+}
+
+#[tokio::test]
+#[ignore = "starts a real headless browser"]
+async fn reconciling_never_loses_a_tab_getting_its_target() {
+    let _serial = SERIAL.lock().await;
+    reset();
+    let profile = std::env::temp_dir().join(format!("apex-work-browser-{}", std::process::id()));
+    service::use_profile(profile.join("assistant-browser"));
+    let first = room_tab("room");
+    drop(first.page().await.unwrap());
+
+    // A tab created after reconcile listed the browser's pages must not look closed.
+    let (reached, resume) = pause_at("reconcile");
+    let reconciling = tokio::spawn(service::reconcile());
+    reached.notified().await;
+    let late = room_tab("room");
+    let opening = tokio::spawn({ let late = late.clone(); async move { late.page().await.map(drop) } });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(late.info.lock().unwrap().target.is_none(), "it waits for reconcile to finish");
+    resume.notify_one();
+    reconciling.await.unwrap().unwrap();
+    opening.await.unwrap().unwrap();
+    assert!(service::find(&late.id).is_ok(), "the new tab survived");
+    service::reconcile().await.unwrap();
+    assert!(service::find(&late.id).is_ok() && service::find(&first.id).is_ok(), "both tabs are real");
+
+    // A page made a moment ago has no registry entry yet, and must not be taken for a stranger.
+    let (reached, resume) = pause_at("assign");
+    let next = room_tab("room");
+    let opening = tokio::spawn({ let next = next.clone(); async move { next.page().await.map(drop) } });
+    reached.notified().await;
+    let count = service::all_tabs().len();
+    let reconciling = tokio::spawn(service::reconcile());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!reconciling.is_finished(), "it waits for the target to be assigned");
+    resume.notify_one();
+    opening.await.unwrap().unwrap();
+    reconciling.await.unwrap().unwrap();
+    assert_eq!(service::all_tabs().len(), count, "no duplicate tab for the new page");
+    assert!(service::find(&next.id).is_ok());
+    kill_browser().await;
+    let _ = std::fs::remove_dir_all(profile);
+}
+
+#[test]
+fn a_session_is_only_what_the_host_issued() {
+    assert_eq!(service::session_check("made-up").unwrap_err(), "browser_session_required");
+    assert_eq!(service::session_check("").unwrap_err(), "browser_session_required");
+    let session = service::session_open();
+    assert!(service::session_check(&session).is_ok());
+    for _ in 0..service::SESSION_LIMIT { service::session_open(); }
+    assert!(service::session_check(&session).is_err(), "old sessions age out");
 }
