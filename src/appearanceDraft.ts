@@ -293,6 +293,15 @@ export function presetNameError(name: string, saved: SkinFile[], except?: string
   return taken ? `${wanted} already exists. Pick another name, or update it instead.` : null;
 }
 
+/** Add a preset from a file. A taken name gets a number, so both are kept. Nothing else changes. */
+export function importPreset(settings: AppSettings, skin: SkinFile): AppSettings {
+  const applied = appliedAppearance(settings);
+  const taken = new Set([...applied.saved, ...BUILTIN_SKINS].map((item) => item.name.toLowerCase()));
+  let name = skin.name;
+  for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${skin.name.slice(0, 36)} ${n}`;
+  return { ...settings, appearance: { ...applied, saved: [...applied.saved, { ...skin, name }].slice(-MAX_SAVED) } };
+}
+
 function readMaterial(raw: unknown, values: AppearanceValues): AppearanceDraft["materialEdits"] {
   if (!isRecord(raw)) return {};
   const out: AppearanceDraft["materialEdits"] = {};

@@ -196,3 +196,18 @@ test('a control reverts to its preset alone', () => {
   const exact = { ...d, values: { ...clayValues, ...themes.colorAppearance('#35aabb') } };
   assert.equal('accentColor' in draft.revertKeys(exact, ['accentColor', 'hue'], []).values, false);
 });
+test('import adds a preset and leaves the draft and Deck alone', () => {
+  const s = withDraft(base(), { values: { radius: 20 } });
+  const next = draft.importPreset(s, skin('Harbor', tideValues));
+  assert.deepEqual(next.appearance.saved.map(p => p.name), ['Harbor']);
+  assert.deepEqual(next.appearance.current, s.appearance.current);
+  assert.deepEqual(next.appearanceDraft, s.appearanceDraft);
+});
+test('import of a preset whose name exists keeps both', () => {
+  const s = draft.importPreset(onSavedPreset('Mine'), skin('Mine', tideValues));
+  assert.deepEqual(s.appearance.saved.map(p => p.name), ['Mine', 'Mine 2']);
+});
+test('import of a preset named like a built-in keeps both', () => {
+  const s = draft.importPreset(base(), skin('Clay Warm', tideValues));
+  assert.deepEqual(s.appearance.saved.map(p => p.name), ['Clay Warm 2']);
+});

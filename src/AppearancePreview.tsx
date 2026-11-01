@@ -10,16 +10,19 @@ import { ChipSampleRow } from "./ChipStylePicker";
 import { Markdown } from "./Markdown";
 import type { AppearanceDraft } from "./appearanceDraft";
 import type { ChipParts } from "./botChip";
+import { LandingTexture } from "./landing/LandingTexture";
+import { DEFAULT_LANDING_TEXTURE, effectiveLandingTexture, type LandingTextureSettings } from "./settings";
 import { applyAppearance, effectiveLightFromMode, type AppearanceValues } from "./themes";
 import type { ProposedAction } from "./types";
 
 const READY = "appearance-preview-ready";
-interface PreviewMessage { type: "appearance-preview"; values: AppearanceValues; botChips: ChipParts }
+export type PreviewScene = "thread" | "empty";
+interface PreviewMessage { type: "appearance-preview"; values: AppearanceValues; botChips: ChipParts; landingTexture?: LandingTextureSettings; scene?: PreviewScene }
 
 const PAGE_URL = () => `${window.location.pathname}?appearance-preview=1`;
 
 /** The frame, fed at most once per animation frame. */
-export function AppearancePreview({ draft, systemDark }: { draft: AppearanceDraft; systemDark: boolean }) {
+export function AppearancePreview({ draft, systemDark, scene }: { draft: AppearanceDraft; systemDark: boolean; scene: PreviewScene }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const message = useRef<PreviewMessage | null>(null);
   const queued = useRef(0);
@@ -31,10 +34,10 @@ export function AppearancePreview({ draft, systemDark }: { draft: AppearanceDraf
   };
 
   const light = effectiveLightFromMode(draft.colorMode, systemDark, draft.values.light);
-  message.current = { type: "appearance-preview", values: { ...draft.values, light }, botChips: draft.botChips };
+  message.current = { type: "appearance-preview", values: { ...draft.values, light }, botChips: draft.botChips, landingTexture: draft.landingTexture, scene };
   useEffect(() => {
     queued.current ||= requestAnimationFrame(send);
-  }, [draft, light]);
+  }, [draft, light, scene]);
 
   useEffect(() => {
     const onReady = (event: MessageEvent) => {
@@ -88,7 +91,7 @@ export function AppearancePreviewPage() {
   // Threads open on the newest message, as in Deck.
   useLayoutEffect(() => {
     if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight;
-  }, [message !== null]);
+  }, [message !== null, message?.scene]);
 
   const chips = message?.botChips;
   const details = chips ? [...(chips.tool ? ["Opus"] : []), ...(chips.effort ? ["high"] : []), ...(chips.usage ? ["ctx 81%"] : [])] : [];
@@ -103,7 +106,12 @@ export function AppearancePreviewPage() {
         <div className="pane-head"><span className="pane-title">Checkout double charges</span><span className="pane-folder">payments</span></div>
         <div data-bot-chip-style={chips?.style ?? "classic"} className="chat thread-chat">
           <div className="chat-body">
-            <div className="transcript" ref={transcript} tabIndex={0} aria-label="Sample conversation">
+            {message?.scene === "empty" ? <div className="transcript">
+              <div className="empty">
+                <LandingTexture settings={effectiveLandingTexture(message.landingTexture ?? DEFAULT_LANDING_TEXTURE, message.values)} />
+                <div className="empty-copy"><span className="eyebrow">A fresh perspective starts here</span><h3>What are we working on?</h3></div>
+              </div>
+            </div> : <div className="transcript" ref={transcript} tabIndex={0} aria-label="Sample conversation">
               <div className="message-row human-row"><div className="bubble human">Checkout retries have been double-charging some customers since Tuesday. Can you find out why and fix it?</div></div>
               <div className="bot-row message-row">
                 <Avatar seed="jigga" color="#a3e635" />
@@ -124,7 +132,7 @@ export function AppearancePreviewPage() {
                   <Markdown text={FOLLOW_UP} onOpen={noOpen} />
                 </div>
               </div>
-            </div>
+            </div>}
           </div>
           <div className="composer">
             <div className="composer-input">

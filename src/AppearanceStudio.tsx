@@ -4,8 +4,9 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 
 import { CustomizePanel, MaterialPanel, Segmented } from "./AppearanceControls";
+import { AppearanceDetails } from "./AppearanceDetails";
 import { AppearancePresetRow } from "./AppearancePresetRow";
-import { AppearancePreview } from "./AppearancePreview";
+import { AppearancePreview, type PreviewScene } from "./AppearancePreview";
 import { deckLabel, displayName, draftTheme, editedKeys, pickPreset, pickTheme } from "./appearanceDraft";
 import type { AppSettings } from "./settings";
 import { builtinFor, effectiveLightFromMode, type AppearanceValues, type ColorMode, type PresetRef, type ThemeId } from "./themes";
@@ -22,6 +23,7 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
   const { draft } = studio;
   const saved = settings.appearance?.saved ?? [];
   const [tab, setTab] = useState<StudioTab>("customize");
+  const [scene, setScene] = useState<PreviewScene>("thread");
   const tabs = useRef<HTMLDivElement>(null);
   const theme = draftTheme(draft, saved);
   const light = effectiveLightFromMode(draft.colorMode, systemDark, draft.values.light);
@@ -91,12 +93,15 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
         <div className="studio-panel" role="tabpanel" id={`studio-panel-${tab}`} aria-labelledby={`studio-tab-${tab}`}>
           {tab === "customize" && <CustomizePanel ctx={ctx} theme={theme} light={light} />}
           {tab === "material" && <MaterialPanel ctx={ctx} theme={theme} light={light} onUseLiquid={() => onTheme("liquid")} />}
+          {(tab === "details" || tab === "share") && <AppearanceDetails tab={tab} studio={studio} settings={settings} />}
         </div>
       </section>
 
       <aside className="studio-preview" aria-label="Live preview">
-        <div className="studio-preview-bar"><p className="studio-prev-state"><b>Preview</b> {studio.pending.length ? "not applied yet" : "matches Deck"}</p></div>
-        <AppearancePreview draft={draft} systemDark={systemDark} />
+        <div className="studio-preview-bar"><p className="studio-prev-state"><b>Preview</b> {studio.pending.length ? "not applied yet" : "matches Deck"}</p>
+          <div className="studio-preview-tools"><Segmented name="studio-scene" label="Preview scene" options={[["thread", "Conversation"], ["empty", "Empty thread"]]} value={scene} onChange={setScene} /></div>
+        </div>
+        <AppearancePreview draft={draft} systemDark={systemDark} scene={scene} />
       </aside>
     </div>
   </div>;

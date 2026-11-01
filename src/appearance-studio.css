@@ -202,6 +202,13 @@ label:has(> .studio-vh:focus-visible) { outline: 2px solid var(--accent); outlin
 p { margin: 0; }
 button { font: inherit; }
 .studio-preset-strip { position: relative; }
+.studio-preview-tools { flex: none; min-width: 0; }
+.studio-text { display: block; width: 100%; margin-top: 6px; padding: 5px 8px; background: var(--studio-code); border: 1px solid var(--studio-edge); border-radius: 6px; color: var(--text); font: 12px/1.45 ui-monospace, "SF Mono", Menlo, monospace; resize: vertical; }
+.studio-notice { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.studio-notice[role="alert"] { color: var(--studio-danger); }
+.studio-check-row { display: flex; gap: 16px; margin-top: 8px; font-size: 13px; }
+.studio-block .appearance-section { padding: 0; border: 0; background: none; }
+.studio-block .chip-style-picker { min-width: 0; }
 .studio-accent-mode { position: absolute; right: 0; top: 5px; width: 170px; }
 .studio-accent { position: relative; height: 142px; }
 .studio-t-rail, .studio-t-pane, .studio-t-l, .studio-t-a, .studio-t-box { display: block; }
