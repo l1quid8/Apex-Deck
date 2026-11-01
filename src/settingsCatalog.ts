@@ -127,6 +127,13 @@ export const CATALOG_ENTRIES: CatalogEntry[] = [
   { id: 'ucu-status', section: 'computer', label: 'Computer use status, refresh, setup', keywords: ['status','refresh','setup','permissions','accessibility','screen','recording','input','monitoring'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-status' },
   { id: 'thread-grants', section: 'computer', label: 'Approval per Work thread', keywords: ['thread','grants','approval','allow','apps','permissions'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'thread-grants' },
   { id: 'cursor', section: 'computer', label: 'Cursor indicator and labels', keywords: ['cursor','pointer','mouse','labels','bubble','duration','indicator'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
+  { id: 'cursor-style', section: 'computer', label: 'Cursor style presets', keywords: ['cursor','style','preset','default','simple','ring','pointer','custom'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
+  { id: 'cursor-colors', section: 'computer', label: 'Cursor colors fill accent outline', keywords: ['cursor','colors','fill','accent','outline','rim','hex'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
+  { id: 'cursor-size', section: 'computer', label: 'Cursor size', keywords: ['cursor','size','scale','large','small'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
+  { id: 'cursor-effects', section: 'computer', label: 'Cursor ripple highlight', keywords: ['cursor','ripple','highlight','target','effect','click'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
+  { id: 'cursor-image', section: 'computer', label: 'Custom cursor PNG image', keywords: ['cursor','image','png','custom','upload','reset'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
+  { id: 'cursor-motion', section: 'computer', label: 'Cursor motion travel dwell timing', keywords: ['cursor','motion','travel','dwell','linger','bow','overshoot','tremor','speed'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor-customize' },
+  { id: 'cursor-labels', section: 'computer', label: 'Cursor action labels', keywords: ['cursor','labels','action','description'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
   { id: 'ucu-stop', section: 'computer', label: 'Stop and privacy', keywords: ['stop','privacy','model','screenshots'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-stop', advanced: true },
 
   // Gateway

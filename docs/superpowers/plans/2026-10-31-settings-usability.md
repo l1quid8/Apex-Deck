@@ -12,6 +12,8 @@
 
 **Status:** Product implementation authorized 2026-10-31+ by Tyler: build settings rebuild NOW concurrently with Jigga's UCU guard fix in isolated worktree `/Users/tylercaldwell/Downloads/apex-deck-worktrees/settings-usability` on branch `feat/settings-usability`. This authorization supersedes the earlier wait-until-UCU start gate. An interactive prototype exists at `mockups/settings-v2/index.html`; it uses sample data only and does not change Apex Deck settings.
 
+**Addendum 2026-11-01:** Tyler explicitly requests cursor customization INSIDE UCU settings — bundled Agent Desktop style capabilities: presets (simple pointer, click-ring-only), size, fill/accent/outline, ripple/highlight toggles, motion/travel and dwell timing, optional action labels (off default), and custom PNG cursor with reset. Must inspect vendored core cursor_overlay/style.rs, config.rs and implement real helper preferences/status/control RPC and host plumbing, validated per upstream limits (PNG ≤2MiB ≤1024px). Controls must not ship as inert placeholders. Simple presets up front, detailed under Customize cursor. Preserve all existing features and true-black Dark mode. Do not alter activity guards or computer execution for cosmetics. Visual overlay only, not OS mouse.
+
 ## Product brief
 
 Settings should help someone accomplish a task without first learning Deck's implementation. Everyday choices belong up front; technical explanations, maintenance and rare configuration belong behind clearly named disclosures. Keep useful existing features discoverable through search rather than deleting them to achieve simplicity.
