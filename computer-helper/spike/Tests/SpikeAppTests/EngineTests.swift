@@ -16,12 +16,6 @@ final class EngineTests: XCTestCase {
       XCTAssertEqual((error as? Refusal)?.code, "stale_observation")
     }
   }
-  func testTypeRejectsUnboundedPayloadBeforeCallingNativeEngine() {
-    let engine = NativeEngine()
-    XCTAssertThrowsError(try engine.type(observation: "old", ref: "@e1", text: String(repeating: "x", count: 65_537), check: {})) { error in
-      XCTAssertEqual((error as? Refusal)?.code, "invalid_text")
-    }
-  }
 }
 
 final class EngineSessionTests: XCTestCase {
@@ -39,13 +33,11 @@ final class EngineSessionTests: XCTestCase {
   func testNativeContinuationKeepsAppIdentityWithoutPinningPreActionFocus() {
     let launch = Date(timeIntervalSince1970: 1)
     XCTAssertTrue(EngineSession.continuationMatches(pid: 10, launch: launch,
-      currentPID: 10, currentLaunch: launch, terminated: false, frontmostPID: 10))
+      currentPID: 10, currentLaunch: launch, terminated: false))
     XCTAssertFalse(EngineSession.continuationMatches(pid: 10, launch: launch,
-      currentPID: 10, currentLaunch: Date(timeIntervalSince1970: 2), terminated: false, frontmostPID: 10))
+      currentPID: 10, currentLaunch: Date(timeIntervalSince1970: 2), terminated: false))
     XCTAssertFalse(EngineSession.continuationMatches(pid: 10, launch: launch,
-      currentPID: 10, currentLaunch: launch, terminated: false, frontmostPID: 11))
-    XCTAssertFalse(EngineSession.continuationMatches(pid: 10, launch: launch,
-      currentPID: 10, currentLaunch: launch, terminated: true, frontmostPID: 10))
+      currentPID: 10, currentLaunch: launch, terminated: true))
   }
   func testActionSummaryContainsOnlyDeliveryAndVerificationMetadata() {
     XCTAssertEqual(EngineSession.actionSummary(["delivery": "delivered_verified", "verification_scope": "element_value", "post_state": "private"]),

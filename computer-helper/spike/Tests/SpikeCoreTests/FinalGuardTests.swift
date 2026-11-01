@@ -40,6 +40,52 @@ final class FinalGuardTests: XCTestCase {
     XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.4)
     wait(for: [done], timeout: 1)
   }
+  func testInputInAnotherAppNeverTouchesTheBot() {
+    let latch = Latch(); latch.start(); latch.setTap(true); latch.setTarget(7)
+    let epoch = latch.state().0
+    latch.beginAction("x")
+    latch.human(motion: false, frontmost: 9)
+    latch.human(motion: true, frontmost: 9)
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch))
+  }
+  func testInputInTheTargetStopsTheBotAtOnce() {
+    let latch = Latch(); latch.start(); latch.setTap(true); latch.setTarget(7)
+    latch.beginAction("x")
+    latch.human(motion: true, frontmost: 7)
+    XCTAssertThrowsError(try latch.check("x")) { XCTAssertEqual(($0 as? Refusal)?.code, "human_input_during_action") }
+    latch.endAction("x")
+    let epoch = latch.state().0
+    latch.human(motion: false, frontmost: 7)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) { XCTAssertEqual(($0 as? Refusal)?.code, "human_activity_changed") }
+  }
+  func testSwitchingToTheTargetCountsAsInput() {
+    let latch = Latch(); latch.start(); latch.setTap(true); latch.setTarget(7)
+    let epoch = latch.state().0
+    latch.beginAction("x")
+    latch.activated(9)
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch))
+    latch.activated(7)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) { XCTAssertEqual(($0 as? Refusal)?.code, "human_input_during_action") }
+  }
+  func testAClickThatReachesTheTargetWithoutActivatingItStopsTheBot() {
+    let latch = Latch(); latch.start(); latch.setTap(true); latch.setTarget(7)
+    let epoch = latch.state().0
+    latch.beginAction("x")
+    latch.human(motion: false, frontmost: 9, under: 9)
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch))
+    latch.human(motion: false, frontmost: 9, under: 7)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) { XCTAssertEqual(($0 as? Refusal)?.code, "human_input_during_action") }
+  }
+  func testUnknownFrontmostOrNoTargetCountsAsInput() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    var epoch = latch.state().0
+    latch.human(motion: false, frontmost: 9)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch))
+    latch.setTarget(7)
+    epoch = latch.state().0
+    latch.human(motion: false, frontmost: nil)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch))
+  }
   func testStopDuringLastQueryPreventsDispatch() {
     let latch = Latch(); latch.start(); latch.setTap(true)
     let epoch = latch.state().0
@@ -60,6 +106,50 @@ final class FinalGuardTests: XCTestCase {
     var sent = false
     XCTAssertThrowsError(try latch.dispatch("x", epoch: epoch, validate: { latch.cancel("x") }, post: { sent = true }))
     XCTAssertFalse(sent)
+  }
+  func testPointerMotionKeepsAReadingButInterruptsAnAction() throws {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    latch.motion()
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch), "a hand on the mouse must not spoil a reading")
+    latch.beginAction("x")
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch))
+    var sent = false
+    XCTAssertThrowsError(try latch.dispatch("x", epoch: epoch, validate: { latch.motion() }, post: { sent = true })) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "human_input_during_action")
+    }
+    XCTAssertFalse(sent)
+    latch.endAction("x")
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch), "nothing was delivered, so the same reading can retry")
+  }
+  func testInputMakesAReadingStaleUntilAFreshOneAfterItStops() throws {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let stale = latch.state().0
+    latch.event()
+    XCTAssertThrowsError(try latch.check("x", epoch: stale)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "human_activity_changed")
+    }
+    var sent = 0
+    try latch.dispatch("x", epoch: latch.state().0, validate: {}, post: { sent += 1 })
+    XCTAssertEqual(sent, 1)
+  }
+  func testInternalInvalidationIsNotBlamedOnTheHuman() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    latch.invalidate()
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "observation_invalidated")
+    }
+  }
+  func testTapLossDuringAnActionIsNotBlamedOnTheHuman() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    latch.beginAction("x")
+    latch.event(broken: true)
+    latch.setTap(true)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "observation_invalidated")
+    }
   }
   func testUnchangedQueryDispatchesOnce() throws {
     let latch = Latch(); latch.start(); latch.setTap(true)

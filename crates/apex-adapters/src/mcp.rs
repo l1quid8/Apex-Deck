@@ -29,6 +29,7 @@ pub(crate) fn redacted_step(tool: &str, arguments: &Value) -> RedactedStep {
         "click" => "Click a control".into(),
         "press_key" => "Press a key".into(),
         "scroll" => "Scroll".into(),
+        "reveal" => "Reveal a control".into(),
         _ => "Use computer".into(),
     };
     RedactedStep { label }

@@ -83,18 +83,20 @@ final class ScreenshotTests: XCTestCase {
     XCTAssertEqual((input["properties"] as? [String: Any])?.count, 0)
     XCTAssertEqual(input["additionalProperties"] as? Bool, false)
   }
-  // Catches image release after cancellation, activity, tap loss, or disconnected/Stopped run.
+  // Catches image release after cancellation, tap loss, or disconnected/Stopped run.
   func testReadGuardRejectsBeforeAndAfterCapture() throws {
     let latch = Latch()
     var captured = false
     XCTAssertThrowsError(try ScreenshotPolicy.guarded(latch: latch, id: "s") { captured = true; return 1 })
     XCTAssertFalse(captured)
-    for interrupt in [{ latch.stop() }, { latch.cancel("s") }, { latch.event() }, { latch.setTap(false) }] {
+    for interrupt in [{ latch.stop() }, { latch.cancel("s") }, { latch.setTap(false) }] {
       latch.start(); latch.setTap(true)
       XCTAssertThrowsError(try ScreenshotPolicy.guarded(latch: latch, id: "s") { interrupt(); return 1 })
     }
     latch.start(); latch.setTap(true)
     XCTAssertEqual(try ScreenshotPolicy.guarded(latch: latch, id: "s") { 17 }, 17)
+    // Reading is how a bot recovers from human input, so input alone must not refuse it.
+    XCTAssertEqual(try ScreenshotPolicy.guarded(latch: latch, id: "s") { latch.event(); return 18 }, 18)
   }
   private func fixture(width: Int, height: Int, type: String) throws -> Data {
     let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,

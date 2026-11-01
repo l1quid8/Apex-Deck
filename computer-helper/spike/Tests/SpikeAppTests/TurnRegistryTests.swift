@@ -73,6 +73,8 @@ final class TurnRegistryTests: XCTestCase {
     XCTAssertNil(EngineSession.deliveredNote("engine_failed; delivery=not_delivered; retry=safe"))
     XCTAssertTrue(EngineSession.keepsObservation(tool: "get_screenshot", code: "window_unverified_or_protected"))
     XCTAssertTrue(EngineSession.keepsObservation(tool: "press_key", code: "unsupported_key"))
+    XCTAssertTrue(EngineSession.keepsObservation(tool: "press_key", code: "human_input_during_action"))
+    XCTAssertFalse(EngineSession.keepsObservation(tool: "click", code: "human_input_during_action"))
     XCTAssertFalse(EngineSession.keepsObservation(tool: "click", code: "engine_failed; delivery=not_delivered; retry=safe"))
     XCTAssertFalse(EngineSession.keepsObservation(tool: "click", code: "turn_unregistered_or_ended"))
   }

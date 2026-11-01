@@ -9,20 +9,28 @@ public final class Latch {
   private let lock = NSLock()
   private var stopped = true
   private var cancelled = Set<String>()
+  /// Moves whenever a reading stops being trustworthy. Each reading records it.
   private var activity: UInt64 = 0
+  /// `activity` at its last non-human move, so a refusal can name the real cause.
+  private var invalidated: UInt64 = 0
+  /// Every real input, including pointer motion that leaves readings usable.
+  private var input: UInt64 = 0
+  private var actions = [String: UInt64]()
   private var tapHealthy = false
   private var counters = [String: Int]()
+  /// The process this bot acts on. Input can only reach it through that app.
+  private var target: Int32?
   public func stop() {
     lock.lock()
     stopped = true
-    activity &+= 1
+    bumpInvalidated()
     lock.unlock()
   }
   public func start() {
     lock.lock()
     stopped = false
     cancelled.removeAll()
-    activity &+= 1
+    bumpInvalidated()
     lock.unlock()
   }
   public func cancel(_ id: String) {
@@ -40,16 +48,67 @@ public final class Latch {
     defer { lock.unlock() }
     return counters
   }
+  /// Input that can change an app: keys, buttons, drags and scrolling.
   public func event(broken: Bool = false) {
     lock.lock()
-    activity &+= 1
-    if broken { tapHealthy = false }
+    if broken {
+      tapHealthy = false
+      bumpInvalidated()
+    } else {
+      activity &+= 1
+      input &+= 1
+    }
+    lock.unlock()
+  }
+  /// Pointer motion changes nothing in an app, so a reading survives it. A running action does not.
+  public func motion() {
+    lock.lock()
+    input &+= 1
+    lock.unlock()
+  }
+  public func setTarget(_ pid: Int32) {
+    lock.lock()
+    target = pid
+    lock.unlock()
+  }
+  /// Real input from the session tap. Input in another app can't reach the target, so it is
+  /// ignored. An unknown front app counts, because Tyler's priority must not depend on a lookup.
+  /// `under` is the app under a click, which can reach a window without activating it.
+  public func human(motion isMotion: Bool, frontmost: Int32?, under: Int32? = nil) {
+    lock.lock()
+    let elsewhere = target != nil && frontmost != nil && frontmost != target && under != target
+    lock.unlock()
+    guard !elsewhere else { return }
+    if isMotion { motion() } else { event() }
+  }
+  /// Tyler switching to the target arrives before his first event in it.
+  public func activated(_ pid: Int32) {
+    lock.lock()
+    let reached = target == pid
+    lock.unlock()
+    if reached { event() }
+  }
+  /// Readings went stale for a reason other than the human, such as a lease change.
+  public func invalidate() {
+    lock.lock()
+    bumpInvalidated()
+    lock.unlock()
+  }
+  /// Until `endAction`, any real input refuses this request's checks.
+  public func beginAction(_ id: String) {
+    lock.lock()
+    actions[id] = input
+    lock.unlock()
+  }
+  public func endAction(_ id: String) {
+    lock.lock()
+    actions.removeValue(forKey: id)
     lock.unlock()
   }
   public func setTap(_ healthy: Bool) {
     lock.lock()
     tapHealthy = healthy
-    activity &+= 1
+    bumpInvalidated()
     lock.unlock()
   }
   public func state() -> (UInt64, Bool, Bool) {
@@ -69,6 +128,13 @@ public final class Latch {
     defer { lock.unlock() }
     if stopped || cancelled.contains(id) { throw Refusal("cancelled_or_stopped") }
     if !tapHealthy { throw Refusal("human_event_tap_unavailable") }
-    if let epoch = epoch, epoch != activity { throw Refusal("human_activity_changed") }
+    if let mark = actions[id], mark != input { throw Refusal("human_input_during_action") }
+    if let epoch = epoch, epoch != activity {
+      throw Refusal(epoch < invalidated ? "observation_invalidated" : "human_activity_changed")
+    }
+  }
+  private func bumpInvalidated() {
+    activity &+= 1
+    invalidated = activity
   }
 }

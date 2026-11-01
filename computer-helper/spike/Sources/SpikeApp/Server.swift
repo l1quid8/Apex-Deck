@@ -15,7 +15,7 @@ final class Server {
   var latch: Latch { activeState.latch }
   let turns = TurnRegistry()
   lazy var activity = ActivityTap(latch)
-  var input: Input { Input(ax: ax, latch: latch, activity: activity) }
+  var input: Input { Input(ax: ax, latch: latch) }
   let queue = DispatchQueue(label: "unified-computer.actions")
   let lease = ActionLease()
   let output = NSLock()
@@ -33,6 +33,7 @@ final class Server {
       let identity = try turns.identity(activeState.target, token: token)
       let app = try ax.running(activeState.target)
       try identity.validate(app)
+      latch.setTarget(app.processIdentifier)
     }
   }
   func startIsolatedRun() -> Bool { false } // Session authority always comes from the signed daemon.
@@ -44,6 +45,10 @@ final class Server {
       guard let fd = turn["control"] as? Int32, fd >= 0, let params = turn["params"] as? [String: Any] else { continue }
       DispatchQueue.global().async { self.send(["jsonrpc": "2.0", "method": "unified/stop", "params": params], fd); close(fd) }
     }
+  }
+  /// A failed reply closes the bot's connection, so only Stop or cancellation may fail one.
+  func replyCheck(_ state: ClientSession, _ request: String) throws {
+    try turns.check(state.token); try state.latch.check(request)
   }
   func start() {
     activity.start()
@@ -183,9 +188,8 @@ final class Server {
           }
           let request = String(describing: id)
           let result = try self.call(params, id: request)
-          let epoch = params["name"] as? String == "list_apps" ? state.latch.state().0 : (self.snapshot?.epoch ?? state.latch.state().0)
           _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": result], fd: client, output: self.output,
-            check: { try self.turns.check(state.token); try state.latch.check(request, epoch: epoch) },
+            check: { try self.replyCheck(state, request) },
             invalidate: { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); state.latch.stop() })
         } catch let error as Refusal {
           let code = state.engine.failureCode(error.code)
@@ -210,28 +214,15 @@ final class Server {
       }
     }
   }
-  func observe(id: String, epoch: UInt64? = nil, allowBackground: Bool = true) throws -> Snapshot {
+  func observe(id: String, epoch: UInt64? = nil) throws -> Snapshot {
     try checkProofHost()
+    // Without a held epoch this is a plain reading, which input never refuses. It records
+    // the count from its start, so input that overlaps it still blocks acting on it.
     let expected = epoch ?? latch.state().0
-    try latch.check(id, epoch: expected)
-    // Foreground path first (focused window), fallback to background enumeration if allowed
-    do {
-      let fresh = try ax.capture(epoch: expected)
-      try latch.check(id, epoch: expected)
-      return fresh
-    } catch {
-      if allowBackground {
-        // Try background-aware capture (explicit window selection without requiring focus)
-        let bg = try ax.captureBestAvailable(epoch: expected)
-        try latch.check(id, epoch: expected)
-        return bg
-      }
-      throw error
-    }
-  }
-
-  func observeBackground(id: String, epoch: UInt64? = nil) throws -> Snapshot {
-    try observe(id: id, epoch: epoch, allowBackground: true)
+    try latch.check(id, epoch: epoch)
+    let fresh = try ax.capture(epoch: expected)
+    try latch.check(id, epoch: epoch)
+    return fresh
   }
   func call(_ params: [String: Any], id: String) throws -> [String: Any] {
     try turns.check(activeState.token)
@@ -250,9 +241,9 @@ final class Server {
       let bytes = try JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys])
       return ["content": [["type": "text", "text": String(data: bytes, encoding: .utf8) ?? "[]"]]]
     }
-    if name == "request_app" { try requestApp(args, token: token, id: id) }
+    var launchTookFocus = false
+    if name == "request_app" { launchTookFocus = try requestApp(args, token: token, id: id) }
     else { try checkProofHost() }
-    // Background support: list_windows enumerates windows of granted app with minimized state
     if name == "list_windows" {
       guard args.isEmpty else { throw Refusal("unexpected_arguments") }
       let infos = try ax.listWindowInfos()
@@ -269,9 +260,6 @@ final class Server {
     if name == "get_screenshot" {
       guard args.isEmpty else { throw Refusal("unexpected_arguments") }
       guard #available(macOS 14.2, *) else { throw Refusal("screenshot_requires_macOS_14_2") }
-      if let s = snapshot, let w = s.window, BackgroundSupport.isMinimized(w) {
-        throw Refusal("window_minimized_needs_restore; restore the window before screenshot")
-      }
       let session = engineSession
       let (fresh, result, scope) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id) { [ax, latch] in
         try session.capture(native: $0, id: id, latch: latch, ax: ax)
@@ -283,46 +271,32 @@ final class Server {
       guard try turns.canControl(token), Set(args.keys) == ["snapshot", "x", "y"],
         let s = snapshot, args["snapshot"] as? String == s.id, let scope = activeState.imageScope,
         scope.snapshot == s.id, let x = args["x"] as? Double, let y = args["y"] as? Double else { throw Refusal("current_screenshot_and_control_required") }
-      // Physical pointer path – MUST remain foreground-only per spec
-      if let w = s.window, BackgroundSupport.isMinimized(w) {
-        throw Refusal("window_minimized_needs_restore; restore the window before click_point")
-      }
-      // Visual overlay: show target before physical click
-      CursorOverlayIntegration.showAtImagePoint(x: x, y: y, scope: scope, label: "Click (\(Int(x)),\(Int(y)))", action: .point)
-      activeState.imageScope = nil
+      latch.beginAction(id); defer { latch.endAction(id) }
       try input.point(x: x, y: y, scope: scope, s: s, id: id)
+      activeState.imageScope = nil
+      latch.endAction(id)
       engineSession.recordUnverifiedInput()
-      snapshot = try observe(id: id, epoch: s.epoch)
+      snapshot = try observe(id: id)
       CursorOverlayIntegration.hideAfterAction()
     } else if name != "request_app" {
-      // press_key stays foreground-only (global keyboard), other AX actions allow background
-      if name == "press_key", let s = snapshot, let w = s.window, BackgroundSupport.isMinimized(w) {
-        throw Refusal("window_minimized_needs_restore; restore the window before press_key")
-      }
       _ = try callText(params, id: id)
       CursorOverlayIntegration.hideAfterAction()
     }
     activeState.imageScope = nil
     guard let native = snapshot else { throw Refusal("observation_unavailable") }
-    // Background reading: engine capture can work without frontmost
-    let bound: Snapshot
-    do {
-      bound = try engineSession.capture(native: native, id: id, latch: latch, ax: ax)
-    } catch {
-      // Retry with background-allowed validation (identity-only) for AX tree
-      bound = try engineSession.captureBackground(native: native, id: id, latch: latch, ax: ax)
-    }
+    let bound = try engineSession.capture(native: native, id: id, latch: latch, ax: ax)
     snapshot = bound
-    return ["content": [["type": "text", "text": bound.output]]]
+    return ["content": [["type": "text", "text": bound.output + (launchTookFocus ? "launch_took_focus\n" : "")]]]
   }
-  func requestApp(_ args: [String: Any], token: String, id: String) throws {
+  /// Never touches a running app. True if starting a stopped one took the front.
+  func requestApp(_ args: [String: Any], token: String, id: String) throws -> Bool {
     guard Set(args.keys) == ["app"], let bundle = args["app"] as? String, Policy.target(bundle),
       let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { throw Refusal("protected_or_unavailable_app") }
     let identity = try AppIdentity.capture(url, bundle: bundle)
     if (try? turns.identity(bundle, token: token)) != identity {
       let control = try turns.canControl(token)
       let owner = try turns.requester(token)
-      let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? bundle).\n\n\(bundle)\n\(identity.path)\n\nAllow Once ends with this bot's turn. Allow for This Work Thread lets every supported bot in this thread use this app, with no more prompts, until you press Stop or access is revoked. Other threads still ask. Password fields and system security settings are protected.")
+      let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? bundle).\n\n\(bundle)\n\(identity.path)\n\nAllow Once ends with this bot's turn. Allow for This Work Thread lets every supported bot in this thread use this app, with no more prompts, until you press Stop or access is revoked. Other threads still ask. Bots work in the background, but starting an app that isn't running can bring it forward. Password fields and system security settings are protected.")
       DispatchQueue.main.async { prompt.show() }
       defer { DispatchQueue.main.async { prompt.dismiss() } }
       let deadline = ProcessInfo.processInfo.systemUptime + 120
@@ -340,11 +314,14 @@ final class Server {
     if control, try lease.claim(token) { activity.invalidateObservations() }
     let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter { !$0.isTerminated }
     guard running.count <= 1 else { throw Refusal("target_ambiguous") }
-    if control {
+    let launching = running.isEmpty
+    guard control || !launching else { throw Refusal("read_access_cannot_launch_app") }
+    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    if launching {
       let completion = DispatchSemaphore(value: 0)
       DispatchQueue.main.async {
         guard (try? self.turns.check(token)) != nil else { completion.signal(); return }
-        let config = NSWorkspace.OpenConfiguration(); config.activates = true
+        let config = NSWorkspace.OpenConfiguration(); config.activates = false
         NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in completion.signal() }
       }
       let deadline = ProcessInfo.processInfo.systemUptime + 5
@@ -352,12 +329,24 @@ final class Server {
         try turns.check(token); try latch.check(id)
         guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("launch_deadline") }
       }
-    } else if running.isEmpty { throw Refusal("read_access_cannot_launch_app") }
+    }
     try turns.check(token)
     activeState.target = bundle; ax.targetBundle = bundle
-    let app = try ax.running(bundle); try identity.validate(app)
-    // User grant/focus changes deliberately require a fresh activity epoch.
-    snapshot = try observe(id: id)
+    // A new app takes a moment to have a window the engine can name.
+    let deadline = ProcessInfo.processInfo.systemUptime + (launching ? 5 : 0)
+    while true {
+      do {
+        let app = try ax.running(bundle); try identity.validate(app)
+        let fresh = try observe(id: id)
+        if !launching || fresh.window.flatMap(windowNumber) != nil { snapshot = fresh; break }
+      } catch let error as Refusal where ["app_has_no_window", "target_not_running_or_ambiguous"].contains(error.code)
+        && ProcessInfo.processInfo.systemUptime < deadline {}
+      guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("app_has_no_window") }
+      try turns.check(token); try latch.check(id)
+      Thread.sleep(forTimeInterval: 0.1)
+    }
+    let now = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    return launching && now != front && now == snapshot?.app.processIdentifier
   }
   func callText(_ params: [String: Any], id: String) throws -> String {
     try latch.check(id)
@@ -367,6 +356,7 @@ final class Server {
     if name == "read_screen" { guard args.isEmpty else { throw Refusal("unexpected_arguments") }; snapshot = try observe(id: id); return snapshot!.output }
     guard let token = activeState.token, try turns.canControl(token) else { throw Refusal("observation_only_access") }
     guard let s = snapshot, args["snapshot"] as? String == s.id, engineSession.current?.id == s.id else { throw Refusal("fresh_snapshot_required") }
+    latch.beginAction(id); defer { latch.endAction(id) }
     switch name {
     case "click":
       guard Set(args.keys) == ["snapshot", "element"], let number = args["element"] as? Int else { throw Refusal("invalid_arguments") }
@@ -375,9 +365,10 @@ final class Server {
       // engine-resolved AX element (minimal hook coordinated with Jigga).
       try engineSession.click(element: number, s: s, id: id, latch: latch, ax: ax)
     case "type_text":
-      guard Set(args.keys) == ["snapshot", "text"], let text = args["text"] as? String else { throw Refusal("invalid_arguments") }
+      guard Set(args.keys).subtracting(["element"]) == ["snapshot", "text"], let text = args["text"] as? String,
+        args["element"] == nil || args["element"] is Int else { throw Refusal("invalid_arguments") }
       // Blocker 3: generic label, no echo of submitted content.
-      try engineSession.type(text: text, s: s, id: id, latch: latch, ax: ax)
+      try engineSession.type(text: text, element: args["element"] as? Int, s: s, id: id, latch: latch, ax: ax)
     case "press_key":
       guard Set(args.keys) == ["snapshot", "key"], let key = args["key"] as? String else { throw Refusal("invalid_arguments") }
       // Generic label for key, show at focus only as fallback before validation
@@ -390,9 +381,13 @@ final class Server {
         ["up", "down", "left", "right"].contains(direction), (1...20).contains(amount) else { throw Refusal("invalid_arguments") }
       // Blocker 2: overlay is shown in EngineCheck at actual resolved target.
       try engineSession.scroll(element: number, direction: direction, amount: amount, s: s, id: id, latch: latch, ax: ax)
+    case "reveal":
+      guard Set(args.keys) == ["snapshot", "element"], let number = args["element"] as? Int else { throw Refusal("invalid_arguments") }
+      try engineSession.reveal(element: number, s: s, id: id, latch: latch, ax: ax)
     default: throw Refusal("unknown_tool")
     }
-    snapshot = try observe(id: id, epoch: s.epoch)
+    latch.endAction(id)
+    snapshot = try observe(id: id)
     return snapshot!.output
   }
   static var tools: [[String: Any]] {
@@ -402,15 +397,17 @@ final class Server {
     }
     let str: [String: Any] = ["type": "string"]
     let snap: [String: Any] = ["snapshot": str]
+    let element: [String: Any] = ["type": "integer", "minimum": 1]
     return [tool("list_apps", "List running eligible native apps. Requires an enabled active session.", [:], [], true),
-      tool("request_app", "Request a native per-app session grant by bundle ID. Observation-only sessions cannot launch or focus apps.", ["app": str], ["app"]),
-      tool("read_screen", "Read the granted app's current verified window and retained element references. Background windows are discovered when focused window is unavailable.", [:], [], true),
-      tool("list_windows", "List windows of the granted app with minimized/focused state for explicit app/window selection without stealing focus.", [:], [], true),
+      tool("request_app", "Request a native per-app session grant by bundle ID. Never brings a running app forward. Starting a stopped app needs a writable session and can bring it forward, which the reply reports as launch_took_focus.", ["app": str], ["app"]),
+      tool("read_screen", "Read the granted app's window and retained element references. Works behind other windows and on minimized windows, and reports visibility: frontmost, covered, minimized or hidden. Controls marked offscreen can still be used.", [:], [], true),
+      tool("list_windows", "List windows of the granted app with minimized/focused state.", [:], [], true),
       ScreenshotPolicy.tool,
-      tool("click", "Activate one retained numbered control in a fresh snapshot. Background AX Press supported where platform allows without focus steal; validates window still present and document unchanged; minimized returns needs_restore.", snap.merging(["element": ["type": "integer", "minimum": 1]]) { $1 }, ["snapshot", "element"]),
-      tool("click_point", "Click a point in the current granted window screenshot. x/y are image pixels; requires its image_snapshot and a writable session. Requires foreground visible window; minimized returns needs_restore.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
-      tool("type_text", "Type text into the verified focused field. Requires foreground visible window; engine uses headed physical keyboard path, not background AX value write. Minimized returns needs_restore.", snap.merging(["text": ["type": "string", "maxLength": 65536]]) { $1 }, ["snapshot", "text"]),
-      tool("press_key", "Press a named key with optional Cmd-, Shift-, Alt-, Control- modifiers on the verified app. Requires foreground for global keyboard; minimized returns needs_restore.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
-      tool("scroll", "Scroll one retained native control in a fresh snapshot. Requires foreground; headed wheel events, not background AX. Minimized returns needs_restore.", snap.merging(["element": ["type": "integer", "minimum": 1], "direction": ["type": "string", "enum": ["up", "down", "left", "right"]], "amount": ["type": "integer", "minimum": 1, "maximum": 20]]) { $1 }, ["snapshot", "element", "direction", "amount"])]
+      tool("click", "Press one retained numbered control in a fresh snapshot, in the background. The pointer never moves. A disabled control returns element_disabled.", snap.merging(["element": element]) { $1 }, ["snapshot", "element"]),
+      tool("click_point", "Press the control under a point in the current screenshot. x/y are image pixels; requires its image_snapshot and a writable session. The pointer never moves, so pixel_target_has_no_control is returned where nothing pressable is under the point, such as a canvas.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
+      tool("type_text", "Type into a numbered text control, or the app's focused field if element is omitted. Works in the background and is verified by reading the field back. Password fields are refused.", snap.merging(["text": ["type": "string", "maxLength": 65536], "element": element]) { $1 }, ["snapshot", "text"]),
+      tool("press_key", "Press a named key, such as Return, Tab, Space, PageDown or Shift-Tab, on the app's focused control. Delivery is not verified, so read the screen and never repeat it blindly. Cmd- and Control- shortcuts return shortcut_needs_foreground; use a control instead. Minimized windows return key_needs_visible_window.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
+      tool("scroll", "Scroll one retained native control by accessibility. Web pages usually return scroll_not_supported_use_reveal.", snap.merging(["element": element, "direction": ["type": "string", "enum": ["up", "down", "left", "right"]], "amount": ["type": "integer", "minimum": 1, "maximum": 20]]) { $1 }, ["snapshot", "element", "direction", "amount"]),
+      tool("reveal", "Scroll a retained numbered control into view. This is the way to scroll a web page.", snap.merging(["element": element]) { $1 }, ["snapshot", "element"])]
   }
 }

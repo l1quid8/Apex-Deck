@@ -31,7 +31,7 @@ import SpikeCore
  Hook contract (V2):
  1. Singleton CursorOverlay.shared, no new process/permissions.
  2. Show:
-    - click_point: showAtImagePoint (scope.point validated) -> Quartz point
+    - click_point: show(at:pid:) with the scope.point Quartz point
     - click/scroll/type: engine hook in EngineCheck (actual target rect)
     - press_key: showForFocus generic (no content echo)
  3. Cleanup: hideAfterAction on success, cleanupOnStop on Stop/end-turn/failure.
@@ -46,8 +46,8 @@ import SpikeCore
 
  Usage:
 
-   // click_point (already correct, uses Quartz point from ScreenshotScope)
-   CursorOverlayIntegration.showAtImagePoint(x: x, y: y, scope: scope, label: "Click", action: .point)
+   // click_point (uses the Quartz point from ScreenshotScope)
+   CursorOverlayIntegration.show(at: point, pid: pid, label: "Click", action: .point)
 
    // engine click/scroll/type – handled inside EngineCheck, no Server call needed
 
@@ -59,12 +59,22 @@ import SpikeCore
 */
 
 enum CursorOverlayIntegration {
-  /// Show at screenshot image point after scope validation – reuses ScreenshotScope
-  /// logic to avoid duplicating clamping. Point is Quartz/AX global.
-  static func showAtImagePoint(x: Double, y: Double, scope: ScreenshotScope, label: String? = nil, action: OverlayAction = .point) {
-    guard CursorOverlaySettings.isEnabled else { return }
-    guard let pt = try? scope.point(x: x, y: y) else { return }
-    CursorOverlay.shared.show(at: pt, label: label, action: action)
+  /// A background target can sit under the person's windows, and drawing there
+  /// would mark their work. Only the top window at that point may show it.
+  static func targetOnTop(_ point: CGPoint, pid: Int32) -> Bool {
+    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    let top = windows.first { entry in
+      guard entry[kCGWindowLayer as String] as? Int == 0, (entry[kCGWindowAlpha as String] as? Double ?? 0) > 0,
+        let bounds = entry[kCGWindowBounds as String] as? [String: Any],
+        let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
+      return frame.contains(point)
+    }
+    return top?[kCGWindowOwnerPID as String] as? Int32 == pid
+  }
+
+  static func show(at point: CGPoint, pid: Int32, label: String? = nil, action: OverlayAction = .point) {
+    guard CursorOverlaySettings.isEnabled, targetOnTop(point, pid: pid) else { return }
+    CursorOverlay.shared.show(at: point, label: label, action: action)
   }
 
   @available(*, deprecated, message: "Do not use for engine refs; overlay is shown at actual engine-resolved target via EngineCheck.")
@@ -90,10 +100,8 @@ enum CursorOverlayIntegration {
   }
 
   static func showForFocus(snapshot: Snapshot, label: String? = nil, action: OverlayAction = .type) {
-    guard CursorOverlaySettings.isEnabled else { return }
-    if let focus = snapshot.focus, let fr = rect(focus) {
-      CursorOverlay.shared.show(at: fr, label: label, action: action)
-    }
+    guard let focus = snapshot.focus, let frame = rect(focus) else { return }
+    show(at: CGPoint(x: frame.midX, y: frame.midY), pid: snapshot.app.processIdentifier, label: label, action: action)
   }
 
   static func hideAfterAction() {

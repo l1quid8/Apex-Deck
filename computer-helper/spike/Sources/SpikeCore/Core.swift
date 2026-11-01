@@ -67,6 +67,18 @@ public enum Policy {
       "F1":122,"F2":120,"F3":99,"F4":118,"F5":96,"F6":97,"F7":98,"F8":100,"F9":101,"F10":109,"F11":103,"F12":111,"Left":123,"Right":124,"Down":125,"Up":126]
     return codes[key].map { ($0, flags) }
   }
+  /// App shortcuts only fire for the active app, so these do nothing from the background.
+  public static func needsForeground(flags: UInt64) -> Bool { flags & (1 << 20 | 1 << 18) != 0 }
+  public static func semanticAction(key: String) -> String? {
+    ["Return": "AXConfirm", "Escape": "AXCancel"][key]
+  }
+  public static func visibility(frontmost: Bool, minimized: Bool, hidden: Bool) -> String {
+    hidden ? "hidden" : minimized ? "minimized" : frontmost ? "frontmost" : "covered"
+  }
+  /// Chromium can keep the browser's own controls and no page. That must not read as a blank page.
+  public static func webContentMissing(browser: Bool, webAreas: Int, scanned: Bool) -> Bool {
+    browser && scanned && webAreas == 0
+  }
   public static func text(_ s: String) -> Bool {
     s.utf8.count <= 65_536 && !s.unicodeScalars.contains { $0.value == 0 || ($0.value < 32 && $0.value != 9 && $0.value != 10 && $0.value != 13) || (127...159).contains($0.value) }
   }
