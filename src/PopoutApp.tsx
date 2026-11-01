@@ -295,6 +295,16 @@ export function PopoutApp({ token }: { token: string }) {
             tabDetails={tabDetails} profilesChanged={profilesChanged}
             onUrl={setUrl} send={send} openPath={openPath}
           />
+        ) : snapshot.kind === "assistant" ? (
+          <div className="popout-assistant" style={{ padding: 16 }}>
+            <h2>{title} (Alfred floating)</h2>
+            <p className="muted">This floating window shares transcript, draft, call, mute and identity with Deck. Closing it returns to Deck; it does not start a duplicate mic or message.</p>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button className="primary" onClick={() => { window.close(); }}>Return to Deck</button>
+              <button onClick={() => { window.apexDeck?.popout?.sendAction(token, { type: 'assistant-new-chat' } as any).catch(()=>{}); }}>New chat</button>
+            </div>
+            <p className="muted" style={{ marginTop: 16 }}>Always-on-top: {snapshot.alwaysOnTop ? 'On (draggable, native window)' : 'Off – enable in Settings → Capabilities → Floating'}. Geometry fits available screens via existing popout layout helper.</p>
+          </div>
         ) : (
           <p className="muted">Nothing to show. Return it to Deck.</p>
         )}

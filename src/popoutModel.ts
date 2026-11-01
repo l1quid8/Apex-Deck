@@ -12,7 +12,7 @@ import type { Access, AgentInfo, Pane, ParticipantConfig, RoomOptions } from "./
 import type { VoiceSettings } from "./voice/types";
 import type { WorkspaceTaskRow } from "./workspaceTasks.ts";
 
-export type PopoutKind = "pane" | "tab";
+export type PopoutKind = "pane" | "tab" | "assistant";
 
 /** Artifacts follows the thread shown by its docked tab, even when a terminal has focus. */
 export function followedTabPane(kind: TabKind, panes: Pane[], focused: string | null, artifactsTarget: string | null): Pane | null {
@@ -59,9 +59,11 @@ export interface PopoutSnapshot {
   pendingMount?: string | null;
   busyTurn?: boolean;
   kind: PopoutKind;
-  /** Pane id when kind is pane, tab id when kind is tab. */
+  /** Pane id when kind is pane, tab id when kind is tab, assistant id when kind is assistant. */
   id: string;
   title: string;
+  /** Optional always-on-top for assistant floating window, off by default. */
+  alwaysOnTop?: boolean;
   /** Terminal run id "<paneId>:<generation>" when the pane is a running terminal. */
   ptyId?: string;
   /** Workspace the pane or tab belongs to, so selection-following tabs keep up. */

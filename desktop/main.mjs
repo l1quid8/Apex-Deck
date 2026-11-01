@@ -915,7 +915,7 @@ function popoutBounds(ownerEntry, bounds) {
  * saver of layout and session; the pop-out is a view that sends actions back.
  */
 function createPopout(ownerEntry, snapshot, bounds) {
-  if (!snapshot || (snapshot.kind !== 'pane' && snapshot.kind !== 'tab') || typeof snapshot.id !== 'string' || typeof snapshot.title !== 'string') {
+  if (!snapshot || (snapshot.kind !== 'pane' && snapshot.kind !== 'tab' && snapshot.kind !== 'assistant') || typeof snapshot.id !== 'string' || typeof snapshot.title !== 'string') {
     throw new Error('That pop-out has nothing to show.');
   }
   const token = crypto.randomBytes(16).toString('hex');
@@ -927,6 +927,7 @@ function createPopout(ownerEntry, snapshot, bounds) {
     minHeight: 240,
     title: `Deck: ${snapshot.title}`,
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
+    alwaysOnTop: !!snapshot.alwaysOnTop,
     show: !smoke,
     webPreferences: {
       devTools: !app.isPackaged,
