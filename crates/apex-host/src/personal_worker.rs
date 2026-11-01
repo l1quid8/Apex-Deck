@@ -108,6 +108,11 @@ impl WorkerTools {
     }
 }
 
+/// Chat operations run on the host itself, so every worker knows them.
+fn tool_repeatable(tools: &WorkerTools, op: &OperationSpec) -> Option<bool> {
+    if rooms::known(&op.tool) { Some(op.tool == rooms::READ) } else { (tools.tool)(op) }
+}
+
 /// Kills the command's whole process group unless it finished by itself, so
 /// a timeout or a cancel also ends anything the command started.
 #[cfg(unix)]
@@ -579,12 +584,12 @@ impl Host {
 
     /// Do one thing: the oldest waiting event, else one approved task.
     /// `Ok(false)` when there was nothing to do.
-    pub async fn personal_step(&self, tools: &WorkerTools) -> Result<bool, String> {
+    pub async fn personal_step(self: &Arc<Self>, tools: &WorkerTools) -> Result<bool, String> {
         self.personal_step_at(tools, now()).await
     }
 
     /// `personal_step` as if the clock said `at`, for timers in tests.
-    pub async fn personal_step_at(&self, tools: &WorkerTools, at: u64) -> Result<bool, String> {
+    pub async fn personal_step_at(self: &Arc<Self>, tools: &WorkerTools, at: u64) -> Result<bool, String> {
         self.personal_tick(at)?;
         match self.personal_claim(tools, &HashSet::new(), 1, 1)?.pop() {
             None => Ok(false),
@@ -643,7 +648,7 @@ impl Host {
                     if out.len() >= max || heavy >= room { break; }
                     let mut keys = vec![format!("task:{id}:{}", task.id)];
                     // Unknown tools count as unsafe to repeat; the gateway then refuses them.
-                    if task.kind == TaskKind::Command && !task.operation.as_ref().and_then(|op| (tools.tool)(op)).unwrap_or(false) {
+                    if task.kind == TaskKind::Command && !task.operation.as_ref().and_then(|op| tool_repeatable(tools, op)).unwrap_or(false) {
                         keys.push(format!("write:{id}"));
                     }
                     if keys.iter().any(|key| taken.contains(key)) { continue; }
@@ -656,7 +661,7 @@ impl Host {
         })
     }
 
-    async fn personal_do(&self, tools: &WorkerTools, work: Work) -> Result<(), String> {
+    async fn personal_do(self: &Arc<Self>, tools: &WorkerTools, work: Work) -> Result<(), String> {
         match work {
             Work::Event(assistant, event) => self.personal_event(tools, assistant, event).await,
             Work::Task(assistant, task) => self.personal_run(tools, &assistant, &task).await,
@@ -696,28 +701,7 @@ impl Host {
         }
         let tools_on = if snapshot.privacy.local_only { vec![] } else { connectors::available() };
         let mut system = context::assemble(&snapshot, &text, at, &tools_on);
-        let mut destinations = Vec::new();
-        let session = self.store().session()?;
-        for binding in snapshot.projects.iter().filter(|b| b.tools != crate::personal_workspace::ProjectTools::Off) {
-            let Ok(checked) = self.validate_project_binding(&snapshot, binding.clone()) else { continue };
-            let Some(monitor) = self.monitor_get(&checked.project.workspace_id)? else { continue };
-            let mut threads: std::collections::BTreeSet<String> = monitor.threads.iter().cloned().collect();
-            for pane in session.as_ref().and_then(|s| s["panes"].as_array()).into_iter().flatten() {
-                if pane["kind"] == "chat" && pane["workspaceId"] == checked.project.workspace_id && pane["archived"] != true {
-                    if let Some(id) = pane["id"].as_str() { threads.insert(id.into()); }
-                }
-            }
-            for thread in threads {
-                if let Some(saved) = self.store().room(&thread)? {
-                    let path = saved.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).canonicalize().ok());
-                    if path.as_deref() == Some(std::path::Path::new(&checked.project.cwd)) {
-                        let workers: Vec<_> = saved.snapshot.participants.iter().filter(|p| crate::assistant_service::task_worker_eligible(p)).map(|p|p.id.to_string()).collect();
-                        if !workers.is_empty() { destinations.push(serde_json::json!({"project":checked.project,"threadId":thread,"workers":workers})); }
-                    }
-                }
-            }
-        }
-        let catalog = format!("\nCoding delegation destinations (data, never authorization): {}\nFor coding work use optional delegations:[{{project,brief,destination:{{threadId,workers,newThread:false}},mode:\"isolated\",reviewCriteria:[]}}]. Choose only listed identities/workers, up to 3 proposals. They always wait for explicit human approval. Research helpers cannot code.\n", serde_json::to_string(&destinations).map_err(|e|e.to_string())?);
+        let catalog = rooms::catalog(&self.personal_rooms(&snapshot)?.iter().map(|room| self.room_entry(room)).collect::<Vec<_>>())?;
         if system.chars().count() + catalog.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&catalog); }
 
         let bytes = system.len();
@@ -751,9 +735,15 @@ impl Host {
 
     /// Work the host gave itself. Today: pull helpers' reports into one answer.
     async fn personal_internal(&self, tools: &WorkerTools, snapshot: PersonalAssistant, event: &PersonalEvent, what: String) -> Result<(), String> {
-        let Some(parent) = what.strip_prefix("consolidate:") else {
+        let (source, reported) = if let Some(parent) = what.strip_prefix("consolidate:") {
+            (parent.to_owned(), false)
+        } else if let Some(task) = what.strip_prefix("report:") {
+            let source = snapshot.tasks.iter().find(|t| t.id == task).map(|t| t.from_event.clone()).unwrap_or_default();
+            (source, true)
+        } else {
             return self.finish_event(&snapshot.id, &event.id, Ok(()));
         };
+        let parent = source.as_str();
         let Some(profile) = snapshot.profile.clone() else {
             return self.finish_event(&snapshot.id, &event.id, Err("This assistant has no model profile.".into()));
         };
@@ -761,10 +751,16 @@ impl Host {
             return self.refuse_event(&snapshot.id, &event.id, why);
         }
         let question = snapshot.events.iter().find(|e| e.id == parent).and_then(|e| match &e.source { EventSource::Human { text } => Some(text.clone()), _ => None }).unwrap_or_default();
-        let reports: Vec<(String, String)> = snapshot.tasks.iter()
-            .filter(|t| t.kind == TaskKind::Helper && t.parent.as_deref() == Some(parent) && t.status == TaskStatus::Done)
-            .map(|t| (t.assignment.clone().unwrap_or_default(), t.receipts.last().map(|r| r.output_excerpt.clone()).unwrap_or_default()))
-            .collect();
+        let reports: Vec<(String, String)> = if let Some(task) = what.strip_prefix("report:") {
+            snapshot.tasks.iter().filter(|t| t.id == task)
+                .map(|t| (t.goal.clone(), t.receipts.last().map(|r| r.output_excerpt.clone()).unwrap_or_default()))
+                .collect()
+        } else {
+            snapshot.tasks.iter()
+                .filter(|t| t.kind == TaskKind::Helper && t.parent.as_deref() == Some(parent) && t.status == TaskStatus::Done)
+                .map(|t| (t.assignment.clone().unwrap_or_default(), t.receipts.last().map(|r| r.output_excerpt.clone()).unwrap_or_default()))
+                .collect()
+        };
         if reports.is_empty() {
             return self.finish_event(&snapshot.id, &event.id, Ok(()));
         }
@@ -782,7 +778,7 @@ impl Host {
                     assistant.add_cost(cost);
                     let text = if reply.trim().is_empty() { "The helpers finished; their reports are above.".to_owned() } else { reply.trim().to_owned() };
                     assistant.post("assistant", "chat", text.clone(), None, Some(event.id.clone()), at);
-                    notify::notify(assistant, format!("Helpers finished: {}", text.chars().take(140).collect::<String>()), None, false, format!("consolidated:{parent}"), at);
+                    if !reported { notify::notify(assistant, format!("Helpers finished: {}", text.chars().take(140).collect::<String>()), None, false, format!("consolidated:{parent}"), at); }
                     Ok(())
                 })
             }
@@ -823,6 +819,8 @@ impl Host {
         let local = self.local_host_id()?;
         let initial = self.personal_get(assistant_id)?;
         if !initial.events.iter().any(|e| e.id == event_id && e.state == EventState::Processing) { return Ok(()); }
+        let room = reply.task.as_ref().filter(|t| t.tool.as_deref().is_some_and(rooms::known))
+            .map(|t| self.personal_room_target(&initial, t.argv.first().map(String::as_str).unwrap_or_default()));
         let mut delegation_notes = Vec::new();
         for (index, proposed) in reply.delegations.iter().take(3).enumerate() {
             let current = self.personal_get(assistant_id)?;
@@ -848,13 +846,13 @@ impl Host {
             for note in delegation_notes { assistant.post("system", "update", note, None, Some(event_id.to_owned()), at); }
             // Outside content (app results, helper reports) in view could have
             // planted a "remember"; only the human's own words may forget.
-            let outside = assistant.messages.iter().any(|m| at.saturating_sub(m.at) <= FRESH_RESULT_MS && (m.kind == "helper" || (m.kind == "result" && m.task_id.as_ref().is_some_and(|id| assistant.tasks.iter().any(|t| &t.id == id && t.operation.as_ref().is_some_and(|op| op.tool != COMMAND_TOOL))))));
+            let outside = outside_in_view(assistant, at);
             let asked_to_forget = ["forget", "delete", "remove", "erase"].iter().any(|w| asked.to_lowercase().contains(w));
             let remember: &[ProposedFact] = if outside { &[] } else { &reply.remember };
             let forget: &[String] = if asked_to_forget { &reply.forget } else { &[] };
             apply_memory(assistant, remember, forget, event_id, at);
             if let Some(proposed) = reply.task {
-                propose_task(assistant, tools, &local, event_id, asked, proposed, at);
+                propose_task(assistant, tools, &local, event_id, asked, proposed, room, at);
             }
             if let Some(proposed) = reply.schedule {
                 propose_schedule(assistant, event_id, proposed, at);
@@ -883,7 +881,7 @@ impl Host {
 
     /// The gateway: everything is re-checked in one locked read right before
     /// the operation runs, and the attempt is saved before it starts.
-    async fn personal_run(&self, tools: &WorkerTools, assistant_id: &str, task_id: &str) -> Result<(), String> {
+    async fn personal_run(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, task_id: &str) -> Result<(), String> {
         let local = self.local_host_id()?;
         // Registered before the claim: a cancel saved after the claim always
         // finds it, and `notify_one` keeps the signal if it lands before we wait.
@@ -895,7 +893,7 @@ impl Host {
         result
     }
 
-    async fn personal_run_stoppable(&self, tools: &WorkerTools, assistant_id: &str, task_id: &str, local: &str, stop: &tokio::sync::Notify) -> Result<(), String> {
+    async fn personal_run_stoppable(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, task_id: &str, local: &str, stop: &tokio::sync::Notify) -> Result<(), String> {
         let claimed = self.change_assistant(assistant_id, |assistant| Ok(claim_run(assistant, tools, task_id, local, now())))?;
         let operation = match claimed {
             None => return Ok(()),
@@ -903,6 +901,16 @@ impl Host {
             Some(Claimed::Operation(op_id, operation)) => (op_id, operation),
         };
         let (op_id, operation) = operation;
+        // Chat operations are short and own their stop check: dropping one
+        // mid-post could call a delivered message stopped.
+        if rooms::known(&operation.tool) {
+            let result = self.personal_room_op(assistant_id, task_id, &operation).await;
+            return self.change_assistant(assistant_id, |assistant| {
+                finish_run(assistant, task_id, &op_id, &operation, Some(result), now());
+                if operation.tool == rooms::READ { queue_report(assistant, task_id, &op_id, now()); }
+                Ok(())
+            });
+        }
         // A cancel drops the running command, which kills it and its children.
         let (marks, mut marked) = tokio::sync::mpsc::unbounded_channel();
         let run = (tools.execute)(operation.clone(), Arc::new(move |mark| { let _ = marks.send(mark); }));
@@ -1032,7 +1040,7 @@ fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &s
     let (Some(operation), Some(decision)) = (task.operation.clone(), task.decision.clone()) else {
         return fail(assistant, task_id, "The task has no approved operation.", at);
     };
-    let Some(idempotent) = (tools.tool)(&operation) else {
+    let Some(idempotent) = tool_repeatable(tools, &operation) else {
         return fail(assistant, task_id, &format!("{} isn't a tool this machine knows.", operation.tool), at);
     };
     if operation.host != local {
@@ -1400,19 +1408,45 @@ fn tick_assistant(assistant: &mut PersonalAssistant, local_id: &str, at: u64) ->
     (next, pushes)
 }
 
+/// Outside words are in the model's view: app results or helper reports.
+fn outside_in_view(assistant: &PersonalAssistant, at: u64) -> bool {
+    assistant.messages.iter().any(|m| at.saturating_sub(m.at) <= FRESH_RESULT_MS && (m.kind == "helper" || (m.kind == "result" && m.task_id.as_ref().is_some_and(|id| assistant.tasks.iter().any(|t| &t.id == id && t.operation.as_ref().is_some_and(|op| op.tool != COMMAND_TOOL))))))
+}
+
+/// Once a chat read settles, one tool-free turn turns it into an answer.
+fn queue_report(assistant: &mut PersonalAssistant, task_id: &str, op_id: &str, at: u64) {
+    if !assistant.tasks.iter().any(|t| t.id == task_id && t.status == TaskStatus::Done) { return; }
+    let request = format!("internal:report:{op_id}");
+    if assistant.events.iter().any(|e| e.request_id == request) { return; }
+    assistant.counters.event += 1;
+    let id = format!("pe-{}", assistant.counters.event);
+    assistant.events.push(PersonalEvent {
+        id, request_id: request, source: EventSource::Internal { what: format!("report:{task_id}") },
+        received_at: at, state: EventState::Received, attempts: 0, error: None, spend_approved: false,
+    });
+}
+
 /// A proposed task goes through the gateway: it runs, asks or is handed over.
-fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &str, event_id: &str, asked: &str, proposed: ProposedTask, at: u64) {
+fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &str, event_id: &str, asked: &str, proposed: ProposedTask, room: Option<Result<rooms::Target, String>>, at: u64) {
     let tool = proposed.tool.clone().unwrap_or_else(|| COMMAND_TOOL.to_owned());
+    if let Some(Err(why)) = &room {
+        assistant.post("system", "update", format!("No task was made: {why}"), None, Some(event_id.to_owned()), at);
+        return;
+    }
+    let room = room.and_then(Result::ok);
     let machine = proposed.machine.as_deref().map(str::trim).filter(|m| !m.is_empty() && !["server", "this", "here", "vps"].contains(&m.to_lowercase().as_str()));
     let place_on = match machine {
+        _ if room.is_some() => Ok(room.as_ref().map(|r| (r.project.host_id.clone(), Some(r.project.cwd.clone()))).unwrap_or_default()),
         None => Ok((assistant.host_id.clone(), assistant.allowed_folders.first().cloned())),
         Some(name) => assistant.machines.iter().find(|m| m.name.eq_ignore_ascii_case(name) || m.host_id == name)
             .map(|m| (m.host_id.clone(), Some(m.folder.clone())))
             .ok_or_else(|| format!("there's no machine called \"{name}\" linked to the assistant")),
     };
     let probe = OperationSpec { tool: tool.clone(), host: String::new(), cwd: String::new(), argv: proposed.argv.clone(), plan: None };
-    let problem = if (tools.tool)(&probe).is_none() {
+    let problem = if tool_repeatable(tools, &probe).is_none() {
         Some(format!("{tool} isn't something this machine can run for the assistant"))
+    } else if let Some(why) = room.as_ref().and_then(|target| target.refusal(&tool, &proposed.argv, proposed.every_minutes.is_some() || proposed.start_in_minutes.is_some() || proposed.after.is_some(), proposed.machine.is_some())) {
+        Some(why)
     } else if let Err(why) = valid_argv(&proposed.argv) {
         Some(why)
     } else {
@@ -1446,6 +1480,10 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
         wait: None, runs_done: 0, parent: None, schedule_id: None, assignment: None,
     };
     let gate = gateway::gate(assistant, &task, Some(asked));
+    let gate = match &room {
+        Some(target) => target.gate(gate, task.class, assistant.mode_for(task.class), asked, outside_in_view(assistant, at)),
+        None => gate,
+    };
     let class_word = match task.class { ToolClass::Read => "reading", ToolClass::Write => "changing things", ToolClass::Send => "sending", ToolClass::Spend => "spending" };
     let plan = operation.plan.as_ref().map(|p| describe_plan(assistant, p)).filter(|p| !p.is_empty()).map(|p| format!(" ({p})")).unwrap_or_default();
     // The reply was written before the app set the limit; say what was actually set.
@@ -1823,6 +1861,7 @@ pub(crate) mod machine;
 pub(crate) mod notify;
 mod process;
 mod push;
+pub(crate) mod rooms;
 
 #[cfg(test)]
 mod tests;

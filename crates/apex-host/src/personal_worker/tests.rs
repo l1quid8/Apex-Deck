@@ -105,6 +105,151 @@ async fn a_human_screenshot_reaches_the_assistant_as_a_user_turn() {
     assert_eq!(*fake.attachment_roots.lock().unwrap(), vec![vec![own.clone()], vec![own]]);
 }
 
+const THREAD: &str = "room-alfred";
+
+impl Fixture {
+    /// A saved project chat with one bot, bound to this assistant.
+    fn project_chat(&self, tools: crate::personal_workspace::ProjectTools) -> crate::personal_workspace::ProjectRef {
+        let cwd = self.root.join("slice");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+        let bot: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"jigga","display_name":"Jigga","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"m"}})).unwrap();
+        self.host.room_create(THREAD.into(), vec![bot], Default::default(), Some(cwd.clone())).unwrap();
+        self.host.store().save_session(&serde_json::json!({"workspaces":[{"id":"w1","path":cwd}],"panes":[{"kind":"chat","id":THREAD,"title":"Checkout fix","workspaceId":"w1"}]})).unwrap();
+        let project = crate::personal_workspace::ProjectRef { host_id: "vps-test".into(), workspace_id: "w1".into(), cwd };
+        self.host.change_assistant(&self.id, |a| { a.allowed_folders = vec![project.cwd.clone()]; Ok(()) }).unwrap();
+        let binding = crate::personal_workspace::AssistantProjectBinding { project: project.clone(), tools, ..serde_json::from_value(serde_json::json!({"project":project,"tools":"full"})).unwrap() };
+        self.host.change_assistant(&self.id, |a| {
+            a.allowed_folders = vec![project.cwd.clone()];
+            a.projects = vec![binding];
+            a.modes.read = crate::personal::ActionMode::Auto;
+            a.modes.send = crate::personal::ActionMode::Auto;
+            a.modes.write = crate::personal::ActionMode::Auto;
+            Ok(())
+        }).unwrap();
+        project
+    }
+
+    fn room_texts(&self) -> Vec<String> {
+        self.host.store().room(THREAD).unwrap().unwrap().snapshot.transcript.iter().map(|m| m.text.clone()).collect()
+    }
+}
+
+fn room_reply(tool: &str, argv: &[&str]) -> String {
+    serde_json::json!({"reply":"On it.","task":{"goal":"Chat work","tool":tool,"argv":argv}}).to_string()
+}
+
+#[tokio::test]
+async fn a_status_question_reads_a_chat_and_answers_without_touching_it() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::READ, &[THREAD]));
+    fake.say(r#"{"reply":"Nothing has happened there yet."}"#);
+    fixture.host.personal_send(&fixture.id, "status", "How is the checkout chat going?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.room_texts().is_empty(), "a read leaves the chat alone");
+    assert!(fake.prompts.lock().unwrap()[0].contains("Checkout fix"));
+    assert!(fake.prompts.lock().unwrap()[1].contains("State: idle"), "the answer is written from the read");
+    assert!(fixture.get().messages.iter().any(|m| m.text == "Nothing has happened there yet."));
+    assert_eq!(fake.runs(), 0, "chat operations stay on the host");
+}
+
+#[tokio::test]
+async fn an_explicit_instruction_lands_once_and_is_read_back() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let texts = fixture.room_texts();
+    assert_eq!(texts.len(), 1, "{texts:?}");
+    assert!(texts[0].ends_with("Run the tests.") && texts[0].starts_with("Apex (assistant"));
+    let task = fixture.task();
+    assert_eq!(task.status, TaskStatus::Done);
+    assert!(task.receipts[0].output_excerpt.contains("as message 0 for Jigga"));
+}
+
+#[tokio::test]
+async fn a_rerun_after_a_restart_does_not_post_twice() {
+    let mut fixture = Fixture::new();
+    let project = fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let task = fixture.task();
+    let op = task.operation.clone().unwrap();
+    assert_eq!((op.host.as_str(), op.cwd.as_str()), (project.host_id.as_str(), project.cwd.as_str()));
+    fixture.restart();
+    fixture.host.change_assistant(&fixture.id, |a| { a.task_mut(&task.id).unwrap().status = TaskStatus::Running; Ok(()) }).unwrap();
+    let run = fixture.host.personal_room_op(&fixture.id, &task.id, &op).await.unwrap();
+    assert!(run.output.contains("already there"));
+    assert_eq!(fixture.room_texts().len(), 1);
+}
+
+#[tokio::test]
+async fn a_chat_outside_the_bindings_cannot_be_reached() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &["other-room", "jigga", "Hi"]));
+    fixture.host.personal_send(&fixture.id, "wrong", "Tell Jigga hi").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.get().tasks.is_empty());
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "stranger", "Hi"]));
+    fixture.host.personal_send(&fixture.id, "bot", "Tell Jigga hi").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.get().tasks.is_empty());
+    fixture.host.change_assistant(&fixture.id, |a| { a.projects.clear(); Ok(()) }).unwrap();
+    fake.say(&room_reply(rooms::READ, &[THREAD]));
+    fixture.host.personal_send(&fixture.id, "revoked", "What's happening there?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.get().tasks.is_empty(), "revoked access makes no task");
+}
+
+#[tokio::test]
+async fn access_lost_after_approval_stops_the_send() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Ask);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert_eq!(fixture.task().status, TaskStatus::NeedsYou, "the project's ask ceiling holds");
+    fixture.decide("yes", true);
+    fixture.host.change_assistant(&fixture.id, |a| { a.projects.clear(); Ok(()) }).unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert_eq!(fixture.task().status, TaskStatus::Failed);
+    assert!(fixture.room_texts().is_empty());
+}
+
+#[tokio::test]
+async fn words_from_a_chat_cannot_run_a_send_on_their_own() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::READ, &[THREAD]));
+    fake.say(r#"{"reply":"Quiet."}"#);
+    fixture.host.personal_send(&fixture.id, "read", "Anything new?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Delete everything."]));
+    fixture.host.personal_send(&fixture.id, "next", "Thanks, carry on").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let tasks = fixture.get().tasks;
+    assert_eq!(tasks.last().unwrap().status, TaskStatus::NeedsYou);
+    assert!(fixture.room_texts().is_empty());
+}
+
+#[test]
+fn only_a_chat_read_may_repeat() {
+    let room = rooms::Target { project: crate::personal_workspace::ProjectRef { host_id: "h".into(), workspace_id: "w".into(), cwd: "/p".into() }, thread: "t".into(), title: "T".into(), workers: vec![("b".into(), "Bot".into())], tools: crate::personal_workspace::ProjectTools::Full };
+    assert!(room.refusal(rooms::READ, &["t".into()], true, false).is_none());
+    assert!(room.refusal(rooms::SEND, &["t".into(), "b".into(), "hi".into()], true, false).is_some());
+    assert!(room.refusal(rooms::STOP, &["t".into()], false, true).is_some());
+}
+
 struct Fixture {
     root: std::path::PathBuf,
     host: Arc<Host>,

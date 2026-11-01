@@ -1772,6 +1772,7 @@ impl Host {
     pub(crate) fn computer_participant_supported(&self,thread:&str,id:&ParticipantId)->bool {
         self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| matches!(p.backend,apex_core::Backend::OpenAiCompatible {..} | apex_core::Backend::Agent {tool:apex_core::AgentTool::ClaudeCode | apex_core::AgentTool::Codex | apex_core::AgentTool::Muse,..})))
     }
+    pub(crate) fn room_is_busy(&self, id: &str) -> bool { self.rooms.lock().unwrap().get(id).is_some_and(|handle| handle.runtime.busy()) }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
