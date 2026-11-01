@@ -24,15 +24,15 @@ final class ActivityTap {
   func outside(_ type: CGEventType, _ event: CGEvent? = nil) {
     let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
     let pointer = HumanEvent.pointerAction(type)
-    let under = pointer ? event.flatMap(pointerOwner) : nil
+    let under = pointer ? event.map(pointerOwners) ?? [] : []
     all { $0.human(motion: type == .mouseMoved, frontmost: front, under: under, pointer: pointer) }
   }
-  private func pointerOwner(_ event: CGEvent) -> Int32? {
+  private func pointerOwners(_ event: CGEvent) -> Set<Int32> {
     let window = event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent)
     let named = window != 0 ? window : event.getIntegerValueField(.mouseEventWindowUnderMousePointer)
     if named != 0 {
       let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(named)) as? [[String: Any]]
-      if let owner = info?.first?[kCGWindowOwnerPID as String] as? Int32 { return owner }
+      if let owner = info?.first?[kCGWindowOwnerPID as String] as? Int32 { return [owner] }
     }
     // Scroll events don't always name a window.
     let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
@@ -43,7 +43,7 @@ final class ActivityTap {
       return PointerWindow(pid: pid, layer: row[kCGWindowLayer as String] as? Int ?? 0,
         alpha: row[kCGWindowAlpha as String] as? Double ?? 1, frame: frame)
     }
-    return HumanEvent.owner(at: event.location, windows: windows, own: ProcessInfo.processInfo.processIdentifier)
+    return HumanEvent.owners(at: event.location, windows: windows, own: ProcessInfo.processInfo.processIdentifier)
   }
   func stopAll() { all { $0.stop() } }
   private func health(_ healthy: Bool) { all { $0.setTap(healthy) } }
