@@ -11,6 +11,15 @@ Unified Computer Use lets Deck bots read and control granted Mac applications th
 
 The helper ships inside `Apex Deck.app/Contents/Resources/Unified Computer Use.app`. Approve the copy inside the installed Deck application, rather than an older prototype or a source-tree build. The macOS permission-list name is **Unified Computer Use**. Changing from the earlier Spike app requires new grants; the old app's grants do not establish permission for this one.
 
+## Request it with !
+
+In a Work thread, type `!` and select **Unified Computer Use**, or send
+`!unified-computer-use Open TextEdit and type hello.` The existing tool picker
+adds the token for you. This requests the bundled desktop tools from the addressed
+bot; it does not enable the feature, clear Stop or grant app permissions. If the
+feature is off or stopped, Deck explains which setting to change before sending.
+The older `!apex-computer` spelling is also recognized.
+
 ## Models and apps
 
 The native engine is model-neutral. API models need reliable tool calling, and screenshot use needs image input. Claude Code and Codex receive the same tool server through their existing Deck adapters. Gemini, Grok, Muse and custom CLI bots do not receive the native capability in this release. Talk-only Chat rooms and personal-assistant text-only inference also do not receive it.

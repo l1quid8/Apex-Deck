@@ -408,6 +408,28 @@ impl Host {
         });
         status
     }
+    pub(crate) fn computer_tool_menu(&self, thread: &str, participant: &ParticipantId, mut servers: Vec<apex_core::server_request::ToolServer>) -> Vec<apex_core::server_request::ToolServer> {
+        let computer = apex_core::server_request::unified_computer_use_server();
+        servers.retain(|s| !computer.matches(&s.token));
+        if cfg!(target_os = "macos") && self.computer_participant_supported(thread, participant)
+            && self.handle(thread).ok().is_some_and(|h| !h.checkpoint.lock().unwrap().snapshot.kind.is_chat()) {
+            servers.push(computer);
+        }
+        servers
+    }
+
+    pub(crate) fn validate_computer_request(&self, names: &[String]) -> Result<(), String> {
+        if names.iter().any(|name| apex_core::server_request::unified_computer_use_server().matches(name)) {
+            if !self.computer.enabled.load(Ordering::SeqCst) {
+                return Err("Enable Settings → Unified Computer Use before requesting !unified-computer-use.".into());
+            }
+            if self.computer.stopped.load(Ordering::SeqCst) {
+                return Err("Unified Computer Use is stopped. Choose Resume in Settings → Unified Computer Use, then send again.".into());
+            }
+        }
+        Ok(())
+    }
+
     pub async fn computer_setup(&self) -> Result<Value, String> {
         let path = verified_bundle().await?;
         #[cfg(unix)]

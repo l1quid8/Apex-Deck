@@ -704,7 +704,8 @@ impl Host {
 
     pub async fn list_tool_servers(&self, room: String, agent: String) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
         let key = format!("{room}:{agent}");
-        if let Some(names) = self.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned() { return Ok(names); }
+        let cached = self.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned();
+        if let Some(names) = cached { return Ok(self.computer_tool_menu(&room, &ParticipantId::new(&agent), names)); }
         let handle = self.handle(&room)?;
         let config = handle.room.lock().await.configs().into_iter().find(|p| p.id.as_str() == agent).ok_or("Unknown participant")?;
         let names = match config.backend {
@@ -713,7 +714,7 @@ impl Host {
             _ => Vec::new(),
         };
         if !names.is_empty() { self.tool_servers.lock().unwrap().insert(key, names.clone()); }
-        Ok(names)
+        Ok(self.computer_tool_menu(&room, &ParticipantId::new(&agent), names))
     }
 
     // ------------------------------------------------------------ terminals
@@ -1238,7 +1239,7 @@ impl Host {
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
-        move |event| {
+        move |mut event| {
             // The desktop emits room-wide Idle only after the final snapshot
             // (including cursors) is saved by run_batch.
             if matches!(event, RoomEvent::Idle) { return; }
@@ -1248,7 +1249,8 @@ impl Host {
                     self.snapshots.note_command(id, seq, bot, command);
                 }
             }
-            if let RoomEvent::ToolServers { id: agent, servers } = &event {
+            if let RoomEvent::ToolServers { id: agent, servers } = &mut event {
+                *servers = self.computer_tool_menu(id, agent, std::mem::take(servers));
                 self.tool_servers.lock().unwrap().insert(format!("{id}:{}", agent.as_str()), servers.clone());
             }
             let record = self.steps.observe(id, &event);
@@ -1299,12 +1301,13 @@ impl Host {
             }
         }
         let requested = apex_core::server_request::parse_server_requests(text);
+        self.validate_computer_request(&requested)?;
         if !requested.is_empty() {
             let recipients = match &targets { Some(ids) => ids.clone(), None => handle.runtime.targets(text).await };
             let cache = self.tool_servers.lock().unwrap();
             let lists: Option<Vec<_>> = recipients.iter().map(|agent| cache.get(&format!("{id}:{}", agent.as_str()))).collect();
             if let Some(lists) = lists {
-                let known = lists.into_iter().flatten().cloned().collect::<Vec<_>>();
+                let known = recipients.iter().zip(lists).flat_map(|(agent, list)| self.computer_tool_menu(id, agent, list.clone())).collect::<Vec<_>>();
                 let unknown = apex_core::server_request::resolve(&requested, &known).unknown;
                 if !unknown.is_empty() { return Err(format!("No tool server called \"{}\" for the addressed models", unknown[0])); }
             }
