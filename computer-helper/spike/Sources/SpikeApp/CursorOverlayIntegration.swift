@@ -2,91 +2,91 @@ import AppKit
 import SpikeCore
 
 /**
- Minimal integration hooks for CursorOverlay – designed to avoid overlapping
- Jigga's AX.swift / EngineSession.swift / core action fixes.
+ Minimal integration hooks for CursorOverlay – updated per review 22ddaca2.
 
- Hook contract:
- 1. Server owns exactly one instance: CursorOverlay.shared (singleton).
-    No new process, no new permissions, all inside existing signed helper.
+ Blocker 1 - Coordinate conversion:
+ - AX / Quartz global point uses top-left origin (0 at top of main screen, Y down),
+   while NSScreen.frame uses bottom-left origin. Conversion is now centralised
+   in CursorOverlay.quartzToCocoa() and handles displays above/below/left/right
+   by using main screen maxY as reference. All callers pass Quartz/AX points;
+   overlay converts internally.
 
- 2. Show points:
-    - click_point: call OverlayIntegration.showAtPoint(x:y:scope:)
-    - click element: call showForElement(_:snapshot:label:)
-    For engine-native clicks (EngineSession), rect lookup is via Accessibility
-    snapshot controls array (not modifying EngineSession).
+ Blocker 2 - Element indexing:
+ - Bot element number is index into EngineSnapshot.refs (engine refs), NOT
+   Snapshot.controls (native controls traversal). Traversals differ, so
+   native.controls[element-1] may highlight wrong element.
+ - Fix: EngineSession.click/scroll/type now show overlay ONLY at the actual
+   engine-resolved AX target via existing validated callback in Engine.swift:
+   EngineCheck.validate(pointer) receives real target after safe-ancestry checks.
+   It dispatches CursorOverlay.show(at: rect(mid)) on main queue.
+ - Server.swift no longer calls showForElement for click/scroll/type. For
+   press_key (no engine ref), fallback is showForFocus with generic label.
+ - showForElement retained only for deprecated fallback, marked, not used for
+   engine actions.
 
- 3. Cleanup:
-    - On action completion (Server.call defer), hide() – non-blocking visual fade.
-    - On Stop (Server.stopIsolatedRun), Server.stopAll(), TurnRegistry end, latch stop:
-      cleanup() immediately removes windows.
-    - Also on Latch.stop() path? ActivityTap.stopAll() already triggers; we hook
-      Server.stopIsolatedRun and per-request defer.
+ Blocker 3 - Label echo:
+ - Overlay must not echo submitted content before permission/target validation.
+   Server now uses generic "Type" label for type_text, not text.prefix(24).
 
- 4. Enable/disable:
-    - Toggle via Status menu (Delegate) + UserDefaults via CursorOverlaySettings.
-    - No RPC change required for model. If needed later, add
-      `unified/cursor-overlay` method in Server dispatch, but NOT required for V1.
-      For now, setting lives in helper helper's UserDefaults and menu.
+ Hook contract (V2):
+ 1. Singleton CursorOverlay.shared, no new process/permissions.
+ 2. Show:
+    - click_point: showAtImagePoint (scope.point validated) -> Quartz point
+    - click/scroll/type: engine hook in EngineCheck (actual target rect)
+    - press_key: showForFocus generic (no content echo)
+ 3. Cleanup: hideAfterAction on success, cleanupOnStop on Stop/end-turn/failure.
+ 4. Toggle via Status menu + UserDefaults.
+ 5. Visual-only: ignoresMouseEvents=true, no injection, no AX changes.
 
- 5. Non-goals enforced:
-    - No input interception (window.ignoresMouseEvents = true)
-    - No injection, no AX changes, no identity checks weakened.
-    - No change to model action selection (purely visual).
+ Coordination with Jigga:
+ - Only minimal Engine.swift hook added: overlayLabel/overlayAction fields in
+   EngineCheck, set from EngineSession. No changes to AX.swift identity checks,
+   no change to browser/window/identity validation.
+ - If Jigga adds post-validation point in EngineSession, he can keep same hook.
 
- Later integration note for Jigga:
- - If EngineSession gains post-validation point (e.g. resolved ref center), you can
-   call CursorOverlay.shared.show(at: point, label: "Click N", action: .click)
-   right before `engine.click` inside Server queue, but after auth/latch checks.
- - Keep AX.swift untouched; rect() helper is already public (internal) – you can
-   reuse via OverlayIntegration.rectForElement if you need a CGPoint.
- - This file documents the only places Server needs to touch.
+ Usage:
 
- Usage in Server.swift (pseudocode for later merge):
+   // click_point (already correct, uses Quartz point from ScreenshotScope)
+   CursorOverlayIntegration.showAtImagePoint(x: x, y: y, scope: scope, label: "Click", action: .point)
 
-   // before click_point dispatch:
-   if CursorOverlaySettings.isEnabled {
-     if let pt = try? scope.point(x:x,y:y) { CursorOverlay.shared.show(at: pt, label:"Click", action:.point) }
-   }
+   // engine click/scroll/type – handled inside EngineCheck, no Server call needed
 
-   // before element click (read_screen snapshot controls):
-   if let ctrl = snapshot.controls[element-1] {
-     if let r = rect(ctrl.e) { CursorOverlay.shared.show(at: r, label:"Click \(element)", action:.click) }
-   }
-
-   // after tools/call result published:
-   CursorOverlay.shared.hide()
+   // after action:
+   CursorOverlayIntegration.hideAfterAction()
 
    // on Stop:
-   CursorOverlay.shared.cleanup()
+   CursorOverlayIntegration.cleanupOnStop()
 */
 
 enum CursorOverlayIntegration {
-  /// Safe rect lookup for a control element from AX – does not modify AX.swift.
-  /// Returns global rect if available and within screen bounds.
-  static func rectForControl(at index: Int, in snapshot: Snapshot) -> CGRect? {
-    guard index > 0, index <= snapshot.controls.count else { return nil }
-    let ctrl = snapshot.controls[index - 1]
-    return rect(ctrl.e)
-  }
-
   /// Show at screenshot image point after scope validation – reuses ScreenshotScope
-  /// logic to avoid duplicating clamping.
+  /// logic to avoid duplicating clamping. Point is Quartz/AX global.
   static func showAtImagePoint(x: Double, y: Double, scope: ScreenshotScope, label: String? = nil, action: OverlayAction = .point) {
     guard CursorOverlaySettings.isEnabled else { return }
     guard let pt = try? scope.point(x: x, y: y) else { return }
     CursorOverlay.shared.show(at: pt, label: label, action: action)
   }
 
+  @available(*, deprecated, message: "Do not use for engine refs; overlay is shown at actual engine-resolved target via EngineCheck.")
   static func showForElement(index: Int, snapshot: Snapshot, label: String? = nil) {
+    // Deprecated: wrong mapping if bot element number is EngineSnapshot.refs index.
+    // Retained for completeness but not used in V2.
     guard CursorOverlaySettings.isEnabled else { return }
     guard let r = rectForControl(at: index, in: snapshot) else {
-      // Fallback: show near focused element if available
       if let focus = snapshot.focus, let fr = rect(focus) {
         CursorOverlay.shared.show(at: fr, label: label, action: .click)
       }
       return
     }
     CursorOverlay.shared.show(at: r, label: label, action: .click)
+  }
+
+  /// Safe rect lookup for a control element from AX – does not modify AX.swift.
+  /// Deprecated for engine element overlay (blocker 2), retained for press_key fallback.
+  static func rectForControl(at index: Int, in snapshot: Snapshot) -> CGRect? {
+    guard index > 0, index <= snapshot.controls.count else { return nil }
+    let ctrl = snapshot.controls[index - 1]
+    return rect(ctrl.e)
   }
 
   static func showForFocus(snapshot: Snapshot, label: String? = nil, action: OverlayAction = .type) {

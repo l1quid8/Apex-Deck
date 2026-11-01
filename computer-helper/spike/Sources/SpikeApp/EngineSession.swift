@@ -86,7 +86,7 @@ final class EngineSession {
     let ref = try reference(element: element, snapshot: s.id)
     _ = try ax.validate(s, epoch: s.epoch)
     current = nil
-    let result = try engine.click(observation: s.id, ref: ref) {
+    let result = try engine.click(observation: s.id, ref: ref, overlayLabel: "Click \(element)", overlayAction: .click) {
       try self.checkContinuation(s, id: id, latch: latch)
     }
     lastAction = result
@@ -99,7 +99,7 @@ final class EngineSession {
     let ref = try reference(element: element, snapshot: s.id)
     _ = try ax.validate(s, epoch: s.epoch)
     current = nil
-    let result = try engine.scroll(observation: s.id, ref: ref, direction: direction, amount: amount) {
+    let result = try engine.scroll(observation: s.id, ref: ref, direction: direction, amount: amount, overlayLabel: "Scroll \(direction)", overlayAction: .generic) {
       try self.checkContinuation(s, id: id, latch: latch)
     }
     lastAction = result
@@ -124,7 +124,7 @@ final class EngineSession {
     // expected state after dispatch, so our own mutation cannot fail a stale
     // static-value check inside the final host callback.
     self.current = nil
-    let result = try engine.type(observation: s.id, ref: ref, text: text, expectedTarget: focus) {
+    let result = try engine.type(observation: s.id, ref: ref, text: text, expectedTarget: focus, overlayLabel: "Type", overlayAction: .type) {
       try self.checkContinuation(s, id: id, latch: latch)
     }
     lastAction = result

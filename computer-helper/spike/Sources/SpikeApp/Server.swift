@@ -302,22 +302,25 @@ final class Server {
     switch name {
     case "click":
       guard Set(args.keys) == ["snapshot", "element"], let number = args["element"] as? Int else { throw Refusal("invalid_arguments") }
-      CursorOverlayIntegration.showForElement(index: number, snapshot: s, label: "Click \(number)")
+      // Blocker 2: Do NOT infer position from native.controls[element-1]. The
+      // ref-to-target rect is shown inside EngineCheck.validate via the actual
+      // engine-resolved AX element (minimal hook coordinated with Jigga).
       try engineSession.click(element: number, s: s, id: id, latch: latch, ax: ax)
     case "type_text":
       guard Set(args.keys) == ["snapshot", "text"], let text = args["text"] as? String else { throw Refusal("invalid_arguments") }
-      CursorOverlayIntegration.showForFocus(snapshot: s, label: "Type: \(String(text.prefix(24)))", action: .type)
+      // Blocker 3: generic label, no echo of submitted content.
       try engineSession.type(text: text, s: s, id: id, latch: latch, ax: ax)
     case "press_key":
       guard Set(args.keys) == ["snapshot", "key"], let key = args["key"] as? String else { throw Refusal("invalid_arguments") }
-      CursorOverlayIntegration.showForFocus(snapshot: s, label: key, action: .generic)
+      // Generic label for key, show at focus only as fallback before validation
+      CursorOverlayIntegration.showForFocus(snapshot: s, label: key == "" ? "Key" : key, action: .generic)
       try input.key(key, s: s, id: id)
       engineSession.recordUnverifiedInput()
     case "scroll":
       guard Set(args.keys) == ["snapshot", "element", "direction", "amount"], let number = args["element"] as? Int,
         let direction = args["direction"] as? String, let amount = args["amount"] as? Int,
         ["up", "down", "left", "right"].contains(direction), (1...20).contains(amount) else { throw Refusal("invalid_arguments") }
-      CursorOverlayIntegration.showForElement(index: number, snapshot: s, label: "Scroll \(direction)")
+      // Blocker 2: overlay is shown in EngineCheck at actual resolved target.
       try engineSession.scroll(element: number, direction: direction, amount: amount, s: s, id: id, latch: latch, ax: ax)
     default: throw Refusal("unknown_tool")
     }

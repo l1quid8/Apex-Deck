@@ -73,18 +73,63 @@ final class CursorOverlay: NSObject {
 
   // MARK: - Window management
 
-  private func screen(for point: CGPoint) -> NSScreen? {
-    // NSScreen uses bottom-left origin; CG global matches NSScreen frame.
-    // Pick screen whose frame contains point; fallback to main.
+  // MARK: - Coordinate conversion (blocker 1)
+  // AX / Quartz global coordinates use top-left origin (0 at top of main screen,
+  // X same as AppKit, Y increases downward), while NSScreen.frame uses
+  // bottom-left origin (main screen minY=0, maxY=height, Y increases upward).
+  // Conversion must handle displays above/below/left/right of primary.
+  static func quartzToCocoa(_ quartzPoint: CGPoint) -> CGPoint {
+    // Main screen maxY is the top edge in AppKit coordinates.
+    // If no main screen, fall back to highest maxY among screens.
+    let mainMaxY: CGFloat
+    if let main = NSScreen.main {
+      mainMaxY = main.frame.maxY
+    } else {
+      mainMaxY = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
+    }
+    // X origin matches (left edge of main screen), Y flipped.
+    return CGPoint(x: quartzPoint.x, y: mainMaxY - quartzPoint.y)
+  }
+
+  static func cocoaToQuartz(_ cocoaPoint: CGPoint) -> CGPoint {
+    let mainMaxY: CGFloat
+    if let main = NSScreen.main {
+      mainMaxY = main.frame.maxY
+    } else {
+      mainMaxY = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
+    }
+    return CGPoint(x: cocoaPoint.x, y: mainMaxY - cocoaPoint.y)
+  }
+
+  private func screen(for quartzPoint: CGPoint) -> NSScreen? {
+    let cocoa = Self.quartzToCocoa(quartzPoint)
+    // Find screen whose AppKit frame contains the converted point.
     for screen in NSScreen.screens {
-      if screen.frame.contains(point) { return screen }
+      if screen.frame.contains(cocoa) { return screen }
+    }
+    // Fallback: closest screen by distance, handles gaps between displays.
+    if let closest = NSScreen.screens.min(by: {
+      let a = $0.frame
+      let b = $1.frame
+      let da = (a.contains(cocoa) ? 0 : 1)
+      let db = (b.contains(cocoa) ? 0 : 1)
+      if da != db { return da < db }
+      let ax = max(a.minX, min(cocoa.x, a.maxX))
+      let ay = max(a.minY, min(cocoa.y, a.maxY))
+      let bx = max(b.minX, min(cocoa.x, b.maxX))
+      let by = max(b.minY, min(cocoa.y, b.maxY))
+      let distA = (cocoa.x-ax)*(cocoa.x-ax) + (cocoa.y-ay)*(cocoa.y-ay)
+      let distB = (cocoa.x-bx)*(cocoa.x-bx) + (cocoa.y-by)*(cocoa.y-by)
+      return distA < distB
+    }) {
+      return closest
     }
     return NSScreen.main ?? NSScreen.screens.first
   }
 
-  private func ensureWindow(at point: CGPoint, label: String?, action: OverlayAction) {
-    guard let screen = screen(for: point) else { return }
-    // Reuse existing window on same screen if present, else create.
+  private func ensureWindow(at quartzPoint: CGPoint, label: String?, action: OverlayAction) {
+    guard let screen = screen(for: quartzPoint) else { return }
+    let cocoaPoint = Self.quartzToCocoa(quartzPoint)
     let existing = windows.first { $0.screen == screen || $0.frame.intersects(screen.frame) }
     let window: NSWindow
     if let existing = existing {
@@ -93,12 +138,11 @@ final class CursorOverlay: NSObject {
       window = makeOverlayWindow(for: screen)
       windows.append(window)
     }
-    // Ensure window covers its screen.
     window.setFrame(screen.frame, display: false)
     window.orderFrontRegardless()
 
     guard let view = window.contentView as? OverlayView else { return }
-    let local = CGPoint(x: point.x - screen.frame.minX, y: point.y - screen.frame.minY)
+    let local = CGPoint(x: cocoaPoint.x - screen.frame.minX, y: cocoaPoint.y - screen.frame.minY)
     view.showPointer(at: local, label: label, action: action, accentHex: CursorOverlaySettings.accentHex)
   }
 
