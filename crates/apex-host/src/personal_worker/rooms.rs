@@ -62,13 +62,18 @@ impl Target {
         ids.iter().find(|id| !self.workers.iter().any(|(worker, _)| worker == *id)).map(|id| format!("{id} isn't in that chat"))
     }
 
-    /// Run only what the human's own message points at when the rules leave
-    /// that to judgment, or when outside words could have planted the idea.
-    pub fn gate(&self, gate: Gate, class: ToolClass, mode: ActionMode, asked: &str, outside: bool) -> Gate {
-        if class == ToolClass::Read || !matches!(gate, Gate::Run(_)) || !(outside || mode == ActionMode::OnRequest) { return gate; }
+    /// Outside words in the prompt always mean asking: a name in the human's
+    /// message can't tell their request from a planted one. "On request" runs
+    /// only what that message points at: the bots acted on, or the chat itself.
+    pub fn gate(&self, gate: Gate, class: ToolClass, mode: ActionMode, argv: &[String], asked: &str, outside: bool) -> Gate {
+        if class == ToolClass::Read || !matches!(gate, Gate::Run(_)) { return gate; }
+        if outside { return Gate::Ask; }
+        if mode != ActionMode::OnRequest { return gate; }
         let asked = words(asked);
+        let bots = argv.get(1).map(|ids| split(ids)).unwrap_or_default();
+        let aimed = self.workers.iter().filter(|(id, _)| bots.contains(&id.as_str())).map(|(_, name)| name);
         // A thread id standing in for a missing title is no name anyone said.
-        let names = self.workers.iter().map(|(_, name)| name).chain(Some(&self.title).filter(|title| **title != self.thread));
+        let names = aimed.chain(Some(&self.title).filter(|title| **title != self.thread));
         let named = names.map(|name| words(name)).any(|name| !name.is_empty() && asked.windows(name.len()).any(|said| said == name));
         if named { gate } else { Gate::Ask }
     }
@@ -253,10 +258,16 @@ mod tests {
             workers: vec![("n".into(), "Null".into()), ("d".into(), "Deep Geek".into())], tools: ProjectTools::Ask,
         };
         let run = || Gate::Run(ActionMode::OnRequest);
-        let gate = |t: &Target, asked: &str| t.gate(run(), ToolClass::Send, ActionMode::OnRequest, asked, false);
+        let argv = ["thread-1".to_owned(), "n,d".to_owned(), "hi".to_owned()];
+        let gate = |t: &Target, asked: &str| t.gate(run(), ToolClass::Send, ActionMode::OnRequest, &argv, asked, false);
         let chat = target("UI", "thread-1");
         for asked in ["What is a nullable field?", "How would we build this?"] { assert!(matches!(gate(&chat, asked), Gate::Ask), "{asked}"); }
         for asked in ["Tell Null to stop.", "ask deep geek for a review", "post in UI please"] { assert!(matches!(gate(&chat, asked), Gate::Run(_)), "{asked}"); }
         assert!(matches!(gate(&target("thread-1", "thread-1"), "send to thread-1"), Gate::Ask), "an id is no title");
+        let only_null = ["thread-1".to_owned(), "n".to_owned(), "hi".to_owned()];
+        let other = target("thread-1", "thread-1").gate(run(), ToolClass::Send, ActionMode::OnRequest, &only_null, "ask Deep Geek", false);
+        assert!(matches!(other, Gate::Ask), "naming one bot doesn't aim at another");
+        let planted = chat.gate(Gate::Run(ActionMode::Auto), ToolClass::Send, ActionMode::Auto, &argv, "What did Null mean?", true);
+        assert!(matches!(planted, Gate::Ask), "a name never outweighs outside words");
     }
 }

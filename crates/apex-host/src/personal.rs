@@ -405,6 +405,16 @@ pub struct MachineLink {
     pub last_seen: Option<u64>,
 }
 
+/// Where a reply's outside words came from.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OutsideSource {
+    /// A reply that used the computer tools.
+    Screen,
+    /// A summary of a chat read or of helper reports.
+    Report,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalMessage {
@@ -423,6 +433,9 @@ pub struct PersonalMessage {
     /// Reactions from the authenticated human account, shared by its devices.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<String>,
+    /// Set when the words retell outside content, so they stay quoted evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outside: Option<OutsideSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
@@ -788,11 +801,17 @@ impl PersonalAssistant {
 
     pub(crate) fn post(&mut self, role: &str, kind: &str, text: String, task_id: Option<String>, event_id: Option<String>, at: u64) {
         let id = self.next_message_id();
-        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new(), legacy: None });
+        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new(), outside: None, legacy: None });
         if self.messages.len() > MAX_MESSAGES {
             let extra = self.messages.len() - MAX_MESSAGES;
             self.messages.drain(..extra);
         }
+    }
+
+    /// An assistant message that retells outside content.
+    pub(crate) fn post_outside(&mut self, source: OutsideSource, text: String, event_id: Option<String>, at: u64) {
+        self.post("assistant", "chat", text, None, event_id, at);
+        if let Some(message) = self.messages.last_mut() { message.outside = Some(source); }
     }
 
     pub(crate) fn task_mut(&mut self, id: &str) -> Option<&mut PersonalTask> {
@@ -1169,8 +1188,10 @@ impl crate::Host {
         self.personal_accept(id, request_id, EventSource::Cancel { task_id: task_id.into() }, None)
     }
 
+    /// Saved before the revoke, so a reply starting now reads the pause.
     pub fn personal_pause(&self, id: &str, request_id: &str, paused: bool) -> Result<Accepted, String> {
         self.personal_accept(id, request_id, EventSource::Pause { paused }, None)
+            .inspect(|_| if paused { self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None); })
     }
 
     /// Cancel one schedule. Tasks it already started are left alone.

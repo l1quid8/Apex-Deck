@@ -129,6 +129,7 @@ impl crate::Host {
 
     pub fn personal_conversation_new(&self, id: &str) -> Result<Changed, String> {
         self.changed(id, |assistant| { assistant.conversation_from = now(); Ok(()) })
+            .inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
     }
 
     /// A standing rule only ever makes the assistant more careful.

@@ -15,6 +15,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::personal::{
+    OutsideSource,
     now, valid_argv, ActionMode, CostEntry, CostSource, DecisionKind, DecisionStatus, EventSource, EventState, Fact, FactKind,
     FactSource, OpPhase, OperationReceipt, OperationSpec, PendingDecision, PersonalAssistant, PersonalEvent, PersonalTask,
     ProcessMark, RunPlan, Schedule, ScheduleStatus, StopCondition, TaskKind, TaskStatus, TaskWait, ToolClass, MAX_FACTS,
@@ -685,7 +686,6 @@ impl Host {
             EventSource::Internal { what } => self.personal_internal(tools, snapshot, &event, what.clone()).await,
             _ => {
                 let stop = self.change_assistant(&snapshot.id, |assistant| Ok(apply_control(assistant, &event)))?;
-                if matches!(event.source, EventSource::Pause { paused: true }) { self.computer.revoke(Some(&computer::thread(&snapshot.id)), None); }
                 // The cancel is saved first, so a stopped command can't be mistaken for a finished one.
                 let stops = self.personal_stops.lock().unwrap();
                 for task_id in stop {
@@ -713,7 +713,7 @@ impl Host {
             return self.change_assistant(&snapshot.id, |assistant| { hold_for_spend(assistant, &event.id, prompt, at); Ok(()) });
         }
         let tools_on = if snapshot.privacy.local_only { vec![] } else { connectors::available() };
-        let mut system = context::assemble(&snapshot, &text, at, &tools_on);
+        let (mut system, seen) = context::assemble_seen(&snapshot, &text, at, &tools_on);
         let catalog = rooms::catalog(&self.personal_rooms(&snapshot)?.iter().map(|room| self.room_entry(room)).collect::<Vec<_>>())?;
         if system.chars().count() + catalog.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&catalog); }
 
@@ -733,19 +733,20 @@ impl Host {
         let active=current.events.iter().any(|e|e.id==event.id&&e.state==EventState::Processing);
         if !active { self.personal_stops.lock().unwrap().remove(&key); return Ok(()); }
         // The saved record, not this event's snapshot: a pause may have landed since.
-        let reach=self.personal_computer_reach(&current,&profile);
+        let reach=self.personal_computer_reach(&current,current.profile.as_ref().unwrap_or(&profile),seen.report);
         let ended=Arc::new(tokio::sync::Notify::new());
         let lease=match reach {
             computer::Reach::Tools(access)=>self.personal_computer_turn(&snapshot.id,&profile,access,&mut request,&ended).await,
             computer::Reach::Off(_)=>None,
         };
         let computing=request.computer.is_some();
-        request.system.push_str(&computer::prompt(reach,computing));
+        request.system.push_str(&computer::prompt(reach,computing,seen.report));
         let bytes=request.system.len();
         if computing {
             let marked=self.change_assistant(&snapshot.id,|assistant| {
                 if let Some(saved)=assistant.events.iter_mut().find(|e|e.id==event.id) { saved.computer_started=true; }
-                Ok(assistant.paused)
+                // The helper may have taken a stricter save's revoke before this lease existed.
+                Ok(self.personal_computer_reach(assistant,assistant.profile.as_ref().unwrap_or(&profile),seen.report)!=reach)
             });
             match marked {
                 Ok(false)=>{}
@@ -770,7 +771,7 @@ impl Host {
             Ok(out) => {
                 let cost = cost_entry("reply", &out, bytes, endpoint(&profile), now());
                 let reply = computer::settle_reply(parse_reply(&out.text), &out);
-                self.commit_reply(tools, &snapshot.id, &event.id, &text, reply, cost)
+                self.commit_reply(tools, &snapshot.id, &event.id, &text, reply, cost, seen, out.computer_used)
             }
             Err(error) => self.finish_event(&snapshot.id, &event.id, Err(error)),
         }
@@ -820,7 +821,7 @@ impl Host {
                     saved.state = EventState::Done;
                     assistant.add_cost(cost);
                     let text = if reply.trim().is_empty() { "The helpers finished; their reports are above.".to_owned() } else { reply.trim().to_owned() };
-                    assistant.post("assistant", "chat", text.clone(), None, Some(event.id.clone()), at);
+                    assistant.post_outside(OutsideSource::Report, text.clone(), Some(event.id.clone()), at);
                     if !reported { notify::notify(assistant, format!("Helpers finished: {}", text.chars().take(140).collect::<String>()), None, false, format!("consolidated:{parent}"), at); }
                     Ok(())
                 })
@@ -860,7 +861,8 @@ impl Host {
         })
     }
 
-    fn commit_reply(&self, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, reply: ModelReply, cost: CostEntry) -> Result<(), String> {
+    #[allow(clippy::too_many_arguments)]
+    fn commit_reply(&self, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, reply: ModelReply, cost: CostEntry, seen: context::Seen, screen: bool) -> Result<(), String> {
         let local = self.local_host_id()?;
         let initial = self.personal_get(assistant_id)?;
         if !initial.events.iter().any(|e| e.id == event_id && e.state == EventState::Processing) { return Ok(()); }
@@ -887,17 +889,21 @@ impl Host {
             event.error = None;
             assistant.add_cost(cost);
             let text = if reply.reply.trim().is_empty() { "…".to_owned() } else { reply.reply.trim().to_owned() };
-            assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at);
+            if screen { assistant.post_outside(OutsideSource::Screen, text, Some(event_id.to_owned()), at); }
+            else { assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at); }
             for note in delegation_notes { assistant.post("system", "update", note, None, Some(event_id.to_owned()), at); }
-            // Outside content (app results, helper reports) in view could have
-            // planted a "remember"; only the human's own words may forget.
-            let outside = outside_in_view(assistant, at);
+            // Outside words in the prompt could have planted a "remember";
+            // only the human's own words may forget.
+            let outside = seen.any();
+            if outside && !reply.remember.is_empty() {
+                assistant.post("system", "update", "I didn't save that to memory, because outside content is in this conversation. Add it in Memory, or say it again in a new conversation.".into(), None, Some(event_id.to_owned()), at);
+            }
             let asked_to_forget = ["forget", "delete", "remove", "erase"].iter().any(|w| asked.to_lowercase().contains(w));
             let remember: &[ProposedFact] = if outside { &[] } else { &reply.remember };
             let forget: &[String] = if asked_to_forget { &reply.forget } else { &[] };
             apply_memory(assistant, remember, forget, event_id, at);
             if let Some(proposed) = reply.task {
-                propose_task(assistant, tools, &local, event_id, asked, proposed, room, at);
+                propose_task(assistant, tools, &local, event_id, asked, proposed, room, outside, at);
             }
             if let Some(proposed) = reply.schedule {
                 propose_schedule(assistant, event_id, proposed, at);
@@ -1453,11 +1459,6 @@ fn tick_assistant(assistant: &mut PersonalAssistant, local_id: &str, at: u64) ->
     (next, pushes)
 }
 
-/// Outside words are in the model's view: app results or helper reports.
-fn outside_in_view(assistant: &PersonalAssistant, at: u64) -> bool {
-    assistant.messages.iter().any(|m| at.saturating_sub(m.at) <= FRESH_RESULT_MS && (m.kind == "helper" || (m.kind == "result" && m.task_id.as_ref().is_some_and(|id| assistant.tasks.iter().any(|t| &t.id == id && t.operation.as_ref().is_some_and(|op| op.tool != COMMAND_TOOL))))))
-}
-
 /// Once a chat read settles, one tool-free turn turns it into an answer.
 fn queue_report(assistant: &mut PersonalAssistant, task_id: &str, op_id: &str, at: u64) {
     if !assistant.tasks.iter().any(|t| t.id == task_id && t.status == TaskStatus::Done) { return; }
@@ -1472,7 +1473,8 @@ fn queue_report(assistant: &mut PersonalAssistant, task_id: &str, op_id: &str, a
 }
 
 /// A proposed task goes through the gateway: it runs, asks or is handed over.
-fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &str, event_id: &str, asked: &str, proposed: ProposedTask, room: Option<Result<rooms::Target, String>>, at: u64) {
+#[allow(clippy::too_many_arguments)]
+fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &str, event_id: &str, asked: &str, proposed: ProposedTask, room: Option<Result<rooms::Target, String>>, outside: bool, at: u64) {
     let tool = proposed.tool.clone().unwrap_or_else(|| COMMAND_TOOL.to_owned());
     if let Some(Err(why)) = &room {
         assistant.post("system", "update", format!("No task was made: {why}"), None, Some(event_id.to_owned()), at);
@@ -1526,7 +1528,7 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
     };
     let gate = gateway::gate(assistant, &task, Some(asked));
     let gate = match &room {
-        Some(target) => target.gate(gate, task.class, assistant.mode_for(task.class), asked, outside_in_view(assistant, at)),
+        Some(target) => target.gate(gate, task.class, assistant.mode_for(task.class), &operation.argv, asked, outside),
         None => gate,
     };
     let class_word = match task.class { ToolClass::Read => "reading", ToolClass::Write => "changing things", ToolClass::Send => "sending", ToolClass::Spend => "spending" };

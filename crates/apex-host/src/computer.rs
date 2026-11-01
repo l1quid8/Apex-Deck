@@ -128,7 +128,7 @@ impl Computer {
     fn cursor_prefs(&self) -> crate::cursor_overlay::CursorOverlayPrefs {
         crate::cursor_overlay::load(&self.data_root)
     }
-    fn generation(&self, thread: &str) -> u64 {
+    pub(crate) fn generation(&self, thread: &str) -> u64 {
         *self
             .generations
             .lock()
