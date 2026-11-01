@@ -64,7 +64,7 @@ final class EngineSession {
   /// Every later action rechecks the turn, activity and live target regardless.
   static func keepsObservation(tool: String, code: String) -> Bool {
     guard !code.contains("delivery=") else { return false }
-    return tool == "get_screenshot" || ["unexpected_arguments", "invalid_arguments", "unsupported_key",
+    return tool == "get_screenshot" || ["unexpected_arguments", "invalid_arguments", "app_id_not_plain_ascii", "unsupported_key",
       "unknown_tool", "invalid_engine_element", "invalid_text",
       "shortcut_needs_foreground", "key_needs_visible_window", "browser_control_needs_visible_window",
       "pixel_target_has_no_control"].contains(code)

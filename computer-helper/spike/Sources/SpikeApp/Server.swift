@@ -409,7 +409,9 @@ final class Server {
   }
   /// Never touches a running app. True if starting a stopped one took the front.
   func requestApp(_ args: [String: Any], token: String, id: String) throws -> Bool {
-    guard Set(args.keys) == ["app"], let bundle = args["app"] as? String, Policy.target(bundle),
+    guard Set(args.keys) == ["app"], let bundle = args["app"] as? String else { throw Refusal("invalid_arguments") }
+    guard bundle.allSatisfy(\.isASCII) else { throw Refusal("app_id_not_plain_ascii") }
+    guard Policy.target(bundle),
       let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { throw Refusal("protected_or_unavailable_app") }
     let identity = try AppIdentity.capture(url, bundle: bundle)
     if (try? turns.identity(bundle, token: token)) != identity {

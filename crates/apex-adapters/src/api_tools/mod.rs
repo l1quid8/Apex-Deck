@@ -330,7 +330,7 @@ impl<'a> Turn<'a> {
                 tool(
                     "mcp_call",
                     "Call a tool on an MCP server. Tools that can spend money, publish or change things ask the person first.",
-                    object(json!({"server": server, "tool": {"type": "string"}, "arguments": {"type": "object"}, "timeout_seconds": {"type": "integer"}}), &["server", "tool"]),
+                    object(json!({"server": server, "tool": {"type": "string"}, "arguments": {"type": "object", "description": "The tool's own inputs as a JSON object, not text. Every input goes here, for example {\"app\":\"com.apple.TextEdit\"}."}, "timeout_seconds": {"type": "integer"}}), &["server", "tool"]),
                 ),
             ]);
         }
@@ -770,7 +770,13 @@ impl<'a> Turn<'a> {
             let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
             return (step, Err(format!("`{name}` has no tool called `{tool_name}`. Its tools are: {}.", names.join(", "))));
         };
-        let arguments = if args["arguments"].is_object() { args["arguments"].clone() } else { json!({}) };
+        let arguments = match mcp_arguments(args, definition) {
+            Ok(arguments) => arguments,
+            Err(fault) => {
+                let step = self.step(call, StepKind::Tool, &format!("{label}: {}", fault.shape), &detail);
+                return (step, Err(fault.reply(&tool_name)));
+            }
+        };
         let catalog = [json!({"name": name, "tools": {tool_name.clone(): definition}})];
         let risky = crate::mcp::catalog_approval(&catalog, &name, &tool_name).unwrap_or_else(|| crate::mcp::needs_approval(&tool_name));
         let need = if self.trusted_computer && name == crate::computer::SERVER {
@@ -805,6 +811,42 @@ impl<'a> Turn<'a> {
     /// Stop whatever this turn left running.
     pub async fn finish(&mut self) {
         self.jobs.stop_all().await;
+    }
+}
+
+/// Why an `mcp_call` was refused. `shape` holds fixed words only, so a step can
+/// show it without repeating a model's arguments.
+#[derive(Debug, PartialEq)]
+struct ArgumentFault {
+    shape: &'static str,
+    required: Vec<String>,
+}
+
+impl ArgumentFault {
+    fn reply(&self, tool: &str) -> String {
+        let example: serde_json::Map<String, Value> = self.required.iter().map(|name| (name.clone(), json!("..."))).collect();
+        format!("`{tool}` did not run: {}. Send its inputs as a JSON object in `arguments`, for example {}.", self.shape, Value::Object(example))
+    }
+}
+
+/// The tool's inputs. Anything else is refused rather than sent as empty
+/// inputs, which would run the tool and blame the wrong thing.
+fn mcp_arguments(args: &Value, definition: &Value) -> Result<Value, ArgumentFault> {
+    let required: Vec<String> = definition["inputSchema"]["required"]
+        .as_array()
+        .map(|names| names.iter().filter_map(|name| name.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let fault = |shape| Err(ArgumentFault { shape, required: required.clone() });
+    let outside = args.as_object().is_some_and(|fields| fields.keys().any(|key| !matches!(key.as_str(), "server" | "tool" | "arguments" | "timeout_seconds")));
+    let given = &args["arguments"];
+    match given {
+        Value::Object(inputs) if required.iter().all(|name| inputs.contains_key(name)) => Ok(given.clone()),
+        Value::Object(_) | Value::Null if outside => fault("inputs were outside arguments"),
+        Value::Object(_) => fault("a required input was missing"),
+        Value::Null if required.is_empty() => Ok(json!({})),
+        Value::Null => fault("arguments was missing"),
+        Value::String(_) => fault("arguments was text"),
+        _ => fault("arguments was not an object"),
     }
 }
 
@@ -928,6 +970,31 @@ done
         let result = turn.run(&call("mcp_call", json!({"server": server, "tool": tool,
             "arguments": {"text":"TYPED_SECRET", "app":"APP_SECRET", "snapshot":"SNAPSHOT_SECRET"}}))).await;
         (result, steps.into_inner().unwrap(), answers.asked.into_inner().unwrap(), activities.into_inner().unwrap())
+    }
+
+    #[test]
+    fn mcp_arguments_refuse_every_shape_that_would_lose_inputs() {
+        let needs_app = json!({"inputSchema": {"required": ["app"]}});
+        let base = |extra: Value| {
+            let mut args = json!({"server": "s", "tool": "t"});
+            args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            args
+        };
+        assert_eq!(mcp_arguments(&base(json!({"arguments": {"app": "x"}, "timeout_seconds": 5})), &needs_app).unwrap(), json!({"app": "x"}));
+        assert_eq!(mcp_arguments(&base(json!({})), &json!({"inputSchema": {}})).unwrap(), json!({}));
+        assert_eq!(mcp_arguments(&base(json!({"arguments": {"app": "x"}, "reason": "harmless"})), &needs_app).unwrap(), json!({"app": "x"}));
+        for (extra, shape) in [
+            (json!({}), "arguments was missing"),
+            (json!({"arguments": null}), "arguments was missing"),
+            (json!({"arguments": {}}), "a required input was missing"),
+            (json!({"arguments": "{\"app\":\"x\"}"}), "arguments was text"),
+            (json!({"arguments": ["x"]}), "arguments was not an object"),
+            (json!({"app": "x"}), "inputs were outside arguments"),
+        ] {
+            assert_eq!(mcp_arguments(&base(extra), &needs_app).unwrap_err().shape, shape);
+        }
+        let reply = ArgumentFault { shape: "arguments was missing", required: vec!["app".into()] }.reply("request_app");
+        assert!(reply.contains("`request_app` did not run: arguments was missing") && reply.contains(r#"{"app":"..."}"#));
     }
 
     #[cfg(unix)]
