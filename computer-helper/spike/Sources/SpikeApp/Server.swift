@@ -37,6 +37,7 @@ final class Server {
   }
   func startIsolatedRun() -> Bool { false } // Session authority always comes from the signed daemon.
   func stopIsolatedRun() {
+    CursorOverlayIntegration.cleanupOnStop()
     activity.stopAll()
     lease.releaseAll()
     for turn in turns.stopAll() {
@@ -52,6 +53,7 @@ final class Server {
     let state = activity.latch.state()
     return ["accessibilityTrusted": ax.trusted(), "screenCaptureAccess": CGPreflightScreenCaptureAccess(),
       "listenEventAccess": CGPreflightListenEventAccess(), "tapHealthy": state.2, "stopped": turns.isStopped,
+      "cursorOverlayEnabled": CursorOverlaySettings.isEnabled,
       "pid": ProcessInfo.processInfo.processIdentifier]
   }
   func send(_ value: [String: Any], _ client: Int32) { output.lock(); defer { output.unlock() }; Wire.send(value, fd: client) }
@@ -116,7 +118,9 @@ final class Server {
       }
       if method == "unified/end-turn" {
         guard authenticated, let token = controlToken, params["turnToken"] as? String == token else { self.fail(id, "authenticated_turn_required", client); return }
-        self.turns.end(token); if self.lease.release(token) { self.activity.invalidateObservations() }; self.response(id, ["ended": true], client); return
+        self.turns.end(token); if self.lease.release(token) { self.activity.invalidateObservations() }
+        CursorOverlayIntegration.cleanupOnStop()
+        self.response(id, ["ended": true], client); return
       }
       if method == "unified/bind-turn" {
         do {
@@ -177,8 +181,14 @@ final class Server {
             invalidate: { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); state.latch.stop() })
         } catch let error as Refusal {
           let code = state.engine.failureCode(error.code)
-          state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); self.fail(id, code, client)
-        } catch { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); self.fail(id, "internal_error", client) }
+          state.imageScope = nil; state.snapshot = nil; state.engine.invalidate()
+          CursorOverlayIntegration.cleanupOnStop()
+          self.fail(id, code, client)
+        } catch {
+          state.imageScope = nil; state.snapshot = nil; state.engine.invalidate()
+          CursorOverlayIntegration.cleanupOnStop()
+          self.fail(id, "internal_error", client)
+        }
       }
     }
   }
@@ -220,11 +230,17 @@ final class Server {
       guard try turns.canControl(token), Set(args.keys) == ["snapshot", "x", "y"],
         let s = snapshot, args["snapshot"] as? String == s.id, let scope = activeState.imageScope,
         scope.snapshot == s.id, let x = args["x"] as? Double, let y = args["y"] as? Double else { throw Refusal("current_screenshot_and_control_required") }
+      // Visual overlay: show target before physical click
+      CursorOverlayIntegration.showAtImagePoint(x: x, y: y, scope: scope, label: "Click (\(Int(x)),\(Int(y)))", action: .point)
       activeState.imageScope = nil
       try input.point(x: x, y: y, scope: scope, s: s, id: id)
       engineSession.recordUnverifiedInput()
       snapshot = try observe(id: id, epoch: s.epoch)
-    } else if name != "request_app" { _ = try callText(params, id: id) }
+      CursorOverlayIntegration.hideAfterAction()
+    } else if name != "request_app" {
+      _ = try callText(params, id: id)
+      CursorOverlayIntegration.hideAfterAction()
+    }
     activeState.imageScope = nil
     guard let native = snapshot else { throw Refusal("observation_unavailable") }
     let bound = try engineSession.capture(native: native, id: id, latch: latch, ax: ax)
@@ -286,18 +302,25 @@ final class Server {
     switch name {
     case "click":
       guard Set(args.keys) == ["snapshot", "element"], let number = args["element"] as? Int else { throw Refusal("invalid_arguments") }
+      // Blocker 2: Do NOT infer position from native.controls[element-1]. The
+      // ref-to-target rect is shown inside EngineCheck.validate via the actual
+      // engine-resolved AX element (minimal hook coordinated with Jigga).
       try engineSession.click(element: number, s: s, id: id, latch: latch, ax: ax)
     case "type_text":
       guard Set(args.keys) == ["snapshot", "text"], let text = args["text"] as? String else { throw Refusal("invalid_arguments") }
+      // Blocker 3: generic label, no echo of submitted content.
       try engineSession.type(text: text, s: s, id: id, latch: latch, ax: ax)
     case "press_key":
       guard Set(args.keys) == ["snapshot", "key"], let key = args["key"] as? String else { throw Refusal("invalid_arguments") }
+      // Generic label for key, show at focus only as fallback before validation
+      CursorOverlayIntegration.showForFocus(snapshot: s, label: key == "" ? "Key" : key, action: .generic)
       try input.key(key, s: s, id: id)
       engineSession.recordUnverifiedInput()
     case "scroll":
       guard Set(args.keys) == ["snapshot", "element", "direction", "amount"], let number = args["element"] as? Int,
         let direction = args["direction"] as? String, let amount = args["amount"] as? Int,
         ["up", "down", "left", "right"].contains(direction), (1...20).contains(amount) else { throw Refusal("invalid_arguments") }
+      // Blocker 2: overlay is shown in EngineCheck at actual resolved target.
       try engineSession.scroll(element: number, direction: direction, amount: amount, s: s, id: id, latch: latch, ax: ax)
     default: throw Refusal("unknown_tool")
     }
