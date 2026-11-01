@@ -21,6 +21,25 @@ import './assistant-editor.css';
 
 export type AssistantCreation = { workspaceVersion:4; name:string; folder:string; profile:ParticipantConfig; look:ReturnType<typeof createAssistantAppearance>; projects:AssistantProjectBinding[]; avatarDraftId?:string; avatarGenerationId?:string; avatarAssetId?:string; firstBrief?:string };
 const providerConnection=(profile?:ParticipantConfig|null)=>{const backend=profile?.backend;return backend?.kind==='agent'?JSON.stringify([backend.kind,backend.tool]):backend?.kind==='open_ai_compatible'?JSON.stringify([backend.kind,backend.base_url,backend.api_key_env]):'';};
+
+function AssistantUcuGrant({backend, assistantId, lane}:{backend:Backend; assistantId:string; lane?:PersonalLane|null}) {
+  const [grants, setGrants] = useState<Record<string, string[]>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(()=>{ if(!backend) return; backend.call<{ grants: Record<string, string[]> }>('computer_assistant_grants',{}).then(r=>setGrants(r.grants||{})).catch(e=>setError(String(e))); }, [backend]);
+  const app = 'preview.apex.local';
+  const has = !!(grants[assistantId]||[]).includes(app);
+  const toggle = async (enabled:boolean) => {
+    if(!backend) return; setBusy(true); setError('');
+    try { const r = await backend.call<{ grants: Record<string, string[]> }>('computer_assistant_set_grant',{assistantId, app, enabled}); setGrants(r.grants||{}); }
+    catch(e){ setError(String(e)); } finally { setBusy(false); }
+  };
+  return <div className="assistant-capability-grants">
+    <label className="assistant-setting-row"><span>UCU app grant: {app}<small>Background browser for Alfred, uses existing assistant-browser profile</small></span><input type="checkbox" aria-label={`UCU grant ${app}`} checked={has} disabled={busy||lane?.offline} onChange={e=>void toggle(e.target.checked)}/></label>
+    {error&&<p role="alert" className="assistant-control-note">{error}</p>}
+    <p className="assistant-control-note">Uses existing assistant browser/profile. Unsupported native background actions return capability limitation without stealing focus. Revoked on Stop. Global enable in Settings → Unified Computer Use.</p>
+  </div>;
+}
 type PreferenceDraft = {style:string;timezone:string;quietStart:string;quietEnd:string;dailyDollars:string;unknownCostOk:boolean;localOnly:boolean;endpoints:string;contextChars:string};
 const preferenceDraft=(record:PersonalAssistantRecord|null):PreferenceDraft=>({style:record?.style??'',timezone:record?.timezone??'',quietStart:record?.quietHours?.start??'',quietEnd:record?.quietHours?.end??'',dailyDollars:record?.budget?.dailyLimitMicros!=null?String(record.budget.dailyLimitMicros/1e6):'',unknownCostOk:!!record?.budget?.unknownCostOk,localOnly:!!record?.privacy?.localOnly,endpoints:(record?.privacy?.allowedEndpoints??[]).join('\n'),contextChars:String(record?.contextBudgetChars??'')});
 /** Only edited preferences join the main workspace transaction. Null clears quiet hours on the wire. */
@@ -255,7 +274,8 @@ export function AssistantEditor({backend,profiles,disabledProviders=[],lane,host
   </section>
   <section className="assistant-settings-section"><h3>Capabilities</h3><p className="assistant-control-note">Optional computer-use and floating window. Uses existing global Unified Computer Use enable + per-conversation app grants (assistant:{original.id} scope). No new master checkbox. Reuses dev.apexdeck.assistant-browser profile, no pointer/focus hijacking or foreground fallback. Model image capability is separate from UCU.</p>
    <label className="assistant-setting-row"><span>Floating window always-on-top<small>Off until selected; draggable, shares transcript/draft/call/mute</small></span><input type="checkbox" aria-label="Floating always-on-top" checked={(()=>{ try { return JSON.parse(localStorage.getItem('alfred-floating-alwaysOnTop')||'false'); } catch { return false; } })()} onChange={event=>{ try { localStorage.setItem('alfred-floating-alwaysOnTop', JSON.stringify(event.target.checked)); } catch {} }}/></label>
-   <div className="assistant-control-note">Global UCU status and per-conversation app grants are in Settings → Unified Computer Use (existing control, not duplicated here). Unsupported native background actions return a capability limitation without stealing focus. Text-only destinations get an invocation warning and keep accessibility/text coordination.</div>
+   <div className="assistant-control-note">Global UCU enable is in Settings → Unified Computer Use (existing). Per-conversation grants below reuse that global enable, scope assistant:{original.id}. Grants are durable, revoke on Stop/disable, preserve foreground/background boundaries. No pointer/focus hijacking, no foreground fallback. Text-only destinations get brief invocation warning + accessibility/text coordination.</div>
+   <AssistantUcuGrant backend={backend} assistantId={original.id} lane={lane} />
   </section>
   <section className="assistant-settings-section"><h3>Voice</h3><p className="assistant-control-note">Shared defaults for regular chat and assistant calls. Call-time voice overrides stay with their chat. Save changes to apply these app-wide defaults. GPT-Live uses existing ephemeral session service, never raw provider key in UI. Mute controls input without cancelling work or speech output. Local + GPT-Live.</p>{voice&&onVoiceSettings?<>
    <div className="assistant-setting-row"><span>Voice for calls</span><span className="voice-pick"><select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={event=>setVoiceDraft(before=>({...before,defaultVoice:event.target.value}))}>{[...new Set([defaultVoiceOf(voice),...CALL_VOICES])].map(value=><option key={value} value={value}>{voiceLabel(value)}</option>)}</select><VoiceSampleButton voice={defaultVoiceOf(voice)}/></span></div>
