@@ -37,11 +37,13 @@ final class ScreenshotTests: XCTestCase {
                    title: String = "Fixture", rect: CGRect? = nil, safe: Bool = true) -> ScreenshotWindow {
       ScreenshotWindow(id: id, pid: pid, bundle: bundle, title: title, frame: rect ?? frame, safe: safe)
     }
-    XCTAssertEqual(try ScreenshotPolicy.select([candidate(), candidate(50, pid: 321)], pid: 123, title: "Fixture", frame: frame).id, 42)
-    for candidates in [[], [candidate(), candidate(43)], [candidate(pid: 321)],
-      [candidate(bundle: "com.apple.SecurityAgent")], [candidate(title: "Other")],
+    XCTAssertEqual(try ScreenshotPolicy.select([candidate(), candidate(50, pid: 321)], id: 42, pid: 123, frame: frame).id, 42)
+    // The capture list shortens long titles, and another window of the app is not ambiguous.
+    XCTAssertEqual(try ScreenshotPolicy.select([candidate(title: "long…title"), candidate(43)], id: 42, pid: 123, frame: frame).id, 42)
+    for candidates in [[], [candidate(), candidate()], [candidate(43)], [candidate(pid: 321)],
+      [candidate(bundle: "com.apple.SecurityAgent")],
       [candidate(rect: frame.offsetBy(dx: 1, dy: 0))], [candidate(safe: false)]] {
-      XCTAssertThrowsError(try ScreenshotPolicy.select(candidates, pid: 123, title: "Fixture", frame: frame))
+      XCTAssertThrowsError(try ScreenshotPolicy.select(candidates, id: 42, pid: 123, frame: frame))
     }
   }
   // Catches MIME spoofing, oversized payloads and output dimensions bypassing encoder limits.

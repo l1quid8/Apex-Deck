@@ -339,8 +339,8 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       </>}
       {resets}
       {api && !mediaType && !talkOnly && <div className="bot-computer">
-        <label className="check-label"><input type="checkbox" checked={touched.current.can_read_images ?? config.can_read_images ?? false} onChange={e => { void apply({ can_read_images: e.target.checked }); }} /> Unified Computer Use: this model can read screenshots</label>
-        <p className="muted">{(touched.current.can_read_images ?? config.can_read_images) ? 'Enable only for a vision model. Granted app screenshots are sent to your model provider.' : 'This model can’t read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.'}</p>
+        <label className="check-label"><input type="checkbox" checked={touched.current.can_read_images ?? config.can_read_images ?? false} onChange={e => { void apply({ can_read_images: e.target.checked }); }} /> This model can read images</label>
+        <p className="muted">{(touched.current.can_read_images ?? config.can_read_images) ? 'Turn on only if this model accepts images. Screenshots of apps you approve go to your model provider.' : 'This model can’t read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.'}</p>
       </div>}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}

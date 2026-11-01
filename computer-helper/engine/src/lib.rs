@@ -309,7 +309,11 @@ impl EngineState {
                 DeliverySemantics::not_delivered(),
             );
         }
-        let request = if let Action::TypeText(text) = &action {
+        // Accessibility scrolling does not reach Chromium pages, so scrolling uses
+        // the engine's wheel path, which first checks the point lands on the target.
+        let request = if matches!(action, Action::Scroll(..)) {
+            ActionRequest::headed(action).with_timeout_ms(Some(2_000))
+        } else if let Action::TypeText(text) = &action {
             // The upstream physical keyboard path checks cancellation between
             // bounded Unicode chunks; a single AX value write cannot do that.
             let timeout =

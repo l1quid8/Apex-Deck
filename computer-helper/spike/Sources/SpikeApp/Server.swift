@@ -120,7 +120,7 @@ final class Server {
       if method == "unified/end-turn" {
         guard authenticated, let token = controlToken, params["turnToken"] as? String == token else { self.fail(id, "authenticated_turn_required", client); return }
         self.turns.end(token); if self.lease.release(token) { self.activity.invalidateObservations() }
-        CursorOverlayIntegration.cleanupOnStop()
+        CursorOverlayIntegration.hideAfterAction()
         self.response(id, ["ended": true], client); return
       }
       if method == "unified/bind-turn" {
@@ -189,7 +189,17 @@ final class Server {
             invalidate: { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); state.latch.stop() })
         } catch let error as Refusal {
           let code = state.engine.failureCode(error.code)
+          if EngineSession.keepsObservation(tool: params["name"] as? String ?? "", code: code) {
+            CursorOverlayIntegration.cleanupOnStop()
+            self.fail(id, code, client)
+            return
+          }
           state.imageScope = nil; state.snapshot = nil; state.engine.invalidate()
+          if let note = EngineSession.deliveredNote(code) {
+            CursorOverlayIntegration.hideAfterAction()
+            self.response(id, ["content": [["type": "text", "text": note]]], client)
+            return
+          }
           CursorOverlayIntegration.cleanupOnStop()
           self.fail(id, code, client)
         } catch {
@@ -230,8 +240,11 @@ final class Server {
     if name == "get_screenshot" {
       guard args.isEmpty else { throw Refusal("unexpected_arguments") }
       guard #available(macOS 14.2, *) else { throw Refusal("screenshot_requires_macOS_14_2") }
-      let (fresh, result, scope) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id)
-      snapshot = fresh; activeState.imageScope = scope; engineSession.invalidate()
+      let session = engineSession
+      let (fresh, result, scope) = try WindowScreenshot(ax: ax, latch: latch).capture(id: id) { [ax, latch] in
+        try session.capture(native: $0, id: id, latch: latch, ax: ax)
+      }
+      snapshot = fresh; activeState.imageScope = scope
       return result
     }
     if name == "click_point" {
@@ -262,7 +275,7 @@ final class Server {
     if (try? turns.identity(bundle, token: token)) != identity {
       let control = try turns.canControl(token)
       let owner = try turns.requester(token)
-      let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nThis turn may \(control ? "read and control" : "read") \(Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? bundle).\n\n\(bundle)\n\(identity.path)\n\nAccess ends when the turn ends or you press Stop. Password fields and system security settings are protected.")
+      let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? bundle).\n\n\(bundle)\n\(identity.path)\n\nAllow Once ends with this bot's turn. Allow for This Work Thread lets every supported bot in this thread use this app, with no more prompts, until you press Stop or access is revoked. Other threads still ask. Password fields and system security settings are protected.")
       DispatchQueue.main.async { prompt.show() }
       defer { DispatchQueue.main.async { prompt.dismiss() } }
       let deadline = ProcessInfo.processInfo.systemUptime + 120
@@ -271,10 +284,10 @@ final class Server {
         guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("app_grant_deadline") }
         Thread.sleep(forTimeInterval: 0.02)
       }
-      let allowed = prompt.decision() == true
+      let decision = prompt.decision()
       try turns.check(token)
-      guard allowed else { throw Refusal("app_grant_denied") }
-      try turns.grant(identity, token: token)
+      guard decision != .denied else { throw Refusal("app_grant_denied") }
+      try turns.grant(identity, token: token, forThread: decision == .thread)
     }
     let control = try turns.canControl(token)
     if control, try lease.claim(token) { activity.invalidateObservations() }
@@ -348,7 +361,7 @@ final class Server {
       tool("click", "Activate one retained numbered control in a fresh snapshot.", snap.merging(["element": ["type": "integer", "minimum": 1]]) { $1 }, ["snapshot", "element"]),
       tool("click_point", "Click a point in the current granted window screenshot. x/y are image pixels; requires its image_snapshot and a writable session.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
       tool("type_text", "Type text into the verified focused field. Reports element delivery; application commit is not verified.", snap.merging(["text": ["type": "string", "maxLength": 65536]]) { $1 }, ["snapshot", "text"]),
-      tool("press_key", "Press a named key with optional Cmd-, Shift-, Alt-, Control- modifiers on the verified app.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
+      tool("press_key", "Press a named key on the verified app, such as Return, PageDown or Cmd-T. Modifiers are Cmd-, Shift-, Alt- and Control-.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
       tool("scroll", "Scroll one retained native control in a fresh snapshot.", snap.merging(["element": ["type": "integer", "minimum": 1], "direction": ["type": "string", "enum": ["up", "down", "left", "right"]], "amount": ["type": "integer", "minimum": 1, "maximum": 20]]) { $1 }, ["snapshot", "element", "direction", "amount"])]
   }
 }

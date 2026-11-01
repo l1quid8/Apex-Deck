@@ -11,7 +11,7 @@ final class EngineSession {
   private(set) var current: EngineSnapshot?
   private var lastAction: [String: Any]?
 
-  static func continuationMatches(pid: Int32, launch: Date, currentPID: Int32?,
+  static func continuationMatches(pid: Int32, launch: Date?, currentPID: Int32?,
     currentLaunch: Date?, terminated: Bool, frontmostPID: Int32?) -> Bool {
     !terminated && currentPID == pid && currentLaunch == launch && frontmostPID == pid
   }
@@ -36,6 +36,20 @@ final class EngineSession {
   func failureCode(_ code: String) -> String {
     guard let lastAction = lastAction, !code.contains("delivery=") else { return code }
     return code + "; " + Self.actionSummary(lastAction)
+  }
+
+  /// An action that went through must never read as a failure: a model would
+  /// repeat it. Only the follow-up reading failed, so say that and nothing else.
+  static func deliveredNote(_ code: String) -> String? {
+    guard code.contains("delivery=delivered_") else { return nil }
+    return "action_delivered; do not repeat it. The follow-up reading failed, so call read_screen before the next action. Detail: \(code)"
+  }
+  /// Nothing reached the app, so the bot's reading is still as good as it was.
+  /// Every later action rechecks the turn, activity and live target regardless.
+  static func keepsObservation(tool: String, code: String) -> Bool {
+    guard !code.contains("delivery=") else { return false }
+    return tool == "get_screenshot" || ["unexpected_arguments", "invalid_arguments", "unsupported_key",
+      "unknown_tool", "invalid_engine_element", "invalid_text"].contains(code)
   }
 
   func recordUnverifiedInput() { lastAction = ["delivery": "delivered_unverified", "verification_scope": "unavailable"] }

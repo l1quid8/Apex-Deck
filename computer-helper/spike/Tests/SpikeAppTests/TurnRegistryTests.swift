@@ -9,7 +9,7 @@ final class TurnRegistryTests: XCTestCase {
     XCTAssertFalse(registry.isStopped)
     let first = String(repeating: "a", count: 64), next = String(repeating: "b", count: 64)
     func args(_ token: String, _ access: String = "full", _ enabled: Bool = true) -> [String: Any] {
-      ["threadId": "thread", "participantId": "agent", "turnToken": token, "effectiveAccess": access, "enabled": enabled]
+      ["threadId": "thread", "participantId": "agent", "turnToken": token, "effectiveAccess": access, "enabled": enabled, "grantScope": "scope"]
     }
     XCTAssertThrowsError(try registry.register(args(first, "full", false), control: -1))
     XCTAssertThrowsError(try registry.register(args(first, "unknown"), control: -1))
@@ -35,6 +35,46 @@ final class TurnRegistryTests: XCTestCase {
     registry.resume()
     XCTAssertFalse(registry.isStopped)
     XCTAssertThrowsError(try registry.bind(args(next)))
+  }
+  func testThreadGrantsReachOtherBotsInTheThreadUntilRevoked() throws {
+    let registry = TurnRegistry()
+    let app = AppIdentity(bundle: "com.example.app", path: "/Applications/Example.app", executable: "/x", signature: Data([1]))
+    var next = 0
+    func turn(thread: String = "thread", bot: String = "agent", access: String = "full", scope: String = "scope") throws -> String {
+      next += 1
+      let token = String(format: "%064x", next)
+      _ = try registry.register(["threadId": thread, "participantId": bot, "turnToken": token,
+        "effectiveAccess": access, "enabled": true, "grantScope": scope], control: -1)
+      return token
+    }
+    let once = try turn()
+    try registry.grant(app, token: once)
+    registry.end(once)
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: try turn()), "Allow Once ends with its turn")
+    let reader = try turn(access: "read")
+    try registry.grant(app, token: reader, forThread: true)
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: try turn(bot: "writer")), "read approval must not grant control")
+    let writer = try turn()
+    try registry.grant(app, token: writer, forThread: true)
+    registry.end(writer)
+    XCTAssertEqual(try registry.identity(app.bundle, token: try turn()), app, "follow-up turn")
+    XCTAssertEqual(try registry.identity(app.bundle, token: try turn(bot: "other")), app, "other bot in the thread")
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: try turn(thread: "other-thread")), "other thread")
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: try turn(scope: "revoked")), "new scope after a revoke")
+    let regrant = try turn(scope: "revoked")
+    try registry.grant(app, token: regrant, forThread: true)
+    _ = registry.stopAll()
+    registry.resume()
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: try turn(scope: "revoked")), "Stop clears thread grants")
+  }
+  func testDeliveredActionsAreNeverReportedAsFailures() {
+    XCTAssertNotNil(EngineSession.deliveredNote("foreign_secure_or_unknown_focus; delivery=delivered_unverified verification_scope=unavailable"))
+    XCTAssertNil(EngineSession.deliveredNote("engine_failed; delivery=delivery_uncertain; retry=unsafe"))
+    XCTAssertNil(EngineSession.deliveredNote("engine_failed; delivery=not_delivered; retry=safe"))
+    XCTAssertTrue(EngineSession.keepsObservation(tool: "get_screenshot", code: "window_unverified_or_protected"))
+    XCTAssertTrue(EngineSession.keepsObservation(tool: "press_key", code: "unsupported_key"))
+    XCTAssertFalse(EngineSession.keepsObservation(tool: "click", code: "engine_failed; delivery=not_delivered; retry=safe"))
+    XCTAssertFalse(EngineSession.keepsObservation(tool: "click", code: "turn_unregistered_or_ended"))
   }
   func testWriterLeaseSpansObservationAndActionUntilExpiryOrOwnerRelease() throws {
     let lease = ActionLease()

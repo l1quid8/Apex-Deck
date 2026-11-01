@@ -7,7 +7,11 @@ Unified Computer Use lets Deck bots read and control granted Mac applications th
 1. Open **Settings → Unified Computer Use** and enable it.
 2. Choose **Open Unified Computer Use**. Grant that exact helper Accessibility and Input Monitoring in macOS when requested. Screenshots also need Screen Recording. macOS may require quitting and reopening the helper after a grant.
 3. Use an API, Claude Code or Codex bot with tools enabled in a Work thread. Ask it to use `apex-computer`, request an app by its bundle identifier, read the screen, and act on a fresh observation. Approve the requested app in the helper's native dialog. For a first task: “Open TextEdit, create a new document and type Hello Tyler. Do not save it.”
-4. For an API vision model, open the bot's settings and enable **Unified Computer Use: this model can read screenshots**. Leave it off for text-only models.
+4. There is no per-bot switch: every supported bot in a Work thread can ask for these tools. For an API model that accepts images, open the bot's settings and turn on **This model can read images** so it receives screenshots. Leave it off for text-only models. This setting describes the model; it grants no access.
+
+## App access
+
+The helper asks before a bot first uses an app. **Allow Once** ends with that bot's turn. **Allow for This Work Thread** lets every supported bot in that thread use the app, including on follow-up turns, with no more prompts. It is held in memory for that thread only, and the app's identity is rechecked on every request and action. A read-only approval does not cover a turn that can control the app. Stop, revoking access (including removing a bot, changing its access, turning on Plan, closing the thread or turning the feature off) and restarting Deck's service or the helper all clear it.
 
 The helper ships inside `Apex Deck.app/Contents/Resources/Unified Computer Use.app`. Approve the copy inside the installed Deck application, rather than an older prototype or a source-tree build. The macOS permission-list name is **Unified Computer Use**. Changing from the earlier Spike app requires new grants; the old app's grants do not establish permission for this one.
 

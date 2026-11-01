@@ -13,14 +13,20 @@ final class TurnRegistry {
     let token: String
     let access: String
     let control: Int32
+    let grantScope: String
     var grants = [String: AppIdentity]()
     var stopped = false
   }
+  /// Remembered for one Work thread only. The scope comes from the daemon and
+  /// changes on every revoke, so a missed message still cannot keep a grant.
+  private struct ThreadGrant { let identity: AppIdentity; let control: Bool }
+  private struct ThreadGrants { let scope: String; var apps = [String: ThreadGrant]() }
   private let lock = NSLock()
   private var turns = [String: Turn]()
   private var globallyStopped = false
   private var retired = Set<String>()
   private var latches = [String: [WeakLatch]]()
+  private var threadGrants = [String: ThreadGrants]()
   static func fields(_ args: [String: Any]) throws -> (String, String, String) {
     guard let thread = args["threadId"] as? String, let participant = args["participantId"] as? String,
       let token = args["turnToken"] as? String, !thread.isEmpty, !participant.isEmpty,
@@ -32,13 +38,15 @@ final class TurnRegistry {
   func register(_ args: [String: Any], control: Int32) throws -> String {
     let (thread, participant, token) = try Self.fields(args)
     guard args["enabled"] as? Bool == true, let access = args["effectiveAccess"] as? String, ["read", "ask", "edits", "full"].contains(access) else { throw Refusal("computer_use_disabled_or_access_denied") }
+    guard let grantScope = args["grantScope"] as? String, (1...128).contains(grantScope.utf8.count) else { throw Refusal("turn_binding_invalid") }
     lock.lock(); defer { lock.unlock() }
     guard !globallyStopped else { throw Refusal("computer_use_stopped") }
     guard turns[token] == nil, !retired.contains(token) else { throw Refusal("turn_already_registered") }
     // A newer turn supersedes every predecessor for the same owner.
     let obsolete = turns.values.filter { $0.thread == thread && $0.participant == participant }.map { $0.token }
     for old in obsolete { turns.removeValue(forKey: old); retired.insert(old); latches.removeValue(forKey: old)?.forEach { $0.value?.stop() } }
-    turns[token] = Turn(thread: thread, participant: participant, token: token, access: access, control: control)
+    turns[token] = Turn(thread: thread, participant: participant, token: token, access: access, control: control, grantScope: grantScope)
+    if threadGrants[thread]?.scope != grantScope { threadGrants[thread] = ThreadGrants(scope: grantScope) }
     return token
   }
   func bind(_ args: [String: Any], latch: Latch? = nil) throws -> String {
@@ -67,19 +75,27 @@ final class TurnRegistry {
     return turn.access != "read"
   }
   func end(_ token: String) { lock.lock(); turns.removeValue(forKey: token); retired.insert(token); latches.removeValue(forKey: token)?.forEach { $0.value?.stop() }; lock.unlock() }
-  func grant(_ identity: AppIdentity, token: String) throws {
+  func grant(_ identity: AppIdentity, token: String, forThread: Bool = false) throws {
     lock.lock(); defer { lock.unlock() }
     guard var turn = turns[token], !turn.stopped else { throw Refusal("turn_unregistered_or_ended") }
     turn.grants[identity.bundle] = identity; turns[token] = turn
+    if forThread, threadGrants[turn.thread]?.scope == turn.grantScope {
+      threadGrants[turn.thread]?.apps[identity.bundle] = ThreadGrant(identity: identity, control: turn.access != "read")
+    }
   }
   func identity(_ bundle: String, token: String) throws -> AppIdentity {
     lock.lock(); defer { lock.unlock() }
-    guard let turn = turns[token], !turn.stopped, let identity = turn.grants[bundle] else { throw Refusal("app_grant_required") }
-    return identity
+    guard let turn = turns[token], !turn.stopped else { throw Refusal("app_grant_required") }
+    if let identity = turn.grants[bundle] { return identity }
+    // A read-only approval never carries over to a turn that can control the app.
+    guard let shared = threadGrants[turn.thread], shared.scope == turn.grantScope,
+      let grant = shared.apps[bundle], grant.control || turn.access == "read" else { throw Refusal("app_grant_required") }
+    return grant.identity
   }
   func stopAll() -> [[String: Any]] {
     lock.lock(); defer { lock.unlock() }
     globallyStopped = true
+    threadGrants.removeAll()
     return turns.keys.compactMap { token in
       guard var turn = turns[token], !turn.stopped else { return nil }
       turn.stopped = true; turn.grants.removeAll(); turns[token] = turn

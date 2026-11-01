@@ -11,6 +11,13 @@ use std::time::Duration;
 const POLICY_DEADLINE: Duration = Duration::from_secs(2);
 const HELPER_ID: &str = "dev.apexdeck.unified-computer-use";
 
+fn instance_id() -> String {
+    use ring::rand::{SecureRandom, SystemRandom};
+    let mut random = [0u8; 16];
+    SystemRandom::new().fill(&mut random).expect("system random");
+    random.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[cfg(unix)]
 struct Active {
     thread: String,
@@ -28,6 +35,8 @@ pub(crate) struct Computer {
     enabled: AtomicBool,
     stopped: AtomicBool,
     settings: PathBuf,
+    /// New each daemon start, so remembered thread grants never outlive it.
+    instance: String,
     generations: Mutex<HashMap<String, u64>>,
     #[cfg(unix)]
     active: Mutex<HashMap<String, Active>>,
@@ -43,6 +52,7 @@ impl Computer {
             enabled: AtomicBool::new(enabled),
             stopped: AtomicBool::new(false),
             settings,
+            instance: instance_id(),
             generations: Mutex::default(),
             #[cfg(unix)]
             active: Mutex::default(),
@@ -55,6 +65,9 @@ impl Computer {
             .unwrap()
             .entry(thread.into())
             .or_default()
+    }
+    fn grant_scope(&self, generation: u64) -> String {
+        format!("{}:{generation}", self.instance)
     }
     pub fn revoke(&self, thread: Option<&str>, participant: Option<&str>) {
         let mut generations = self.generations.lock().unwrap();
@@ -285,7 +298,7 @@ impl TurnLifecycleHook for TurnHook {
                     Access::Edits => "edits",
                     Access::Full => "full",
                 };
-                let registered=rpc(&mut stream,"unified/register-turn",json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access,"enabled":true})).await.ok()?;
+                let registered=rpc(&mut stream,"unified/register-turn",json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await.ok()?;
                 if registered["registered"] != true
                     || !self.computer.ready(&self.thread, generation)
                 {
@@ -505,8 +518,10 @@ mod tests {
         computer.set_enabled(true).unwrap();
         let generation = computer.generation("thread");
         assert!(computer.ready("thread", generation));
+        let scope = computer.grant_scope(generation);
         computer.revoke(Some("thread"), None);
         assert!(!computer.ready("thread", generation));
+        assert_ne!(scope, computer.grant_scope(computer.generation("thread")));
         let next = computer.generation("thread");
         assert!(computer.ready("thread", next));
         computer.stop();
