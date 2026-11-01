@@ -95,8 +95,8 @@ export function PopoutApp({ token }: { token: string }) {
   const renameSent = useRef(false);
   const [winWidth, setWinWidth] = useState(() => window.innerWidth);
   // The owner's skin, sent with the snapshot and again whenever it changes in Deck.
-  const [appearance, setAppearance] = useState<AppearanceValues>(DEFAULT_APPEARANCE);
-  useAppearance(appearance);
+  const [appearance, setAppearance] = useState<AppearanceValues | import("./themes").AppearanceSettings>(DEFAULT_APPEARANCE);
+  useAppearance(appearance as any);
 
   useEffect(() => {
     const measure = () => setWinWidth(window.innerWidth);

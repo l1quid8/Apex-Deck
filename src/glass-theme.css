@@ -2,13 +2,13 @@
    continues to use the existing styles unchanged. */
 :root[data-deck-theme="glass"],
 :root[data-deck-theme="flat"] {
-  --deck-bg: #090d12;
-  --deck-panel: 13 19 26;
-  --deck-panel-raised: 22 31 41;
-  --deck-code: #060a0f;
+  --deck-bg: #000000;
+  --deck-panel: 16 16 16;
+  --deck-panel-raised: 24 24 24;
+  --deck-code: #101010;
   --deck-line: 255 255 255;
-  --deck-text: #e4eaf0;
-  --deck-muted: #b0bccb;
+  --deck-text: #f5f5f5;
+  --deck-muted: #aaaaaa;
   --deck-warning: #f59e0b;
   --deck-danger: #f87171;
   --deck-accent: var(--deck-custom-accent, oklch(.85 .13 var(--deck-hue, 172)));
@@ -18,7 +18,7 @@
   --bg: var(--deck-bg);
   --panel: rgb(var(--deck-panel));
   --panel-2: rgb(var(--deck-panel-raised));
-  --line: rgb(var(--deck-line) / .14);
+  --line: rgb(255 255 255 / .14);
   --text: var(--deck-text);
   --muted: var(--deck-muted);
   --accent: var(--deck-accent);

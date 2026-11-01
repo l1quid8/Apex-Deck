@@ -316,10 +316,7 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
             <button type="button" aria-pressed={appearance.density === 1} onClick={() => tune({ density: 1 })}>Roomy</button>
           </div>
         </div>
-        <label className="appearance-option">
-          <span className="appearance-control-copy"><strong>Light surfaces</strong><small>Pale panels and dark text.</small></span>
-          <input type="checkbox" role="switch" checked={appearance.light} onChange={(event) => tune({ light: event.currentTarget.checked })} />
-        </label>
+        <p className="appearance-note">Light/Dark/System is now at the top of Appearance, separate from skin styling. The skin's portable light hint is preserved but no longer edited here directly.</p>
         {!isClay && <label className="appearance-option">
           <span className="appearance-control-copy"><strong>Flat surfaces</strong><small>Solid panels without the glass effect.</small></span>
           <input type="checkbox" role="switch" checked={appearance.flat} onChange={(event) => tune({ flat: event.currentTarget.checked })} />

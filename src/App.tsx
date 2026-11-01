@@ -202,8 +202,10 @@ export function App() {
     if (status.lastAt) setPanes((list) => noteActive(list, paneId, status.lastAt!));
   }, []);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const appearance = settings.appearance?.current.appearance ?? DEFAULT_APPEARANCE;
-  useAppearance(appearance);
+  const appearanceSettings = settings.appearance;
+  const appearance = appearanceSettings?.current.appearance ?? DEFAULT_APPEARANCE;
+  // Pass full settings when available so System mode can react to OS changes; fallback to raw appearance for legacy boot
+  useAppearance(appearanceSettings ?? appearance);
   const disabledProviders = settings.disabledProviders;
   /** The settings section shown, or null while the deck is. */
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
@@ -1542,7 +1544,7 @@ export function App() {
       push(rec.token, {
         title: pane.title,
         cwd: chatFolder(pane, workspace),
-        appearance,
+        appearance: appearanceSettings ?? appearance,
         workspaceId: pane.workspaceId,
         ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
         ...(pane.kind === "preview" ? { previewSource: previewSourceOf(pane) } : {}),
@@ -1554,7 +1556,7 @@ export function App() {
       const tab = panel.tabs.find((t) => t.id === rec.id) ?? rec.tab;
       const selected = followedTabPane(tab.kind, listed, focusedPane, detailsTarget);
       const followWorkspace = workspaces.find((w) => w.id === (selected?.workspaceId ?? activeWorkspace)) ?? null;
-      const patch: PopoutUpdate = { title: tabTitle(tab), appearance };
+      const patch: PopoutUpdate = { title: tabTitle(tab), appearance: appearanceSettings ?? appearance };
       if (tab.kind === "browser" && tab.url !== undefined) patch.url = tab.url;
       if (tab.kind === "dashboard") patch.dashboardRows = dashboardRows;
       if (followWorkspace) {

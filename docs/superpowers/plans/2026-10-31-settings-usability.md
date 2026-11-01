@@ -10,7 +10,7 @@
 
 **Spec:** Product brief and acceptance criteria embedded in this document, based on the live twelve-section settings review and Tyler's direction.
 
-**Status:** Product implementation is queued. An interactive prototype exists at `mockups/settings-v2/index.html`; it uses sample data only and does not change Apex Deck settings.
+**Status:** Product implementation authorized 2026-10-31+ by Tyler: build settings rebuild NOW concurrently with Jigga's UCU guard fix in isolated worktree `/Users/tylercaldwell/Downloads/apex-deck-worktrees/settings-usability` on branch `feat/settings-usability`. This authorization supersedes the earlier wait-until-UCU start gate. An interactive prototype exists at `mockups/settings-v2/index.html`; it uses sample data only and does not change Apex Deck settings.
 
 ## Product brief
 
@@ -35,10 +35,13 @@ Tyler specifically requested a comprehensive plan to execute AFTER Unified Compu
 
 ## Start gate
 
+- [x] Start gate superseded by explicit authorization 2026-10-31: implement settings rebuild NOW concurrently with Jigga's UCU guard fix (Tyler direction in Work chat). Keep UCU engine/input/permissions untouched.
+- [ ] Refresh the settings inventory against final source and installed build post-UCU where observable; document deltas.
+
+Original gate (for release finalization):
 - [ ] Finish and integrate the currently authorized Unified Computer Use scope: foreground reliability, thread grants, supported adapters and invocation-time model warnings, cursor behavior/optional labels, and the newly requested background/minimized slice.
 - [ ] Verify the exact combined installed build and document real-task results and remaining limitations; do not substitute agent reports or successful compilation for installed behavior.
-- [ ] Confirm with Tyler that Unified Computer Use is finished enough to switch focus to this plan. Background support may have explicit application-specific limitations, but these must be documented and accepted rather than silently dropped.
-- [ ] Refresh the settings inventory against that final source and installed build. This review predates several Unified Computer Use changes.
+- [ ] Confirm with Tyler that Unified Computer Use is finished enough to switch focus to this plan.
 
 ## Review focus
 
