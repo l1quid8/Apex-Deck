@@ -235,15 +235,17 @@ final class Accessibility {
     let output =
       "snapshot: \(id)\n" + tree.lines.joined(separator: "\n")
       + (tree.truncated ? "\ntruncated" : "")
+    guard let launchDate = app.launchDate else { throw Refusal("target_not_running_or_ambiguous") }
     return Snapshot(
-      id: id, app: app, launch: app.launchDate!, window: window,
+      id: id, app: app, launch: launchDate, window: window,
       document: window.flatMap { string($0, kAXDocumentAttribute) }, focus: focus, value: value,
       range: range, epoch: epoch, focusFingerprint: focusSafe ? fingerprint(focus!) : nil,
       controls: tree.controls, output: output, screenshotSafe: pixelsSafe)
   }
   func validate(_ s: Snapshot, epoch: UInt64) throws -> AXUIElement {
     try verifyIdentity?(s.app)
-    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, s.app.launchDate == s.launch, epoch == s.epoch else {
+    guard let liveLaunch = s.app.launchDate, liveLaunch == s.launch else { throw Refusal("target_or_activity_changed") }
+    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, epoch == s.epoch else {
       throw Refusal("target_or_activity_changed")
     }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier,

@@ -131,11 +131,12 @@ extension Accessibility {
   func captureExplicitWindow(window: AXUIElement, focus: AXUIElement?, app: NSRunningApplication, root: AXUIElement, epoch: UInt64) throws -> Snapshot {
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 2
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
+    // Snapshot.launch is Date on main, Date? on Jigga's branch – handle both without force unwrap
+    guard let launchDate = app.launchDate else { throw Refusal("target_not_running_or_ambiguous") }
     var tree = Tree(targetPID: app.processIdentifier)
     tree.walk(window)
     guard !tree.foreign else { throw Refusal("protected_or_unverified_surface") }
-    let pixelsSafe = tree.pixelsSafe // may be false for background/disoccluded but still allow AX read
-    // Do not require foreign/focus frontmost for background path
+    let pixelsSafe = tree.pixelsSafe
     if let menu = element(root, kAXMenuBarAttribute) { tree.walk(menu) }
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 0.5
     let id = UUID().uuidString
@@ -144,40 +145,51 @@ extension Accessibility {
     let range = focusSafe ? selectedRange(focus!) : nil
     let output = "snapshot: \(id)\n" + tree.lines.joined(separator: "\n") + (tree.truncated ? "\ntruncated" : "")
     return Snapshot(
-      id: id, app: app, launch: app.launchDate!, window: window,
+      id: id, app: app, launch: launchDate, window: window,
       document: string(window, kAXDocumentAttribute), focus: focus, value: value,
       range: range, epoch: epoch, focusFingerprint: focusSafe ? fingerprint(focus!) : nil,
       controls: tree.controls, output: output, screenshotSafe: pixelsSafe)
   }
 
-  /// Identity-only validation for background AX actions (click/press/scroll/type via engine)
-  /// Preserves app identity, launch, PID, but does NOT require frontmostApplication.
+  /// Validation for background AX read + AX-only click.
+  /// - Checks app identity (bundle/identity), PID, launch, epoch, termination.
+  /// - For targeted actions: selected window still present in kAXWindows, PID/safe,
+  ///   document unchanged (if tracked), focus fingerprint unchanged when focus is action target.
+  /// Does NOT require frontmostApplication.
   func validateBackground(_ s: Snapshot, epoch: UInt64) throws -> AXUIElement? {
     try verifyIdentity?(s.app)
-    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, s.app.launchDate == s.launch, epoch == s.epoch else {
+    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, epoch == s.epoch else {
       throw Refusal("target_or_activity_changed")
     }
-    // Require that window still exists and PID matches, but not frontmost.
-    // For type action we still need focus element if present.
-    if let window = s.window {
-      _ = AXUIElementCreateApplication(s.app.processIdentifier)
-      // Check window still in list (or same)
-      // If not same but belongs to same app, still allow if document/fingerprint stable? Keep conservative: same element.
-      // At minimum ensure its PID and safe ancestry.
-      guard pid(window) == s.app.processIdentifier, safe(window) else {
+    // Handle optional launchDate on Jigga branch
+    guard let liveLaunch = s.app.launchDate else { throw Refusal("target_or_activity_changed") }
+    guard liveLaunch == s.launch else { throw Refusal("target_or_activity_changed") }
+
+    // Window presence + document fingerprint checks for targeted actions
+    if let snapWindow = s.window {
+      guard pid(snapWindow) == s.app.processIdentifier, safe(snapWindow) else {
         throw Refusal("window_foreign_or_protected")
       }
-      // If minimized, allow reading but caller decides if action needs restore
-      if BackgroundSupport.isMinimized(window) {
-        // For read we allow; for engine actions we will later reject with needs_restore if needed
+      // Window must still be present in current window list
+      let root = AXUIElementCreateApplication(s.app.processIdentifier)
+      let currentWindows = BackgroundSupport.allWindows(root: root)
+      let stillPresent = currentWindows.contains { same($0, snapWindow) } ||
+        (windowNumber(snapWindow).map { num in currentWindows.contains { windowNumber($0) == num } } ?? false)
+      guard stillPresent else { throw Refusal("window_unavailable_needs_restore_or_focus") }
+
+      // Document fingerprint unchanged (if snapshot tracked one)
+      if let expectedDoc = s.document {
+        let liveDoc = string(snapWindow, kAXDocumentAttribute) ?? ""
+        guard liveDoc == expectedDoc else { throw Refusal("window_document_changed") }
       }
     }
-    // Return focus if available and safe, without requiring system focusedUI == s.focus
+
     if let focus = s.focus, pid(focus) == s.app.processIdentifier, safe(focus) {
-      if let fp = s.focusFingerprint, fp == fingerprint(focus) {
+      if let fp = s.focusFingerprint {
+        let liveFP = fingerprint(focus)
+        guard fp == liveFP else { throw Refusal("focused_control_changed") }
         return focus
       }
-      // If fingerprint changed, still return element for non-typing actions, but type_text will re-validate value
       return focus
     }
     return s.focus

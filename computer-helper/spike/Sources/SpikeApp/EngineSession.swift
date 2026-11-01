@@ -132,41 +132,35 @@ final class EngineSession {
   }
 
   @discardableResult
-  func scroll(element: Int, direction: String, amount: Int, s: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = true) throws -> [String: Any] {
+  func scroll(element: Int, direction: String, amount: Int, s: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = false) throws -> [String: Any] {
+    // Corrected: scroll now uses headed wheel events in engine and Jigga's branch – requires foreground.
+    // Background AX scroll via headless request is not valid after merge.
     try latch.check(id, epoch: s.epoch)
     let ref = try reference(element: element, snapshot: s.id)
-    if allowBackground {
-      _ = try ax.validateBackground(s, epoch: s.epoch)
-      try ax.requireVisibleIfMinimized(s, op: "scroll")
-    } else {
-      _ = try ax.validate(s, epoch: s.epoch)
+    _ = try ax.validate(s, epoch: s.epoch)
+    if let minimized = s.window.map({ BackgroundSupport.isMinimized($0) }), minimized {
+      throw Refusal("window_minimized_needs_restore; restore the window before scroll")
     }
     current = nil
     let result = try engine.scroll(observation: s.id, ref: ref, direction: direction, amount: amount, overlayLabel: "Scroll \(direction)", overlayAction: .generic) {
-      if allowBackground {
-        try self.checkContinuationBackground(s, id: id, latch: latch)
-      } else {
-        try self.checkContinuation(s, id: id, latch: latch)
-      }
+      try self.checkContinuation(s, id: id, latch: latch)
     }
     lastAction = result
     return result
   }
   @discardableResult
-  func type(text: String, s: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = true) throws -> [String: Any] {
+  func type(text: String, s: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = false) throws -> [String: Any] {
+    // Corrected: engine TypeText uses ActionRequest::headed with physical keyboard chunks – foreground required.
+    // No background AX value-write path; claiming background type by skipping focus check was invalid.
     try latch.check(id, epoch: s.epoch)
     guard let current = current, current.id == s.id, let ref = current.focusedRef,
       current.refs.contains(ref)
     else { throw Refusal("engine_focused_ref_unavailable") }
     guard Policy.text(text) else { throw Refusal("invalid_text") }
-    let focus: AXUIElement?
-    if allowBackground {
-      focus = try ax.validateBackground(s, epoch: s.epoch)
-      try ax.requireVisibleIfMinimized(s, op: "type")
-    } else {
-      focus = try ax.validate(s, epoch: s.epoch)
+    if let minimized = s.window.map({ BackgroundSupport.isMinimized($0) }), minimized {
+      throw Refusal("window_minimized_needs_restore; restore the window before type_text")
     }
-    guard let focus = focus else { throw Refusal("focused_control_unavailable") }
+    let focus = try ax.validate(s, epoch: s.epoch)
     guard let value = s.value, value.utf16.count <= 1_048_576,
       string(focus, kAXValueAttribute) == value,
       let expected = s.range, let live = selectedRange(focus),
@@ -176,11 +170,7 @@ final class EngineSession {
     else { throw Refusal("editable_state_changed") }
     self.current = nil
     let result = try engine.type(observation: s.id, ref: ref, text: text, expectedTarget: focus, overlayLabel: "Type", overlayAction: .type) {
-      if allowBackground {
-        try self.checkContinuationBackground(s, id: id, latch: latch)
-      } else {
-        try self.checkContinuation(s, id: id, latch: latch)
-      }
+      try self.checkContinuation(s, id: id, latch: latch)
     }
     lastAction = result
     return result
