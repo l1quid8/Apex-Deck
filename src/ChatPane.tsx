@@ -1384,7 +1384,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     return () => clearInterval(timer);
   }, [running]);
 
-  /** Open a file, folder or web address a message links to. A local server opens in a Preview. */
+  /** Open a file, folder or web address a message links to. A local server opens in the Browser tab. */
   const openTarget = (target: string, reveal = false) => {
     if (talkOnly && !/^https?:\/\//i.test(target)) return;
     const address = /^https?:\/\//i.test(target) ? normalizeAddress(target) : null;

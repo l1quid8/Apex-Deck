@@ -134,6 +134,8 @@ export type PersonalLane = {
   browserView?(): Promise<BrowserView>;
   browserTakeOver?(on: boolean): Promise<BrowserView>;
   browserInput?(input: BrowserInput): Promise<BrowserView>;
+  /** The shared browser on this assistant's machine. */
+  browserCall?<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
 };
 export type ConnectorState = { kind: "github" | "gmail" | "drive" | "browser"; connected: boolean; keys: string[] };
 export type BrowserView = { url: string; title: string; image: string; width: number; height: number; takenOver: boolean; dialogOpen?: boolean };

@@ -192,6 +192,17 @@ struct AppIdentity: Equatable {
   /// Nil only for a Safari web app, whose manifest bundle has no executable.
   let executable: String?
   let signature: Data
+  /// A running app is named by the bundle it actually runs from, which a launcher's registered
+  /// copy can differ from. More than one, or one with no bundle, identifies nothing.
+  static func source(running: [URL?], registered: URL?) throws -> URL {
+    guard running.count <= 1 else { throw Refusal("target_ambiguous") }
+    if let app = running.first {
+      guard let url = app else { throw Refusal("protected_or_unavailable_app") }
+      return url
+    }
+    guard let url = registered else { throw Refusal("protected_or_unavailable_app") }
+    return url
+  }
   static func capture(_ url: URL, bundle: String) throws -> AppIdentity {
     let url = url.resolvingSymlinksInPath().standardizedFileURL
     guard Policy.target(bundle), let app = Bundle(url: url), app.bundleIdentifier == bundle else { throw Refusal("protected_or_invalid_app") }

@@ -64,7 +64,10 @@ pub fn command_needs(command: &Command) -> Need {
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
         | PersonalMachineResult { .. } | PersonalMachineAllow { .. } | PersonalMachineAllowed {} | PersonalExecuteLocal { .. }
-        | PersonalConnectors {} | PersonalBrowserView {} | PersonalBrowserTakeOver { .. } | PersonalBrowserInput { .. } => full(Global),
+        | PersonalConnectors {} | PersonalBrowserSession {} | PersonalBrowserView { .. } | PersonalBrowserTakeOver { .. } | PersonalBrowserInput { .. }
+        // A device that can drive the shared browser reaches every signed-in site in it.
+        | BrowserTabs { .. } | BrowserTabOpen { .. } | BrowserTabClose { .. } | BrowserTabControl { .. } | BrowserTabShare { .. } | BrowserTabFrame { .. }
+        | BrowserTabInput { .. } | BrowserTabResize { .. } | BrowserTabUpload { .. } | BrowserTabStop { .. } => full(Global),
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } | RoomGitStatus { id } => read(thread(id)),
@@ -378,7 +381,7 @@ mod tests {
             ("personal_memory_forget", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1" })),
             ("personal_machine_claim", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac" })),
             ("personal_execute_local", Some((Full, "global")), json!({ "assistantId": "asst-1", "assistantHostId": "vps", "operation": { "tool": "host.command", "host": "mac", "cwd": "/x", "argv": ["ls"] } })),
-            ("personal_browser_input", Some((Full, "global")), json!({ "input": { "kind": "back" } })),
+            ("personal_browser_input", Some((Full, "global")), json!({ "session": "s", "input": { "kind": "back" } })),
             ("personal_rule_remove", Some((Full, "global")), json!({ "assistantId": "asst-1", "ruleId": "pr-1" })),
             ("personal_memory_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "x" })),
             ("personal_memory_correct", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1", "text": "x" })),
@@ -395,8 +398,19 @@ mod tests {
             ("personal_machine_allow", Some((Full, "global")), json!({ "assistantId": "asst-1", "assistantHostId": "vps", "folder": "/x" })),
             ("personal_machine_allowed", Some((Full, "global")), json!({})),
             ("personal_connectors", Some((Full, "global")), json!({})),
-            ("personal_browser_view", Some((Full, "global")), json!({})),
-            ("personal_browser_take_over", Some((Full, "global")), json!({ "on": true })),
+            ("personal_browser_session", Some((Full, "global")), json!({})),
+            ("personal_browser_view", Some((Full, "global")), json!({ "session": "s" })),
+            ("browser_tabs", Some((Full, "global")), json!({ "session": "s" })),
+            ("browser_tab_frame", Some((Full, "global")), json!({ "session": "s", "tab": "t", "after": 0 })),
+            ("browser_tab_input", Some((Full, "global")), json!({ "session": "s", "tab": "t", "events": [{ "kind": "reload" }] })),
+            ("browser_tab_share", Some((Full, "global")), json!({ "session": "s", "tab": "t", "thread": "r", "share": true })),
+            ("browser_tab_open", Some((Full, "global")), json!({ "session": "s" })),
+            ("browser_tab_close", Some((Full, "global")), json!({ "session": "s", "tab": "t" })),
+            ("browser_tab_control", Some((Full, "global")), json!({ "session": "s", "tab": "t", "take": true })),
+            ("browser_tab_stop", Some((Full, "global")), json!({ "session": "s", "tab": "t" })),
+            ("browser_tab_resize", Some((Full, "global")), json!({ "session": "s", "tab": "t", "width": 800, "height": 600, "scale": 1.0 })),
+            ("browser_tab_upload", Some((Full, "global")), json!({ "session": "s", "tab": "t", "name": "a.txt", "data": "" })),
+            ("personal_browser_take_over", Some((Full, "global")), json!({ "session": "s", "on": true })),
             ("monitor_check_now", Some((Full, "global")), json!({ "workspaceId": "w" })),
             ("monitor_resolve", Some((Full, "global")), json!({ "workspaceId": "w", "findingId": "f", "status": "resolved" })),
             ("monitor_react", Some((Full, "global")), json!({ "workspaceId": "w", "messageId": "m1", "emoji": "👍", "enabled": true, "cwd": "/p", "hostId": "h", "conversationId": "c" })),

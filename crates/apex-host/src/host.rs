@@ -504,6 +504,7 @@ impl Host {
     }
 
     /// The host's own data folder.
+    pub(crate) fn downloads_dir(&self) -> Option<PathBuf> { self.paths.downloads.clone() }
     pub(crate) fn data_dir(&self) -> &Path {
         &self.paths.data
     }
@@ -1773,6 +1774,9 @@ impl Host {
         self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| apex_adapters::computer_backend_supported(&p.backend)))
     }
     pub(crate) fn room_is_busy(&self, id: &str) -> bool { self.rooms.lock().unwrap().get(id).is_some_and(|handle| handle.runtime.busy()) }
+    pub(crate) fn computer_participant_label(&self,thread:&str,id:&ParticipantId)->Option<String> {
+        self.handle(thread).ok()?.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).map(|p|p.display_name.clone())
+    }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {

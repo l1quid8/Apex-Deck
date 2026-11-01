@@ -11,10 +11,12 @@ final class BrowserBroker {
   /// Not an app on disk, so its permission names the resource itself.
   static let identity = AppIdentity(bundle: resource, path: "apex-deck:assistant-browser", executable: nil, signature: Data())
   static let waitLimit: Double = 90
-  private static let reads: Set<String> = ["read_screen", "list_windows", "get_screenshot"]
+  private static let reads: Set<String> = ["read_screen", "list_windows", "get_screenshot", "browser_tabs"]
+  /// Always Deck's browser, whatever the bot was using before.
+  private static let tabTools: Set<String> = ["browser_tabs", "browser_new_tab", "browser_use_tab", "browser_close_tab"]
   private static let routed = reads.union(["click", "click_point", "type_text", "press_key", "scroll", "reveal"])
   static func routes(_ name: String, _ args: [String: Any], active: Bool) -> Bool {
-    if name == "navigate" { return true }
+    if name == "navigate" || tabTools.contains(name) { return true }
     if name == "request_app" { return args["app"] as? String == resource }
     return active && routed.contains(name)
   }

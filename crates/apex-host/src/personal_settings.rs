@@ -308,6 +308,63 @@ impl crate::Host {
     pub async fn personal_browser_input(&self, input: browser::Input) -> Result<browser::View, String> {
         browser::input(input).await
     }
+
+    pub async fn browser_tabs(&self) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_list().await
+    }
+
+    pub async fn browser_tab_open(&self, url: Option<String>) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_open(url).await
+    }
+
+    pub async fn browser_tab_close(&self, tab: String) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_close(&tab).await
+    }
+
+    pub async fn browser_tab_control(&self, tab: String, take: bool) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_control(&tab, take).await
+    }
+
+    pub async fn browser_tab_share(&self, tab: String, thread: String, share: bool) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        self.handle(&thread)?;
+        browser::tab_share(&tab, &thread, share).await
+    }
+
+    pub async fn browser_tab_frame(&self, tab: String, after: u64) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_frame(&tab, after).await
+    }
+
+    pub async fn browser_tab_input(&self, tab: String, events: Vec<browser::Event>) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_input(&tab, events).await
+    }
+
+    pub async fn browser_tab_resize(&self, tab: String, width: u32, height: u32, scale: f64) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_resize(&tab, width, height, scale).await
+    }
+
+    pub async fn browser_tab_upload(&self, tab: String, name: String, data: String) -> Result<serde_json::Value, String> {
+        use base64::Engine;
+        self.use_assistant_browser();
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| "That file couldn't be read.".to_owned())?;
+        browser::tab_upload(&tab, &name, &bytes).await
+    }
+
+    /// Stops only the bot holding this tab; other tabs and rooms keep working.
+    pub async fn browser_tab_stop(&self, tab: String) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        if let Some((thread, participant)) = browser::tab_holder(&tab)? {
+            self.room_stop(thread, Some(apex_core::ParticipantId::new(participant)));
+        }
+        browser::tab_control(&tab, false).await
+    }
 }
 
 

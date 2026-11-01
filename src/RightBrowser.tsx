@@ -11,7 +11,7 @@ export function normalise(input: string): string {
   return `https://duckduckgo.com/?q=${encodeURIComponent(text)}`;
 }
 
-export function RightBrowser({ id, url, browser, visible, onUrl }: { id: string; url: string; browser?: BrowserApi; visible: boolean; onUrl: (url: string) => void }) {
+export function RightBrowser({ id, url, browser, visible, onUrl, onShare }: { id: string; url: string; browser?: BrowserApi; visible: boolean; onUrl: (url: string) => void; onShare?: (url: string) => void }) {
   const pane = `side:${id}`;
   const [typed, setTyped] = useState(url);
   const [page, setPage] = useState<BrowserState | null>(null);
@@ -20,5 +20,5 @@ export function RightBrowser({ id, url, browser, visible, onUrl }: { id: string;
   const go = (value: string) => { const address = normalise(value); if (!address) return; setTyped(address); onUrl(address); if (address === url) void browser.navigate(pane, address); };
   return <div className="right-browser"><form className="right-browser-bar" onSubmit={(event) => { event.preventDefault(); go(typed); }}>
     <button type="button" className="icon small" disabled={!page?.canGoBack} onClick={() => void browser.back(pane)} aria-label="Back">‹</button><button type="button" className="icon small" disabled={!page?.canGoForward} onClick={() => void browser.forward(pane)} aria-label="Forward">›</button><button type="button" className="icon small" disabled={!url} onClick={() => void browser.reload(pane)} aria-label="Reload">↻</button><input aria-label="Address" placeholder="Search or type an address" value={typed} onChange={(event) => setTyped(event.target.value)} />
-  </form>{!url && <div className="right-browser-start"><button onClick={() => go("localhost:3000")}>localhost:3000</button><button onClick={() => go("localhost:5173")}>localhost:5173</button></div>}{url && <BrowserView pane={pane} url={url} browser={browser} visible={visible} onState={setPage} />}</div>;
+  </form><p className="right-browser-note">Preview keeps your older saved sign-ins and isn't shared with bots.{url && onShare ? <> <button type="button" onClick={() => onShare(url)}>Open in Browser</button></> : null}</p>{!url && <div className="right-browser-start"><button onClick={() => go("localhost:3000")}>localhost:3000</button><button onClick={() => go("localhost:5173")}>localhost:5173</button></div>}{url && <BrowserView pane={pane} url={url} browser={browser} visible={visible} onState={setPage} />}</div>;
 }

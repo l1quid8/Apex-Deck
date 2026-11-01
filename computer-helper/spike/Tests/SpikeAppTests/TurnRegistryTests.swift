@@ -223,4 +223,15 @@ final class SafariWebAppIdentityTests: XCTestCase {
     let again = try turns.register(turn("e", "one", "full"), control: -1)
     XCTAssertEqual(try turns.identity(BrowserBroker.resource, token: again), BrowserBroker.identity)
   }
+
+  /// Deck's launcher in /Applications hands off to its protected runtime, so the registered copy isn't what runs.
+  func testARunningAppIsNamedByTheBundleItRunsFrom() throws {
+    let launcher = URL(fileURLWithPath: "/Applications/Apex Deck.app")
+    let runtime = URL(fileURLWithPath: "/Library/Application Support/Apex Deck Provenance/TrustedUI/Apex Deck.app")
+    XCTAssertEqual(try AppIdentity.source(running: [runtime], registered: launcher), runtime)
+    XCTAssertEqual(try AppIdentity.source(running: [], registered: launcher), launcher)
+    XCTAssertThrowsError(try AppIdentity.source(running: [runtime, launcher], registered: launcher))
+    XCTAssertThrowsError(try AppIdentity.source(running: [nil], registered: launcher))
+    XCTAssertThrowsError(try AppIdentity.source(running: [], registered: nil))
+  }
 }

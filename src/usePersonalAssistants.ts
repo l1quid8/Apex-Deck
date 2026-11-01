@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { browserCaller } from "./browserTabs.ts";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import type { Backend, HostEntry } from "./backend";
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type AssistantLook } from "./assistantIdentity.ts";
@@ -261,9 +262,10 @@ export class PersonalAssistantsCollection {
       connectors: () => call<ConnectorState[]>("personal_connectors"),
       saveKey: async (name, value) => { await call("api_key_save", { name, key: value }); },
       removeKey: async name => { await call("api_key_remove", { name }); },
-      browserView: () => call<BrowserView>("personal_browser_view"),
-      browserTakeOver: on => call<BrowserView>("personal_browser_take_over", { on }),
-      browserInput: (input: BrowserInput) => call<BrowserView>("personal_browser_input", { input }),
+      browserView: () => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_view"),
+      browserTakeOver: on => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_take_over", { on }),
+      browserInput: (input: BrowserInput) => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_input", { input }),
+      browserCall: call as NonNullable<PersonalLane["browserCall"]>,
     };
   };
   /** Legacy configure denies unknown fields. V4 runtime/projects require negotiated support and its separate API. */

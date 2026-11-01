@@ -296,7 +296,7 @@ final class Server {
       if tool == "request_app" {
         guard args.count == 1 else { throw Refusal("unexpected_arguments") }
         if (try? turns.identity(BrowserBroker.resource, token: token)) != BrowserBroker.identity {
-          try ask(BrowserBroker.identity, name: BrowserBroker.name, detail: "This is Deck's own background browser, not your Chrome or Brave. It has no window, so bots use it without your pointer, keyboard or focus. It keeps the sites signed in through Take over, and a bot allowed here can act on those sites.\n\nAllow Once ends with this bot's turn. Allow for This Work Thread covers every supported bot in this thread until you press Stop or access is revoked. Other threads still ask. Take over keeps every bot out until you hand it back.", token: token, state: state, request: request)
+          try ask(BrowserBroker.identity, name: BrowserBroker.name, detail: "This is Deck's own background browser, not your Chrome or Brave. It has no window, so bots use it without your pointer, keyboard or focus. Each bot works in its own tab, shown in Deck's Browser tab. It can open any site signed in there, and act on it.\n\nAllow Once ends with this bot's turn. Allow for This Work Thread covers every supported bot in this thread until you press Stop or access is revoked. Other threads still ask and can't reach this thread's tabs. Take over keeps every bot out of that tab until you hand it back.", token: token, state: state, request: request)
         }
       }
       _ = try turns.identity(BrowserBroker.resource, token: token)
@@ -308,7 +308,7 @@ final class Server {
           self.send(message, control); close(control)
         }, check: { try self.replyCheck(state, request) })
       let reply = try BrowserBroker.content(result)
-      if tool == "request_app" || tool == "navigate" { activeLock.lock(); state.usingBrowser = true; activeLock.unlock() }
+      if tool == "request_app" || tool == "navigate" || tool.hasPrefix("browser_") { activeLock.lock(); state.usingBrowser = true; activeLock.unlock() }
       if result["image"] != nil {
         _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": reply], fd: client, output: output,
           check: { try self.replyCheck(state, request) }, invalidate: { state.latch.stop() })
@@ -411,9 +411,12 @@ final class Server {
   func requestApp(_ args: [String: Any], token: String, id: String) throws -> Bool {
     guard Set(args.keys) == ["app"], let bundle = args["app"] as? String else { throw Refusal("invalid_arguments") }
     guard bundle.allSatisfy(\.isASCII) else { throw Refusal("app_id_not_plain_ascii") }
-    guard Policy.target(bundle),
-      let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { throw Refusal("protected_or_unavailable_app") }
+    guard Policy.target(bundle) else { throw Refusal("protected_or_unavailable_app") }
+    let open = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter { !$0.isTerminated && $0.activationPolicy != .prohibited }
+    let url = try AppIdentity.source(running: open.map(\.bundleURL), registered: NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle))
     let identity = try AppIdentity.capture(url, bundle: bundle)
+    // The permission prompt names exactly what's running, checked before anyone is asked.
+    if let app = open.first { try identity.validate(app) }
     if (try? turns.identity(bundle, token: token)) != identity {
       try ask(identity, name: Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? bundle,
         detail: "\(bundle)\n\(identity.path)\n\nAllow Once ends with this bot's turn. Allow for This Work Thread lets every supported bot in this thread use this app, with no more prompts, until you press Stop or access is revoked. Other threads still ask. Bots work in the background, but starting an app that isn't running can bring it forward. Password fields and system security settings are protected.",
@@ -510,6 +513,10 @@ final class Server {
     return [tool("list_apps", "List running eligible native apps, plus \(BrowserBroker.resource), Deck's own background browser. Requires an enabled active session.", [:], [], true),
       tool("request_app", "Request a per-app session grant by bundle ID. Never brings a running app forward. Starting a stopped app needs a writable session and can bring it forward, which the reply reports as launch_took_focus. Request \(BrowserBroker.resource) for websites: it has no window, keeps Take over sign-ins, and uses neither the person's pointer nor focus. Once requested, the tools below act on that browser until another app is requested.", ["app": str], ["app"]),
       tool("navigate", "Open an http or https address in Deck's own background browser. Requires the \(BrowserBroker.resource) grant.", ["url": str], ["url"]),
+      tool("browser_tabs", "List the tabs of Deck's browser this thread may use, and who holds each. Tabs belonging to the person or other threads aren't shown. Each bot works in its current tab, and bots work at the same time in separate tabs.", [:], [], true),
+      tool("browser_new_tab", "Open a new tab in Deck's browser for this thread and work in it. The url is optional.", ["url": str], []),
+      tool("browser_use_tab", "Switch to working in another tab this thread may use. If another bot holds it, you can read it but not act on it.", ["tab": str], ["tab"]),
+      tool("browser_close_tab", "Close a tab this thread may use, unless someone else holds it.", ["tab": str], ["tab"]),
       tool("read_screen", "Read the granted app's window and retained element references. Works behind other windows and on minimized windows, and reports visibility: frontmost, partly_visible, covered, minimized or hidden. Controls marked offscreen can still be used. While a browser window is fully covered its page can lag, and a page loaded then can return web_content_unavailable. No tool fixes that from the background: the window has to be showing.", [:], [], true),
       tool("list_windows", "List windows of the granted app with minimized/focused state.", [:], [], true),
       ScreenshotPolicy.tool,
