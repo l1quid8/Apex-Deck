@@ -73,7 +73,7 @@ public enum ScreenshotPolicy {
       ["type": "image", "mimeType": "image/jpeg", "data": jpeg.base64EncodedString()]]]
   }
   public static var tool: [String: Any] {
-    ["name": "get_screenshot", "description": "Read one verified granted app window as bounded JPEG; never launches/focuses or requests permission.",
+    ["name": "get_screenshot", "description": "Read one verified granted app window as bounded JPEG; never launches/focuses or requests permission. An image of a fully covered browser window can be older than the page.",
       "inputSchema": ["type": "object", "properties": [String: Any](), "required": [String](), "additionalProperties": false],
       "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]]
   }

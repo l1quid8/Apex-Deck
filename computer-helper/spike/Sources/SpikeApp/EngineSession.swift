@@ -51,7 +51,8 @@ final class EngineSession {
     guard !code.contains("delivery=") else { return false }
     return tool == "get_screenshot" || ["unexpected_arguments", "invalid_arguments", "unsupported_key",
       "unknown_tool", "invalid_engine_element", "invalid_text",
-      "shortcut_needs_foreground", "key_needs_visible_window", "pixel_target_has_no_control"].contains(code)
+      "shortcut_needs_foreground", "key_needs_visible_window", "browser_control_needs_visible_window",
+      "pixel_target_has_no_control"].contains(code)
       // Engine actions have already spent their reading by this point. A key has not.
       || (tool == "press_key" && code == "human_input_during_action")
   }
@@ -84,9 +85,13 @@ final class EngineSession {
     }
     current = captured
     var output = captured.text
-    output += "visibility: " + Policy.visibility(
-      frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier == native.app.processIdentifier,
-      minimized: BackgroundSupport.isMinimized(window), hidden: native.app.isHidden) + "\n"
+    let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == native.app.processIdentifier
+    let visibility = Policy.visibility(frontmost: frontmost, minimized: BackgroundSupport.isMinimized(window),
+      hidden: native.app.isHidden, covered: !frontmost && windowFullyCovered(number))
+    output += "visibility: \(visibility)\n"
+    if Policy.pageMayLag(browser: ax.browser(native.app), visibility: visibility) {
+      output += "page_freshness: may_lag_while_covered\n"
+    }
     if !captured.complete { output += "reading: partial; reveal or read a smaller area for more\n" }
     if let action = lastAction {
       output += "last_action: " + Self.actionSummary(action) + "\n"

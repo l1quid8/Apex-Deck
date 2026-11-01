@@ -56,6 +56,31 @@ enum BackgroundSupport {
   }
 }
 
+/// Bounds and layers need no Screen Recording permission. Only normal windows count,
+/// because the menu bar and transparent overlays sit above everything. A translucent
+/// window looks opaque here, so this can say covered where macOS would not.
+func windowFullyCovered(_ number: CGWindowID) -> Bool {
+  func frame(_ info: [String: Any]) -> CGRect? {
+    (info[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
+  }
+  let all = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+  guard let own = all.first(where: { $0[kCGWindowNumber as String] as? Int == Int(number) }),
+    let bounds = frame(own) else { return false }
+  // Off screen includes another Space, which macOS reports as occluded too.
+  guard own[kCGWindowIsOnscreen as String] as? Bool == true else { return true }
+  let above = CGWindowListCopyWindowInfo(.optionOnScreenAboveWindow, number) as? [[String: Any]] ?? []
+  return Policy.fullyCovered(bounds, by: above.compactMap { info in
+    guard info[kCGWindowLayer as String] as? Int == 0, (info[kCGWindowAlpha as String] as? Double ?? 1) >= 1 else { return nil }
+    return frame(info)
+  })
+}
+
+func insidePage(_ control: AXUIElement) -> Bool {
+  Policy.insidePage(control) { current in
+    string(current, kAXRoleAttribute).map { ($0, element(current, kAXParentAttribute)) }
+  }
+}
+
 // MARK: - Accessibility extensions for background
 
 extension Accessibility {

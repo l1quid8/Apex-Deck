@@ -72,8 +72,49 @@ public enum Policy {
   public static func semanticAction(key: String) -> String? {
     ["Return": "AXConfirm", "Escape": "AXCancel"][key]
   }
-  public static func visibility(frontmost: Bool, minimized: Bool, hidden: Bool) -> String {
-    hidden ? "hidden" : minimized ? "minimized" : frontmost ? "frontmost" : "covered"
+  public static func visibility(frontmost: Bool, minimized: Bool, hidden: Bool, covered: Bool) -> String {
+    hidden ? "hidden" : minimized ? "minimized" : frontmost ? "frontmost" : covered ? "covered" : "partly_visible"
+  }
+  /// True when the windows above leave no part of `frame` showing.
+  public static func fullyCovered(_ frame: CGRect, by above: [CGRect]) -> Bool {
+    var showing = [frame]
+    for cover in above {
+      showing = showing.flatMap { piece -> [CGRect] in
+        let hit = piece.intersection(cover)
+        guard !hit.isNull, !hit.isEmpty else { return [piece] }
+        return [
+          CGRect(x: piece.minX, y: piece.minY, width: piece.width, height: hit.minY - piece.minY),
+          CGRect(x: piece.minX, y: hit.maxY, width: piece.width, height: piece.maxY - hit.maxY),
+          CGRect(x: piece.minX, y: hit.minY, width: hit.minX - piece.minX, height: hit.height),
+          CGRect(x: hit.maxX, y: hit.minY, width: piece.maxX - hit.maxX, height: hit.height),
+        ].filter { $0.width > 0 && $0.height > 0 }
+      }
+      if showing.isEmpty { return true }
+    }
+    return false
+  }
+  /// Return in a covered browser's own fields landed 0 of 7, and the address bar offers no
+  /// accessibility confirm. A named refusal beats reporting a delivery that never arrives.
+  public static func browserConfirmNeedsVisibleWindow(key: String, browser: Bool, frontmost: Bool,
+    insidePage: @autoclosure () -> Bool, covered: @autoclosure () -> Bool) -> Bool {
+    key == "Return" && browser && !frontmost && !insidePage() && covered()
+  }
+  /// Only a walk that reaches the top proves a control is the browser's own.
+  public static func insidePage<E>(_ start: E, read: (E) -> (String, E?)?) -> Bool {
+    var current: E? = start
+    var depth = 0
+    while let node = current {
+      guard depth < 128, let (role, parent) = read(node) else { return true }
+      if role == "AXWebArea" { return true }
+      current = parent
+      depth += 1
+    }
+    return false
+  }
+  /// A hidden Chromium page runs no rendering updates, and its accessibility tree and
+  /// pixels wait on them. Nothing outside the browser reports when that has happened.
+  public static func pageMayLag(browser: Bool, visibility: String) -> Bool {
+    browser && visibility == "covered"
   }
   /// Chromium can keep the browser's own controls and no page. That must not read as a blank page.
   public static func webContentMissing(browser: Bool, webAreas: Int, scanned: Bool) -> Bool {
