@@ -38,11 +38,15 @@ enum Request {
         direction: String,
         amount: u32,
     },
-    Type {
+    Focus {
         pid: i32,
         observation: String,
         r#ref: String,
-        text: String,
+    },
+    Reveal {
+        pid: i32,
+        observation: String,
+        r#ref: String,
     },
 }
 fn parse_request(raw: &str) -> Result<Request, ()> {
@@ -53,20 +57,12 @@ fn parse_request(raw: &str) -> Result<Request, ()> {
     let pid = match &request {
         Request::Capture { pid, .. }
         | Request::Click { pid, .. }
-        | Request::Type { pid, .. }
+        | Request::Focus { pid, .. }
+        | Request::Reveal { pid, .. }
         | Request::Scroll { pid, .. } => *pid,
     };
     if pid <= 0 {
         return Err(());
-    }
-    if let Request::Type { text, .. } = &request {
-        if text.len() > 65_536
-            || text
-                .chars()
-                .any(|c| c == '\0' || (c.is_control() && !['\n', '\r', '\t'].contains(&c)))
-        {
-            return Err(());
-        }
     }
     if let Request::Capture { app, .. } = &request {
         if app.is_empty()
@@ -112,6 +108,9 @@ fn failure(code: &str, delivery: DeliverySemantics) -> Value {
 fn adapter_failure(error: AdapterError) -> Value {
     let code = if error.message == "engine_cancelled" {
         "engine_cancelled".to_owned()
+    } else if error.message.contains("live enabled state is false") {
+        // A disabled item can report success and do nothing, so it gets its own name.
+        "element_disabled".to_owned()
     } else {
         format!("engine_{}", error.code.as_str().to_ascii_lowercase())
     };
@@ -160,12 +159,16 @@ impl EngineState {
                 observation,
                 r#ref,
             } => self.action(pid, &observation, &r#ref, Action::Click),
-            Request::Type {
+            Request::Focus {
                 pid,
                 observation,
                 r#ref,
-                text,
-            } => self.action(pid, &observation, &r#ref, Action::TypeText(text)),
+            } => self.action(pid, &observation, &r#ref, Action::SetFocus),
+            Request::Reveal {
+                pid,
+                observation,
+                r#ref,
+            } => self.action(pid, &observation, &r#ref, Action::ScrollTo),
         }
     }
     fn clear(&mut self) {
@@ -309,23 +312,10 @@ impl EngineState {
                 DeliverySemantics::not_delivered(),
             );
         }
-        // Accessibility scrolling does not reach Chromium pages, so scrolling uses
-        // the engine's wheel path, which first checks the point lands on the target.
-        let request = if matches!(action, Action::Scroll(..)) {
-            ActionRequest::headed(action).with_timeout_ms(Some(2_000))
-        } else if let Action::TypeText(text) = &action {
-            // The upstream physical keyboard path checks cancellation between
-            // bounded Unicode chunks; a single AX value write cannot do that.
-            let timeout =
-                (2_000 + text.encode_utf16().count().div_ceil(32) as u64 * 400).max(30_000);
-            ActionRequest::headed(action).with_timeout_ms(Some(timeout))
-        } else {
-            ActionRequest::headless(action).with_timeout_ms(Some(2_000))
-        };
         let result = agent_desktop_core::ref_action::execute_entry_with_context(
             &MacOSAdapter::new(),
             entry,
-            request,
+            background(action),
             &CommandContext::default(),
         );
         self.clear();
@@ -343,6 +333,11 @@ impl EngineState {
             Err(error) => adapter_failure(error),
         }
     }
+}
+/// The only way an action reaches the engine. Headed mode moves the real pointer
+/// and types through the global event stream, which competes with the person's own.
+fn background(action: Action) -> ActionRequest {
+    ActionRequest::headless(action).with_timeout_ms(Some(2_000))
 }
 fn observation_id() -> String {
     let mut b = [0u8; 16];
@@ -653,9 +648,34 @@ mod tests {
     }
 
     #[test]
-    fn protocol_rejects_unknown_fields_and_overlarge_text_before_native_work() {
+    fn protocol_rejects_unknown_fields_and_text_never_crosses_the_bridge() {
         assert!(parse_request(r#"{"op":"capture","pid":123,"extra":"bad"}"#).is_err());
-        assert!(parse_request(&json!({"op":"type", "pid":123, "observation":"1", "ref":"@e1", "text":"x".repeat(65_537)}).to_string()).is_err());
+        assert!(parse_request(&json!({"op":"type", "pid":123, "observation":"1", "ref":"@e1", "text":"x"}).to_string()).is_err());
+    }
+
+    #[test]
+    fn actions_can_never_take_the_pointer_or_focus() {
+        for action in [
+            Action::Click,
+            Action::SetFocus,
+            Action::ScrollTo,
+            Action::Scroll(Direction::Down, 1),
+        ] {
+            let request = background(action);
+            assert_eq!(
+                request.policy,
+                agent_desktop_core::InteractionPolicy::headless()
+            );
+        }
+    }
+
+    #[test]
+    fn a_disabled_target_has_its_own_refusal() {
+        let error = AdapterError::new(
+            agent_desktop_core::ErrorCode::ActionFailed,
+            "Target is not actionable: live enabled state is false",
+        );
+        assert_eq!(adapter_failure(error)["error"], "element_disabled");
     }
 
     #[test]

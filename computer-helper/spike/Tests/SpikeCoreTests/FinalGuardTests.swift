@@ -40,6 +40,43 @@ final class FinalGuardTests: XCTestCase {
     XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.4)
     wait(for: [done], timeout: 1)
   }
+  func testInputInAnotherAppNeverTouchesTheBot() {
+    let latch = Latch(); latch.start(); latch.setTap(true); latch.setTarget(7)
+    let epoch = latch.state().0
+    latch.beginAction("x")
+    latch.human(motion: false, frontmost: 9)
+    latch.human(motion: true, frontmost: 9)
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch))
+  }
+  func testInputInTheTargetStopsTheBotAtOnce() {
+    let latch = Latch(); latch.start(); latch.setTap(true); latch.setTarget(7)
+    latch.beginAction("x")
+    latch.human(motion: true, frontmost: 7)
+    XCTAssertThrowsError(try latch.check("x")) { XCTAssertEqual(($0 as? Refusal)?.code, "human_input_during_action") }
+    latch.endAction("x")
+    let epoch = latch.state().0
+    latch.human(motion: false, frontmost: 7)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) { XCTAssertEqual(($0 as? Refusal)?.code, "human_activity_changed") }
+  }
+  func testSwitchingToTheTargetCountsAsInput() {
+    let latch = Latch(); latch.start(); latch.setTap(true); latch.setTarget(7)
+    let epoch = latch.state().0
+    latch.beginAction("x")
+    latch.activated(9)
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch))
+    latch.activated(7)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) { XCTAssertEqual(($0 as? Refusal)?.code, "human_input_during_action") }
+  }
+  func testUnknownFrontmostOrNoTargetCountsAsInput() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    var epoch = latch.state().0
+    latch.human(motion: false, frontmost: 9)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch))
+    latch.setTarget(7)
+    epoch = latch.state().0
+    latch.human(motion: false, frontmost: nil)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch))
+  }
   func testStopDuringLastQueryPreventsDispatch() {
     let latch = Latch(); latch.start(); latch.setTap(true)
     let epoch = latch.state().0

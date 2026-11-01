@@ -4,23 +4,6 @@ import XCTest
 // Background / minimized-app vertical slice
 final class BackgroundReadingTests: XCTestCase {
 
-  func testBackgroundSupportDetectsMinimized() {
-    // BackgroundSupport explicitly distinguishes minimized vs normal windows
-    let refusal = BackgroundSupport.needsRestore(minimized: true, op: "screenshot")
-    XCTAssertNotNil(refusal, "minimized screenshot should need restore")
-    XCTAssertTrue(refusal!.code.contains("needs_restore"))
-    XCTAssertTrue(refusal!.code.contains("restore the window"))
-
-    XCTAssertNil(BackgroundSupport.needsRestore(minimized: false, op: "screenshot"), "non-minimized should not need restore")
-    XCTAssertNil(BackgroundSupport.needsRestore(minimized: true, op: "click"), "AX press click may work background; only pixel/pointer ops need restore")
-
-    XCTAssertNotNil(BackgroundSupport.needsRestore(minimized: true, op: "click_point"), "physical pointer requires visible")
-    XCTAssertNotNil(BackgroundSupport.needsRestore(minimized: true, op: "point"))
-    XCTAssertNotNil(BackgroundSupport.needsRestore(minimized: true, op: "press_key"), "global keyboard requires foreground")
-    XCTAssertNil(BackgroundSupport.needsRestore(minimized: true, op: "scroll"), "scroll via AX may work in background where supported")
-    XCTAssertNil(BackgroundSupport.needsRestore(minimized: true, op: "type_text"), "AX typing may work background; visibility failure is engine-level")
-  }
-
   func testBestWindowSelectionPrefersNonMinimized() {
     // Simulate selection logic without real AX elements (use dummy by passing nil handling)
     // We test the pure decision path via WindowInfo construction with real AX required,
@@ -35,32 +18,32 @@ final class BackgroundReadingTests: XCTestCase {
     XCTAssertTrue(Server.tools.contains { ($0["name"] as? String) == "read_screen" })
   }
 
-  func testToolsContainBackgroundDescriptions() {
+  func testToolsPromiseBackgroundAndNoneAskForTheForeground() {
     let tools = Server.tools
     let byName = Dictionary(uniqueKeysWithValues: tools.map { (($0["name"] as? String) ?? "", $0) })
     XCTAssertNotNil(byName["list_windows"])
-    XCTAssertNotNil(byName["click"])
-    let clickDesc = (byName["click"]?["description"] as? String) ?? ""
-    XCTAssertTrue(clickDesc.lowercased().contains("background") || clickDesc.contains("needs_restore"),
-                  "click tool should document background / needs_restore")
-    let clickPointDesc = (byName["click_point"]?["description"] as? String) ?? ""
-    XCTAssertTrue(clickPointDesc.lowercased().contains("foreground") || clickPointDesc.contains("needs_restore"))
+    XCTAssertNotNil(byName["reveal"])
+    for tool in tools {
+      let description = (tool["description"] as? String ?? "").lowercased()
+      XCTAssertFalse(description.contains("requires foreground"), "\(tool["name"] ?? "")")
+      XCTAssertFalse(description.contains("needs_restore"), "\(tool["name"] ?? "")")
+    }
+    XCTAssertTrue((byName["press_key"]?["description"] as? String ?? "").contains("shortcut_needs_foreground"))
+    XCTAssertTrue((byName["click_point"]?["description"] as? String ?? "").contains("pixel_target_has_no_control"))
+    let typing = byName["type_text"]?["inputSchema"] as? [String: Any]
+    XCTAssertEqual((typing?["required"] as? [String]) ?? [], ["snapshot", "text"], "element stays optional")
   }
 
-  func testContinuationMatchesBackgroundSkipsFrontmost() {
-    let pid: Int32 = 1234
-    let now = Date()
-    XCTAssertTrue(EngineSession.continuationMatchesBackground(pid: pid, launch: now, currentPID: pid, currentLaunch: now, terminated: false))
-    XCTAssertFalse(EngineSession.continuationMatchesBackground(pid: pid, launch: now, currentPID: 9999, currentLaunch: now, terminated: false))
-    XCTAssertFalse(EngineSession.continuationMatchesBackground(pid: pid, launch: now, currentPID: pid, currentLaunch: now, terminated: true))
-    // Foreground version requires frontmost
-    XCTAssertFalse(EngineSession.continuationMatches(pid: pid, launch: now, currentPID: pid, currentLaunch: now, terminated: false, frontmostPID: 9999))
-    XCTAssertTrue(EngineSession.continuationMatches(pid: pid, launch: now, currentPID: pid, currentLaunch: now, terminated: false, frontmostPID: pid))
+  func testRefusalsThatDeliveredNothingKeepTheReading() {
+    for (tool, code) in [("press_key", "shortcut_needs_foreground"), ("press_key", "key_needs_visible_window"),
+      ("click_point", "pixel_target_has_no_control"), ("get_screenshot", "minimized_stale_image")] {
+      XCTAssertTrue(EngineSession.keepsObservation(tool: tool, code: code), code)
+    }
+    XCTAssertFalse(EngineSession.keepsObservation(tool: "type_text", code: "type_verification_failed; delivery=delivered_unverified; retry=unsafe"))
   }
 
-  func testObserveAllowsBackgroundFallback() {
-    // The Server.observe method now has allowBackground param, default true.
-    // Ensure that validationBackground path exists.
-    XCTAssertNoThrow(try EngineSession.continuationMatchesBackground(pid: 1, launch: Date(), currentPID: 1, currentLaunch: Date(), terminated: false))
+  func testTypingThatLandedReadsAsDeliveredSoItIsNotRepeated() {
+    XCTAssertNotNil(EngineSession.deliveredNote("type_verification_failed; delivery=delivered_unverified; retry=unsafe"))
+    XCTAssertNil(EngineSession.deliveredNote("type_verification_failed; delivery=delivery_uncertain; retry=unsafe"))
   }
 }

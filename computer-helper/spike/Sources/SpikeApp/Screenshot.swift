@@ -56,7 +56,7 @@ final class WindowScreenshot {
     Thread.current.threadDictionary["axDeadline"] = deadline
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
     try latch.check(id)
-    _ = try ax.validate(s)
+    try ax.validate(s)
     guard s.screenshotSafe, let window = s.window, pid(window) == s.app.processIdentifier,
       safe(window), rect(window) == frame, string(window, kAXTitleAttribute) == title,
       !s.app.isTerminated, s.app.launchDate == s.launch,
@@ -98,6 +98,10 @@ final class WindowScreenshot {
       }
       let deadline = ProcessInfo.processInfo.systemUptime + 8
       let observation = try ax.capture(epoch: epoch)
+      // Nothing tells us which apps keep a minimized window's frame current. Chromium doesn't.
+      if let window = observation.window, BackgroundSupport.isMinimized(window) || observation.app.isHidden {
+        throw Refusal("minimized_stale_image")
+      }
       guard observation.screenshotSafe, let window = observation.window,
         pid(window) == observation.app.processIdentifier, let frame = rect(window),
         let number = windowNumber(window)

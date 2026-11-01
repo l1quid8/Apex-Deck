@@ -42,12 +42,13 @@ enum EngineSubrole {
 private final class EngineCheck {
   let pid: Int32
   let check: () throws -> Void
-  let expectedTarget: AXUIElement?
   var error: Error?
+  /// The element the engine last acted on, past every check.
+  var target: AXUIElement?
   var overlayLabel: String?
   var overlayAction: OverlayAction = .click
-  init(pid: Int32, expectedTarget: AXUIElement?, check: @escaping () throws -> Void) {
-    self.pid = pid; self.expectedTarget = expectedTarget; self.check = check
+  init(pid: Int32, check: @escaping () throws -> Void) {
+    self.pid = pid; self.check = check
   }
   func validate(_ pointer: UnsafeRawPointer?) -> Int32 {
     if error != nil { return 0 }
@@ -61,14 +62,6 @@ private final class EngineCheck {
       try check()
       if let pointer = pointer {
         let target = Unmanaged<AXUIElement>.fromOpaque(pointer).takeUnretainedValue()
-        if let expectedTarget = expectedTarget {
-          let system = AXUIElementCreateSystemWide()
-          // Keyboard delivery first raises the field's own window. Focus must still be the field.
-          guard same(target, expectedTarget) || same(target, element(expectedTarget, kAXWindowAttribute)),
-            let focused = element(system, kAXFocusedUIElementAttribute),
-            SpikeApp.pid(focused) == pid, same(focused, expectedTarget)
-          else { throw Refusal("engine_typing_target_changed") }
-        }
         AXUIElementSetMessagingTimeout(target, 0.1)
         guard SpikeApp.pid(target) == pid,
           let app = NSRunningApplication(processIdentifier: pid),
@@ -83,18 +76,18 @@ private final class EngineCheck {
               role == kAXApplicationRole ? nil : element(current, kAXParentAttribute))
           })
         else { throw Refusal("engine_foreign_secure_or_unknown_target") }
+        guard attr(target, kAXEnabledAttribute) as? Bool != false else { throw Refusal("element_disabled") }
         // Overlay hook: show only the actual engine-resolved target (blocker 2 + final hook).
         // Require non-nil overlayLabel so capture/verification callbacks cannot display fake Click cursor.
         // Call CursorOverlay.shared.show directly – show already dispatches to main internally.
         // Removing extra outer DispatchQueue.main.async prevents show being queued behind
         // Server's hide/Stop cleanup (double-dispatch stale cursor bug).
-        if CursorOverlaySettings.isEnabled, let label = overlayLabel, let r = SpikeApp.rect(target),
-           r.width >= 0, r.height >= 0 {
-          let center = CGPoint(x: r.midX, y: r.midY)
-          CursorOverlay.shared.show(at: center, label: label, action: overlayAction)
+        if let label = overlayLabel, let r = SpikeApp.rect(target), r.width >= 0, r.height >= 0 {
+          CursorOverlayIntegration.show(at: CGPoint(x: r.midX, y: r.midY), pid: pid, label: label, action: overlayAction)
         }
         // Keep final try check() after all rect reads (final revocation win)
         try check()
+        self.target = target
       }
       return 1
     } catch { self.error = error; return 0 }
@@ -108,6 +101,7 @@ private let engineCheck: @convention(c) (UnsafeMutableRawPointer?, UnsafeRawPoin
 final class NativeEngine {
   private let handle = apex_engine_create()
   private var snapshots = [String: EngineSnapshot]()
+  private var target: AXUIElement?
   deinit { apex_engine_destroy(handle) }
   func invalidate() { snapshots.removeAll(); apex_engine_reset(handle) }
 
@@ -137,16 +131,19 @@ final class NativeEngine {
   @discardableResult
   func click(observation: String, ref: String, overlayLabel: String? = nil, overlayAction: OverlayAction = .click,
     check: @escaping () throws -> Void) throws -> [String: Any] {
-    try action("click", observation: observation, ref: ref, text: nil, overlayLabel: overlayLabel, overlayAction: overlayAction, check: check)
+    try action("click", observation: observation, ref: ref, overlayLabel: overlayLabel, overlayAction: overlayAction, check: check)
+  }
+  /// Moves the app's own focus and returns the element that received it.
+  func focus(observation: String, ref: String, check: @escaping () throws -> Void) throws -> AXUIElement {
+    target = nil
+    _ = try action("focus", observation: observation, ref: ref, check: check)
+    guard let target = target else { throw Refusal("engine_focus_target_unavailable") }
+    return target
   }
   @discardableResult
-  func type(observation: String, ref: String, text: String, expectedTarget: AXUIElement? = nil,
-    overlayLabel: String? = nil, overlayAction: OverlayAction = .type,
+  func reveal(observation: String, ref: String, overlayLabel: String? = nil,
     check: @escaping () throws -> Void) throws -> [String: Any] {
-    guard Policy.text(text) else { throw Refusal("invalid_text") }
-    guard let expectedTarget = expectedTarget else { throw Refusal("engine_typing_target_required") }
-    return try action("type", observation: observation, ref: ref, text: text, expectedTarget: expectedTarget,
-      overlayLabel: overlayLabel, overlayAction: overlayAction, check: check)
+    try action("reveal", observation: observation, ref: ref, overlayLabel: overlayLabel, overlayAction: .generic, check: check)
   }
   @discardableResult
   func scroll(observation: String, ref: String, direction: String, amount: Int,
@@ -157,30 +154,29 @@ final class NativeEngine {
     return try invoke(["op": "scroll", "pid": snapshot.pid, "observation": observation, "ref": ref,
       "direction": direction, "amount": amount], pid: snapshot.pid, overlayLabel: overlayLabel, overlayAction: overlayAction, check: check)
   }
-  private func action(_ op: String, observation: String, ref: String, text: String?, expectedTarget: AXUIElement? = nil,
+  private func action(_ op: String, observation: String, ref: String,
     overlayLabel: String? = nil, overlayAction: OverlayAction = .click,
     check: @escaping () throws -> Void) throws -> [String: Any] {
     try check()
     guard let snapshot = snapshots.removeValue(forKey: observation), snapshot.refs.contains(ref)
     else { throw Refusal("stale_observation") }
-    var request: [String: Any] = ["op": op, "pid": snapshot.pid, "observation": observation, "ref": ref]
-    if let text = text { request["text"] = text }
-    return try invoke(request, pid: snapshot.pid, expectedTarget: expectedTarget,
+    return try invoke(["op": op, "pid": snapshot.pid, "observation": observation, "ref": ref], pid: snapshot.pid,
       overlayLabel: overlayLabel, overlayAction: overlayAction, check: check)
   }
-  private func invoke(_ request: [String: Any], pid: Int32, expectedTarget: AXUIElement? = nil,
+  private func invoke(_ request: [String: Any], pid: Int32,
     overlayLabel: String? = nil, overlayAction: OverlayAction = .click,
     check: @escaping () throws -> Void) throws -> [String: Any] {
     try check()
     guard let handle = handle else { throw Refusal("engine_unavailable") }
     let data = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
     guard let json = String(data: data, encoding: .utf8) else { throw Refusal("invalid_request") }
-    let context = EngineCheck(pid: pid, expectedTarget: expectedTarget, check: check)
+    let context = EngineCheck(pid: pid, check: check)
     context.overlayLabel = overlayLabel
     context.overlayAction = overlayAction
     let raw = json.withCString { apex_engine_call(handle, $0, engineCheck, Unmanaged.passUnretained(context).toOpaque()) }
     guard let raw = raw else { throw Refusal("engine_unavailable") }
     defer { apex_engine_free_string(raw) }
+    target = context.target
     let resultData = Data(bytes: raw, count: strlen(raw))
     guard let value = try JSONSerialization.jsonObject(with: resultData) as? [String: Any],
       let ok = value["ok"] as? Bool

@@ -22,6 +22,11 @@ func element(_ e: AXUIElement, _ key: String) -> AXUIElement? {
   return (v as! AXUIElement)
 }
 func string(_ e: AXUIElement, _ key: String) -> String? { attr(e, key) as? String }
+func actions(_ e: AXUIElement) -> [String] {
+  var names: CFArray?
+  guard AXUIElementCopyActionNames(e, &names) == .success else { return [] }
+  return names as? [String] ?? []
+}
 func pid(_ e: AXUIElement) -> pid_t {
   var p: pid_t = 0
   AXUIElementGetPid(e, &p)
@@ -210,22 +215,38 @@ final class Accessibility {
     }
     return apps[0]
   }
+  private var browsers = [String: Bool]()
+  /// Apps registered for web links. Only used to tell a missing page from a native window.
+  private func browser(_ app: NSRunningApplication) -> Bool {
+    guard let url = app.bundleURL?.standardizedFileURL else { return false }
+    if let known = browsers[url.path] { return known }
+    let handlers = URL(string: "https://example.com").map { NSWorkspace.shared.urlsForApplications(toOpen: $0) } ?? []
+    let result = handlers.contains { $0.standardizedFileURL == url }
+    browsers[url.path] = result
+    return result
+  }
+  /// The app's focused window, or its best other window. Nothing here needs the app in front.
   func capture(epoch: UInt64) throws -> Snapshot {
     guard trusted() else { throw Refusal("accessibility_not_trusted") }
     guard Policy.target(targetBundle) else { throw Refusal("app_grant_required") }
     let app = try running(targetBundle)
     try verifyIdentity?(app)
     let root = AXUIElementCreateApplication(app.processIdentifier)
-    let window = element(root, kAXFocusedWindowAttribute)
-    let focus = element(root, kAXFocusedUIElementAttribute)
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 2
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
+    let focused = element(root, kAXFocusedWindowAttribute)
+    let focus = element(root, kAXFocusedUIElementAttribute)
+    let best = focused ?? BackgroundSupport.bestWindow(infos: BackgroundSupport.windowInfos(root: root, focusedWindow: nil))?.element
+    guard let window = best else { throw Refusal("app_has_no_window") }
     var tree = Tree(targetPID: app.processIdentifier)
-    if let window = window { tree.walk(window) }
+    tree.walk(window)
     // A foreign surface can host another app's sheet, so reading stays refused.
     // Partial, unreadable or protected content only limits pixels, decided here.
     guard !tree.foreign else { throw Refusal("protected_or_unverified_surface") }
-    let pixelsSafe = window != nil && tree.pixelsSafe
+    let pixelsSafe = tree.pixelsSafe
+    guard !Policy.webContentMissing(browser: browser(app), webAreas: tree.roles["AXWebArea"] ?? 0, scanned: !tree.unscanned) else {
+      throw Refusal("web_content_unavailable")
+    }
     if let menu = element(root, kAXMenuBarAttribute) { tree.walk(menu) }
     // The focus checks below get their own time if a large tree used up the walk's.
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 0.5
@@ -238,49 +259,40 @@ final class Accessibility {
       + (tree.truncated ? "\ntruncated" : "")
     return Snapshot(
       id: id, app: app, launch: app.launchDate, window: window,
-      document: window.flatMap { string($0, kAXDocumentAttribute) }, focus: focus, value: value,
+      document: string(window, kAXDocumentAttribute), focus: focus, value: value,
       range: range, epoch: epoch, focusFingerprint: focusSafe ? fingerprint(focus!) : nil,
       controls: tree.controls, output: output, screenshotSafe: pixelsSafe)
   }
-  /// Identity and focus only. Human activity is the latch's job, so the two can't share a refusal.
-  func validate(_ s: Snapshot) throws -> AXUIElement {
+  /// Identity, the reading's window and its focused control. Human activity is the
+  /// latch's job, so the two can't share a refusal. Returns the focus if it is safe.
+  @discardableResult
+  func validate(_ s: Snapshot) throws -> AXUIElement? {
     try verifyIdentity?(s.app)
     guard s.app.launchDate == s.launch else { throw Refusal("target_changed") }
     guard trusted() else { throw Refusal("accessibility_not_trusted") }
     guard Policy.target(s.app.bundleIdentifier ?? ""), !s.app.isTerminated else {
       throw Refusal("target_changed")
     }
-    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier else {
-      throw Refusal("target_not_frontmost")
-    }
-    guard let focusedApp = element(system, kAXFocusedApplicationAttribute),
-      pid(focusedApp) == s.app.processIdentifier,
-      let focus = element(system, kAXFocusedUIElementAttribute),
-      pid(focus) == s.app.processIdentifier, safe(focus)
-    else { throw Refusal("foreign_secure_or_unknown_focus") }
     let root = AXUIElementCreateApplication(s.app.processIdentifier)
-    guard same(element(root, kAXFocusedWindowAttribute), s.window), same(focus, s.focus),
-      s.window.flatMap({ string($0, kAXDocumentAttribute) }) == s.document
-    else { throw Refusal("window_document_or_focus_changed") }
-    guard s.focusFingerprint == fingerprint(focus) else { throw Refusal("focused_control_changed") }
-    guard attr(focus, kAXEnabledAttribute) as? Bool != false else {
-      throw Refusal("focus_disabled")
+    guard let window = s.window, pid(window) == s.app.processIdentifier, safe(window) else {
+      throw Refusal("window_foreign_or_protected")
     }
+    guard BackgroundSupport.allWindows(root: root).contains(where: { same($0, window) }) else {
+      throw Refusal("window_unavailable")
+    }
+    guard string(window, kAXDocumentAttribute) == s.document else { throw Refusal("window_document_changed") }
+    guard let focus = s.focus, pid(focus) == s.app.processIdentifier, safe(focus) else { return nil }
+    if let print = s.focusFingerprint, print != fingerprint(focus) { throw Refusal("focused_control_changed") }
     return focus
   }
-  func hit(_ target: AXUIElement, at point: CGPoint, targetPID: pid_t) throws {
-    var hit: AXUIElement?
-    guard
-      AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit) == .success,
-      let hit = hit, pid(hit) == targetPID, safe(hit)
-    else { throw Refusal("hit_test_foreign_or_unknown") }
-    var current: AXUIElement? = hit
-    for _ in 0..<Policy.maxAncestry {
-      guard let e = current else { break }
-      if same(e, target) { return }
-      current = element(e, kAXParentAttribute)
+  /// Keys and text land on the app's focused control, so it must be the one the bot read.
+  func liveFocus(_ s: Snapshot) throws -> AXUIElement {
+    let root = AXUIElementCreateApplication(s.app.processIdentifier)
+    guard let focus = try validate(s), same(element(root, kAXFocusedUIElementAttribute), focus) else {
+      throw Refusal("foreign_secure_or_unknown_focus")
     }
-    throw Refusal("hit_test_mismatch")
+    guard attr(focus, kAXEnabledAttribute) as? Bool != false else { throw Refusal("focus_disabled") }
+    return focus
   }
   func probeDS4() throws -> [String: Any] {
     guard trusted() else { throw Refusal("accessibility_not_trusted") }
