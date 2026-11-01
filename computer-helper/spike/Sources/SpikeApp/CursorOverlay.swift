@@ -26,6 +26,7 @@ final class CursorOverlay: NSObject {
   private let lock = NSLock()
   private var windows: [NSWindow] = [] // active overlay windows (one per screen covering point)
   private var hideWork: DispatchWorkItem?
+  private var generation: Int = 0 // bumps on each show; guards stale hide completions
 
   // MARK: - Public API (main thread)
 
@@ -44,6 +45,9 @@ final class CursorOverlay: NSObject {
   func show(at point: CGPoint, label: String? = nil, action: OverlayAction = .click) {
     guard CursorOverlaySettings.isEnabled else { return }
     DispatchQueue.main.async {
+      self.lock.lock()
+      self.generation &+= 1
+      self.lock.unlock()
       self.cancelPendingHide()
       self.ensureWindow(at: point, label: label, action: action)
       self.scheduleAutoHide()
@@ -134,6 +138,8 @@ final class CursorOverlay: NSObject {
     let window: NSWindow
     if let existing = existing {
       window = existing
+      // Cancel any in-flight fade-out on reused window so next action is visible
+      if let v = window.contentView as? OverlayView { v.cancelFade() }
     } else {
       window = makeOverlayWindow(for: screen)
       windows.append(window)
@@ -174,13 +180,23 @@ final class CursorOverlay: NSObject {
   }
 
   private func animateHideAndRemove() {
+    lock.lock(); let captured = generation; lock.unlock()
     for w in windows {
       guard let view = w.contentView as? OverlayView else { w.orderOut(nil); continue }
-      view.animateOut { [weak w] in w?.orderOut(nil) }
+      view.animateOut { [weak self, weak w] in
+        guard let self = self else { w?.orderOut(nil); return }
+        self.lock.lock(); let current = self.generation; self.lock.unlock()
+        // Old fade completion must not hide a newer action
+        guard current == captured else { return }
+        w?.orderOut(nil)
+      }
     }
-    // Remove after animation
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-      self?.windows.removeAll { !$0.isVisible }
+    // Remove after animation, guarded by generation
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) { [weak self] in
+      guard let self = self else { return }
+      self.lock.lock(); let current = self.generation; self.lock.unlock()
+      guard current == captured else { return }
+      self.windows.removeAll { !$0.isVisible }
     }
   }
 
@@ -232,12 +248,20 @@ private final class OverlayView: NSView {
   required init?(coder: NSCoder) { super.init(coder: coder) }
 
   func showPointer(at point: CGPoint, label: String?, action: OverlayAction, accentHex: String) {
+    // Fix stale fade: layer.opacity=0 from previous animateOut would keep reused window invisible
+    layer?.removeAnimation(forKey: "fade")
+    layer?.opacity = 1
     pointerPoint = point
     labelText = truncatedLabel(label ?? action.labelFallback)
     self.action = action
     accent = NSColor(hex: accentHex) ?? .systemPink
     needsDisplay = true
     rebuildLayers()
+  }
+
+  func cancelFade() {
+    layer?.removeAnimation(forKey: "fade")
+    layer?.opacity = 1
   }
 
   func animateOut(completion: @escaping () -> Void) {

@@ -81,18 +81,17 @@ private final class EngineCheck {
               role == kAXApplicationRole ? nil : element(current, kAXParentAttribute))
           })
         else { throw Refusal("engine_foreign_secure_or_unknown_target") }
-        // Overlay hook: show only the actual engine-resolved target (blocker 2).
-        // Runs on Rust owner thread, so hop to main for UI. Uses Quartz/AX point;
-        // CursorOverlay converts to Cocoa for proper screen placement.
-        if CursorOverlaySettings.isEnabled, let r = SpikeApp.rect(target), r.width >= 0, r.height >= 0 {
-          let label = overlayLabel
-          let action = overlayAction
+        // Overlay hook: show only the actual engine-resolved target (blocker 2 + final hook).
+        // Require non-nil overlayLabel so capture/verification callbacks cannot display fake Click cursor.
+        // Call CursorOverlay.shared.show directly – show already dispatches to main internally.
+        // Removing extra outer DispatchQueue.main.async prevents show being queued behind
+        // Server's hide/Stop cleanup (double-dispatch stale cursor bug).
+        if CursorOverlaySettings.isEnabled, let label = overlayLabel, let r = SpikeApp.rect(target),
+           r.width >= 0, r.height >= 0 {
           let center = CGPoint(x: r.midX, y: r.midY)
-          DispatchQueue.main.async {
-            CursorOverlay.shared.show(at: center, label: label, action: action)
-          }
+          CursorOverlay.shared.show(at: center, label: label, action: overlayAction)
         }
-        // Ancestry checks can take time. Revocation wins before native dispatch.
+        // Keep final try check() after all rect reads (final revocation win)
         try check()
       }
       return 1
