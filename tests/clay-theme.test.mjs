@@ -84,7 +84,7 @@ const mix = (agent, text, p) => "#" + hexToRgb(agent).map((v, i) => Math.round(v
 // The token values clay-theme.css must carry. Panel/raised expand the RGB
 // triplets so contrast can be checked as solid colors.
 const MODES = {
-  ember: { light: false, ink: "#2a1e16", bg: "#262421", panel: "#1e1c1a", raised: "#302d29", code: "#1b1917", selected: "#3a3630", human: "#38332d", text: "#efe9e0", muted: "#c2b9ad", muted2: "#ada294", warn: "#e6b562", danger: "#f0907f", success: "#9dc79b", edge: "#544e46", line: "#3b3732" },
+  ember: { light: false, ink: "#04211d", bg: "#000000", panel: "#101010", raised: "#181818", code: "#101010", selected: "#181818", human: "#181818", text: "#f2f2f2", muted: "#9a9a9a", muted2: "#9a9a9a", warn: "#f59e0b", danger: "#f87171", success: "#9dc79b", edge: "#2a2a2a", line: "#2a2a2a" },
   paper: { light: true, ink: "#fffaf3", bg: "#f8f5ee", panel: "#f0ece3", raised: "#fffdf9", code: "#f0ebe1", selected: "#e5dfd2", human: "#ebe4d7", text: "#29251f", muted: "#58514a", muted2: "#6a6258", warn: "#865800", danger: "#ad3626", success: "#356b3a", edge: "#c9c0b1", line: "#e1dacd" },
 };
 

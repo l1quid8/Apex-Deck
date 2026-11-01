@@ -1,4 +1,4 @@
-/* Clay: a solid, warm theme layer beside glass and flat. Clean-room and
+/* Clay: a solid theme layer with neutral dark and warm light palettes beside glass and flat. Clean-room and
    Claude-inspired in feel only — system/open fonts, no copied code or
    assets. Classic, Glass and Flat have no matching selectors here and are
    untouched. Surfaces are opaque (no blur, no backdrop glow), bot replies
@@ -7,26 +7,26 @@
    on Paper. Approval cards deliberately keep the shared amber safety
    treatment in glass-theme.css. */
 :root[data-deck-theme="clay"] {
-  --deck-bg: #262421;
-  --deck-panel: 30 28 26;
-  --deck-panel-raised: 48 45 41;
-  --deck-code: #1b1917;
-  --deck-line: 239 233 224;
-  --deck-text: #efe9e0;
-  --deck-muted: #c2b9ad;
-  --deck-muted-2: #ada294;
-  --deck-warning: #e6b562;
-  --deck-danger: #f0907f;
+  --deck-bg: #000000;
+  --deck-panel: 16 16 16;
+  --deck-panel-raised: 24 24 24;
+  --deck-code: #101010;
+  --deck-line: 242 242 242;
+  --deck-text: #f2f2f2;
+  --deck-muted: #9a9a9a;
+  --deck-muted-2: #9a9a9a;
+  --deck-warning: #f59e0b;
+  --deck-danger: #f87171;
   --deck-success: #9dc79b;
   --deck-accent: var(--deck-custom-accent, oklch(.83 .08 var(--deck-hue, 38)));
-  --deck-accent-ink: var(--deck-custom-accent-ink, #2a1e16);
+  --deck-accent-ink: var(--deck-custom-accent-ink, #04211d);
   --deck-accent-text: var(--deck-accent);
   --deck-accent-soft: color-mix(in srgb, var(--deck-accent) 16%, var(--deck-bg));
-  --deck-selected: #3a3630;
-  --deck-human-fill: #38332d;
+  --deck-selected: #181818;
+  --deck-human-fill: #181818;
   --deck-human-line: color-mix(in srgb, var(--deck-human-fill) 92%, var(--deck-text));
   --deck-surface-sunken: var(--deck-code);
-  --deck-edge: #544e46;
+  --deck-edge: #2a2a2a;
   --deck-glow: 0;
   --deck-blur: 0px;
   --deck-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -36,7 +36,7 @@
   --bg: var(--deck-bg);
   --panel: rgb(var(--deck-panel));
   --panel-2: rgb(var(--deck-panel-raised));
-  --line: #3b3732;
+  --line: #2a2a2a;
   --text: var(--deck-text);
   --muted: var(--deck-muted);
   --accent: var(--deck-accent);
@@ -72,8 +72,8 @@
 
 @media (prefers-contrast: more) {
   :root[data-deck-theme="clay"] {
-    --deck-muted: #ddd4c6;
-    --deck-muted-2: #cfc4b4;
+    --deck-muted: #dddddd;
+    --deck-muted-2: #cfcfcf;
     --line: var(--deck-edge);
   }
   :root[data-deck-light="true"][data-deck-theme="clay"] {
@@ -86,7 +86,7 @@
   }
 }
 
-/* Solid warm surfaces. Most components already paint from --panel,
+/* Solid theme surfaces. Most components already paint from --panel,
    --panel-2 and --line, so they follow the tokens above; these rules set
    the radius and remove glass effects Clay never uses. */
 :root[data-deck-theme="clay"] body { background: var(--deck-bg); }
