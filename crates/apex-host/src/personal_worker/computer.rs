@@ -20,8 +20,15 @@ pub(super) const TEXT_ONLY_NOTE: &str = "This model can't see screenshots, so it
 const DROPPED_NOTE: &str = "I read your screen in this reply, so I didn't start or save anything from it. Ask me directly if you want a next step.";
 pub(crate) const INTERRUPTED: &str = "I was interrupted while using your computer. Some actions may already have happened, so I won't repeat them. Check the result, then ask again if you still want it.";
 
+const THREAD_PREFIX: &str = "assistant:";
+
 pub(crate) fn thread(assistant_id: &str) -> String {
-    format!("assistant:{assistant_id}")
+    format!("{THREAD_PREFIX}{assistant_id}")
+}
+
+/// The stable assistant id a computer thread belongs to, if it isn't a room.
+pub(crate) fn thread_assistant(thread: &str) -> Option<&str> {
+    thread.strip_prefix(THREAD_PREFIX)
 }
 
 /// What this reply may do on the computer, and otherwise why it can't.

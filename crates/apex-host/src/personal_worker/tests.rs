@@ -140,6 +140,15 @@ fn room_reply(tool: &str, argv: &[&str]) -> String {
 }
 
 #[tokio::test]
+async fn a_browser_tab_names_the_assistant_holding_it() {
+    let fixture = Fixture::new();
+    let profile = apex_core::ParticipantId::new("profile");
+    let label = fixture.host.computer_participant_label(&computer_thread(&fixture.id), &profile);
+    assert_eq!(label, Some(fixture.get().name));
+    assert_eq!(fixture.host.computer_participant_label(&computer_thread("gone"), &profile), None);
+}
+
+#[tokio::test]
 async fn a_status_question_reads_a_chat_and_answers_without_touching_it() {
     let fixture = Fixture::new();
     fixture.project_chat(crate::personal_workspace::ProjectTools::Full);

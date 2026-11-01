@@ -1775,6 +1775,7 @@ impl Host {
     }
     pub(crate) fn room_is_busy(&self, id: &str) -> bool { self.rooms.lock().unwrap().get(id).is_some_and(|handle| handle.runtime.busy()) }
     pub(crate) fn computer_participant_label(&self,thread:&str,id:&ParticipantId)->Option<String> {
+        if let Some(assistant)=crate::personal_worker::computer_thread_assistant(thread) { return self.personal_get(assistant).ok().map(|a|a.name); }
         self.handle(thread).ok()?.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).map(|p|p.display_name.clone())
     }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }

@@ -24,7 +24,7 @@ use crate::Host;
 pub const COMMAND_TOOL: &str = "host.command";
 /// A Spend decision for one model reply: its argv is the held event's id.
 pub const REPLY_TOOL: &str = "model.reply";
-pub(crate) use computer::{thread as computer_thread, INTERRUPTED as COMPUTER_INTERRUPTED, TEXT_ONLY_STEP};
+pub(crate) use computer::{thread as computer_thread, thread_assistant as computer_thread_assistant, INTERRUPTED as COMPUTER_INTERRUPTED, TEXT_ONLY_STEP};
 const COMMAND_TIMEOUT_MS: u64 = 60_000;
 const MAX_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
