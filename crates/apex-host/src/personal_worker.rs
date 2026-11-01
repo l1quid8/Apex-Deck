@@ -24,6 +24,7 @@ use crate::Host;
 pub const COMMAND_TOOL: &str = "host.command";
 /// A Spend decision for one model reply: its argv is the held event's id.
 pub const REPLY_TOOL: &str = "model.reply";
+pub(crate) use computer::{thread as computer_thread, INTERRUPTED as COMPUTER_INTERRUPTED, TEXT_ONLY_STEP};
 const COMMAND_TIMEOUT_MS: u64 = 60_000;
 const MAX_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
@@ -62,6 +63,8 @@ pub struct ReasonOut {
     pub cost_micros: Option<u64>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Computer tools ran on accessibility text alone.
+    pub text_only_computer: bool,
 }
 
 impl ReasonOut {
@@ -92,8 +95,8 @@ impl WorkerTools {
     pub fn real() -> Self {
         WorkerTools {
             reason: Arc::new(|config, request, attachment_roots| Box::pin(async move {
-                crate::assistant_inference::reply(config, request, attachment_roots).await.map(|reply| ReasonOut {
-                    text: reply.text, cost_micros: reply.cost_micros, input_tokens: reply.input_tokens, output_tokens: reply.output_tokens,
+                crate::assistant_inference::reply(config, request, attachment_roots).await.map(|(reply, text_only_computer)| ReasonOut {
+                    text: reply.text, cost_micros: reply.cost_micros, input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, text_only_computer,
                 })
             })),
             execute: Arc::new(|spec, started| Box::pin(run_operation(spec, started))),
@@ -668,12 +671,13 @@ impl Host {
         }
     }
 
-    async fn personal_event(&self, tools: &WorkerTools, snapshot: PersonalAssistant, event: PersonalEvent) -> Result<(), String> {
+    async fn personal_event(self: &Arc<Self>, tools: &WorkerTools, snapshot: PersonalAssistant, event: PersonalEvent) -> Result<(), String> {
         match &event.source {
             EventSource::Human { text } => self.personal_answer(tools, snapshot, &event, text.clone()).await,
             EventSource::Internal { what } => self.personal_internal(tools, snapshot, &event, what.clone()).await,
             _ => {
                 let stop = self.change_assistant(&snapshot.id, |assistant| Ok(apply_control(assistant, &event)))?;
+                if matches!(event.source, EventSource::Pause { paused: true }) { self.computer.revoke(Some(&computer::thread(&snapshot.id)), None); }
                 // The cancel is saved first, so a stopped command can't be mistaken for a finished one.
                 let stops = self.personal_stops.lock().unwrap();
                 for task_id in stop {
@@ -686,9 +690,10 @@ impl Host {
         }
     }
 
-    /// Answer the human: privacy and spend checks in code, then one
-    /// tool-free model call with the assembled context.
-    async fn personal_answer(&self, tools: &WorkerTools, snapshot: PersonalAssistant, event: &PersonalEvent, text: String) -> Result<(), String> {
+    /// Answer the human: privacy and spend checks in code, then one model
+    /// call with the assembled context. It has no tools, apart from any
+    /// computer turn the helper accepts for this reply.
+    async fn personal_answer(self: &Arc<Self>, tools: &WorkerTools, snapshot: PersonalAssistant, event: &PersonalEvent, text: String) -> Result<(), String> {
         let Some(profile) = snapshot.profile.clone() else {
             return self.finish_event(&snapshot.id, &event.id, Err("This assistant has no model profile.".into()));
         };
@@ -704,30 +709,54 @@ impl Host {
         let catalog = rooms::catalog(&self.personal_rooms(&snapshot)?.iter().map(|room| self.room_entry(room)).collect::<Vec<_>>())?;
         if system.chars().count() + catalog.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&catalog); }
 
-        let bytes = system.len();
         let mut request = read_only_request(system);
         request.turns.push(apex_core::ViewTurn { role: apex_core::Role::User, content: text.clone() });
         // The composer saves attachments using the assistant's stable id as its room key.
         let attachment_roots = vec![self.attachment_dir(&snapshot.id)?.canonicalize()
             .map_err(|error| format!("Could not resolve assistant attachments: {error}"))?];
         // No lock is held across the model call. A restart here leaves the
-        // event `Processing`, which recovery turns back into `Received`; the
-        // call has no side effects, so running it again commits one reply.
+        // event `Processing`, which recovery turns back into `Received`; a
+        // call without computer tools has no side effects, so running it again
+        // commits one reply. One with them is marked first and never reruns.
         let key=format!("reply:{}:{}",snapshot.id,event.id);
         let stop=Arc::new(tokio::sync::Notify::new());
         self.personal_stops.lock().unwrap().insert(key.clone(),stop.clone());
         let active=self.personal_get(&snapshot.id)?.events.iter().any(|e|e.id==event.id&&e.state==EventState::Processing);
         if !active { self.personal_stops.lock().unwrap().remove(&key); return Ok(()); }
-        let answer=tokio::select! {
-            output=(tools.reason)(profile.clone(),request,attachment_roots)=>Some(output),
-            _=stop.notified()=>None,
+        let reach=self.personal_computer_reach(&snapshot,&profile);
+        let ended=Arc::new(tokio::sync::Notify::new());
+        let lease=match reach {
+            computer::Reach::Tools(access)=>self.personal_computer_turn(&snapshot.id,&profile,access,&mut request,&ended).await,
+            computer::Reach::Off(_)=>None,
         };
+        let computing=request.computer.is_some();
+        request.system.push_str(&computer::prompt(reach,computing));
+        let bytes=request.system.len();
+        if computing {
+            self.change_assistant(&snapshot.id,|assistant| {
+                if let Some(saved)=assistant.events.iter_mut().find(|e|e.id==event.id) { saved.computer_started=true; }
+                Ok(())
+            })?;
+        }
+        // Stop first: nothing of a stopped reply may run, and dropping the call ends its tools.
+        let answer=tokio::select! {
+            biased;
+            _=stop.notified()=>None,
+            _=ended.notified(),if computing=>Some(Err(computer::STOPPED.to_owned())),
+            output=(tools.reason)(profile.clone(),request,attachment_roots)=>Some(output),
+        };
+        drop(lease);
         self.personal_stops.lock().unwrap().remove(&key);
-        let Some(answer)=answer else { return Ok(()); };
+        let Some(answer)=answer else {
+            self.computer.revoke(Some(&computer::thread(&snapshot.id)),None);
+            return Ok(());
+        };
         match answer {
             Ok(out) => {
                 let cost = cost_entry("reply", &out, bytes, endpoint(&profile), now());
-                self.commit_reply(tools, &snapshot.id, &event.id, &text, parse_reply(&out.text), cost)
+                let mut reply = parse_reply(&out.text);
+                if out.text_only_computer { reply.reply = format!("{}\n\n{}", reply.reply, computer::TEXT_ONLY_NOTE); }
+                self.commit_reply(tools, &snapshot.id, &event.id, &text, reply, cost)
             }
             Err(error) => self.finish_event(&snapshot.id, &event.id, Err(error)),
         }
@@ -804,10 +833,12 @@ impl Host {
             let Some(event) = assistant.events.iter_mut().find(|e| e.id == event_id && e.state == EventState::Processing) else { return Ok(()) };
             let Err(error) = result else { event.state = EventState::Done; return Ok(()) };
             event.error = Some(error.clone());
-            if event.attempts >= MAX_EVENT_ATTEMPTS {
+            // Computer actions may have landed, so that reply never runs twice.
+            if event.attempts >= MAX_EVENT_ATTEMPTS || event.computer_started {
+                let repeat = if event.computer_started { " Anything already done on your computer stays done, and I won't repeat it." } else { "" };
                 event.state = EventState::Failed;
                 let id = event.id.clone();
-                assistant.post("system", "update", format!("I couldn't answer that: {error}"), None, Some(id), at);
+                assistant.post("system", "update", format!("I couldn't answer that: {error}{repeat}"), None, Some(id), at);
             } else {
                 event.state = EventState::Received;
             }
@@ -990,7 +1021,7 @@ impl Host {
                     let id = format!("pe-{}", assistant.counters.event);
                     assistant.events.push(PersonalEvent {
                         id, request_id: request, source: EventSource::Internal { what: format!("consolidate:{parent}") },
-                        received_at: at, state: EventState::Received, attempts: 0, error: None, spend_approved: false,
+                        received_at: at, state: EventState::Received, attempts: 0, error: None, spend_approved: false, computer_started: false,
                     });
                 }
             }
@@ -1422,7 +1453,7 @@ fn queue_report(assistant: &mut PersonalAssistant, task_id: &str, op_id: &str, a
     let id = format!("pe-{}", assistant.counters.event);
     assistant.events.push(PersonalEvent {
         id, request_id: request, source: EventSource::Internal { what: format!("report:{task_id}") },
-        received_at: at, state: EventState::Received, attempts: 0, error: None, spend_approved: false,
+        received_at: at, state: EventState::Received, attempts: 0, error: None, spend_approved: false, computer_started: false,
     });
 }
 
@@ -1854,6 +1885,7 @@ fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &st
 }
 
 pub(crate) mod browser;
+pub(crate) mod computer;
 pub(crate) mod connectors;
 mod context;
 pub(crate) mod gateway;

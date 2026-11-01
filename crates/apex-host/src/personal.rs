@@ -466,6 +466,10 @@ pub struct PersonalEvent {
     /// The human OK'd this reply's cost (over the budget, or unknown).
     #[serde(default)]
     pub spend_approved: bool,
+    /// This reply was given computer tools, so running it again could repeat
+    /// real actions. It settles once, whatever happens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub computer_started: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -824,11 +828,19 @@ impl PersonalAssistant {
     /// an operation that was attempted but never finished is now uncertain.
     pub(crate) fn recover(&mut self) -> bool {
         let mut changed = false;
+        let mut interrupted = Vec::new();
         for event in &mut self.events {
             if event.state == EventState::Processing {
-                event.state = EventState::Received;
+                event.state = if event.computer_started { EventState::Failed } else { EventState::Received };
+                if event.computer_started {
+                    event.error = Some(crate::personal_worker::COMPUTER_INTERRUPTED.into());
+                    interrupted.push(event.id.clone());
+                }
                 changed = true;
             }
+        }
+        for id in interrupted {
+            self.post("system", "update", crate::personal_worker::COMPUTER_INTERRUPTED.into(), None, Some(id), now());
         }
         for task in &mut self.tasks {
             if task.status == TaskStatus::Running {
@@ -1128,7 +1140,7 @@ impl crate::Host {
             };
             assistant.events.push(PersonalEvent {
                 id: event_id.clone(), request_id: request, source, received_at: at,
-                state, attempts: 0, error: None, spend_approved: false,
+                state, attempts: 0, error: None, spend_approved: false, computer_started: false,
             });
             assistant.prune_events();
             Ok((event_id, false))
@@ -1227,9 +1239,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_restart_never_replays_a_reply_that_had_computer_tools() {
+        let event=|id:&str,computer_started|PersonalEvent{id:id.into(),request_id:id.into(),source:EventSource::Human{text:"Close the tab".into()},received_at:0,state:EventState::Processing,attempts:1,error:None,spend_approved:false,computer_started};
+        let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        assistant.events=vec![event("plain",false),event("acted",true)];
+        assert!(assistant.recover());
+        assert_eq!(assistant.events[0].state,EventState::Received,"a tool-free reply still reruns");
+        assert_eq!(assistant.events[1].state,EventState::Failed);
+        assert_eq!(assistant.messages.last().unwrap().text,crate::personal_worker::COMPUTER_INTERRUPTED);
+    }
+
+    #[test]
     fn lifecycle_source_receipts_survive_event_pruning_until_explicit_purge() {
         let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[{"id":"pt-1","goal":"Task","completionCriteria":[],"targetHost":"h","status":"cancelled","fromEvent":"source","maxAttempts":3,"createdAt":0,"updatedAt":0,"deletedAt":1}]})).unwrap();
-        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into()},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false});}
+        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into()},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false});}
         assistant.prune_events();
         assert!(assistant.events.iter().any(|event|event.id=="source"),"source request authority cannot be discarded while a deleted task awaits Empty");
     }

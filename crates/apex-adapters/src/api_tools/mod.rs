@@ -47,6 +47,9 @@ pub(crate) struct ToolBox {
     /// Commands the bot runs. Stop ends them all.
     pub processes: Registry,
     pub mcp: mcp_client::Pool,
+    /// The host-issued computer server and nothing else: no files, commands,
+    /// web fetches or personal MCP servers.
+    pub computer_only: bool,
 }
 
 impl ToolBox {
@@ -66,6 +69,7 @@ impl ToolBox {
             },
             processes: Registry::new(context.process_registry.clone()),
             mcp: mcp_client::Pool::default(),
+            computer_only: false,
         }
     }
 }
@@ -164,7 +168,7 @@ enum Need {
 impl<'a> Turn<'a> {
     pub fn new(tools: &'a ToolBox, access: Access, plan: bool, own: Access, approver: &'a dyn Approver, progress: ProgressSink<'a>) -> Self {
         // Leave the MCP client's long-lived servers on the room folder across turns.
-        let servers = tools.mcp.servers(tools.env.cwd.as_deref());
+        let servers = if tools.computer_only { vec![] } else { tools.mcp.servers(tools.env.cwd.as_deref()) };
         if !servers.is_empty() {
             let menu: Vec<apex_core::server_request::ToolServer> = servers.iter().map(|s| s.name.clone().into()).collect();
             progress(Progress::ToolServers(&menu));
@@ -207,6 +211,9 @@ impl<'a> Turn<'a> {
 
     /// What to add to the bot's instructions, so it knows what it has.
     pub fn instructions(&self) -> String {
+        if self.tools.computer_only {
+            return "\nYour only tools are mcp_list_tools and mcp_call on the apex-computer server. Never say you did or saw something unless a tool result in this reply shows it.\n".into();
+        }
         let folder = self.roots.workspace.as_ref().map(|w| format!(" ({})", w.display())).unwrap_or_default();
         let mut out = format!(
             "\nYou have tools for working in the project folder{folder}: read, find and search files, edit files, run shell commands, and fetch web pages"
@@ -237,6 +244,14 @@ impl<'a> Turn<'a> {
 
     /// The tools offered now, as the API's `tools` list.
     pub fn definitions(&self) -> Vec<Value> {
+        let mut definitions = self.all_definitions();
+        if self.tools.computer_only {
+            definitions.retain(|t| matches!(t["function"]["name"].as_str(), Some("mcp_list_tools" | "mcp_call")));
+        }
+        definitions
+    }
+
+    fn all_definitions(&self) -> Vec<Value> {
         let path = json!({"type": "string", "description": "A path relative to the project folder, or absolute."});
         let mut out = vec![
             tool(
@@ -451,6 +466,9 @@ impl<'a> Turn<'a> {
     }
 
     async fn dispatch(&mut self, call: &ToolCall, args: &Value) -> (WorkStep, Result<Done, String>) {
+        if self.tools.computer_only && !matches!(call.name.as_str(), "mcp_list_tools" | "mcp_call") {
+            return (self.step(call, StepKind::Tool, "Refused tool", ""), Err("Only the computer tools are available in this conversation.".into()));
+        }
         let s = |key: &str| args[key].as_str().unwrap_or("").to_string();
         match call.name.as_str() {
             "read_file" | "list_dir" | "glob" | "grep" => {
@@ -926,6 +944,25 @@ mod tests {
 
     fn call(name: &str, arguments: Value) -> ToolCall {
         ToolCall { id: format!("call-{name}"), name: name.into(), arguments: arguments.to_string(), extra: None }
+    }
+
+    #[tokio::test]
+    async fn a_computer_only_turn_offers_and_runs_nothing_but_the_computer() {
+        let dir = std::env::temp_dir().join(format!("apex-computer-only-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("private.txt"), "PRIVATE").unwrap();
+        let tools = ToolBox { computer_only: true, ..toolbox(&dir) };
+        let progress = |_: Progress<'_>| {};
+        let computer = apex_core::ComputerTurn { relay: "/A/SpikeMCP".into(), thread_id: "assistant:a".into(), participant_id: "p".into(), token: "t".repeat(64) };
+        let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &NoApprover, &progress).with_computer(Some(&computer));
+        assert_eq!(names(&turn), ["mcp_list_tools", "mcp_call"]);
+        assert!(!turn.instructions().contains("shell"));
+        let text = turn.run(&call("read_file", json!({"path":"private.txt"}))).await.text;
+        assert!(!text.contains("PRIVATE"), "{text}");
+        let refused = turn.run(&call("run_command", json!({"command":"touch hacked"}))).await.text;
+        assert!(refused.contains("Only the computer tools"), "{refused}");
+        assert!(!dir.join("hacked").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn names(turn: &Turn<'_>) -> Vec<String> {

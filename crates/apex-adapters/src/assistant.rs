@@ -23,6 +23,22 @@ pub fn build_assistant(config: ParticipantConfig, context: &BuildContext) -> Res
     })
 }
 
+/// Models whose adapters can carry a host-issued computer server.
+pub fn computer_backend_supported(backend: &Backend) -> bool {
+    matches!(backend, Backend::OpenAiCompatible { .. } | Backend::Agent { tool: apex_core::AgentTool::ClaudeCode | apex_core::AgentTool::Codex | apex_core::AgentTool::Muse, .. })
+}
+
+/// `build_assistant`, plus the computer server from `TurnRequest::computer`
+/// and no other tool. A turn without that capability has no tools at all.
+pub fn build_computer_assistant(config: ParticipantConfig, context: &BuildContext) -> Result<Arc<dyn Participant>, String> {
+    assistant_profile_ok(&config)?;
+    if !computer_backend_supported(&config.backend) { return Err("This model has no computer tools.".into()); }
+    Ok(match config.backend {
+        Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config).with_attachment_roots(context.attachment_roots.clone()).with_computer_tools_only(context)),
+        _ => Arc::new(CliParticipant::new(config).with_context(context).with_computer_tools_only()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

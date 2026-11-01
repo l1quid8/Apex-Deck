@@ -7,6 +7,8 @@ use tokio::process::Command;
 
 pub(crate) struct Isolation {
     root: Staged,
+    /// The host-issued computer relay, when this run may start it.
+    computer: Option<PathBuf>,
     #[cfg(target_os = "linux")]
     bwrap: PathBuf,
 }
@@ -79,6 +81,7 @@ impl Isolation {
             .map_err(|_| failed("cannot bound project discovery"))?;
         let isolation = Self {
             root,
+            computer: None,
             #[cfg(target_os = "linux")]
             bwrap,
         };
@@ -134,6 +137,11 @@ impl Isolation {
         isolation.write("config/grok/config.toml", "[cli]\nuse_leader = false\nauto_update = false\n[compat.claude]\nmcps = false\n[compat.cursor]\nmcps = false\n[managed_mcps]\nenabled = false\ngateway_tools_enabled = false\n")?;
         isolation.write("gemini-system.json", r#"{"mcp":{"allowed":["__apex_gateway_no_mcp__"]},"mcpServers":{},"tools":{"core":[]},"extensions":{"enabled":false},"security":{"auth":{"selectedType":"oauth-personal"}}}"#)?;
         Ok(isolation)
+    }
+
+    pub(crate) fn with_computer(mut self, relay: Option<PathBuf>) -> Self {
+        self.computer = relay;
+        self
     }
 
     fn write(&self, relative: &str, value: &str) -> Result<(), ParticipantError> {
@@ -261,6 +269,18 @@ impl Isolation {
                     ));
                 }
             }
+            // The signed helper bundle and its one control socket, nothing beside them.
+            // The turn token in the child's environment stays the authority.
+            let mut computer = String::new();
+            if let Some(relay) = &self.computer {
+                let bundle = relay.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
+                    .ok_or_else(|| failed("invalid computer relay"))?;
+                let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| failed("no home folder"))?;
+                let socket = home.join("Library/Application Support/Apex Unified Computer Use/control.sock");
+                let folder = socket.parent().ok_or_else(|| failed("invalid computer socket"))?;
+                read.push_str(&format!(" (subpath {}) (subpath {})", quote(bundle)?, quote(folder)?));
+                computer = format!("(allow network-outbound (literal {}))\n", quote(&socket)?);
+            }
             // Permit runtime libraries and this run's private files only.
             // Absolute paths, symlinks and tool subprocesses
             // remain subject to this kernel boundary. No inherited keychain access.
@@ -280,7 +300,7 @@ impl Isolation {
 (allow network-outbound (remote ip "*:443" "*:80"))
 (deny network-outbound (remote ip "localhost:*"))
 (allow network-outbound (literal "/private/var/run/mDNSResponder"))
-(allow mach-lookup
+{}(allow mach-lookup
  (global-name "com.apple.system.opendirectoryd.libinfo")
  (global-name "com.apple.system.logger")
  (global-name "com.apple.system.notification_center")
@@ -291,7 +311,8 @@ impl Isolation {
 "#,
                 quote(&root)?,
                 read,
-                quote(&root)?
+                quote(&root)?,
+                computer
             );
             self.write("sandbox.sb", &profile)?;
             let mut command = Command::new("/usr/bin/sandbox-exec");
@@ -610,6 +631,19 @@ mod tests {
         assert_eq!(staged["old-client"]["refresh_token"],"");assert_eq!(staged["current-client"]["refresh_token"],"");
         assert_eq!(staged["current-client"]["key"],"current");assert_eq!(staged["old-client"]["expires_at"],50);
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),input);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "live: needs the installed Unified Computer Use helper; status only, no turn"]
+    async fn computer_relay_reaches_the_helper_inside_the_sandbox() {
+        let relay = PathBuf::from("/Applications/Apex Deck.app/Contents/Resources/Unified Computer Use.app/Contents/Helpers/SpikeMCP");
+        let closed = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap();
+        let refused = closed.command(relay.to_str().unwrap(), &["--status".into()], None).unwrap().output().await.unwrap();
+        assert!(!String::from_utf8_lossy(&refused.stdout).contains("accessibilityTrusted"), "no grant, no helper");
+        let open = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap().with_computer(Some(relay.clone()));
+        let output = open.command(relay.to_str().unwrap(), &["--status".into()], None).unwrap().output().await.unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains("accessibilityTrusted"), "{}", String::from_utf8_lossy(&output.stderr));
     }
 
     #[cfg(target_os="macos")]

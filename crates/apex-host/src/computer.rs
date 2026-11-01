@@ -25,11 +25,14 @@ struct Active {
     participant: String,
     token: String,
     socket: std::os::unix::net::UnixStream,
+    /// Told when an assistant's reply loses this authority.
+    ended: Option<Arc<tokio::sync::Notify>>,
 }
 #[cfg(unix)]
 impl Drop for Active {
     fn drop(&mut self) {
         browser::release(&self.token);
+        if let Some(ended) = &self.ended { ended.notify_one(); }
         let _ = self.socket.shutdown(std::net::Shutdown::Both);
     }
 }
@@ -116,6 +119,9 @@ impl Computer {
             #[cfg(unix)]
             active: Mutex::default(),
         })
+    }
+    pub(crate) fn state(&self) -> (bool, bool) {
+        (self.enabled.load(Ordering::SeqCst), self.stopped.load(Ordering::SeqCst))
     }
     fn cursor_prefs(&self) -> crate::cursor_overlay::CursorOverlayPrefs {
         crate::cursor_overlay::load(&self.data_root)
@@ -303,6 +309,9 @@ pub(crate) struct TurnHook {
     pub computer: Arc<Computer>,
     pub thread: String,
     pub work_room: bool,
+    /// Set for an assistant conversation, which is no room: Stop ends the
+    /// authority and the waiting reply instead of stopping room turns.
+    pub ended: Option<Arc<tokio::sync::Notify>>,
 }
 impl TurnLifecycleHook for TurnHook {
     fn revoke(&self, id: Option<&ParticipantId>) {
@@ -318,10 +327,10 @@ impl TurnLifecycleHook for TurnHook {
         Box::pin(async move {
             request.computer = None;
             if !self.work_room
-                || !self
+                || (self.ended.is_none() && !self
                     .host
                     .upgrade()
-                    .is_some_and(|host| host.computer_participant_supported(&self.thread, id))
+                    .is_some_and(|host| host.computer_participant_supported(&self.thread, id)))
                 || !self.computer.enabled.load(Ordering::SeqCst)
                 || self.computer.stopped.load(Ordering::SeqCst)
             {
@@ -384,6 +393,7 @@ impl TurnLifecycleHook for TurnHook {
                             participant: id.as_str().into(),
                             token: token.clone(),
                             socket: shutdown,
+                            ended: self.ended.clone(),
                         },
                     );
                 }
@@ -399,6 +409,7 @@ impl TurnLifecycleHook for TurnHook {
                     id.clone(),
                     token.clone(),
                 );
+                let (computer, assistant) = (Arc::downgrade(&self.computer), self.ended.is_some());
                 let link = Arc::new(BrowserLink {
                     computer: Arc::downgrade(&self.computer),
                     thread: thread.clone(),
@@ -434,7 +445,9 @@ impl TurnLifecycleHook for TurnHook {
                             continue;
                         }
                         if message["method"] == "unified/stop" {
-                            if let Some(host) = host.upgrade() {
+                            if assistant {
+                                if let Some(computer) = computer.upgrade() { computer.revoke(Some(&thread), None); }
+                            } else if let Some(host) = host.upgrade() {
                                 host.room_stop(thread.clone(), None);
                             }
                             break;
@@ -728,7 +741,7 @@ mod tests {
         let computer = Computer::new(&data);
         computer.set_enabled(true).unwrap();
         let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
-        computer.active.lock().unwrap().insert("token".into(), Active { thread: "t".into(), participant: "p".into(), token: "token".into(), socket });
+        computer.active.lock().unwrap().insert("token".into(), Active { thread: "t".into(), participant: "p".into(), token: "token".into(), socket, ended: None });
         let (writer, reader) = tokio::net::UnixStream::pair().unwrap();
         let link = BrowserLink { computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
         let link = Arc::new(link);
@@ -753,6 +766,21 @@ mod tests {
         assert!(link.live(&running), "another thread's revoke leaves this one alone");
         computer.revoke(Some("t"), None);
         assert!(!link.live(&running), "Stop or any revoke ends every step that follows");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn losing_the_authority_tells_the_waiting_reply() {
+        let data = std::env::temp_dir().join(format!("apex-computer-ended-{}", std::process::id()));
+        std::fs::create_dir_all(&data).unwrap();
+        let computer = Computer::new(&data);
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let ended = Arc::new(tokio::sync::Notify::new());
+        computer.active.lock().unwrap().insert("token".into(), Active { thread: "assistant:a".into(), participant: "p".into(), token: "token".into(), socket, ended: Some(ended.clone()) });
+        computer.revoke(Some("assistant:b"), None);
+        assert!(tokio::time::timeout(Duration::from_millis(20), ended.notified()).await.is_err(), "another assistant's revoke leaves this reply alone");
+        computer.revoke(Some("assistant:a"), None);
+        tokio::time::timeout(Duration::from_secs(1), ended.notified()).await.expect("Stop reaches the reply");
         std::fs::remove_dir_all(data).unwrap();
     }
     #[test]
@@ -795,6 +823,7 @@ mod tests {
                 participant: "p".into(),
                 token: "old".into(),
                 socket,
+                ended: None,
             },
         );
         drop(Lease {

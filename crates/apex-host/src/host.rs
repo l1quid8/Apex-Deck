@@ -1117,7 +1117,7 @@ impl Host {
         answers.store(true, Ordering::SeqCst);
         let approvals = room.approvals_handle();
         let checkpoint = Arc::new(Mutex::new(SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
-        let mut runtime = ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(crate::computer::TurnHook { host: Arc::downgrade(self), computer: Arc::clone(&self.computer), thread: id.clone(), work_room: !kind.is_chat() }));
+        let mut runtime = ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(crate::computer::TurnHook { host: Arc::downgrade(self), computer: Arc::clone(&self.computer), thread: id.clone(), work_room: !kind.is_chat(), ended: None }));
         if let Some(cwd) = &context.cwd {
             runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
             let this = Arc::downgrade(self);
@@ -1770,7 +1770,7 @@ impl Host {
     }
 
     pub(crate) fn computer_participant_supported(&self,thread:&str,id:&ParticipantId)->bool {
-        self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| matches!(p.backend,apex_core::Backend::OpenAiCompatible {..} | apex_core::Backend::Agent {tool:apex_core::AgentTool::ClaudeCode | apex_core::AgentTool::Codex | apex_core::AgentTool::Muse,..})))
+        self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| apex_adapters::computer_backend_supported(&p.backend)))
     }
     pub(crate) fn room_is_busy(&self, id: &str) -> bool { self.rooms.lock().unwrap().get(id).is_some_and(|handle| handle.runtime.busy()) }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }

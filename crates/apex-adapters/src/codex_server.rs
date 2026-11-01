@@ -407,9 +407,9 @@ async fn mcp_inventory(
 
 /// Disabled servers can remain in the status response, but none may expose
 /// tools or resources. Missing or unknown inventory shapes fail closed.
-fn isolated_mcp_inventory(servers: &[Value]) -> bool {
+fn isolated_mcp_inventory(servers: &[Value], computer: bool) -> bool {
     servers.iter().all(|server| {
-        server["tools"].as_object().is_some_and(|tools| tools.is_empty())
+        (computer && server["name"].as_str() == Some(crate::computer::SERVER)) || server["tools"].as_object().is_some_and(|tools| tools.is_empty())
             && ["resources", "resourceTemplates"].iter().all(|field| {
                 server.get(*field).is_some_and(|value| value.as_array().is_some_and(|values| values.is_empty()))
             })
@@ -425,7 +425,11 @@ pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
         "ephemeral": true,
     });
     if turn.tools_disabled {
-        params["developerInstructions"] = json!("Answer as the assistant defined in the supplied conversation. This is a text-only conversation: no tools or subagents are available. Task execution belongs to the host approval workflow.");
+        params["developerInstructions"] = json!(if turn.trusted_computer {
+            "Answer as the assistant defined in the supplied conversation. The only tools here are the apex-computer MCP tools; no shell, file, web or subagent tools are available. Other task execution belongs to the host approval workflow."
+        } else {
+            "Answer as the assistant defined in the supplied conversation. This is a text-only conversation: no tools or subagents are available. Task execution belongs to the host approval workflow."
+        });
     }
     if let Some(tier) = turn.service_tier {
         params["serviceTier"] = json!(tier);
@@ -659,7 +663,7 @@ pub(crate) async fn run_with_images(
         let (policy, menu, catalog) = mcp_inventory(&mut stdin, &mut lines, turn.mcp_disabled)
             .await
             .map_err(TurnError::Failed)?;
-        if turn.mcp_disabled && !isolated_mcp_inventory(&catalog) {
+        if turn.mcp_disabled && !isolated_mcp_inventory(&catalog, turn.trusted_computer) {
             return Err(TurnError::Failed("Codex still exposes MCP servers after isolation; gateway turn refused.".into()));
         }
         tool_catalog = catalog;
@@ -787,7 +791,8 @@ pub(crate) async fn run_with_images(
         };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
             let item = &message["params"]["item"];
-            if turn.tools_disabled && message["method"] == "item/started" && !matches!(item["type"].as_str(),Some("userMessage"|"agentMessage"|"reasoning"|"contextCompaction")) {
+            let computer_item = turn.trusted_computer && item["type"] == "mcpToolCall" && item["server"].as_str() == Some(crate::computer::SERVER);
+            if turn.tools_disabled && !computer_item && message["method"] == "item/started" && !matches!(item["type"].as_str(),Some("userMessage"|"agentMessage"|"reasoning"|"contextCompaction")) {
                 return Err(TurnError::Failed("A tool was requested during a text-only assistant reply; the turn was stopped.".into()));
             }
             if message["method"] == "item/started" && item["type"] == "mcpToolCall" {
@@ -831,7 +836,7 @@ pub(crate) async fn run_with_images(
                             eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
                                 params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
                         }
-                        let decision = if turn.mcp_disabled || params["threadId"] != thread {
+                        let decision = if (turn.mcp_disabled && !turn.trusted_computer) || params["threadId"] != thread {
                             Decision::Reject
                         } else if let Some(action) = mcp_question(params) {
                             // App access is a separate decision even if its arguments
@@ -1194,11 +1199,15 @@ cat > /dev/null"#;
 
     #[test]
     fn gateway_inventory_requires_no_tools_or_resources() {
-        assert!(super::isolated_mcp_inventory(&[]));
-        assert!(super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [], "resourceTemplates": []})]));
-        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {"post": {}}})]));
-        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [{}]})]));
-        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({})]));
+        assert!(super::isolated_mcp_inventory(&[], false));
+        assert!(super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [], "resourceTemplates": []})], false));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {"post": {}}})], false));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [{}]})], false));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({})], false));
+        let computer = serde_json::json!({"name": "apex-computer", "tools": {"read_screen": {}}});
+        assert!(!super::isolated_mcp_inventory(&[computer.clone()], false), "only a computer turn may expose it");
+        assert!(super::isolated_mcp_inventory(&[computer], true));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"name": "other", "tools": {"post": {}}})], true), "a computer turn exposes nothing else");
     }
 
     #[test]

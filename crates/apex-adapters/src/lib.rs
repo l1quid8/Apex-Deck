@@ -9,7 +9,7 @@
 
 mod ansi;
 mod assistant;
-pub use assistant::{assistant_profile_ok, build_assistant};
+pub use assistant::{assistant_profile_ok, build_assistant, build_computer_assistant, computer_backend_supported};
 mod api_tools;
 mod attachments;
 mod api_info;

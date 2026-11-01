@@ -124,7 +124,7 @@ impl crate::Host {
                 }
             }
             apply_settings(assistant, settings)
-        })
+        }).inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
     }
 
     /// A standing rule only ever makes the assistant more careful.
@@ -137,7 +137,7 @@ impl crate::Host {
             let rule_id = assistant.next_rule_id();
             assistant.rules.push(StandingRule { id: rule_id, text: text.to_owned(), class, mode, created_at: now() });
             Ok(())
-        })
+        }).inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
     }
 
     pub fn personal_rule_remove(&self, id: &str, rule_id: &str) -> Result<Changed, String> {
