@@ -130,7 +130,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [focusedResultIdx, setFocusedResultIdx] = useState(-1);
-  const pendingOps = useRef<Map<string, number>>(new Map());
+  const pendingOps = useRef<Map<string, { seq: number; state: 'saving' | 'saved' | 'error' }>>(new Map());
   const idleTimer = useRef<any>(null);
   const lastSettingsJson = useRef<string>('');
   const expandedAdvanced = useRef<Set<string>>(new Set());
@@ -270,56 +270,47 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
     setSaveState('saving');
   }, [settings]);
 
-  // Listen for storage save errors or successful save events
+  // Listen for storage save errors or successful save events.
   useEffect(() => {
+    const update = () => {
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+      const states = [...pendingOps.current.values()].map(op => op.state);
+      const state = states.includes('error') ? 'error' : states.includes('saving') ? 'saving' : 'saved';
+      setSaveState(state);
+      if (state === 'saved') idleTimer.current = setTimeout(() => {
+        setSaveState(current => current === 'saved' ? 'idle' : current);
+      }, 1800);
+    };
+    const detailOf = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      return detail && typeof detail.source === 'string' && Number.isSafeInteger(detail.seq)
+        ? detail as {source: string; seq: number} : null;
+    };
     const onSavePending = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { seq?: number; source?: string } | undefined;
-      const source = detail?.source || 'settings';
-      const seq = detail?.seq ?? Date.now();
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-      pendingOps.current.set(source, Math.max(pendingOps.current.get(source) ?? 0, seq));
-      setSaveState('saving');
+      const detail = detailOf(e);
+      if (!detail) return;
+      const current = pendingOps.current.get(detail.source);
+      if (current && current.seq >= detail.seq) return;
+      pendingOps.current.set(detail.source, {seq: detail.seq, state: 'saving'});
+      update();
     };
-
-    const onSaved = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { seq?: number; source?: string } | undefined;
-      const source = detail?.source || 'settings';
-      const seq = detail?.seq;
-
-      if (seq != null) {
-        const latestPending = pendingOps.current.get(source);
-        if (latestPending != null && seq < latestPending) {
-          // Stale completion from an older operation; a newer edit is pending. Do not mark saved.
-          return;
-        }
-      }
-      pendingOps.current.delete(source);
-
-      // Only transition to 'saved' when ALL pending persistence operations have completed
-      if (pendingOps.current.size === 0) {
-        setSaveState('saved');
-        if (idleTimer.current) clearTimeout(idleTimer.current);
-        idleTimer.current = setTimeout(() => {
-          setSaveState((curr) => curr === 'saved' ? 'idle' : curr);
-        }, 1800);
-      }
+    const finish = (e: Event, state: 'saved' | 'error') => {
+      const detail = detailOf(e);
+      if (!detail) return;
+      const current = pendingOps.current.get(detail.source);
+      if (!current || current.seq !== detail.seq || current.state !== 'saving') return;
+      pendingOps.current.set(detail.source, {seq: detail.seq, state});
+      update();
     };
-
-    const onStorageError = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { seq?: number; source?: string; error?: string } | string | undefined;
-      const source = (typeof detail === 'object' && detail?.source) || 'settings';
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-      pendingOps.current.delete(source);
-      setSaveState('error');
-    };
-
-    window.addEventListener('settings-save-pending' as any, onSavePending);
-    window.addEventListener('settings-saved' as any, onSaved);
-    window.addEventListener('settings-save-error' as any, onStorageError);
+    const onSaved = (e: Event) => finish(e, 'saved');
+    const onStorageError = (e: Event) => finish(e, 'error');
+    window.addEventListener('settings-save-pending', onSavePending);
+    window.addEventListener('settings-saved', onSaved);
+    window.addEventListener('settings-save-error', onStorageError);
     return () => {
-      window.removeEventListener('settings-save-pending' as any, onSavePending);
-      window.removeEventListener('settings-saved' as any, onSaved);
-      window.removeEventListener('settings-save-error' as any, onStorageError);
+      window.removeEventListener('settings-save-pending', onSavePending);
+      window.removeEventListener('settings-saved', onSaved);
+      window.removeEventListener('settings-save-error', onStorageError);
       if (idleTimer.current) clearTimeout(idleTimer.current);
     };
   }, []);

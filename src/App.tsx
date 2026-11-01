@@ -1,3 +1,4 @@
+import { nextSettingsSaveSequence } from "./settingsSaveSequence";
 import { assistantSidebarPanes, assistantThreadKey } from './assistantSidebar';
 import { AssistantBrowser, type AssistantBrowserPresentation } from './AssistantBrowser';
 import { chatFolder } from "./worktreeMount";
@@ -212,7 +213,6 @@ export function App() {
   /** False until settings.json has been read, so a file that can't be read is never overwritten. */
   const settingsRead = useRef(false);
   const settingsQueue = useRef<Promise<void>>(Promise.resolve());
-  const settingsSaveSeq = useRef(0);
   const closeSettings = useCallback(() => setSettingsOpen(null), []);
   // The mod panel's Options button opens Settings → Mods.
   useEffect(() => {
@@ -666,7 +666,7 @@ export function App() {
   // Preservation: failed saves retain local value for retry (queue keeps pending value), stale completions not shown as success due to versioned operation tracking.
   useEffect(() => {
     if (!backend || !settingsRead.current) return;
-    const seq = ++settingsSaveSeq.current;
+    const seq = nextSettingsSaveSequence();
     try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'settings' } })); } catch {}
     settingsQueue.current = settingsQueue.current.catch(() => {}).then(async () => {
       await backend.settingsSave(settings);

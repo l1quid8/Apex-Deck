@@ -242,7 +242,7 @@ mod tests {
     fn nullable_fields_serialize_as_null() {
         let prefs = CursorOverlayPrefs::default();
         let val = serde_json::to_value(&prefs).unwrap();
-        assert_eq!(val["fill"], serde_json::Value::Null, "fill must serialize as null to allow Swift helper to clear it");
-        assert_eq!(val["customImage"], serde_json::Value::Null, "customImage must serialize as null to allow Swift helper to clear it");
+        assert_eq!(val.get("fill"), Some(&serde_json::Value::Null), "fill must serialize as null to allow Swift helper to clear it");
+        assert_eq!(val.get("customImage"), Some(&serde_json::Value::Null), "customImage must serialize as null to allow Swift helper to clear it");
     }
 }

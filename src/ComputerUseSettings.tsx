@@ -1,3 +1,4 @@
+import { nextSettingsSaveSequence } from "./settingsSaveSequence";
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Backend } from './backend';
 
@@ -64,7 +65,6 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
   const [busy, setBusy] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const cursorOpSeq = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -103,7 +103,7 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
   }, [backend.demo, refresh]);
 
   const act = async (command: string, args?: Record<string, unknown>) => {
-    const seq = ++cursorOpSeq.current;
+    const seq = nextSettingsSaveSequence();
     try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'cursor' } })); } catch {}
     setBusy(true); setError('');
     try {
@@ -125,7 +125,7 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
   };
 
   const commitPrefs = async (next: CursorOverlayPrefs) => {
-    const seq = ++cursorOpSeq.current;
+    const seq = nextSettingsSaveSequence();
     try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'cursor' } })); } catch {}
     const prev = prefs;
     setPrefs(next);
@@ -190,7 +190,7 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
       r.onerror = () => reject(new Error('read failed'));
       r.readAsDataURL(file);
     });
-    const seq = ++cursorOpSeq.current;
+    const seq = nextSettingsSaveSequence();
     try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'cursor' } })); } catch {}
     setBusy(true); setError('');
     try {

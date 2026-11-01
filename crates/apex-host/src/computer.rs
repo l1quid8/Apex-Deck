@@ -587,18 +587,15 @@ impl Host {
     }
 
     pub async fn computer_reset_cursor_overlay(&self) -> Result<Value, String> {
-        let prefs = crate::cursor_overlay::reset(&self.computer.data_root).map_err(|e| e)?;
+        let prefs = crate::cursor_overlay::CursorOverlayPrefs::default();
         #[cfg(unix)]
-        {
-            if let Ok(mut stream) = connect().await {
-                // Prefer dedicated reset RPC, fallback to set overlay
-                if rpc(&mut stream, "unified/reset-cursor-overlay", json!({})).await.is_err() {
-                    if let Ok(mut s2) = connect().await {
-                        let _ = rpc(&mut s2, "unified/set-cursor-overlay", json!({ "cursorOverlay": prefs.clone() })).await;
-                    }
-                }
-            }
+        if let Ok(mut stream) = connect().await {
+            rpc(&mut stream, "unified/set-cursor-overlay", json!({"cursorOverlay": prefs})).await
+                .map_err(|error| format!("Helper failed to reset cursor overlay: {error}"))?;
         }
+        // Do not replace persisted preferences or remove custom images until an
+        // online helper has accepted the full default state. Offline changes sync later.
+        crate::cursor_overlay::reset(&self.computer.data_root)?;
         Ok(self.computer_status().await)
     }
     pub async fn computer_set_enabled(&self, enabled: bool) -> Result<Value, String> {
