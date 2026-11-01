@@ -1,3 +1,4 @@
+import CoreGraphics
 import Darwin
 import Foundation
 import XCTest
@@ -54,6 +55,33 @@ final class ServerPrivacyTests: XCTestCase {
       XCTAssertEqual(($0 as? Refusal)?.code, "cancelled_or_stopped")
     }
     XCTAssertNil(server.snapshot)
+  }
+
+  func testHumanInputNeverEndsAReplyButStopDoes() throws {
+    let server = Server()
+    let state = ClientSession()
+    let turn: [String: Any] = ["threadId": "thread", "participantId": "agent", "turnToken": String(repeating: "a", count: 64),
+      "enabled": true, "effectiveAccess": "full", "grantScope": "scope"]
+    _ = try server.turns.register(turn, control: -1)
+    state.token = try server.turns.bind(turn, latch: state.latch)
+    state.latch.setTap(true)
+    state.latch.event(); state.latch.motion()
+    XCTAssertNoThrow(try server.replyCheck(state, "reply"), "one mouse move closed the bot's connection")
+    state.latch.stop()
+    XCTAssertThrowsError(try server.replyCheck(state, "reply"))
+  }
+
+  func testOnlyPointerMotionLeavesAReadingUsable() throws {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let tap = ActivityTap(latch)
+    let epoch = latch.state().0
+    tap.outside(.mouseMoved)
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch))
+    for type: CGEventType in [.keyDown, .flagsChanged, .leftMouseDown, .leftMouseDragged, .scrollWheel] {
+      let fresh = latch.state().0
+      tap.outside(type)
+      XCTAssertThrowsError(try latch.check("x", epoch: fresh), "\(type.rawValue)")
+    }
   }
 
   func testRefusedRequestContainsOnlyFailureCode() throws {

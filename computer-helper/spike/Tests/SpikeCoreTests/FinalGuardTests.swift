@@ -61,6 +61,50 @@ final class FinalGuardTests: XCTestCase {
     XCTAssertThrowsError(try latch.dispatch("x", epoch: epoch, validate: { latch.cancel("x") }, post: { sent = true }))
     XCTAssertFalse(sent)
   }
+  func testPointerMotionKeepsAReadingButInterruptsAnAction() throws {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    latch.motion()
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch), "a hand on the mouse must not spoil a reading")
+    latch.beginAction("x")
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch))
+    var sent = false
+    XCTAssertThrowsError(try latch.dispatch("x", epoch: epoch, validate: { latch.motion() }, post: { sent = true })) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "human_input_during_action")
+    }
+    XCTAssertFalse(sent)
+    latch.endAction("x")
+    XCTAssertNoThrow(try latch.check("x", epoch: epoch), "nothing was delivered, so the same reading can retry")
+  }
+  func testInputMakesAReadingStaleUntilAFreshOneAfterItStops() throws {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let stale = latch.state().0
+    latch.event()
+    XCTAssertThrowsError(try latch.check("x", epoch: stale)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "human_activity_changed")
+    }
+    var sent = 0
+    try latch.dispatch("x", epoch: latch.state().0, validate: {}, post: { sent += 1 })
+    XCTAssertEqual(sent, 1)
+  }
+  func testInternalInvalidationIsNotBlamedOnTheHuman() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    latch.invalidate()
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "observation_invalidated")
+    }
+  }
+  func testTapLossDuringAnActionIsNotBlamedOnTheHuman() {
+    let latch = Latch(); latch.start(); latch.setTap(true)
+    let epoch = latch.state().0
+    latch.beginAction("x")
+    latch.event(broken: true)
+    latch.setTap(true)
+    XCTAssertThrowsError(try latch.check("x", epoch: epoch)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "observation_invalidated")
+    }
+  }
   func testUnchangedQueryDispatchesOnce() throws {
     let latch = Latch(); latch.start(); latch.setTap(true)
     var sent = 0

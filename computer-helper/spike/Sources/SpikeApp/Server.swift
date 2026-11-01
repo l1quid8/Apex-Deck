@@ -45,6 +45,10 @@ final class Server {
       DispatchQueue.global().async { self.send(["jsonrpc": "2.0", "method": "unified/stop", "params": params], fd); close(fd) }
     }
   }
+  /// A failed reply closes the bot's connection, so only Stop or cancellation may fail one.
+  func replyCheck(_ state: ClientSession, _ request: String) throws {
+    try turns.check(state.token); try state.latch.check(request)
+  }
   func start() {
     activity.start()
     DispatchQueue.global().async { self.listen() }
@@ -183,9 +187,8 @@ final class Server {
           }
           let request = String(describing: id)
           let result = try self.call(params, id: request)
-          let epoch = params["name"] as? String == "list_apps" ? state.latch.state().0 : (self.snapshot?.epoch ?? state.latch.state().0)
           _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": result], fd: client, output: self.output,
-            check: { try self.turns.check(state.token); try state.latch.check(request, epoch: epoch) },
+            check: { try self.replyCheck(state, request) },
             invalidate: { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); state.latch.stop() })
         } catch let error as Refusal {
           let code = state.engine.failureCode(error.code)
@@ -212,18 +215,20 @@ final class Server {
   }
   func observe(id: String, epoch: UInt64? = nil, allowBackground: Bool = true) throws -> Snapshot {
     try checkProofHost()
+    // Without a held epoch this is a plain reading, which input never refuses. It records
+    // the count from its start, so input that overlaps it still blocks acting on it.
     let expected = epoch ?? latch.state().0
-    try latch.check(id, epoch: expected)
+    try latch.check(id, epoch: epoch)
     // Foreground path first (focused window), fallback to background enumeration if allowed
     do {
       let fresh = try ax.capture(epoch: expected)
-      try latch.check(id, epoch: expected)
+      try latch.check(id, epoch: epoch)
       return fresh
     } catch {
       if allowBackground {
         // Try background-aware capture (explicit window selection without requiring focus)
         let bg = try ax.captureBestAvailable(epoch: expected)
-        try latch.check(id, epoch: expected)
+        try latch.check(id, epoch: epoch)
         return bg
       }
       throw error
@@ -290,9 +295,11 @@ final class Server {
       // Visual overlay: show target before physical click
       CursorOverlayIntegration.showAtImagePoint(x: x, y: y, scope: scope, label: "Click (\(Int(x)),\(Int(y)))", action: .point)
       activeState.imageScope = nil
+      latch.beginAction(id); defer { latch.endAction(id) }
       try input.point(x: x, y: y, scope: scope, s: s, id: id)
+      latch.endAction(id)
       engineSession.recordUnverifiedInput()
-      snapshot = try observe(id: id, epoch: s.epoch)
+      snapshot = try observe(id: id)
       CursorOverlayIntegration.hideAfterAction()
     } else if name != "request_app" {
       // press_key stays foreground-only (global keyboard), other AX actions allow background
@@ -367,6 +374,7 @@ final class Server {
     if name == "read_screen" { guard args.isEmpty else { throw Refusal("unexpected_arguments") }; snapshot = try observe(id: id); return snapshot!.output }
     guard let token = activeState.token, try turns.canControl(token) else { throw Refusal("observation_only_access") }
     guard let s = snapshot, args["snapshot"] as? String == s.id, engineSession.current?.id == s.id else { throw Refusal("fresh_snapshot_required") }
+    latch.beginAction(id); defer { latch.endAction(id) }
     switch name {
     case "click":
       guard Set(args.keys) == ["snapshot", "element"], let number = args["element"] as? Int else { throw Refusal("invalid_arguments") }
@@ -392,7 +400,8 @@ final class Server {
       try engineSession.scroll(element: number, direction: direction, amount: amount, s: s, id: id, latch: latch, ax: ax)
     default: throw Refusal("unknown_tool")
     }
-    snapshot = try observe(id: id, epoch: s.epoch)
+    latch.endAction(id)
+    snapshot = try observe(id: id)
     return snapshot!.output
   }
   static var tools: [[String: Any]] {

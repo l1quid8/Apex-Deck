@@ -151,17 +151,18 @@ extension Accessibility {
   }
 
   /// Validation for background AX read + AX-only click.
-  /// - Checks app identity (bundle/identity), PID, launch, epoch, termination.
+  /// - Checks app identity (bundle/identity), PID, launch, termination.
   /// - For targeted actions: selected window still present in kAXWindows, PID/safe,
   ///   document unchanged (if tracked), focus fingerprint unchanged when focus is action target.
   /// Does NOT require frontmostApplication.
-  func validateBackground(_ s: Snapshot, epoch: UInt64) throws -> AXUIElement? {
+  func validateBackground(_ s: Snapshot) throws -> AXUIElement? {
     try verifyIdentity?(s.app)
-    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, epoch == s.epoch else {
-      throw Refusal("target_or_activity_changed")
+    guard trusted() else { throw Refusal("accessibility_not_trusted") }
+    guard Policy.target(s.app.bundleIdentifier ?? ""), !s.app.isTerminated else {
+      throw Refusal("target_changed")
     }
     // Handle optional launchDate on Jigga branch
-    guard s.app.launchDate == s.launch else { throw Refusal("target_or_activity_changed") }
+    guard s.app.launchDate == s.launch else { throw Refusal("target_changed") }
 
     // Window presence + document fingerprint checks for targeted actions
     if let snapWindow = s.window {

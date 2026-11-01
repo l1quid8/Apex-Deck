@@ -19,9 +19,18 @@ final class ActivityTap {
     listenersLock.lock(); let values = Array(listeners.values); listenersLock.unlock()
     body(latch); for value in values { body(value) }
   }
-  func invalidateObservations() { all { $0.event() } }
+  func invalidateObservations() { all { $0.invalidate() } }
+  /// Input that did not come from this helper. A bot may think for many seconds
+  /// after a reading, so a hand resting on the mouse must not spoil it.
+  func outside(_ type: CGEventType) { all { type == .mouseMoved ? $0.motion() : $0.event() } }
   func stopAll() { all { $0.stop() } }
   private func health(_ healthy: Bool) { all { $0.setTap(healthy) } }
+  /// macOS can switch a tap off. Input went unseen, so readings stay invalid, but the guard must not stay dead.
+  func recoverTap() {
+    guard let tap = tap else { return }
+    CGEvent.tapEnable(tap: tap, enable: true)
+    health(CGEvent.tapIsEnabled(tap: tap))
+  }
   func start() {
     guard CGPreflightListenEventAccess() else {
       health(false)
@@ -42,12 +51,13 @@ final class ActivityTap {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
           owner.latch.count("tapDisabled")
           owner.all { $0.event(broken: true) }
+          owner.recoverTap()
         } else {
           let own = event.getIntegerValueField(.eventSourceUserData) == owner.tag
             || event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(ProcessInfo.processInfo.processIdentifier)
           let keyboard = type == .keyDown || type == .keyUp || type == .flagsChanged
           owner.latch.count((own ? "ownTagged" : "other") + (keyboard ? "Keyboard" : "Mouse"))
-          if !own { owner.all { $0.event() } }
+          if !own { owner.outside(type) }
         }
         return Unmanaged.passUnretained(event)
       }, userInfo: Unmanaged.passUnretained(self).toOpaque())
@@ -72,9 +82,9 @@ final class Input {
     self.activity = activity
   }
   func guardState(_ s: Snapshot, _ id: String, _ deadline: Double) throws -> AXUIElement {
-    try latch.check(id)
+    try latch.check(id, epoch: s.epoch)
     guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("action_deadline") }
-    let focus = try ax.validate(s, epoch: latch.state().0)
+    let focus = try ax.validate(s)
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier else {
       throw Refusal("foreign_focus")
     }

@@ -38,13 +38,13 @@ final class WindowScreenshot {
   let latch: Latch
   init(ax: Accessibility, latch: Latch) { self.ax = ax; self.latch = latch }
 
-  private func wait<T>(_ id: String, epoch: UInt64, deadline: Double,
+  private func wait<T>(_ id: String, deadline: Double,
                        start: (@escaping (Result<T, Error>) -> Void) -> Void) throws -> T {
-    try latch.check(id, epoch: epoch)
+    try latch.check(id)
     let result = CaptureResult<T>()
     start { result.complete($0) }
     while true {
-      try latch.check(id, epoch: epoch)
+      try latch.check(id)
       guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("screenshot_deadline") }
       if let value = result.take() { return try value.get() }
       Thread.sleep(forTimeInterval: 0.01)
@@ -55,13 +55,13 @@ final class WindowScreenshot {
                            deadline: Double) throws {
     Thread.current.threadDictionary["axDeadline"] = deadline
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
-    try latch.check(id, epoch: s.epoch)
-    _ = try ax.validate(s, epoch: latch.state().0)
+    try latch.check(id)
+    _ = try ax.validate(s)
     guard s.screenshotSafe, let window = s.window, pid(window) == s.app.processIdentifier,
       safe(window), rect(window) == frame, string(window, kAXTitleAttribute) == title,
       !s.app.isTerminated, s.app.launchDate == s.launch,
       ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("window_changed_or_protected") }
-    try latch.check(id, epoch: s.epoch)
+    try latch.check(id)
   }
 
   private func candidates(_ content: SCShareableContent) -> [ScreenshotWindow] {
@@ -85,6 +85,8 @@ final class WindowScreenshot {
   }
 
   func capture(id: String, bind: (Snapshot) throws -> Snapshot) throws -> (Snapshot, [String: Any], ScreenshotScope) {
+    // Like any reading, input can't refuse this. Pixel safety is rechecked around the capture,
+    // and keeping the start count means an overlapped image can't be acted on.
     let epoch = latch.state().0
     return try ScreenshotPolicy.guarded(latch: latch, id: id) {
       guard ax.trusted() else {
@@ -103,7 +105,7 @@ final class WindowScreenshot {
       let title = string(window, kAXTitleAttribute) ?? ""
       try guardWindow(observation, id, title: title, frame: frame, deadline: deadline)
       func content() throws -> SCShareableContent {
-        try wait(id, epoch: observation.epoch, deadline: deadline) { done in
+        try wait(id, deadline: deadline) { done in
           SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { value, error in
             if let value = value, error == nil { done(.success(value)) }
             else { done(.failure(Refusal("shareable_window_metadata_unavailable"))) }
@@ -124,7 +126,7 @@ final class WindowScreenshot {
       configuration.includeChildWindows = false
       configuration.ignoreShadowsSingleWindow = true
       try guardWindow(observation, id, title: title, frame: frame, deadline: deadline)
-      let image: CGImage = try wait(id, epoch: observation.epoch, deadline: deadline) { done in
+      let image: CGImage = try wait(id, deadline: deadline) { done in
         SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration) { image, error in
           if let image = image, error == nil { done(.success(image)) }
           else { done(.failure(Refusal("selected_window_capture_failed"))) }

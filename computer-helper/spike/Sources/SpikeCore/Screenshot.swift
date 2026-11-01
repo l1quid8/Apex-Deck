@@ -78,10 +78,9 @@ public enum ScreenshotPolicy {
       "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]]
   }
   public static func guarded<T>(latch: Latch, id: String, operation: () throws -> T) throws -> T {
-    let epoch = latch.state().0
-    try latch.check(id, epoch: epoch)
+    try latch.check(id)
     let result = try operation()
-    try latch.check(id, epoch: epoch)
+    try latch.check(id)
     return result
   }
 }

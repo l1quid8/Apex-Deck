@@ -242,14 +242,18 @@ final class Accessibility {
       range: range, epoch: epoch, focusFingerprint: focusSafe ? fingerprint(focus!) : nil,
       controls: tree.controls, output: output, screenshotSafe: pixelsSafe)
   }
-  func validate(_ s: Snapshot, epoch: UInt64) throws -> AXUIElement {
+  /// Identity and focus only. Human activity is the latch's job, so the two can't share a refusal.
+  func validate(_ s: Snapshot) throws -> AXUIElement {
     try verifyIdentity?(s.app)
-    guard s.app.launchDate == s.launch else { throw Refusal("target_or_activity_changed") }
-    guard Policy.target(s.app.bundleIdentifier ?? ""), trusted(), !s.app.isTerminated, epoch == s.epoch else {
-      throw Refusal("target_or_activity_changed")
+    guard s.app.launchDate == s.launch else { throw Refusal("target_changed") }
+    guard trusted() else { throw Refusal("accessibility_not_trusted") }
+    guard Policy.target(s.app.bundleIdentifier ?? ""), !s.app.isTerminated else {
+      throw Refusal("target_changed")
     }
-    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier,
-      let focusedApp = element(system, kAXFocusedApplicationAttribute),
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier else {
+      throw Refusal("target_not_frontmost")
+    }
+    guard let focusedApp = element(system, kAXFocusedApplicationAttribute),
       pid(focusedApp) == s.app.processIdentifier,
       let focus = element(system, kAXFocusedUIElementAttribute),
       pid(focus) == s.app.processIdentifier, safe(focus)

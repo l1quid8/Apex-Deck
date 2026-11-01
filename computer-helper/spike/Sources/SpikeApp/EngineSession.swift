@@ -19,17 +19,17 @@ final class EngineSession {
     currentLaunch: Date?, terminated: Bool) -> Bool {
     !terminated && currentPID == pid && currentLaunch == launch
   }
-  private func checkContinuation(_ s: Snapshot, id: String, latch: Latch) throws {
+  private func checkContinuation(_ s: Snapshot, id: String, latch: Latch, reading: Bool = false) throws {
     try authorization?()
-    try latch.check(id, epoch: s.epoch)
+    try latch.check(id, epoch: reading ? nil : s.epoch)
     guard Self.continuationMatches(pid: s.app.processIdentifier, launch: s.launch,
       currentPID: s.app.processIdentifier, currentLaunch: s.app.launchDate,
       terminated: s.app.isTerminated, frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
     else { throw Refusal("engine_target_or_foreground_changed") }
   }
-  private func checkContinuationBackground(_ s: Snapshot, id: String, latch: Latch) throws {
+  private func checkContinuationBackground(_ s: Snapshot, id: String, latch: Latch, reading: Bool = false) throws {
     try authorization?()
-    try latch.check(id, epoch: s.epoch)
+    try latch.check(id, epoch: reading ? nil : s.epoch)
     guard Self.continuationMatchesBackground(pid: s.app.processIdentifier, launch: s.launch,
       currentPID: s.app.processIdentifier, currentLaunch: s.app.launchDate,
       terminated: s.app.isTerminated)
@@ -62,6 +62,8 @@ final class EngineSession {
     guard !code.contains("delivery=") else { return false }
     return tool == "get_screenshot" || ["unexpected_arguments", "invalid_arguments", "unsupported_key",
       "unknown_tool", "invalid_engine_element", "invalid_text"].contains(code)
+      // Engine actions have already spent their reading by this point. A key has not.
+      || (tool == "press_key" && code == "human_input_during_action")
   }
 
   func recordUnverifiedInput() { lastAction = ["delivery": "delivered_unverified", "verification_scope": "unavailable"] }
@@ -70,31 +72,32 @@ final class EngineSession {
 
   func capture(native: Snapshot, id: String, latch: Latch, ax: Accessibility, allowBackground: Bool = false) throws -> Snapshot {
     current = nil
-    let epoch = native.epoch
-    try latch.check(id, epoch: epoch)
+    // Input never refuses a reading, because reading is how a bot recovers from it.
+    // The result keeps `native.epoch`, so a reading that overlapped input can't be acted on.
+    try latch.check(id)
     guard let window = native.window, let number = windowNumber(window)
     else { throw Refusal("engine_exact_window_number_unavailable") }
     let expectedWindow = "w-\(number)"
     if allowBackground {
-      _ = try ax.validateBackground(native, epoch: epoch)
+      _ = try ax.validateBackground(native)
     } else {
-      _ = try ax.validate(native, epoch: epoch)
+      _ = try ax.validate(native)
     }
     let captured = try engine.capture(pid: native.app.processIdentifier, windowID: expectedWindow) {
       if allowBackground {
-        try self.checkContinuationBackground(native, id: id, latch: latch)
+        try self.checkContinuationBackground(native, id: id, latch: latch, reading: true)
       } else {
-        try self.checkContinuation(native, id: id, latch: latch)
+        try self.checkContinuation(native, id: id, latch: latch, reading: true)
       }
     }
-    try latch.check(id, epoch: epoch)
+    try latch.check(id)
     guard captured.pid == native.app.processIdentifier, captured.windowID == expectedWindow,
       windowNumber(window) == number
     else { throw Refusal("engine_window_identity_changed") }
     if allowBackground {
-      _ = try ax.validateBackground(native, epoch: epoch)
+      _ = try ax.validateBackground(native)
     } else {
-      _ = try ax.validate(native, epoch: epoch)
+      _ = try ax.validate(native)
     }
     current = captured
     var output = captured.text
@@ -128,10 +131,10 @@ final class EngineSession {
     let ref = try reference(element: element, snapshot: s.id)
     // Background AX click (AX Press) can work without stealing focus – use identity-only validation
     if allowBackground {
-      _ = try ax.validateBackground(s, epoch: s.epoch)
+      _ = try ax.validateBackground(s)
       try ax.requireVisibleIfMinimized(s, op: "click")
     } else {
-      _ = try ax.validate(s, epoch: s.epoch)
+      _ = try ax.validate(s)
     }
     current = nil
     let result = try engine.click(observation: s.id, ref: ref, overlayLabel: "Click \(element)", overlayAction: .click) {
@@ -151,7 +154,7 @@ final class EngineSession {
     // Background AX scroll via headless request is not valid after merge.
     try latch.check(id, epoch: s.epoch)
     let ref = try reference(element: element, snapshot: s.id)
-    _ = try ax.validate(s, epoch: s.epoch)
+    _ = try ax.validate(s)
     if let minimized = s.window.map({ BackgroundSupport.isMinimized($0) }), minimized {
       throw Refusal("window_minimized_needs_restore; restore the window before scroll")
     }
@@ -174,7 +177,7 @@ final class EngineSession {
     if let minimized = s.window.map({ BackgroundSupport.isMinimized($0) }), minimized {
       throw Refusal("window_minimized_needs_restore; restore the window before type_text")
     }
-    let focus = try ax.validate(s, epoch: s.epoch)
+    let focus = try ax.validate(s)
     guard let value = s.value, value.utf16.count <= 1_048_576,
       string(focus, kAXValueAttribute) == value,
       let expected = s.range, let live = selectedRange(focus),
