@@ -148,6 +148,8 @@ pub fn classify(op: &OperationSpec, folders: &[String]) -> (ToolClass, bool) {
         }
         // Opening any address the model picks can carry data to that site.
         "browser.open" => (ToolClass::Send, false),
+        crate::personal_worker::rooms::READ => (ToolClass::Read, false),
+        crate::personal_worker::rooms::SEND | crate::personal_worker::rooms::RESUME => (ToolClass::Send, false),
         tool if tool.starts_with("github.") || tool.starts_with("gmail.") || tool.starts_with("drive.") => {
             if tool.ends_with(".read") || tool.ends_with(".search") || tool.ends_with(".get") || tool.ends_with(".open") { (ToolClass::Read, false) } else { (ToolClass::Send, false) }
         }
@@ -157,6 +159,8 @@ pub fn classify(op: &OperationSpec, folders: &[String]) -> (ToolClass, bool) {
 }
 
 pub fn uses_network(op: &OperationSpec) -> bool {
+    // Reading or stopping a chat stays here; a message reaches its bots' models.
+    if matches!(op.tool.as_str(), crate::personal_worker::rooms::READ | crate::personal_worker::rooms::STOP) { return false; }
     op.tool != crate::personal_worker::COMMAND_TOOL || NETWORK.contains(&program(&op.argv))
 }
 
@@ -197,7 +201,9 @@ pub fn gate(assistant: &PersonalAssistant, task: &PersonalTask, asked: Option<&s
     // Personal operations do not yet carry project lineage. Their argv/cwd
     // cannot prove disjoint scope (for example Git object paths), so apply
     // every same-host assignment conservatively until the scoped executor.
-    for binding in assistant.projects.iter().filter(|binding| binding.project.host_id == op.host) {
+    // A chat operation does carry its project, so only that binding applies.
+    let chat = crate::personal_worker::rooms::known(&op.tool);
+    for binding in assistant.projects.iter().filter(|binding| binding.project.host_id == op.host && (!chat || binding.project.cwd == op.cwd)) {
         match binding.tools {
             crate::personal_workspace::ProjectTools::Off => return Gate::Refuse("An assigned project's tools are off, so this assistant cannot run tools on this host."),
             crate::personal_workspace::ProjectTools::Ask => project_asks = true,
@@ -216,6 +222,9 @@ pub fn gate(assistant: &PersonalAssistant, task: &PersonalTask, asked: Option<&s
         // Spending without asking needs a bounded budget to stay inside.
         ActionMode::Auto if class == ToolClass::Spend && assistant.budget.daily_limit_micros.is_none() => Gate::Ask,
         ActionMode::Auto => Gate::Run(mode),
+        // The model only proposes these from a human message; `Target::gate`
+        // holds them back when that message doesn't name the chat or bot.
+        ActionMode::OnRequest if chat => Gate::Run(mode),
         ActionMode::OnRequest => {
             let name = program(&op.argv).to_lowercase();
             let said = asked.is_some_and(|text| text.to_lowercase().split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').any(|word| !name.is_empty() && word == name));

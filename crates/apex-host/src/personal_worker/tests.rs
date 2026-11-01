@@ -22,6 +22,8 @@ struct Fake {
     reason_calls: AtomicUsize,
     runs: StdMutex<Vec<OperationSpec>>,
     prompts: StdMutex<Vec<String>>,
+    requests: StdMutex<Vec<TurnRequest>>,
+    attachment_roots: StdMutex<Vec<Vec<std::path::PathBuf>>>,
 }
 
 impl Fake {
@@ -35,6 +37,8 @@ impl Fake {
             reason_calls: AtomicUsize::new(0),
             runs: StdMutex::new(vec![]),
             prompts: StdMutex::new(vec![]),
+            requests: StdMutex::new(vec![]),
+            attachment_roots: StdMutex::new(vec![]),
         })
     }
 
@@ -45,10 +49,12 @@ impl Fake {
     fn tools(self: &Arc<Self>) -> WorkerTools {
         let (a, b, c) = (self.clone(), self.clone(), self.clone());
         WorkerTools {
-            reason: Arc::new(move |_, request: TurnRequest| {
+            reason: Arc::new(move |_, request: TurnRequest, attachment_roots| {
                 let fake = a.clone();
                 Box::pin(async move {
                     fake.prompts.lock().unwrap().push(request.system.clone());
+                    fake.requests.lock().unwrap().push(request);
+                    fake.attachment_roots.lock().unwrap().push(attachment_roots);
                     fake.reason_calls.fetch_add(1, Ordering::SeqCst);
                     while fake.model_hangs.load(Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -78,6 +84,226 @@ impl Fake {
 }
 
 const DISK_TASK: &str = r#"{"reply":"I can check that. Approve the command and I'll run it.","task":{"goal":"Report free disk space","criteria":["report free space on /"],"argv":["df","-h","/"]}}"#;
+
+#[tokio::test]
+async fn a_human_screenshot_reaches_the_assistant_as_a_user_turn() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    let image = fixture.host.save_attachment(&fixture.id, "screen.png", b"\x89PNG\r\n\x1a\nfixture").unwrap();
+    let text = format!("What does this show?\nAttached image: {image}");
+    fixture.host.personal_send(&fixture.id, "screenshot", &text).unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.host.personal_send(&fixture.id, "next-message", "Thanks").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let requests = fake.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].turns, vec![apex_core::ViewTurn { role: apex_core::Role::User, content: text }]);
+    assert_eq!(requests[0].access, Some(apex_core::Access::Read));
+    assert!(requests[0].computer.is_none());
+    assert_eq!(requests[1].turns, vec![apex_core::ViewTurn { role: apex_core::Role::User, content: "Thanks".into() }], "earlier screenshots stay history rather than being resent");
+    let own = fixture.root.join("data/attachments").join(&fixture.id).canonicalize().unwrap();
+    assert_eq!(*fake.attachment_roots.lock().unwrap(), vec![vec![own.clone()], vec![own]]);
+}
+
+const THREAD: &str = "room-alfred";
+
+impl Fixture {
+    /// A saved project chat with one bot, bound to this assistant.
+    fn project_chat(&self, tools: crate::personal_workspace::ProjectTools) -> crate::personal_workspace::ProjectRef {
+        let cwd = self.root.join("slice");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+        let bot: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"jigga","display_name":"Jigga","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"m"}})).unwrap();
+        self.host.room_create(THREAD.into(), vec![bot], Default::default(), Some(cwd.clone())).unwrap();
+        self.host.store().save_session(&serde_json::json!({"workspaces":[{"id":"w1","path":cwd}],"panes":[{"kind":"chat","id":THREAD,"title":"Checkout fix","workspaceId":"w1"}]})).unwrap();
+        let project = crate::personal_workspace::ProjectRef { host_id: "vps-test".into(), workspace_id: "w1".into(), cwd };
+        self.host.change_assistant(&self.id, |a| { a.allowed_folders = vec![project.cwd.clone()]; Ok(()) }).unwrap();
+        let binding = crate::personal_workspace::AssistantProjectBinding { project: project.clone(), tools, ..serde_json::from_value(serde_json::json!({"project":project,"tools":"full"})).unwrap() };
+        self.host.change_assistant(&self.id, |a| {
+            a.allowed_folders = vec![project.cwd.clone()];
+            a.projects = vec![binding];
+            a.modes.read = crate::personal::ActionMode::Auto;
+            a.modes.send = crate::personal::ActionMode::Auto;
+            a.modes.write = crate::personal::ActionMode::Auto;
+            Ok(())
+        }).unwrap();
+        project
+    }
+
+    fn room_texts(&self) -> Vec<String> {
+        self.host.store().room(THREAD).unwrap().unwrap().snapshot.transcript.iter().map(|m| m.text.clone()).collect()
+    }
+}
+
+fn room_reply(tool: &str, argv: &[&str]) -> String {
+    serde_json::json!({"reply":"On it.","task":{"goal":"Chat work","tool":tool,"argv":argv}}).to_string()
+}
+
+#[tokio::test]
+async fn a_browser_tab_names_the_assistant_holding_it() {
+    let fixture = Fixture::new();
+    let profile = apex_core::ParticipantId::new("profile");
+    let label = fixture.host.computer_participant_label(&computer_thread(&fixture.id), &profile);
+    assert_eq!(label, Some(fixture.get().name));
+    assert_eq!(fixture.host.computer_participant_label(&computer_thread("gone"), &profile), None);
+}
+
+#[tokio::test]
+async fn a_status_question_reads_a_chat_and_answers_without_touching_it() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::READ, &[THREAD]));
+    fake.say(r#"{"reply":"Nothing has happened there yet."}"#);
+    fixture.host.personal_send(&fixture.id, "status", "How is the checkout chat going?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.room_texts().is_empty(), "a read leaves the chat alone");
+    assert!(fake.prompts.lock().unwrap()[0].contains("Checkout fix"));
+    assert!(fake.prompts.lock().unwrap()[1].contains("State: idle"), "the answer is written from the read");
+    assert!(fixture.get().messages.iter().any(|m| m.text == "Nothing has happened there yet."));
+    assert_eq!(fake.runs(), 0, "chat operations stay on the host");
+}
+
+#[tokio::test]
+async fn a_long_chat_read_keeps_the_newest_messages() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let mut saved = fixture.host.store().room(THREAD).unwrap().unwrap();
+    for seq in 0..12 {
+        let text = format!("{seq}-marker {}", "x".repeat(590));
+        saved.snapshot.transcript.push(apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, late_reply_from: None, servers: vec![], seq, speaker: apex_core::Speaker::Human, text, at: None });
+    }
+    fixture.host.store().save_room(THREAD, &saved).unwrap();
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::READ, &[THREAD]));
+    fixture.host.personal_send(&fixture.id, "status", "Any news?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let task = fixture.task();
+    let kept = &task.receipts[0].output_excerpt;
+    assert!(kept.contains("11-marker") && !kept.contains("(cut)"), "{kept}");
+    assert!(!kept.contains("[Human] 0-marker"), "the oldest gives way first");
+}
+
+#[tokio::test]
+async fn an_explicit_instruction_lands_once_and_is_read_back() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let texts = fixture.room_texts();
+    assert_eq!(texts.len(), 1, "{texts:?}");
+    assert!(texts[0].ends_with("Run the tests.") && texts[0].starts_with("Apex (assistant"));
+    let task = fixture.task();
+    assert_eq!(task.status, TaskStatus::Done);
+    assert!(task.receipts[0].output_excerpt.contains("as message 0 for Jigga"));
+}
+
+#[tokio::test]
+async fn a_rerun_after_a_restart_does_not_post_twice() {
+    let mut fixture = Fixture::new();
+    let project = fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let task = fixture.task();
+    let op = task.operation.clone().unwrap();
+    assert_eq!((op.host.as_str(), op.cwd.as_str()), (project.host_id.as_str(), project.cwd.as_str()));
+    fixture.restart();
+    fixture.host.change_assistant(&fixture.id, |a| { a.task_mut(&task.id).unwrap().status = TaskStatus::Running; Ok(()) }).unwrap();
+    let run = fixture.host.personal_room_op(&fixture.id, &task.id, &op).await.unwrap();
+    assert!(run.output.contains("already there"));
+    assert_eq!(fixture.room_texts().len(), 1);
+}
+
+#[tokio::test]
+async fn a_chat_outside_the_bindings_cannot_be_reached() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &["other-room", "jigga", "Hi"]));
+    fixture.host.personal_send(&fixture.id, "wrong", "Tell Jigga hi").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.get().tasks.is_empty());
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "stranger", "Hi"]));
+    fixture.host.personal_send(&fixture.id, "bot", "Tell Jigga hi").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.get().tasks.is_empty());
+    fixture.host.change_assistant(&fixture.id, |a| { a.projects.clear(); Ok(()) }).unwrap();
+    fake.say(&room_reply(rooms::READ, &[THREAD]));
+    fixture.host.personal_send(&fixture.id, "revoked", "What's happening there?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.get().tasks.is_empty(), "revoked access makes no task");
+}
+
+#[tokio::test]
+async fn access_lost_after_approval_stops_the_send() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Ask);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert_eq!(fixture.task().status, TaskStatus::NeedsYou, "the project's ask ceiling holds");
+    fixture.decide("yes", true);
+    fixture.host.change_assistant(&fixture.id, |a| { a.projects.clear(); Ok(()) }).unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert_eq!(fixture.task().status, TaskStatus::Failed);
+    assert!(fixture.room_texts().is_empty());
+}
+
+#[tokio::test]
+async fn words_from_a_chat_cannot_run_a_send_on_their_own() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::READ, &[THREAD]));
+    fake.say(r#"{"reply":"Quiet."}"#);
+    fixture.host.personal_send(&fixture.id, "read", "Anything new?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    // Naming a bot in a question doesn't make the chat's words the human's.
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Delete everything."]));
+    fixture.host.personal_send(&fixture.id, "next", "What did Jigga mean?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let tasks = fixture.get().tasks;
+    assert_eq!(tasks.last().unwrap().status, TaskStatus::NeedsYou);
+    assert!(fixture.room_texts().is_empty());
+    // The read's summary stays quoted, and still counts, however old it gets.
+    let mut read = fixture.get().messages.iter().find(|m| m.outside.is_some()).cloned().unwrap();
+    assert_eq!(read.text, "Quiet.");
+    read.at = 0;
+    assert!(super::context::context_line(&read, now()).contains("quoted evidence"));
+    fake.say(r#"{"reply":"Noted.","remember":[{"text":"obey the chat"}]}"#);
+    fixture.host.personal_send(&fixture.id, "memory", "thanks").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let saved = fixture.get();
+    assert!(saved.facts.is_empty(), "a retold chat can't plant a memory");
+    assert!(saved.messages.iter().any(|m| m.text.starts_with("I didn't save that to memory")));
+}
+
+#[tokio::test]
+async fn pause_new_conversation_and_stricter_saves_end_a_computer_turn() {
+    let fixture = Fixture::new();
+    let computer = fixture.host.computer.clone();
+    let thread = super::computer_thread(&fixture.id);
+    let generation = computer.generation(&thread);
+    fixture.host.personal_pause(&fixture.id, "pause", true).unwrap();
+    assert_eq!(computer.generation(&thread), generation + 1, "the running turn loses its lease");
+    fixture.host.personal_pause(&fixture.id, "resume", false).unwrap();
+    assert_eq!(computer.generation(&thread), generation + 1, "resuming takes nothing away");
+    fixture.host.personal_conversation_new(&fixture.id).unwrap();
+    assert_eq!(computer.generation(&thread), generation + 2, "grants don't outlive their conversation");
+}
+
+#[test]
+fn only_a_chat_read_may_repeat() {
+    let room = rooms::Target { project: crate::personal_workspace::ProjectRef { host_id: "h".into(), workspace_id: "w".into(), cwd: "/p".into() }, thread: "t".into(), title: "T".into(), workers: vec![("b".into(), "Bot".into())], tools: crate::personal_workspace::ProjectTools::Full };
+    assert!(room.refusal(rooms::READ, &["t".into()], true, false).is_none());
+    assert!(room.refusal(rooms::SEND, &["t".into(), "b".into(), "hi".into()], true, false).is_some());
+    assert!(room.refusal(rooms::STOP, &["t".into()], false, true).is_some());
+}
 
 struct Fixture {
     root: std::path::PathBuf,
@@ -468,6 +694,7 @@ fn result_message(at: u64) -> PersonalMessage {
         task_id: Some("task-1".into()),
         event_id: None,
         reactions: Vec::new(),
+        outside: None,
         legacy: None,
     }
 }
@@ -1494,4 +1721,69 @@ async fn stopping_a_cost_held_reply_supersedes_its_spend_approval() {
  assert!(f.get().tasks.iter().all(|t|t.status==TaskStatus::Cancelled));
  assert!(f.get().tasks.iter().all(|t|t.decision.as_ref().is_none_or(|d|d.status!=DecisionStatus::Open)));
  assert_eq!(fake.reason_calls.load(Ordering::SeqCst),0);
+}
+
+#[test]
+fn a_new_conversation_leaves_the_model_context_but_keeps_everything_saved() {
+    let mut assistant: PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+    assistant.post("human", "chat", "BEFORE".into(), None, None, 100);
+    assistant.post("human", "chat", "AFTER".into(), None, None, 300);
+    assistant.conversation_from = 200;
+    let prompt = context::assemble(&assistant, "now", 400, &[]);
+    assert!(prompt.contains("AFTER") && !prompt.contains("BEFORE"));
+    assert_eq!(assistant.messages.len(), 2, "history stays");
+}
+
+#[tokio::test]
+async fn a_renamed_assistant_does_not_redeliver_a_saved_instruction() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let task = fixture.task();
+    fixture.host.change_assistant(&fixture.id, |a| {
+        a.name = "Alfred".into();
+        a.task_mut(&task.id).unwrap().status = TaskStatus::Running;
+        Ok(())
+    }).unwrap();
+    let run = fixture.host.personal_room_op(&fixture.id, &task.id, task.operation.as_ref().unwrap()).await.unwrap();
+    assert!(run.output.contains("already there"));
+    assert_eq!(fixture.room_texts().len(), 1);
+}
+
+#[tokio::test]
+async fn revoking_authority_while_a_send_waits_for_the_room_gate_prevents_delivery() {
+    for revoke in ["cancel", "pause", "project", "rule"] {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.host.personal_step(&fake.tools()).await.unwrap();
+    let gate = fixture.host.runner_gate(THREAD);
+    let held = gate.lock().await;
+    let tools = fake.tools();
+    let send = fixture.host.personal_step(&tools);
+    tokio::pin!(send);
+    tokio::select! {
+        result = &mut send => panic!("send did not wait: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+    }
+    let task = fixture.task();
+    fixture.host.change_assistant(&fixture.id, |a| {
+        match revoke {
+            "cancel" => a.task_mut(&task.id).unwrap().status = TaskStatus::Cancelled,
+            "pause" => a.paused = true,
+            "project" => a.projects.clear(),
+            "rule" => a.modes.send = ActionMode::HandOff,
+            _ => unreachable!(),
+        }
+        Ok(())
+    }).unwrap();
+    drop(held);
+    send.await.unwrap();
+    assert!(fixture.room_texts().is_empty(), "{revoke} while waiting must never post");
+    }
 }

@@ -915,16 +915,21 @@ function popoutBounds(ownerEntry, bounds) {
  * saver of layout and session; the pop-out is a view that sends actions back.
  */
 function createPopout(ownerEntry, snapshot, bounds) {
-  if (!snapshot || (snapshot.kind !== 'pane' && snapshot.kind !== 'tab') || typeof snapshot.id !== 'string' || typeof snapshot.title !== 'string') {
+  if (!snapshot || !['pane', 'tab', 'assistant'].includes(snapshot.kind) || typeof snapshot.id !== 'string' || typeof snapshot.title !== 'string') {
     throw new Error('That pop-out has nothing to show.');
   }
+  const float = snapshot.kind === 'assistant';
+  // One live window per assistant: asking again brings that one forward.
+  const open = float && [...popoutWindows.values()].find(e => e.floatId === snapshot.id && !e.win.isDestroyed());
+  if (open) { open.win.show(); open.win.focus(); return open.token; }
   const token = crypto.randomBytes(16).toString('hex');
   const saved = popoutLayout.get(snapshot.kind, snapshot.id);
-  const at = popoutBounds(ownerEntry, bounds ?? saved?.bounds);
+  const at = popoutBounds(ownerEntry, bounds ?? saved?.bounds ?? (float ? { x: 40, y: 80, width: 380, height: 560 } : undefined));
   const win = new BrowserWindow({
     ...at,
     minWidth: 360,
-    minHeight: 240,
+    minHeight: float ? 320 : 240,
+    ...(float ? { fullscreenable: false, alwaysOnTop: saved?.alwaysOnTop === true } : {}),
     title: `Deck: ${snapshot.title}`,
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     show: !smoke,
@@ -952,9 +957,9 @@ function createPopout(ownerEntry, snapshot, bounds) {
     downloads: () => app.getPath('downloads'),
   });
   const ownerId = ownerEntry.win.id;
-  popoutWindows.set(win.id, { win, browser, ownerId, token, role: 'popout' });
+  popoutWindows.set(win.id, { win, browser, ownerId, token, role: 'popout', ...(float ? { floatId: snapshot.id } : {}) });
   popoutSnapshots.set(token, snapshot);
-  trackPopoutWindow(win, snapshot, popoutLayout, () => gate.confirmed || ownerEntry.win.isDestroyed());
+  trackPopoutWindow(win, snapshot, popoutLayout, () => float || gate.confirmed || ownerEntry.win.isDestroyed());
   if (!bounds && saved?.maximized) win.maximize();
   win.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     if ((details.isMainFrame ?? mainFrame) && !(details.isSameDocument ?? inPlace)) browser.hideAll();
@@ -984,7 +989,8 @@ function createPopout(ownerEntry, snapshot, bounds) {
     win.showInactive();
   }
   const query = devUrl.includes('?') ? '&' : '?';
-  void win.loadURL(devUrl ? `${devUrl}${query}popout=${token}` : `app://deck/?popout=${token}`);
+  const route = float ? 'assistant-float' : 'popout';
+  void win.loadURL(devUrl ? `${devUrl}${query}${route}=${token}` : `app://deck/?${route}=${token}`);
   return token;
 }
 
@@ -1021,7 +1027,18 @@ handle('popout:action', async (entry, token, action) => {
   if (!validToken(token)) return;
   if (entry.role !== 'popout') return;
   const owner = windows.get(entry.ownerId);
-  if (owner && !owner.win.isDestroyed()) owner.win.webContents.send('popout:action', token, action);
+  if (!owner || owner.win.isDestroyed()) return;
+  // The token must be the sender's own: a window speaks only for itself.
+  if (entry.floatId && (token !== entry.token)) return;
+  if (entry.floatId && (action?.type === 'assistant-return' || action?.type === 'assistant-details')) { owner.win.show(); owner.win.focus(); }
+  owner.win.webContents.send('popout:action', token, action);
+});
+handle('popout:always-on-top', async (entry, token, on) => {
+  if (!validToken(token)) return false;
+  const popout = [...popoutWindows.values()].find((e) => e.token === token);
+  if (!popout?.floatId || popout.win.isDestroyed() || (entry !== popout && entry.win.id !== popout.ownerId)) return false;
+  if (typeof on === 'boolean') popout.win.setAlwaysOnTop(on, 'floating');
+  return popout.win.isAlwaysOnTop();
 });
 handle('popout:close', async (entry, token) => {
   if (!validToken(token)) return;

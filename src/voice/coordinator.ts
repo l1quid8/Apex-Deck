@@ -11,6 +11,7 @@ import type {
 } from "./types.ts";
 import { createRealtimeVoiceController } from "./realtimeController.ts";
 import { joinVoiceEngines } from "./engineController.ts";
+import { mintForScope } from "./realtimeMint.ts";
 
 export interface VoiceRegistration {
   candidates: VoiceCandidate[];
@@ -100,14 +101,7 @@ const realtimeController = createRealtimeVoiceController({
     const any = [...registry.values()][0]?.settings;
     return any ?? readVoiceSettings(undefined);
   },
-  mintSession: async (args) => {
-    const entry = args.room
-      ? registry.get(scopeKey({ hostId: "local", roomId: args.room } as any)) ??
-        [...registry.values()].find(r => r.candidates.some(c => c.roomId === args.room))
-      : [...registry.values()][0];
-    if (!entry?.realtimeSession) throw new Error("Realtime not available for this thread – update Deck and ensure OPENAI_API_KEY is set.");
-    return entry.realtimeSession(args);
-  },
+  mintSession: (args) => mintForScope((hostId, roomId) => registry.get(scopeKey({ hostId, roomId })), args),
   focus: (scope) => lookup(scope).focus(),
 });
 

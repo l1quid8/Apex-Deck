@@ -5,7 +5,7 @@ export interface RealtimeControllerDeps {
   candidates(): VoiceCandidate[];
   bridge(scope: CallScope): ThreadVoiceBridge;
   voiceSettings(): VoiceSettings;
-  mintSession(args: { room: string; participant?: string; model?: string; voice?: string; instructions?: string; tools?: unknown[] }): Promise<{ client_secret: string; expires_at?: number; model: string; voice: string }>;
+  mintSession(args: { hostId: string; room: string; participant?: string; model?: string; voice?: string; instructions?: string; tools?: unknown[] }): Promise<{ client_secret: string; expires_at?: number; model: string; voice: string }>;
   focus(scope: CallScope): void;
 }
 

@@ -288,9 +288,12 @@ pub(crate) async fn run_with_computer(
                 // mode, Full included (probed 2026-10-06). The questions go
                 // out raw; the room cleans them for display, and the answers
                 // come back matched by position.
-                let reply = if tools_disabled && request["subtype"] == "can_use_tool" {
+                // A trusted computer call is the one exception to a tool-free turn.
+                let computer_call = trusted_computer && request["subtype"] == "can_use_tool"
+                    && request["tool_name"].as_str().and_then(crate::mcp::claude_tool).is_some_and(|(server, _)| server == crate::computer::SERVER);
+                let reply = if tools_disabled && !computer_call && request["subtype"] == "can_use_tool" {
                     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": message["request_id"], "response": { "behavior": "deny", "message": "This turn is configured without tools." } } })
-                } else if tools_disabled {
+                } else if tools_disabled && !computer_call {
                     json!({ "type": "control_response", "response": { "subtype": "error", "request_id": message["request_id"], "error": "This turn is configured without tools or control requests." } })
                 } else if request["subtype"] == "can_use_tool"
                     && request["tool_name"] == "AskUserQuestion"

@@ -98,14 +98,16 @@ pub struct CliParticipant {
     /// Deck's shared phone, for Claude and Codex bots. See phone_env.rs.
     phone: Option<PhoneEnv>,
     computer: Option<apex_core::ComputerTurn>,
+    /// A tool-free turn may still carry the host-issued computer server, and nothing else.
+    computer_only: bool,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, computer: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, computer: None, computer_only: false }
     }
 
-    /// Start a text-only turn with tools disabled at both the CLI and
+    /// Start a conversation turn with tools disabled at both the CLI and
     /// protocol boundaries. Known agents use provider-specific tool removal and private process isolation.
     pub fn with_tools_disabled(mut self) -> Self {
         self.tools_disabled = true;
@@ -113,8 +115,21 @@ impl CliParticipant {
         self.config.access = Access::Read;
         self.phone = None;
         self.codex_hook = None;
-        self.attachment_roots.clear();
         self
+    }
+
+    /// A tool-free turn that also accepts `TurnRequest::computer`: the one
+    /// host-issued server is added on top of every tool-free restriction.
+    pub fn with_computer_tools_only(mut self) -> Self {
+        self = self.with_tools_disabled();
+        self.computer_only = true;
+        self
+    }
+
+    /// Whether this turn really carries the computer server. Workers get it
+    /// through their tools; a tool-free turn only through `computer_only`.
+    fn computer_on(&self) -> bool {
+        self.computer.is_some() && (self.computer_only || (!self.mcp_disabled && !self.tools_disabled))
     }
 
     /// Disable personal MCP servers for a gateway turn. Unsupported backends
@@ -205,15 +220,19 @@ impl CliParticipant {
                     if self.config.speed == Some(apex_core::Speed::Fast) {
                         safe.extend(["--settings".to_owned(), r#"{"fastMode":true}"#.to_owned()]);
                     }
-                    safe.extend(["--safe-mode", "--restricted", "--tools", "", "--strict-mcp-config", "--setting-sources", ""].into_iter().map(str::to_owned));
+                    // `--safe-mode` also drops `--mcp-config` servers, with no error
+                    // (checked against Claude Code 2026-11-01), so a computer turn
+                    // relies on the other flags here and on the host's no-CLAUDE.md env.
+                    if !self.computer_on() { safe.push("--safe-mode".to_owned()); }
+                    safe.extend(["--restricted", "--tools", "", "--strict-mcp-config", "--setting-sources", ""].into_iter().map(str::to_owned));
                     args = safe;
                 }
-                if *tool == AgentTool::ClaudeCode && !self.mcp_disabled && !self.tools_disabled {
+                if *tool == AgentTool::ClaudeCode && self.computer_on() {
                     if let Some(computer) = &self.computer {
                         args.extend(["--mcp-config".into(),crate::computer::claude_config(computer).to_string()]);
                     }
                 }
-                if *tool == AgentTool::Muse && !self.mcp_disabled && !self.tools_disabled {
+                if *tool == AgentTool::Muse && self.computer_on() {
                     if let Some(computer) = &self.computer {
                         args.extend(crate::computer::muse_flags(computer));
                     }
@@ -241,8 +260,9 @@ impl CliParticipant {
         };
         command.envs(env.iter().map(|(name, value)| (*name, value)));
         for key in crate::computer::ENV_KEYS { command.env_remove(key); }
-        if !self.tools_disabled && !self.mcp_disabled {
+        if self.computer_on() {
             if let Some(computer)=&self.computer {command.envs(crate::computer::env(computer));}
+            if self.computer_only { command.env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1"); }
         }
         // Claude and Codex bots get the phone command; see phone_env.rs.
         // A text-only monitor turn has no tools, so it gets nothing.
@@ -305,7 +325,6 @@ impl CliParticipant {
     ) -> Result<Reply, ParticipantError> {
         let program = "codex";
         let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
-        if let Some(computer)=self.computer.as_ref().filter(|_|!self.mcp_disabled && !self.tools_disabled) {args.extend(crate::computer::codex_flags(computer));}
         args.extend(phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
         if self.mcp_disabled {
             let mut inventory_args: Vec<String> = GATEWAY_CODEX_FLAGS.iter().map(|s|(*s).into()).collect();
@@ -328,6 +347,9 @@ impl CliParticipant {
             }
             args.extend(codex_mcp_disable_flags(&output.stdout)?);
         }
+        // Disable inherited servers first, then install the host-issued replacement.
+        // An existing reserved-name entry must not disable this turn's tools.
+        if let Some(computer)=self.computer.as_ref().filter(|_|self.computer_on()) {args.extend(crate::computer::codex_flags(computer));}
         // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
         // has gone would make Codex run every tool unasked, so check first.
         let hook = self.codex_hook.as_deref().filter(|helper| !self.mcp_disabled && helper.is_file()).and_then(|helper| {
@@ -349,7 +371,7 @@ impl CliParticipant {
             plan: self.plan.is_some(),
             mcp_disabled: self.mcp_disabled,
             tools_disabled: self.tools_disabled,
-            trusted_computer: self.computer.is_some() && !self.mcp_disabled && !self.tools_disabled,
+            trusted_computer: self.computer_on(),
         };
         match codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await {
             Ok(reply) => Ok(reply),
@@ -388,7 +410,7 @@ impl CliParticipant {
             effort: effort.as_deref(),
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
-            trusted_computer: self.computer.is_some() && !self.mcp_disabled && !self.tools_disabled,
+            trusted_computer: self.computer_on(),
         };
         match muse_server::run(child, turn, prompt, images, on_progress, approver).await {
             Ok(reply) => Ok(reply),
@@ -515,7 +537,7 @@ impl CliParticipant {
     ) -> Result<Reply, ParticipantError> {
         let child = self.start(program, args)?;
         let cwd = self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned());
-        let finished = claude_session::run_with_computer(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled, images, self.computer.is_some() && !self.mcp_disabled && !self.tools_disabled)
+        let finished = claude_session::run_with_computer(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled, images, self.computer_on())
             .await
             .map_err(|e| ParticipantError::Failed(format!("talking to `{program}` failed: {e}")))?;
         if let Some(error) = finished.cleanup_error { return Err(ParticipantError::CleanupIncomplete(error)); }
@@ -722,7 +744,7 @@ impl Participant for CliParticipant {
         if self.tools_disabled && (request.access.is_some_and(|access| access != Access::Read) || request.plan) {
             return Err(ParticipantError::Failed("Text-only turns cannot request workspace access or planning tools.".into()));
         }
-        let computer = request.computer.clone().filter(|_| !self.tools_disabled && !self.mcp_disabled);
+        let computer = request.computer.clone().filter(|_| self.computer_only || (!self.tools_disabled && !self.mcp_disabled));
         if computer != self.computer {
             let mut scoped=self.clone(); scoped.computer=computer;
             return scoped.respond_with_approvals(request,on_progress,approver).await;
@@ -745,6 +767,7 @@ impl Participant for CliParticipant {
                 attachment_roots: self.attachment_roots.clone(),
                 phone: self.phone.clone(),
                 computer: self.computer.clone(),
+                computer_only: self.computer_only,
             };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
@@ -752,7 +775,7 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone() };
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone(), computer_only: self.computer_only };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -763,7 +786,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone() };
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone(), computer_only: self.computer_only };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -774,7 +797,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone(), computer_only: self.computer_only };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         if self.mcp_disabled && self.isolation.is_none() && (self.tools_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) || !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })) {
@@ -782,9 +805,10 @@ impl Participant for CliParticipant {
             let path = self.path.clone();
             // Credential lookup may wait on Keychain; keep it off the async worker.
             let isolation = tokio::task::spawn_blocking(move || crate::gateway_sandbox::Isolation::new_with_path(&backend, path.as_deref()))
-                .await.map_err(|_| ParticipantError::Failed("Gateway isolation setup failed".into()))??;
+                .await.map_err(|_| ParticipantError::Failed("Gateway isolation setup failed".into()))??
+                .with_computer(self.computer.as_ref().filter(|_| self.computer_on()).map(|turn| turn.relay.clone()));
             let isolation = std::sync::Arc::new(isolation);
-            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, computer: None };
+            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: self.attachment_roots.clone(), phone: None, computer: self.computer.clone(), computer_only: self.computer_only };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
@@ -795,7 +819,7 @@ impl Participant for CliParticipant {
         if !images.is_empty() {
             match &self.config.backend {
                 Backend::Agent { tool: AgentTool::Grok, .. } => {
-                    let files = crate::attachments::Staged::new()?;
+                    let files = self.isolation.as_ref().map_or_else(crate::attachments::Staged::new, |isolation| isolation.stage_images())?;
                     let path = files.grok(&prompt, &images)?;
                     // Replace /dev/stdin with a .json file so Grok parses ACP blocks.
                     if let Some(index) = args.iter().position(|arg| arg == "--prompt-file") {
@@ -804,7 +828,7 @@ impl Participant for CliParticipant {
                     staged = Some(files);
                 }
                 Backend::Agent { tool: AgentTool::Gemini, .. } => {
-                    let files = crate::attachments::Staged::new()?;
+                    let files = self.isolation.as_ref().map_or_else(crate::attachments::Staged::new, |isolation| isolation.stage_images())?;
                     prompt = files.gemini(&prompt, &images)?;
                     let directory = files.dir.to_string_lossy().into_owned();
                     if let Some(index) = args.iter().position(|arg| arg == "--include-directories") {
@@ -920,6 +944,35 @@ mod tests {
         assert!(owned,"Stop must own and terminate inventory startup, not only the later model process");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn computer_codex_replaces_a_reserved_server_after_isolation() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = crate::attachments::Staged::new().unwrap();
+        let script = folder.dir.join("codex");
+        std::fs::write(&script, r#"#!/bin/sh
+case "$*" in
+  *'mcp list --json'*) printf '%s\n' '[{"name":"apex-computer"},{"name":"other"}]'; exit 0 ;;
+esac
+printf '%s\n' "$@" > "$0.args"
+exit 1
+"#).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = serde_json::from_value(serde_json::json!({"id":"a","display_name":"A","backend":{"kind":"agent","tool":"codex"}})).unwrap();
+        let mut bot = CliParticipant::new(config).with_context(&crate::BuildContext {
+            path: folder.dir.to_str().map(str::to_owned), ..Default::default()
+        }).with_computer_tools_only();
+        bot.computer = Some(apex_core::ComputerTurn { relay: "/fixture/SpikeMCP".into(), thread_id: "assistant:a".into(), participant_id: "a".into(), token: "fixture-token".into() });
+        // Call the transport with a fake executable; no account or provider is used.
+        let _ = bot.run_codex_server(None, "hello", &[], &|_| {}, &apex_core::NoApprover).await;
+        let args = std::fs::read_to_string(folder.dir.join("codex.args")).unwrap();
+        let reserved = args.lines().filter(|line| line.starts_with("mcp_servers.apex-computer")).last().unwrap();
+        assert!(reserved.contains("enabled=true"), "the trusted replacement must win: {args}");
+        assert!(reserved.contains("/fixture/SpikeMCP"));
+        assert!(args.lines().any(|line| line == "mcp_servers.other.enabled=false"));
+        assert!(!args.contains("fixture-token"));
+    }
+
     #[tokio::test]
     async fn assistant_request_cannot_reenable_workspace_access() {
         use apex_core::Participant;
@@ -928,6 +981,25 @@ mod tests {
         let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None};
         let result=bot.respond(request,&|_|{}).await;
         assert!(matches!(result,Err(ref why) if why.to_string().contains("Text-only turns cannot")),"workspace escalation must refuse before launching any provider");
+    }
+
+    #[test]
+    fn tool_free_assistant_keeps_explicit_image_authority() {
+        let folder = crate::attachments::Staged::new().unwrap();
+        let image = folder.dir.join("screen.png");
+        std::fs::write(&image, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let config = serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"claude_code"},"access":"full"})).unwrap();
+        let bot = super::CliParticipant::new(config).with_context(&crate::BuildContext {
+            attachment_roots: vec![folder.dir.canonicalize().unwrap()], ..Default::default()
+        }).with_tools_disabled();
+        let request = apex_core::TurnRequest { turns: vec![apex_core::ViewTurn {
+            role: apex_core::Role::User, content: format!("Attached image: {}", image.display())
+        }], ..Default::default() };
+        let images = crate::attachments::for_request(&request, &bot.attachment_roots).unwrap();
+        assert_eq!(crate::attachments::claude_content("describe", &images)[1]["source"]["data"], "iVBORw0KGgpmaXh0dXJl");
+        assert!(bot.tools_disabled && bot.mcp_disabled);
+        assert_eq!(bot.config.access, apex_core::Access::Read);
+        assert!(bot.phone.is_none() && bot.codex_hook.is_none());
     }
 
     #[cfg(target_os = "macos")]
@@ -951,6 +1023,28 @@ mod tests {
                 AgentTool::Muse => assert!(args.windows(2).any(|a| a == ["--preset", "empty"])),
             }
         }
+    }
+
+    #[test]
+    fn only_a_computer_turn_widens_a_tool_free_claude_and_only_by_that_server() {
+        let config: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"a","display_name":"A","backend":{"kind":"agent","tool":"claude_code"}})).unwrap();
+        let turn = apex_core::ComputerTurn { relay: "/A/SpikeMCP".into(), thread_id: "assistant:a".into(), participant_id: "p".into(), token: "t".repeat(64) };
+        let mut plain = CliParticipant::new(config.clone()).with_tools_disabled();
+        plain.computer = Some(turn.clone());
+        let args = plain.command_line().unwrap().1;
+        assert!(args.iter().any(|a| a == "--safe-mode"), "a tool-free participant ignores a stray capability");
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
+        let empty = CliParticipant::new(config.clone()).with_computer_tools_only();
+        assert!(empty.command_line().unwrap().1.iter().any(|a| a == "--safe-mode"), "no capability, no tools");
+        let mut computer = CliParticipant::new(config).with_computer_tools_only();
+        computer.computer = Some(turn);
+        let args = computer.command_line().unwrap().1;
+        // Safe mode silently removes the server, so it can't be kept here.
+        assert!(!args.iter().any(|a| a == "--safe-mode"));
+        for kept in [["--tools", ""], ["--setting-sources", ""]] { assert!(args.windows(2).any(|a| a == kept), "{kept:?}"); }
+        assert!(args.iter().any(|a| a == "--strict-mcp-config") && args.iter().any(|a| a == "--restricted"));
+        assert!(args.iter().filter(|a| a.as_str() == "--mcp-config").count() == 1);
+        assert!(!args.join(" ").contains(&"t".repeat(64)));
     }
 
     #[test]

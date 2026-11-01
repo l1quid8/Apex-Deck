@@ -71,6 +71,14 @@ impl OpenAiCompatParticipant {
         self
     }
 
+    /// The host-issued computer server as this turn's only tools.
+    pub fn with_computer_tools_only(mut self, context: &crate::BuildContext) -> Self {
+        let mut tools = ToolBox::new(context);
+        tools.computer_only = true;
+        self.tools = Some(Arc::new(tools));
+        self
+    }
+
     /// Let the bot make pictures and videos when its model does, saving
     /// them in `dir`.
     pub fn with_media_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {

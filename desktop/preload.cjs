@@ -128,6 +128,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
     open: (snapshot, bounds) => ipcRenderer.invoke('popout:open', snapshot, bounds),
     snapshot: (token) => ipcRenderer.invoke('popout:snapshot', token),
     close: (token) => ipcRenderer.invoke('popout:close', token),
+    alwaysOnTop: (token, on) => ipcRenderer.invoke('popout:always-on-top', token, on),
     update: (token, patch) => ipcRenderer.invoke('popout:update', token, patch),
     sendAction: (token, action) => ipcRenderer.invoke('popout:action', token, action),
     onUpdate: (cb) => subscribe('popout:update', cb),

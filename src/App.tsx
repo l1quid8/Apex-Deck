@@ -40,6 +40,9 @@ import { usePersonalAssistants } from "./usePersonalAssistants";
 import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
+import { assistantCallCandidate } from "./assistantFloat";
+import { useAssistantFloat, type AssistantFloatHandle } from "./useAssistantFloat";
+import { AssistantVoiceKeeper } from "./voice/AssistantVoiceKeeper";
 import { AssistantDetails } from "./AssistantDetails";
 import { useAssistantOutputs } from "./useAssistantOutputs";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
@@ -1925,7 +1928,8 @@ export function App() {
   const reachable = (hostId:string) => { if(hostId==='local'||!backend?.machines)return true;try{return backend.machines.connection(hostId).get().status.kind==='connected';}catch{return false;} };
   const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
-  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
+  const [assistantFloat, setAssistantFloat] = useState<AssistantFloatHandle | null>(null);
+  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant' || !!assistantFloat, bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
   // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
   // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
   const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
@@ -2022,19 +2026,22 @@ export function App() {
   const startAssistantCall = () => {
     if (!selectedAssistant) return;
     const hostId = selectedAssistant.ref?.hostId ?? selectedAssistant.assistant?.hostId ?? selectedAssistant.hostName;
-    const id = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
-    const candidate = {
-      hostId,
-      roomId: `assistant:${id}`,
-      participantId: id,
-      profileId: `assistant:${id}`,
-      name: selectedAssistant.name,
-      roomTitle: selectedAssistant.name,
-      agentVoice: selectedAssistant.assistant?.profile?.voice,
-      aliases: [],
-    };
-    void voiceController.start(candidate);
+    const assistantId = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
+    void voiceController.start(assistantCallCandidate(selectedAssistant, { hostId, assistantId }));
   };
+  const floatLane = assistantFloat ? assistants.lane(assistantFloat.ref) : null;
+  const floatControls = useAssistantFloat({ float: assistantFloat, setFloat: setAssistantFloat, lane: floatLane, appearance: appearanceSettings ?? appearance, onDetails: ref => {
+    setMainView({ kind: 'assistant', assistant: ref, section: 'chat' });
+    showDetails();
+  } });
+  const popOutAssistant = () => {
+    if (!selectedAssistant?.ref) return;
+    floatControls.open(selectedAssistant.ref, selectedAssistant.name).catch(error => toast(String(error instanceof Error ? error.message : error)));
+  };
+  const floatNeedsVoice = !!floatLane && !(selectedAssistant && floatLane.draftKey === selectedAssistant.draftKey);
+  // The route to the assistant's machine, as the main view uses: `ref.hostId` is its identity.
+  const floatHost = assistantFloat ? assistants.hosts.find(host => host.hostId === assistantFloat.ref.hostId) : undefined;
+  const floatBackend = floatHost && !offlineHost(floatHost.routeHostId) ? hostBackend(floatHost.routeHostId) : undefined;
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
   /** What this session's tasks and its own chat made: documents, exports and pages. */
@@ -2788,7 +2795,8 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
           </div>
-          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
+          {floatNeedsVoice && floatLane && <AssistantVoiceKeeper lane={floatLane} backend={floatBackend} settings={settings.voice} onSettings={voice=>setSettings(s=>({...s,voice}))}/>}
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace onPopOut={window.apexDeck?.popout&&selectedAssistant.ref?popOutAssistant:undefined} detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
             memoryProject={assistantNotebookProject}
             projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact managementOpen onDetailChange={()=>{}} detailBackLabel={workDetailOrigin==='chat'?'Chat':'Projects & access'} onDetailBack={()=>{if(workDetailOrigin==='chat')navigateAssistant('chat');}} focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
               onEnsureCoordinator={async(project)=>{
@@ -2822,7 +2830,7 @@ export function App() {
               onKeepThread={(project,id)=>{const pane=viewPanes.find(p=>p.id===id&&p.workspaceId===project.workspaceId);if(pane)keepAssistantThread(pane);else toast('Reconnect this task conversation before keeping it.');}}
               onOpenThread={(project,id)=>{const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);const destination=workspace?assistantWorkerThreadDestination(workspace,id,viewPanes,new Set([...deleting,...poppedIds])):null;if(!destination?.pane){toast('Reconnect this project or return its worker thread to Deck to open it.');return;}focusPane(destination.pane);setMaximized(destination.maximized);}}
             />:undefined}
-            editor={assistantBackend ? <AssistantEditor onArchived={()=>setMainView({kind:'workspace'})} onOpenBrowser={openAssistantBrowser} machineName={selectedAssistant.hostName} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;}).filter(workspace=>Boolean(workspace.path?.trim()))} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
+            editor={assistantBackend ? <AssistantEditor onPopOut={window.apexDeck?.popout&&selectedAssistant.ref?popOutAssistant:undefined} onArchived={()=>setMainView({kind:'workspace'})} onOpenBrowser={openAssistantBrowser} machineName={selectedAssistant.hostName} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;}).filter(workspace=>Boolean(workspace.path?.trim()))} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
             chat={<ApexAgentAll delegatedTasks={selectedDelegatedTasks} voiceBackend={assistantBackend??undefined} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} voiceHeader={assistantVoiceHost} onVoiceFocus={()=>navigateAssistant('chat')} onOpenBrowser={openAssistantBrowser} onOpenProjectTask={key=>{const task=selectedDelegatedTasks.find(t=>projectTaskKey(t.owner.hostId,t.owner.workspaceId,t.id)===key);if(!task)return false;const lists=assistantWorkItems([], [task],assistantProjectName);const item=Object.values(lists).flat().find(i=>i.taskId===task.id);if(!item)return false;openWorkItem(item,'chat');return true;}} key={selectedAssistant.draftKey} focusTask={chatFocus} onFocusHandled={()=>setChatFocus(null)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} draftKey={selectedAssistant.draftKey} assistantAvatar={<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={panel=>navigateAssistant(panel==='activity'?'chat':panel)} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
             offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence}  overviewEntries={[]} personal={selectedAssistant}
             taskContext={assistantTaskContext && scopedAssistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}

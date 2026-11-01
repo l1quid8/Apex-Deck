@@ -108,6 +108,8 @@ pub struct ActionModes {
     pub spend: ActionMode,
 }
 
+fn is_zero(value: &u64) -> bool { *value == 0 }
+
 impl Default for ActionModes {
     fn default() -> Self {
         ActionModes { read: ActionMode::Auto, write: ActionMode::Ask, send: ActionMode::Ask, spend: ActionMode::Ask }
@@ -356,6 +358,10 @@ pub struct PersonalAssistant {
     pub quiet_hours: Option<QuietHours>,
     #[serde(default)]
     pub modes: ActionModes,
+    /// Where the current conversation began. Older messages stay saved and
+    /// leave the model's context; memory, tasks and shared chats are untouched.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub conversation_from: u64,
     #[serde(default)]
     pub rules: Vec<StandingRule>,
     #[serde(default)]
@@ -399,6 +405,16 @@ pub struct MachineLink {
     pub last_seen: Option<u64>,
 }
 
+/// Where a reply's outside words came from.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OutsideSource {
+    /// A reply that used the computer tools.
+    Screen,
+    /// A summary of a chat read or of helper reports.
+    Report,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalMessage {
@@ -417,6 +433,9 @@ pub struct PersonalMessage {
     /// Reactions from the authenticated human account, shared by its devices.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<String>,
+    /// Set when the words retell outside content, so they stay quoted evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outside: Option<OutsideSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
@@ -466,6 +485,10 @@ pub struct PersonalEvent {
     /// The human OK'd this reply's cost (over the budget, or unknown).
     #[serde(default)]
     pub spend_approved: bool,
+    /// This reply was given computer tools, so running it again could repeat
+    /// real actions. It settles once, whatever happens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub computer_started: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -778,11 +801,17 @@ impl PersonalAssistant {
 
     pub(crate) fn post(&mut self, role: &str, kind: &str, text: String, task_id: Option<String>, event_id: Option<String>, at: u64) {
         let id = self.next_message_id();
-        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new(), legacy: None });
+        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new(), outside: None, legacy: None });
         if self.messages.len() > MAX_MESSAGES {
             let extra = self.messages.len() - MAX_MESSAGES;
             self.messages.drain(..extra);
         }
+    }
+
+    /// An assistant message that retells outside content.
+    pub(crate) fn post_outside(&mut self, source: OutsideSource, text: String, event_id: Option<String>, at: u64) {
+        self.post("assistant", "chat", text, None, event_id, at);
+        if let Some(message) = self.messages.last_mut() { message.outside = Some(source); }
     }
 
     pub(crate) fn task_mut(&mut self, id: &str) -> Option<&mut PersonalTask> {
@@ -824,11 +853,19 @@ impl PersonalAssistant {
     /// an operation that was attempted but never finished is now uncertain.
     pub(crate) fn recover(&mut self) -> bool {
         let mut changed = false;
+        let mut interrupted = Vec::new();
         for event in &mut self.events {
             if event.state == EventState::Processing {
-                event.state = EventState::Received;
+                event.state = if event.computer_started { EventState::Failed } else { EventState::Received };
+                if event.computer_started {
+                    event.error = Some(crate::personal_worker::COMPUTER_INTERRUPTED.into());
+                    interrupted.push(event.id.clone());
+                }
                 changed = true;
             }
+        }
+        for id in interrupted {
+            self.post("system", "update", crate::personal_worker::COMPUTER_INTERRUPTED.into(), None, Some(id), now());
         }
         for task in &mut self.tasks {
             if task.status == TaskStatus::Running {
@@ -1067,7 +1104,7 @@ impl crate::Host {
                 paused: false, revision: 1, created_at: at, counters: Counters::default(),
                 messages: vec![], events: vec![], tasks: vec![],
                 look: None, timezone: utc(), utc_offset_minutes: 0, quiet_hours: None,
-                modes: ActionModes::default(), rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
+                modes: ActionModes::default(), conversation_from: 0, rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
                 context_budget_chars: default_context_budget(), facts: vec![], schedules: vec![], notices: vec![], costs: vec![],
                 machines: vec![], push_devices: vec![],
             };
@@ -1128,7 +1165,7 @@ impl crate::Host {
             };
             assistant.events.push(PersonalEvent {
                 id: event_id.clone(), request_id: request, source, received_at: at,
-                state, attempts: 0, error: None, spend_approved: false,
+                state, attempts: 0, error: None, spend_approved: false, computer_started: false,
             });
             assistant.prune_events();
             Ok((event_id, false))
@@ -1151,8 +1188,10 @@ impl crate::Host {
         self.personal_accept(id, request_id, EventSource::Cancel { task_id: task_id.into() }, None)
     }
 
+    /// Saved before the revoke, so a reply starting now reads the pause.
     pub fn personal_pause(&self, id: &str, request_id: &str, paused: bool) -> Result<Accepted, String> {
         self.personal_accept(id, request_id, EventSource::Pause { paused }, None)
+            .inspect(|_| if paused { self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None); })
     }
 
     /// Cancel one schedule. Tasks it already started are left alone.
@@ -1227,9 +1266,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_restart_never_replays_a_reply_that_had_computer_tools() {
+        let event=|id:&str,computer_started|PersonalEvent{id:id.into(),request_id:id.into(),source:EventSource::Human{text:"Close the tab".into()},received_at:0,state:EventState::Processing,attempts:1,error:None,spend_approved:false,computer_started};
+        let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        assistant.events=vec![event("plain",false),event("acted",true)];
+        assert!(assistant.recover());
+        assert_eq!(assistant.events[0].state,EventState::Received,"a tool-free reply still reruns");
+        assert_eq!(assistant.events[1].state,EventState::Failed);
+        assert_eq!(assistant.messages.last().unwrap().text,crate::personal_worker::COMPUTER_INTERRUPTED);
+    }
+
+    #[test]
     fn lifecycle_source_receipts_survive_event_pruning_until_explicit_purge() {
         let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[{"id":"pt-1","goal":"Task","completionCriteria":[],"targetHost":"h","status":"cancelled","fromEvent":"source","maxAttempts":3,"createdAt":0,"updatedAt":0,"deletedAt":1}]})).unwrap();
-        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into()},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false});}
+        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into()},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false});}
         assistant.prune_events();
         assert!(assistant.events.iter().any(|event|event.id=="source"),"source request authority cannot be discarded while a deleted task awaits Empty");
     }

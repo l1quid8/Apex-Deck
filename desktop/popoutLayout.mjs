@@ -16,11 +16,11 @@ export class PopoutLayoutStore {
   }
 
   keep(record) {
-    if (!record || !['pane', 'tab'].includes(record.kind) || typeof record.id !== 'string' || !record.id || !validBounds(record.bounds)) return;
+    if (!record || !['pane', 'tab', 'assistant'].includes(record.kind) || typeof record.id !== 'string' || !record.id || !validBounds(record.bounds)) return;
     const bounds = Object.fromEntries(['x', 'y', 'width', 'height'].map(k => [k, Math.round(record.bounds[k])]));
     bounds.width = Math.max(360, bounds.width);
     bounds.height = Math.max(240, bounds.height);
-    const next = { kind: record.kind, id: record.id, bounds, maximized: record.maximized === true };
+    const next = { kind: record.kind, id: record.id, bounds, maximized: record.maximized === true, ...(record.alwaysOnTop === true ? { alwaysOnTop: true } : {}) };
     this.records.set(keyOf(next), next);
   }
 
@@ -52,9 +52,10 @@ export class PopoutLayoutStore {
       ...(Array.isArray(panes) ? panes : []).map(id => keyOf({ kind: 'pane', id })),
       ...(Array.isArray(tabs) ? tabs : []).map(id => keyOf({ kind: 'tab', id })),
     ]);
-    for (const [key] of this.records) if (!available.has(key)) this.records.delete(key);
+    // An assistant window reopens by choice; only its place and pin are remembered.
+    for (const [key, record] of this.records) if (record.kind !== 'assistant' && !available.has(key)) this.records.delete(key);
     this.save();
-    return this.list().map(({ kind, id }) => ({ kind, id }));
+    return this.list().filter(({ kind }) => kind !== 'assistant').map(({ kind, id }) => ({ kind, id }));
   }
 }
 
@@ -79,10 +80,10 @@ export function fitPopoutBounds(bounds, workAreas) {
 /** Save while the window is open so reboot/forced exit cannot erase the last placement. */
 export function trackPopoutWindow(win, identity, store, preserveOnClose) {
   const save = () => {
-    if (!win.isDestroyed()) store.set({ ...identity, bounds: win.getNormalBounds(), maximized: win.isMaximized() });
+    if (!win.isDestroyed()) store.set({ kind: identity.kind, id: identity.id, bounds: win.getNormalBounds(), maximized: win.isMaximized(), alwaysOnTop: win.isAlwaysOnTop() });
   };
   save();
-  for (const event of ['move', 'resize', 'maximize', 'unmaximize', 'leave-full-screen']) win.on(event, save);
+  for (const event of ['move', 'resize', 'maximize', 'unmaximize', 'leave-full-screen', 'always-on-top-changed']) win.on(event, save);
   win.on('closed', () => {
     if (!preserveOnClose()) store.remove(identity.kind, identity.id);
   });

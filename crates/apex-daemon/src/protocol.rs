@@ -475,9 +475,13 @@ where
                             _ => None,
                         };
                         if let Some((model, voice_name, instructions, tools)) = maybe_realtime {
+                            // An assistant id must name one on this machine; it is no room id.
+                            let unknown = matches!(&request, crate::voice::session::VoiceRequest::VoiceRealtimeSession { room, .. }
+                                if room.strip_prefix("assistant:").is_some_and(|assistant| daemon.host.personal_get(assistant).is_err()));
                             // Realtime session mint – never log key or secret.
                             let api_key = crate::voice::realtime::lookup_key();
                             let result = match api_key {
+                                _ if unknown => Err("This assistant isn't on this machine.".to_string()),
                                 None => Err("Missing OpenAI API key. Add OPENAI_API_KEY in Settings → Providers or environment.".to_string()),
                                 Some(key) => {
                                     let args = crate::voice::realtime::MintArgs { model, voice: voice_name, instructions, tools };

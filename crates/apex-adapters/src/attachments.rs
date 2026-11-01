@@ -283,10 +283,14 @@ impl Drop for Staged {
 }
 impl Staged {
     pub fn new() -> Result<Self, ParticipantError> {
+        Self::new_in(&std::env::temp_dir())
+    }
+    /// Keep file-based image protocols inside an existing private process sandbox.
+    pub(crate) fn new_in(parent: &Path) -> Result<Self, ParticipantError> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         for _ in 0..100 {
-            let dir = std::env::temp_dir().join(format!(
+            let dir = parent.join(format!(
                 "apex-vision-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)

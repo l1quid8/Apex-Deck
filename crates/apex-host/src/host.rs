@@ -1118,7 +1118,7 @@ impl Host {
         answers.store(true, Ordering::SeqCst);
         let approvals = room.approvals_handle();
         let checkpoint = Arc::new(Mutex::new(SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
-        let mut runtime = ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(crate::computer::TurnHook { host: Arc::downgrade(self), computer: Arc::clone(&self.computer), thread: id.clone(), work_room: !kind.is_chat() }));
+        let mut runtime = ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(crate::computer::TurnHook { host: Arc::downgrade(self), computer: Arc::clone(&self.computer), thread: id.clone(), work_room: !kind.is_chat(), ended: None }));
         if let Some(cwd) = &context.cwd {
             runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
             let this = Arc::downgrade(self);
@@ -1420,12 +1420,19 @@ impl Host {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn room_client_post(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<serde_json::Value, String> {
+        self.room_client_post_checked(id, text, targets, request_id, voice, background, hops, answers, capability, &|| Ok(())).await
+    }
+
+    /// Revalidate the caller's authority after waiting for the room and at acceptance.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn room_client_post_checked(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability, check: &(dyn Fn() -> Result<(), String> + Send + Sync)) -> Result<serde_json::Value, String> {
         if self.assistant_tasks.execution(&id).map_err(|error| error.to_string())?.is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
         if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
         let runner_gate = self.runner_gate(&id);
         let runner_guard = runner_gate.lock().await;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
+        check()?;
         // A resend of a message the chat already took still gets its record.
         let known = handle.checkpoint.lock().unwrap().snapshot.client_messages.contains_key(&request_id);
         if !known {
@@ -1438,7 +1445,7 @@ impl Host {
         }
         // Acceptance already committed this event. Publishing it must not do
         // a second fallible save and abandon an accepted batch before launch.
-        let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot), &|event| {
+        let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| { check()?; self.commit_client_snapshot(&id, &handle, snapshot) }, &|event| {
             if let RoomEvent::MessageAdded { message } = &event { update_chat_message_meta(&self.store, &id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message); }
             self.room_event(&id, event);
         }).await
@@ -1771,9 +1778,11 @@ impl Host {
     }
 
     pub(crate) fn computer_participant_supported(&self,thread:&str,id:&ParticipantId)->bool {
-        self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| matches!(p.backend,apex_core::Backend::OpenAiCompatible {..} | apex_core::Backend::Agent {tool:apex_core::AgentTool::ClaudeCode | apex_core::AgentTool::Codex | apex_core::AgentTool::Muse,..})))
+        self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| apex_adapters::computer_backend_supported(&p.backend)))
     }
+    pub(crate) fn room_is_busy(&self, id: &str) -> bool { self.rooms.lock().unwrap().get(id).is_some_and(|handle| handle.runtime.busy()) }
     pub(crate) fn computer_participant_label(&self,thread:&str,id:&ParticipantId)->Option<String> {
+        if let Some(assistant)=crate::personal_worker::computer_thread_assistant(thread) { return self.personal_get(assistant).ok().map(|a|a.name); }
         self.handle(thread).ok()?.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).map(|p|p.display_name.clone())
     }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
@@ -2646,7 +2655,7 @@ impl Host {
     /// Photos and files attached in the composer live with the app's data, one
     /// folder per thread, so they stay out of the workspace and its diff.
     /// Agents are allowed to read the `attachments` folder; see `new`.
-    fn attachment_dir(&self, room: &str) -> Result<PathBuf, String> {
+    pub(crate) fn attachment_dir(&self, room: &str) -> Result<PathBuf, String> {
         let room = export::safe_file_name(room)?;
         let dir = self.paths.data.join("attachments").join(room);
         std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make the attachments folder: {e}"))?;

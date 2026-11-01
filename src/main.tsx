@@ -9,6 +9,7 @@ import "./clay-theme.css";
 import "./appearance-settings.css";
 import "./apex-agent-panel.css";
 import "./popout.css";
+import { AssistantFloat } from "./AssistantFloatWindow";
 import "./bot-chip-styles.css";
 import "./appearance-studio.css";
 
@@ -16,7 +17,8 @@ import "./appearance-studio.css";
 // loads no startup state and saves nothing.
 const query = new URLSearchParams(window.location.search);
 const popoutToken = query.get("popout");
+const floatToken = query.get("assistant-float");
 
 // The Appearance preview is the same kind of window: real stylesheets, sample
 // content, no backend.
-createRoot(document.getElementById("root")!).render(query.has("appearance-preview") ? <AppearancePreviewPage /> : popoutToken ? <PopoutApp token={popoutToken} /> : <App />);
+createRoot(document.getElementById("root")!).render(query.has("appearance-preview") ? <AppearancePreviewPage /> : floatToken ? <AssistantFloat token={floatToken} /> : popoutToken ? <PopoutApp token={popoutToken} /> : <App />);

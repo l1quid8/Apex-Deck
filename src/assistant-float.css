@@ -1,0 +1,18 @@
+.assistant-float { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); font-size: 13px; }
+.assistant-float-bar { -webkit-app-region: drag; display: flex; align-items: center; gap: 4px; min-height: 44px; padding: 6px 10px 6px 76px; border-bottom: 1px solid var(--line); }
+.assistant-float-bar button { -webkit-app-region: no-drag; background: none; border: 0; color: inherit; border-radius: var(--radius); min-width: 28px; height: 28px; cursor: pointer; }
+.assistant-float-bar button:hover, .assistant-float-bar button[aria-pressed="true"] { background: var(--panel); }
+.assistant-float-id { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+.assistant-float-id span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-float-grow { flex: 1; }
+.assistant-float-log { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.assistant-float-log p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; }
+.assistant-float-log p[data-role="human"] { align-self: flex-end; max-width: 85%; padding: 6px 10px; border-radius: var(--radius); background: var(--panel); }
+.assistant-float-log p[data-role="system"] { opacity: .7; font-size: 12px; }
+.assistant-float-empty { opacity: .6; }
+.assistant-float-problem { margin: 0; padding: 6px 12px; color: var(--red, #ff7b72); font-size: 12px; }
+.assistant-float-call { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-top: 1px solid var(--line); }
+.assistant-float-composer { display: flex; align-items: flex-end; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.assistant-float-composer textarea { flex: 1; resize: none; background: var(--panel); color: inherit; border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px; font: inherit; }
+.assistant-float-composer button, .assistant-float-call button { background: var(--panel); border: 1px solid var(--line); color: inherit; border-radius: var(--radius); height: 30px; min-width: 30px; padding: 0 8px; cursor: pointer; }
+.assistant-float :focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }

@@ -535,6 +535,7 @@ impl Host {
         };
         let owner = crate::assistant_avatar::Owner::Assistant { assistant: AssistantRef { host_id: snapshot.host_id.clone(), assistant_id: snapshot.id.clone() } };
         let reset = matches!(input.avatar, Some(crate::assistant_avatar::Selection::Pixel));
+        let thread = crate::personal_worker::computer_thread(&snapshot.id);
         self.with_avatar_selection(owner, input.avatar, |image| self.change_personal(|assistants| {
             let assistant = assistants
                 .iter_mut()
@@ -584,7 +585,13 @@ impl Host {
             Ok(Changed {
                 assistant: assistant.clone(),
             })
-        }))
+        })).inspect(|changed| {
+            // A running computer turn holds the access it started with.
+            let saved = &changed.assistant;
+            if saved.modes != snapshot.modes || saved.privacy != snapshot.privacy || saved.profile != snapshot.profile || saved.projects != snapshot.projects {
+                self.computer.revoke(Some(&thread), None);
+            }
+        })
     }
 }
 

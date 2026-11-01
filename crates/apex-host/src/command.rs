@@ -68,6 +68,7 @@ pub enum Command {
     PersonalReplyCancel { assistant_id: String, request_id: String, event_id: String },
     PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
+    PersonalConversationNew { assistant_id: String },
     PersonalScheduleCancel { assistant_id: String, request_id: String, schedule_id: String },
     PersonalAvatarOptions { owner: crate::assistant_avatar::Owner },
     PersonalAvatarGenerate { #[serde(flatten)] input: crate::assistant_avatar::Generate },
@@ -460,6 +461,7 @@ impl Host {
             PersonalTaskLifecycle { input } => reply(self.personal_task_lifecycle(input).await?),
             PersonalReplyCancel { assistant_id, request_id, event_id } => reply(self.personal_reply_cancel(&assistant_id, &request_id, &event_id)?),
             PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
+            PersonalConversationNew { assistant_id } => reply(self.personal_conversation_new(&assistant_id)?),
             PersonalPause { assistant_id, request_id, paused } => { let accepted = self.personal_pause(&assistant_id, &request_id, paused)?; if !paused { self.redispatch_recovered_queued()?; } reply(accepted) },
             PersonalScheduleCancel { assistant_id, request_id, schedule_id } => reply(self.personal_schedule_cancel(&assistant_id, &request_id, &schedule_id)?),
             ProjectMemoryList { input } => reply(self.project_memory_list(input)?),
@@ -923,7 +925,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 213);
+        assert_eq!(names.len(), 214);
         for name in [
             "room_curate",
             "room_curate_undo",
