@@ -114,3 +114,19 @@ test('eligible current focus chooses its project while stale closed focus never 
  assert.equal(closed.focusedThreadId,null);assert.equal(companionViewContext(closed,null).focusedThreadId,undefined);
  assert.equal(closed.openThreadIds.includes('closed'),false);
 });
+
+test('legacy Work chat_list rows need no metadata or titleExplicit flag and include zero-agent native threads',()=>{
+  const data=input();
+  data.routeHostId='local';data.workspaces=[{id:'a',name:'Apex',path:'/canonical/a'}];
+  data.panes=[{id:'legacy-native',kind:'chat',workspaceId:'a',title:'Existing native name'}];data.focusedPane='legacy-native';
+  data.assistant.projects.push(binding('ios','/canonical/ios','full'));
+  data.catalog=withListedRooms(emptyCatalog(),'local','This Mac',parseChatList('local',{rooms:[{
+    id:'legacy-native',kind:'work',cwd:'/canonical/a',title:'New chat',participants:[],updatedAt:0,archived:false,
+  }]}),1);
+  const result=deriveCompanionCatalog(data),context=companionFloatContext(result,null);
+  assert.equal(result.valid,true);assert.equal(result.projects.length,2);
+  assert.equal(context.threads.length,1);assert.equal(context.threads[0].title,'Existing native name');
+  assert.equal(context.threads[0].closed,false);assert.equal(context.threads[0].status,undefined);
+  assert.deepEqual(context.followedThreadIds,['legacy-native']);assert.equal(context.canCreateThread,true);
+  const target=companionNewThreadTarget(result,null);assert.equal(target.kind,'project');assert.equal(target.routeHostId,'local');assert.equal(target.project.cwd,'/canonical/a');
+});

@@ -9,3 +9,16 @@ html.assistant-float-document,html.assistant-float-document body,html.assistant-
 @media(prefers-reduced-motion:reduce){.assistant-float *{animation:none!important;transition:none!important}}
 
 .assistant-float-thread-toggle{position:absolute;right:8px;bottom:51px;z-index:3;display:grid;place-items:center;width:23px;height:18px;min-height:18px;padding:0;border:1px solid var(--af-border);border-radius:6px;background:var(--af-glass);color:var(--af-muted);font-size:12px;line-height:1}.assistant-float-thread-toggle:hover{color:var(--text);background:var(--panel-2)}.assistant-float-context{padding-right:34px}
+
+/* Native windows inherit Deck's browser zoom. Bound the picker just like its
+   header/pill, and spend reduced vertical space on scrolling rather than
+   overflowing a transparent window. */
+.assistant-float-stack{min-width:0;min-height:0;max-height:100%}
+.assistant-float-context,.assistant-float-bar{flex-shrink:0}
+.assistant-float-picker{min-width:0;max-width:100%;min-height:0;flex-shrink:1;display:flex;flex-direction:column;overflow:hidden}
+.assistant-float-picker-top,.assistant-float-picker>input,.assistant-float-picker-foot,.assistant-float-picker>.assistant-float-problem{flex-shrink:0}
+.assistant-float-picker-top{min-width:0;max-width:100%}
+.assistant-float-picker-top>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.assistant-float-picker>input{min-width:0;max-width:calc(100% - 20px)}
+.assistant-float-thread-list{min-width:0;min-height:0;flex:1 1 126px;overflow-x:hidden}
+.assistant-float-thread,.assistant-float-use-thread{min-width:0;max-width:100%}

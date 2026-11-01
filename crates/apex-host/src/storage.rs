@@ -1023,7 +1023,7 @@ impl Store {
         Ok(meta)
     }
 
-    /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
+    /// Every authority-validated saved chat or Work room. Catalog metadata is optional.
     pub fn chat_list(&self) -> Result<Vec<ChatListEntry>, String> {
         let metas = self.chat_metas_held()?;
         let authorities = self.room_authorities()?;
@@ -1057,9 +1057,6 @@ impl Store {
                 Ok(saved) => saved,
                 Err(_) => continue,
             };
-            if !saved.snapshot.kind.is_chat() && meta.is_none() {
-                continue;
-            }
             let meta = meta.unwrap_or_default();
             let last_msg_at = saved
                 .snapshot
@@ -1350,6 +1347,30 @@ mod tests {
         assert_eq!(std::fs::read(store.room_path("destination")).unwrap(), bytes);
         drop(host);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_list_includes_native_zero_bot_work_rooms_without_optional_metadata() {
+        let runtime=tokio::runtime::Runtime::new().unwrap();
+        let root=temp();
+        let cwd=root.join("project");std::fs::create_dir_all(&cwd).unwrap();
+        let cwd=cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+        let host=crate::Host::new(crate::HostPaths{data:root.clone(),downloads:None},runtime.handle().clone());
+        let snapshot=host.room_create("native-work".into(),vec![],RoomOptions::default(),Some(cwd.clone())).unwrap();
+        assert_eq!(snapshot.kind,apex_core::RoomKind::Work);assert!(snapshot.participants.is_empty());
+        assert!(host.store().chat_meta("native-work").unwrap().is_none(),"normal native creation does not require catalog metadata");
+        let rows=host.store().chat_list().unwrap();
+        let row=rows.iter().find(|row|row.id=="native-work").expect("the native Work thread must be discoverable before naming it or adding bots");
+        assert_eq!(row.kind,apex_core::RoomKind::Work);assert_eq!(row.cwd.as_deref(),Some(cwd.as_str()));assert!(row.participants.is_empty());
+        assert!(!row.archived);assert!(row.trashed_at.is_none());assert!(!row.title_explicit);
+        host.chat_update_meta("native-work".into(),Some("Native work".into()),Some(true),None).unwrap();
+        host.room_set_trashed("native-work".into(),true).unwrap();
+        let row=host.store().chat_list().unwrap().into_iter().find(|row|row.id=="native-work").unwrap();
+        assert_eq!(row.title,"Native work");assert!(row.archived);assert!(row.trashed_at.is_some());
+        host.room_delete("native-work".into()).unwrap();
+        drop(host);drop(runtime);
+        // Native checkpoint workers may still be finishing in this temp fixture.
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]

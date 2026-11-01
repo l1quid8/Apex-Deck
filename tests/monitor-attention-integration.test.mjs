@@ -1020,3 +1020,25 @@ test('actual App an older successful rename cannot clear a newer request that re
   assert.equal(current.title,'Reused title');assert.equal(current.hostTitlePending,'Reused title','the older acknowledgement does not own the latest equal-text request');
   h.unmount();
 });
+
+test('actual App companion lists a legacy zero-agent Work row without explicit metadata and can create in its focused project despite two grants',async()=>{
+  const h=appHarness({companion:true});h.assistantCollection.hosts[0].routeHostId='local';
+  h.personalLane.assistant.projects.push({project:{hostId:'host-a',workspaceId:'ios',cwd:'/work/ios'},tools:'full'});
+  h.assistantCollection.assistants[0].projects=h.personalLane.assistant.projects;
+  h.session.focusedPane='thread-a';
+  // Store::chat_list's legacy Work shape: no managed title/metadata required,
+  // no providers needed, and transport `local` differs from durable host-a.
+  const raw={id:'thread-a',kind:'work',cwd:project.path,title:'New chat',participants:[],updatedAt:0,archived:false};
+  h.chatCollection.catalog=withListedRooms(emptyCatalog(),'local','This Mac',parseChatList('local',{rooms:[raw]}),1);
+  h.render();await tick();let tree=h.render();
+  child(tree,'ProjectSidebar').props.onPopOutAssistant(h.assistantRef);await tick();h.render();await tick();tree=h.render();
+  const context=h.floatOptions().threadContext;
+  assert.equal(context.threads.length,1,'a real listed Work room must not require chat metadata or an attached bot');
+  assert.equal(context.threads[0].id,'thread-a');assert.equal(context.threads[0].title,'Ordinary thread');
+  assert.equal(context.threads[0].hostId,'host-a');assert.equal(context.threads[0].projectId,project.id);
+  assert.deepEqual(context.followedThreadIds,['thread-a']);assert.equal(context.canCreateThread,true,'the focused native thread disambiguates two enabled projects');
+  const payload=h.personalOptions().viewContext('local','host-a',h.assistantRef);
+  assert.equal(payload.focusedThreadId,'thread-a');assert.deepEqual(payload.openThreadIds,['thread-a']);
+  assert.deepEqual(h.popoutRecords.updates.at(-1).patch.float.context,context);
+  h.unmount();
+});
