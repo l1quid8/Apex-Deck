@@ -1,4 +1,4 @@
-/* Clay: a solid theme layer with neutral dark and warm light palettes beside glass and flat. Clean-room and
+/* Clay: a solid, warm theme layer beside glass and flat, with an opt-in Black palette. Clean-room and
    Claude-inspired in feel only — system/open fonts, no copied code or
    assets. Classic, Glass and Flat have no matching selectors here and are
    untouched. Surfaces are opaque (no blur, no backdrop glow), bot replies
@@ -7,26 +7,26 @@
    on Paper. Approval cards deliberately keep the shared amber safety
    treatment in glass-theme.css. */
 :root[data-deck-theme="clay"] {
-  --deck-bg: #000000;
-  --deck-panel: 16 16 16;
-  --deck-panel-raised: 24 24 24;
-  --deck-code: #101010;
-  --deck-line: 242 242 242;
-  --deck-text: #f2f2f2;
-  --deck-muted: #9a9a9a;
-  --deck-muted-2: #9a9a9a;
-  --deck-warning: #f59e0b;
-  --deck-danger: #f87171;
+  --deck-bg: #262421;
+  --deck-panel: 30 28 26;
+  --deck-panel-raised: 48 45 41;
+  --deck-code: #1b1917;
+  --deck-line: 239 233 224;
+  --deck-text: #efe9e0;
+  --deck-muted: #c2b9ad;
+  --deck-muted-2: #ada294;
+  --deck-warning: #e6b562;
+  --deck-danger: #f0907f;
   --deck-success: #9dc79b;
   --deck-accent: var(--deck-custom-accent, oklch(.83 .08 var(--deck-hue, 38)));
-  --deck-accent-ink: var(--deck-custom-accent-ink, #04211d);
+  --deck-accent-ink: var(--deck-custom-accent-ink, #2a1e16);
   --deck-accent-text: var(--deck-accent);
   --deck-accent-soft: color-mix(in srgb, var(--deck-accent) 16%, var(--deck-bg));
-  --deck-selected: #181818;
-  --deck-human-fill: #181818;
+  --deck-selected: #3a3630;
+  --deck-human-fill: #38332d;
   --deck-human-line: color-mix(in srgb, var(--deck-human-fill) 92%, var(--deck-text));
   --deck-surface-sunken: var(--deck-code);
-  --deck-edge: #2a2a2a;
+  --deck-edge: #544e46;
   --deck-glow: 0;
   --deck-blur: 0px;
   --deck-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -36,7 +36,7 @@
   --bg: var(--deck-bg);
   --panel: rgb(var(--deck-panel));
   --panel-2: rgb(var(--deck-panel-raised));
-  --line: #2a2a2a;
+  --line: #3b3732;
   --text: var(--deck-text);
   --muted: var(--deck-muted);
   --accent: var(--deck-accent);
@@ -47,6 +47,26 @@
   --plus: var(--deck-success);
   --minus: var(--deck-danger);
   color-scheme: dark;
+}
+
+/* Black sits before the Light block, which it ties on specificity, so Black
+   in Light starts from the warm Light tokens and takes its own block below. */
+:root[data-deck-theme="clay"][data-deck-palette="black"] {
+  --deck-bg: #000000;
+  --deck-panel: 16 16 16;
+  --deck-panel-raised: 24 24 24;
+  --deck-code: #101010;
+  --deck-line: 242 242 242;
+  --deck-text: #f2f2f2;
+  --deck-muted: #9a9a9a;
+  --deck-muted-2: #9a9a9a;
+  --deck-warning: #f59e0b;
+  --deck-danger: #f87171;
+  --deck-accent-ink: var(--deck-custom-accent-ink, #04211d);
+  --deck-selected: #181818;
+  --deck-human-fill: #181818;
+  --deck-edge: #3f3f3f;
+  --line: #2a2a2a;
 }
 
 :root[data-deck-light="true"][data-deck-theme="clay"] {
@@ -70,8 +90,34 @@
   color-scheme: light;
 }
 
+:root[data-deck-light="true"][data-deck-theme="clay"][data-deck-palette="black"] {
+  --deck-bg: #f7f7f6;
+  --deck-panel: 238 238 236;
+  --deck-panel-raised: 255 255 255;
+  --deck-code: #eeeeec;
+  --deck-line: 28 28 28;
+  --deck-text: #1c1c1c;
+  --deck-muted: #555555;
+  --deck-muted-2: #636363;
+  --deck-warning: #865800;
+  --deck-danger: #ad3626;
+  --deck-accent-ink: var(--deck-custom-accent-ink, #ffffff);
+  --deck-selected: #e4e4e2;
+  --deck-human-fill: #eaeae8;
+  --deck-edge: #bdbdbb;
+  --line: #dddddc;
+}
+
+:root[data-deck-edges="strong"][data-deck-theme="clay"],
+:root[data-deck-edges="strong"][data-deck-theme="clay"][data-deck-palette="black"] { --line: var(--deck-edge); }
+
 @media (prefers-contrast: more) {
   :root[data-deck-theme="clay"] {
+    --deck-muted: #ddd4c6;
+    --deck-muted-2: #cfc4b4;
+    --line: var(--deck-edge);
+  }
+  :root[data-deck-theme="clay"][data-deck-palette="black"] {
     --deck-muted: #dddddd;
     --deck-muted-2: #cfcfcf;
     --line: var(--deck-edge);
@@ -79,6 +125,11 @@
   :root[data-deck-light="true"][data-deck-theme="clay"] {
     --deck-muted: #3d3831;
     --deck-muted-2: #454037;
+    --line: var(--deck-edge);
+  }
+  :root[data-deck-light="true"][data-deck-theme="clay"][data-deck-palette="black"] {
+    --deck-muted: #3d3d3d;
+    --deck-muted-2: #454545;
     --line: var(--deck-edge);
   }
   :root[data-deck-theme="clay"] :is(button, input, select, textarea, [tabindex]):focus-visible {
@@ -156,6 +207,11 @@
   font-size: 13px;
 }
 :root[data-deck-theme="clay"] .bubble.bot .speaker { font-family: var(--deck-font-ui); }
+/* Reply text can leave the theme's own face: sans here, serif in the other
+   themes. Clay's headings keep their serif either way. */
+:root[data-deck-theme="clay"][data-deck-reply="sans"] .bubble.bot > :is(.md, .draft-text) {
+  font-family: var(--deck-font-ui);
+}
 /* Agent names, in bubbles and in Details. The color-mix line is the
    fallback: a gentle warm mute on Ember, a stronger pull toward the dark
    text color on Paper, enough for the built-in palette. Where relative

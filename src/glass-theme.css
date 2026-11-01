@@ -1,3 +1,20 @@
+/* Serif replies in the themes whose own reply face is sans. Same rules as Clay's
+   reading layout: reply text only, code and tables keep their own faces. */
+:root[data-deck-reply="serif"] {
+  --deck-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --deck-font-reading: "Iowan Old Style", Charter, "Source Serif 4", Georgia, serif;
+  --deck-reading-size: calc(13px + 3px * var(--deck-density, 1));
+}
+:root[data-deck-reply="serif"] .bubble.bot > :is(.md, .draft-text) {
+  font-family: var(--deck-font-reading);
+  font-size: var(--deck-reading-size);
+  line-height: 1.62;
+}
+:root[data-deck-reply="serif"] .bubble.bot :is(.md-code, .md-table) {
+  font-family: var(--deck-font-ui);
+  font-size: 13px;
+}
+
 /* Optional glass appearance. Classic has no matching root selector, so it
    continues to use the existing styles unchanged. */
 :root[data-deck-theme="glass"],
@@ -546,3 +563,8 @@
 
 @media (prefers-reduced-motion: reduce) {
 }
+
+/* Panel edges: Strong. Clay has its own rule beside its tokens. */
+:root[data-deck-theme="classic"][data-deck-edges="strong"] { --line: #3f3f3f; }
+:root[data-deck-theme="glass"][data-deck-edges="strong"],
+:root[data-deck-theme="flat"][data-deck-edges="strong"] { --line: rgb(var(--deck-line) / .3); }
