@@ -997,6 +997,12 @@ export function App() {
     setPanel((current) => openTab({ ...current, open: true }, "assistantbrowser", Date.now()));
   };
 
+  // A link for a machine that's offline has nowhere to open. The panel says so while the person stays put.
+  useEffect(() => {
+    if (!browserAddress?.hostId) return;
+    try { hostBackend(browserAddress.hostId); } catch { setBrowserAddress(null); }
+  }, [browserAddress]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const forkThread = async (source: Pane, title: string, upto: number | null, at: number) => {
     const id = newId("pane");
     if (!backend) throw new Error("The backend is not ready yet.");
@@ -2879,7 +2885,8 @@ export function App() {
                 if (!route) return <p className="muted right-panel-empty">Connect to a machine to use its browser.</p>;
                 const browserRoute = route;
                 const browserName = inAssistant ? selectedAssistant!.hostName : hostNameFor(browserHost);
-                return <SharedBrowser key={inAssistant ? `assistant:${browserName}` : browserHost} call={(cmd, args) => browserRoute.call(cmd, args)} hostId={inAssistant ? `assistant:${browserName}` : browserHost} hostName={browserName} visible={visible} assistantFirst={inAssistant} assistantName={selectedAssistant?.assistant?.name ?? "Assistant"}
+                const browserKey = inAssistant ? `assistant:${assistantHost?.routeHostId ?? browserName}` : browserHost;
+                return <SharedBrowser key={browserKey} call={(cmd, args) => browserRoute.call(cmd, args)} hostId={browserKey} hostName={browserName} visible={visible} assistantFirst={inAssistant} assistantName={selectedAssistant?.assistant?.name ?? "Assistant"}
                   thread={!inAssistant && browserHost === focusedHost && pane?.kind === "chat" ? { id: pane.id, title: pane.title } : null} roomName={(id) => panes.find((item) => item.id === id)?.title} open={browserAddress} onOpened={() => setBrowserAddress(null)} onStopAll={() => { void browserRoute.call("computer_stop").catch(() => {}); }} />;
               },
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,

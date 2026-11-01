@@ -94,7 +94,17 @@ test("input made on one tab never lands on the tab switched to", async () => {
   queue.add("vps\0A", to("vps"), text("v"));
   release();
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(sent, [["A", "1"], ["A", "2", "3"], ["B", "b"], ["vps", "v"]]);
+  assert.deepEqual(sent.filter(([name]) => name === "A"), [["A", "1"], ["A", "2", "3"]]);
+  assert.deepEqual(sent.filter(([name]) => name !== "A"), [["B", "b"], ["vps", "v"]]);
+  assert.ok(sent.findIndex(([name]) => name === "B") < sent.findIndex(([, text]) => text === "2"), "a slow tab holds up no other");
+});
+
+test("nothing shares a batch with a clipboard reply", async () => {
+  const sent = [];
+  const queue = inputQueue((deliver, events) => deliver(events), () => {}, () => {});
+  queue.add("A", async (events) => { sent.push(events.map((event) => event.kind)); }, { kind: "reload" }, { kind: "cut" }, { kind: "back" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(sent, [["reload", "cut"], ["back"]]);
 });
 
 test("a refused event drops what followed it on that tab only", async () => {

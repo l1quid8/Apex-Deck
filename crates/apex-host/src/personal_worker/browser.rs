@@ -626,6 +626,10 @@ impl Tab {
     }
 }
 
+/// One frame of a tab: `session` when it runs in its own process, `context` when it shares its parent's.
+#[derive(Default)]
+struct Place { session: Option<String>, context: Option<i64> }
+
 struct Page {
     socket: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     next: u64,
@@ -707,34 +711,39 @@ impl Page {
         Ok(result["result"]["value"].clone())
     }
 
-    /// The selection in the frame that has the keyboard, which may be nested in other frames
-    /// or run in another process. It fails rather than answer with some other frame's text.
-    async fn selection(&mut self) -> Result<String, String> {
-        const UNAVAILABLE: &str = "browser_selection_unavailable";
-        let (mut session, mut context) = (None::<String>, None::<i64>);
+    /// Where the keyboard is: the frame with focus, which may be nested or run in another process.
+    async fn focused_frame(&mut self) -> Result<Place, String> {
+        let mut place = Place::default();
         for _ in 0..MAX_FRAME_DEPTH {
-            let mut asked = json!({ "expression": FOCUSED_FRAME });
-            if let Some(context) = context { asked["contextId"] = json!(context); }
-            let answer = self.call_in(session.as_deref(), "Runtime.evaluate", asked).await.map_err(|_| UNAVAILABLE)?;
-            let Some(frame) = answer["result"]["objectId"].as_str() else {
-                let mut asked = json!({ "expression": SELECTION, "returnByValue": true });
-                if let Some(context) = context { asked["contextId"] = json!(context); }
-                let answer = self.call_in(session.as_deref(), "Runtime.evaluate", asked).await.map_err(|_| UNAVAILABLE)?;
-                return answer["result"]["value"].as_str().map(str::to_owned).ok_or_else(|| UNAVAILABLE.to_owned());
-            };
+            let answer = self.in_frame(&place, FOCUSED_FRAME, false).await?;
+            let Some(frame) = answer["objectId"].as_str() else { return Ok(place) };
+            let session = place.session.clone();
             let node = self.call_in(session.as_deref(), "DOM.describeNode", json!({ "objectId": frame })).await.map_err(|_| UNAVAILABLE)?;
             let frame = node["node"]["frameId"].as_str().ok_or(UNAVAILABLE)?.to_owned();
-            // This also reports frames already running elsewhere; the second call collects any that arrive after its answer.
+            // This reports frames already running elsewhere, and the evaluation after it collects any that arrive late.
             self.call_in(session.as_deref(), "Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true })).await.map_err(|_| UNAVAILABLE)?;
             self.call_in(session.as_deref(), "Runtime.evaluate", json!({ "expression": "0" })).await.map_err(|_| UNAVAILABLE)?;
-            if let Some(own) = self.frames.get(&frame) {
-                (session, context) = (Some(own.clone()), None);
-            } else {
-                let world = self.call_in(session.as_deref(), "Page.createIsolatedWorld", json!({ "frameId": frame, "worldName": "deck-selection" })).await.map_err(|_| UNAVAILABLE)?;
-                context = Some(world["executionContextId"].as_i64().ok_or(UNAVAILABLE)?);
-            }
+            place = match self.frames.get(&frame) {
+                Some(own) => Place { session: Some(own.clone()), context: None },
+                None => {
+                    let world = self.call_in(session.as_deref(), "Page.createIsolatedWorld", json!({ "frameId": frame, "worldName": "deck-selection" })).await.map_err(|_| UNAVAILABLE)?;
+                    Place { session, context: Some(world["executionContextId"].as_i64().ok_or(UNAVAILABLE)?) }
+                }
+            };
         }
         Err(UNAVAILABLE.into())
+    }
+
+    async fn in_frame(&mut self, place: &Place, expression: &str, by_value: bool) -> Result<Value, String> {
+        let mut asked = json!({ "expression": expression, "returnByValue": by_value });
+        if let Some(context) = place.context { asked["contextId"] = json!(context); }
+        let answer = self.call_in(place.session.as_deref(), "Runtime.evaluate", asked).await.map_err(|_| UNAVAILABLE)?;
+        Ok(answer["result"].clone())
+    }
+
+    /// The selected text where the keyboard is. It fails rather than answer with some other frame's text.
+    async fn selection(&mut self, place: &Place) -> Result<String, String> {
+        Ok(self.in_frame(place, SELECTION, true).await?["value"].as_str().ok_or(UNAVAILABLE)?.to_owned())
     }
 
     async fn settle(&mut self) {
@@ -862,7 +871,6 @@ pub async fn input(input: Input) -> Result<View, String> {
                 return Err("Use Escape in Take over to dismiss this page dialog.".into());
             }
             tab.answer_dialog(false, None).await?;
-            tab.dialog.store(false, Ordering::SeqCst);
         } else {
             match input {
                 Input::Click { x, y } => {
@@ -1019,6 +1027,8 @@ pub enum Event {
     Dialog { accept: bool, #[serde(default)] text: Option<String> },
 }
 
+/// Copy and Cut couldn't read the selection, so neither did anything.
+const UNAVAILABLE: &str = "browser_selection_unavailable";
 /// Frames deeper than this aren't followed for Copy and Cut.
 const MAX_FRAME_DEPTH: usize = 8;
 /// The focused frame's element, in this document, if focus went into one.
@@ -1042,8 +1052,8 @@ pub async fn tab_input(id: &str, events: Vec<Event>) -> Result<Value, String> {
         let mut page = tab.page().await?;
         match event {
             Event::Dialog { accept, text } => {
+                // The browser's own "closed" report clears the flag; doing it here could hide a dialog opened right after.
                 tab.answer_dialog(accept, text).await?;
-                tab.dialog.store(false, Ordering::SeqCst);
                 tab.bump();
                 continue;
             }
@@ -1072,14 +1082,18 @@ pub async fn tab_input(id: &str, events: Vec<Event>) -> Result<Value, String> {
             Event::Back => { page.eval("history.back()").await?; }
             Event::Forward => { page.eval("history.forward()").await?; }
             Event::Reload => { page.call("Page.reload", json!({})).await?; }
-            Event::Copy => { copied = Some(page.selection().await?); }
+            Event::Copy => {
+                let place = page.focused_frame().await?;
+                copied = Some(page.selection(&place).await?);
+            }
             Event::Cut => {
-                let text = page.selection().await?;
+                let place = page.focused_frame().await?;
+                let text = page.selection(&place).await?;
                 // Nothing is removed that didn't reach the clipboard, which also spares password fields.
                 if text.is_empty() { continue; }
+                // An editing command, because a key would reach the page's own shortcuts.
+                page.in_frame(&place, "document.execCommand('delete')", true).await?;
                 copied = Some(text);
-                page.call("Input.dispatchKeyEvent", json!({ "type": "rawKeyDown", "key": "x", "code": "KeyX", "windowsVirtualKeyCode": 88, "commands": ["delete"] })).await?;
-                page.call("Input.dispatchKeyEvent", json!({ "type": "keyUp", "key": "x", "code": "KeyX", "windowsVirtualKeyCode": 88 })).await?;
             }
             Event::Dialog { .. } => unreachable!("answered above"),
         }

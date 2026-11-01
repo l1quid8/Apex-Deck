@@ -40,34 +40,35 @@ export function coalesce(queue: PageEvent[], next: PageEvent): PageEvent[] {
 }
 
 /**
- * Input in the order it happened, one batch at a time. Each event keeps the tab and machine it
- * was made on from the moment it's queued, so switching away can never send it somewhere else.
+ * Input in the order it happened, one batch at a time for each tab. Each event keeps the tab and
+ * machine it was made on from the moment it's queued, so switching away can never send it
+ * somewhere else, and a slow tab can't hold up the others.
  */
 export function inputQueue<R>(deliver: (send: (events: PageEvent[]) => Promise<R>, events: PageEvent[]) => Promise<void>, onIdle: () => void, onFail: (cause: unknown) => void) {
-  type Batch = { to: string; send: (events: PageEvent[]) => Promise<R>; events: PageEvent[] };
-  let batches: Batch[] = [];
-  let sending = false;
-  const flush = async () => {
-    if (sending) return;
-    sending = true;
-    while (batches.length) {
-      const batch = batches.shift()!;
-      try { await deliver(batch.send, batch.events); onIdle(); }
-      catch (cause) {
-        // What followed a failed event makes no sense without it, but other tabs are unaffected.
-        batches = batches.filter((item) => item.to !== batch.to);
-        onFail(cause);
-      }
+  type Batch = { send: (events: PageEvent[]) => Promise<R>; events: PageEvent[] };
+  const lines = new Map<string, Batch[]>();
+  const clipboard = (batch: Batch) => { const kind = batch.events[batch.events.length - 1]?.kind; return kind === "copy" || kind === "cut"; };
+  const run = async (to: string, line: Batch[]) => {
+    while (line.length) {
+      const batch = line[0];
+      try { await deliver(batch.send, batch.events); line.shift(); onIdle(); }
+      // What followed a failed event makes no sense without it.
+      catch (cause) { line.length = 0; onFail(cause); }
     }
-    sending = false;
+    if (lines.get(to) === line) lines.delete(to);
   };
   return {
     add(to: string, send: (events: PageEvent[]) => Promise<R>, ...events: PageEvent[]) {
-      const last = batches[batches.length - 1];
-      const batch = last?.to === to ? last : { to, send, events: [] };
-      if (batch !== last) batches.push(batch);
-      for (const event of events) batch.events = coalesce(batch.events, event);
-      void flush();
+      let line = lines.get(to);
+      const idle = !line;
+      if (!line) lines.set(to, line = []);
+      for (const event of events) {
+        // The batch being sent is out of reach, and a clipboard reply mustn't wait on anything after it.
+        const last = line.length > (idle ? 0 : 1) ? line[line.length - 1] : undefined;
+        if (last && !clipboard(last)) last.events = coalesce(last.events, event);
+        else line.push({ send, events: [event] });
+      }
+      if (idle) void run(to, line);
     },
   };
 }

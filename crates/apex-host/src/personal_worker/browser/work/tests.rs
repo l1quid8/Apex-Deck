@@ -13,6 +13,11 @@ fn reset() {
     held.primary = None;
 }
 
+/// The browser's folder can only be set once per run, so every real-browser test shares it.
+fn test_profile() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("apex-work-browser-{}", std::process::id()))
+}
+
 fn node(role: &str, name: &str, backend: i64) -> Value {
     json!({"ignored":false,"role":{"value":role},"name":{"value":name},"backendDOMNodeId":backend,"properties":[]})
 }
@@ -271,7 +276,7 @@ fn key(action: &str, letter: char) -> service::Event {
 async fn the_shared_browser_works_for_real() {
     let _serial = SERIAL.lock().await;
     reset();
-    let profile = std::env::temp_dir().join(format!("apex-work-browser-{}", std::process::id()));
+    let profile = test_profile();
     service::use_profile(profile.join("assistant-browser"));
     let address = site().await;
     let bot = turn("bot", "room", &live);
@@ -422,7 +427,7 @@ async fn the_shared_browser_works_for_real() {
 async fn dialogs_show_their_own_words_to_the_person_only() {
     let _serial = SERIAL.lock().await;
     reset();
-    let profile = std::env::temp_dir().join(format!("apex-work-dialog-{}", std::process::id()));
+    let profile = test_profile();
     service::use_profile(profile.join("assistant-browser"));
     let site = site().await;
     let opened = service::tab_open(Some(format!("{site}/questions"))).await.unwrap();
@@ -467,7 +472,7 @@ async fn dialogs_show_their_own_words_to_the_person_only() {
 async fn copy_and_cut_use_the_frame_with_the_keyboard() {
     let _serial = SERIAL.lock().await;
     reset();
-    let profile = std::env::temp_dir().join(format!("apex-work-cut-{}", std::process::id()));
+    let profile = test_profile();
     service::use_profile(profile.join("assistant-browser"));
     let site = site().await;
     // Same site shares a process with the page; localhost and 127.0.0.1 don't.
@@ -534,7 +539,7 @@ async fn a_held_tab_keeps_its_size_when_a_resize_was_already_waiting() {
 async fn reconciling_never_loses_a_tab_getting_its_target() {
     let _serial = SERIAL.lock().await;
     reset();
-    let profile = std::env::temp_dir().join(format!("apex-work-browser-{}", std::process::id()));
+    let profile = test_profile();
     service::use_profile(profile.join("assistant-browser"));
     let first = room_tab("room");
     drop(first.page().await.unwrap());
