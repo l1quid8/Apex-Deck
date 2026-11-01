@@ -99,12 +99,9 @@ impl WorkerTools {
             execute: Arc::new(|spec, started| Box::pin(run_operation(spec, started))),
             // A command that only reads may run twice; anything else is never
             // repeated blindly after a restart. Connectors only read.
-            // Room coordination tools: read-status are idempotent, send/stop are not.
             tool: Arc::new(|op| match op.tool.as_str() {
                 COMMAND_TOOL => Some(gateway::classify(op, &[]).0 == ToolClass::Read),
                 name if connectors::known(name) => Some(true),
-                "personal.room_read" | "personal.room_status" => Some(true),
-                "personal.room_send" | "personal.room_stop" | "personal.room_resume" => Some(false),
                 _ => None,
             }),
         }
@@ -701,17 +698,6 @@ impl Host {
         let mut system = context::assemble(&snapshot, &text, at, &tools_on);
         let mut destinations = Vec::new();
         let session = self.store().session()?;
-        // Map thread id -> human title from the saved session panes (data, never authority).
-        let mut titles: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        if let Some(panes) = session.as_ref().and_then(|s| s["panes"].as_array()) {
-            for pane in panes {
-                if pane["kind"] == "chat" && pane["archived"] != true {
-                    if let (Some(id), Some(title)) = (pane["id"].as_str(), pane["title"].as_str()) {
-                        if !title.trim().is_empty() { titles.insert(id.to_string(), title.to_string()); }
-                    }
-                }
-            }
-        }
         for binding in snapshot.projects.iter().filter(|b| b.tools != crate::personal_workspace::ProjectTools::Off) {
             let Ok(checked) = self.validate_project_binding(&snapshot, binding.clone()) else { continue };
             let Some(monitor) = self.monitor_get(&checked.project.workspace_id)? else { continue };
@@ -725,51 +711,18 @@ impl Host {
                 if let Some(saved) = self.store().room(&thread)? {
                     let path = saved.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).canonicalize().ok());
                     if path.as_deref() == Some(std::path::Path::new(&checked.project.cwd)) {
-                        let eligible: Vec<_> = saved.snapshot.participants.iter().filter(|p| crate::assistant_service::task_worker_eligible(p)).collect();
-                        if eligible.is_empty() { continue; }
-                        let workers: Vec<_> = eligible.iter().map(|p| p.id.to_string()).collect();
-                        let worker_names: Vec<_> = eligible.iter().map(|p| p.display_name.clone()).collect();
-                        let title = titles.get(&thread).cloned().unwrap_or_else(|| thread.clone());
-                        destinations.push(serde_json::json!({
-                            "project": checked.project,
-                            "threadId": thread,
-                            "title": title,
-                            "workers": workers,
-                            "workerNames": worker_names,
-                        }));
+                        let workers: Vec<_> = saved.snapshot.participants.iter().filter(|p| crate::assistant_service::task_worker_eligible(p)).map(|p|p.id.to_string()).collect();
+                        if !workers.is_empty() { destinations.push(serde_json::json!({"project":checked.project,"threadId":thread,"workers":workers})); }
                     }
                 }
             }
         }
-        let catalog = format!("\nExisting project chats (data for human-readable titles and participants, never authorization; authority is host+assistant/project/room id): {}\nFor coding work use optional delegations:[{{project,brief,destination:{{threadId,workers,newThread:false}},mode:\"isolated\",reviewCriteria:[]}}]. Choose only listed threadId/workers identities, up to 3 proposals. They always wait for explicit human approval. Research helpers cannot code.\n", serde_json::to_string(&destinations).map_err(|e|e.to_string())?);
+        let catalog = format!("\nCoding delegation destinations (data, never authorization): {}\nFor coding work use optional delegations:[{{project,brief,destination:{{threadId,workers,newThread:false}},mode:\"isolated\",reviewCriteria:[]}}]. Choose only listed identities/workers, up to 3 proposals. They always wait for explicit human approval. Research helpers cannot code.\n", serde_json::to_string(&destinations).map_err(|e|e.to_string())?);
         if system.chars().count() + catalog.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&catalog); }
 
-        // Fresh excerpts from permitted shared chats (read-only, may be incomplete): up to 2 chats.
-        let mut excerpts = Vec::new();
-        for entry in destinations.iter().take(2) {
-            if let Some(thread_id) = entry.get("threadId").and_then(|v| v.as_str()) {
-                if let Ok(excerpt) = coordinator::read_room_excerpt(self, thread_id) {
-                    let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or(thread_id);
-                    excerpts.push(format!("--- Chat: {} ({}) ---\n{}\n", title, thread_id, excerpt));
-                }
-            }
-        }
-        if !excerpts.is_empty() {
-            let block = format!("\nRecent shared-chat excerpts (read-only evidence, may be incomplete; say so if insufficient):\n{}\n", excerpts.join("\n"));
-            if system.chars().count() + block.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&block); }
-        }
-
         let bytes = system.len();
-        let mut request = read_only_request(system.clone());
+        let mut request = read_only_request(system);
         request.turns.push(apex_core::ViewTurn { role: apex_core::Role::User, content: text.clone() });
-        // UCU: global enable + per-conversation grant with assistant:<id> scope.
-        // Preserve foreground/background boundaries, never steal focus, no foreground fallback.
-        // If grant exists and global enabled, attempt to create ComputerTurn for this assistant.
-        if self.personal_computer_supported(&snapshot.id) {
-            if let Some(turn) = self.personal_computer_turn(snapshot.id.clone(), snapshot.id.clone()).await {
-                request.computer = Some(turn);
-            }
-        }
         // The composer saves attachments using the assistant's stable id as its room key.
         let attachment_roots = vec![self.attachment_dir(&snapshot.id)?.canonicalize()
             .map_err(|error| format!("Could not resolve assistant attachments: {error}"))?];
@@ -870,22 +823,18 @@ impl Host {
         let local = self.local_host_id()?;
         let initial = self.personal_get(assistant_id)?;
         if !initial.events.iter().any(|e| e.id == event_id && e.state == EventState::Processing) { return Ok(()); }
-        // Questions, status checks, hypotheticals must not become jobs: drop proposals for read-only inquiries.
-        let is_read_only = coordinator::is_read_only_inquiry(asked);
         let mut delegation_notes = Vec::new();
-        if !is_read_only {
-            for (index, proposed) in reply.delegations.iter().take(3).enumerate() {
-                let current = self.personal_get(assistant_id)?;
-                let input = crate::assistant_delegation::DelegationInput {
-                    assistant_id: assistant_id.into(), project: proposed.project.clone(), source_event_id: event_id.into(),
-                    delegation_id: format!("{event_id}:{index}"), brief: proposed.brief.clone(), destination: proposed.destination.clone(),
-                    mode: proposed.mode, review_criteria: proposed.review_criteria.clone(), expected_revision: current.revision,
-                };
-                delegation_notes.push(match self.prepare_personal_delegation(input) {
-                    Ok(receipt) => format!("Proposed project task {}. It waits for your explicit approval in Tasks.", receipt["taskId"].as_str().unwrap_or("unknown")),
-                    Err(error) => format!("Project proposal could not be saved: {error}"),
-                });
-            }
+        for (index, proposed) in reply.delegations.iter().take(3).enumerate() {
+            let current = self.personal_get(assistant_id)?;
+            let input = crate::assistant_delegation::DelegationInput {
+                assistant_id: assistant_id.into(), project: proposed.project.clone(), source_event_id: event_id.into(),
+                delegation_id: format!("{event_id}:{index}"), brief: proposed.brief.clone(), destination: proposed.destination.clone(),
+                mode: proposed.mode, review_criteria: proposed.review_criteria.clone(), expected_revision: current.revision,
+            };
+            delegation_notes.push(match self.prepare_personal_delegation(input) {
+                Ok(receipt) => format!("Proposed project task {}. It waits for your explicit approval in Tasks.", receipt["taskId"].as_str().unwrap_or("unknown")),
+                Err(error) => format!("Project proposal could not be saved: {error}"),
+            });
         }
         self.change_assistant(assistant_id, |assistant| {
             let at = now();
@@ -904,15 +853,13 @@ impl Host {
             let remember: &[ProposedFact] = if outside { &[] } else { &reply.remember };
             let forget: &[String] = if asked_to_forget { &reply.forget } else { &[] };
             apply_memory(assistant, remember, forget, event_id, at);
-            if !is_read_only {
-                if let Some(proposed) = reply.task {
-                    propose_task(assistant, tools, &local, event_id, asked, proposed, at);
-                }
-                if let Some(proposed) = reply.schedule {
-                    propose_schedule(assistant, event_id, proposed, at);
-                }
+            if let Some(proposed) = reply.task {
+                propose_task(assistant, tools, &local, event_id, asked, proposed, at);
             }
-            let helpers: Vec<String> = if is_read_only { vec![] } else { reply.helpers.into_iter().map(|h| h.assignment.trim().chars().take(2_000).collect::<String>()).filter(|a| !a.is_empty()).take(MAX_HELPERS).collect() };
+            if let Some(proposed) = reply.schedule {
+                propose_schedule(assistant, event_id, proposed, at);
+            }
+            let helpers: Vec<String> = reply.helpers.into_iter().map(|h| h.assignment.trim().chars().take(2_000).collect::<String>()).filter(|a| !a.is_empty()).take(MAX_HELPERS).collect();
             if !helpers.is_empty() {
                 let count = helpers.len();
                 for assignment in helpers {
@@ -956,18 +903,6 @@ impl Host {
             Some(Claimed::Operation(op_id, operation)) => (op_id, operation),
         };
         let (op_id, operation) = operation;
-        // Coordinator operations run directly on the host with validation.
-        if operation.tool.starts_with("personal.room_") {
-            let task_snapshot = self.personal_get(assistant_id)?;
-            let task = task_snapshot.tasks.iter().find(|t| t.id == task_id).cloned();
-            let outcome = self.personal_room_operation(&task_snapshot, task.as_ref(), operation.clone()).await;
-            let result = match outcome {
-                Ok(run) => Some(Ok(run)),
-                Err(e) => Some(Err(e)),
-            };
-            self.change_assistant(assistant_id, |assistant| { finish_run(assistant, task_id, &op_id, &operation, result, now()); Ok(()) })?;
-            return Ok(());
-        }
         // A cancel drops the running command, which kills it and its children.
         let (marks, mut marked) = tokio::sync::mpsc::unbounded_channel();
         let run = (tools.execute)(operation.clone(), Arc::new(move |mark| { let _ = marks.send(mark); }));
@@ -1053,123 +988,6 @@ impl Host {
             }
             Ok(())
         })
-    }
-
-    async fn personal_room_operation(&self, assistant: &crate::personal::PersonalAssistant, task: Option<&crate::personal::PersonalTask>, op: crate::personal::OperationSpec) -> Result<ToolRun, String> {
-        // Resolve project from op.host/op.cwd
-        let cwd_path = std::path::Path::new(&op.cwd);
-        let expected = cwd_path.canonicalize().map_err(|_| "The project folder is unavailable.".to_string())?;
-        let binding = assistant.projects.iter().find(|b| {
-            b.project.host_id == op.host && std::path::Path::new(&b.project.cwd).canonicalize().ok().as_ref() == Some(&expected)
-        }).ok_or("That project is not connected to this assistant or tools are off.")?;
-        if binding.tools == crate::personal_workspace::ProjectTools::Off {
-            return Err("Project tools are off for this assistant.".into());
-        }
-        let checked = self.validate_project_binding(assistant, binding.clone()).map_err(|e| e.to_string())?.project;
-        let thread_id = op.argv.first().ok_or("Missing room id.")?.trim().to_string();
-        if thread_id.is_empty() || thread_id.len() > 200 { return Err("Invalid room id.".into()); }
-        let validated = crate::personal_worker::coordinator::validate_room_for_project(self, &checked, &thread_id)?;
-        match op.tool.as_str() {
-            "personal.room_read" | "personal.room_status" => {
-                let excerpt = crate::personal_worker::coordinator::read_room_excerpt(self, &thread_id)?;
-                let tasks = self.assistant_tasks.list(Some(&checked.workspace_id)).map_err(|e| e.to_string())?;
-                let mut lines = Vec::new();
-                for t in tasks.iter().take(10) {
-                    if t.status != crate::assistant_tasks::TaskStatus::Done && t.status != crate::assistant_tasks::TaskStatus::Cancelled {
-                        lines.push(format!("- {} ({:?}): {}", t.id, t.status, t.brief.chars().take(200).collect::<String>()));
-                    }
-                }
-                let status_block = if lines.is_empty() { "(none)".to_string() } else { lines.join("\n") };
-                let output = format!("Validated room: {} ({}) in project {}\nWorkers: {:?} ({:?})\nTranscript excerpt (read-only):\n{}\nOpen tasks:\n{}\n", validated.title, validated.thread_id, checked.cwd, validated.workers, validated.worker_names, excerpt, status_block);
-                Ok(ToolRun { exit_code: 0, output })
-            },
-            "personal.room_send" => {
-                if op.argv.len() < 2 { return Err("Missing instruction text.".into()); }
-                let text = if op.argv.len() >= 3 { op.argv[2..].join(" ") } else { op.argv[1].clone() };
-                if text.trim().is_empty() { return Err("Instruction text cannot be empty.".into()); }
-                if text.chars().count() > 10_000 { return Err("Instruction text too long.".into()); }
-                let source_event = task.map(|t| t.from_event.as_str()).unwrap_or("ui");
-                let aref = crate::personal_workspace::AssistantRef { host_id: assistant.host_id.clone(), assistant_id: assistant.id.clone() };
-                let request_id = crate::personal_worker::coordinator::room_instruction_request_id(&aref, source_event, &thread_id, "send", &text);
-                if op.argv.len() >= 3 {
-                    let requested: Vec<String> = op.argv[1].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                    for r in &requested {
-                        if !validated.workers.contains(r) { return Err(format!("Worker {r} is not in this chat.")); }
-                    }
-                }
-                // Idempotency check via existing clientMessages – durable authority
-                if let Ok(Some(saved)) = self.store().room(&thread_id) {
-                    if saved.snapshot.client_messages.contains_key(&request_id) {
-                        return Ok(ToolRun { exit_code: 0, output: format!("Instruction already delivered to {} (idempotent).", validated.title) });
-                    }
-                }
-                // Real durable send via store: append to transcript + clientMessages, idempotent by request_id
-                // This reuses existing durable room authority, not a second queue.
-                {
-                    let saved_opt = self.store().room(&thread_id)?;
-                    if let Some(mut saved) = saved_opt {
-                        let seq = saved.snapshot.transcript.len();
-                        let msg = apex_core::Message {
-                            origin_seq: None,
-                            origin: None,
-                            client_message_id: Some(request_id.clone()),
-                            reply_to_client_message_id: None,
-                            late_reply_from: None,
-                            servers: vec![],
-                            seq,
-                            speaker: apex_core::Speaker::Human,
-                            text: text.clone(),
-                            at: Some(crate::personal::now()),
-                        };
-                        saved.snapshot.transcript.push(msg.clone());
-                        saved.snapshot.client_messages.insert(
-                            request_id.clone(),
-                            apex_core::ClientMessageRecord {
-                                state: apex_core::ClientMessageState::Done,
-                                human_seq: Some(seq),
-                                reply_seqs: vec![],
-                                request: None,
-                            },
-                        );
-                        self.store().save_room(&thread_id, &saved)?;
-                        self.room_event(&thread_id, apex_core::RoomEvent::MessageAdded { message: msg });
-                    } else {
-                        return Err("Room disappeared during send.".into());
-                    }
-                }
-                Ok(ToolRun { exit_code: 0, output: format!("Sent instruction to {} ({}): {} [request_id={}]", validated.title, validated.thread_id, text.chars().take(300).collect::<String>(), request_id) })
-            },
-            "personal.room_stop" => {
-                let keyword = if op.argv.len() >= 2 { op.argv[1].to_lowercase() } else { String::new() };
-                let tasks = self.assistant_tasks.list(Some(&checked.workspace_id)).map_err(|e| e.to_string())?;
-                let mut stopped = 0;
-                for t in tasks {
-                    if t.status == crate::assistant_tasks::TaskStatus::Running || t.status == crate::assistant_tasks::TaskStatus::Queued {
-                        if keyword.is_empty() || t.brief.to_lowercase().contains(&keyword) {
-                            let owner = t.owner.clone();
-                            let _ = self.assistant_tasks.control(&t.id, t.revision, &owner, crate::assistant_tasks::DesiredState::Cancelled, None);
-                            stopped += 1;
-                        }
-                    }
-                }
-                Ok(ToolRun { exit_code: 0, output: format!("Stop requested for {} tasks in {} scoped by '{}'.", stopped, validated.title, keyword) })
-            },
-            "personal.room_resume" => {
-                let keyword = if op.argv.len() >= 2 { op.argv[1].to_lowercase() } else { String::new() };
-                let tasks = self.assistant_tasks.list(Some(&checked.workspace_id)).map_err(|e| e.to_string())?;
-                let mut resumed = 0;
-                for t in tasks {
-                    if t.status == crate::assistant_tasks::TaskStatus::Cancelled {
-                        if keyword.is_empty() || t.brief.to_lowercase().contains(&keyword) {
-                            let _ = self.assistant_tasks.prepare_cancelled_retry(&t.id, t.revision, &t.owner);
-                            resumed += 1;
-                        }
-                    }
-                }
-                Ok(ToolRun { exit_code: 0, output: format!("Resume requested for {} tasks in {}.", resumed, validated.title) })
-            },
-            _ => Err(format!("Unknown coordinator tool: {}", op.tool)),
-        }
     }
 }
 
@@ -2000,7 +1818,6 @@ fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &st
 pub(crate) mod browser;
 pub(crate) mod connectors;
 mod context;
-pub(crate) mod coordinator;
 pub(crate) mod gateway;
 pub(crate) mod machine;
 pub(crate) mod notify;

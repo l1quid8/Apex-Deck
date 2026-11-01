@@ -97,8 +97,6 @@ pub enum Command {
     ComputerStatus {},
     ComputerSetup {},
     ComputerSetEnabled { enabled: bool },
-    ComputerAssistantGrants {},
-    ComputerAssistantSetGrant { assistant_id: String, app: String, enabled: bool },
     ComputerSetActionLabels { enabled: bool },
     ComputerSetCursorOverlay { prefs: serde_json::Value },
     ComputerSetCursorImage {
@@ -485,8 +483,6 @@ impl Host {
             ComputerSetup {} => reply(self.computer_setup().await?),
             ComputerSetActionLabels { enabled } => reply(self.computer_set_action_labels(enabled).await?),
             ComputerSetEnabled { enabled } => reply(self.computer_set_enabled(enabled).await?),
-            ComputerAssistantGrants {} => reply(self.computer_assistant_grants().await),
-            ComputerAssistantSetGrant { assistant_id, app, enabled } => reply(self.computer_assistant_set_grant(assistant_id, app, enabled).await?),
             ComputerSetCursorOverlay { prefs } => reply(self.computer_set_cursor_overlay(prefs).await?),
             ComputerSetCursorImage { image_base64, hotspot_x, hotspot_y } => reply(self.computer_set_cursor_image(image_base64, hotspot_x, hotspot_y).await?),
             ComputerResetCursorOverlay {} => reply(self.computer_reset_cursor_overlay().await?),

@@ -61,12 +61,6 @@ export function AssistantWorkspace({lane,backend,section,onNavigate,chat,project
    </div>
    <div className="assistant-strip-right">
     {!inCall&&<button type="button" className="assistant-strip-button assistant-strip-phone" aria-label={`Call ${lane.name}`} title={`Call ${lane.name}`} onClick={()=>onStartCall?.()}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg></button>}
-    <button type="button" className="assistant-strip-button" aria-label={`Pop out ${lane.name}`} title={`Pop out ${lane.name} – optional always-on-top, shares transcript/draft/call/mute, with new-chat and Return to Deck`} onClick={()=>{
-      const api = (window as any).apexDeck?.popout;
-      if (!api) return;
-      const alwaysOnTop = (()=>{ try { return JSON.parse(localStorage.getItem('alfred-floating-alwaysOnTop')||'false'); } catch { return false; } })();
-      api.open({ kind: 'assistant', id: ref.assistantId, title: lane.name, alwaysOnTop } as any).catch(()=>{});
-    }}>⧉</button>
     <details className="assistant-workspace-menu"><summary aria-label="Projects, memory and settings">⋯</summary><div role="menu">
      <button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);onNavigate('projects');}}>Projects &amp; access</button>
      <button type="button" role="menuitem" disabled={!onOpenBrowser||!lane.browserView} title={!lane.browserView?'This host does not expose the assistant browser.':undefined} onClick={event=>{closeMenu(event.currentTarget);onOpenBrowser?.();}}>Browser</button>

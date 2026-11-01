@@ -16,7 +16,7 @@ export class PopoutLayoutStore {
   }
 
   keep(record) {
-    if (!record || !['pane', 'tab', 'assistant'].includes(record.kind) || typeof record.id !== 'string' || !record.id || !validBounds(record.bounds)) return;
+    if (!record || !['pane', 'tab'].includes(record.kind) || typeof record.id !== 'string' || !record.id || !validBounds(record.bounds)) return;
     const bounds = Object.fromEntries(['x', 'y', 'width', 'height'].map(k => [k, Math.round(record.bounds[k])]));
     bounds.width = Math.max(360, bounds.width);
     bounds.height = Math.max(240, bounds.height);
