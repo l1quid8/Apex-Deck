@@ -221,6 +221,29 @@ impl Host {
         }
     }
 
+    fn personal_room_delivery_check(&self, assistant_id: &str, task_id: &str, op: &OperationSpec) -> Result<(), String> {
+        let assistant = self.personal_get(assistant_id)?;
+        let task = assistant.tasks.iter().find(|task| task.id == task_id).ok_or("The task no longer exists.")?;
+        if assistant.paused || assistant.archived_at.is_some() || task.status != TaskStatus::Running {
+            return Err("Stopped before it reached the chat.".into());
+        }
+        let hash = op.hash();
+        if task.operation.as_ref().is_none_or(|saved| saved.hash() != hash)
+            || task.decision.as_ref().is_none_or(|decision| decision.status != crate::personal::DecisionStatus::Approved || decision.params_hash != hash) {
+            return Err("The approved chat operation changed.".into());
+        }
+        let human_approved = task.decision.as_ref().and_then(|d| d.decided_by_event.as_deref()).is_some_and(|by| by.starts_with("pe-"));
+        match super::gateway::gate(&assistant, task, None) {
+            Gate::Refuse(why) => return Err(why.into()),
+            Gate::Ask | Gate::HandOff if !human_approved => return Err("The assistant's rules changed before delivery.".into()),
+            _ => {}
+        }
+        let room = self.personal_room_target(&assistant, op.argv.first().map(String::as_str).unwrap_or_default())?;
+        if room.project.host_id != op.host || room.project.cwd != op.cwd { return Err("That chat moved to a different project.".into()); }
+        if let Some(why) = room.refusal(&op.tool, &op.argv, false, false) { return Err(why); }
+        Ok(())
+    }
+
     async fn room_deliver(self: &Arc<Self>, assistant: &PersonalAssistant, task_id: &str, room: &Target, op: &OperationSpec) -> Result<ToolRun, String> {
         let targets: Vec<ParticipantId> = split(op.argv.get(1).map(String::as_str).unwrap_or_default()).into_iter().map(ParticipantId::new).collect();
         let said = op.argv.get(2).map(|text| text.trim()).filter(|text| !text.is_empty()).unwrap_or(RESUME_TEXT);
@@ -228,17 +251,16 @@ impl Host {
         let text = format!("{} (assistant, for the human; {task_id}): {said}", assistant.name);
         let request = format!("assistant:{}:{task_id}", assistant.id);
         let saved = self.store().room(&room.thread)?.ok_or("That chat has no saved data.")?;
-        let already = saved.snapshot.transcript.iter().any(|m| m.text == text);
+        let already = saved.snapshot.client_messages.contains_key(&request)
+            || saved.snapshot.transcript.iter().any(|m| m.text == text);
         if !already {
-            if saved.snapshot.kind.is_chat() {
-                // One bot turn each: no follow-up loop between bots.
-                self.room_client_post(room.thread.clone(), text.clone(), Some(targets.clone()), request, false, true, Some(0), None, apex_core::GeneratedUiCapability::Unsupported).await?;
-            } else {
-                self.room_post_to(room.thread.clone(), text.clone(), targets.clone()).await?;
-            }
+            // Work and Chat rooms share the durable acceptance ledger. A cancelled
+            // task or revoked binding must be checked after waiting for either lock.
+            self.room_client_post_checked(room.thread.clone(), text.clone(), Some(targets.clone()), request.clone(), false, true, Some(0), None,
+                apex_core::GeneratedUiCapability::Unsupported, &|| self.personal_room_delivery_check(&assistant.id, task_id, op)).await?;
         }
         let saved = self.store().room(&room.thread)?.ok_or("That chat has no saved data.")?;
-        let Some(message) = saved.snapshot.transcript.iter().find(|m| m.text == text) else {
+        let Some(message) = saved.snapshot.transcript.iter().find(|m| m.client_message_id.as_deref() == Some(request.as_str()) || m.text == text) else {
             return Ok(ToolRun { exit_code: 1, output: format!("Posted to {}, but the message isn't in its saved history.", room.title) });
         };
         let names: Vec<&str> = room.workers.iter().filter(|(id, _)| targets.iter().any(|t| t.as_str() == id)).map(|(_, name)| name.as_str()).collect();

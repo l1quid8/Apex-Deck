@@ -1733,3 +1733,57 @@ fn a_new_conversation_leaves_the_model_context_but_keeps_everything_saved() {
     assert!(prompt.contains("AFTER") && !prompt.contains("BEFORE"));
     assert_eq!(assistant.messages.len(), 2, "history stays");
 }
+
+#[tokio::test]
+async fn a_renamed_assistant_does_not_redeliver_a_saved_instruction() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let task = fixture.task();
+    fixture.host.change_assistant(&fixture.id, |a| {
+        a.name = "Alfred".into();
+        a.task_mut(&task.id).unwrap().status = TaskStatus::Running;
+        Ok(())
+    }).unwrap();
+    let run = fixture.host.personal_room_op(&fixture.id, &task.id, task.operation.as_ref().unwrap()).await.unwrap();
+    assert!(run.output.contains("already there"));
+    assert_eq!(fixture.room_texts().len(), 1);
+}
+
+#[tokio::test]
+async fn revoking_authority_while_a_send_waits_for_the_room_gate_prevents_delivery() {
+    for revoke in ["cancel", "pause", "project", "rule"] {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::SEND, &[THREAD, "jigga", "Run the tests."]));
+    fixture.host.personal_send(&fixture.id, "send", "Tell Jigga to run the tests").unwrap();
+    fixture.host.personal_step(&fake.tools()).await.unwrap();
+    let gate = fixture.host.runner_gate(THREAD);
+    let held = gate.lock().await;
+    let tools = fake.tools();
+    let send = fixture.host.personal_step(&tools);
+    tokio::pin!(send);
+    tokio::select! {
+        result = &mut send => panic!("send did not wait: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+    }
+    let task = fixture.task();
+    fixture.host.change_assistant(&fixture.id, |a| {
+        match revoke {
+            "cancel" => a.task_mut(&task.id).unwrap().status = TaskStatus::Cancelled,
+            "pause" => a.paused = true,
+            "project" => a.projects.clear(),
+            "rule" => a.modes.send = ActionMode::HandOff,
+            _ => unreachable!(),
+        }
+        Ok(())
+    }).unwrap();
+    drop(held);
+    send.await.unwrap();
+    assert!(fixture.room_texts().is_empty(), "{revoke} while waiting must never post");
+    }
+}

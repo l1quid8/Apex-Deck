@@ -325,7 +325,6 @@ impl CliParticipant {
     ) -> Result<Reply, ParticipantError> {
         let program = "codex";
         let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
-        if let Some(computer)=self.computer.as_ref().filter(|_|self.computer_on()) {args.extend(crate::computer::codex_flags(computer));}
         args.extend(phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
         if self.mcp_disabled {
             let mut inventory_args: Vec<String> = GATEWAY_CODEX_FLAGS.iter().map(|s|(*s).into()).collect();
@@ -348,6 +347,9 @@ impl CliParticipant {
             }
             args.extend(codex_mcp_disable_flags(&output.stdout)?);
         }
+        // Disable inherited servers first, then install the host-issued replacement.
+        // An existing reserved-name entry must not disable this turn's tools.
+        if let Some(computer)=self.computer.as_ref().filter(|_|self.computer_on()) {args.extend(crate::computer::codex_flags(computer));}
         // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
         // has gone would make Codex run every tool unasked, so check first.
         let hook = self.codex_hook.as_deref().filter(|helper| !self.mcp_disabled && helper.is_file()).and_then(|helper| {
@@ -940,6 +942,35 @@ mod tests {
             if bot.cancel_active_turn().await.unwrap(){owned=true;break;}
         }
         assert!(owned,"Stop must own and terminate inventory startup, not only the later model process");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn computer_codex_replaces_a_reserved_server_after_isolation() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = crate::attachments::Staged::new().unwrap();
+        let script = folder.dir.join("codex");
+        std::fs::write(&script, r#"#!/bin/sh
+case "$*" in
+  *'mcp list --json'*) printf '%s\n' '[{"name":"apex-computer"},{"name":"other"}]'; exit 0 ;;
+esac
+printf '%s\n' "$@" > "$0.args"
+exit 1
+"#).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = serde_json::from_value(serde_json::json!({"id":"a","display_name":"A","backend":{"kind":"agent","tool":"codex"}})).unwrap();
+        let mut bot = CliParticipant::new(config).with_context(&crate::BuildContext {
+            path: folder.dir.to_str().map(str::to_owned), ..Default::default()
+        }).with_computer_tools_only();
+        bot.computer = Some(apex_core::ComputerTurn { relay: "/fixture/SpikeMCP".into(), thread_id: "assistant:a".into(), participant_id: "a".into(), token: "fixture-token".into() });
+        // Call the transport with a fake executable; no account or provider is used.
+        let _ = bot.run_codex_server(None, "hello", &[], &|_| {}, &apex_core::NoApprover).await;
+        let args = std::fs::read_to_string(folder.dir.join("codex.args")).unwrap();
+        let reserved = args.lines().filter(|line| line.starts_with("mcp_servers.apex-computer")).last().unwrap();
+        assert!(reserved.contains("enabled=true"), "the trusted replacement must win: {args}");
+        assert!(reserved.contains("/fixture/SpikeMCP"));
+        assert!(args.lines().any(|line| line == "mcp_servers.other.enabled=false"));
+        assert!(!args.contains("fixture-token"));
     }
 
     #[tokio::test]
