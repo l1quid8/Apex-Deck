@@ -190,9 +190,9 @@ impl EngineState {
                 deadline,
             )?;
             windows.retain(|window| window.pid.get() == pid as u32);
-            let requested = window_id.map(|id| {
+            let requested = window_id.as_ref().map(|id| {
                 if id.starts_with("w-") {
-                    id
+                    id.clone()
                 } else {
                     format!("w-{id}")
                 }
@@ -241,7 +241,18 @@ impl EngineState {
                 Err(error) => return adapter_failure(error),
             }
         }
-        let result = match work() {
+        // A page can retitle its window between the engine's listing and its resolve.
+        let mut attempt = work();
+        for _ in 0..2 {
+            match &attempt {
+                Err(error) if error.code == agent_desktop_core::ErrorCode::WindowNotFound => {
+                    thread::sleep(std::time::Duration::from_millis(100));
+                    attempt = work();
+                }
+                _ => break,
+            }
+        }
+        let result = match attempt {
             Ok(result) => result,
             Err(error) => {
                 self.clear();

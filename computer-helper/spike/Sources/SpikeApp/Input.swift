@@ -109,6 +109,7 @@ final class Input {
       _ = try self.guardFocus(snapshot, id, deadline)
     }, post: {
       down.postToPid(pid)
+      Thread.sleep(forTimeInterval: 0.03) // Chromium can drop a key whose up arrives with its down.
       up.postToPid(pid)
     })
   }

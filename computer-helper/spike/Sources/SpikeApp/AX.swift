@@ -217,7 +217,7 @@ final class Accessibility {
   }
   private var browsers = [String: Bool]()
   /// Apps registered for web links. Only used to tell a missing page from a native window.
-  private func browser(_ app: NSRunningApplication) -> Bool {
+  func browser(_ app: NSRunningApplication) -> Bool {
     guard let url = app.bundleURL?.standardizedFileURL else { return false }
     if let known = browsers[url.path] { return known }
     let handlers = URL(string: "https://example.com").map { NSWorkspace.shared.urlsForApplications(toOpen: $0) } ?? []
@@ -244,9 +244,6 @@ final class Accessibility {
     // Partial, unreadable or protected content only limits pixels, decided here.
     guard !tree.foreign else { throw Refusal("protected_or_unverified_surface") }
     let pixelsSafe = tree.pixelsSafe
-    guard !Policy.webContentMissing(browser: browser(app), webAreas: tree.roles["AXWebArea"] ?? 0, scanned: !tree.unscanned) else {
-      throw Refusal("web_content_unavailable")
-    }
     if let menu = element(root, kAXMenuBarAttribute) { tree.walk(menu) }
     // The focus checks below get their own time if a large tree used up the walk's.
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 0.5

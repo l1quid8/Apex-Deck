@@ -1,6 +1,6 @@
 # ADR: Unified Computer Use runs in the background
 
-**Status:** Reviewed by Muck 2026-11-01; see Review outcome. Nothing here is built.
+**Status:** Built on `fix/ucu-background-no-pointer`; see Build outcome. Signed live acceptance is still owed.
 **Date:** 2026-11-01
 **Deciders:** Tyler. Review: Muck, who owns the background work.
 **Base:** `fix/ucu-activity-gate` `3cc1d53d` (on main `0c444f22`)
@@ -169,6 +169,33 @@ Build on `fix/ucu-activity-gate`, and agree overlap with Muck first because this
 5. **Live acceptance in the signed helper.** While Tyler works normally in another app, a bot opens a new Brave tab, goes to the IANA page by address bar and verifies it. A sampler records the pointer, frontmost app and window order throughout. Pass means zero bot-caused changes and no human-activity refusals. Repeat once on a real target app.
 
 Keep tests to the existing Swift and engine suites, with focused cases for the guard, the `type_text` read-back and `click_point` refusals. The probe in `/tmp/ucu-bg` becomes the one live check. No new test files beyond that.
+
+## Build outcome
+
+Muck did not start this, so Jigga built it. Run through the real tool path on a scratch Chromium window fully covered by other apps, 2026-11-01. The sampler never saw the target take the front.
+
+| Step | Result on a covered window |
+|---|---|
+| `request_app`, `read_screen` | Yes, reports `visibility: covered` |
+| `type_text` on a numbered field, then by focus | Yes, read back. Page field needed the `AXValue` rung |
+| `click`, `reveal`, `click_point` on a control | Yes |
+| `click_point` on empty page | `pixel_target_has_no_control` |
+| `press_key Cmd-T` | `shortcut_needs_foreground`, reading kept |
+| `get_screenshot` | Yes |
+| New Tab press, address typed | Yes, read back through `AXSelectedText` |
+| **Return in the address bar** | **Unreliable. 0 of 7 through the helper. Raw probes landed 1 of 15** |
+
+Found while building:
+
+- **A covered page can go blind.** A page reloaded while Chromium reports it `hidden` has no web tree, and `AXManualAccessibility`, `AXEnhancedUserInterface`, `AXMain` and `AXRaise` don't bring it back. The bot gets `web_content_unavailable`. A page opened by navigation in such a window is expected to do the same, though that wasn't reached because Return missed. The earlier 7 of 11 key result and the new tab task were on windows that were at least partly visible, or were not recorded either way.
+- **`AXConfirm`** did nothing on the Chromium address bar, and the bar doesn't advertise it.
+- **No suggestion list.** Chromium exposed no suggestion rows to press in place of Return on a covered window.
+- **A covered page reports new values late**, over 0.4 seconds, so the final read-back waits up to 2 seconds.
+- **Readings can race a retitle.** The engine compares titles, so a page changing its title during a reading gave `engine_window_not_found`. Readings now retry twice.
+- **The web check needs the engine.** Only the engine switches a browser's page tree on, so `web_content_unavailable` is decided from its reading.
+- **Test windows can take the front.** Closing and creating Chromium windows over the debug port took the front twice. The tool-path runs never did.
+
+Not settled: whether a partly visible window behaves better, and how real Brave behaves. Partly visible needs a window on Tyler's screen, so the signed acceptance run is the place to find out. Acceptance step 5 can't pass on a fully covered Chromium window until Return is solved; the likely answer is an address-free route, or a named refusal for that case.
 
 ## Review outcome
 

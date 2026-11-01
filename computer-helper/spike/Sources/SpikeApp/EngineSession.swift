@@ -76,6 +76,11 @@ final class EngineSession {
       windowNumber(window) == number
     else { throw Refusal("engine_window_identity_changed") }
     try ax.validate(native)
+    // Only the engine switches a browser's page tree on, so only its reading can tell.
+    guard !Policy.webContentMissing(browser: ax.browser(native.app),
+      webAreas: captured.text.contains(" webarea") ? 1 : 0, scanned: captured.complete) else {
+      throw Refusal("web_content_unavailable")
+    }
     current = captured
     var output = captured.text
     output += "visibility: " + Policy.visibility(
@@ -185,8 +190,8 @@ final class EngineSession {
       selection: selectedRange(field).map { NSRange(location: $0.location, length: $0.length) },
       gate: { try self.checkContinuation(s, id: id, latch: latch) },
       insert: { write(kAXSelectedTextAttribute, $0) }, replace: { write(kAXValueAttribute, $0) },
-      settled: { expected in
-        let deadline = ProcessInfo.processInfo.systemUptime + 0.4
+      settled: { expected, wait in
+        let deadline = ProcessInfo.processInfo.systemUptime + wait
         var live = string(field, kAXValueAttribute)
         while live != expected, ProcessInfo.processInfo.systemUptime < deadline {
           Thread.sleep(forTimeInterval: 0.01)

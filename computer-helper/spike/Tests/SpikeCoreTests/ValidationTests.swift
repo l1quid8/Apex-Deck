@@ -61,7 +61,15 @@ final class ValidationTests: XCTestCase {
       field.writes.append("value")
       if field.valueWorks { field.value = value }
       return true
-    }, settled: { _ in field.value })
+    }, settled: { _, _ in field.value })
+  }
+  func testOnlyTheFinalReadBackIsPatient() throws {
+    var waits = [Double]()
+    let field = Field("abc"); field.insertWorks = false
+    try TypeLadder.run(text: "x", value: "abc", selection: NSRange(location: 3, length: 0), gate: {},
+      insert: { _ in true }, replace: { field.value = $0; return true },
+      settled: { _, wait in waits.append(wait); return field.value })
+    XCTAssertEqual(waits, [TypeLadder.quickly, TypeLadder.patiently])
   }
   func testSelectedTextIsEnoughWhenTheAppHonoursIt() throws {
     let field = Field("hello world")
@@ -90,7 +98,7 @@ final class ValidationTests: XCTestCase {
   func testAFieldThatChangedSomethingElseIsDeliveredButUnverified() {
     let field = Field("abc")
     XCTAssertThrowsError(try TypeLadder.run(text: "x", value: "abc", selection: NSRange(location: 3, length: 0), gate: {},
-      insert: { _ in field.value = "abcx.com"; return true }, replace: { _ in true }, settled: { _ in field.value })) {
+      insert: { _ in field.value = "abcx.com"; return true }, replace: { _ in true }, settled: { _, _ in field.value })) {
       XCTAssertEqual(($0 as? Refusal)?.code, "type_verification_failed; delivery=delivered_unverified; retry=unsafe")
     }
   }
