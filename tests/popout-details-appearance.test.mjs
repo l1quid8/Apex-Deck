@@ -70,10 +70,12 @@ test("the owner sends its appearance with every pop-out and pushes changes; both
   assert.match(paneSnapshot, /appearance,/);
   assert.match(tabSnapshot, /appearance,/);
   assert.match(app, /title: pane\.title,\s+appearance,/);
-  assert.match(app, /const patch: PopoutUpdate = \{ title: tabTitle\(tab\), appearance \}/);
-  assert.match(app, /useAppearance\(appearance\)/);
+  // Pushes carry the whole settings object so Light/Dark/System reaches the pop-out too.
+  assert.match(app, /const patch: PopoutUpdate = \{ title: tabTitle\(tab\), appearance: appearanceSettings \?\? appearance \}/);
+  assert.match(app, /title: pane\.title,[^}]*appearance: appearanceSettings \?\? appearance,/);
+  assert.match(app, /useAppearance\(appearanceSettings \?\? appearance\)/);
   assert.doesNotMatch(app, /themeVariables\(appearance\)/);
-  assert.match(popout, /useAppearance\(appearance\)/);
+  assert.match(popout, /useAppearance\(appearance as any\)/);
   assert.match(popout, /snap\.appearance/);
   assert.match(popout, /patch\.appearance !== undefined/);
 });
