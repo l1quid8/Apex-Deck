@@ -295,6 +295,8 @@ pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
     match request {
         VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
         VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
+        // An assistant is no room: its calls need what its other commands need.
+        VoiceRealtimeSession { room, .. } if room.starts_with("assistant:") => full(Scope::Global),
         VoiceServerWarm { room } | VoiceServerOpen { room } | VoiceRealtimeSession { room, .. } => chat(thread(room)),
     }
 }
@@ -304,6 +306,16 @@ mod tests {
     use super::*;
     use crate::devices::tests::id;
     use serde_json::json;
+
+    #[test]
+    fn an_assistant_realtime_session_needs_full_access_not_a_thread_grant() {
+        use crate::voice::session::VoiceRequest::VoiceRealtimeSession;
+        let session = |room: &str| VoiceRealtimeSession { room: room.into(), participant: None, model: None, voice: None, instructions: None, tools: None };
+        let chat_device = device(Tier::Chat, Threads::Only(vec!["assistant:a".into(), "mine".into()]));
+        assert!(check(&chat_device, &voice_needs(&session("mine"))).is_ok());
+        assert!(check(&chat_device, &voice_needs(&session("assistant:a"))).is_err(), "a thread list can't name an assistant");
+        assert!(check(&device(Tier::Full, Threads::All(crate::devices::AllThreads::All)), &voice_needs(&session("assistant:a"))).is_ok());
+    }
 
     fn device(tier: Tier, threads: Threads) -> Device {
         Device { endpoint_id: id(1), label: "Phone".into(), tier, threads, added_at: 0, last_seen: None }

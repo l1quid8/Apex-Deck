@@ -281,3 +281,60 @@ test("end right after start cancels it before the mic opens (real controller)", 
   assert.equal(controller.getState().status, "off");
   assert.equal(asked, 0, "the microphone was never opened");
 });
+
+test("the session comes from the host that owns the call, with a clear failure otherwise", async () => {
+  const { mintForScope } = await import("../src/voice/realtimeMint.ts");
+  const asked = [];
+  const entries = new Map([
+    ["h1", { realtimeSession: async (args) => { asked.push(["h1", args]); return { client_secret:"ek", model:"m", voice:"v" }; } }],
+    ["h2", { realtimeSession: async (args) => { asked.push(["h2", args]); return { client_secret:"ek", model:"m", voice:"v" }; } }],
+    ["h3", {}],
+  ]);
+  const find = (hostId) => entries.get(hostId);
+  await mintForScope(find, { hostId:"h2", room:"assistant:a" });
+  assert.deepEqual(asked, [["h2", { room:"assistant:a" }]], "the same assistant id on another host is left alone, and hostId stays local");
+  await assert.rejects(mintForScope(find, { hostId:"h3", room:"assistant:a" }), /OPENAI_API_KEY/);
+  await assert.rejects(mintForScope(find, { hostId:"gone", room:"assistant:a" }), /no longer open/);
+});
+
+test("an assistant call uses the one conversation: one send, mute and end leave the work alone", async () => {
+  const { createPersonalVoiceBridge } = await import("../src/voice/personalBridge.ts");
+  const scope = { hostId:"h1", roomId:"assistant:a", participantId:"a" };
+  const sent = [], stopped = [];
+  let record = { id:"a", hostId:"h1", messages:[], events:[] };
+  const bridge = createPersonalVoiceBridge({ scope, send: async (text, request) => { sent.push([text, request]); return { eventId:"pe-1" }; }, stop: async (event) => { stopped.push(event); }, read: async () => record, schedule: () => () => {} });
+  const mics = [];
+  getUserMediaImpl = async () => { const mic = new FakeStream(); mics.push(mic); return mic; };
+  fetchImpl = async () => new Response("v=0 answer", { status: 200 });
+  const controller = createRealtimeVoiceController({
+    candidates: () => [{ ...scope, name:"Alfred" }], bridge: () => bridge, focus: () => {},
+    voiceSettings: () => ({ engine:"realtime", realtimeVoice:"verse", pauseMs:100, style:"pill", voices:[] }),
+    mintSession: async () => ({ client_secret:"ek_fake", model:"gpt-realtime", voice:"verse" }),
+  });
+  await controller.start(scope);
+  const dc = FakePC.last.dc;
+  dc._open();
+  const opening = dc.sent.map(s => JSON.parse(s)).find(s => s.type === "session.update");
+  assert.match(opening.session.instructions, /live voice of "Alfred"/);
+  const call = (id) => dc._receive({ type:"response.function_call_arguments.done", call_id:id, name:"ask_agent", arguments:'{"agent":"Alfred","request":"status?"}' });
+  call("c1"); call("c1");
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(sent.length, 1, "a repeated tool event reaches the conversation once");
+  record = { ...record, events:[{ id:"pe-1", state:"held" }] };
+  bridge.update(record);
+  assert.ok(dc.sent.some(s => s.includes("approval in Deck")), "a held reply is spoken, not silent");
+  controller.mute(true);
+  assert.equal(mics[0].getAudioTracks()[0].enabled, false);
+  assert.deepEqual(stopped, [], "mute is not Stop");
+  dc._receive({ type:"input_audio_buffer.speech_started" });
+  assert.deepEqual(stopped, [], "talking over the voice doesn't stop the work");
+  await controller.end();
+  assert.deepEqual(stopped, [], "ending the call leaves the work running");
+  assert.equal(mics[0].getAudioTracks()[0].stopped, true);
+  await controller.start(scope);
+  await controller.start(scope);
+  assert.equal(mics[2].getAudioTracks()[0].stopped, false);
+  assert.equal(mics[1].getAudioTracks()[0].stopped, true, "rejoining leaves one live mic");
+  await controller.end();
+  bridge.dispose();
+});

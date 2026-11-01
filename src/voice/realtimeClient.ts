@@ -32,6 +32,7 @@ export interface RealtimeClient {
 
 export type RealtimeDependencies = {
   mintSession(args: {
+    hostId: string;
     room: string;
     participant?: string;
     model?: string;
@@ -59,6 +60,15 @@ export function buildRealtimeInstructions(cands: VoiceCandidate[], forScope: Cal
     .slice(0, 32)
     .join("\n");
   const defaultTarget = cands.find(c => c.participantId === forScope.participantId)?.name ?? cands[0]?.name ?? "agent";
+  if (forScope.roomId.startsWith("assistant:")) return `You are the live voice of "${defaultTarget}", the user's personal assistant in Apex Deck. ${defaultTarget} holds the conversation, memory and access; you only carry it by voice.
+
+Rules:
+- Send everything the user says to ${defaultTarget} with ask_agent, questions and small talk included, so the one conversation stays whole. Don't answer from your own knowledge.
+- Say once that it's working, then stay quiet until the result arrives.
+- Speak the result closely, adding no facts.
+- If the user asks to stop the current reply, call stop_agent.
+- Ending or muting the call never cancels work.
+`;
   return `You are GPT-Live inside Apex Deck, a voice interface for coding agents.
 Default agent is "${defaultTarget}". Agents available in THIS thread only:
 ${agentList || "- none listed"}
@@ -136,6 +146,7 @@ export async function connectRealtime(
   let minted: RealtimeSessionMint;
   try {
     minted = await deps.mintSession({
+      hostId: scope.hostId,
       room: scope.roomId,
       participant: scope.participantId,
       model,
@@ -237,6 +248,11 @@ export async function connectRealtime(
         if (ev.requestId !== requestId) return;
         if (ev.scope.hostId !== target.hostId || ev.scope.roomId !== target.roomId || ev.scope.participantId !== target.participantId) return;
         if (ev.type === "text" && ev.text) finalText += ev.text;
+        if (ev.type === "approval") {
+          try {
+            dc.send(JSON.stringify({ type: "response.create", response: { instructions: "Briefly say this needs the user's approval in Deck, then stay quiet.", output_modalities: ["audio"] } }));
+          } catch {}
+        }
         if (ev.type === "done" || ev.type === "failed" || ev.type === "canceled") {
           if (!done) {
             done = true;
