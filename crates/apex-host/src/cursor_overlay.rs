@@ -15,11 +15,11 @@ pub struct CursorOverlayPrefs {
     pub preset: CursorPreset,
     #[serde(default)]
     pub size: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub fill: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub rim: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub accent: Option<String>,
     #[serde(default = "default_true")]
     pub ripple: bool,
@@ -29,7 +29,7 @@ pub struct CursorOverlayPrefs {
     pub labels_enabled: bool,
     #[serde(default)]
     pub motion: MotionPrefs,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub custom_image: Option<CustomImagePrefs>,
 }
 
@@ -237,5 +237,12 @@ mod tests {
     fn image_too_large_rejected() {
         // not PNG
         assert!(validate_and_store_image(&std::env::temp_dir().join("test-cursor"), b"not png").is_err());
+    }
+    #[test]
+    fn nullable_fields_serialize_as_null() {
+        let prefs = CursorOverlayPrefs::default();
+        let val = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(val["fill"], serde_json::Value::Null, "fill must serialize as null to allow Swift helper to clear it");
+        assert_eq!(val["customImage"], serde_json::Value::Null, "customImage must serialize as null to allow Swift helper to clear it");
     }
 }

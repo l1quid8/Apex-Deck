@@ -1,38 +1,59 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Test the save feedback generation counter logic: stale timer must not announce Saved after newer edit
-// Reproduces false-Saved prevention requirement
+// Test the save feedback operation tracking logic: stale completion must not announce Saved after newer edit,
+// and Saved is never synthesized from a timer.
+// Reproduces false-Saved prevention requirement.
 
-test('save generation prevents stale Saved announcement', async () => {
-  let gen = 0;
-  let lastSavedGen = -1;
+test('save feedback: stale completion does not announce Saved while newer edit is pending', () => {
+  const pendingOps = new Map();
   let saveState = 'idle';
 
-  const edit = async (delayMs) => {
-    const myGen = ++gen;
+  const onPending = (source, seq) => {
+    pendingOps.set(source, Math.max(pendingOps.get(source) ?? 0, seq));
     saveState = 'saving';
-    await new Promise(r => setTimeout(r, delayMs));
-    if (myGen !== gen) {
-      // stale completion should not set saved
-      return { gen: myGen, stale: true, state: saveState };
-    }
-    saveState = 'saved';
-    lastSavedGen = myGen;
-    return { gen: myGen, stale: false, state: saveState };
   };
 
-  // Simulate rapid edits: first takes 100ms, second starts after 10ms and takes 20ms
-  const p1 = edit(100);
-  await new Promise(r => setTimeout(r, 10));
-  const p2 = edit(20);
-  const r2 = await p2;
-  const r1 = await p1;
+  const onSaved = (source, seq) => {
+    const latest = pendingOps.get(source);
+    if (latest != null && seq < latest) {
+      // Stale completion from an older operation; a newer edit is pending
+      return;
+    }
+    pendingOps.delete(source);
+    if (pendingOps.size === 0) {
+      saveState = 'saved';
+    }
+  };
 
-  assert.equal(r2.stale, false, 'second edit should not be stale');
-  assert.equal(r1.stale, true, 'first edit should be stale and not announce saved');
-  assert.equal(lastSavedGen, 2, 'only latest gen should be saved');
-  assert.equal(saveState, 'saved', 'final state should be saved from latest');
+  const onError = (source) => {
+    pendingOps.delete(source);
+    saveState = 'error';
+  };
+
+  // Operation 1 starts
+  onPending('settings', 1);
+  assert.equal(saveState, 'saving');
+
+  // Operation 2 starts before op 1 finishes
+  onPending('settings', 2);
+  assert.equal(saveState, 'saving');
+
+  // Op 1 completes late (stale ack)
+  onSaved('settings', 1);
+  assert.equal(saveState, 'saving', 'stale op 1 completion must not set saved while op 2 is pending');
+  assert.equal(pendingOps.get('settings'), 2, 'pending ops must still retain op 2');
+
+  // Op 2 completes
+  onSaved('settings', 2);
+  assert.equal(saveState, 'saved', 'latest op completion sets saved');
+  assert.equal(pendingOps.size, 0);
+
+  // Failure scenario
+  onPending('settings', 3);
+  assert.equal(saveState, 'saving');
+  onError('settings');
+  assert.equal(saveState, 'error', 'error sets error state, never saved');
 });
 
 test('failed save retains local value and reports error', async () => {

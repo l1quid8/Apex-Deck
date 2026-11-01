@@ -4319,12 +4319,12 @@ button.mod-status:hover { color: var(--text); }
 
 /* ── Settings v2: true black palette, grouped nav, search, mode cards ── */
 .settings.settings-v2 { background: var(--bg); }
-.settings-nav.settings-nav-v2 { background: #000000; border-right-color: var(--line); width: 264px; }
+.settings-nav.settings-nav-v2 { background: var(--bg); border-right: 1px solid var(--line); width: 264px; }
 .settings-nav-v2 .settings-nav-head h1 { color: var(--text); }
 .settings-search-wrap { position: relative; margin: 6px 8px 10px; }
 .settings-search-wrap .search-icon { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; pointer-events: none; }
-.settings-search-wrap input[type="search"] { width: 100%; padding: 9px 28px 9px 28px; font-size: 13px; background: #101010; border-color: #303030; color: var(--text); border-radius: 8px; }
-.settings-search-wrap kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 10px; color: var(--muted); background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 1px 4px; }
+.settings-search-wrap input[type="search"] { width: 100%; padding: 9px 28px 9px 28px; font-size: 13px; background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 8px; }
+.settings-search-wrap kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 10px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
 .settings-search-wrap .search-clear { position: absolute; right: 36px; top: 50%; transform: translateY(-50%); }
 .settings-nav-v2 nav { gap: 0; }
 .settings-nav-v2 details { margin-top: 8px; }
@@ -4333,15 +4333,15 @@ button.mod-status:hover { color: var(--text); }
 .settings-nav-v2 details[open] > summary::before { transform: rotate(90deg); }
 .settings-nav-v2 .nav-group { display: flex; flex-direction: column; gap: 2px; padding: 0 4px 6px; }
 .settings-nav-v2 .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 10px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 13px; }
-.settings-nav-v2 .nav-item:hover { color: var(--text); background: #111; border-color: #222; }
-.settings-nav-v2 .nav-item.active { background: #101010; border-color: #2a2a2a; color: var(--text); box-shadow: 0 1px 0 #ffffff0d; font-weight: 600; }
+.settings-nav-v2 .nav-item:hover { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+.settings-nav-v2 .nav-item.active { background: var(--panel); border-color: var(--line); color: var(--text); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05); font-weight: 600; }
 .settings-nav-v2 .nav-item .nav-icon { width: 18px; text-align: center; font-size: 14px; }
-.settings-nav-v2 .settings-nav-foot { border-top: 1px solid #1a1a1a; margin-top: 12px; padding-top: 12px; gap: 4px; }
+.settings-nav-v2 .settings-nav-foot { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; gap: 4px; }
 .settings-nav-v2 .save-state-inline { color: var(--accent); font-size: 12px; min-height: 16px; }
 
 .settings-main .settings-top-line { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
-.settings-scope-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 8px; border-radius: 5px; background: #101010; border: 1px solid #2a2a2a; color: var(--muted); }
-.settings-main .pill { font-size: 11px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: #101010; }
+.settings-scope-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 8px; border-radius: 5px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+.settings-main .pill { font-size: 11px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--panel); }
 .settings-main .section-title { font-size: 12px; font-weight: 650; color: var(--muted); letter-spacing: .02em; text-transform: uppercase; margin: 28px 0 10px; }
 .settings-main .settings-note { font-size: 12px; line-height: 1.6; color: var(--muted); margin: 12px 2px; max-width: 680px; }
 .settings-main .link-btn { background: transparent; border: 0; padding: 0; color: var(--accent); font-size: 12px; cursor: pointer; }

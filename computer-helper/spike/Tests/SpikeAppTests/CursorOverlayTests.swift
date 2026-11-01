@@ -64,4 +64,30 @@ final class CursorOverlayTests: XCTestCase {
     CursorOverlay.shared.setEnabled(true)
     XCTAssertTrue(CursorOverlaySettings.isEnabled)
   }
+
+  func testApplyClearingNullableFieldsDoesNotResurrectOldBlobValues() {
+    CursorOverlaySettings.resetToDefaults()
+    let initial: [String: Any] = [
+      "fill": "#FFFFFF",
+      "accent": "#4299FF",
+      "preset": "default"
+    ]
+    let err1 = CursorOverlaySettings.apply(dict: initial)
+    XCTAssertNil(err1)
+    XCTAssertEqual(CursorOverlaySettings.fillHex, "#FFFFFF")
+
+    // Now clear fill using NSNull
+    let clearFill: [String: Any] = [
+      "fill": NSNull(),
+      "customImage": NSNull()
+    ]
+    let err2 = CursorOverlaySettings.apply(dict: clearFill)
+    XCTAssertNil(err2)
+    XCTAssertNil(CursorOverlaySettings.fillHex, "fillHex should be nil after clearing with NSNull")
+    XCTAssertNil(CursorOverlaySettings.customImagePath, "customImagePath should be nil after clearing with NSNull")
+
+    let dict = CursorOverlaySettings.toDictionary()
+    XCTAssertTrue(dict["fill"] is NSNull, "snapshot dictionary should explicitly contain NSNull for cleared fill")
+    XCTAssertTrue(dict["customImage"] is NSNull, "snapshot dictionary should explicitly contain NSNull for cleared customImage")
+  }
 }
