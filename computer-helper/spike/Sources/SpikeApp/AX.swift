@@ -84,7 +84,8 @@ struct Control {
 struct Snapshot {
   let id: String
   let app: NSRunningApplication
-  let launch: Date
+  /// Nil for apps started at login, such as Finder.
+  let launch: Date?
   let window: AXUIElement?
   let document: String?
   let focus: AXUIElement?
@@ -204,7 +205,7 @@ final class Accessibility {
     let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter {
       !$0.isTerminated
     }
-    guard apps.count == 1, apps[0].launchDate != nil else {
+    guard apps.count == 1 else {
       throw Refusal("target_not_running_or_ambiguous")
     }
     return apps[0]
@@ -236,7 +237,7 @@ final class Accessibility {
       "snapshot: \(id)\n" + tree.lines.joined(separator: "\n")
       + (tree.truncated ? "\ntruncated" : "")
     return Snapshot(
-      id: id, app: app, launch: app.launchDate!, window: window,
+      id: id, app: app, launch: app.launchDate, window: window,
       document: window.flatMap { string($0, kAXDocumentAttribute) }, focus: focus, value: value,
       range: range, epoch: epoch, focusFingerprint: focusSafe ? fingerprint(focus!) : nil,
       controls: tree.controls, output: output, screenshotSafe: pixelsSafe)

@@ -730,6 +730,11 @@ impl<'a> Turn<'a> {
         } else if listing { format!("{name}: list tools") } else { format!("{name}: {tool_name}") };
         let detail = if private { String::new() } else { args.to_string() };
         let step = self.step(call, StepKind::Tool, &label, &detail);
+        if !listing && crate::mcp::is_computer_server(&name) && !self.can_read_images {
+            (self.progress)(Progress::Work(&crate::work_feed::computer_text_notice(
+                "This model can’t read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.",
+            )));
+        }
         if !listing && crate::mcp::is_computer_server(&name) && tool_name == "get_screenshot" && !self.can_read_images {
             return (step, Err(NO_SCREENSHOTS.into()));
         }

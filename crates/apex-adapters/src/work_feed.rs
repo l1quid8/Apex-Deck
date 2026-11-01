@@ -35,6 +35,14 @@ fn file_name(path: &str) -> &str {
     path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
 }
 
+/// Shown when a bot without confirmed image support uses Unified Computer
+/// Use. It repeats under one key, so a turn shows it once, and blocks nothing.
+pub(crate) fn computer_text_notice(label: &str) -> WorkStep {
+    let mut step = running("computer-text-only", None, StepKind::Tool, label, "");
+    step.status = StepStatus::Done;
+    step
+}
+
 fn running(key: &str, parent: Option<&str>, kind: StepKind, label: &str, detail: &str) -> WorkStep {
     WorkStep {
         key: key.to_string(),
@@ -409,6 +417,9 @@ pub(crate) fn muse_step(item: &Value, cwd: Option<&str>) -> Option<WorkStep> {
         .as_str()
         .and_then(|a| serde_json::from_str(a).ok())
         .unwrap_or(Value::Null);
+    if let Some(name) = crate::mcp::computer_tool(tool) {
+        return Some(running(key, None, StepKind::Tool, &crate::mcp::redacted_step(name, &args).label, ""));
+    }
     let arg = |name: &str| args[name].as_str().map(str::trim).filter(|s| !s.is_empty());
     let path = arg("path").or(arg("file_path"));
     let named = |verb: &str| match path {
@@ -476,6 +487,9 @@ pub(crate) fn muse_step(item: &Value, cwd: Option<&str>) -> Option<WorkStep> {
 /// a failed helper reports its `failureReason`; everything else is
 /// `visibleOutput` as is.
 fn muse_output(tool: &str, item: &Value) -> (String, Option<i32>) {
+    if crate::mcp::computer_tool(tool).is_some() {
+        return (String::new(), None);
+    }
     let visible = item["visibleOutput"].as_str().unwrap_or("");
     match tool {
         "bash" | "shell" => match serde_json::from_str::<Value>(visible) {

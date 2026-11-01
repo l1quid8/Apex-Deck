@@ -70,6 +70,11 @@ final class CursorOverlay: NSObject {
     }
   }
 
+  /// Leave the overlay up long enough to follow, then fade. A newer action resets this.
+  func linger() {
+    DispatchQueue.main.async { self.scheduleAutoHide() }
+  }
+
   /// Immediate cleanup – call on Stop / turn end / invalidation.
   func cleanup() {
     DispatchQueue.main.async { self.hideImmediately() }
@@ -197,7 +202,7 @@ final class CursorOverlay: NSObject {
     cancelPendingHide()
     let work = DispatchWorkItem { [weak self] in self?.hide(animated: true) }
     hideWork = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
   }
 }
 

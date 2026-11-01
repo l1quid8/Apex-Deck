@@ -84,7 +84,7 @@ final class WindowScreenshot {
     }
   }
 
-  func capture(id: String) throws -> (Snapshot, [String: Any], ScreenshotScope) {
+  func capture(id: String, bind: (Snapshot) throws -> Snapshot) throws -> (Snapshot, [String: Any], ScreenshotScope) {
     let epoch = latch.state().0
     return try ScreenshotPolicy.guarded(latch: latch, id: id) {
       guard ax.trusted() else {
@@ -98,8 +98,9 @@ final class WindowScreenshot {
       let observation = try ax.capture(epoch: epoch)
       guard observation.screenshotSafe, let window = observation.window,
         pid(window) == observation.app.processIdentifier, let frame = rect(window),
-        let title = string(window, kAXTitleAttribute), !title.isEmpty
+        let number = windowNumber(window)
       else { throw Refusal("window_missing_foreign_protected_or_incomplete") }
+      let title = string(window, kAXTitleAttribute) ?? ""
       try guardWindow(observation, id, title: title, frame: frame, deadline: deadline)
       func content() throws -> SCShareableContent {
         try wait(id, epoch: observation.epoch, deadline: deadline) { done in
@@ -110,7 +111,7 @@ final class WindowScreenshot {
         }
       }
       let available = try content()
-      let chosen = try ScreenshotPolicy.select(candidates(available), pid: observation.app.processIdentifier, title: title, frame: frame)
+      let chosen = try ScreenshotPolicy.select(candidates(available), id: number, pid: observation.app.processIdentifier, frame: frame)
       guard let selected = available.windows.first(where: { $0.windowID == chosen.id }),
         let size = ScreenshotPolicy.dimensions(width: frame.width, height: frame.height)
       else { throw Refusal("window_identity_unavailable") }
@@ -130,7 +131,7 @@ final class WindowScreenshot {
         }
       }
       try guardWindow(observation, id, title: title, frame: frame, deadline: deadline)
-      let current = try ScreenshotPolicy.select(candidates(try content()), pid: chosen.pid, title: title, frame: frame)
+      let current = try ScreenshotPolicy.select(candidates(try content()), id: number, pid: chosen.pid, frame: frame)
       guard current.id == chosen.id else { throw Refusal("window_replaced") }
       let jpeg = try ScreenshotPolicy.encode(image)
       let fresh = try ax.capture(epoch: observation.epoch)
@@ -142,8 +143,10 @@ final class WindowScreenshot {
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
         let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
         let height = properties[kCGImagePropertyPixelHeight as String] as? Int else { throw Refusal("image_geometry_unavailable") }
-      let scope = ScreenshotScope(snapshot: fresh.id, windowID: chosen.id, frame: frame, width: width, height: height)
-      return (fresh, try ScreenshotPolicy.reply(text: fresh.output, snapshot: fresh.id, window: chosen, jpeg: jpeg), scope)
+      // Bound to the engine so numbered controls stay usable after a screenshot.
+      let bound = try bind(fresh)
+      let scope = ScreenshotScope(snapshot: bound.id, windowID: chosen.id, frame: frame, width: width, height: height)
+      return (bound, try ScreenshotPolicy.reply(text: bound.output, snapshot: bound.id, window: chosen, jpeg: jpeg), scope)
     }
   }
 }

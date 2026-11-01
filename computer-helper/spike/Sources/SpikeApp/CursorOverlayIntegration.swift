@@ -97,7 +97,7 @@ enum CursorOverlayIntegration {
   }
 
   static func hideAfterAction() {
-    CursorOverlay.shared.hide(animated: true)
+    CursorOverlay.shared.linger()
   }
 
   static func cleanupOnStop() {

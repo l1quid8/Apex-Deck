@@ -38,12 +38,14 @@ public enum ScreenshotPolicy {
     let scale = min(1, 1568 / max(width, height))
     return [max(1, Int((width * scale).rounded(.down))), max(1, Int((height * scale).rounded(.down)))]
   }
-  public static func select(_ windows: [ScreenshotWindow], pid: Int32, title: String, frame: CGRect) throws -> ScreenshotWindow {
-    guard pid > 0, !title.isEmpty, dimensions(width: frame.width, height: frame.height) != nil,
+  /// Matches the exact CoreGraphics window. Titles cannot be compared: the capture
+  /// list shortens long ones with an ellipsis, so they differ from the AX title.
+  public static func select(_ windows: [ScreenshotWindow], id: UInt32, pid: Int32, frame: CGRect) throws -> ScreenshotWindow {
+    guard id != 0, pid > 0, dimensions(width: frame.width, height: frame.height) != nil,
       frame.origin.x.isFinite, frame.origin.y.isFinite else { throw Refusal("window_identity_unavailable") }
     // Do not discard protected candidates first: a duplicate must remain ambiguous.
-    let matches = windows.filter { $0.pid == pid && $0.frame == frame && $0.title == title }
-    guard matches.count == 1, let match = matches.first, match.id != 0,
+    let matches = windows.filter { $0.id == id && $0.pid == pid && $0.frame == frame }
+    guard matches.count == 1, let match = matches.first,
       Policy.target(match.bundle), match.safe else { throw Refusal("window_unverified_or_protected") }
     return match
   }
