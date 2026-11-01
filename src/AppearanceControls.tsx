@@ -69,7 +69,16 @@ function AccentControl({ ctx, light }: { ctx: Ctx; light: boolean }) {
   useEffect(() => { setText(values.accentColor ?? ""); setBad(false); }, [values.accentColor]);
   const typed = (value: string) => {
     setText(value);
-    try { ctx.patch(colorAppearance(value)); setBad(false); } catch { /* wait until it's a color */ }
+    // Three digits are a color too, but they're also the way to six, so they wait for blur.
+    if (/^#[0-9a-f]{6}$/i.test(value.trim())) { ctx.patch(colorAppearance(value)); setBad(false); }
+  };
+  const left = () => {
+    try {
+      const color = colorAppearance(text);
+      if (color.accentColor !== values.accentColor) ctx.patch(color);
+      else setText(values.accentColor ?? "");
+      setBad(false);
+    } catch { setBad(true); }
   };
   const palette = paletteOf(values);
   return <Ctl ctx={ctx} id="accent" name="Accent" keys={["hue", "accentColor"]} className="studio-accent">
@@ -81,7 +90,7 @@ function AccentControl({ ctx, light }: { ctx: Ctx; light: boolean }) {
       {exact ? <>
         <div className="studio-exact-row">
           <input type="color" aria-label="Exact accent color" value={values.accentColor} onChange={(event) => ctx.patch(colorAppearance(event.currentTarget.value))} />
-          <input type="text" className="studio-hex" aria-label="Exact accent hex value" maxLength={7} spellCheck={false} value={text} aria-invalid={bad} onChange={(event) => typed(event.currentTarget.value)} onBlur={() => { try { colorAppearance(text); } catch { setBad(true); } }} />
+          <input type="text" className="studio-hex" aria-label="Exact accent hex value" maxLength={7} spellCheck={false} value={text} aria-invalid={bad} onChange={(event) => typed(event.currentTarget.value)} onBlur={left} />
         </div>
         {bad && <p className="studio-err" role="alert">Enter a hex color such as #35aabb.</p>}
       </> : <>
@@ -144,7 +153,7 @@ function GlowDetails({ ctx, light }: { ctx: Ctx; light: boolean }) {
   return <details className="studio-more-glow">
     <summary>Glow colors and size</summary>
     <Ctl ctx={ctx} id="glow-colors" name="Match accent" keys={["glowColors"]} className="studio-line-seg studio-switch-row" label="studio-match-accent">
-      <input id="studio-match-accent" type="checkbox" role="switch" checked={matching} onChange={(event) => glow({ glowColors: event.currentTarget.checked ? undefined : colors })} />
+      <input id="studio-match-accent" type="checkbox" role="switch" checked={matching} onChange={(event) => glow(event.currentTarget.checked ? { glowColors: undefined, glowCount: colors.length } : { glowColors: colors })} />
     </Ctl>
     {matching
       ? <div className="studio-glow-colors">{colors.map((color) => <span key={color} className="studio-sw" style={{ background: color }} title={color} />)}</div>

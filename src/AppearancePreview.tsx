@@ -79,9 +79,16 @@ export function AppearancePreviewPage() {
       if (event.origin !== window.location.origin || event.source !== window.parent || event.data?.type !== "appearance-preview") return;
       setMessage(event.data as PreviewMessage);
     };
+    // Keys pressed in here would never reach Settings, so they go on to the frame element.
+    const onKeyDown = (event: KeyboardEvent) => {
+      const { key, code, repeat, metaKey, ctrlKey, shiftKey, altKey } = event;
+      const passed = new KeyboardEvent("keydown", { key, code, repeat, metaKey, ctrlKey, shiftKey, altKey, bubbles: true, cancelable: true });
+      if (window.frameElement?.dispatchEvent(passed) === false) event.preventDefault();
+    };
     window.addEventListener("message", onMessage);
+    window.addEventListener("keydown", onKeyDown);
     window.parent.postMessage({ type: READY }, window.location.origin);
-    return () => window.removeEventListener("message", onMessage);
+    return () => { window.removeEventListener("message", onMessage); window.removeEventListener("keydown", onKeyDown); };
   }, []);
 
   useLayoutEffect(() => {

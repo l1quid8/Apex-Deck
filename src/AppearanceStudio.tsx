@@ -21,7 +21,7 @@ const TABS: { id: StudioTab; name: string }[] = [
 const THEMES: [ThemeId, string][] = [["clay", "Clay"], ["classic", "Classic"], ["liquid", "Liquid"]];
 const MODES: [ColorMode, string][] = [["light", "Light"], ["dark", "Dark"], ["system", "System"]];
 
-export function AppearanceStudio({ studio, settings, systemDark, highlightId }: { studio: AppearanceStudioState; settings: AppSettings; systemDark: boolean; highlightId: string | null }) {
+export function AppearanceStudio({ studio, settings, systemDark, highlightId, onHighlightUsed }: { studio: AppearanceStudioState; settings: AppSettings; systemDark: boolean; highlightId: string | null; onHighlightUsed: () => void }) {
   const { draft } = studio;
   const saved = settings.appearance?.saved ?? [];
   const [tab, setTab] = useState<StudioTab>("customize");
@@ -49,8 +49,11 @@ export function AppearanceStudio({ studio, settings, systemDark, highlightId }: 
     setTab(anchor.tab);
     const frame = requestAnimationFrame(() => {
       const control = document.querySelector<HTMLElement>(`.studio [data-ctl="${anchor.control ?? highlightId}"]`);
+      const section = control?.closest("details");
+      if (section) section.open = true;
       control?.scrollIntoView({ block: "center" });
       (control?.querySelector<HTMLElement>("input, button, select, textarea") ?? control)?.focus({ preventScroll: true });
+      onHighlightUsed();
     });
     return () => cancelAnimationFrame(frame);
   }, [highlightId]);

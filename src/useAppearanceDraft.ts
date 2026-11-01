@@ -5,23 +5,11 @@
 import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react";
 
 import {
-  applyDraft, clearEdits, deckLabel, deletePreset, discardDraft, displayName, editedKeys, pendingChanges, pickPreset, renamePreset,
-  revertPending, savePreset, storeDraft, updatePreset, workingDraft, type AppearanceDraft, type PendingChange, type PendingLabel,
+  applyDraft, clearEdits, deckLabel, deletePreset, discardDraft, displayName, editedKeys, pendingChanges, pickPreset, presetUpdateNote, renamePreset,
+  restoreAppearance, revertPending, savePreset, storeDraft, updatePreset, workingDraft, type AppearanceDraft, type PendingChange, type PendingLabel,
 } from "./appearanceDraft.ts";
 import type { AppSettings } from "./settings.ts";
-import { deriveSource, type PresetRef } from "./themes.ts";
-
-const APPEARANCE_KEYS = ["appearance", "appearanceDraft", "botChips", "landingTexture"] as const;
-
-/** Put the appearance keys of an earlier moment back, leaving everything else as it is now. */
-function restore(now: AppSettings, earlier: AppSettings): AppSettings {
-  const next = { ...now };
-  for (const key of APPEARANCE_KEYS) {
-    if (earlier[key] === undefined) delete next[key];
-    else Object.assign(next, { [key]: earlier[key] });
-  }
-  return next;
-}
+import type { PresetRef } from "./themes.ts";
 
 /** A button can leave with what it did (the bar, a toast's Undo), so nobody is left focused on nothing. */
 export function settleFocus(): void {
@@ -56,8 +44,8 @@ export function useAppearanceDraft(settings: AppSettings, setSettings: Dispatch<
   const pending = useMemo(() => pendingChanges(settings, draft, systemDark), [settings, draft, systemDark]);
   const saved = settings.appearance?.saved ?? [];
 
-  const undoTo = useCallback((earlier: AppSettings) => () => {
-    setSettings((now) => restore(now, earlier));
+  const undoTo = useCallback((earlier: AppSettings, returning?: string) => () => {
+    setSettings((now) => restoreAppearance(now, earlier, returning));
     settleFocus();
   }, [setSettings]);
 
@@ -91,9 +79,8 @@ export function useAppearanceDraft(settings: AppSettings, setSettings: Dispatch<
       toast(`${name.trim()} saved to your presets.`);
     },
     update: () => {
-      const usedByDeck = settings.appearance !== undefined && displayName(deriveSource(settings.appearance)) === displayName(draft.source);
       setSettings((now) => updatePreset(now));
-      toast(usedByDeck ? `${displayName(draft.source)} updated. Deck keeps the earlier version until you apply.` : `${displayName(draft.source)} updated.`);
+      toast(presetUpdateNote(settings));
     },
     rename: (from, to) => {
       setSettings((now) => renamePreset(now, from, to));
@@ -102,7 +89,7 @@ export function useAppearanceDraft(settings: AppSettings, setSettings: Dispatch<
     remove: (name) => {
       const inUse = draft.source.kind === "saved" && draft.source.name === name;
       setSettings((now) => deletePreset(now, name));
-      toast(`${name} deleted.${inUse ? " Your settings are still here as unsaved changes." : ""}`, undoTo(settings));
+      toast(`${name} deleted.${inUse ? " Your settings are still here as unsaved changes." : ""}`, undoTo(settings, name));
     },
     change: (update) => setSettings(update),
   };

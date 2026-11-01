@@ -148,6 +148,8 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
   const grouped = useMemo(() => groupSections().map(g=>({ ...g, sections: g.sections.filter(s=>visibleSections.has(s.id))})).filter(g=>g.sections.length>0), [visibleSections]);
 
   useEffect(() => { navFocusRef.current?.querySelector<HTMLButtonElement>("button.active")?.focus(); }, [resolvedSection]);
+  // Arriving at a section means leaving the results, or the page would stay hidden behind them.
+  useEffect(() => { setSearchQuery(''); setSearchResults([]); setFocusedResultIdx(-1); }, [resolvedSection]);
 
   // Keyboard: Escape clears search before closing, Cmd+F focuses search, Arrow nav for results
   useEffect(() => {
@@ -356,7 +358,7 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
       </div>
     </aside>
     <main className={`settings-main${studio ? ' studio-main' : ''}`} ref={mainRef} tabIndex={-1}>
-      {studio ? <AppearanceStudio studio={appearanceStudio} settings={settings} systemDark={systemDark} highlightId={highlightId} /> : <div className="settings-column">
+      {studio ? <AppearanceStudio studio={appearanceStudio} settings={settings} systemDark={systemDark} highlightId={highlightId} onHighlightUsed={()=>setHighlightId(null)} /> : <div className="settings-column">
         {searchResults.length>0 || searchQuery.trim() ? (
           <div className="settings-search-results">
             <div className="settings-head">

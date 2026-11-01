@@ -217,3 +217,68 @@ test('a draft keeps the applied object, so pop-outs see nothing until Apply', ()
   assert.equal(edited.appearance, s.appearance);
   assert.notEqual(draft.applyDraft(edited).appearance, s.appearance);
 });
+
+const full = () => {
+  const saved = Array.from({ length: 50 }, (_, i) => skin(`P${i}`, { ...clayValues, radius: 5 + (i % 20) }));
+  return { ...base(), appearance: applied(skin('Clay Warm', clayValues), saved) };
+};
+test('a chip style matching the omitted default is not a change', () => {
+  const s = base();
+  const d = draft.workingDraft(s);
+  assert.deepEqual(draft.pendingChanges(s, { ...d, botChips: { ...d.botChips, style: 'classic' } }, true), []);
+});
+test('a full preset list refuses imports and saves instead of dropping the oldest', () => {
+  const s = full();
+  assert.equal(draft.presetLimitError(s.appearance.saved), 'You have 50 presets. Delete one first.');
+  assert.equal(draft.presetLimitError(s.appearance.saved.slice(1)), null);
+  assert.equal(draft.importPreset(s, skin('New', clayValues)), s);
+  assert.equal(draft.savePreset(s, 'New'), s);
+});
+test('Undo keeps a preset saved since, but puts Deck back', () => {
+  const before = withDraft(base(), { values: { radius: 20 } });
+  const after = draft.savePreset(draft.applyDraft(before), 'Later');
+  const undone = draft.restoreAppearance(after, before);
+  assert.deepEqual(undone.appearance.saved.map(p => p.name), ['Later']);
+  assert.equal(undone.appearance.current.appearance.radius, clayValues.radius);
+  assert.equal(undone.appearanceDraft.values.radius, 20);
+});
+test('Undo keeps a preset updated since', () => {
+  const start = onSavedPreset('Mine');
+  const before = { ...start };
+  const later = withDraft(start, { values: { radius: 26 } });
+  const undone = draft.restoreAppearance(draft.updatePreset(later), before);
+  assert.equal(undone.appearance.saved[0].appearance.radius, 26);
+});
+test('Undo of a delete brings that preset back in its place', () => {
+  const a = skin('A', { ...clayValues, radius: 7 }); const b = skin('B', { ...clayValues, radius: 8 });
+  const before = { ...base(), appearance: applied(skin('Clay Warm', clayValues), [a, b]) };
+  const later = draft.importPreset(draft.deletePreset(before, 'A'), skin('C', { ...clayValues, radius: 9 }));
+  const undone = draft.restoreAppearance(later, before, 'A');
+  assert.deepEqual(undone.appearance.saved.map(p => p.name), ['A', 'B', 'C']);
+});
+test('Undo does not leave a draft on a preset deleted since', () => {
+  const liquid = skin('Glass', { ...tideValues, radius: 7 });
+  const start = { ...base(), appearance: applied(skin('Clay Warm', clayValues), [liquid]) };
+  const before = draft.storeDraft(start, draft.pickPreset(draft.workingDraft(start), { kind: 'saved', name: 'Glass' }, [liquid]));
+  const undone = draft.restoreAppearance(draft.deletePreset(before, 'Glass'), before);
+  assert.equal(undone.appearanceDraft.source.kind, 'builtin');
+  assert.equal(draft.draftTheme(undone.appearanceDraft, undone.appearance.saved), 'liquid');
+});
+test('Undo with no earlier appearance record still keeps presets saved since', () => {
+  const before = withDraft({ ...DEFAULT_SETTINGS }, { values: { radius: 20 } });
+  const after = draft.savePreset(before, 'Later');
+  assert.deepEqual(draft.restoreAppearance(after, before).appearance.saved.map(p => p.name), ['Later']);
+});
+test('updating another preset keeps the label on the one Deck is behind', () => {
+  const mine = onSavedPreset('Mine');
+  const other = skin('Other', { ...clayValues, radius: 8 });
+  const s = { ...mine, appearance: { ...mine.appearance, saved: [...mine.appearance.saved, other], sourceBehind: true } };
+  const next = draft.updatePreset(withDraft(s, { source: { kind: 'saved', name: 'Other' }, values: { radius: 9 } }));
+  assert.equal(next.appearance.sourceBehind, true);
+});
+test('the Update note only mentions the earlier version when Deck differs', () => {
+  const same = onSavedPreset('Mine');
+  const unchanged = { ...same, appearance: { ...same.appearance, saved: [skin('Mine', { ...clayValues, radius: 12 })] } };
+  assert.equal(draft.presetUpdateNote(withDraft(unchanged, {})), 'Mine updated.');
+  assert.equal(draft.presetUpdateNote(onSavedPresetWithEdits()), 'Mine updated. Deck keeps the earlier version until you apply.');
+});

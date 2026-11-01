@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const css = readFileSync(new URL("../src/glass-theme.css", import.meta.url), "utf8");
+const css = readFileSync(new URL("../src/glass-theme.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
 test("Liquid's composer placeholder follows the theme's muted colour", () => {
   const rule = /:root:is\(\[data-deck-theme="glass"\], \[data-deck-theme="flat"\]\) \.composer:not\(\.tldr, \.plan\) \.composer-box textarea::placeholder\s*\{([^}]*)\}/.exec(css);

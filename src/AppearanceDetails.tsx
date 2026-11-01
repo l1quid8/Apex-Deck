@@ -3,7 +3,7 @@
 
 import { useRef, useState, type ChangeEvent } from "react";
 
-import { editedKeys, displayName, importPreset } from "./appearanceDraft";
+import { editedKeys, displayName, importPreset, presetLimitError } from "./appearanceDraft";
 import { LandingTextureControls } from "./AppearanceSettings";
 import { ChipStylePicker } from "./ChipStylePicker";
 import type { AppSettings } from "./settings";
@@ -51,6 +51,8 @@ function Share({ studio, settings }: { studio: AppearanceStudioState; settings: 
     try {
       if (new TextEncoder().encode(text).byteLength > FILE_LIMIT) throw new Error("Preset files must be 32,000 bytes or smaller.");
       const preset = parseSkin(text);
+      const full = presetLimitError(saved);
+      if (full) throw new Error(full);
       studio.change((now) => importPreset(now, preset));
       setImportText("");
       setNotice({ text: `${preset.name} added to your presets. Pick it above to preview it.` });

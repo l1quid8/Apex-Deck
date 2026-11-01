@@ -41,7 +41,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const sameRef = (a: PresetRef, b: PresetRef) => a.kind === b.kind && (a.kind === "builtin" ? a.id === (b as typeof a).id : a.name === (b as typeof a).name);
 const skinFile = (name: string, appearance: AppearanceValues): SkinFile => ({ format: "apex-glass-playground", version: 2, name, appearance });
 const appliedAppearance = (settings: AppSettings): AppearanceSettings => settings.appearance ?? defaultAppearanceSettings();
-const sameChips = (a: ChipParts, b: ChipParts) => a.style === b.style && a.tool === b.tool && a.effort === b.effort && a.usage === b.usage;
+const sameChips = (a: ChipParts, b: ChipParts) => (a.style ?? "classic") === (b.style ?? "classic") && a.tool === b.tool && a.effort === b.effort && a.usage === b.usage;
 
 /** parseSkin's rules for one set of values. Drops a reply that matches the theme's own. */
 const canonical = (values: AppearanceValues): AppearanceValues => parseSkin(JSON.stringify(skinFile("draft", values))).appearance;
@@ -215,6 +215,30 @@ export function applyDraft(settings: AppSettings): AppSettings {
   };
 }
 
+const APPEARANCE_KEYS = ["appearance", "appearanceDraft", "botChips", "landingTexture"] as const;
+
+/** Put the appearance keys of an earlier moment back, leaving everything else as
+ *  it is now. Saved presets stay as they are now too, apart from `returning`, the
+ *  one preset this Undo brings back. */
+export function restoreAppearance(now: AppSettings, earlier: AppSettings, returning?: string): AppSettings {
+  const next = { ...now };
+  for (const key of APPEARANCE_KEYS) {
+    if (earlier[key] === undefined) delete next[key];
+    else Object.assign(next, { [key]: earlier[key] });
+  }
+  const saved = [...(now.appearance?.saved ?? [])];
+  const before = earlier.appearance?.saved ?? [];
+  const back = before.findIndex((skin) => skin.name === returning);
+  if (back >= 0 && !saved.some((skin) => skin.name === returning)) saved.splice(back, 0, before[back]);
+  if (saved.length) next.appearance = { ...appliedAppearance(earlier), saved };
+  else if (next.appearance) next.appearance = { ...next.appearance, saved };
+  const draft = next.appearanceDraft;
+  if (!draft) return next;
+  const lastPreset = Object.fromEntries(Object.entries(draft.lastPreset).filter(([, last]) => refExists(last, saved)));
+  next.appearanceDraft = { ...draft, source: refExists(draft.source, saved) ? draft.source : { kind: "builtin", id: builtinFor(draft.values).id }, lastPreset };
+  return next;
+}
+
 export function discardDraft(settings: AppSettings): AppSettings {
   const { appearanceDraft: _dropped, ...rest } = settings;
   return rest;
@@ -224,11 +248,12 @@ export function discardDraft(settings: AppSettings): AppSettings {
 export function savePreset(settings: AppSettings, name: string): AppSettings {
   const draft = workingDraft(settings);
   const applied = appliedAppearance(settings);
+  if (presetLimitError(applied.saved)) return settings;
   const preset = skinFile(name.trim(), canonical(draft.values));
   const source: PresetRef = { kind: "saved", name: preset.name };
   const appearance: AppearanceSettings = {
     ...applied,
-    saved: [...applied.saved, preset].slice(-MAX_SAVED),
+    saved: [...applied.saved, preset],
     ...(sameLook(applied.current.appearance, draft.values) ? { current: { ...applied.current, name: preset.name }, source } : {}),
   };
   const theme = draftTheme(draft, applied.saved);
@@ -242,10 +267,18 @@ export function updatePreset(settings: AppSettings): AppSettings {
   if (source.kind !== "saved") return settings;
   const applied = appliedAppearance(settings);
   const saved = applied.saved.map((skin) => skin.name === source.name ? { ...skin, appearance: canonical(draft.values) } : skin);
-  const { sourceBehind: _behind, ...appearance } = applied;
+  const { sourceBehind, ...appearance } = applied;
   const inUse = sameRef(deriveSource(applied), source);
-  const behind = inUse && !sameLook(applied.current.appearance, draft.values);
+  const behind = inUse ? !sameLook(applied.current.appearance, draft.values) : sourceBehind;
   return storeDraft({ ...settings, appearance: { ...appearance, saved, ...(inUse ? { source } : {}), ...(behind ? { sourceBehind: true as const } : {}) } }, draft);
+}
+
+/** What Update just did, in words. Reads the settings from before it ran. */
+export function presetUpdateNote(settings: AppSettings): string {
+  const draft = workingDraft(settings);
+  const applied = appliedAppearance(settings);
+  const differs = sameRef(deriveSource(applied), draft.source) && !sameLook(applied.current.appearance, draft.values);
+  return `${displayName(draft.source)} updated.${differs ? " Deck keeps the earlier version until you apply." : ""}`;
 }
 
 function renameRefs(draft: AppearanceDraft, from: string, to: string): AppearanceDraft {
@@ -286,10 +319,13 @@ export function deletePreset(settings: AppSettings, name: string): AppSettings {
   return storeDraft(next, { ...draft, source, lastPreset });
 }
 
+export const presetLimitError = (saved: SkinFile[]): string | null => saved.length >= MAX_SAVED ? `You have ${MAX_SAVED} presets. Delete one first.` : null;
+
 export function presetNameError(name: string, saved: SkinFile[], except?: string): string | null {
   const wanted = name.trim();
   if (!wanted) return "Enter a name for this preset.";
-  if (except === undefined && saved.length >= MAX_SAVED) return `You have ${MAX_SAVED} presets. Delete one first.`;
+  const full = except === undefined ? presetLimitError(saved) : null;
+  if (full) return full;
   const lower = wanted.toLowerCase();
   const taken = saved.some((skin) => skin.name.toLowerCase() === lower && skin.name !== except) || BUILTIN_SKINS.some((skin) => skin.name.toLowerCase() === lower);
   return taken ? `${wanted} already exists. Pick another name, or update it instead.` : null;
@@ -298,10 +334,11 @@ export function presetNameError(name: string, saved: SkinFile[], except?: string
 /** Add a preset from a file. A taken name gets a number, so both are kept. Nothing else changes. */
 export function importPreset(settings: AppSettings, skin: SkinFile): AppSettings {
   const applied = appliedAppearance(settings);
+  if (presetLimitError(applied.saved)) return settings;
   const taken = new Set([...applied.saved, ...BUILTIN_SKINS].map((item) => item.name.toLowerCase()));
   let name = skin.name;
   for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${skin.name.slice(0, 36)} ${n}`;
-  return { ...settings, appearance: { ...applied, saved: [...applied.saved, { ...skin, name }].slice(-MAX_SAVED) } };
+  return { ...settings, appearance: { ...applied, saved: [...applied.saved, { ...skin, name }] } };
 }
 
 function readMaterial(raw: unknown, values: AppearanceValues): AppearanceDraft["materialEdits"] {
