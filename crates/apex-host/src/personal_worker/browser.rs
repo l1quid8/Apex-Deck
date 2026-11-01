@@ -21,6 +21,11 @@ static PROFILE: OnceLock<PathBuf> = OnceLock::new();
 static STATE: tokio::sync::Mutex<Option<Running>> = tokio::sync::Mutex::const_new(None);
 /// The human is driving: the assistant doesn't touch the browser.
 static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
+static DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
+static PAGE: tokio::sync::Mutex<Option<Page>> = tokio::sync::Mutex::const_new(None);
+type DialogReply = tokio::sync::oneshot::Sender<Result<(), String>>;
+struct DialogWatch { target: String, task: tokio::task::JoinHandle<()>, dismiss: tokio::sync::mpsc::Sender<DialogReply> }
+static DIALOG_WATCH: tokio::sync::Mutex<Option<DialogWatch>> = tokio::sync::Mutex::const_new(None);
 /// One operation at a time. Take over waits here, so nothing checked before it can still land after it.
 static OPS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Moves on anything that can change the page, so an older reading can't be acted on.
@@ -147,12 +152,69 @@ async fn ensure() -> Result<u16, String> {
 struct Target {
     #[serde(default)]
     id: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    title: String,
     #[serde(rename = "type")]
     kind: String,
     web_socket_debugger_url: Option<String>,
 }
 
-async fn page() -> Result<Page, String> {
+// Keep dialogs observable between calls. Only explicit human Escape sends a response,
+// on the same CDP session that received the dialog; ordinary reads never answer it.
+async fn watch_dialogs(target: &str, url: &str) -> Result<(), String> {
+    let mut held = DIALOG_WATCH.lock().await;
+    if held.as_ref().is_some_and(|watch| watch.target == target && !watch.task.is_finished()) { return Ok(()); }
+    if let Some(watch) = held.take() { watch.task.abort(); }
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.map_err(|e| e.to_string())?;
+    socket.send(Message::Text(json!({"id":1,"method":"Page.enable","params":{}}).to_string().into())).await.map_err(|e| e.to_string())?;
+    DIALOG_OPEN.store(false, Ordering::SeqCst);
+    let (ready, waiting) = tokio::sync::oneshot::channel();
+    let (dismiss, mut commands) = tokio::sync::mpsc::channel::<DialogReply>(4);
+    let task = tokio::spawn(async move {
+        let mut ready = Some(ready);
+        let mut next = 1u64;
+        let mut pending = std::collections::HashMap::<u64, DialogReply>::new();
+        loop {
+            let frame = tokio::select! {
+                reply = commands.recv() => {
+                    let Some(reply) = reply else { break };
+                    next += 1;
+                    pending.insert(next, reply);
+                    if socket.send(Message::Text(json!({"id":next,"method":"Page.handleJavaScriptDialog","params":{"accept":false}}).to_string().into())).await.is_err() { break; }
+                    continue;
+                }
+                frame = socket.next() => match frame { Some(Ok(Message::Text(text))) => text, Some(Ok(_)) => continue, _ => break },
+            };
+            let Ok(value) = serde_json::from_str::<Value>(&frame) else { continue };
+            match value["method"].as_str() {
+                Some("Page.javascriptDialogOpening") => { DIALOG_OPEN.store(true, Ordering::SeqCst); }
+                Some("Page.javascriptDialogClosed") => { DIALOG_OPEN.store(false, Ordering::SeqCst); }
+                _ => {}
+            }
+            if value["id"] == 1 || value["method"] == "Page.javascriptDialogOpening" {
+                if let Some(ready) = ready.take() { let _ = ready.send(()); }
+            }
+            if let Some(reply) = value["id"].as_u64().and_then(|id| pending.remove(&id)) {
+                let result = value.get("error").map_or(Ok(()), |error| Err(error["message"].as_str().unwrap_or("Dialog response failed").to_owned()));
+                let _ = reply.send(result);
+            }
+        }
+    });
+    *held = Some(DialogWatch { target: target.to_owned(), task, dismiss });
+    tokio::time::timeout(Duration::from_secs(5), waiting).await.map_err(|_| "Browser dialog monitor did not start".to_owned())?.map_err(|_| "Browser dialog monitor closed".to_owned())?;
+    Ok(())
+}
+
+async fn dismiss_dialog() -> Result<(), String> {
+    let sender = DIALOG_WATCH.lock().await.as_ref().ok_or("Browser dialog monitor is unavailable")?.dismiss.clone();
+    let (reply, waiting) = tokio::sync::oneshot::channel();
+    sender.send(reply).await.map_err(|_| "Browser dialog monitor closed")?;
+    tokio::time::timeout(Duration::from_secs(5), waiting).await.map_err(|_| "Browser did not answer the dialog response")?.map_err(|_| "Browser dialog monitor closed")?
+}
+
+async fn page() -> Result<tokio::sync::MappedMutexGuard<'static, Page>, String> {
     let port = ensure().await?;
     let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
     let targets: Vec<Target> = http.get(format!("http://127.0.0.1:{port}/json/list")).send().await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
@@ -165,36 +227,62 @@ async fn page() -> Result<Page, String> {
     };
     *PINNED.lock().unwrap() = Some(target.id.clone());
     let url = target.web_socket_debugger_url.ok_or("The browser has no page.")?;
+    watch_dialogs(&target.id, &url).await?;
+    let mut held = PAGE.lock().await;
+    if held.as_ref().is_some_and(|page| page.target == target.id && !page.dead) {
+        let page = held.as_mut().unwrap();
+        page.url = target.url;
+        page.title = target.title;
+        page.dialog_open = DIALOG_OPEN.load(Ordering::SeqCst);
+        return Ok(tokio::sync::MutexGuard::map(held, |page| page.as_mut().unwrap()));
+    }
     let (socket, _) = tokio_tungstenite::connect_async(url.as_str()).await.map_err(|e| format!("Could not reach the browser: {e}"))?;
-    let mut page = Page { socket, next: 0, target: target.id };
-    // Needed for the dialog events `call` answers. A dialog already open is announced again.
-    page.call("Page.enable", json!({})).await?;
-    page.call("Emulation.setDeviceMetricsOverride", json!({ "width": WIDTH, "height": HEIGHT, "deviceScaleFactor": 1, "mobile": false })).await?;
-    Ok(page)
+    let mut page = Page { socket, next: 0, target: target.id, url: target.url, title: target.title, dialog_open: DIALOG_OPEN.load(Ordering::SeqCst), dead: false };
+    if !page.dialog_open {
+        if let Err(error) = page.call("Emulation.setDeviceMetricsOverride", json!({ "width": WIDTH, "height": HEIGHT, "deviceScaleFactor": 1, "mobile": false })).await {
+            if error != "browser_dialog_requires_take_over" { return Err(error); }
+        }
+    }
+    *held = Some(page);
+    Ok(tokio::sync::MutexGuard::map(held, |page| page.as_mut().unwrap()))
 }
 
 struct Page {
     socket: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     next: u64,
     target: String,
+    url: String,
+    title: String,
+    dialog_open: bool,
+    dead: bool,
 }
 
 impl Page {
     async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         self.next += 1;
         let id = self.next;
-        self.socket.send(Message::Text(json!({ "id": id, "method": method, "params": params }).to_string().into())).await.map_err(|e| e.to_string())?;
+        if let Err(error) = self.socket.send(Message::Text(json!({ "id": id, "method": method, "params": params }).to_string().into())).await {
+            self.dead = true;
+            return Err(error.to_string());
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let frame = tokio::time::timeout(Duration::from_secs(30), self.socket.next()).await
-                .map_err(|_| format!("The browser didn't answer {method} in time."))?
-                .ok_or("The browser closed the connection.")?
-                .map_err(|e| e.to_string())?;
+            if method != "Page.handleJavaScriptDialog" && DIALOG_OPEN.load(Ordering::SeqCst) {
+                self.dialog_open = true;
+                return Err("browser_dialog_requires_take_over".into());
+            }
+            let frame = tokio::select! {
+                result = tokio::time::timeout_at(deadline, self.socket.next()) => match result {
+                    Ok(Some(Ok(frame))) => frame,
+                    _ => { self.dead = true; return Err(format!("The browser connection failed during {method}")); }
+                },
+                _ = tokio::time::sleep(Duration::from_millis(20)) => continue,
+            };
             let Message::Text(text) = frame else { continue };
             let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-            // A dialog freezes the page and nobody can see it, so it gets the cautious answer.
             if value["method"] == "Page.javascriptDialogOpening" {
-                self.next += 1;
-                self.socket.send(Message::Text(json!({ "id": self.next, "method": "Page.handleJavaScriptDialog", "params": { "accept": false } }).to_string().into())).await.map_err(|e| e.to_string())?;
+                self.dialog_open = true;
+                return Err("browser_dialog_requires_take_over".into());
             }
             if value["id"] == json!(id) {
                 if let Some(error) = value.get("error") {
@@ -263,6 +351,7 @@ pub async fn open_text(url: &str) -> Result<(i32, String), String> {
         return Err("A Work bot is using the browser right now. Try again when it finishes.".into());
     }
     let mut page = page().await?;
+    if page.dialog_open { return Err("browser_dialog_requires_take_over".into()); }
     EPOCH.fetch_add(1, Ordering::SeqCst);
     page.navigate(url).await?;
     let text = page.eval("`${document.title}\\n${location.href}\\n\\n${document.body ? document.body.innerText : ''}`").await?;
@@ -279,15 +368,23 @@ pub struct View {
     pub width: u32,
     pub height: u32,
     pub taken_over: bool,
+    pub dialog_open: bool,
 }
 
 /// What the browser shows right now, for the Take over screen.
 pub async fn view() -> Result<View, String> {
     let mut page = page().await?;
-    let shot = page.call("Page.captureScreenshot", json!({ "format": "jpeg", "quality": 60 })).await?;
+    if page.dialog_open {
+        return Ok(View { url: page.url.clone(), title: page.title.clone(), image: String::new(), width: WIDTH, height: HEIGHT, taken_over: TAKEN_OVER.load(Ordering::SeqCst), dialog_open: true });
+    }
+    let shot = page.call("Page.captureScreenshot", json!({ "format": "jpeg", "quality": 60 })).await;
+    if page.dialog_open {
+        return Ok(View {url:page.url.clone(), title:page.title.clone(), image:String::new(), width:WIDTH, height:HEIGHT, taken_over:TAKEN_OVER.load(Ordering::SeqCst), dialog_open:true});
+    }
+    let shot = shot?;
     let url = page.eval("location.href").await?.as_str().unwrap_or_default().to_owned();
     let title = page.eval("document.title").await?.as_str().unwrap_or_default().to_owned();
-    Ok(View { url, title, image: shot["data"].as_str().unwrap_or_default().to_owned(), width: WIDTH, height: HEIGHT, taken_over: TAKEN_OVER.load(Ordering::SeqCst) })
+    Ok(View { url, title, image: shot["data"].as_str().unwrap_or_default().to_owned(), width: WIDTH, height: HEIGHT, taken_over: TAKEN_OVER.load(Ordering::SeqCst), dialog_open: false })
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -309,6 +406,16 @@ pub async fn input(input: Input) -> Result<View, String> {
     }
     let mut page = page().await?;
     EPOCH.fetch_add(1, Ordering::SeqCst);
+    if page.dialog_open {
+        if !matches!(&input, Input::Key { key } if key == "Escape") {
+            return Err("Use Escape in Take over to dismiss this page dialog.".into());
+        }
+        dismiss_dialog().await?;
+        DIALOG_OPEN.store(false, Ordering::SeqCst);
+        drop(page);
+        drop(ops);
+        return view().await;
+    }
     match input {
         Input::Click { x, y } => {
             for kind in ["mousePressed", "mouseReleased"] {

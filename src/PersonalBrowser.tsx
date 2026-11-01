@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { BrowserInput, BrowserView, PersonalLane } from './personalAssistant.ts';
 import './personal-browser.css';
 
-const KEYS: { key: 'Enter' | 'Tab' | 'Backspace'; label: string }[] = [{ key: 'Enter', label: 'Enter' }, { key: 'Tab', label: 'Tab' }, { key: 'Backspace', label: 'Backspace' }];
+const KEYS: { key: 'Enter' | 'Tab' | 'Backspace' | 'Escape'; label: string }[] = [{ key: 'Enter', label: 'Enter' }, { key: 'Tab', label: 'Tab' }, { key: 'Backspace', label: 'Backspace' }, {key: 'Escape', label: 'Escape'}];
 export type BrowserPresentation = 'popup' | 'expanded';
 export type PersonalBrowserProps = {
   lane: PersonalLane;
@@ -119,11 +119,12 @@ export function PersonalBrowser({ lane, onClose, presentation = 'expanded', onEx
       </div>
       {lane.offline && <p className="personal-browser-hint">Reconnect {lane.hostName} to view the page and use browser controls.</p>}
       {!lane.browserView && <p role="alert" className="personal-browser-alert">This host does not support the assistant browser.</p>}
+      {view?.dialogOpen && <p role="status" className="personal-browser-hint">A page dialog is waiting. Take over, then choose Escape to dismiss it. Bots leave the dialog alone.</p>}
       {error && <p role="alert" className="personal-browser-alert">{error}</p>}
       {view && !lane.offline ? (
         <div className="personal-browser-page">
-          <img className={takenOver ? 'is-taken' : ''} src={`data:image/jpeg;base64,${view.image}`} alt={view.title || 'Page in the assistant browser'} draggable={false} onClick={click}
-            onWheel={(event) => { if (takenOver && !locked) void send({ kind: 'scroll', deltaY: Math.round(event.deltaY) }); }} />
+          {view.image ? <img className={takenOver ? 'is-taken' : ''} src={`data:image/jpeg;base64,${view.image}`} alt={view.title || 'Page in the assistant browser'} draggable={false} onClick={click}
+            onWheel={(event) => { if (takenOver && !locked) void send({ kind: 'scroll', deltaY: Math.round(event.deltaY) }); }} /> : <p>A page dialog is waiting for you.</p>}
         </div>
       ) : !error && !lane.offline && lane.browserView ? <p className="personal-browser-hint">Loading the page…</p> : null}
       {takenOver && (

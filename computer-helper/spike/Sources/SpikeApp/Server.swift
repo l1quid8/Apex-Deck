@@ -234,7 +234,6 @@ final class Server {
       let tool = params["name"] as? String ?? "", toolArguments = params["arguments"] as? [String: Any] ?? [:]
       self.activeLock.lock()
       let brokered = BrowserBroker.routes(tool, toolArguments, active: state.usingBrowser)
-      if tool == "request_app", !brokered { state.usingBrowser = false }
       self.activeLock.unlock()
       if brokered { DispatchQueue.global().async { self.browserCall(id, tool, toolArguments, state: state, client: client) }; return }
       self.activeLock.lock()
@@ -260,6 +259,7 @@ final class Server {
           }
           let request = String(describing: id)
           let result = try self.call(params, id: request)
+          if tool == "request_app" { self.activeLock.lock(); state.usingBrowser = false; self.activeLock.unlock() }
           _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": result], fd: client, output: self.output,
             check: { try self.replyCheck(state, request) },
             invalidate: { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); state.latch.stop() })
@@ -300,7 +300,6 @@ final class Server {
         }
       }
       _ = try turns.identity(BrowserBroker.resource, token: token)
-      if !state.usingBrowser { activeLock.lock(); state.usingBrowser = true; activeLock.unlock() }
       let owner = try turns.requester(token)
       let result = try browser.call(tool == "request_app" ? "read_screen" : tool, tool == "request_app" ? [:] : args,
         turn: ["threadId": owner.0, "participantId": owner.1, "turnToken": token],
@@ -309,6 +308,7 @@ final class Server {
           self.send(message, control); close(control)
         }, check: { try self.replyCheck(state, request) })
       let reply = try BrowserBroker.content(result)
+      if tool == "request_app" || tool == "navigate" { activeLock.lock(); state.usingBrowser = true; activeLock.unlock() }
       if result["image"] != nil {
         _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": reply], fd: client, output: output,
           check: { try self.replyCheck(state, request) }, invalidate: { state.latch.stop() })

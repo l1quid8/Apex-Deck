@@ -26,7 +26,7 @@ const UNCERTAIN: &str = "delivery_uncertain; do not repeat it. Read the screen f
 
 // Page scripts are fixed here. Neither text nor names from a bot ever become code.
 const HIT: &str = "function(x,y){if(this.disabled||this.getAttribute('aria-disabled')==='true')return'disabled';const r=this.getRootNode();const e=(r.elementFromPoint?r:document).elementFromPoint(x,y);return e&&(this===e||this.contains(e))?'ok':'obscured'}";
-const FIELD: &str = "function(){const t=(this.type||'').toLowerCase(),a=(this.autocomplete||'').toLowerCase(),n=this.tagName;const editable=!this.disabled&&!this.readOnly&&(this.isContentEditable||n==='TEXTAREA'||(n==='INPUT'&&!['button','checkbox','color','file','hidden','image','radio','range','reset','submit'].includes(t)));return{editable,secure:t==='password'||a.includes('password')||a==='one-time-code'||a.startsWith('cc-')}}";
+const FIELD: &str = "function(){const t=(this.type||'').toLowerCase(),a=(this.autocomplete||'').toLowerCase(),n=this.tagName;const editable=!this.disabled&&!this.readOnly&&(this.isContentEditable||n==='TEXTAREA'||(n==='INPUT'&&!['button','checkbox','color','file','hidden','image','radio','range','reset','submit'].includes(t)));return{tag:n,editable,secure:t==='password'||a.includes('password')||a==='one-time-code'||a.startsWith('cc-')}}";
 const FOCUS: &str = "function(){this.focus();if(this.setSelectionRange){try{const n=this.value.length;this.setSelectionRange(n,n)}catch(e){}}}";
 const VALUE: &str = "function(){return this.value===undefined?this.innerText:this.value}";
 const ACTIVE: &str = "(()=>{let e=document.activeElement;while(e&&e.shadowRoot&&e.shadowRoot.activeElement)e=e.shadowRoot.activeElement;return e})()";
@@ -81,6 +81,7 @@ struct Reading {
     actionable: bool,
     /// True for a screenshot's reading, which `click_point` needs.
     pixels: bool,
+    complete: bool,
     elements: Vec<Element>,
 }
 
@@ -229,8 +230,8 @@ impl Page {
     }
 
     /// The element's middle in page pixels, brought into view if needed.
-    async fn middle(&mut self, backend: i64) -> Result<(f64, f64), String> {
-        let _ = self.call("DOM.scrollIntoViewIfNeeded", json!({ "backendNodeId": backend })).await;
+    async fn middle(&mut self, call: &Call<'_>, backend: i64) -> Result<(f64, f64), String> {
+        self.send(call, "DOM.scrollIntoViewIfNeeded", json!({ "backendNodeId": backend })).await?;
         let quads = self.call("DOM.getContentQuads", json!({ "backendNodeId": backend })).await.map_err(|_| "element_not_visible")?;
         let points: Vec<f64> = quads["quads"][0].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
         if points.len() != 8 {
@@ -264,6 +265,9 @@ impl Page {
         self.call("Accessibility.enable", json!({})).await?;
         let tree = self.call("Accessibility.getFullAXTree", json!({})).await?;
         let (mut elements, mut partial) = controls(tree["nodes"].as_array().map_or(&[], Vec::as_slice));
+        // Child-frame fields are not represented in the main-frame control list.
+        let frames = self.call("Page.getFrameTree", json!({})).await?;
+        partial |= frames["frameTree"]["childFrames"].as_array().is_some_and(|frames| !frames.is_empty());
         for element in elements.iter_mut().filter(|e| e.role == "textbox" || e.role == "combobox" || e.role == "searchbox" || e.role == "spinbutton") {
             // A field that can't be checked stays hidden.
             element.secure = match self.call("DOM.describeNode", json!({ "backendNodeId": element.backend })).await {
@@ -271,7 +275,7 @@ impl Page {
                 Err(_) => true,
             };
         }
-        let reading = Reading { id: snapshot_id(), target: self.target.clone(), document: self.document().await?, epoch: EPOCH.load(Ordering::SeqCst), actionable: holder, pixels, elements };
+        let reading = Reading { id: snapshot_id(), target: self.target.clone(), document: self.document().await?, epoch: EPOCH.load(Ordering::SeqCst), actionable: holder, pixels, complete: !partial, elements };
         let body = self.eval("document.body?document.body.innerText:''").await?;
         let mut body = body.as_str().unwrap_or_default().to_owned();
         if body.len() > MAX_TEXT {
@@ -346,6 +350,7 @@ pub(crate) async fn call(call: &Call<'_>, tool: &str, args: &Value) -> Result<Va
 
 async fn run(call: &Call<'_>, tool: &str, args: &Value, holder: bool) -> Result<Value, String> {
     let mut page = page().await.map_err(|_| "browser_unavailable")?;
+    if page.dialog_open { return Err("browser_dialog_requires_take_over".into()); }
     match tool {
         "read_screen" => page.observe(call, holder, false, "").await.map(|(text, _)| json!({ "text": text })),
         "list_windows" => {
@@ -354,6 +359,7 @@ async fn run(call: &Call<'_>, tool: &str, args: &Value, holder: bool) -> Result<
         }
         "get_screenshot" => {
             let (text, reading) = page.observe(call, holder, true, "").await?;
+            if !reading.complete { return Err("screenshot_requires_complete_reading".into()); }
             if reading.elements.iter().any(|e| e.secure) {
                 return Err("protected_field_on_page".into());
             }
@@ -399,7 +405,7 @@ async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &
         "click" => {
             let target = element(held, args)?;
             page.verify(&target).await?;
-            let (x, y) = page.middle(target.backend).await?;
+            let (x, y) = page.middle(call, target.backend).await?;
             let object = page.object(target.backend).await?;
             match page.on(&object, HIT, json!([{ "value": x }, { "value": y }])).await?.as_str() {
                 Some("ok") => {}
@@ -434,7 +440,9 @@ async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &
             call.gate()?;
             bump();
             page.on(&object, FOCUS, json!([])).await.map_err(|_| UNCERTAIN.to_owned())?;
-            // The focus can run page code, so the field is checked again before any text goes in.
+            // Page focus handlers can redirect input to a different (even secret) field.
+            let focused = page.on(&object, "function(){let a=this.ownerDocument.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;return a===this}", json!([])).await?;
+            if focused != true { return Err("focused_element_changed".into()); }
             page.field(&object).await?;
             page.send(call, "Input.insertText", json!({ "text": text })).await?;
             let value = page.on(&object, VALUE, json!([])).await.unwrap_or_default();
@@ -446,6 +454,13 @@ async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &
                 return Err("shortcut_not_supported_in_browser".into());
             }
             let (code, vk, text, modifiers) = key_event(key).ok_or("unsupported_key")?;
+            let active = page.call("Runtime.evaluate", json!({"expression": ACTIVE})).await?;
+            let object = active["result"]["objectId"].as_str().ok_or("focused_element_unavailable")?;
+            let focused = page.on(object, FIELD, json!([])).await?;
+            if matches!(focused["tag"].as_str(), Some("IFRAME" | "FRAME")) {
+                return Err("focused_frame_requires_take_over".into());
+            }
+            if focused["secure"] == true { return Err("secret_field_use_take_over".into()); }
             call.gate()?;
             bump();
             page.press(code, vk, text, modifiers).await.map_err(|_| UNCERTAIN.to_owned())?;
@@ -454,7 +469,7 @@ async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &
         "scroll" => {
             let target = element(held, args)?;
             let amount = number(args, "amount")?.clamp(1, 20) as f64 * 100.0;
-            let (x, y) = page.middle(target.backend).await?;
+            let (x, y) = page.middle(call, target.backend).await?;
             let (dx, dy) = match args["direction"].as_str() {
                 Some("up") => (0.0, -amount),
                 Some("down") => (0.0, amount),
@@ -554,10 +569,14 @@ mod tests {
                 let mut request = [0u8; 2048];
                 let n = socket.read(&mut request).await.unwrap_or(0);
                 let path = String::from_utf8_lossy(&request[..n]).split_whitespace().nth(1).unwrap_or("/").to_owned();
-                let body = if path.starts_with("/two") {
+                let body = if path.starts_with("/framed") {
+                    r#"<title>Framed page</title><iframe src=/ onload="this.contentDocument.querySelector('[aria-label=Secret]').focus()"></iframe>"#.to_owned()
+                } else if path.starts_with("/many") {
+                    format!("<title>Many controls</title>{}<input type=password value=hidden-secret style='position:fixed;top:0'>", "<button>Item</button>".repeat(310))
+                } else if path.starts_with("/two") {
                     format!("<title>Second</title><p>Reached {path}</p><button onclick=\"document.title='pressed'\" style='position:fixed;left:10px;top:10px;width:120px;height:40px'>Point</button><div style='height:4000px'></div><a href='#end'>Far link</a>")
                 } else {
-                    "<title>First</title><h1>Hello page</h1><input aria-label=Note><input aria-label=Secret type=password value=ucu-secret-marker><button onclick=\"document.title='clicked'\">Go</button><button onclick=\"document.title=confirm('sure?')?'accepted':'declined'\">Ask</button><form action=/two><input aria-label=Query name=q></form>".to_owned()
+                    "<title>First</title><h1>Hello page</h1><input aria-label=Note><input aria-label=Redirect onfocus=\"document.querySelector('[aria-label=Secret]').focus()\"><input aria-label=Secret type=password value=ucu-secret-marker><button onclick=\"document.title='clicked'\">Go</button><button onclick=\"document.title=confirm('sure?')?'accepted':'declined'\">Ask</button><form action=/two><input aria-label=Query name=q></form>".to_owned()
                 };
                 let reply = format!("HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
                 let _ = socket.write_all(reply.as_bytes()).await;
@@ -599,9 +618,18 @@ mod tests {
 
         let clicked = text(call(&bot, "click", &json!({ "snapshot": snapshot(&typed), "element": numbered(&typed, "Go") })).await.unwrap());
         assert!(clicked.contains("title: clicked"), "{clicked}");
-        let asked = text(call(&bot, "click", &json!({ "snapshot": snapshot(&clicked), "element": numbered(&clicked, "Ask") })).await.unwrap());
-        assert!(asked.contains("title: declined"), "a page dialog is declined instead of freezing the browser: {asked}");
-        let clicked = asked;
+        assert_eq!(call(&bot, "type_text", &json!({ "snapshot": snapshot(&clicked), "element": numbered(&clicked, "Redirect"), "text": "must-not-reach-secret" })).await.unwrap_err(), "focused_element_changed");
+        let clicked = text(call(&bot, "read_screen", &json!({})).await.unwrap());
+        let asked = call(&bot, "click", &json!({ "snapshot": snapshot(&clicked), "element": numbered(&clicked, "Ask") })).await;
+        if let Ok(reply) = asked { assert!(!text(reply).contains("title: declined"), "bots must not dismiss page dialogs"); }
+
+        assert_eq!(call(&bot, "read_screen", &json!({})).await.unwrap_err(), "browser_dialog_requires_take_over");
+        let dialog = super::super::take_over(true).await.unwrap();
+        assert!(dialog.dialog_open);
+        super::super::input(super::super::Input::Key {key: "Escape".into()}).await.unwrap();
+        super::super::take_over(false).await.unwrap();
+        let clicked = text(call(&bot, "read_screen", &json!({})).await.unwrap());
+        assert!(clicked.contains("title: declined"), "only the human Escape dismissed the dialog");
         assert_eq!(call(&bot, "type_text", &json!({ "snapshot": snapshot(&clicked), "element": numbered(&clicked, "Secret"), "text": "x" })).await.unwrap_err(), "secret_field_use_take_over");
         assert_eq!(call(&bot, "press_key", &json!({ "snapshot": snapshot(&clicked), "key": "Cmd-T" })).await.unwrap_err(), "shortcut_not_supported_in_browser");
         assert_eq!(call(&bot, "get_screenshot", &json!({})).await.unwrap_err(), "protected_field_on_page");
@@ -642,6 +670,14 @@ mod tests {
         assert!(super::super::open_text(&format!("{address}/")).await.unwrap_err().contains("Work bot"));
         release("bot");
         assert!(super::super::open_text(&format!("{address}/")).await.unwrap().1.contains("Hello page"));
+
+        let many = text(call(&bot, "navigate", &json!({"url":format!("{address}/many")})).await.unwrap());
+        assert!(many.contains("reading: partial"));
+        assert_eq!(call(&bot, "get_screenshot", &json!({})).await.unwrap_err(), "screenshot_requires_complete_reading");
+
+        let framed = text(call(&bot, "navigate", &json!({"url":format!("{address}/framed")})).await.unwrap());
+        assert_eq!(call(&bot, "press_key", &json!({"snapshot":snapshot(&framed),"key":"Return"})).await.unwrap_err(), "focused_frame_requires_take_over");
+        assert_eq!(call(&bot, "get_screenshot", &json!({})).await.unwrap_err(), "screenshot_requires_complete_reading");
 
         // Stop mid-turn.
         let stopped = || false;
@@ -737,7 +773,7 @@ mod tests {
 
     #[test]
     fn a_reading_only_acts_on_its_own_document_and_moment() {
-        let reading = Reading { id: "s".into(), target: "t".into(), document: "d".into(), epoch: 7, actionable: true, pixels: false, elements: vec![] };
+        let reading = Reading { id: "s".into(), target: "t".into(), document: "d".into(), epoch: 7, actionable: true, pixels: false, complete: true, elements: vec![] };
         assert!(reading.current("s", "t", "d", 7).is_ok());
         assert_eq!(reading.current("old", "t", "d", 7).unwrap_err(), "fresh_snapshot_required");
         assert_eq!(reading.current("s", "other", "d", 7).unwrap_err(), "fresh_snapshot_required");

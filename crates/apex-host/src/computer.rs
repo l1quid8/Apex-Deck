@@ -60,10 +60,16 @@ impl BrowserLink {
             cancelled.store(true, Ordering::SeqCst);
         }
     }
-    async fn run(self: Arc<Self>, call: String, tool: String, arguments: Value) {
-        use tokio::io::AsyncWriteExt;
+    fn start(self: &Arc<Self>, call: String, tool: String, arguments: Value) {
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.calls.lock().unwrap().insert(call.clone(), cancelled.clone());
+        let mut calls = self.calls.lock().unwrap();
+        if calls.contains_key(&call) { return; }
+        calls.insert(call.clone(), cancelled.clone());
+        drop(calls);
+        tokio::spawn(self.clone().run(call, tool, arguments, cancelled));
+    }
+    async fn run(self: Arc<Self>, call: String, tool: String, arguments: Value, cancelled: Arc<AtomicBool>) {
+        use tokio::io::AsyncWriteExt;
         let live = {
             let (link, cancelled) = (self.clone(), cancelled.clone());
             move || link.live(&cancelled)
@@ -441,7 +447,7 @@ impl TurnLifecycleHook for TurnHook {
                                 host.use_assistant_browser();
                             }
                             let tool = p["tool"].as_str().unwrap_or_default().to_owned();
-                            tokio::spawn(link.clone().run(call, tool, p["arguments"].clone()));
+                            link.start(call, tool, p["arguments"].clone());
                         }
                     }
                 });
@@ -726,12 +732,20 @@ mod tests {
         let (writer, reader) = tokio::net::UnixStream::pair().unwrap();
         let link = BrowserLink { computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
         let link = Arc::new(link);
-        link.clone().run("call-1".into(), "Runtime.evaluate".into(), json!({})).await;
+        link.start("call-1".into(), "Runtime.evaluate".into(), json!({}));
         let mut line = String::new();
-        tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(reader), &mut line).await.unwrap();
+        let mut reader = tokio::io::BufReader::new(reader);
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await.unwrap();
         let reply: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(reply["method"], "unified/browser-result");
         assert_eq!(reply["params"], json!({"callId":"call-1","turnToken":"token","error":"unknown_tool"}));
+        // Cancellation in the same scheduling turn must be registered before the task starts.
+        link.start("call-2".into(), "read_screen".into(), json!({}));
+        link.cancel("call-2");
+        line.clear();
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await.unwrap();
+        let cancelled: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(cancelled["params"]["error"], "turn_unregistered_or_ended");
         let running = AtomicBool::new(false);
         assert!(link.live(&running));
         assert!(!link.live(&AtomicBool::new(true)), "a cancelled call stops");

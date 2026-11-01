@@ -287,8 +287,8 @@ The answer for websites while the human keeps working is the browser Deck alread
 
 **Limits.**
 - One shared page. A link that opens a new tab isn't followed, and the bot stays on the page it had.
-- Controls inside iframes aren't listed. Password checks don't see them either, so a screenshot can show a framed login, though the field itself still shows dots.
-- A page dialog gets the cautious answer, which is Cancel. Bots don't see it happened.
+- Controls inside iframes aren't listed. Readings are marked partial, screenshots are refused when frames or the control cap prevent complete checking, and keys refuse unresolved frame focus.
+- Page dialogs are observed without answering them. Bots receive a takeover-required refusal. The existing Take over view shows the pending-dialog state; a human can choose Escape to dismiss it. The CDP dialog session remains connected so observation cannot silently cancel a confirmation.
 - Shortcuts such as Cmd-T don't exist here. `navigate` replaces the address bar.
 - Sites that detect headless browsers may behave differently.
 - A bot allowed here can act on every site signed in through Take over, so the permission popup says so.

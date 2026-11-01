@@ -132,7 +132,7 @@ export type PersonalLane = {
   browserInput?(input: BrowserInput): Promise<BrowserView>;
 };
 export type ConnectorState = { kind: "github" | "gmail" | "drive" | "browser"; connected: boolean; keys: string[] };
-export type BrowserView = { url: string; title: string; image: string; width: number; height: number; takenOver: boolean };
+export type BrowserView = { url: string; title: string; image: string; width: number; height: number; takenOver: boolean; dialogOpen?: boolean };
 export type BrowserInput = { kind: "click"; x: number; y: number } | { kind: "type"; text: string } | { kind: "key"; key: "Enter" | "Backspace" | "Tab" | "Escape" | "ArrowDown" | "ArrowUp" } | { kind: "scroll"; deltaY: number } | { kind: "navigate"; url: string } | { kind: "back" };
 /** One operation the assistant's host hands this Mac to run. */
 export type RemoteOp = { taskId: string; opId: string; operation: { tool: string; host: string; cwd: string; argv: string[] } };
