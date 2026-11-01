@@ -16,6 +16,7 @@ import { DEFAULT_LANDING_TEXTURE, DEFAULT_SETTINGS, effectiveLandingTexture, rea
 import { DEFAULT_APPEARANCE } from "./themes";
 import { useAppearance, useSystemDark } from "./useAppearance";
 import { useAppearanceDraft } from "./useAppearanceDraft";
+import { AppearanceDraftBar } from "./AppearanceDraftBar";
 import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { ArtifactsHost } from "./ArtifactsPanel";
@@ -370,6 +371,18 @@ export function App() {
   renameNote.current ??= renameNotes(toast);
   const systemDark = useSystemDark();
   const appearanceStudio = useAppearanceDraft(settings, setSettings, toast, systemDark);
+  const resumeAppearance = useCallback(() => {
+    const count = appearanceStudio.pending.length;
+    setSettingsOpen("appearance");
+    toast(`Draft restored. ${count} change${count === 1 ? "" : "s"} not applied.`);
+    // Settings loads lazily, so wait for the status row before moving focus to it.
+    const focusStatus = (tries: number) => requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(".studio-pending-btn");
+      if (row) row.focus();
+      else if (tries > 0) focusStatus(tries - 1);
+    });
+    focusStatus(120);
+  }, [appearanceStudio.pending.length, toast]);
   const onCopyRenamed = useCallback((seq: number, outcome: CopyOutcome) => renameNote.current?.heard(seq, outcome), []);
   /** Agents whose name changed from `before` to `after`, for every thread to rename its copy of. */
   const noteRenames = (before: ParticipantConfig[], after: ParticipantConfig[]) => {
@@ -2599,6 +2612,7 @@ export function App() {
       <UpdateNotices updates={updates} onRestart={restartToUpdate} />
       {newChatOpen && <NewChatDialog chats={chats} onClose={() => setNewChatOpen(false)} onStarted={(row) => { setNewChatOpen(false); setMainView({kind:"workspace"}); setCreatingAssistant(false); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
+      {appearanceStudio.pending.length > 0 && settingsOpen !== "appearance" && <AppearanceDraftBar studio={appearanceStudio} settings={settings} systemDark={systemDark} onResume={resumeAppearance} />}
       <div className={`body${sidePanelFull && !chatShown ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
@@ -2646,6 +2660,7 @@ export function App() {
             settingsOpen={settingsOpen !== null && settingsOpen !== "appearance"}
             onOpenAppearance={() => setSettingsOpen((open) => open === "appearance" ? null : "appearance")}
             onOpenSettings={() => setSettingsOpen((open) => open ? null : "general")}
+            appearanceDraftCount={settingsOpen ? 0 : appearanceStudio.pending.length}
             onRestore={restoreArchived}
             style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}
           />

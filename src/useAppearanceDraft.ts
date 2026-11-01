@@ -23,6 +23,17 @@ function restore(now: AppSettings, earlier: AppSettings): AppSettings {
   return next;
 }
 
+/** A button can leave with what it did (the bar, a toast's Undo), so nobody is left focused on nothing. */
+export function settleFocus(): void {
+  requestAnimationFrame(() => {
+    if (document.activeElement && document.activeElement !== document.body && document.activeElement.getBoundingClientRect().width > 0) return;
+    for (const place of [".studio-editor", ".appearance-draft-bar button", ".settings-main", '.rail-controls [aria-label="Settings"]', ".titlebar button"]) {
+      const target = document.querySelector<HTMLElement>(place);
+      if (target) { target.focus(); return; }
+    }
+  });
+}
+
 export interface AppearanceStudioState {
   draft: AppearanceDraft;
   pending: PendingChange[];
@@ -47,8 +58,7 @@ export function useAppearanceDraft(settings: AppSettings, setSettings: Dispatch<
 
   const undoTo = useCallback((earlier: AppSettings) => () => {
     setSettings((now) => restore(now, earlier));
-    // The Undo button leaves with its toast, so nobody is left focused on nothing.
-    requestAnimationFrame(() => { if (document.activeElement === document.body) document.querySelector<HTMLElement>(".studio-editor, .appearance-draft-bar, .rail")?.focus(); });
+    settleFocus();
   }, [setSettings]);
 
   return {

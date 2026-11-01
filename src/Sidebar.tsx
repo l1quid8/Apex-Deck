@@ -61,6 +61,8 @@ export interface ProjectSidebarProps {
   appearanceOpen: boolean;
   settingsOpen: boolean;
   onOpenAppearance(): void;
+  /** Appearance changes waiting for Apply, shown on Settings while it's closed. */
+  appearanceDraftCount?: number;
   onOpenSettings(): void;
   onRestore(pane: Pane): void;
   /** The Chats section, drawn above Projects. */
@@ -365,8 +367,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         <button className={props.appearanceOpen ? "icon active" : "icon"} onClick={props.onOpenAppearance} aria-label="Appearance" title="Appearance" aria-pressed={props.appearanceOpen}>
           <DeckIcon name="moon" />
         </button>
-        <button className={props.settingsOpen ? "icon active" : "icon"} onClick={props.onOpenSettings} aria-label="Settings" title="Settings (⌘,)" aria-pressed={props.settingsOpen}>
+        <button className={props.settingsOpen ? "icon active" : "icon"} onClick={props.onOpenSettings} aria-label={props.appearanceDraftCount ? `Settings, ${props.appearanceDraftCount} unapplied appearance change${props.appearanceDraftCount === 1 ? "" : "s"}` : "Settings"} title="Settings (⌘,)" aria-pressed={props.settingsOpen}>
           <DeckIcon name="settings" />
+          {props.appearanceDraftCount ? <span className="appearance-draft-count" aria-hidden="true">{props.appearanceDraftCount}</span> : null}
         </button>
       </div>
       {menu && <MenuList id={`${menu.kind}:${menu.id}`} entries={menuEntries()} anchor={menu.anchor} opener={menu.opener}

@@ -341,7 +341,7 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
                 <button key={s.id} className={s.id===resolvedSection ? "active nav-item" : "nav-item"} aria-current={s.id===resolvedSection ? "page" : undefined} onClick={()=>onSection(s.id as SettingsSection)} title={s.purpose}>
                   <span className="nav-icon" aria-hidden="true">{ICONS[s.id] ?? '•'}</span>
                   <span className="nav-label">{s.label}</span>
-                </button>
+                {s.id==='appearance' && appearanceStudio.pending.length>0 && <span className="appearance-draft-count" aria-label={`${appearanceStudio.pending.length} unapplied`}>{appearanceStudio.pending.length}</span>}</button>
               ))}
             </div>
           </details>

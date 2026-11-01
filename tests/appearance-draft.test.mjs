@@ -211,3 +211,9 @@ test('import of a preset named like a built-in keeps both', () => {
   const s = draft.importPreset(base(), skin('Clay Warm', tideValues));
   assert.deepEqual(s.appearance.saved.map(p => p.name), ['Clay Warm 2']);
 });
+test('a draft keeps the applied object, so pop-outs see nothing until Apply', () => {
+  const s = base();
+  const edited = draft.storeDraft(s, { ...draft.workingDraft(s), values: { ...clayValues, radius: 20 } });
+  assert.equal(edited.appearance, s.appearance);
+  assert.notEqual(draft.applyDraft(edited).appearance, s.appearance);
+});

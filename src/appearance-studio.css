@@ -263,6 +263,20 @@ dialog.studio-dialog label { display: block; margin-top: 10px; font-weight: 500;
 @media (forced-colors: active) { .studio-preset-card.studio-on, .studio-seg-item.studio-on { outline: 2px solid Highlight; } }
 }
 
+/* The draft bar lives in Deck, outside the neutral page, so it wears the theme. */
+.appearance-draft-bar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 14px; min-width: 0; color: var(--text); background: var(--panel-2); border-bottom: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--warn, #f59e0b); }
+.appearance-draft-copy { min-width: 0; }
+.appearance-draft-copy strong { font-weight: 600; }
+.appearance-draft-copy p { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.appearance-draft-actions { display: flex; gap: 6px; flex: none; }
+.appearance-draft-actions .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.appearance-draft-count { min-width: 17px; height: 17px; margin-left: 6px; padding: 0 5px; display: inline-grid; place-items: center; border-radius: 9px; font-size: 11px; font-weight: 700; line-height: 1; background: var(--warn, #f59e0b); color: #1d1e20; }
+.rail-controls .appearance-draft-count { margin-left: 2px; }
+@media (max-width: 820px) {
+  .appearance-draft-bar { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 14px; }
+  .appearance-draft-actions button { flex: 1; min-height: 44px; min-width: 0; }
+}
+
 /* Inside the preview frame. Layout only: every color comes from the theme. */
 html:has(.appearance-preview-page), html:has(.appearance-preview-page) body, html:has(.appearance-preview-page) #root { height: 100%; overflow: hidden; }
 .appearance-preview-page { height: 100%; min-height: 0; display: flex; font-size: 13px; }
