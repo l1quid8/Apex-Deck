@@ -189,6 +189,7 @@ Muck did not start this, so Jigga built it. Run through the real tool path on a 
 Found while building:
 
 - **A covered page can go blind.** A page reloaded while Chromium reports it `hidden` has no web tree, and `AXManualAccessibility`, `AXEnhancedUserInterface`, `AXMain` and `AXRaise` don't bring it back. The bot gets `web_content_unavailable`. A page opened by navigation in such a window is expected to do the same, though that wasn't reached because Return missed. The earlier 7 of 11 key result and the new tab task were on windows that were at least partly visible, or were not recorded either way.
+- **A fresh window can start blind too.** The last run opened a new window fully covered from its first frame and got `web_content_unavailable` on `request_app`. Earlier fresh windows read fine, so the trigger is timing against Chromium marking the page hidden, and it isn't controlled.
 - **`AXConfirm`** did nothing on the Chromium address bar, and the bar doesn't advertise it.
 - **No suggestion list.** Chromium exposed no suggestion rows to press in place of Return on a covered window.
 - **A covered page reports new values late**, over 0.4 seconds, so the final read-back waits up to 2 seconds.
