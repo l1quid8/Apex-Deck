@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CATALOG_ENTRIES, CATALOG_SECTIONS, searchSettings, resolveSectionId, groupSections } from '../src/settingsCatalog.ts';
+import { CATALOG_ENTRIES, CATALOG_SECTIONS, searchSettings, resolveSectionId, groupSections , STUDIO_ANCHORS} from '../src/settingsCatalog.ts';
 
 test('catalog preserves every existing feature from README coverage', () => {
   // Representative coverage from mockup README
@@ -63,4 +63,15 @@ test('every entry has required fields and scope label', () => {
     assert.ok(e.scopeLabel);
     assert.ok(e.anchorId);
   }
+});
+
+test('every Appearance catalog entry maps to a real control', () => {
+  for (const item of CATALOG_ENTRIES.filter(i => i.section === 'appearance')) assert.ok(STUDIO_ANCHORS[item.anchorId], item.id);
+});
+test('labels use the new words', () => {
+  for (const item of CATALOG_ENTRIES) assert.doesNotMatch(item.label, /\bskins?\b/i);
+});
+test('new Studio words can be searched, and skin still finds it', () => {
+  const visible = new Set(['appearance']);
+  for (const word of ['preset', 'reply', 'panel edges', 'skin']) assert.ok(searchSettings(word, CATALOG_ENTRIES, visible).some(r => r.section === 'appearance'), word);
 });

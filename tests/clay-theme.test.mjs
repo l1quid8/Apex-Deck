@@ -84,7 +84,9 @@ const mix = (agent, text, p) => "#" + hexToRgb(agent).map((v, i) => Math.round(v
 // The token values clay-theme.css must carry. Panel/raised expand the RGB
 // triplets so contrast can be checked as solid colors.
 const MODES = {
-  ember: { light: false, ink: "#04211d", bg: "#000000", panel: "#101010", raised: "#181818", code: "#101010", selected: "#181818", human: "#181818", text: "#f2f2f2", muted: "#9a9a9a", muted2: "#9a9a9a", warn: "#f59e0b", danger: "#f87171", success: "#9dc79b", edge: "#2a2a2a", line: "#2a2a2a" },
+  ember: { light: false, ink: "#2a1e16", bg: "#262421", panel: "#1e1c1a", raised: "#302d29", code: "#1b1917", selected: "#3a3630", human: "#38332d", text: "#efe9e0", muted: "#c2b9ad", muted2: "#ada294", warn: "#e6b562", danger: "#f0907f", success: "#9dc79b", edge: "#544e46", line: "#3b3732" },
+  black: { light: false, ink: "#04211d", bg: "#000000", panel: "#101010", raised: "#181818", code: "#101010", selected: "#181818", human: "#181818", text: "#f2f2f2", muted: "#9a9a9a", muted2: "#9a9a9a", warn: "#f59e0b", danger: "#f87171", success: "#9dc79b", edge: "#3f3f3f", line: "#2a2a2a" },
+  blackLight: { light: true, ink: "#ffffff", bg: "#f7f7f6", panel: "#eeeeec", raised: "#ffffff", code: "#eeeeec", selected: "#e4e4e2", human: "#eaeae8", text: "#1c1c1c", muted: "#555555", muted2: "#636363", warn: "#865800", danger: "#ad3626", success: "#356b3a", edge: "#bdbdbb", line: "#dddddc" },
   paper: { light: true, ink: "#fffaf3", bg: "#f8f5ee", panel: "#f0ece3", raised: "#fffdf9", code: "#f0ebe1", selected: "#e5dfd2", human: "#ebe4d7", text: "#29251f", muted: "#58514a", muted2: "#6a6258", warn: "#865800", danger: "#ad3626", success: "#356b3a", edge: "#c9c0b1", line: "#e1dacd" },
 };
 
@@ -239,4 +241,17 @@ test("Clay reshapes the layout toward the mock, scoped and CSS-only", () => {
   for (const [, selector] of structure.matchAll(/^([^\s/*@}][^{]*)\{/gm)) {
     assert.match(selector, /data-deck-theme="clay"/, `unscoped selector: ${selector.trim()}`);
   }
+});
+
+test('Warm is the default and Black is opt-in', () => {
+  const css = readFileSync(new URL('../src/clay-theme.css', import.meta.url), 'utf8');
+  assert.match(css, /:root\[data-deck-theme="clay"\] \{[^}]*--deck-bg: #262421/);
+  assert.match(css, /\[data-deck-theme="clay"\]\[data-deck-palette="black"\] \{[^}]*--deck-bg: #000000/);
+  assert.match(css, /\[data-deck-light="true"\]\[data-deck-theme="clay"\]\[data-deck-palette="black"\] \{[^}]*--deck-bg: #f7f7f6/);
+});
+test('Reply and edge settings reach every theme', () => {
+  const css = readFileSync(new URL('../src/clay-theme.css', import.meta.url), 'utf8') + readFileSync(new URL('../src/glass-theme.css', import.meta.url), 'utf8');
+  assert.match(css, /\[data-deck-reply="serif"\]/);
+  assert.match(css, /\[data-deck-reply="sans"\]/);
+  assert.match(css, /\[data-deck-edges="strong"\]/);
 });

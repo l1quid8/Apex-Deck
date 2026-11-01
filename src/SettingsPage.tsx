@@ -1,9 +1,8 @@
 // Settings: reorganized for usability - grouped nav, search, true black palette, explicit Light/Dark/System
-import { ChipStylePicker } from "./ChipStylePicker";
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
-import { AppearanceSettings } from "./AppearanceSettings";
-import { defaultAppearanceSettings, type ColorMode } from "./themes";
-import { effectiveAppearanceValues as effectiveAppearanceValuesFn, useSystemDark } from "./useAppearance";
+import { AppearanceStudio } from "./AppearanceStudio";
+import type { AppearanceStudioState } from "./useAppearanceDraft";
+import { useSystemDark } from "./useAppearance";
 import { CATALOG_SECTIONS, CATALOG_ENTRIES, groupSections, searchSettings as catalogSearch, resolveSectionId, type SettingsSectionId, type CatalogEntry } from "./settingsCatalog";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Backend, KeyState } from "./backend";
@@ -12,7 +11,7 @@ import { providerEnabled } from "./providers";
 import { CALL_VOICES, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, REALTIME_MODELS, REALTIME_VOICES, defaultVoiceOf, readVoiceSettings, realtimeVoiceLabel } from "./voice/settings";
 import { VoiceSampleButton } from "./voice/VoiceSampleButton";
 import { CALL_LOOKS, voiceLabel } from "./voice/callView";
-import { DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
+import { FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
 import { LegacyImportPanel } from "./LegacyImportScreen";
 import { ModelGatewaySettings } from "./ModelGatewaySettings";
@@ -49,8 +48,7 @@ const LEGACY_TO_NEW: Record<string, SettingsSectionId> = {
 
 const LEADS: Partial<Record<SettingsSectionId, string>> = {
   general: "The everyday details that make Deck yours. Artifact handling and code-block Run buttons live here; other groups live nearby.",
-  appearance: "A familiar workspace, in the light that suits you. Light, Dark, and System are explicit and separate from your skin.",
-  calls: "Choose how you talk with your agents. Local and GPT-Live keep their preferences separately.",
+    calls: "Choose how you talk with your agents. Local and GPT-Live keep their preferences separately.",
   threads: "A starting point for the next conversation. Existing threads keep their own settings.",
   terminal: "Make the terminal comfortable to work in. Open terminals update straight away.",
   models: "Your models, connected and ready when you need them. Choose what appears when adding agents.",
@@ -86,6 +84,7 @@ interface Props {
   onSection: (section: SettingsSection) => void;
   settings: AppSettings;
   onChange: (settings: AppSettings) => void;
+  appearanceStudio: AppearanceStudioState;
   agents: AgentInfo[];
   profiles: ParticipantConfig[];
   backend: Backend;
@@ -113,7 +112,7 @@ function ScopeBadge({ label }: { label: string }) {
   return <span className="settings-scope-badge">{label}</span>;
 }
 
-export function SettingsPage({ section, onSection, settings, onChange, agents, profiles, backend, updates = null, onRestartToUpdate, onClose }: Props) {
+export function SettingsPage({ section, onSection, settings, onChange, appearanceStudio, agents, profiles, backend, updates = null, onRestartToUpdate, onClose }: Props) {
   const systemDark = useSystemDark();
   const navFocusRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
@@ -149,6 +148,8 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
   const grouped = useMemo(() => groupSections().map(g=>({ ...g, sections: g.sections.filter(s=>visibleSections.has(s.id))})).filter(g=>g.sections.length>0), [visibleSections]);
 
   useEffect(() => { navFocusRef.current?.querySelector<HTMLButtonElement>("button.active")?.focus(); }, [resolvedSection]);
+  // Arriving at a section means leaving the results, or the page would stay hidden behind them.
+  useEffect(() => { setSearchQuery(''); setSearchResults([]); setFocusedResultIdx(-1); }, [resolvedSection]);
 
   // Keyboard: Escape clears search before closing, Cmd+F focuses search, Arrow nav for results
   useEffect(() => {
@@ -318,7 +319,10 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
   const currentSec = CATALOG_SECTIONS.find(s=>s.id===resolvedSection) ?? CATALOG_SECTIONS[0];
   const index = CATALOG_SECTIONS.findIndex(s=>s.id===resolvedSection);
 
-  return <div className="settings settings-v2">
+  const searching = searchResults.length>0 || Boolean(searchQuery.trim());
+  const studio = resolvedSection==='appearance' && !searching;
+
+  return <div className={`settings settings-v2${resolvedSection==='appearance' ? ' appearance-neutral' : ''}`}>
     <aside className="settings-nav settings-nav-v2">
       <div className="settings-nav-head">
         <h1>Settings</h1>
@@ -339,7 +343,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
                 <button key={s.id} className={s.id===resolvedSection ? "active nav-item" : "nav-item"} aria-current={s.id===resolvedSection ? "page" : undefined} onClick={()=>onSection(s.id as SettingsSection)} title={s.purpose}>
                   <span className="nav-icon" aria-hidden="true">{ICONS[s.id] ?? '•'}</span>
                   <span className="nav-label">{s.label}</span>
-                </button>
+                {s.id==='appearance' && appearanceStudio.pending.length>0 && <span className="appearance-draft-count" aria-label={`${appearanceStudio.pending.length} unapplied`}>{appearanceStudio.pending.length}</span>}</button>
               ))}
             </div>
           </details>
@@ -350,11 +354,11 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
           {saveState==='saving' ? 'Saving…' : saveState==='saved' ? '✓ Saved' : saveState==='error' ? 'Could not save' : ''}
         </span>
         <span><kbd>⌘,</kbd> opens · <kbd>Esc</kbd> closes</span>
-        <span>Changes save as you make them.</span>
+        <span>{resolvedSection==='appearance' ? 'Appearance changes wait for Apply.' : 'Changes save as you make them.'}</span>
       </div>
     </aside>
-    <main className="settings-main" ref={mainRef} tabIndex={-1}>
-      <div className="settings-column">
+    <main className={`settings-main${studio ? ' studio-main' : ''}`} ref={mainRef} tabIndex={-1}>
+      {studio ? <AppearanceStudio studio={appearanceStudio} settings={settings} systemDark={systemDark} highlightId={highlightId} onHighlightUsed={()=>setHighlightId(null)} /> : <div className="settings-column">
         {searchResults.length>0 || searchQuery.trim() ? (
           <div className="settings-search-results">
             <div className="settings-head">
@@ -381,7 +385,6 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
             </header>
 
             {resolvedSection==='general' && <General settings={settings} onChange={onChange} backend={backend} updates={updates} onRestartToUpdate={onRestartToUpdate} onSection={onSection} />}
-            {resolvedSection==='appearance' && <AppearanceSection settings={settings} onChange={onChange} systemDark={systemDark} backend={backend} highlightId={highlightId} />}
             {resolvedSection==='computers' && backend.hosts && <HostsSection backend={backend} />}
             {resolvedSection==='phones' && backend.hosts && <PhonesSection backend={backend} />}
             {resolvedSection==='computer' && <ComputerSection backend={backend} highlightId={highlightId} />}
@@ -400,7 +403,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
             </div>
           </>
         )}
-      </div>
+      </div>}
     </main>
   </div>;
 }
@@ -428,69 +431,8 @@ function General({ settings, onChange, backend: _backend, updates: _updates, onR
     <div className="settings-card">
       <Row label="Voice & call settings" note="All voice choices live in one place."><button className="link-btn" onClick={()=>onSection('calls')}>Open Calls</button></Row>
       <Row label="Saved work & storage" note="Locations, older records and maintenance."><button className="link-btn" onClick={()=>onSection('data')}>Open Data & storage</button></Row>
-      <Row label="Appearance mode" note="Light, Dark, or follow the system."><button className="link-btn" onClick={()=>onSection('appearance')}>Open Appearance</button></Row>
+      <Row label="Appearance mode" note="Light, Dark or follow the system, plus theme and presets."><button className="link-btn" onClick={()=>onSection('appearance')}>Open Appearance</button></Row>
     </div>
-  </>;
-}
-
-function AppearanceSection({ settings, onChange, systemDark, backend: _backend, highlightId }: { settings: AppSettings; onChange: (s:AppSettings)=>void; systemDark: boolean; backend: Backend; highlightId: string | null }) {
-  const value = settings.appearance ?? defaultAppearanceSettings();
-  const effectiveValues = effectiveAppearanceValuesFn(value, systemDark);
-  const colorMode: ColorMode = value.colorMode ?? (value.current.appearance.light ? 'light' as ColorMode : 'dark' as ColorMode);
-
-  const setColorMode = (mode: ColorMode) => {
-    onChange({ ...settings, appearance: { ...value, colorMode: mode } });
-  };
-
-  return <>
-    <div className="section-title">Appearance mode</div>
-    <div className="settings-card appearance-mode-card" id="mode">
-      <div className="mode-grid" role="group" aria-label="Appearance mode">
-        {([
-          { id: 'light' as ColorMode, label: 'Light', desc: 'Bright surfaces' },
-          { id: 'dark' as ColorMode, label: 'Dark', desc: 'True black canvas' },
-          { id: 'system' as ColorMode, label: 'System', desc: systemDark ? 'Following OS: Dark' : 'Following OS: Light' },
-        ] as const).map(m=>(
-          <button key={m.id} className={`mode-card ${colorMode===m.id ? 'selected' : ''}`} aria-pressed={colorMode===m.id} onClick={()=>setColorMode(m.id)}>
-            <div className={`mini-preview ${m.id==='dark' || (m.id==='system' && systemDark) ? 'night' : ''} ${m.id==='system' ? 'auto' : ''}`} aria-hidden="true">
-              <div className="mini-side"><i/><i/><i/></div>
-              <div className="mini-main"><i/><i/><b/></div>
-            </div>
-            <div className="mode-name"><strong>{m.label}</strong><span className="tick">{colorMode===m.id ? '✓' : ''}</span></div>
-            <small>{m.desc}</small>
-          </button>
-        ))}
-      </div>
-      <p className="settings-note">System follows your OS appearance. Deck updates live — all open windows, including pop-outs, agree.</p>
-    </div>
-
-    <div className="section-title">Agent chips & details</div>
-    <div className="settings-card" id="chips">
-      <div className={`settings-row chip-style-row ${highlightId==='chips' ? 'search-highlight' : ''}`} id="chip-style-row">
-        <div className="settings-label"><strong>Chip style</strong><small>Applies to all chats, including popped-out windows. Hover a name to preview it; click to use it.</small></div>
-        <ChipStylePicker value={settings.botChips.style ?? "classic"} onChange={(style)=>onChange({ ...settings, botChips: { ...settings.botChips, style } })} />
-      </div>
-      <Row id="effort" label="Show effort" note="How hard the bot thinks, such as high." highlight={highlightId==='effort'}>
-        <input type="checkbox" aria-label="Show effort" checked={settings.botChips.effort} onChange={e=>onChange({ ...settings, botChips: { ...settings.botChips, effort: e.target.checked } })} />
-      </Row>
-      <Row id="usage" label="Show usage" note="Context and plan left. A bot running low still shows its warning." highlight={highlightId==='usage'}>
-        <input type="checkbox" aria-label="Show usage" checked={settings.botChips.usage} onChange={e=>onChange({ ...settings, botChips: { ...settings.botChips, usage: e.target.checked } })} />
-      </Row>
-    </div>
-
-    <div className="section-title">Skins & surfaces</div>
-    <AppearanceSettings value={value} onChange={(appearance)=>onChange({ ...settings, appearance })} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onLandingTexture={(landingTexture)=>onChange({ ...settings, landingTexture })} />
-
-    <Advanced title="Advanced appearance: reading density" id="density">
-      <Row label="Reading density" note="How much room rows and messages get." highlight={highlightId==='density'}>
-        <div className="inline-options">
-          <button aria-pressed={effectiveValues.density===0.72} onClick={()=>onChange({ ...settings, appearance: { ...value, current: { ...value.current, appearance: { ...value.current.appearance, density: 0.72 } } } })}>Compact</button>
-          <button aria-pressed={effectiveValues.density===1} onClick={()=>onChange({ ...settings, appearance: { ...value, current: { ...value.current, appearance: { ...value.current.appearance, density: 1 } } } })}>Comfortable</button>
-        </div>
-      </Row>
-    </Advanced>
-
-    <p className="settings-note">All existing appearance controls are retained above. Skin choice never overrides your Light/Dark/System selection. Imported skins keep their own light hint.</p>
   </>;
 }
 

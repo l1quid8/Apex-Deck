@@ -14,7 +14,9 @@ import { connection, statusWords } from "./connection";
 import { SettingsPage, type SettingsSection } from "./lazyViews";
 import { DEFAULT_LANDING_TEXTURE, DEFAULT_SETTINGS, effectiveLandingTexture, readSettings, type AppSettings } from "./settings";
 import { DEFAULT_APPEARANCE } from "./themes";
-import { useAppearance } from "./useAppearance";
+import { useAppearance, useSystemDark } from "./useAppearance";
+import { useAppearanceDraft } from "./useAppearanceDraft";
+import { AppearanceDraftBar } from "./AppearanceDraftBar";
 import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { ArtifactsHost } from "./ArtifactsPanel";
@@ -367,6 +369,20 @@ export function App() {
   const renameSeq = useRef(0);
   const renameNote = useRef<ReturnType<typeof renameNotes> | null>(null);
   renameNote.current ??= renameNotes(toast);
+  const systemDark = useSystemDark();
+  const appearanceStudio = useAppearanceDraft(settings, setSettings, toast, systemDark);
+  const resumeAppearance = useCallback(() => {
+    const count = appearanceStudio.pending.length;
+    setSettingsOpen("appearance");
+    toast(`Draft restored. ${count} change${count === 1 ? "" : "s"} not applied.`);
+    // Settings loads lazily, so wait for the status row before moving focus to it.
+    const focusStatus = (tries: number) => requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(".studio-pending-btn");
+      if (row) row.focus();
+      else if (tries > 0) focusStatus(tries - 1);
+    });
+    focusStatus(120);
+  }, [appearanceStudio.pending.length, toast]);
   const onCopyRenamed = useCallback((seq: number, outcome: CopyOutcome) => renameNote.current?.heard(seq, outcome), []);
   /** Agents whose name changed from `before` to `after`, for every thread to rename its copy of. */
   const noteRenames = (before: ParticipantConfig[], after: ParticipantConfig[]) => {
@@ -1362,7 +1378,7 @@ export function App() {
     const { workspace, hostId } = hostOfPane(pane);
     const run = runs[paneId];
     const snapshot: PopoutSnapshot = {
-      kind: "pane", id: pane.id, title: pane.title, appearance,
+      kind: "pane", id: pane.id, title: pane.title, appearance: appearanceSettings ?? appearance,
       ...(pane.kind === "terminal" && run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
       workspaceId: pane.workspaceId, hostId,
       ...(pane.agent ? { agent: pane.agent } : {}),
@@ -1408,7 +1424,7 @@ export function App() {
     const workspace = workspaces.find((w) => w.id === (tab.kind === "artifacts" ? selected?.workspaceId : activeWorkspace)) ?? shownWorkspaces(workspaces)[0] ?? null;
     const hostId = workspace ? workspaceHost(workspace) : "local";
     const snapshot: PopoutSnapshot = {
-      kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance,
+      kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance: appearanceSettings ?? appearance,
       ...(tab.url !== undefined ? { url: tab.url } : {}),
       workspaceId: workspace?.id, hostId,
       cwd: chatFolder(selected, workspace),
@@ -2596,6 +2612,7 @@ export function App() {
       <UpdateNotices updates={updates} onRestart={restartToUpdate} />
       {newChatOpen && <NewChatDialog chats={chats} onClose={() => setNewChatOpen(false)} onStarted={(row) => { setNewChatOpen(false); setMainView({kind:"workspace"}); setCreatingAssistant(false); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
+      {appearanceStudio.pending.length > 0 && settingsOpen !== "appearance" && <AppearanceDraftBar studio={appearanceStudio} settings={settings} systemDark={systemDark} onResume={resumeAppearance} />}
       <div className={`body${sidePanelFull && !chatShown ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
@@ -2643,6 +2660,7 @@ export function App() {
             settingsOpen={settingsOpen !== null && settingsOpen !== "appearance"}
             onOpenAppearance={() => setSettingsOpen((open) => open === "appearance" ? null : "appearance")}
             onOpenSettings={() => setSettingsOpen((open) => open ? null : "general")}
+            appearanceDraftCount={settingsOpen ? 0 : appearanceStudio.pending.length}
             onRestore={restoreArchived}
             style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}
           />
@@ -2923,7 +2941,7 @@ export function App() {
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}
-        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
+        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} appearanceStudio={appearanceStudio} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
       {connectionDialog && backend.hosts && <ConnectionDialog mode={connectionDialog} hosts={hostList} api={backend.hosts}

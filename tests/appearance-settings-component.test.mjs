@@ -5,7 +5,7 @@ import { transform } from 'sucrase';
 import * as themes from '../src/themes.ts';
 
 const source = await fs.readFile(new URL('../src/AppearanceSettings.tsx', import.meta.url), 'utf8');
-const compiled = transform(source.replace(/^import .*;\n/gm, '').replace('export function AppearanceSettings', 'function AppearanceSettings'), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
+const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export function /gm, 'function '), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
 const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
 const Component = new Function('React', 'useState', 'useRef', 'useEffect', ...Object.keys(themes), `${compiled}; return AppearanceSettings;`)(React, value => [value, () => {}], value => ({ current: value }), () => {}, ...Object.values(themes));
 const all = (node, predicate) => !node || typeof node !== 'object' ? [] : [...(predicate(node) ? [node] : []), ...(node.children ?? []).flatMap(child => all(child, predicate))];

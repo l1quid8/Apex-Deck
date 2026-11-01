@@ -65,15 +65,13 @@ test("applyAppearance paints a root like Deck's and cleans up after itself", () 
 test("the owner sends its appearance with every pop-out and pushes changes; both windows share one hook", () => {
   assert.match(model, /appearance\?: AppearanceValues/);
   assert.equal((model.match(/appearance\?: AppearanceValues/g) ?? []).length, 2); // Snapshot and update.
-  const paneSnapshot = app.slice(app.indexOf("const popOutPane"), app.indexOf("const popOutTab"));
-  const tabSnapshot = app.slice(app.indexOf("const popOutTab"), app.indexOf("const popoutLive"));
-  assert.match(paneSnapshot, /appearance,/);
-  assert.match(tabSnapshot, /appearance,/);
-  assert.match(app, /title: pane\.title,\s+appearance,/);
-  assert.match(app, /const patch: PopoutUpdate = \{ title: tabTitle\(tab\), appearance \}/);
-  assert.match(app, /useAppearance\(appearance\)/);
+  // Initial bridge payloads are exercised in popout-initial-appearance.test.mjs.
+  // Pushes carry the whole settings object so Light/Dark/System reaches the pop-out too.
+  assert.match(app, /const patch: PopoutUpdate = \{ title: tabTitle\(tab\), appearance: appearanceSettings \?\? appearance \}/);
+  assert.match(app, /title: pane\.title,[^}]*appearance: appearanceSettings \?\? appearance,/);
+  assert.match(app, /useAppearance\(appearanceSettings \?\? appearance\)/);
   assert.doesNotMatch(app, /themeVariables\(appearance\)/);
-  assert.match(popout, /useAppearance\(appearance\)/);
+  assert.match(popout, /useAppearance\(appearance as any\)/);
   assert.match(popout, /snap\.appearance/);
   assert.match(popout, /patch\.appearance !== undefined/);
 });

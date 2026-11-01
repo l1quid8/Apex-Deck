@@ -47,7 +47,7 @@ function normalizeHex(input: string): string | null {
 }
 
 /** One exact glow color: a color picker plus a hex box that commits on blur or Enter. */
-function GlowColorRow({ index, color, onCommit }: { index: number; color: string; onCommit: (hex: string) => void }) {
+export function GlowColorRow({ index, color, onCommit }: { index: number; color: string; onCommit: (hex: string) => void }) {
   const [text, setText] = useState(color);
   const [error, setError] = useState(false);
   useEffect(() => { setText(color); setError(false); }, [color]);
@@ -76,7 +76,7 @@ function GlowColorRow({ index, color, onCommit }: { index: number; color: string
 }
 
 /** Controls for the glyph field behind empty threads. Rendered only where the parent passes them. */
-function LandingTextureControls({ value, onChange }: { value: LandingTextureSettings; onChange: (value: LandingTextureSettings) => void }) {
+export function LandingTextureControls({ value, onChange, switchId }: { value: LandingTextureSettings; onChange: (value: LandingTextureSettings) => void; switchId?: string }) {
   const [hexText, setHexText] = useState(value.color);
   const [hexBad, setHexBad] = useState(false);
   useEffect(() => { setHexText(value.color); setHexBad(false); }, [value.color]);
@@ -94,7 +94,7 @@ function LandingTextureControls({ value, onChange }: { value: LandingTextureSett
     <div className="appearance-controls">
       <label className="appearance-option">
         <span className="appearance-control-copy"><strong>Show the field</strong><small>Behind empty threads only, never behind messages.</small></span>
-        <input type="checkbox" role="switch" checked={value.enabled} onChange={(event) => patch({ enabled: event.currentTarget.checked })} />
+        <input id={switchId} type="checkbox" role="switch" checked={value.enabled} onChange={(event) => patch({ enabled: event.currentTarget.checked })} />
       </label>
       <div className="appearance-option">
         <div className="appearance-control-copy"><strong>Color</strong><small>Rainbow cycles hues across the field, or pick one color.</small></div>

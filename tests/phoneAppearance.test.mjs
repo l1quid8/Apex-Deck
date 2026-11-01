@@ -6,7 +6,7 @@ import { PHONE_APPEARANCE_KEY, loadPhoneAppearance, savePhoneAppearance, applyPh
 test('phone appearance survives a restart without writing desktop settings', () => {
   const values = new Map([['apex-deck.settings', 'desktop stays here']]);
   const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
-  const state = { current: { format: 'apex-glass-playground', version: 2, name: 'My Tide', appearance: BUILTIN_SKINS.find(s => s.id === 'tide').appearance }, saved: [] };
+  const state = { current: { format: 'apex-glass-playground', version: 2, name: 'My Tide', appearance: BUILTIN_SKINS.find(s => s.id === 'tide').appearance }, saved: [], colorMode: 'system' };
   state.saved.push(state.current);
   assert.equal(savePhoneAppearance(storage, state), true);
   assert.deepEqual(loadPhoneAppearance(storage), state);

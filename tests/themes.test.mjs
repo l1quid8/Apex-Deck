@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { BUILTIN_SKINS, DEFAULT_APPEARANCE, parseSkin, skinPrompt, themeMode, themeVariables } from "../src/themes.ts";
+import * as themes from "../src/themes.ts";
 
 const validAppearance = { hue: 168, glow: 40, blur: 24, opacity: 76, radius: 18, backdrop: 35, density: 1, light: false, flat: false };
 const skin = (appearance = validAppearance, extra = {}) => JSON.stringify({ format: "apex-glass-playground", version: 2, name: "Test", appearance, ...extra });
 
-test("exports the eight presets and the legacy-compatible default is Classic", () => {
+test("exports the nine presets and the legacy-compatible default is Classic", () => {
   assert.deepEqual(BUILTIN_SKINS.map(({ id, name }) => [id, name]), [
-    ["classic", "Classic"], ["smoked", "Smoked"], ["tide", "Tide"], ["dusk", "Dusk"], ["rose", "Rose"], ["frost", "Frost"], ["liquid", "Liquid"], ["clay", "Clay"],
+    ["classic", "Classic"], ["smoked", "Liquid Smoked"], ["tide", "Liquid Tide"], ["dusk", "Liquid Dusk"], ["rose", "Liquid Rose"], ["frost", "Liquid Frost"], ["liquid", "Liquid Full glass"], ["clay", "Clay Warm"], ["clay-black", "Clay Black"],
   ]);
   assert.deepEqual(DEFAULT_APPEARANCE, BUILTIN_SKINS[0].appearance);
   assert.equal(themeMode(DEFAULT_APPEARANCE), "classic");
@@ -97,4 +98,77 @@ test("color picker conversion preserves saturation and brightness, including neu
   assert.match(accentHex(validAppearance), /^#[0-9a-f]{6}$/);
   assert.equal(themeVariables({ ...validAppearance, ...colorAppearance("#101010") })["--deck-custom-accent-ink"], "#ffffff");
   assert.equal(themeVariables({ ...validAppearance, ...colorAppearance("#ffffff") })["--deck-custom-accent-ink"], "#000000");
+});
+
+test('every built-in sits in its theme', () => {
+  const byTheme = t => themes.BUILTIN_SKINS.filter(s => s.theme === t).map(s => s.preset);
+  assert.deepEqual(byTheme('clay'), ['Warm', 'Black']);
+  assert.deepEqual(byTheme('classic'), ['Standard']);
+  assert.deepEqual(byTheme('liquid').sort(), ['Dusk', 'Frost', 'Full glass', 'Rose', 'Smoked', 'Tide']);
+  for (const skin of themes.BUILTIN_SKINS) assert.equal(themes.themeFamily(skin.appearance), skin.theme);
+});
+test('Classic stays Classic after its corners change', () => {
+  assert.equal(themes.themeFamily({ ...themes.DEFAULT_APPEARANCE, radius: 22 }), 'classic');
+});
+test('Liquid with solid panels stays Liquid', () => {
+  const tide = themes.BUILTIN_SKINS.find(s => s.id === 'tide').appearance;
+  assert.equal(themes.themeFamily({ ...tide, flat: true }), 'liquid');
+});
+test('new fields round-trip and bad ones are refused', () => {
+  const file = v => JSON.stringify({ format: 'apex-glass-playground', version: 2, name: 'x', appearance: { ...themes.BUILTIN_SKINS[0].appearance, ...v } });
+  assert.deepEqual(themes.parseSkin(file({ palette: 'black', reply: 'sans', edges: 'strong' })).appearance.palette, 'black');
+  for (const bad of [{ palette: 'warm' }, { reply: 'mono' }, { edges: 'soft' }]) assert.throws(() => themes.parseSkin(file(bad)));
+});
+test('a reply font equal to the theme default is not stored', () => {
+  const file = v => JSON.stringify({ format: 'apex-glass-playground', version: 2, name: 'x', appearance: { ...v } });
+  const clay = themes.BUILTIN_SKINS.find(s => s.id === 'clay').appearance;
+  assert.equal('reply' in themes.parseSkin(file({ ...clay, reply: 'serif' })).appearance, false);
+  assert.equal(themes.parseSkin(file({ ...clay, reply: 'sans' })).appearance.reply, 'sans');
+  assert.equal('reply' in themes.parseSkin(file({ ...themes.DEFAULT_APPEARANCE, reply: 'sans' })).appearance, false);
+  assert.equal(themes.parseSkin(file({ ...themes.DEFAULT_APPEARANCE, reply: 'serif' })).appearance.reply, 'serif');
+});
+test('old settings keep their identity without being rewritten', () => {
+  const clay = themes.BUILTIN_SKINS.find(s => s.id === 'clay');
+  const old = { format: 'apex-glass-playground', version: 2, name: 'Clay', appearance: clay.appearance };
+  assert.deepEqual(themes.deriveSource({ current: old, saved: [] }), { kind: 'builtin', id: 'clay' });
+  const custom = { ...old, name: 'Custom', appearance: { ...clay.appearance, radius: 20 } };
+  assert.deepEqual(themes.deriveSource({ current: custom, saved: [] }), { kind: 'builtin', id: 'clay' });
+  assert.deepEqual(themes.deriveSource({ current: { ...custom, name: 'Mine' }, saved: [{ ...custom, name: 'Mine' }] }), { kind: 'saved', name: 'Mine' });
+});
+test('a stored source wins over matching, and a dangling one is ignored', () => {
+  const clay = themes.BUILTIN_SKINS.find(s => s.id === 'clay');
+  const current = { format: 'apex-glass-playground', version: 2, name: 'Clay Warm', appearance: clay.appearance };
+  const mine = { ...current, name: 'Mine' };
+  assert.deepEqual(themes.deriveSource({ current, saved: [mine], source: { kind: 'saved', name: 'Mine' } }), { kind: 'saved', name: 'Mine' });
+  assert.deepEqual(themes.deriveSource({ current, saved: [], source: { kind: 'saved', name: 'Mine' } }), { kind: 'builtin', id: 'clay' });
+  assert.deepEqual(themes.deriveSource({ current, saved: [], source: { kind: 'builtin', id: 'gone' } }), { kind: 'builtin', id: 'clay' });
+});
+test('readAppearance keeps a valid source and drops a bad one', () => {
+  const mine = { format: 'apex-glass-playground', version: 2, name: 'Mine', appearance: { ...themes.DEFAULT_APPEARANCE } };
+  const kept = themes.readAppearance({ current: mine, saved: [mine], source: { kind: 'saved', name: 'Mine' }, sourceBehind: true });
+  assert.deepEqual(kept.source, { kind: 'saved', name: 'Mine' });
+  assert.equal(kept.sourceBehind, true);
+  const dropped = themes.readAppearance({ current: mine, saved: [], source: { kind: 'saved', name: 'Gone' }, sourceBehind: true });
+  assert.equal('source' in dropped, false);
+  assert.equal('sourceBehind' in dropped, false);
+});
+test('duplicate saved names become unique on read', () => {
+  const skin = hue => ({ format: 'apex-glass-playground', version: 2, name: 'Same', appearance: { ...themes.DEFAULT_APPEARANCE, hue } });
+  assert.deepEqual(themes.readAppearance({ current: skin(1), saved: [skin(1), skin(2)] }).saved.map(s => s.name), ['Same', 'Same 2']);
+});
+test('Light hint is not a difference between looks', () => {
+  assert.ok(themes.sameLook({ ...themes.DEFAULT_APPEARANCE, light: true }, themes.DEFAULT_APPEARANCE));
+  assert.ok(!themes.sameLook({ ...themes.DEFAULT_APPEARANCE, radius: 20 }, themes.DEFAULT_APPEARANCE));
+});
+test('applyAppearance paints the new fields and clears them', () => {
+  const root = { dataset: {}, style: { setProperty() {}, removeProperty() {} } };
+  const stop = themes.applyAppearance(root, { ...themes.BUILTIN_SKINS.find(s => s.id === 'clay-black').appearance, reply: 'sans', edges: 'strong' });
+  assert.equal(root.dataset.deckPalette, 'black');
+  assert.equal(root.dataset.deckReply, 'sans');
+  assert.equal(root.dataset.deckEdges, 'strong');
+  stop();
+  assert.deepEqual(root.dataset, {});
+});
+test('the prompt describes the new optional fields', () => {
+  for (const word of ['palette', 'reply', 'edges']) assert.match(themes.skinPrompt('x'), new RegExp(word));
 });
