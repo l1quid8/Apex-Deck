@@ -43,11 +43,22 @@ final class BackgroundReadingTests: XCTestCase {
   }
 
   func testOnlyAFinishedActionWhoseReadingFailedCountsAsDone() {
-    XCTAssertNotNil(EngineSession.deliveredNote("window_unavailable; delivery=delivered_verified verification_scope=element_value application_commit=not_verified"))
+    XCTAssertNotNil(EngineSession.deliveredNote("window_unavailable; delivery=delivered_verified verification_scope=element_value application_commit=not_verified", tool: "click"))
     for code in ["type_verification_failed; delivery=delivered_unverified; retry=unsafe",
       "cancelled_or_stopped; delivery=delivered_unverified; retry=unsafe"] {
-      XCTAssertNil(EngineSession.deliveredNote(code), "partial or wrong text must stay an error")
+      XCTAssertNil(EngineSession.deliveredNote(code, tool: "type_text"), "partial or wrong text must stay an error")
     }
+    // The engine's own refusal shape carries no scope. A press it delivered still finished, so the
+    // reply must keep the model from repeating a click that already navigated.
+    let pressed = "human_activity_changed; delivery=delivered_unverified; retry=unsafe"
+    XCTAssertEqual(EngineSession.deliveryValue(pressed), "delivered_unverified")
+    for tool in ["click", "click_point", "press_key", "reveal", "scroll", "navigate"] {
+      let note = EngineSession.deliveredNote(pressed, tool: tool)
+      XCTAssertNotNil(note, tool)
+      XCTAssertTrue(note?.contains("do not repeat it") == true, tool)
+      XCTAssertTrue(note?.contains("delivery=delivered_unverified") == true, tool)
+    }
+    XCTAssertNil(EngineSession.deliveredNote(pressed, tool: "type_text"), "half-typed text stays an error")
   }
 
   func testAnAccessibilityErrorOnlyProvesNothingLandedWhenTheCallWasRefused() {

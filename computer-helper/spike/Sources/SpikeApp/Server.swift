@@ -271,7 +271,7 @@ final class Server {
             return
           }
           state.imageScope = nil; state.snapshot = nil; state.engine.invalidate()
-          if let note = EngineSession.deliveredNote(code) {
+          if let note = EngineSession.deliveredNote(code, tool: params["name"] as? String ?? "") {
             CursorOverlayIntegration.hideAfterAction()
             self.response(id, ["content": [["type": "text", "text": note]]], client)
             return

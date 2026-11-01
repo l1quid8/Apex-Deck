@@ -68,9 +68,10 @@ final class TurnRegistryTests: XCTestCase {
     XCTAssertThrowsError(try registry.identity(app.bundle, token: try turn(scope: "revoked")), "Stop clears thread grants")
   }
   func testDeliveredActionsAreNeverReportedAsFailures() {
-    XCTAssertNotNil(EngineSession.deliveredNote("foreign_secure_or_unknown_focus; delivery=delivered_unverified verification_scope=unavailable"))
-    XCTAssertNil(EngineSession.deliveredNote("engine_failed; delivery=delivery_uncertain; retry=unsafe"))
-    XCTAssertNil(EngineSession.deliveredNote("engine_failed; delivery=not_delivered; retry=safe"))
+    XCTAssertNotNil(EngineSession.deliveredNote("foreign_secure_or_unknown_focus; delivery=delivered_unverified verification_scope=unavailable", tool: "click"))
+    XCTAssertNil(EngineSession.deliveredNote("engine_failed; delivery=delivery_uncertain; retry=unsafe", tool: "click"))
+    XCTAssertNil(EngineSession.deliveredNote("engine_failed; delivery=not_delivered; retry=safe", tool: "click"))
+    XCTAssertNil(EngineSession.deliveryValue("engine_failed; retry=safe"))
     XCTAssertTrue(EngineSession.keepsObservation(tool: "get_screenshot", code: "window_unverified_or_protected"))
     XCTAssertTrue(EngineSession.keepsObservation(tool: "press_key", code: "unsupported_key"))
     XCTAssertTrue(EngineSession.keepsObservation(tool: "press_key", code: "human_input_during_action"))

@@ -38,12 +38,27 @@ final class EngineSession {
     return code + "; " + Self.actionSummary(lastAction)
   }
 
-  /// An action that finished must never read as a failure: a model would repeat it.
-  /// Only the follow-up reading failed, which `failureCode` marks with the action's
-  /// summary. Text that went in partly or wrongly is not finished, so it stays an error.
-  static func deliveredNote(_ code: String) -> String? {
-    guard code.contains("delivery=delivered_"), code.contains("verification_scope=") else { return nil }
-    return "action_delivered; do not repeat it. The follow-up reading failed, so call read_screen before the next action. Detail: \(code)"
+  /// The delivery the engine reached before whatever failed next. Two shapes reach here:
+  /// `failureCode` builds `delivery=… verification_scope=…` for the follow-up reading, and the
+  /// engine's own refusals carry `delivery=… retry=…` with no scope at all.
+  static func deliveryValue(_ code: String) -> String? {
+    guard let start = code.range(of: "delivery=") else { return nil }
+    let name = code[start.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+    return name.isEmpty ? nil : String(name)
+  }
+  /// Tools whose action is one discrete press, so the app took it or it did not. Once the engine
+  /// reports a delivery the action is finished. Typing is deliberately absent: half the text may
+  /// have landed, so a failed one must stay an error a model can correct.
+  private static let pressTools: Set<String> = ["click", "click_point", "press_key", "reveal", "scroll", "navigate"]
+
+  /// An action that finished must never read as a failure: a model would repeat it. That is true
+  /// for a press whenever the engine says it was delivered, including the engine's own scope-less
+  /// refusals. Requiring `verification_scope=` here dropped the note for exactly that case, so a
+  /// press that had landed (a click that navigated) came back as a bare refusal.
+  static func deliveredNote(_ code: String, tool: String) -> String? {
+    guard let delivery = deliveryValue(code), delivery.hasPrefix("delivered_") else { return nil }
+    guard code.contains("verification_scope=") || pressTools.contains(tool) else { return nil }
+    return "action_delivered; delivery=\(delivery); do not repeat it. The follow-up reading failed, so call read_screen before the next action. Detail: \(code)"
   }
   /// Nothing reached the app, so the bot's reading is still as good as it was.
   /// Every later action rechecks the turn, activity and live target regardless.
