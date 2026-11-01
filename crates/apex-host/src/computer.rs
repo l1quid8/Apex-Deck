@@ -42,6 +42,8 @@ struct BrowserLink {
     thread: String,
     generation: u64,
     token: String,
+    participant: String,
+    label: String,
     control: bool,
     writer: tokio::sync::Mutex<tokio::net::UnixStream>,
     calls: Mutex<HashMap<String, Arc<AtomicBool>>>,
@@ -74,7 +76,7 @@ impl BrowserLink {
             let (link, cancelled) = (self.clone(), cancelled.clone());
             move || link.live(&cancelled)
         };
-        let turn = browser::Call { owner: &self.token, control: self.control, live: &live };
+        let turn = browser::Call { owner: &self.token, thread: &self.thread, participant: &self.participant, label: &self.label, control: self.control, live: &live };
         let outcome = browser::call(&turn, &tool, &arguments).await;
         self.calls.lock().unwrap().remove(&call);
         let mut reply = json!({"callId":call,"turnToken":self.token});
@@ -404,6 +406,8 @@ impl TurnLifecycleHook for TurnHook {
                     thread: thread.clone(),
                     generation,
                     token: token.clone(),
+                    participant: id.as_str().into(),
+                    label: self.host.upgrade().and_then(|host| host.computer_participant_label(&self.thread, id)).unwrap_or_else(|| id.as_str().into()),
                     control,
                     writer: tokio::sync::Mutex::new(writer),
                     calls: Mutex::default(),
@@ -730,7 +734,7 @@ mod tests {
         let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         computer.active.lock().unwrap().insert("token".into(), Active { thread: "t".into(), participant: "p".into(), token: "token".into(), socket });
         let (writer, reader) = tokio::net::UnixStream::pair().unwrap();
-        let link = BrowserLink { computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
+        let link = BrowserLink { computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), participant: "p".into(), label: "Bot".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
         let link = Arc::new(link);
         link.start("call-1".into(), "Runtime.evaluate".into(), json!({}));
         let mut line = String::new();

@@ -489,6 +489,7 @@ impl Host {
     /// Work bots can reach the browser before the assistant has ever started.
     pub(crate) fn use_assistant_browser(&self) {
         browser::use_profile(self.data_dir().join("assistant-browser"));
+        if let Some(folder) = self.downloads_dir() { browser::use_downloads(folder); }
     }
 
     pub fn start_personal_worker_with(self: &Arc<Self>, tools: WorkerTools) -> Result<(), String> {

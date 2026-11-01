@@ -504,6 +504,7 @@ impl Host {
     }
 
     /// The host's own data folder.
+    pub(crate) fn downloads_dir(&self) -> Option<PathBuf> { self.paths.downloads.clone() }
     pub(crate) fn data_dir(&self) -> &Path {
         &self.paths.data
     }
@@ -1771,6 +1772,9 @@ impl Host {
 
     pub(crate) fn computer_participant_supported(&self,thread:&str,id:&ParticipantId)->bool {
         self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| matches!(p.backend,apex_core::Backend::OpenAiCompatible {..} | apex_core::Backend::Agent {tool:apex_core::AgentTool::ClaudeCode | apex_core::AgentTool::Codex | apex_core::AgentTool::Muse,..})))
+    }
+    pub(crate) fn computer_participant_label(&self,thread:&str,id:&ParticipantId)->Option<String> {
+        self.handle(thread).ok()?.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).map(|p|p.display_name.clone())
     }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 

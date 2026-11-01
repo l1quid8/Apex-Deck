@@ -33,7 +33,8 @@ for (const command of ["monitor_assign", "monitor_message", "monitor_react", "mo
   "personal_memory_forget", "personal_notices_seen", "personal_push_register", "personal_machine_link", "personal_machine_unlink",
   "personal_machine_claim", "personal_machine_result", "personal_machine_allow", "personal_execute_local",
   "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote",
-  "personal_browser_take_over", "personal_browser_input"]) rawWrites.add(command);
+  "personal_browser_take_over", "personal_browser_input",
+  "browser_tab_open", "browser_tab_close", "browser_tab_control", "browser_tab_share", "browser_tab_input", "browser_tab_resize", "browser_tab_upload", "browser_tab_stop"]) rawWrites.add(command);
 /** Reject unavailable execution; recovery reads and harmless PTY probes remain available. */
 export function guardHostWrites(backend: Backend, connection: HostConnectionStore): Backend {
   // React effects depend on these methods (including attachment readers).

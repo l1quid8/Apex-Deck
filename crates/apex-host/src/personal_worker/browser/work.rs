@@ -4,19 +4,20 @@
 //! machine with no window, so it needs no pointer, no keyboard and no focus.
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::{page, Page, EPOCH, OPS, TAKEN_OVER};
+use super::tabs::{Control, Holder, Scope};
+use super::{Page, Tab};
 use std::sync::atomic::Ordering;
 
-const LEASE: Duration = Duration::from_secs(60);
 const MAX_CONTROLS: usize = 300;
 const MAX_TEXT: usize = 16 * 1024;
 const ACTIONS: &[&str] = &["navigate", "click", "click_point", "type_text", "press_key", "scroll", "reveal"];
 const READS: &[&str] = &["read_screen", "list_windows", "get_screenshot"];
+const TAB_TOOLS: &[&str] = &["browser_tabs", "browser_new_tab", "browser_use_tab", "browser_close_tab"];
 const CONTROL_ROLES: &[&str] = &["button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch",
     "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "option", "listbox", "slider", "spinbutton", "treeitem"];
 const STATES: &[&str] = &["focused", "disabled", "checked", "expanded", "selected", "pressed", "required", "readonly"];
@@ -34,6 +35,10 @@ const ACTIVE: &str = "(()=>{let e=document.activeElement;while(e&&e.shadowRoot&&
 pub(crate) struct Call<'a> {
     /// The turn's token. Only ever compared.
     pub owner: &'a str,
+    pub thread: &'a str,
+    pub participant: &'a str,
+    /// The bot's name, shown on tabs it holds.
+    pub label: &'a str,
     /// False for a read-only or Plan turn.
     pub control: bool,
     /// False once the turn ended, was revoked or stopped, or this call was cancelled.
@@ -45,7 +50,28 @@ impl Call<'_> {
         if !(self.live)() || super::CLOSING.load(Ordering::SeqCst) {
             return Err("turn_unregistered_or_ended".into());
         }
-        if TAKEN_OVER.load(Ordering::SeqCst) {
+        Ok(())
+    }
+
+    fn holder(&self) -> Holder {
+        Holder { owner: self.owner.into(), thread: self.thread.into(), participant: self.participant.into(), label: self.label.into() }
+    }
+}
+
+/// A turn working in one tab. Its reach and hold are rechecked for every step.
+struct Bound<'a> {
+    call: &'a Call<'a>,
+    tab: Arc<Tab>,
+}
+
+impl Bound<'_> {
+    fn open(&self) -> Result<(), String> {
+        self.call.open()?;
+        let info = self.tab.info.lock().unwrap();
+        if !info.reachable_by(self.call.thread) {
+            return Err("tab_not_authorized".into());
+        }
+        if info.control == Control::Human {
             return Err("browser_taken_over".into());
         }
         Ok(())
@@ -54,11 +80,11 @@ impl Call<'_> {
     /// Runs before every step that can change the page.
     fn gate(&self) -> Result<(), String> {
         self.open()?;
-        match WRITER.lock().unwrap().as_ref() {
-            Some((owner, _)) if owner == self.owner => Ok(()),
-            _ => Err("browser_busy".into()),
-        }
+        if self.tab.info.lock().unwrap().holds(self.call.owner, Instant::now()) { Ok(()) } else { Err("browser_busy".into()) }
     }
+
+    fn bump(&self) { self.tab.bump(); }
+    fn epoch(&self) -> u64 { self.tab.epoch.load(Ordering::SeqCst) }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,34 +123,14 @@ impl Reading {
     }
 }
 
-static WRITER: Mutex<Option<(String, Instant)>> = Mutex::new(None);
-static READINGS: LazyLock<Mutex<HashMap<String, Reading>>> = LazyLock::new(Mutex::default);
-
-fn claim(owner: &str) -> Result<(), String> {
-    let mut writer = WRITER.lock().unwrap();
-    let now = Instant::now();
-    match writer.as_ref() {
-        Some((held, until)) if held != owner && now < *until => return Err("browser_busy".into()),
-        Some((held, _)) if held == owner => {}
-        _ => {
-            EPOCH.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-    *writer = Some((owner.to_owned(), now + LEASE));
-    Ok(())
-}
+static READINGS: LazyLock<Mutex<HashMap<(String, String), Reading>>> = LazyLock::new(Mutex::default);
 
 /// The turn is over. Called whenever its authority ends, however that happened.
 pub(crate) fn release(owner: &str) {
-    READINGS.lock().unwrap().remove(owner);
-    let mut writer = WRITER.lock().unwrap();
-    if writer.as_ref().is_some_and(|(held, _)| held == owner) {
-        *writer = None;
+    READINGS.lock().unwrap().retain(|(held, _), _| held != owner);
+    for tab in super::all_tabs() {
+        tab.info.lock().unwrap().release(owner);
     }
-}
-
-pub(super) fn work_in_progress() -> bool {
-    WRITER.lock().unwrap().as_ref().is_some_and(|(_, until)| Instant::now() < *until)
 }
 
 /// Desktop key names, plus the names the Take over screen sends.
@@ -209,10 +215,6 @@ fn snapshot_id() -> String {
     random.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn bump() {
-    EPOCH.fetch_add(1, Ordering::SeqCst);
-}
-
 impl Page {
     async fn document(&mut self) -> Result<String, String> {
         let tree = self.call("Page.getFrameTree", json!({})).await?;
@@ -230,7 +232,7 @@ impl Page {
     }
 
     /// The element's middle in page pixels, brought into view if needed.
-    async fn middle(&mut self, call: &Call<'_>, backend: i64) -> Result<(f64, f64), String> {
+    async fn middle(&mut self, call: &Bound<'_>, backend: i64) -> Result<(f64, f64), String> {
         self.send(call, "DOM.scrollIntoViewIfNeeded", json!({ "backendNodeId": backend })).await?;
         let quads = self.call("DOM.getContentQuads", json!({ "backendNodeId": backend })).await.map_err(|_| "element_not_visible")?;
         let points: Vec<f64> = quads["quads"][0].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
@@ -261,7 +263,7 @@ impl Page {
         Ok(())
     }
 
-    async fn observe(&mut self, call: &Call<'_>, holder: bool, pixels: bool, last: &str) -> Result<(String, Reading), String> {
+    async fn observe(&mut self, call: &Bound<'_>, holder: bool, pixels: bool, last: &str) -> Result<(String, Reading), String> {
         self.call("Accessibility.enable", json!({})).await?;
         let tree = self.call("Accessibility.getFullAXTree", json!({})).await?;
         let (mut elements, mut partial) = controls(tree["nodes"].as_array().map_or(&[], Vec::as_slice));
@@ -275,7 +277,8 @@ impl Page {
                 Err(_) => true,
             };
         }
-        let reading = Reading { id: snapshot_id(), target: self.target.clone(), document: self.document().await?, epoch: EPOCH.load(Ordering::SeqCst), actionable: holder, pixels, complete: !partial, elements };
+        let target = call.tab.info.lock().unwrap().target.clone().unwrap_or_default();
+        let reading = Reading { id: snapshot_id(), target, document: self.document().await?, epoch: call.epoch(), actionable: holder, pixels, complete: !partial, elements };
         let body = self.eval("document.body?document.body.innerText:''").await?;
         let mut body = body.as_str().unwrap_or_default().to_owned();
         if body.len() > MAX_TEXT {
@@ -284,8 +287,8 @@ impl Page {
         }
         let about = self.eval("JSON.stringify([location.href,document.title])").await?;
         let about: Vec<String> = about.as_str().and_then(|text| serde_json::from_str(text).ok()).unwrap_or_default();
-        let mut text = format!("snapshot: {}\nwindow: Apex Deck browser\nurl: {}\ntitle: {}\nvisibility: background_browser\nreading: {}\n",
-            reading.id, about.first().map_or("", String::as_str), about.get(1).map_or("", String::as_str), if partial { "partial" } else { "complete" });
+        let mut text = format!("snapshot: {}\ntab: {}\nwindow: Apex Deck browser\nurl: {}\ntitle: {}\nvisibility: background_browser\nreading: {}\n",
+            reading.id, call.tab.id, about.first().map_or("", String::as_str), about.get(1).map_or("", String::as_str), if partial { "partial" } else { "complete" });
         if !holder {
             text.push_str("observation_only: true\n");
         }
@@ -297,19 +300,19 @@ impl Page {
         text.push_str(&body);
         text.push('\n');
         text.push_str(last);
-        READINGS.lock().unwrap().insert(call.owner.to_owned(), reading.clone());
+        READINGS.lock().unwrap().insert((call.call.owner.to_owned(), call.tab.id.clone()), reading.clone());
         Ok((text, reading))
     }
 
-    async fn send(&mut self, call: &Call<'_>, method: &str, params: Value) -> Result<Value, String> {
+    async fn send(&mut self, call: &Bound<'_>, method: &str, params: Value) -> Result<Value, String> {
         call.gate()?;
-        bump();
+        call.bump();
         self.call(method, params).await.map_err(|_| UNCERTAIN.to_owned())
     }
 
-    async fn click_at(&mut self, call: &Call<'_>, x: f64, y: f64) -> Result<(), String> {
+    async fn click_at(&mut self, call: &Bound<'_>, x: f64, y: f64) -> Result<(), String> {
         call.gate()?;
-        bump();
+        call.bump();
         // One step: a press must always get its release.
         let press = self.call("Input.dispatchMouseEvent", json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1 })).await;
         let release = self.call("Input.dispatchMouseEvent", json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 })).await;
@@ -325,31 +328,129 @@ fn element(reading: &Reading, args: &Value) -> Result<Element, String> {
     reading.elements.get(number(args, "element")?.wrapping_sub(1)).cloned().ok_or_else(|| "invalid_engine_element".to_owned())
 }
 
+/// What this thread may see of the browser. Other rooms' tabs don't exist as far as it knows.
+fn listing(call: &Call<'_>) -> String {
+    let current = super::registry().bound.get(&(call.thread.to_owned(), call.participant.to_owned())).cloned();
+    let mut text = String::from("tabs:\n");
+    for tab in super::all_tabs() {
+        let info = tab.info.lock().unwrap();
+        if !info.reachable_by(call.thread) { continue; }
+        let state = match info.holder(Instant::now()) {
+            Control::Free => "free".to_owned(),
+            Control::Human => "held by the person".to_owned(),
+            Control::Assistant => "held by the assistant".to_owned(),
+            Control::Bot { owner, .. } if owner == call.owner => "held by you".to_owned(),
+            Control::Bot { label, .. } => format!("held by {label}"),
+        };
+        let mark = if current.as_deref() == Some(&tab.id) { " (current)" } else { "" };
+        text.push_str(&format!("tab: {}{mark} {:?} {} [{state}]\n", tab.id, info.title, info.url));
+    }
+    text
+}
+
+fn bind(call: &Call<'_>, id: &str) {
+    super::registry().bound.insert((call.thread.to_owned(), call.participant.to_owned()), id.to_owned());
+    super::save();
+}
+
+/// The tab this bot is working in. Its first tab is made for its thread alone, so it can't
+/// land in a tab the person or another room has open.
+fn current_tab(call: &Call<'_>) -> Option<Arc<Tab>> {
+    let bound = {
+        let held = super::registry();
+        held.bound.get(&(call.thread.to_owned(), call.participant.to_owned())).and_then(|id| held.tabs.get(id).cloned())
+    };
+    if bound.is_some() || !call.control { return bound; }
+    let mut scope = Scope::default();
+    scope.rooms.insert(call.thread.to_owned());
+    let tab = super::add_tab("", scope);
+    bind(call, &tab.id);
+    Some(tab)
+}
+
+async fn tab_tool(call: &Call<'_>, tool: &str, args: &Value) -> Result<Value, String> {
+    match tool {
+        "browser_tabs" => {
+            let _ = super::reconcile().await;
+            Ok(json!({ "text": listing(call) }))
+        }
+        "browser_new_tab" => {
+            if !call.control { return Err("observation_only_access".into()); }
+            let url = args["url"].as_str().map(str::trim).unwrap_or_default();
+            if !url.is_empty() && !super::tabs::restorable(url) { return Err("unsupported_url".into()); }
+            let mut scope = Scope::default();
+            scope.rooms.insert(call.thread.to_owned());
+            let tab = super::add_tab(url, scope);
+            bind(call, &tab.id);
+            Ok(json!({ "text": format!("tab: {}\n{}", tab.id, listing(call)) }))
+        }
+        "browser_use_tab" => {
+            let id = args["tab"].as_str().ok_or("invalid_arguments")?;
+            let tab = super::find(id).map_err(|_| "tab_not_authorized")?;
+            if !tab.info.lock().unwrap().reachable_by(call.thread) { return Err("tab_not_authorized".into()); }
+            bind(call, id);
+            Ok(json!({ "text": listing(call) }))
+        }
+        "browser_close_tab" => {
+            if !call.control { return Err("observation_only_access".into()); }
+            let id = args["tab"].as_str().ok_or("invalid_arguments")?;
+            let tab = super::find(id).map_err(|_| "tab_not_authorized")?;
+            {
+                let mut info = tab.info.lock().unwrap();
+                if !info.reachable_by(call.thread) { return Err("tab_not_authorized".into()); }
+                info.claim(&call.holder(), Instant::now())?;
+            }
+            let _ops = tab.ops.lock().await;
+            call.open()?;
+            if !tab.info.lock().unwrap().holds(call.owner, Instant::now()) { return Err("browser_busy".into()); }
+            super::close_target(&tab).await;
+            super::remove_tab(id);
+            Ok(json!({ "text": listing(call) }))
+        }
+        _ => Err("unknown_tool".into()),
+    }
+}
+
 /// One tool call. A refusal comes back as a short code, and nothing has happened unless it says so.
 pub(crate) async fn call(call: &Call<'_>, tool: &str, args: &Value) -> Result<Value, String> {
     let acting = ACTIONS.contains(&tool);
-    if !acting && !READS.contains(&tool) {
+    if !acting && !READS.contains(&tool) && !TAB_TOOLS.contains(&tool) {
         return Err("unknown_tool".into());
     }
     if acting && !call.control {
         return Err("observation_only_access".into());
     }
     call.open()?;
-    let _ops = OPS.lock().await;
-    call.open()?;
-    let holder = call.control && claim(call.owner).is_ok();
+    if TAB_TOOLS.contains(&tool) {
+        return tab_tool(call, tool, args).await;
+    }
+    let Some(tab) = current_tab(call) else {
+        return Ok(json!({ "text": format!("no_current_tab\n{}", listing(call)) }));
+    };
+    let bound = Bound { call, tab: tab.clone() };
+    bound.open()?;
+    let _ops = tab.ops.lock().await;
+    bound.open()?;
+    let claimed = if call.control { tab.info.lock().unwrap().claim(&call.holder(), Instant::now()) } else { Err("observation_only_access") };
+    if claimed == Ok(true) { tab.bump(); }
+    let holder = claimed.is_ok();
     if acting && !holder {
         return Err("browser_busy".into());
     }
-    match tokio::time::timeout(CALL_LIMIT, run(call, tool, args, holder)).await {
+    let outcome = match tokio::time::timeout(CALL_LIMIT, run(&bound, tool, args, holder)).await {
         Ok(outcome) => outcome,
         Err(_) if acting => Err(UNCERTAIN.into()),
         Err(_) => Err("browser_timeout".into()),
+    };
+    // A reply that outlived the turn is nothing the bot may rely on.
+    if outcome.is_ok() && bound.open().is_err() {
+        return Err(if acting { UNCERTAIN.into() } else { "turn_unregistered_or_ended".into() });
     }
+    outcome
 }
 
-async fn run(call: &Call<'_>, tool: &str, args: &Value, holder: bool) -> Result<Value, String> {
-    let mut page = page().await.map_err(|_| "browser_unavailable")?;
+async fn run(call: &Bound<'_>, tool: &str, args: &Value, holder: bool) -> Result<Value, String> {
+    let mut page = call.tab.page().await.map_err(|error| if error == "tab_closed" { error } else { "browser_unavailable".to_owned() })?;
     if page.dialog_open { return Err("browser_dialog_requires_take_over".into()); }
     match tool {
         "read_screen" => page.observe(call, holder, false, "").await.map(|(text, _)| json!({ "text": text })),
@@ -365,7 +466,7 @@ async fn run(call: &Call<'_>, tool: &str, args: &Value, holder: bool) -> Result<
             }
             let shot = page.call("Page.captureScreenshot", json!({ "format": "jpeg", "quality": 70 })).await?;
             call.open()?;
-            let viewport = format!("image_snapshot: {}\npixels: {}x{}\nclick_point takes x/y in these image pixels\n", reading.id, super::WIDTH, super::HEIGHT);
+            let viewport = format!("image_snapshot: {}\npixels: {}x{}\nclick_point takes x/y in these image pixels\n", reading.id, page.width, page.height);
             Ok(json!({ "text": viewport + &text, "image": shot["data"] }))
         }
         "navigate" => {
@@ -374,23 +475,25 @@ async fn run(call: &Call<'_>, tool: &str, args: &Value, holder: bool) -> Result<
                 return Err("unsupported_url".into());
             }
             call.gate()?;
-            bump();
+            call.bump();
             page.load(url).await.map_err(|error| if error.starts_with("The page didn't load") { "page_did_not_load".to_owned() } else { UNCERTAIN.to_owned() })?;
             let keep = || call.open().is_ok();
             page.settle_while(&keep).await;
             follow(&mut page, call, "delivery=delivered_verified").await
         }
         _ => {
-            let held = READINGS.lock().unwrap().get(call.owner).cloned().ok_or("fresh_snapshot_required")?;
+            let key = (call.call.owner.to_owned(), call.tab.id.clone());
+            let held = READINGS.lock().unwrap().get(&key).cloned().ok_or("fresh_snapshot_required")?;
             let document = page.document().await?;
-            held.current(args["snapshot"].as_str().unwrap_or_default(), &page.target.clone(), &document, EPOCH.load(Ordering::SeqCst))?;
+            let target = call.tab.info.lock().unwrap().target.clone().unwrap_or_default();
+            held.current(args["snapshot"].as_str().unwrap_or_default(), &target, &document, call.epoch())?;
             let last = act(&mut page, call, tool, args, &held).await?;
             follow(&mut page, call, last).await
         }
     }
 }
 
-async fn follow(page: &mut Page, call: &Call<'_>, last: &str) -> Result<Value, String> {
+async fn follow(page: &mut Page, call: &Bound<'_>, last: &str) -> Result<Value, String> {
     let keep = || call.open().is_ok();
     page.settle_while(&keep).await;
     let last = format!("last_action: {last}\n");
@@ -400,7 +503,7 @@ async fn follow(page: &mut Page, call: &Call<'_>, last: &str) -> Result<Value, S
     }
 }
 
-async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &Reading) -> Result<&'static str, String> {
+async fn act(page: &mut Page, call: &Bound<'_>, tool: &str, args: &Value, held: &Reading) -> Result<&'static str, String> {
     match tool {
         "click" => {
             let target = element(held, args)?;
@@ -420,7 +523,7 @@ async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &
             if !held.pixels {
                 return Err("current_screenshot_and_control_required".into());
             }
-            if !(0.0..super::WIDTH as f64).contains(&x) || !(0.0..super::HEIGHT as f64).contains(&y) {
+            if !(0.0..page.width as f64).contains(&x) || !(0.0..page.height as f64).contains(&y) {
                 return Err("point_outside_image".into());
             }
             page.click_at(call, x, y).await?;
@@ -438,7 +541,7 @@ async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &
             };
             page.field(&object).await?;
             call.gate()?;
-            bump();
+            call.bump();
             page.on(&object, FOCUS, json!([])).await.map_err(|_| UNCERTAIN.to_owned())?;
             // Page focus handlers can redirect input to a different (even secret) field.
             let focused = page.on(&object, "function(){let a=this.ownerDocument.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;return a===this}", json!([])).await?;
@@ -462,7 +565,7 @@ async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &
             }
             if focused["secure"] == true { return Err("secret_field_use_take_over".into()); }
             call.gate()?;
-            bump();
+            call.bump();
             page.press(code, vk, text, modifiers).await.map_err(|_| UNCERTAIN.to_owned())?;
             Ok("delivery=delivered_unverified")
         }
@@ -491,297 +594,4 @@ async fn act(page: &mut Page, call: &Call<'_>, tool: &str, args: &Value, held: &
 }
 
 #[cfg(test)]
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-#[cfg(test)]
-fn reset() {
-    super::CLOSING.store(false, Ordering::SeqCst);
-    *WRITER.lock().unwrap() = None;
-    READINGS.lock().unwrap().clear();
-    TAKEN_OVER.store(false, Ordering::SeqCst);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::AtomicBool;
-
-    fn node(role: &str, name: &str, backend: i64) -> Value {
-        json!({"ignored":false,"role":{"value":role},"name":{"value":name},"backendDOMNodeId":backend,"properties":[]})
-    }
-
-    #[test]
-    fn a_reading_lists_only_usable_controls() {
-        let nodes = vec![
-            node("button", "Sign in", 1),
-            node("StaticText", "words", 2),
-            json!({"ignored":true,"role":{"value":"button"},"name":{"value":"Hidden"},"backendDOMNodeId":3}),
-            json!({"ignored":false,"role":{"value":"link"},"name":{"value":"No node"}}),
-            json!({"ignored":false,"role":{"value":"checkbox"},"name":{"value":"Keep"},"backendDOMNodeId":4,
-                "properties":[{"name":"checked","value":{"value":"true"}},{"name":"disabled","value":{"value":true}}]}),
-        ];
-        let (found, partial) = controls(&nodes);
-        assert!(!partial);
-        assert_eq!(found.iter().map(|e| e.backend).collect::<Vec<_>>(), [1, 4]);
-        assert_eq!(line(1, &found[0]), "element: 1 button \"Sign in\"");
-        assert_eq!(line(2, &found[1]), "element: 2 checkbox \"Keep\" [checked, disabled]");
-    }
-
-    #[test]
-    fn a_huge_page_reads_as_partial() {
-        let nodes: Vec<Value> = (0..MAX_CONTROLS as i64 + 5).map(|i| node("link", "x", i)).collect();
-        let (found, partial) = controls(&nodes);
-        assert_eq!(found.len(), MAX_CONTROLS);
-        assert!(partial);
-    }
-
-    #[test]
-    fn a_secret_field_never_shows_its_value() {
-        let mut field = Element { backend: 1, role: "textbox".into(), name: "Password".into(), value: "hunter2".into(), states: vec![], secure: false };
-        field.secure = secure_field(&["type".into(), "PassWord".into(), "name".into(), "p".into()]);
-        assert!(field.secure);
-        assert_eq!(line(1, &field), "element: 1 textbox \"Password\" [secret]");
-        assert!(secure_field(&["autocomplete".into(), "cc-number".into()]));
-        assert!(!secure_field(&["type".into(), "text".into()]));
-    }
-
-    #[test]
-    fn keys_follow_the_desktop_names_and_shortcuts_are_refused() {
-        assert_eq!(key_event("Return").unwrap(), ("Enter", 13, "\r", 0));
-        assert_eq!(key_event("Shift-Tab").unwrap(), ("Tab", 9, "", 8));
-        assert_eq!(key_event("PageDown").unwrap(), ("PageDown", 34, "", 0));
-        assert!(key_event("Cmd-T").is_none());
-        assert!(key_event("Control-L").is_none());
-        assert!(key_event("Nonsense").is_none());
-    }
-
-    fn turn<'a>(owner: &'a str, live: &'a (dyn Fn() -> bool + Send + Sync)) -> Call<'a> {
-        Call { owner, control: true, live }
-    }
-
-    /// One small site with the awkward parts: a secret field, a form and a tall page.
-    async fn site() -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            loop {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let mut request = [0u8; 2048];
-                let n = socket.read(&mut request).await.unwrap_or(0);
-                let path = String::from_utf8_lossy(&request[..n]).split_whitespace().nth(1).unwrap_or("/").to_owned();
-                let body = if path.starts_with("/framed") {
-                    r#"<title>Framed page</title><iframe src=/ onload="this.contentDocument.querySelector('[aria-label=Secret]').focus()"></iframe>"#.to_owned()
-                } else if path.starts_with("/many") {
-                    format!("<title>Many controls</title>{}<input type=password value=hidden-secret style='position:fixed;top:0'>", "<button>Item</button>".repeat(310))
-                } else if path.starts_with("/two") {
-                    format!("<title>Second</title><p>Reached {path}</p><button onclick=\"document.title='pressed'\" style='position:fixed;left:10px;top:10px;width:120px;height:40px'>Point</button><div style='height:4000px'></div><a href='#end'>Far link</a>")
-                } else {
-                    "<title>First</title><h1>Hello page</h1><input aria-label=Note><input aria-label=Redirect onfocus=\"document.querySelector('[aria-label=Secret]').focus()\"><input aria-label=Secret type=password value=ucu-secret-marker><button onclick=\"document.title='clicked'\">Go</button><button onclick=\"document.title=confirm('sure?')?'accepted':'declined'\">Ask</button><form action=/two><input aria-label=Query name=q></form>".to_owned()
-                };
-                let reply = format!("HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
-                let _ = socket.write_all(reply.as_bytes()).await;
-            }
-        });
-        address
-    }
-
-    fn snapshot(text: &str) -> String {
-        text.lines().find_map(|l| l.strip_prefix("snapshot: ")).unwrap().to_owned()
-    }
-
-    fn numbered(text: &str, name: &str) -> u64 {
-        let line = text.lines().find(|l| l.starts_with("element: ") && l.contains(name)).unwrap_or_else(|| panic!("no {name} in {text}"));
-        line.split_whitespace().nth(1).unwrap().parse().unwrap()
-    }
-
-    #[tokio::test]
-    #[ignore = "starts a real headless browser"]
-    async fn the_tools_drive_the_real_browser() {
-        let _serial = SERIAL.lock().await;
-        reset();
-        let profile = std::env::temp_dir().join(format!("apex-work-browser-{}", std::process::id()));
-        super::super::use_profile(profile.join("assistant-browser"));
-        let address = site().await;
-        let live = || true;
-        let bot = turn("bot", &live);
-        let text = |value: Value| value["text"].as_str().unwrap().to_owned();
-        let last_action = |t: &str| t.lines().find(|l| l.starts_with("last_action")).unwrap_or("").to_owned();
-
-        let page = text(call(&bot, "navigate", &json!({ "url": format!("{address}/") })).await.unwrap());
-        assert!(page.contains("title: First") && page.contains("Hello page"), "{page}");
-        assert!(page.contains("[secret]") && !page.contains("ucu-secret-marker"), "the secret stays hidden: {page}");
-
-        let s = snapshot(&page);
-        let typed = text(call(&bot, "type_text", &json!({ "snapshot": s, "element": numbered(&page, "Note"), "text": "hello" })).await.unwrap());
-        assert!(last_action(&typed).contains("delivered_verified"), "{typed}");
-        assert_eq!(call(&bot, "click", &json!({ "snapshot": s, "element": numbered(&page, "Go") })).await.unwrap_err(), "fresh_snapshot_required");
-
-        let clicked = text(call(&bot, "click", &json!({ "snapshot": snapshot(&typed), "element": numbered(&typed, "Go") })).await.unwrap());
-        assert!(clicked.contains("title: clicked"), "{clicked}");
-        assert_eq!(call(&bot, "type_text", &json!({ "snapshot": snapshot(&clicked), "element": numbered(&clicked, "Redirect"), "text": "must-not-reach-secret" })).await.unwrap_err(), "focused_element_changed");
-        let clicked = text(call(&bot, "read_screen", &json!({})).await.unwrap());
-        let asked = call(&bot, "click", &json!({ "snapshot": snapshot(&clicked), "element": numbered(&clicked, "Ask") })).await;
-        if let Ok(reply) = asked { assert!(!text(reply).contains("title: declined"), "bots must not dismiss page dialogs"); }
-
-        assert_eq!(call(&bot, "read_screen", &json!({})).await.unwrap_err(), "browser_dialog_requires_take_over");
-        let dialog = super::super::take_over(true).await.unwrap();
-        assert!(dialog.dialog_open);
-        super::super::input(super::super::Input::Key {key: "Escape".into()}).await.unwrap();
-        super::super::take_over(false).await.unwrap();
-        let clicked = text(call(&bot, "read_screen", &json!({})).await.unwrap());
-        assert!(clicked.contains("title: declined"), "only the human Escape dismissed the dialog");
-        assert_eq!(call(&bot, "type_text", &json!({ "snapshot": snapshot(&clicked), "element": numbered(&clicked, "Secret"), "text": "x" })).await.unwrap_err(), "secret_field_use_take_over");
-        assert_eq!(call(&bot, "press_key", &json!({ "snapshot": snapshot(&clicked), "key": "Cmd-T" })).await.unwrap_err(), "shortcut_not_supported_in_browser");
-        assert_eq!(call(&bot, "get_screenshot", &json!({})).await.unwrap_err(), "protected_field_on_page");
-
-        let read = text(call(&bot, "read_screen", &json!({})).await.unwrap());
-        let query = text(call(&bot, "type_text", &json!({ "snapshot": snapshot(&read), "element": numbered(&read, "Query"), "text": "abc" })).await.unwrap());
-        let second = text(call(&bot, "press_key", &json!({ "snapshot": snapshot(&query), "key": "Return" })).await.unwrap());
-        assert!(second.contains("title: Second") && second.contains("q=abc"), "Return reached the form: {second}");
-
-        let shot = call(&bot, "get_screenshot", &json!({})).await.unwrap();
-        assert!(shot["image"].as_str().unwrap().len() > 1000);
-        let shot_text = text(shot);
-        let pressed = text(call(&bot, "click_point", &json!({ "snapshot": snapshot(&shot_text), "x": 60.0, "y": 30.0 })).await.unwrap());
-        assert!(pressed.contains("title: pressed"), "{pressed}");
-
-        let revealed = text(call(&bot, "reveal", &json!({ "snapshot": snapshot(&pressed), "element": numbered(&pressed, "Far link") })).await.unwrap());
-        let scrolled = text(call(&bot, "scroll", &json!({ "snapshot": snapshot(&revealed), "element": numbered(&revealed, "Far link"), "direction": "up", "amount": 3 })).await.unwrap());
-        assert!(last_action(&scrolled).contains("delivered"), "{scrolled}");
-
-        // A second bot can look, but its reading can't act, and it can't take the browser.
-        let other = turn("other", &live);
-        let watching = text(call(&other, "read_screen", &json!({})).await.unwrap());
-        assert!(watching.contains("observation_only: true"));
-        assert_eq!(call(&other, "click", &json!({ "snapshot": snapshot(&watching), "element": 1 })).await.unwrap_err(), "browser_busy");
-
-        // The human takes over the same page, and the bot's reading never comes back.
-        let before = text(call(&bot, "read_screen", &json!({})).await.unwrap());
-        let view = super::super::take_over(true).await.unwrap();
-        assert_eq!(view.title, "pressed");
-        assert!(view.taken_over);
-        assert_eq!(call(&bot, "read_screen", &json!({})).await.unwrap_err(), "browser_taken_over");
-        assert_eq!(call(&bot, "click", &json!({ "snapshot": snapshot(&before), "element": 1 })).await.unwrap_err(), "browser_taken_over");
-        super::super::input(super::super::Input::Navigate { url: format!("{address}/two?human=1") }).await.unwrap();
-        super::super::take_over(false).await.unwrap();
-        assert_eq!(call(&bot, "click", &json!({ "snapshot": snapshot(&before), "element": 1 })).await.unwrap_err(), "fresh_snapshot_required");
-
-        // The assistant's own browsing stays out while a bot holds the browser.
-        assert!(super::super::open_text(&format!("{address}/")).await.unwrap_err().contains("Work bot"));
-        release("bot");
-        assert!(super::super::open_text(&format!("{address}/")).await.unwrap().1.contains("Hello page"));
-
-        let many = text(call(&bot, "navigate", &json!({"url":format!("{address}/many")})).await.unwrap());
-        assert!(many.contains("reading: partial"));
-        assert_eq!(call(&bot, "get_screenshot", &json!({})).await.unwrap_err(), "screenshot_requires_complete_reading");
-
-        let framed = text(call(&bot, "navigate", &json!({"url":format!("{address}/framed")})).await.unwrap());
-        assert_eq!(call(&bot, "press_key", &json!({"snapshot":snapshot(&framed),"key":"Return"})).await.unwrap_err(), "focused_frame_requires_take_over");
-        assert_eq!(call(&bot, "get_screenshot", &json!({})).await.unwrap_err(), "screenshot_requires_complete_reading");
-
-        // Stop mid-turn.
-        let stopped = || false;
-        assert_eq!(call(&turn("bot", &stopped), "read_screen", &json!({})).await.unwrap_err(), "turn_unregistered_or_ended");
-        release("other");
-        let host = crate::Host::new(crate::HostPaths {data:profile.clone(),downloads:None}, tokio::runtime::Handle::current());
-        host.wind_down(Duration::from_secs(1)).await;
-        assert!(super::super::STATE.lock().await.is_none(), "service shutdown must close its owned browser");
-        assert!(profile.join("assistant-browser").exists(), "shutdown preserves the saved browser profile");
-        let _ = std::fs::remove_dir_all(profile);
-    }
-
-    #[tokio::test]
-    async fn one_writer_holds_the_browser_until_it_lets_go() {
-        let _serial = SERIAL.lock().await;
-        reset();
-        claim("first").unwrap();
-        assert_eq!(claim("second").unwrap_err(), "browser_busy");
-        assert!(work_in_progress());
-        release("first");
-        assert!(!work_in_progress());
-        claim("second").unwrap();
-        release("second");
-    }
-
-    #[tokio::test]
-    async fn a_lapsed_writer_loses_the_browser_and_its_reading() {
-        let _serial = SERIAL.lock().await;
-        reset();
-        claim("first").unwrap();
-        WRITER.lock().unwrap().as_mut().unwrap().1 = Instant::now() - Duration::from_secs(1);
-        assert!(!work_in_progress());
-        claim("second").unwrap();
-        release("second");
-    }
-
-    #[tokio::test]
-    async fn stop_refuses_before_the_browser_is_touched() {
-        let _serial = SERIAL.lock().await;
-        reset();
-        let stopped = |_: ()| false;
-        let live = move || stopped(());
-        let refused = call(&turn("gone", &live), "navigate", &json!({"url":"https://example.com"})).await;
-        assert_eq!(refused.unwrap_err(), "turn_unregistered_or_ended");
-    }
-
-    #[tokio::test]
-    async fn take_over_refuses_queued_work_and_every_tool() {
-        let _serial = SERIAL.lock().await;
-        reset();
-        let live = || true;
-        TAKEN_OVER.store(true, Ordering::SeqCst);
-        for tool in ["read_screen", "get_screenshot", "navigate", "click"] {
-            assert_eq!(call(&turn("bot", &live), tool, &json!({})).await.unwrap_err(), "browser_taken_over");
-        }
-        TAKEN_OVER.store(false, Ordering::SeqCst);
-    }
-
-    #[tokio::test]
-    async fn stop_arriving_while_queued_refuses_at_the_front_of_the_queue() {
-        let _serial = SERIAL.lock().await;
-        reset();
-        let stopped = std::sync::Arc::new(AtomicBool::new(false));
-        let flag = stopped.clone();
-        let live = move || !flag.load(Ordering::SeqCst);
-        let held = OPS.lock().await;
-        let queued = tokio::spawn(async move {
-            call(&Call { owner: "bot", control: true, live: &live }, "navigate", &json!({"url":"https://example.com"})).await
-        });
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        stopped.store(true, Ordering::SeqCst);
-        drop(held);
-        assert_eq!(queued.await.unwrap().unwrap_err(), "turn_unregistered_or_ended");
-    }
-
-    #[tokio::test]
-    async fn read_access_cannot_act() {
-        let _serial = SERIAL.lock().await;
-        reset();
-        let live = || true;
-        let observer = Call { owner: "bot", control: false, live: &live };
-        for tool in ["navigate", "click", "click_point", "type_text", "press_key", "scroll", "reveal"] {
-            assert_eq!(call(&observer, tool, &json!({})).await.unwrap_err(), "observation_only_access");
-        }
-    }
-
-    #[tokio::test]
-    async fn nothing_outside_the_tool_list_reaches_the_browser() {
-        let live = || true;
-        for tool in ["Runtime.evaluate", "eval", "cdp", ""] {
-            assert_eq!(call(&turn("bot", &live), tool, &json!({})).await.unwrap_err(), "unknown_tool");
-        }
-    }
-
-    #[test]
-    fn a_reading_only_acts_on_its_own_document_and_moment() {
-        let reading = Reading { id: "s".into(), target: "t".into(), document: "d".into(), epoch: 7, actionable: true, pixels: false, complete: true, elements: vec![] };
-        assert!(reading.current("s", "t", "d", 7).is_ok());
-        assert_eq!(reading.current("old", "t", "d", 7).unwrap_err(), "fresh_snapshot_required");
-        assert_eq!(reading.current("s", "other", "d", 7).unwrap_err(), "fresh_snapshot_required");
-        assert_eq!(reading.current("s", "t", "other", 7).unwrap_err(), "fresh_snapshot_required");
-        assert_eq!(reading.current("s", "t", "d", 8).unwrap_err(), "fresh_snapshot_required");
-        let watching = Reading { actionable: false, ..reading };
-        assert_eq!(watching.current("s", "t", "d", 7).unwrap_err(), "observation_only_reading");
-    }
-}
+mod tests;

@@ -94,6 +94,16 @@ pub enum Command {
     PersonalBrowserView {},
     PersonalBrowserTakeOver { on: bool },
     PersonalBrowserInput { input: crate::personal_worker::browser::Input },
+    BrowserTabs {},
+    BrowserTabOpen { #[serde(default)] url: Option<String> },
+    BrowserTabClose { tab: String },
+    BrowserTabControl { tab: String, take: bool },
+    BrowserTabShare { tab: String, thread: String, share: bool },
+    BrowserTabFrame { tab: String, after: u64 },
+    BrowserTabInput { tab: String, events: Vec<crate::personal_worker::browser::Event> },
+    BrowserTabResize { tab: String, width: u32, height: u32, scale: f64 },
+    BrowserTabUpload { tab: String, name: String, data: String },
+    BrowserTabStop { tab: String },
     ComputerStatus {},
     ComputerSetup {},
     ComputerSetEnabled { enabled: bool },
@@ -479,6 +489,16 @@ impl Host {
             PersonalBrowserView {} => reply(self.personal_browser_view().await?),
             PersonalBrowserTakeOver { on } => reply(self.personal_browser_take_over(on).await?),
             PersonalBrowserInput { input } => reply(self.personal_browser_input(input).await?),
+            BrowserTabs {} => reply(self.browser_tabs().await?),
+            BrowserTabOpen { url } => reply(self.browser_tab_open(url).await?),
+            BrowserTabClose { tab } => reply(self.browser_tab_close(tab).await?),
+            BrowserTabControl { tab, take } => reply(self.browser_tab_control(tab, take).await?),
+            BrowserTabShare { tab, thread, share } => reply(self.browser_tab_share(tab, thread, share).await?),
+            BrowserTabFrame { tab, after } => reply(self.browser_tab_frame(tab, after).await?),
+            BrowserTabInput { tab, events } => reply(self.browser_tab_input(tab, events).await?),
+            BrowserTabResize { tab, width, height, scale } => reply(self.browser_tab_resize(tab, width, height, scale).await?),
+            BrowserTabUpload { tab, name, data } => reply(self.browser_tab_upload(tab, name, data).await?),
+            BrowserTabStop { tab } => reply(self.browser_tab_stop(tab).await?),
             ComputerStatus {} => reply(self.computer_status().await),
             ComputerSetup {} => reply(self.computer_setup().await?),
             ComputerSetActionLabels { enabled } => reply(self.computer_set_action_labels(enabled).await?),
@@ -863,7 +883,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 202);
+        assert_eq!(names.len(), 212);
         for name in [
             "room_curate",
             "room_curate_undo",
