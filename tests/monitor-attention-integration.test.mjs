@@ -1,3 +1,4 @@
+import {commandBackend} from '../src/commandBackend.ts';
 import {assistantVoiceKeeperOwner} from '../src/voice/assistantVoiceOwner.ts';
 import {statusWords} from '../src/connection.ts';
 import * as companionContext from '../src/assistantCompanionContext.ts';
@@ -154,8 +155,8 @@ function appHarness(options = {}) {
     subscribeToImports,
     chatFolder, useWorktreeMount,
     getBackend: async () => backend,
-    DEFAULT_SETTINGS: { disabledProviders: [], theme: 'dark' },
-    readSettings: () => ({ disabledProviders: [] }),
+    DEFAULT_SETTINGS: { disabledProviders: [], theme: 'dark', newThread:options.newThread??{policy:'mention',max_bot_hops:3} },
+    readSettings: () => ({ disabledProviders: [], newThread:options.newThread??{policy:'mention',max_bot_hops:3} }),
     connection: { subscribe: () => () => {}, get: () => ({ status: { kind: 'connected' } }) },
     statusWords,
     modHost: { start() {} },
@@ -834,8 +835,8 @@ test('a native-created Work thread appears closed and the actual sidebar opens i
  assert.ok(!calls.some(([cmd])=>['room_turn','room_post','room_post_to'].includes(cmd)));h.unmount();
 });
 
-async function companionAppHarness() {
-  const h=appHarness({companion:true});
+async function companionAppHarness(options={}) {
+  const h=appHarness({companion:true,...options});
   h.assistantCollection.hosts[0].routeHostId='route-a';
   h.setConnection({kind:'connected',hostId:'host-a'},'route-a');
   h.session.focusedPane='thread-a';
@@ -911,14 +912,21 @@ test('actual App passes eligible owner threads to the real companion hook, keeps
 });
 
 test('actual App New thread creates a zero-bot native room on the exact active project route and focuses it without starting a reply',async()=>{
-  const {h}=await companionAppHarness();h.emitFloat({type:'assistant-active-thread',threadId:'closed-pin'});h.render();
+  const settingsOptions={policy:'everyone',max_bot_hops:7};
+  const {h}=await companionAppHarness({newThread:settingsOptions});h.emitFloat({type:'assistant-active-thread',threadId:'closed-pin'});h.render();
   const calls=[],route=h.route('route-a');let created;
   route.call=async(command,args)=>{
     calls.push({command,args:structuredClone(args)});
-    if(command==='room_create'){created={id:args.id,kind:'work',cwd:args.cwd,title:'New thread',participants:[]};return {participants:[],options:{},transcript:[]};}
+    if(command==='room_create'){
+      assert.ok(['mention','everyone','round_robin'].includes(args.options?.policy),'native room_create requires RoomOptions.policy');
+      assert.ok(Object.hasOwn(args.options,'max_bot_hops'),'native request preserves configured max_bot_hops');
+      created={id:args.id,kind:'work',cwd:args.cwd,title:'New thread',participants:[]};return {participants:[],options:args.options,transcript:[]};}
     if(command==='chat_update_meta')return {title:args.title};
     throw new Error(`Unexpected mutation ${command}`);
   };
+  const typed=commandBackend({call:route.call,listen:async()=>()=>{},saveAttachment:async()=>{throw Error('No attachment expected');},readAttachment:async()=>{throw Error('No attachment expected');}},{});
+  let typedCreates=0;
+  route.roomCreate=(...args)=>{typedCreates++;return typed.roomCreate(...args);};
   h.chatCollection.refresh=async routeHostId=>{
     calls.push({command:'refresh',routeHostId});
     assert.equal(routeHostId,'route-a');
@@ -927,7 +935,8 @@ test('actual App New thread creates a zero-bot native room on the exact active p
   };
   const result=await h.floatOptions().onNewThread();let tree=h.render();await tick();tree=h.render();
   assert.ok(result.id.startsWith('pane-'));assert.deepEqual(calls.map(call=>call.command),['room_create','chat_update_meta','refresh']);
-  assert.deepEqual(calls[0].args,{id:result.id,participants:[],options:{},cwd:project.path});
+  assert.deepEqual(calls[0].args,{id:result.id,participants:[],options:settingsOptions,cwd:project.path});
+  assert.equal(typedCreates,1,'App uses the existing typed native roomCreate route');
   assert.deepEqual(calls[1].args,{id:result.id,title:'New thread'});
   assert.equal(h.floatOptions().threadContext.activeThreadId,result.id);assert.ok(h.floatOptions().threadContext.followedThreadIds.includes(result.id));
   const createdPane=child(tree,'ProjectSidebar').props.panes.find(p=>p.id===result.id);assert.ok(createdPane);assert.equal(createdPane.workspaceId,project.id);assert.equal(Boolean(createdPane.closed),false);

@@ -2163,7 +2163,7 @@ export function App() {
       const bound=()=>hostBackend(target.routeHostId)===route&&authenticatedProjectHost(target.routeHostId)===target.hostId&&!offlineHost(target.routeHostId);
       if(!bound())throw new Error('Reconnect the thread’s owning machine before creating it.');
       const id=newId('pane');
-      await route.call('room_create',{id,participants:[],options:{},cwd:target.project.cwd});
+      await route.roomCreate(id,[],settings.newThread,target.project.cwd);
       if(!bound())throw new Error('The machine changed after thread creation. Refresh its thread list before trying again.');
       await route.call('chat_update_meta',{id,title:'New thread'});
       await chats.refresh(target.routeHostId);
