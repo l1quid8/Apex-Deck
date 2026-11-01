@@ -29,7 +29,7 @@ enum CursorOverlaySettings {
   /// Can be disabled separately if user wants only the pointer.
   static var showLabel: Bool {
     get {
-      if UserDefaults.standard.object(forKey: labelKey) == nil { return true }
+      if UserDefaults.standard.object(forKey: labelKey) == nil { return false }
       return UserDefaults.standard.bool(forKey: labelKey)
     }
     set { UserDefaults.standard.set(newValue, forKey: labelKey) }

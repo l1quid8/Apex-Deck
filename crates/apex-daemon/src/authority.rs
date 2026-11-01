@@ -155,7 +155,7 @@ pub fn command_needs(command: &Command) -> Need {
         ExportThread { .. } => full(Global),
 
         // Desktop control and permission setup belong to this Mac.
-        ComputerStatus {} | ComputerSetup {} | ComputerSetEnabled { .. } | ComputerStop {} => Need::Never,
+        ComputerStatus {} | ComputerSetup {} | ComputerSetEnabled { .. } | ComputerSetActionLabels { .. } | ComputerStop {} => Need::Never,
         // Never remote.
         DataFolder {} => Need::Never,
         EnvPresent { .. } => Need::Never,
@@ -507,6 +507,7 @@ mod tests {
             ("computer_status", None, json!({})),
             ("computer_setup", None, json!({})),
             ("computer_set_enabled", None, json!({"enabled":true})),
+            ("computer_set_action_labels", None, json!({"enabled":true})),
             ("computer_stop", None, json!({})),
             ("phone_status", None, json!({})),
             ("phone_start", None, json!({})),

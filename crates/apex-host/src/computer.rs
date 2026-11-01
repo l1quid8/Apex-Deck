@@ -391,6 +391,7 @@ impl Host {
                         "listenEventAccess",
                         "screenCaptureAccess",
                         "tapHealthy",
+                        "cursorOverlayLabelsEnabled",
                     ] {
                         status[key] = json!(helper[key] == true);
                     }
@@ -439,6 +440,19 @@ impl Host {
         }
         launch(&path, true).await?;
         Ok(self.computer_status().await)
+    }
+    pub async fn computer_set_action_labels(&self, enabled: bool) -> Result<Value, String> {
+        #[cfg(unix)]
+        {
+            let mut stream = connect().await?;
+            let result = rpc(&mut stream, "unified/set-action-labels", json!({"enabled":enabled})).await?;
+            if result["cursorOverlayLabelsEnabled"] != enabled {
+                return Err("Unified Computer Use did not acknowledge the label setting.".into());
+            }
+            return Ok(self.computer_status().await);
+        }
+        #[cfg(not(unix))]
+        { let _ = enabled; Err("Unified Computer Use requires macOS.".into()) }
     }
     pub async fn computer_set_enabled(&self, enabled: bool) -> Result<Value, String> {
         if enabled {

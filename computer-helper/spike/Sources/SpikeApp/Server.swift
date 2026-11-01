@@ -54,6 +54,7 @@ final class Server {
     return ["accessibilityTrusted": ax.trusted(), "screenCaptureAccess": CGPreflightScreenCaptureAccess(),
       "listenEventAccess": CGPreflightListenEventAccess(), "tapHealthy": state.2, "stopped": turns.isStopped,
       "cursorOverlayEnabled": CursorOverlaySettings.isEnabled,
+      "cursorOverlayLabelsEnabled": CursorOverlaySettings.showLabel,
       "pid": ProcessInfo.processInfo.processIdentifier]
   }
   func send(_ value: [String: Any], _ client: Int32) { output.lock(); defer { output.unlock() }; Wire.send(value, fd: client) }
@@ -136,6 +137,13 @@ final class Server {
         guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
         DispatchQueue.main.async { self.showSetup?() }
         self.response(id, ["shown": true], client); return
+      }
+      if method == "unified/set-action-labels" {
+        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        guard let enabled = params["enabled"] as? Bool else { self.fail(id, "invalid_request", client); return }
+        CursorOverlaySettings.showLabel = enabled
+        CursorOverlay.shared.cleanup()
+        self.response(id, ["cursorOverlayLabelsEnabled": enabled], client); return
       }
       if method == "unified/resume" {
         guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }

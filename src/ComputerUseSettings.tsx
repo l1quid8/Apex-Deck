@@ -8,6 +8,7 @@ type ComputerStatus = {
   listenEventAccess?: boolean;
   screenCaptureAccess?: boolean;
   stopped?: boolean;
+  cursorOverlayLabelsEnabled?: boolean;
   reason?: string;
 };
 
@@ -46,6 +47,10 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
       <div className="settings-row">
         <div className="settings-label"><strong>Mac permissions</strong><small>Accessibility: {permission(status?.accessibilityTrusted)}<br />Input Monitoring: {permission(status?.listenEventAccess)}<br />Screen Recording: {permission(status?.screenCaptureAccess)}</small></div>
         <button disabled={busy || backend.demo || !status?.available} onClick={() => { void act('computer_setup'); }}>Open Unified Computer Use</button>
+      </div>
+      <div className="settings-row">
+        <div className="settings-label"><strong>Show action labels</strong><small>Show a description of each cursor action. Off by default; the pointer and click ripple remain visible.</small></div>
+        <input type="checkbox" aria-label="Show action labels" checked={status?.cursorOverlayLabelsEnabled ?? false} disabled={busy || backend.demo || !status?.available || status.cursorOverlayLabelsEnabled === undefined} onChange={e => { void act('computer_set_action_labels', { enabled: e.target.checked }); }} />
       </div>
       <div className="settings-row">
         <div className="settings-label"><strong>Stop Unified Computer Use</strong><small>Cancels active input and revokes the current turns. The helper also has an independent Stop control in the menu bar.</small></div>
