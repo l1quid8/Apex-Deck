@@ -21,7 +21,16 @@ export interface AppearanceValues {
   /** Solid warm theme layer; omitted by every legacy skin. Saved last so
    *  JSON key order survives a parseSkin round-trip (tile highlight). */
   theme?: "clay";
+  /** Clay's alternate palette; omitted means warm. */
+  palette?: "black";
+  /** Reply typeface; omitted means the theme's own (serif in Clay, sans elsewhere). */
+  reply?: "serif" | "sans";
+  /** Stronger panel dividers; omitted means soft. */
+  edges?: "strong";
 }
+
+export type ThemeId = "clay" | "classic" | "liquid";
+export type PresetRef = { kind: "builtin"; id: string } | { kind: "saved"; name: string };
 
 export const BACKDROP_PATTERNS = [
   { id: "blobs", name: "Blobs" },
@@ -50,6 +59,10 @@ export interface SkinFile {
 
 export interface BuiltinSkin {
   id: string;
+  theme: ThemeId;
+  /** The name inside its theme, such as "Warm". */
+  preset: string;
+  /** The full name, such as "Clay Warm". */
   name: string;
   note: string;
   appearance: AppearanceValues;
@@ -62,6 +75,10 @@ export interface AppearanceSettings {
   saved: SkinFile[];
   /** Explicit light/dark/system choice, separate from skin's portable light hint. */
   colorMode?: ColorMode;
+  /** The preset Deck's current appearance came from. Derived when absent. */
+  source?: PresetRef;
+  /** Deck holds an earlier version of its saved preset until the next Apply. */
+  sourceBehind?: true;
 }
 
 export function resolveColorMode(mode: ColorMode | undefined, systemDark: boolean): 'light' | 'dark' {
@@ -92,14 +109,15 @@ export const DEFAULT_APPEARANCE: AppearanceValues = appearance({
 });
 
 export const BUILTIN_SKINS: BuiltinSkin[] = [
-  { id: "classic", name: "Classic", note: "Today's Deck, no glass", appearance: DEFAULT_APPEARANCE },
-  { id: "smoked", name: "Smoked", note: "Quiet glass", appearance: appearance({ hue: 168, glow: 40, blur: 24, opacity: 76, radius: 18, backdrop: 35, density: 1, light: false, flat: false }) },
-  { id: "tide", name: "Tide", note: "Cool and deep", appearance: appearance({ hue: 223, glow: 62, blur: 28, opacity: 60, radius: 20, backdrop: 70, density: 1, light: false, flat: false }) },
-  { id: "dusk", name: "Dusk", note: "Violet evening", appearance: appearance({ hue: 290, glow: 55, blur: 26, opacity: 64, radius: 18, backdrop: 65, density: 1, light: false, flat: false }) },
-  { id: "rose", name: "Rose", note: "Warm and soft", appearance: appearance({ hue: 15, glow: 45, blur: 22, opacity: 70, radius: 22, backdrop: 55, density: 1, light: false, flat: false }) },
-  { id: "frost", name: "Frost", note: "Light glass", appearance: appearance({ hue: 218, glow: 40, blur: 26, opacity: 66, radius: 18, backdrop: 70, density: 1, light: true, flat: false }) },
-  { id: "liquid", name: "Liquid", note: "Full glass", appearance: appearance({ hue: 172, glow: 85, blur: 30, opacity: 44, radius: 24, backdrop: 95, density: 1, light: false, flat: false }) },
-  { id: "clay", name: "Clay", note: "Warm paper, serif replies", appearance: appearance({ hue: 38, glow: 0, blur: 0, opacity: 100, radius: 10, backdrop: 0, density: 1, light: false, flat: true, theme: "clay" }) },
+  { id: "classic", theme: "classic", preset: "Standard", name: "Classic", note: "Today's Deck, no glass", appearance: DEFAULT_APPEARANCE },
+  { id: "smoked", theme: "liquid", preset: "Smoked", name: "Liquid Smoked", note: "Quiet glass", appearance: appearance({ hue: 168, glow: 40, blur: 24, opacity: 76, radius: 18, backdrop: 35, density: 1, light: false, flat: false }) },
+  { id: "tide", theme: "liquid", preset: "Tide", name: "Liquid Tide", note: "Cool and deep", appearance: appearance({ hue: 223, glow: 62, blur: 28, opacity: 60, radius: 20, backdrop: 70, density: 1, light: false, flat: false }) },
+  { id: "dusk", theme: "liquid", preset: "Dusk", name: "Liquid Dusk", note: "Violet evening", appearance: appearance({ hue: 290, glow: 55, blur: 26, opacity: 64, radius: 18, backdrop: 65, density: 1, light: false, flat: false }) },
+  { id: "rose", theme: "liquid", preset: "Rose", name: "Liquid Rose", note: "Warm and soft", appearance: appearance({ hue: 15, glow: 45, blur: 22, opacity: 70, radius: 22, backdrop: 55, density: 1, light: false, flat: false }) },
+  { id: "frost", theme: "liquid", preset: "Frost", name: "Liquid Frost", note: "Light glass", appearance: appearance({ hue: 218, glow: 40, blur: 26, opacity: 66, radius: 18, backdrop: 70, density: 1, light: true, flat: false }) },
+  { id: "liquid", theme: "liquid", preset: "Full glass", name: "Liquid Full glass", note: "Full glass", appearance: appearance({ hue: 172, glow: 85, blur: 30, opacity: 44, radius: 24, backdrop: 95, density: 1, light: false, flat: false }) },
+  { id: "clay", theme: "clay", preset: "Warm", name: "Clay Warm", note: "Warm paper, serif replies", appearance: appearance({ hue: 38, glow: 0, blur: 0, opacity: 100, radius: 10, backdrop: 0, density: 1, light: false, flat: true, theme: "clay" }) },
+  { id: "clay-black", theme: "clay", preset: "Black", name: "Clay Black", note: "Black and white paper, serif replies", appearance: appearance({ hue: 38, glow: 0, blur: 0, opacity: 100, radius: 10, backdrop: 0, density: 1, light: false, flat: true, theme: "clay", palette: "black" }) },
 ];
 
 /** Clay accent hues. The stylesheet derives a light Ember and a dark Paper
@@ -120,6 +138,7 @@ const LABELS: Record<string, string> = { hue: "Hue", glow: "Glow", blur: "Frost"
 const DEFAULT_SKIN: SkinFile = { format: FORMAT, version: 2, name: "Classic", appearance: DEFAULT_APPEARANCE };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const defaultReply = (clay: boolean): "serif" | "sans" => clay ? "serif" : "sans";
 const utf8Length = (text: string): number => new TextEncoder().encode(text).byteLength;
 
 /** Parse and validate an imported skin, migrating v1 files into the v2 shape. */
@@ -138,7 +157,7 @@ export function parseSkin(text: string): SkinFile {
   if (value.author !== undefined && typeof value.author !== "string") throw new Error("Skin author must be text.");
   if (!isRecord(value.appearance)) throw new Error("Skin appearance must be an object.");
   const source = value.appearance;
-  const knownAppearance = new Set<string>([...FIELD_NAMES, "accentColor", "backdropPattern", "glowColors", "glowCount", "glowSize", "theme"]);
+  const knownAppearance = new Set<string>([...FIELD_NAMES, "accentColor", "backdropPattern", "glowColors", "glowCount", "glowSize", "theme", "palette", "reply", "edges"]);
   for (const key of Object.keys(source)) if (!knownAppearance.has(key)) throw new Error(`Unknown appearance setting: ${key}.`);
 
   const normalized: Record<string, unknown> = {};
@@ -182,6 +201,18 @@ export function parseSkin(text: string): SkinFile {
   if (source.theme !== undefined) {
     if (source.theme !== "clay") throw new Error("Theme must be \"clay\" when present.");
     normalized.theme = source.theme;
+  }
+  if (source.palette !== undefined) {
+    if (source.palette !== "black") throw new Error("Palette must be \"black\" when present.");
+    normalized.palette = source.palette;
+  }
+  if (source.reply !== undefined) {
+    if (source.reply !== "serif" && source.reply !== "sans") throw new Error("Reply must be \"serif\" or \"sans\" when present.");
+    if (source.reply !== defaultReply(source.theme === "clay")) normalized.reply = source.reply;
+  }
+  if (source.edges !== undefined) {
+    if (source.edges !== "strong") throw new Error("Edges must be \"strong\" when present.");
+    normalized.edges = source.edges;
   }
 
   const name = value.name.trim().slice(0, 40);
@@ -236,11 +267,17 @@ export function applyAppearance(root: Pick<HTMLElement, "dataset" | "style">, va
   const variables = themeVariables(values);
   root.dataset.deckTheme = themeMode(values);
   root.dataset.deckLight = String(values.light);
+  if (values.palette) root.dataset.deckPalette = values.palette;
+  if (values.reply) root.dataset.deckReply = values.reply;
+  if (values.edges) root.dataset.deckEdges = values.edges;
   for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
   return () => {
     for (const name of Object.keys(variables)) root.style.removeProperty(name);
     delete root.dataset.deckTheme;
     delete root.dataset.deckLight;
+    delete root.dataset.deckPalette;
+    delete root.dataset.deckReply;
+    delete root.dataset.deckEdges;
   };
 }
 
@@ -387,10 +424,51 @@ export function themeMode(values: AppearanceValues): "classic" | "flat" | "glass
   return values.flat ? "flat" : "glass";
 }
 
+/** Which theme a set of values belongs to. Nothing extra is stored, so Liquid's
+ *  Solid panels keeps its glass values and stays Liquid. */
+export function themeFamily(values: AppearanceValues): ThemeId {
+  if (values.theme === "clay") return "clay";
+  if (values.flat && values.glow === 0 && values.blur === 0 && values.backdrop === 0 && !customBackdrop(values)) return "classic";
+  return "liquid";
+}
+
+/** The built-in a saved or edited appearance falls back to. */
+export function builtinFor(values: AppearanceValues): BuiltinSkin {
+  const family = themeFamily(values);
+  const id = family === "clay" ? (values.palette === "black" ? "clay-black" : "clay") : family === "classic" ? "classic" : "liquid";
+  return BUILTIN_SKINS.find((skin) => skin.id === id)!;
+}
+
+/** Compares everything except the portable light hint: Mode decides that now. */
+export function sameLook(a: AppearanceValues, b: AppearanceValues): boolean {
+  const comparable = (values: AppearanceValues) => {
+    const { light: _light, ...rest } = values;
+    const entries = Object.entries({ ...rest, reply: values.reply ?? defaultReply(values.theme === "clay") }).filter(([, value]) => value !== undefined);
+    return JSON.stringify(entries.sort(([x], [y]) => x < y ? -1 : 1));
+  };
+  return comparable(a) === comparable(b);
+}
+
+const validSource = (source: unknown, saved: SkinFile[]): source is PresetRef =>
+  isRecord(source) && (
+    (source.kind === "builtin" && BUILTIN_SKINS.some((skin) => skin.id === source.id))
+    || (source.kind === "saved" && saved.some((skin) => skin.name === source.name)));
+
+/** What Deck's current appearance came from: the stored source, else worked out
+ *  from its values, so settings from before presets keep their identity. */
+export function deriveSource(settings: AppearanceSettings): PresetRef {
+  if (validSource(settings.source, settings.saved)) return settings.source;
+  const { current, saved } = settings;
+  const mine = saved.find((skin) => skin.name === current.name && sameLook(skin.appearance, current.appearance));
+  if (mine) return { kind: "saved", name: mine.name };
+  const builtin = BUILTIN_SKINS.find((skin) => sameLook(skin.appearance, current.appearance)) ?? builtinFor(current.appearance);
+  return { kind: "builtin", id: builtin.id };
+}
+
 /** Build a truthful prompt for an external AI to return an importable skin JSON file. */
 export function skinPrompt(description: string): string {
   const brief = description.trim() || "a distinctive, usable Apex Deck appearance";
-  return `Create an Apex Deck appearance skin for this description: ${brief}\n\nReturn only one JSON object using this contract: {"format":"apex-glass-playground","version":2,"name":"Name","appearance":{"hue":0,"glow":0,"blur":0,"opacity":100,"radius":14,"backdrop":0,"density":1,"light":false,"flat":false}}. Optional accentColor is an exact six-digit hex color such as #35aabb; omit it for the legacy hue palette. The background behind the glass is a set of colored glows: optional backdropPattern is one of ${BACKDROP_PATTERNS.map(({ id }) => id).join(", ")}; optional glowColors is a list of ${MIN_GLOWS} to ${MAX_GLOWS} six-digit hex colors, one per glow (omit it to derive the glows from the accent hue); optional glowCount (whole number ${MIN_GLOWS}–${MAX_GLOWS}) sets how many accent-derived glows there are when glowColors is omitted; optional glowSize (number 50–200, percent of normal) makes the glows tighter or wider. Use only these appearance fields: accentColor (optional hex string), backdropPattern (optional), glowColors (optional), glowCount (optional), glowSize (optional), hue (number 0–360), glow (number 0–100), blur (number 0–40), opacity (number 30–100), radius (number 4–30), backdrop (number 0–100), density (exactly 0.72 or 1), light (boolean), flat (boolean), theme (optional, exactly "clay" for the solid warm theme with serif replies; omit it otherwise). Do not include CSS, scripts, extra keys, or external assets. This prompt requests JSON for the user's import workflow; Apex Deck does not generate the skin itself.`;
+  return `Create an Apex Deck appearance skin for this description: ${brief}\n\nReturn only one JSON object using this contract: {"format":"apex-glass-playground","version":2,"name":"Name","appearance":{"hue":0,"glow":0,"blur":0,"opacity":100,"radius":14,"backdrop":0,"density":1,"light":false,"flat":false}}. Optional accentColor is an exact six-digit hex color such as #35aabb; omit it for the legacy hue palette. The background behind the glass is a set of colored glows: optional backdropPattern is one of ${BACKDROP_PATTERNS.map(({ id }) => id).join(", ")}; optional glowColors is a list of ${MIN_GLOWS} to ${MAX_GLOWS} six-digit hex colors, one per glow (omit it to derive the glows from the accent hue); optional glowCount (whole number ${MIN_GLOWS}–${MAX_GLOWS}) sets how many accent-derived glows there are when glowColors is omitted; optional glowSize (number 50–200, percent of normal) makes the glows tighter or wider. Use only these appearance fields: accentColor (optional hex string), backdropPattern (optional), glowColors (optional), glowCount (optional), glowSize (optional), hue (number 0–360), glow (number 0–100), blur (number 0–40), opacity (number 30–100), radius (number 4–30), backdrop (number 0–100), density (exactly 0.72 or 1), light (boolean), flat (boolean), theme (optional, exactly "clay" for the solid warm theme with serif replies; omit it otherwise), palette (optional, exactly "black" for Clay's black palette; omit it for warm), reply (optional, "serif" or "sans"; omit it for the theme's own reply font), edges (optional, exactly "strong" for stronger panel dividers; omit it otherwise). Do not include CSS, scripts, extra keys, or external assets. This prompt requests JSON for the user's import workflow; Apex Deck does not generate the skin itself.`;
 }
 
 export function defaultAppearanceSettings(): AppearanceSettings {
@@ -410,6 +488,7 @@ export function readAppearance(raw: unknown): AppearanceSettings {
       try { saved.push(parseSkin(JSON.stringify(candidate))); } catch { /* skip this saved skin only */ }
     }
   }
+  uniqueNames(saved);
   // Migration: explicit colorMode wins; legacy files map appearance.light -> explicit mode
   let colorMode: ColorMode | undefined;
   if (isColorMode((raw as any).colorMode)) {
@@ -423,7 +502,20 @@ export function readAppearance(raw: unknown): AppearanceSettings {
       colorMode = 'system';
     }
   }
-  return { current, saved, colorMode };
+  const source = validSource(raw.source, saved) ? { source: raw.source } : {};
+  const behind = source.source && raw.sourceBehind === true ? { sourceBehind: true as const } : {};
+  return { current, saved, colorMode, ...source, ...behind };
+}
+
+/** Presets are found by name, so older duplicates get " 2", " 3" in order. */
+function uniqueNames(saved: SkinFile[]): void {
+  const taken = new Set<string>();
+  saved.forEach((skin, index) => {
+    let name = skin.name;
+    for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${skin.name.slice(0, 36)} ${n}`;
+    taken.add(name.toLowerCase());
+    if (name !== skin.name) saved[index] = { ...skin, name };
+  });
 }
 
 /** Normalize picker/hex input and derive a hue for the background color field. */
