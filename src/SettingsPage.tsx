@@ -2,6 +2,8 @@
 import { ChipStylePicker } from "./ChipStylePicker";
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { AppearancePreview } from "./AppearancePreview";
+import { workingDraft } from "./appearanceDraft";
 import { defaultAppearanceSettings, type ColorMode } from "./themes";
 import { effectiveAppearanceValues as effectiveAppearanceValuesFn, useSystemDark } from "./useAppearance";
 import { CATALOG_SECTIONS, CATALOG_ENTRIES, groupSections, searchSettings as catalogSearch, resolveSectionId, type SettingsSectionId, type CatalogEntry } from "./settingsCatalog";
@@ -318,7 +320,10 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
   const currentSec = CATALOG_SECTIONS.find(s=>s.id===resolvedSection) ?? CATALOG_SECTIONS[0];
   const index = CATALOG_SECTIONS.findIndex(s=>s.id===resolvedSection);
 
-  return <div className="settings settings-v2">
+  const searching = searchResults.length>0 || Boolean(searchQuery.trim());
+  const studio = resolvedSection==='appearance' && !searching;
+
+  return <div className={`settings settings-v2${resolvedSection==='appearance' ? ' appearance-neutral' : ''}`}>
     <aside className="settings-nav settings-nav-v2">
       <div className="settings-nav-head">
         <h1>Settings</h1>
@@ -353,8 +358,14 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
         <span>Changes save as you make them.</span>
       </div>
     </aside>
-    <main className="settings-main" ref={mainRef} tabIndex={-1}>
-      <div className="settings-column">
+    <main className={`settings-main${studio ? ' studio-main' : ''}`} ref={mainRef} tabIndex={-1}>
+      {studio ? <div className="studio">
+        <div className="studio-status" />
+        <div className="studio-workspace">
+          <section className="studio-editor"><AppearanceSection settings={settings} onChange={onChange} systemDark={systemDark} backend={backend} highlightId={highlightId} /></section>
+          <aside className="studio-preview" aria-label="Live preview"><AppearancePreview draft={workingDraft(settings)} systemDark={systemDark} /></aside>
+        </div>
+      </div> : <div className="settings-column">
         {searchResults.length>0 || searchQuery.trim() ? (
           <div className="settings-search-results">
             <div className="settings-head">
@@ -381,7 +392,6 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
             </header>
 
             {resolvedSection==='general' && <General settings={settings} onChange={onChange} backend={backend} updates={updates} onRestartToUpdate={onRestartToUpdate} onSection={onSection} />}
-            {resolvedSection==='appearance' && <AppearanceSection settings={settings} onChange={onChange} systemDark={systemDark} backend={backend} highlightId={highlightId} />}
             {resolvedSection==='computers' && backend.hosts && <HostsSection backend={backend} />}
             {resolvedSection==='phones' && backend.hosts && <PhonesSection backend={backend} />}
             {resolvedSection==='computer' && <ComputerSection backend={backend} highlightId={highlightId} />}
@@ -400,7 +410,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
             </div>
           </>
         )}
-      </div>
+      </div>}
     </main>
   </div>;
 }

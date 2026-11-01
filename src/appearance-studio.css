@@ -1,0 +1,63 @@
+/* The Appearance page. Everything here is neutral: it follows Deck's applied
+   Mode and never the theme, which shows only inside the preview frame. */
+.settings.appearance-neutral,
+:root[data-deck-theme] .settings.appearance-neutral {
+  --bg: #18191b; --panel: #1f2023; --panel-2: #2a2b2f; --line: #303136; --text: #ececea; --muted: #a6a7ab;
+  --accent: #ececea; --accent-ink: #141517; --radius: 7px;
+  --studio-code: #141517; --studio-edge: #4a4b52; --studio-selected: #2c2d31; --studio-attention: #eebb6c; --studio-danger: #f0907f;
+  /* Theme rules that paint from their own tokens get the same neutral values. */
+  --deck-bg: var(--bg); --deck-panel: 31 32 35; --deck-panel-raised: 42 43 47; --deck-code: var(--studio-code); --deck-text: var(--text);
+  --deck-muted: var(--muted); --deck-muted-2: var(--muted); --deck-accent: var(--accent); --deck-edge: var(--studio-edge);
+  --deck-selected: var(--studio-selected); --deck-opacity: 1; --deck-blur: 0px;
+  --deck-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: dark;
+  background: var(--bg);
+  color: var(--text);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-deck-light="true"] .settings.appearance-neutral,
+:root[data-deck-light="true"][data-deck-theme] .settings.appearance-neutral {
+  --bg: #f2f2f0; --panel: #fafaf9; --panel-2: #ffffff; --line: #dcdcd8; --text: #1d1e20; --muted: #5a5b60;
+  --accent: #1d1e20; --accent-ink: #ffffff;
+  --studio-code: #e9e9e6; --studio-edge: #b4b4b0; --studio-selected: #e6e6e3; --studio-attention: #8a5a00; --studio-danger: #ad3626;
+  --deck-panel: 250 250 249; --deck-panel-raised: 255 255 255;
+  color-scheme: light;
+}
+:root[data-deck-theme] .settings.appearance-neutral .settings-nav {
+  background: var(--panel);
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-deck-theme] .settings.appearance-neutral .settings-main.studio-main { padding: 0; overflow: hidden; background: var(--bg); }
+
+.studio { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; }
+.studio-status { height: 52px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.studio-workspace { display: grid; grid-template-columns: 372px minmax(0, 1fr); min-height: 0; }
+.studio-editor { background: var(--panel); border-right: 1px solid var(--line); min-height: 0; overflow: auto; }
+.studio-preview { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 6px 12px 12px; }
+.studio-preview-frame { flex: 1; min-height: 0; width: 100%; border: 1px solid var(--studio-edge); border-radius: 12px; background: transparent; }
+
+/* Inside the preview frame. Layout only: every color comes from the theme. */
+html:has(.appearance-preview-page), html:has(.appearance-preview-page) body, html:has(.appearance-preview-page) #root { height: 100%; overflow: hidden; }
+.appearance-preview-page { height: 100%; min-height: 0; display: flex; font-size: 13px; }
+.preview-deck { flex: 1; min-width: 0; min-height: 0; display: flex; gap: var(--deck-gap, 0); }
+:root[data-deck-theme="glass"] .preview-deck, :root[data-deck-theme="flat"] .preview-deck, :root[data-deck-theme="classic"] .preview-deck { padding: 8px; gap: 8px; }
+.preview-rail { width: 170px; padding: 12px 10px; }
+.preview-rail-label { margin: 0 6px 6px; font-size: 11px; color: var(--muted); }
+.preview-rail-row { margin: 0; display: flex; justify-content: space-between; gap: 6px; padding: 5px 6px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-rail-row small { color: var(--muted); }
+.preview-rail-row.current { background: var(--panel-2); font-weight: 600; }
+.preview-pane { flex: 1; }
+.preview-steps { margin: 0 0 4px; color: var(--muted); font-size: 12px; white-space: normal; }
+.preview-error { display: grid; gap: 1px; margin-top: 8px; padding: 7px 10px; border: 1px solid var(--danger); border-left-width: 3px; border-radius: min(var(--radius), 8px); font-size: 12px; line-height: 1.45; white-space: normal; background: color-mix(in srgb, var(--danger) 10%, var(--panel-2)); }
+.preview-error strong { color: var(--danger); }
+.preview-error small { color: var(--muted); }
+.preview-ask { display: grid; gap: 3px; margin-top: 8px; padding: 7px 10px; border: 1px solid var(--line); border-radius: min(var(--radius), 10px); font-size: 12.5px; line-height: 1.45; white-space: normal; background: var(--panel-2); }
+.preview-ask span { padding: 3px 7px; border-radius: min(var(--radius), 6px); color: var(--muted); }
+.preview-ask span.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
