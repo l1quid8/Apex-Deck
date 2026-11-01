@@ -52,6 +52,21 @@ test('native external windows reopen after process exit with fresh snapshots and
           assert.deepEqual(JSON.parse(JSON.stringify(await callbacks.get('popout:restore')(owner,available))),[]);
           const thread=await open('pane','thread','Original title');
           const files=await open('tab','files','Files');
+          // The renderer tracks one assistant float. Switching assistants must
+          // close the former view, never leave an untracked window taking sends.
+          const first=await open('assistant','assistant-a','Assistant A');
+          const again=await callbacks.get('popout:open')(owner,{kind:'assistant',id:'assistant-a',title:'Assistant A'});
+          assert.equal(again.token,first.token,'same assistant reuses its live view');
+          const second=await open('assistant','assistant-b','Assistant B');
+          assert.ok(first.win.isDestroyed(),'opening B closes A before its handle is replaced');
+          assert.equal([...api.windows.values()].filter(e=>e.floatId).length,1,'only the tracked assistant view survives');
+          assert.ok(!thread.win.isDestroyed() && !files.win.isDestroyed(),'ordinary pop-outs stay open');
+          assert.ok(!api.snapshots.has(first.token),'old assistant snapshot is removed');
+          await callbacks.get('popout:close')(owner,second.token);
+          // Placement remains saved for reopening an assistant, independently
+          // of the ordinary pane/tab restart fixture below.
+          api.store.remove('assistant','assistant-a');
+          api.store.remove('assistant','assistant-b');
           const a=screen.getPrimaryDisplay().workArea;
           thread.win.setBounds({x:a.x+40,y:a.y+50,width:600,height:400});
           files.win.setBounds({x:a.x+100,y:a.y+120,width:650,height:430});

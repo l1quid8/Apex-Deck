@@ -919,9 +919,14 @@ function createPopout(ownerEntry, snapshot, bounds) {
     throw new Error('That pop-out has nothing to show.');
   }
   const float = snapshot.kind === 'assistant';
-  // One live window per assistant: asking again brings that one forward.
-  const open = float && [...popoutWindows.values()].find(e => e.floatId === snapshot.id && !e.win.isDestroyed());
+  // The owning renderer tracks one float. Keep that contract here too, so a
+  // different assistant never leaves a visible window without a live owner.
+  const floats = float ? [...popoutWindows.values()].filter(e => e.ownerId === ownerEntry.win.id && e.floatId && !e.win.isDestroyed()) : [];
+  const open = floats.find(e => e.floatId === snapshot.id);
   if (open) { open.win.show(); open.win.focus(); return open.token; }
+  // Floats are views only: their conversation, draft and call live in Deck.
+  // Destroy synchronously before returning a replacement handle to the owner.
+  for (const previous of floats) previous.win.destroy();
   const token = crypto.randomBytes(16).toString('hex');
   const saved = popoutLayout.get(snapshot.kind, snapshot.id);
   const at = popoutBounds(ownerEntry, bounds ?? saved?.bounds ?? (float ? { x: 40, y: 80, width: 380, height: 560 } : undefined));
