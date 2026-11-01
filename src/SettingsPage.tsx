@@ -466,7 +466,7 @@ function AppearanceSection({ settings, onChange, systemDark, backend: _backend, 
 
     <div className="section-title">Agent chips & details</div>
     <div className="settings-card" id="chips">
-      <div className={`settings-row ${highlightId==='chips' ? 'search-highlight' : ''}`} id="chip-style-row">
+      <div className={`settings-row chip-style-row ${highlightId==='chips' ? 'search-highlight' : ''}`} id="chip-style-row">
         <div className="settings-label"><strong>Chip style</strong><small>Applies to all chats, including popped-out windows. Hover a name to preview it; click to use it.</small></div>
         <ChipStylePicker value={settings.botChips.style ?? "classic"} onChange={(style)=>onChange({ ...settings, botChips: { ...settings.botChips, style } })} />
       </div>
