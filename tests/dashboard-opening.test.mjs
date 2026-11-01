@@ -76,7 +76,7 @@ test('external panes use their source section layout even if another screen is a
     window: { apexDeck: { popout: { open: async snapshot => { snapshots.push(snapshot); return { token: 'token' }; } } } },
     poppedIds: new Set(), listed: [source], toast: message => assert.fail(message),
     hostOfPane: () => ({ workspace: { id: source.workspaceId, path: '/remote/project' }, hostId: 'remote-host' }),
-    runs: {}, appearance: {}, chatFolder: (_pane, workspace) => workspace.path,
+    runs: {}, appearance: {}, appearanceSettings: undefined, chatFolder: (_pane, workspace) => workspace.path,
     layoutKey: (_workspace, section) => `:${section}`, paneSection,
     dashboardTree: section => layouts[`:${section}`], takePaneOut, popoutRefusal,
     setLayouts: update => Object.assign(layouts, update(layouts)),

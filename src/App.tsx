@@ -1378,7 +1378,7 @@ export function App() {
     const { workspace, hostId } = hostOfPane(pane);
     const run = runs[paneId];
     const snapshot: PopoutSnapshot = {
-      kind: "pane", id: pane.id, title: pane.title, appearance,
+      kind: "pane", id: pane.id, title: pane.title, appearance: appearanceSettings ?? appearance,
       ...(pane.kind === "terminal" && run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
       workspaceId: pane.workspaceId, hostId,
       ...(pane.agent ? { agent: pane.agent } : {}),
@@ -1424,7 +1424,7 @@ export function App() {
     const workspace = workspaces.find((w) => w.id === (tab.kind === "artifacts" ? selected?.workspaceId : activeWorkspace)) ?? shownWorkspaces(workspaces)[0] ?? null;
     const hostId = workspace ? workspaceHost(workspace) : "local";
     const snapshot: PopoutSnapshot = {
-      kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance,
+      kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance: appearanceSettings ?? appearance,
       ...(tab.url !== undefined ? { url: tab.url } : {}),
       workspaceId: workspace?.id, hostId,
       cwd: chatFolder(selected, workspace),
