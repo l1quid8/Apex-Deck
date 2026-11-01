@@ -1,6 +1,29 @@
 import Darwin
 import Foundation
 
+/// A Safari web app is a signed manifest with no executable, run by Apple's host.
+public enum SafariWebApp {
+  public static let hostIdentifier = "com.apple.Safari.WebApp"
+  public static let hostRequirement = "identifier \"\(hostIdentifier)\" and anchor apple"
+  public static func manifest(bundle: String, info: [String: Any]) -> Bool {
+    guard info["LSTemplateApplication"] as? Bool == true, info["CFBundleExecutable"] == nil,
+      let template = info["LSTemplateApplicationParameters"] as? [String: Any],
+      template["CFBundleIdentifier"] as? String == hostIdentifier,
+      let id = template["TemplateAppUUID"] as? String, UUID(uuidString: id) != nil else { return false }
+    return bundle == "\(hostIdentifier).\(id)"
+  }
+  public static func launchBinds(_ args: [String], path: String, bundle: String) -> Bool {
+    let options = Array(args.prefix { $0 != "--" })
+    func only(_ flag: String) -> String? {
+      let found = options.indices.filter { options[$0] == flag }
+      guard found.count == 1, found[0] + 1 < options.count else { return nil }
+      return options[found[0] + 1]
+    }
+    guard let launched = only("--bundlepath"), only("--bundleidentifier") == bundle else { return false }
+    return URL(fileURLWithPath: launched).resolvingSymlinksInPath().standardizedFileURL.path == path
+  }
+}
+
 public enum Policy {
   public static func protectedRole(_ role: String, _ subrole: String) -> Bool {
     let role = role.lowercased()

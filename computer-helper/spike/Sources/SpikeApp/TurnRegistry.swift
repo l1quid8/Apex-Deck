@@ -118,23 +118,7 @@ final class TurnRegistry {
   private static func daemonServeMode(_ process: pid_t) -> Bool {
     // Kernel argv is a second boundary: signed --stdio and --codex-hook modes
     // can be relays and must never act as a computer-use host.
-    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, process]
-    var count = 0
-    guard sysctl(&mib, 3, nil, &count, nil, 0) == 0, (8...1_048_576).contains(count) else { return false }
-    var bytes = [UInt8](repeating: 0, count: count)
-    guard sysctl(&mib, 3, &bytes, &count, nil, 0) == 0 else { return false }
-    let argc = bytes.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
-    guard (2...1024).contains(argc) else { return false }
-    var index = 4
-    while index < count && bytes[index] != 0 { index += 1 } // executable path
-    while index < count && bytes[index] == 0 { index += 1 }
-    var args = [String]()
-    for _ in 0..<argc {
-      let start = index
-      while index < count && bytes[index] != 0 { index += 1 }
-      guard index < count, let arg = String(bytes: bytes[start..<index], encoding: .utf8) else { return false }
-      args.append(arg); index += 1
-    }
+    guard let args = kernelArguments(process), args.count >= 2 else { return false }
     guard !args.contains("--codex-hook"), !args.contains("--stdio"), !args.contains("--attach") else { return false }
     return args.dropFirst().first == "serve"
   }
@@ -158,15 +142,38 @@ final class TurnRegistry {
   }
 }
 
+func kernelArguments(_ process: pid_t) -> [String]? {
+  var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, process]
+  var count = 0
+  guard sysctl(&mib, 3, nil, &count, nil, 0) == 0, (8...1_048_576).contains(count) else { return nil }
+  var bytes = [UInt8](repeating: 0, count: count)
+  guard sysctl(&mib, 3, &bytes, &count, nil, 0) == 0 else { return nil }
+  let argc = bytes.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+  guard (1...1024).contains(argc) else { return nil }
+  var index = 4
+  while index < count && bytes[index] != 0 { index += 1 } // executable path
+  while index < count && bytes[index] == 0 { index += 1 }
+  var args = [String]()
+  for _ in 0..<argc {
+    let start = index
+    while index < count && bytes[index] != 0 { index += 1 }
+    guard index < count, let arg = String(bytes: bytes[start..<index], encoding: .utf8) else { return nil }
+    args.append(arg); index += 1
+  }
+  return args
+}
+
 struct AppIdentity: Equatable {
   let bundle: String
   let path: String
-  let executable: String
+  /// Nil only for a Safari web app, whose manifest bundle has no executable.
+  let executable: String?
   let signature: Data
   static func capture(_ url: URL, bundle: String) throws -> AppIdentity {
     let url = url.resolvingSymlinksInPath().standardizedFileURL
-    guard Policy.target(bundle), let app = Bundle(url: url), app.bundleIdentifier == bundle,
-      let executable = app.executableURL?.resolvingSymlinksInPath().path else { throw Refusal("protected_or_invalid_app") }
+    guard Policy.target(bundle), let app = Bundle(url: url), app.bundleIdentifier == bundle else { throw Refusal("protected_or_invalid_app") }
+    let executable = app.executableURL?.resolvingSymlinksInPath().path
+    guard executable != nil || SafariWebApp.manifest(bundle: bundle, info: app.infoDictionary ?? [:]) else { throw Refusal("protected_or_invalid_app") }
     var code: SecStaticCode?
     var info: CFDictionary?
     guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code = code,
@@ -177,9 +184,21 @@ struct AppIdentity: Equatable {
   }
   func validate(_ app: NSRunningApplication) throws {
     guard !app.isTerminated, app.bundleIdentifier == bundle, let url = app.bundleURL,
-      try Self.capture(url, bundle: bundle) == self,
-      app.executableURL?.resolvingSymlinksInPath().path == executable else { throw Refusal("app_identity_changed") }
+      try Self.capture(url, bundle: bundle) == self else { throw Refusal("app_identity_changed") }
     var running: SecCode?
+    guard let executable = executable else {
+      // The running code is Apple's shared host, so its signature cannot match
+      // the manifest. Require that host, launched for exactly this manifest.
+      var requirement: SecRequirement?
+      guard let args = kernelArguments(app.processIdentifier),
+        SafariWebApp.launchBinds(args, path: path, bundle: bundle) else { throw Refusal("app_identity_changed") }
+      guard SecRequirementCreateWithString(SafariWebApp.hostRequirement as CFString, [], &requirement) == errSecSuccess,
+        let requirement = requirement,
+        SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: app.processIdentifier] as CFDictionary, [], &running) == errSecSuccess,
+        let running = running, SecCodeCheckValidity(running, [], requirement) == errSecSuccess else { throw Refusal("running_app_identity_changed") }
+      return
+    }
+    guard app.executableURL?.resolvingSymlinksInPath().path == executable else { throw Refusal("app_identity_changed") }
     var runningStatic: SecStaticCode?
     var info: CFDictionary?
     guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: app.processIdentifier] as CFDictionary, [], &running) == errSecSuccess,

@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 import SpikeCore
 @testable import SpikeApp
@@ -48,5 +49,65 @@ final class TurnRegistryTests: XCTestCase {
     XCTAssertNoThrow(try lease.check("two", now: 122))
     XCTAssertTrue(lease.release("two"))
     XCTAssertTrue(try lease.claim("one", now: 123))
+  }
+}
+
+final class SafariWebAppIdentityTests: XCTestCase {
+  private let uuid = "2D312C6E-5EA1-488C-B953-E02B7C796B19"
+  private var bundle: String { "com.apple.Safari.WebApp.\(uuid)" }
+  private func manifest(template: Bool = true, host: String = "com.apple.Safari.WebApp") -> [String: Any] {
+    ["LSTemplateApplication": template, "LSTemplateApplicationParameters": ["CFBundleIdentifier": host, "TemplateAppUUID": uuid]]
+  }
+  private func fixture(_ info: [String: Any]) throws -> URL {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    let app = root.appendingPathComponent("Web.app")
+    try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
+    let plist = info.merging(["CFBundleIdentifier": bundle, "CFBundlePackageType": "AAPL"]) { $1 }
+    try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
+    let sign = Process()
+    sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+    sign.arguments = ["-s", "-", "-i", bundle, app.path]
+    sign.standardError = FileHandle.nullDevice
+    try sign.run(); sign.waitUntilExit()
+    XCTAssertEqual(sign.terminationStatus, 0)
+    return app
+  }
+  func testManifestOnlyWebAppCapturesWithoutAnExecutable() throws {
+    let identity = try AppIdentity.capture(fixture(manifest()), bundle: bundle)
+    XCTAssertNil(identity.executable)
+    XCTAssertFalse(identity.signature.isEmpty)
+  }
+  func testExecutableLessBundleWithoutWebAppTemplateIsStillRefused() throws {
+    for info in [[:], manifest(template: false), manifest(host: "com.example.Host")] {
+      XCTAssertThrowsError(try AppIdentity.capture(fixture(info), bundle: bundle)) { error in
+        XCTAssertEqual((error as? Refusal)?.code, "protected_or_invalid_app")
+      }
+    }
+  }
+  func testManifestMustNameItsOwnTemplateIdentifier() {
+    XCTAssertTrue(SafariWebApp.manifest(bundle: bundle, info: manifest()))
+    XCTAssertFalse(SafariWebApp.manifest(bundle: "com.apple.Safari.WebApp.OTHER", info: manifest()))
+    XCTAssertFalse(SafariWebApp.manifest(bundle: bundle, info: manifest().merging(["CFBundleExecutable": "Web"]) { $1 }))
+  }
+  func testHostLaunchMustBindExactlyThisManifest() {
+    let path = "/Users/me/Applications/Apex Terminal.app"
+    let good = ["Web App", "--bundlepath", path, "--sandboxextension", "x", "--bundleidentifier", bundle, "--"]
+    XCTAssertTrue(SafariWebApp.launchBinds(good, path: path, bundle: bundle))
+    XCTAssertFalse(SafariWebApp.launchBinds(good, path: "/Users/me/Applications/Other.app", bundle: bundle))
+    XCTAssertFalse(SafariWebApp.launchBinds(good, path: path, bundle: "com.apple.Safari.WebApp.OTHER"))
+    XCTAssertFalse(SafariWebApp.launchBinds(["Web App", "--bundleidentifier", bundle], path: path, bundle: bundle))
+    XCTAssertFalse(SafariWebApp.launchBinds(good.dropLast() + good, path: path, bundle: bundle))
+    XCTAssertFalse(SafariWebApp.launchBinds(["Web App", "--", "--bundlepath", path, "--bundleidentifier", bundle], path: path, bundle: bundle))
+  }
+  func testRunningWebAppValidatesAndDifferentManifestDoesNot() throws {
+    guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.hasPrefix("com.apple.Safari.WebApp.") == true }),
+      let url = app.bundleURL else { throw XCTSkip("no Safari web app is running") }
+    let identity = try AppIdentity.capture(url, bundle: app.bundleIdentifier!)
+    XCTAssertNoThrow(try identity.validate(app))
+    let other = AppIdentity(bundle: identity.bundle, path: "/Applications/Other.app", executable: nil, signature: identity.signature)
+    XCTAssertThrowsError(try other.validate(app)) { error in
+      XCTAssertEqual((error as? Refusal)?.code, "app_identity_changed")
+    }
   }
 }
