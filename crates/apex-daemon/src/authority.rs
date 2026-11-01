@@ -373,6 +373,8 @@ mod tests {
             ("personal_avatar_asset", Some((Full, "global")), json!({"assistantId":"a","assetId":"x","sha256":"hash"})),
             ("personal_create", Some((Full, "global")), json!({ "name": "A", "folder": "/tmp/a", "profile": participant })),
             ("personal_send", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r1", "text": "hi" })),
+            ("personal_permission_set", Some((Full, "global")), json!({"assistantId":"asst-1","expectedRevision":0,"capability":"threadCreate","scope":{"kind":"allProjects"},"mode":"always","delegate":false})),
+            ("room_set_trashed", Some((Full, "thread")), json!({"id":"mine","trashed":true})),
             ("personal_react", Some((Full, "global")), json!({ "assistantId": "asst-1", "messageId": "m1", "emoji": "👍", "enabled": true })),
             ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
             ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),

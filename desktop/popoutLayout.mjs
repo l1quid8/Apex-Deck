@@ -18,8 +18,8 @@ export class PopoutLayoutStore {
   keep(record) {
     if (!record || !['pane', 'tab', 'assistant'].includes(record.kind) || typeof record.id !== 'string' || !record.id || !validBounds(record.bounds)) return;
     const bounds = Object.fromEntries(['x', 'y', 'width', 'height'].map(k => [k, Math.round(record.bounds[k])]));
-    bounds.width = Math.max(360, bounds.width);
-    bounds.height = Math.max(240, bounds.height);
+    bounds.width = Math.max(record.kind === 'assistant' ? 76 : 360, bounds.width);
+    bounds.height = Math.max(record.kind === 'assistant' ? 76 : 240, bounds.height);
     const next = { kind: record.kind, id: record.id, bounds, maximized: record.maximized === true, ...(record.alwaysOnTop === true ? { alwaysOnTop: true } : {}) };
     this.records.set(keyOf(next), next);
   }

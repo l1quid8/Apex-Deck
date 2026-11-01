@@ -69,7 +69,7 @@ pub fn capability(op:&OperationSpec)->Capability { match op.tool.as_str() {
     "room.addParticipant"=>Capability::ParticipantAdd,"room.removeParticipant"=>Capability::ParticipantRemove,
     "room.assign"=>Capability::AgentAssign,"room.send"=>Capability::AgentMessage,
     "room.stop"=>Capability::WorkPause,"room.resume"=>Capability::WorkResume,
-    "model.reply"=>Capability::Spend,
+    t if t.starts_with("model.")=>Capability::Spend,
     t if t.starts_with("browser.")=>Capability::BrowserUse,
     t if t.starts_with("computer.")=>Capability::ComputerUse,
     t if t.ends_with(".publish")||t.ends_with(".send")=>Capability::Publish,
@@ -91,11 +91,17 @@ impl PermissionPolicy {
         Ok(())
     }
     pub fn resolve(&self,op:&OperationSpec,_requested:bool,_outside:bool)->Option<&Grant> {
-        self.grants.iter().filter(|g|g.capability==capability(op) && g.scope.matches(op)).max_by_key(|g|g.scope.rank())
+        // Raw commands, browser control and assistant calls have no native thread
+        // lineage. Narrow allowances cannot authorize them. Narrow restrictions
+        // conservatively hold them on that host instead of falling through to a
+        // broad Always rule (cwd does not confine arbitrary program I/O).
+        let raw=!op.tool.starts_with("room.");
+        let restriction=if raw {self.grants.iter().filter(|g|g.capability==capability(op)&&g.scope!=Scope::AllProjects&&(g.revoked||g.mode!=GrantMode::Always)&&match &g.scope {Scope::Project{host,..}|Scope::Thread{host,..}=>host==&op.host,_=>false}).max_by_key(|g|g.scope.rank())} else {None};
+        restriction.or_else(||self.grants.iter().filter(|g|g.capability==capability(op) && g.scope.matches(op) && (!raw||g.scope==Scope::AllProjects)).max_by_key(|g|g.scope.rank()))
     }
     pub fn authorize(&self,op:&OperationSpec,requested:bool,outside:bool)->Result<Authorization,String> {
         let g=self.resolve(op,requested,outside).ok_or("No capability grant.")?;
-        if g.revoked || g.mode==GrantMode::Ask || (outside && !matches!(capability(op),Capability::ConversationRead|Capability::FileRead|Capability::StatusRead)) || (g.mode==GrantMode::OnRequest && !requested) {return Err("This operation requires approval.".into())}
+        if (g.scope!=Scope::AllProjects&&!op.tool.starts_with("room.")) || g.revoked || g.mode==GrantMode::Ask || (outside && !matches!(capability(op),Capability::ConversationRead|Capability::FileRead|Capability::StatusRead)) || (g.mode==GrantMode::OnRequest && !requested) {return Err("This operation requires approval.".into())}
         Ok(Authorization{revision:self.revision,grant_id:Some(g.id.clone()),operation_hash:op.hash(),human_once:false})
     }
     pub fn revalidate(&self,op:&OperationSpec,authorization:&Authorization,requested:bool,outside:bool)->Result<(),String> {
@@ -117,18 +123,25 @@ impl PermissionPolicy {
 }
 /// Reply cost authority is separate from computer or command authority. A
 /// budget remains an independent ceiling enforced by the worker afterwards.
-pub fn reply_spend_operation(assistant:&super::PersonalAssistant,event:&super::PersonalEvent)->OperationSpec {
+pub fn model_spend_operation(assistant:&super::PersonalAssistant,purpose:&str,id:&str,source:&super::EventSource,payload:&str)->OperationSpec {
     use sha2::{Digest,Sha256};
-    OperationSpec{tool:"model.reply".into(),host:assistant.host_id.clone(),cwd:String::new(),argv:vec![event.id.clone(),assistant.permissions.revision.to_string(),format!("{:x}",Sha256::digest(serde_json::to_vec(&event.source).unwrap_or_default()))],plan:None}
+    OperationSpec{tool:format!("model.{purpose}"),host:assistant.host_id.clone(),cwd:String::new(),argv:vec![id.into(),assistant.permissions.revision.to_string(),format!("{:x}",Sha256::digest(serde_json::to_vec(source).unwrap_or_default())),format!("{:x}",Sha256::digest(payload.as_bytes()))],plan:None}
+}
+pub fn reply_spend_operation(assistant:&super::PersonalAssistant,event:&super::PersonalEvent)->OperationSpec {
+    let purpose=if matches!(event.source,super::EventSource::Internal{..}) {"summary"}else{"reply"};
+    model_spend_operation(assistant,purpose,&event.id,&event.source,"")
+}
+pub fn model_spend_approved(assistant:&super::PersonalAssistant,operation:&OperationSpec)->bool {
+    assistant.tasks.iter().any(|t|t.operation.as_ref()==Some(operation)&&(t.kind==super::TaskKind::Helper||t.receipts.is_empty())&&t.decision.as_ref().is_some_and(|d|d.status==super::DecisionStatus::Approved&&d.params_hash==operation.hash()&&d.decided_by_event.as_deref().is_some_and(|m|authorization_is_human_once(m)&&validate_marker(assistant,t,m).is_ok())))
+}
+pub fn model_spend_hold(assistant:&super::PersonalAssistant,operation:&OperationSpec,human:bool)->Option<String> {
+    let grant=assistant.permissions.resolve(operation,false,false)?;
+    if model_spend_approved(assistant,operation) {return None}
+    if grant.scope==Scope::AllProjects&&!grant.revoked&&(grant.mode==GrantMode::Always||(grant.mode==GrantMode::OnRequest&&human)) {return None}
+    Some(format!("Allow spending for this exact {}? Your separate daily budget still applies.",operation.tool.trim_start_matches("model.")))
 }
 pub fn reply_spend_hold(assistant:&super::PersonalAssistant,event:&super::PersonalEvent)->Option<String> {
-    let operation=reply_spend_operation(assistant,event);
-    let grant=assistant.permissions.resolve(&operation,false,false)?;
-    let approved=assistant.tasks.iter().any(|t|t.status==super::TaskStatus::Done&&t.operation.as_ref()==Some(&operation)&&t.decision.as_ref().is_some_and(|d|d.status==super::DecisionStatus::Approved&&d.params_hash==operation.hash()&&d.decided_by_event.as_deref().is_some_and(authorization_is_human_once)));
-    if approved {return None}
-    let human=matches!(event.source,super::EventSource::Human{..});
-    if !grant.revoked&&(grant.mode==GrantMode::Always||(grant.mode==GrantMode::OnRequest&&human)) {return None}
-    Some("Allow spending for this exact reply? Your separate daily budget still applies.".into())
+    model_spend_hold(assistant,&reply_spend_operation(assistant,event),matches!(event.source,super::EventSource::Human{..}))
 }
 
 /// Persist this marker in the decision; revision binding makes revocation
@@ -146,15 +159,53 @@ pub fn marker(assistant:&super::PersonalAssistant,task:&super::PersonalTask,huma
 pub fn authorization_is_human_once(marker:&str)->bool {
     marker.starts_with("pe-") || marker.strip_prefix("permission:").and_then(|s|serde_json::from_str::<Authorization>(s).ok()).is_some_and(|a|a.human_once)
 }
+/// Conservative imperative clauses, used again with the native target name.
+/// Ambiguous, explanatory, negated and hypothetical clauses supply no authority.
+pub fn direct_request_text(text:&str,capability:Capability)->String {
+    let lower=text.to_lowercase().replace('’', "'");
+    let verbs:&[&str]=match capability {
+        Capability::ThreadDelete=>&["delete","purge"],Capability::ParticipantAdd=>&["add","invite"],
+        Capability::ThreadOrganize=>&["rename","organize","move","restore"],Capability::ThreadArchive=>&["archive"],
+        Capability::ThreadTrash=>&["trash"],Capability::ParticipantRemove=>&["remove"],
+        Capability::AgentAssign=>&["assign","ask","tell","send"],Capability::AgentMessage=>&["send","tell","ask","message","post"],
+        Capability::ThreadCreate=>&["create","make","start"],Capability::WorkPause=>&["stop","pause"],Capability::WorkResume=>&["resume","continue","restart"],
+        Capability::FileEdit=>&["edit","write","change","update","replace"],Capability::ApprovalDelegate=>&["approve","authorize","allow"],
+        Capability::ComputerUse=>&["open","click","navigate","scroll","type","press","use","inspect","look","read","show"],_=>return lower,
+    };
+    lower.split(|c:char|matches!(c,'.'|'!'|'?'|';'|'\n')).filter(|clause|{
+        let tokens:Vec<_>=clause.split_whitespace().collect();
+        let start=match tokens.as_slice(){["please",..]=>1,["can"|"could"|"would"|"will","you","please",..]=>3,["can"|"could"|"would"|"will","you",..]=>2,_=>0};
+        // A compound condition or contrast can change the target of an imperative.
+        // Leave it to an exact human approval instead of inferring intent.
+        let normalized:Vec<_>=tokens.iter().map(|w|w.trim_matches(|c:char|!c.is_alphanumeric()&&c!='\'')).collect();
+        let negated=normalized.iter().enumerate().skip(start+1).any(|(i,w)| {
+            if *w=="never" {
+                // Never can be a real thread title. Only its direct object
+                // positions are unambiguous; trailing adverbial "never" asks.
+                let named_object=i==start+1&&(i+1==normalized.len()||(capability==Capability::ThreadOrganize&&normalized.get(i+1)==Some(&"to")));
+                let named_destination=i+1==normalized.len()&&normalized.get(i-1)==Some(&"to")&&matches!(capability,Capability::ThreadOrganize|Capability::ParticipantAdd);
+                return !(named_object||named_destination)
+            }
+            matches!(*w,"no"|"not"|"neither"|"nor"|"nothing"|"none"|"nobody"|"nowhere"|"without"|"don't"|"cannot"|"can't"|"but"|"unless"|"if"|"instead"|"except"|"excluding")
+        });
+        tokens.get(start).is_some_and(|v|verbs.contains(v)) && !negated
+    }).collect::<Vec<_>>().join(". ")
+}
 pub fn explicit_request(assistant:&super::PersonalAssistant,task:&super::PersonalTask)->bool {
     let Some(op)=&task.operation else {return false};
     let Some(text)=assistant.events.iter().find(|e|e.id==task.from_event).and_then(|e|match &e.source {super::EventSource::Human{text,..}=>Some(text),_=>None}) else {return false};
     let words:Vec<_>=text.to_lowercase().split(|c:char|!c.is_alphanumeric() && c!='_' && c!='-').filter(|w|!w.is_empty()).map(str::to_owned).collect();
     let reading=matches!(capability(op),Capability::ConversationRead|Capability::FileRead|Capability::StatusRead);
+    // Only a direct imperative (optionally polite) is evidence of intent.
+    // Evaluate the clause containing the proposed verb, so an unrelated project
+    // name such as "Never" does not become a global keyword veto.
+    if !reading {
+        if direct_request_text(text,capability(op)).is_empty() {return false}
+    }
     if !reading&&(words.iter().take(3).any(|w|["what","why","how","whether"].contains(&w.as_str())) || words.windows(2).any(|w|w[0]=="what" && w[1]=="if")) {return false}
     let verbs:&[&str]=match capability(op) {
         Capability::ConversationRead|Capability::FileRead|Capability::StatusRead=>&["read","open","show","inspect","search","find","list","status","what","which","how"],
-        Capability::ThreadCreate=>&["create","make","start"],Capability::ThreadOrganize=>&["rename","organize","move"],
+        Capability::ThreadCreate=>&["create","make","start"],Capability::ThreadOrganize=>&["rename","organize","move","restore"],
         Capability::ThreadArchive=>&["archive"],Capability::ThreadTrash=>&["trash"],Capability::ThreadDelete=>&["delete","purge"],
         Capability::FileEdit=>&["edit","write","change","update","replace"],Capability::AgentAssign=>&["assign","ask","tell","send"],
         Capability::ParticipantAdd=>&["add","invite"],Capability::ParticipantRemove=>&["remove"],
@@ -175,13 +226,24 @@ pub fn validate_marker(assistant:&super::PersonalAssistant,task:&super::Personal
     assistant.permissions.revalidate(op,&auth,human,false)
 }
 
+/// Scope/adapter matrix: room adapters carry a checked host/project/thread;
+/// raw browser and computer adapters are global; creation has no target thread.
+pub fn scope_supported(capability:Capability,scope:&Scope)->bool {
+    match capability {
+        Capability::ComputerUse|Capability::BrowserUse=>*scope==Scope::AllProjects,
+        Capability::ThreadCreate=>!matches!(scope,Scope::Thread{..}),
+        // No typed publisher exists. Keep its controls unavailable.
+        Capability::Publish=>false,
+        _=>true,
+    }
+}
+
 /// Called only through an authenticated Full-access command, never the model tool surface.
 impl crate::Host {
     pub fn personal_permission_set(&self,id:&str,expected_revision:u64,capability:Capability,scope:Scope,mode:GrantMode,delegate:bool)->Result<crate::personal_settings::Changed,String> {
-        if capability==Capability::ThreadCreate && matches!(scope,Scope::Thread{..}) {return Err("Thread creation needs a project or all-projects scope.".into())}
-        if capability==Capability::ComputerUse && scope!=Scope::AllProjects {return Err("Computer control is assistant-wide; it cannot be confined to a project or thread.".into())}
         self.change_assistant(id,|a| {
             if a.permissions.revision!=expected_revision {return Err("Permissions changed. Refresh before saving.".into())}
+            if !scope_supported(capability,&scope)&&!(mode==GrantMode::Ask&&!delegate&&a.permissions.grants.iter().any(|g|g.capability==capability&&g.scope==scope)) {return Err("This capability has no adapter for that scope. Browser/computer control is assistant-wide; publishing has no typed adapter.".into())}
             match &scope {
                 Scope::AllProjects=>{},
                 Scope::Project{host,cwd}|Scope::Thread{host,cwd,..}=>{
@@ -205,6 +267,16 @@ impl crate::Host {
 mod tests {
     use super::*;
     fn op(tool: &str, thread: &str) -> OperationSpec { OperationSpec { tool:tool.into(),host:"h".into(),cwd:"/p".into(),argv:vec![thread.into()],plan:None } }
+    #[test]
+    fn narrow_ask_never_falls_back_to_broad_always_for_unscoped_adapters() {
+        for (capability,tool,argv) in [(Capability::CommandRun,"host.command",vec!["rm","x"]),(Capability::FileRead,"host.command",vec!["cat","x"]),(Capability::BrowserUse,"browser.open",vec!["url"]),(Capability::Spend,"model.reply",vec!["event"])] {
+            let mut policy=PermissionPolicy::default();
+            policy.set(capability,Scope::AllProjects,GrantMode::Always,false).unwrap();
+            policy.set(capability,Scope::Thread{host:"h".into(),cwd:"/p".into(),thread:"one".into()},GrantMode::Ask,false).unwrap();
+            let mut operation=op(tool,"one");operation.argv=argv.into_iter().map(str::to_owned).collect();
+            assert!(policy.authorize(&operation,true,false).is_err(),"{capability:?}");
+        }
+    }
     #[test]
     fn delegated_requests_bind_native_payload_and_reject_unclassified_privilege_changes() {
         let mut room=op("room.read","one");room.cwd=std::env::temp_dir().to_string_lossy().into_owned();

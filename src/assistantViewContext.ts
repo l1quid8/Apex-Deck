@@ -1,7 +1,7 @@
 import type { Pane, Workspace } from "./types";
 import { workspaceHost } from "./hostSession.ts";
 
-export type PersonalViewContext = { hostId: string; focusedThreadId?: string; openThreadIds: string[] };
+export type PersonalViewContext = { hostId: string; focusedThreadId?: string; openThreadIds: string[]; followedThreadIds?: string[] };
 
 /** IDs are only hints. The host must resolve them against current project grants. */
 export function assistantViewContext(input: {

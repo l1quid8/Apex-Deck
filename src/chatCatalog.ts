@@ -13,6 +13,9 @@ export interface ChatEntry {
   bots: ChatBot[];
   updatedAt: number;
   archived: boolean;
+  metadataRevision?: number;
+  titleExplicit?: boolean;
+  archiveExplicit?: boolean;
   /** Recoverable host-owned Trash; absent means available. */
   trashedAt?: number;
   /** A promoted Work thread's folder; null for a chat. */
@@ -59,6 +62,9 @@ function entry(hostId: string, raw: unknown): ChatEntry | null {
     bots,
     updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0,
     archived: raw.archived === true,
+    ...(typeof raw.metadataRevision==='number' && Number.isSafeInteger(raw.metadataRevision) && raw.metadataRevision>=0 ? {metadataRevision:raw.metadataRevision}:{}),
+    ...(typeof raw.titleExplicit==='boolean' ? {titleExplicit:raw.titleExplicit}:{}),
+    ...(typeof raw.archiveExplicit==='boolean' ? {archiveExplicit:raw.archiveExplicit}:{}),
     ...(typeof raw.trashedAt === "number" && Number.isFinite(raw.trashedAt) && raw.trashedAt > 0 ? { trashedAt: raw.trashedAt } : {}),
     cwd: text(raw.cwd),
     folderName: text(raw.folderName),

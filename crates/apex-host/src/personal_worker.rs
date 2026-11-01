@@ -454,7 +454,7 @@ fn dollars(micros: u64) -> String {
 fn spend_hold(assistant: &PersonalAssistant, profile: &ParticipantConfig, event: &PersonalEvent, now: u64) -> Option<String> {
     if let Some(prompt) = crate::personal::permissions::reply_spend_hold(assistant,event) { return Some(prompt); }
     let limit = assistant.budget.daily_limit_micros?;
-    if event.spend_approved {
+    if event.spend_approved && (assistant.permissions.revision==0 || crate::personal::permissions::model_spend_approved(assistant,&crate::personal::permissions::reply_spend_operation(assistant,event))) {
         return None;
     }
     let spent = assistant.spent_today(now);
@@ -766,6 +766,8 @@ impl Host {
                 Err(error)=>{ self.personal_stops.lock().unwrap().remove(&key); return Err(error); }
             }
         }
+        let admission=self.personal_model_event_admission(&snapshot.id,&event.id,&profile)?;
+        if !admission {drop(lease);self.computer.revoke(Some(&computer::thread(&snapshot.id)),None);self.personal_stops.lock().unwrap().remove(&key);return Ok(())}
         // Stop first: nothing of a stopped reply may run, and dropping the call ends its tools.
         let answer=tokio::select! {
             biased;
@@ -789,6 +791,25 @@ impl Host {
         }
     }
 
+    fn personal_model_event_admission(&self,id:&str,event_id:&str,profile:&ParticipantConfig)->Result<bool,String> {
+        self.change_assistant(id,|a| {
+            let Some(event)=a.events.iter().find(|e|e.id==event_id&&e.state==EventState::Processing).cloned() else {return Ok(false)};
+            if let Some(why)=endpoint_refusal(a,profile) {
+                if let Some(saved)=a.events.iter_mut().find(|e|e.id==event_id) {saved.state=EventState::Failed;saved.error=Some(why);}
+                return Ok(false)
+            }
+            if let Some(prompt)=spend_hold(a,profile,&event,now()) {hold_for_spend(a,event_id,prompt,now());return Ok(false)}
+            if a.archived_at.is_some(){return Ok(false)}
+            let operation=crate::personal::permissions::reply_spend_operation(a,&event);
+            for task in a.tasks.iter_mut().filter(|t|t.operation.as_ref()==Some(&operation)&&t.status==TaskStatus::Done&&t.receipts.is_empty()) {
+                let mut receipt=attempt(next_op_id(task),operation.hash(),now(),false);
+                receipt.phase=OpPhase::Verified;receipt.finished_at=Some(now());receipt.note=Some("One model-call cost authorization consumed before provider invocation.".into());task.receipts.push(receipt);
+            }
+            if let Some(saved)=a.events.iter_mut().find(|e|e.id==event_id){saved.spend_approved=false;}
+            Ok(true)
+        })
+    }
+
     /// Work the host gave itself. Today: pull helpers' reports into one answer.
     async fn personal_internal(&self, tools: &WorkerTools, snapshot: PersonalAssistant, event: &PersonalEvent, what: String) -> Result<(), String> {
         let (source, reported) = if let Some(parent) = what.strip_prefix("consolidate:") {
@@ -806,6 +827,9 @@ impl Host {
         if let Some(why) = endpoint_refusal(&snapshot, &profile) {
             return self.refuse_event(&snapshot.id, &event.id, why);
         }
+        if let Some(prompt)=spend_hold(&snapshot,&profile,event,now()) {
+            return self.change_assistant(&snapshot.id,|a|{hold_for_spend(a,&event.id,prompt,now());Ok(())});
+        }
         let question = snapshot.events.iter().find(|e| e.id == parent).and_then(|e| match &e.source { EventSource::Human { text, .. } => Some(text.clone()), _ => None }).unwrap_or_default();
         let reports: Vec<(String, String)> = if let Some(task) = what.strip_prefix("report:") {
             snapshot.tasks.iter().filter(|t| t.id == task)
@@ -822,6 +846,7 @@ impl Host {
         }
         let system = context::consolidate_prompt(&snapshot, &question, &reports, now());
         let bytes = system.len();
+        if !self.personal_model_event_admission(&snapshot.id,&event.id,&profile)? {return Ok(())}
         match (tools.reason)(profile.clone(), read_only_request(system), vec![]).await {
             Ok(out) => {
                 let cost = cost_entry("summary", &out, bytes, endpoint(&profile), now());
@@ -1001,6 +1026,20 @@ impl Host {
     /// back as a quoted report; once every helper for a message is done the
     /// host pulls them together.
     async fn personal_helper(&self, tools: &WorkerTools, assistant_id: &str, task_id: &str, profile: ParticipantConfig, assignment: String, stop: &tokio::sync::Notify) -> Result<(), String> {
+        let admitted=self.change_assistant(assistant_id,|a| {
+            let Some(task)=a.tasks.iter().find(|t|t.id==task_id&&t.status==TaskStatus::Running).cloned() else {return Ok(false)};
+            let Some(source)=a.events.iter().find(|e|e.id==task.from_event).map(|e|e.source.clone()) else {return Ok(false)};
+            let operation=crate::personal::permissions::model_spend_operation(a,"helper",&task.id,&source,&format!("{}\nProvider attempt {}",assignment,task.receipts.len()));
+            if task.operation.as_ref()!=Some(&operation)||crate::personal::permissions::model_spend_hold(a,&operation,false).is_some() {
+                if let Some(saved)=a.task_mut(task_id) {saved.status=TaskStatus::Queued;}
+                return Ok(false)
+            }
+            if a.paused||a.archived_at.is_some() {if let Some(saved)=a.task_mut(task_id){saved.status=TaskStatus::Queued;}return Ok(false)}
+            if let Some(why)=endpoint_refusal(a,&profile) {fail::<()>(a,task_id,&why,now());return Ok(false)}
+            if a.budget.daily_limit_micros.is_some_and(|limit|a.spent_today(now())>=limit) {if let Some(saved)=a.task_mut(task_id){saved.status=TaskStatus::Blocked;saved.last_update=Some("Over today's spending limit. Change the budget before running this helper.".into());}return Ok(false)}
+            Ok(true)
+        })?;
+        if !admitted {return Ok(())}
         let system = context::helper_prompt(&assignment);
         let bytes = system.len();
         let call = (tools.reason)(profile.clone(), read_only_request(system), vec![]);
@@ -1076,6 +1115,16 @@ fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &s
     if task.kind == TaskKind::Helper {
         let Some(profile) = assistant.profile.clone() else { return fail(assistant, task_id, "This assistant has no model profile.", at) };
         if let Some(why) = endpoint_refusal(assistant, &profile) { return fail(assistant, task_id, &why, at); }
+        let source=assistant.events.iter().find(|e|e.id==task.from_event)?.source.clone();
+        let operation=crate::personal::permissions::model_spend_operation(assistant,"helper",&task.id,&source,&format!("{}\nProvider attempt {}",task.assignment.as_deref().unwrap_or_default(),task.receipts.len()+1));
+        if let Some(prompt)=crate::personal::permissions::model_spend_hold(assistant,&operation,false) {
+            let mut decision=open_decision(assistant,DecisionKind::Spend,&operation,at);decision.prompt=prompt.clone();
+            let saved=assistant.task_mut(task_id)?;saved.operation=Some(operation);saved.decision=Some(decision);saved.status=TaskStatus::NeedsYou;saved.last_update=Some(prompt.clone());saved.updated_at=at;
+            assistant.post("system","approval",prompt,Some(task_id.into()),Some(task.from_event),at);
+            return None;
+        }
+        // Save the exact admitted operation, including revision and assignment.
+        assistant.task_mut(task_id)?.operation=Some(operation);
         let host = endpoint(&profile);
         let unknown = assistant.costs.iter().rev().find(|c| c.endpoint == host).map_or(matches!(profile.backend, apex_core::Backend::OpenAiCompatible { .. }), |c| c.source == CostSource::Unknown);
         let blocked = match assistant.budget.daily_limit_micros {
@@ -1544,8 +1593,9 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
         wait: None, runs_done: 0, parent: None, schedule_id: None, assignment: None,
     };
     let gate = gateway::gate(assistant, &task, Some(asked));
+    let direct=crate::personal::permissions::direct_request_text(asked,crate::personal::permissions::capability(&operation));
     let gate = match &room {
-        Some(target) => target.gate(gate, task.class, gateway::operation_mode(assistant, &operation, task.class), &operation.argv, asked, outside),
+        Some(target) => target.gate(gate, task.class, gateway::operation_mode(assistant, &operation, task.class), &operation.argv, if task.class==ToolClass::Read {asked}else{&direct}, outside),
         None => gate,
     };
     let permission_marker = crate::personal::permissions::marker(assistant, &task, false, outside);
@@ -1706,8 +1756,7 @@ fn approval_line(assistant: &PersonalAssistant, decision: &PendingDecision, oper
 fn hold_for_spend(assistant: &mut PersonalAssistant, event_id: &str, prompt: String, at: u64) {
     let Some(source) = assistant.events.iter().find(|e| e.id == event_id && e.state == EventState::Processing).cloned() else { return };
     let scoped = crate::personal::permissions::reply_spend_operation(assistant,&source);
-    let operation = if assistant.permissions.resolve(&scoped,false,false).is_some() { scoped }
-        else { OperationSpec { tool: REPLY_TOOL.into(), host: assistant.host_id.clone(), cwd: String::new(), argv: vec![event_id.to_owned()], plan: None } };
+    let operation = scoped;
     let Some(event) = assistant.events.iter_mut().find(|e| e.id == event_id && e.state == EventState::Processing) else { return };
     event.state = EventState::Held;
     let task_id = assistant.next_task_id();
@@ -1715,7 +1764,7 @@ fn hold_for_spend(assistant: &mut PersonalAssistant, event_id: &str, prompt: Str
     decision.prompt = prompt.clone();
     assistant.tasks.push(PersonalTask {
         deleted_at: None,
-        id: task_id.clone(), goal: "Reply to your message".into(), completion_criteria: vec![], target_host: assistant.host_id.clone(),
+        id: task_id.clone(), goal: if operation.tool=="model.summary" {"Summarize reports"}else{"Reply to your message"}.into(), completion_criteria: vec![], target_host: assistant.host_id.clone(),
         status: TaskStatus::NeedsYou, class: ToolClass::Spend, operation: Some(operation), decision: Some(decision), receipts: vec![],
         from_event: event_id.to_owned(), max_attempts: 1, created_at: at, updated_at: at, last_update: Some("Waiting for your OK to spend.".into()),
         kind: TaskKind::Command, wait: None, runs_done: 0, parent: None, schedule_id: None, assignment: None,
@@ -1783,7 +1832,7 @@ pub(crate) fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalE
                     decision.status = DecisionStatus::Superseded;
                 }
                 // A held reply's cost card was cancelled: that reply won't come.
-                let held = task.operation.as_ref().filter(|op| op.tool == REPLY_TOOL).and_then(|op| op.argv.first().cloned());
+                let held = task.operation.as_ref().filter(|op| matches!(op.tool.as_str(),REPLY_TOOL|"model.summary")).and_then(|op| op.argv.first().cloned());
                 if let Some(event) = held.and_then(|id| assistant.events.iter_mut().find(|e| e.id == id && e.state == EventState::Held)) {
                     event.state = EventState::Failed;
                     event.error = Some("Cancelled.".into());
@@ -1899,6 +1948,14 @@ fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &st
             task.status = TaskStatus::Done;
             task.last_update = Some("You did it.".into());
             Ok(Some((Some(task_id), "Marked done by you.".into())))
+        }
+        DecisionKind::Spend if task.kind==TaskKind::Helper => {
+            task.status=TaskStatus::Queued;task.last_update=Some("Helper cost approved.".into());
+            let approved=task.clone();
+            if let Some(marker)=crate::personal::permissions::marker(assistant,&approved,true,false)? {
+                assistant.task_mut(&task_id).unwrap().decision.as_mut().unwrap().decided_by_event=Some(marker);
+            }
+            Ok(Some((Some(task_id),"Helper cost approved.".into())))
         }
         DecisionKind::Spend => {
             task.status = TaskStatus::Done;

@@ -170,12 +170,12 @@ test('an archive response without persisted archivedAt cannot report successful 
 
 test('typed and voice sends capture current view on their own host before awaiting a reply',async()=>{
  const f=fixture();f.routes.a.supports=()=>true;
- let focused='thread-a';f.options.viewContext=(routeHostId)=>({hostId:routeHostId==='a'?'alpha':'mac',focusedThreadId:focused,openThreadIds:[focused]});
+ let focused='thread-a';const followed=['thread-z'];f.options.viewContext=(routeHostId)=>({hostId:routeHostId==='a'?'alpha':'mac',focusedThreadId:focused,openThreadIds:[focused],followedThreadIds:followed});
  await f.collection.refresh();const lane=f.collection.lane(ref('alpha'));
  const held=defer();f.handlers['a:personal_send']=async()=>{await held.promise;return {assistant:record('alpha','asst-1',2),eventId:'event-1'};};
- const pending=lane.sendRequest('Ask Jigga to fix this','voice-request');focused='thread-b';held.resolve();await pending;
- const sent=f.calls.find(([,cmd])=>cmd==='personal_send');assert.deepEqual(sent[2].viewContext,{hostId:'alpha',focusedThreadId:'thread-a',openThreadIds:['thread-a']});
- await lane.send('What changed?');assert.deepEqual(f.calls.filter(([,cmd])=>cmd==='personal_send').at(-1)[2].viewContext,{hostId:'alpha',focusedThreadId:'thread-b',openThreadIds:['thread-b']});
+ const pending=lane.sendRequest('Ask Jigga to fix this','voice-request');focused='thread-b';followed.push('thread-late');held.resolve();await pending;
+ const sent=f.calls.find(([,cmd])=>cmd==='personal_send');assert.deepEqual(sent[2].viewContext,{hostId:'alpha',focusedThreadId:'thread-a',openThreadIds:['thread-a'],followedThreadIds:['thread-z']});
+ await lane.send('What changed?');assert.deepEqual(f.calls.filter(([,cmd])=>cmd==='personal_send').at(-1)[2].viewContext,{hostId:'alpha',focusedThreadId:'thread-b',openThreadIds:['thread-b'],followedThreadIds:['thread-z','thread-late']});
 });
 
 test('pane context is omitted for old hosts and mismatched machine identities',async()=>{

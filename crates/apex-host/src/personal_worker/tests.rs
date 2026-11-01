@@ -238,7 +238,7 @@ async fn view_context_is_frozen_and_only_resolves_current_permitted_rooms() {
     use crate::personal::PersonalViewContext;
     let fixture = Fixture::new();
     fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
-    let view = PersonalViewContext { host_id: fixture.get().host_id, focused_thread_id: Some(THREAD.into()), open_thread_ids: vec![THREAD.into(), "ungranted-private-id".into()] };
+    let view = PersonalViewContext { host_id: fixture.get().host_id, focused_thread_id: Some(THREAD.into()), open_thread_ids: vec![THREAD.into(), "ungranted-private-id".into()], followed_thread_ids: vec![THREAD.into(),"ungranted-private-follow".into()] };
     let accepted = fixture.host.personal_send_with_context(&fixture.id, "view-a", "Which chat is this?", Some(view.clone())).unwrap();
     assert!(fixture.host.personal_send_with_context(&fixture.id, "view-a", "Which chat is this?", Some(PersonalViewContext { focused_thread_id: Some("changed".into()), ..view.clone() })).is_err(), "a retry cannot silently retarget the original request");
     let fake = Fake::new(true);
@@ -246,6 +246,8 @@ async fn view_context_is_frozen_and_only_resolves_current_permitted_rooms() {
     let prompt = &fake.prompts.lock().unwrap()[0];
     assert!(prompt.contains("focusedThreadId\":\"room-alfred\""));
     assert!(!prompt.contains("ungranted-private-id"));
+    assert!(!prompt.contains("ungranted-private-follow"));
+    assert!(prompt.contains("followedThreadIds\":[\"room-alfred\"]"));
     assert!(accepted.assistant.events.iter().any(|event| event.id == accepted.event_id));
     let other = PersonalViewContext { host_id: "other-machine".into(), ..view };
     assert!(fixture.host.personal_send_with_context(&fixture.id, "wrong-machine", "Here", Some(other)).is_err());
@@ -1886,4 +1888,167 @@ async fn revoking_authority_while_a_send_waits_for_the_room_gate_prevents_delive
     send.await.unwrap();
     assert!(fixture.room_texts().is_empty(), "{revoke} while waiting must never post");
     }
+}
+
+#[tokio::test]
+async fn durable_native_archive_excludes_a_closed_room() {
+    let f=Fixture::new(); let project=f.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let fake=Fake::new(true);fake.say(&room_reply(rooms::ARCHIVE,&[THREAD]));
+    f.host.personal_send(&f.id,"archive","Archive Checkout fix").unwrap();f.drain(&fake.tools()).await;
+    let d=f.task().decision.unwrap();f.host.personal_decide(&f.id,"approve",&d.id,&d.params_hash,true).unwrap();f.drain(&fake.tools()).await;
+    assert!(f.host.store().chat_meta(THREAD).unwrap().unwrap().archived);
+    f.host.store().save_session(&serde_json::json!({"workspaces":[{"id":"w1","path":project.cwd}],"panes":[]})).unwrap();
+    assert!(f.host.personal_rooms(&f.get()).unwrap().is_empty());
+    assert!(f.host.personal_room_target(&f.get(),THREAD).is_err());
+}
+
+#[tokio::test]
+async fn negated_native_requests_never_authorize_mutation_but_polite_requests_do() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    for (message,tool,args,cap,allowed) in [
+        ("Delete neither Checkout fix nor Release",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Delete nothing from Checkout fix",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Delete no threads from Checkout fix",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Delete Checkout fix never",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Delete Checkout fix not Release",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Delete Checkout fix under no circumstances",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Don't delete Checkout fix",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Never add Jigga to Checkout fix",rooms::ADD,vec![THREAD,"jigga"],Capability::ParticipantAdd,false),
+        ("Explain whether I should delete Checkout fix",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Delete another thread. Don't delete Checkout fix",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("For example, delete Checkout fix",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("If I delete Checkout fix, what happens?",rooms::DELETE,vec![THREAD],Capability::ThreadDelete,false),
+        ("Please rename Checkout fix to Finished",rooms::RENAME,vec![THREAD,"Finished"],Capability::ThreadOrganize,true),
+    ] {
+        let f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Full);
+        f.host.change_assistant(&f.id,|a|{a.permissions.set(cap,Scope::AllProjects,GrantMode::OnRequest,false)?;Ok(())}).unwrap();
+        let fake=Fake::new(true);fake.say(&room_reply(tool,&args));
+        f.host.personal_send(&f.id,"request",message).unwrap();f.drain(&fake.tools()).await;
+        assert_eq!(f.task().status,if allowed {TaskStatus::Done}else{TaskStatus::NeedsYou},"{message}");
+    }
+}
+
+#[tokio::test]
+async fn a_thread_actually_named_never_can_still_be_renamed_on_request() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    let f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Full);
+    f.host.chat_update_meta(THREAD.into(),Some("Never".into()),None,None).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.permissions.set(Capability::ThreadOrganize,Scope::AllProjects,GrantMode::OnRequest,false)?;Ok(())}).unwrap();
+    let fake=Fake::new(true);fake.say(&room_reply(rooms::RENAME,&[THREAD,"Finished"]));
+    f.host.personal_send(&f.id,"request","Please rename Never to Finished").unwrap();f.drain(&fake.tools()).await;
+    assert_eq!(f.task().status,TaskStatus::Done);
+    assert_eq!(f.host.store().chat_meta(THREAD).unwrap().unwrap().title,"Finished");
+}
+
+#[tokio::test]
+async fn exact_reply_spend_approval_does_not_pay_for_helper_or_consolidation() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    let f=Fixture::new();let fake=Fake::new(true);
+    f.host.change_assistant(&f.id,|a|{a.permissions.set(Capability::Spend,Scope::AllProjects,GrantMode::Ask,false)?;Ok(())}).unwrap();
+    fake.say(r#"{"reply":"Researching","helpers":[{"assignment":"Compare plans"}]}"#);
+    f.host.personal_send(&f.id,"request","Compare plans").unwrap();f.drain(&fake.tools()).await;
+    f.decide("approve-reply",true);f.drain(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),1,"reply approval is not helper authority");
+    let helper=f.get().tasks.into_iter().find(|t|t.kind==TaskKind::Helper).unwrap();
+    assert_eq!(helper.status,TaskStatus::NeedsYou);
+    let d=helper.decision.unwrap();f.host.personal_decide(&f.id,"approve-helper",&d.id,&d.params_hash,true).unwrap();
+    f.drain(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),2,"summary needs separate authority");
+    let a=f.get();let summary=a.tasks.iter().find(|t|t.status==TaskStatus::NeedsYou&&t.operation.as_ref().is_some_and(|o|o.tool=="model.summary")).unwrap();
+    let d=summary.decision.as_ref().unwrap();f.host.personal_decide(&f.id,"approve-summary",&d.id,&d.params_hash,true).unwrap();
+    f.drain(&fake.tools()).await;assert_eq!(fake.reason_calls.load(Ordering::SeqCst),3);
+}
+
+#[tokio::test]
+async fn queued_helpers_recheck_spend_revocation_before_their_provider_call() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    let f=Fixture::new();let fake=Fake::new(true);
+    f.host.change_assistant(&f.id,|a|{a.permissions.set(Capability::Spend,Scope::AllProjects,GrantMode::Always,false)?;Ok(())}).unwrap();
+    fake.say(r#"{"reply":"Researching","helpers":[{"assignment":"Compare plans"}]}"#);
+    f.host.personal_send(&f.id,"request","Compare plans").unwrap();
+    assert!(f.host.personal_step(&fake.tools()).await.unwrap());
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),1);
+    f.host.change_assistant(&f.id,|a|{a.permissions.set(Capability::Spend,Scope::AllProjects,GrantMode::Ask,false)?;Ok(())}).unwrap();
+    f.drain(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),1);
+    assert_eq!(f.get().tasks.iter().find(|t|t.kind==TaskKind::Helper).unwrap().status,TaskStatus::NeedsYou);
+}
+
+#[tokio::test]
+async fn a_native_read_report_has_its_own_visible_resumable_spend_approval() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    let f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Full);let fake=Fake::new(true);
+    f.host.change_assistant(&f.id,|a|{a.permissions.set(Capability::Spend,Scope::AllProjects,GrantMode::OnRequest,false)?;Ok(())}).unwrap();
+    fake.say(&room_reply(rooms::READ,&[THREAD]));f.host.personal_send(&f.id,"request","Read Checkout fix").unwrap();f.drain(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),1);
+    let a=f.get();let held=a.tasks.iter().find(|t|t.status==TaskStatus::NeedsYou).unwrap();
+    assert_eq!(held.operation.as_ref().unwrap().tool,"model.summary");
+    let decision=held.decision.as_ref().unwrap();
+    f.host.personal_decide(&f.id,"approve-report",&decision.id,&decision.params_hash,true).unwrap();f.drain(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),2);assert!(!f.get().tasks.iter().any(|t|t.status==TaskStatus::NeedsYou));
+}
+
+#[tokio::test]
+async fn unsupported_scope_adapters_are_refused_without_saving_a_misleading_grant() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    let f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Full);
+    for capability in [Capability::BrowserUse,Capability::ComputerUse,Capability::Publish] {
+        assert!(f.host.personal_permission_set(&f.id,0,capability,Scope::Project{host:project.host_id.clone(),cwd:project.cwd.clone()},GrantMode::Always,false).is_err());
+    }
+    assert_eq!(f.get().permissions.revision,0);assert!(f.get().permissions.grants.is_empty());
+}
+
+#[tokio::test]
+async fn trash_never_leaks_body_or_status_through_ordinary_discovery() {
+    let f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Full);
+    f.host.room_post(THREAD.into(),"UNIQUE-TRASH-SECRET".into()).await.unwrap();
+    f.host.room_set_trashed(THREAD.into(),true).unwrap();
+    let (context,_)=f.host.personal_room_context(&f.get(),"Find UNIQUE-TRASH-SECRET checkout",None,12000).unwrap();
+    assert!(!context.contains(THREAD));assert!(!context.contains("UNIQUE-TRASH-SECRET"));
+    let (recovery,_)=f.host.personal_room_context(&f.get(),"restore Checkout fix",None,12000).unwrap();
+    assert!(recovery.contains("Checkout fix"));assert!(recovery.contains("inTrash"));assert!(!recovery.contains("UNIQUE-TRASH-SECRET"));assert!(!recovery.contains("lastText"));
+}
+
+#[tokio::test]
+async fn one_helper_cost_approval_cannot_pay_for_a_provider_retry() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    let f=Fixture::new();let fake=Fake::new(true);
+    f.host.change_assistant(&f.id,|a|{a.permissions.set(Capability::Spend,Scope::AllProjects,GrantMode::Ask,false)?;Ok(())}).unwrap();
+    fake.say(r#"{"reply":"Researching","helpers":[{"assignment":"Compare plans"}]}"#);
+    f.host.personal_send(&f.id,"request","Compare plans").unwrap();f.drain(&fake.tools()).await;
+    f.decide("reply",true);f.drain(&fake.tools()).await;
+    let helper=f.get().tasks.into_iter().find(|t|t.kind==TaskKind::Helper).unwrap();let d=helper.decision.unwrap();
+    fake.replies.lock().unwrap().push(Err("provider failed".into()));
+    f.host.personal_decide(&f.id,"helper",&d.id,&d.params_hash,true).unwrap();f.drain(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),2,"retry is another paid call");
+    assert_eq!(f.get().tasks.iter().find(|t|t.kind==TaskKind::Helper).unwrap().status,TaskStatus::NeedsYou);
+}
+
+#[tokio::test]
+async fn a_reply_cost_approval_is_consumed_before_invocation_and_not_reused_after_recovery() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    let mut f=Fixture::new();let fake=Fake::new(true);
+    f.host.change_assistant(&f.id,|a|{a.permissions.set(Capability::Spend,Scope::AllProjects,GrantMode::Ask,false)?;Ok(())}).unwrap();
+    f.host.personal_send(&f.id,"request","Answer once").unwrap();f.drain(&fake.tools()).await;
+    f.decide("approve",true);assert!(f.host.personal_step(&fake.tools()).await.unwrap());
+    fake.model_hangs.store(true,Ordering::SeqCst);f.step_and_crash(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),1);
+    f.restart();fake.model_hangs.store(false,Ordering::SeqCst);f.drain(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),1);
+    let a=f.get();assert!(a.tasks.iter().any(|t|t.status==TaskStatus::NeedsYou));
+    assert!(a.tasks.iter().any(|t|t.status==TaskStatus::Done&&!t.receipts.is_empty()));
+}
+
+#[tokio::test]
+async fn metadata_management_is_explicit_and_revisions_increase_for_partial_native_updates() {
+    let f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Full);
+    f.host.store().save_chat_meta(THREAD,&crate::storage::ChatRoomMeta{title:"New chat".into(),..Default::default()}).unwrap();
+    let row=f.host.store().chat_list().unwrap().into_iter().find(|r|r.id==THREAD).unwrap();
+    assert!(!row.title_explicit);assert!(!row.archive_explicit);
+    let renamed=f.host.chat_update_meta(THREAD.into(),Some("Renamed".into()),None,None).unwrap();
+    let row=f.host.store().chat_list().unwrap().into_iter().find(|r|r.id==THREAD).unwrap();
+    assert!(row.title_explicit);assert!(!row.archive_explicit);assert_eq!(row.title,"Renamed");
+    let archived=f.host.chat_update_meta(THREAD.into(),None,Some(true),None).unwrap();assert!(archived.metadata_revision>renamed.metadata_revision);
+    let row=f.host.store().chat_list().unwrap().into_iter().find(|r|r.id==THREAD).unwrap();
+    assert!(row.archive_explicit);assert!(row.archived);assert_eq!(row.title,"Renamed");
 }

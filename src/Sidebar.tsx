@@ -28,6 +28,8 @@ export interface ProjectSidebarProps {
   rosterProblem?: string | null;
   assistantBackend?: (ref:AssistantRef) => Backend | undefined;
   onOpenAssistant?: (ref:AssistantRef) => void;
+  floatingAssistant?: AssistantRef | null;
+  onPopOutAssistant?: (ref:AssistantRef) => void;
   onCreateAssistant?: () => void;
   backend: Backend;
   section: AppSection;
@@ -323,7 +325,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       {/* Only the lists scroll; the preferences row below stays at the bottom. */}
       <div className="rail-scroll" onScroll={hover.hide}>
       <div className="rail-sec"><span>Your team</span><button type="button" className="icon" aria-label="Add teammate" onClick={props.onCreateAssistant}>+</button></div>
-      {props.assistants?.map(assistant => <AssistantTeamRow key={assistantIdentityKey(assistant.ref)} assistant={assistant} status={props.assistantStatusFor?.(assistant.ref) ?? assistantStatus({offline:assistant.offline,paused:assistant.paused,personalTasks:assistant.personalTasks,delegatedTasks:[]})} selected={!!props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)} backend={props.assistantBackend?.(assistant.ref)} onOpen={ref=>props.onOpenAssistant?.(ref)}/>)}
+      {props.assistants?.map(assistant => <AssistantTeamRow key={assistantIdentityKey(assistant.ref)} assistant={assistant} status={props.assistantStatusFor?.(assistant.ref) ?? assistantStatus({offline:assistant.offline,paused:assistant.paused,personalTasks:assistant.personalTasks,delegatedTasks:[]})} selected={!!props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)} backend={props.assistantBackend?.(assistant.ref)} floated={!!props.floatingAssistant && assistantIdentityKey(props.floatingAssistant)===assistantIdentityKey(assistant.ref)} onPopOut={props.onPopOutAssistant} onOpen={ref=>props.onOpenAssistant?.(ref)}/>)}
       {!props.assistants?.length && <p className="assistant-team-empty">{props.rosterProblem ?? 'No assistants yet.'}</p>}
       {lists.pinned.length > 0 && <>
         <div className="rail-sec" data-sec="pinned">Pinned</div>

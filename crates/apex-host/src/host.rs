@@ -1000,10 +1000,12 @@ impl Host {
             .unwrap_or(0);
         self.store.update_chat_meta(&id, |meta| {
             if let Some(t) = title {
+                meta.title_managed=true;
                 let trimmed = t.trim();
                 meta.title = if trimmed.is_empty() { "New chat".to_string() } else { trimmed.to_string() };
             }
             if let Some(a) = archived {
+                meta.archive_managed=true;
                 meta.archived = a;
             }
             if let Some(m) = moved_to {

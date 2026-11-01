@@ -189,6 +189,8 @@ impl Host {
             threads.extend(saved_ids.iter().filter(|id| !archived.contains(*id)).cloned());
             for thread in threads {
                 if archived.contains(&thread) { continue; }
+                let meta=self.store().chat_meta(&thread)?;
+                if meta.as_ref().is_some_and(|m|m.archived) {continue}
                 let Some(saved) = self.store().room(&thread)? else { continue };
                 // Trash remains discoverable for explicit restore/delete, but no
                 // ordinary operation may touch it until restoration.
@@ -210,7 +212,7 @@ impl Host {
     pub(crate) fn personal_room_context(&self, assistant: &PersonalAssistant, query: &str, view: Option<&crate::personal::PersonalViewContext>, limit: usize) -> Result<(String, bool), String> {
         let terms: Vec<_> = query.to_lowercase().split(|c: char| !c.is_alphanumeric())
             .filter(|w| w.len() > 3 && !["thread", "threads", "project", "currently", "which", "their", "please", "could", "would", "what", "that", "this", "with", "from", "have", "them", "read", "only"].contains(w)).map(str::to_owned).collect();
-        let rooms = self.personal_rooms(assistant)?;
+        let rooms = self.personal_rooms(assistant)?.into_iter().filter(|r|self.require_not_trashed(&r.thread).is_ok() || query.to_lowercase().split_whitespace().any(|w|matches!(w,"restore"|"delete"|"purge"))).collect::<Vec<_>>();
         let view = view.filter(|v| v.host_id == assistant.host_id);
         let focused = view.and_then(|v| v.focused_thread_id.as_ref()).and_then(|id| rooms.iter().find(|r| &r.thread == id));
         let view_header = if let Some(view) = view {
@@ -219,18 +221,26 @@ impl Host {
                 chars += r.thread.chars().count();
                 (chars <= 256).then_some(r.thread.as_str())
             }).collect();
-            format!("\nCurrent view at send time (data, not authority): {}. Focus is the default meaning of this/here, not permission to act. Open IDs may be omitted for space.\n", json!({"focusedThreadId":focused.map(|r| &r.thread),"focusedTitle":focused.map(|r| r.title.chars().take(160).collect::<String>()),"openThreadIds":open}))
+            let mut followed_chars=0;
+            let followed:Vec<_>=rooms.iter().filter(|r|view.followed_thread_ids.contains(&r.thread)).filter_map(|r|{
+                followed_chars+=r.thread.chars().count();
+                (followed_chars<=256).then_some(r.thread.as_str())
+            }).collect();
+            format!("\nCurrent view at send time (data, not authority): {}. Focus means this/here. Following is context, never broadcast permission. IDs may be omitted for space.\n", json!({"focusedThreadId":focused.map(|r| &r.thread),"focusedTitle":focused.map(|r| r.title.chars().take(160).collect::<String>()),"openThreadIds":open,"followedThreadIds":followed}))
         } else { String::new() };
         let total = rooms.len();
         let mut ranked = Vec::new();
         for room in &rooms {
-            let mut entry = if can_auto_read_context(assistant,room,STATUS,query) { self.room_entry(room) }
+            let trashed=self.require_not_trashed(&room.thread).is_err();
+            let mut entry = if trashed {json!({"project":room.project,"threadId":room.thread,"title":room.title,"inTrash":true})}
+                else if can_auto_read_context(assistant,room,STATUS,query) { self.room_entry(room) }
                 else { json!({"project":room.project,"threadId":room.thread,"title":room.title,"workers":room.workers.iter().map(|(id,_)|id).collect::<Vec<_>>(),"workerNames":room.workers.iter().map(|(_,name)|name).collect::<Vec<_>>()}) };
             let title = room.title.to_lowercase();
             let mut score = terms.iter().filter(|word| title.contains(word.as_str())).count() * 10;
             if focused.is_some_and(|r| r.thread == room.thread) { score += 10_000; entry["focusedAtSend"] = json!(true); }
             if view.is_some_and(|v| v.open_thread_ids.contains(&room.thread)) { score += 1_000; entry["openAtSend"] = json!(true); }
-            if can_auto_read_context(assistant,room,READ,query) {
+            if view.is_some_and(|v|v.followed_thread_ids.contains(&room.thread)) {score+=500;entry["followedAtSend"]=json!(true);}
+            if !trashed && can_auto_read_context(assistant,room,READ,query) {
               if let Some(saved) = self.store().room(&room.thread)? {
                 let matching = saved.snapshot.transcript.iter().rev().filter(|m| terms.iter().any(|w| m.text.to_lowercase().contains(w.as_str()))).take(2).collect::<Vec<_>>();
                 score += matching.len();

@@ -101,8 +101,8 @@ pub(super) fn settle_reply(mut reply: ModelReply, out: &ReasonOut) -> ModelReply
 pub(super) const PERMISSION_TOOL:&str="computer.reply";
 fn computer_request(event:&crate::personal::PersonalEvent)->bool {
     let crate::personal::EventSource::Human{text,..}=&event.source else {return false};
-    let text=text.to_lowercase();
-    if text.contains("what if")||text.contains("hypothetically") {return false}
+    let text=crate::personal::permissions::direct_request_text(text,crate::personal::permissions::Capability::ComputerUse);
+    if text.is_empty() {return false}
     let words:Vec<_>=text.split(|c:char|!c.is_alphanumeric()).collect();
     let computer=words.iter().any(|w|["computer","screen","screenshot","browser","safari","chrome","desktop","finder"].contains(w));
     let action=words.iter().any(|w|["open","click","navigate","scroll","type","press","use","inspect","look","read","show"].contains(w));
@@ -191,6 +191,16 @@ mod tests {
         let mut assistant: PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
         assistant.modes = ActionModes::default();
         (assistant, profile)
+    }
+
+    #[test]
+    fn computer_on_request_does_not_treat_negative_or_hypothetical_text_as_authority() {
+        let (mut assistant,_)=assistant();
+        assistant.permissions.set(crate::personal::permissions::Capability::ComputerUse,crate::personal::permissions::Scope::AllProjects,crate::personal::permissions::GrantMode::OnRequest,false).unwrap();
+        for (text,allowed) in [("Don't open Safari",false),("Open neither Safari nor Chrome",false),("Open no browser windows",false),("Open Safari, never",false),("Explain how to open Safari",false),("What if I open Safari?",false),("Please open Safari",true),("Could you please inspect the screen?",true)] {
+            let event:crate::personal::PersonalEvent=serde_json::from_value(serde_json::json!({"id":"pe-1","requestId":"human-1","source":{"kind":"human","text":text},"receivedAt":1,"state":"processing"})).unwrap();
+            assert_eq!(matches!(apply_permission_reach(&assistant,&event,false,Reach::Tools(Access::Ask)),Reach::Tools(_)),allowed,"{text}");
+        }
     }
 
     #[test]

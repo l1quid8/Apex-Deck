@@ -454,6 +454,8 @@ pub struct PersonalViewContext {
     pub focused_thread_id: Option<String>,
     #[serde(default)]
     pub open_thread_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub followed_thread_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1199,7 +1201,7 @@ impl crate::Host {
         if let Some(view) = &view_context {
             let assistant = self.personal_get(id)?;
             if view.host_id != assistant.host_id { return Err("The view context belongs to another machine.".into()); }
-            if view.open_thread_ids.len() > 64 || view.open_thread_ids.iter().chain(view.focused_thread_id.iter()).any(|id| id.is_empty() || id.len() > 256) {
+            if view.open_thread_ids.len() > 64 || view.followed_thread_ids.len() > 64 || view.open_thread_ids.iter().chain(view.followed_thread_ids.iter()).chain(view.focused_thread_id.iter()).any(|id| id.is_empty() || id.len() > 256) {
                 return Err("The view context contains too many or invalid thread identities.".into());
             }
         }
@@ -1233,7 +1235,7 @@ pub(crate) mod tests {
 
     #[test]
     fn human_event_retains_send_time_view_context() {
-        let value = serde_json::json!({"kind":"human", "text":"Fix this", "viewContext":{"hostId":"machine-a","focusedThreadId":"thread-a","openThreadIds":["thread-a","thread-b"]}});
+        let value = serde_json::json!({"kind":"human", "text":"Fix this", "viewContext":{"hostId":"machine-a","focusedThreadId":"thread-a","openThreadIds":["thread-a","thread-b"],"followedThreadIds":["thread-b"]}});
         let event: EventSource = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(event).unwrap(), value);
         let old: EventSource = serde_json::from_value(serde_json::json!({"kind":"human","text":"Hi"})).unwrap();

@@ -237,7 +237,7 @@ pub fn gate(assistant: &PersonalAssistant, task: &PersonalTask, asked: Option<&s
 /// Explicit capability policies override only the legacy class mode. Project,
 /// runtime, privacy, helper and private-file ceilings still apply above.
 pub fn operation_mode(assistant: &PersonalAssistant, op: &OperationSpec, class: ToolClass) -> ActionMode {
-    assistant.permissions.resolve(op, false, false).map(|g| assistant.rules.iter().filter(|rule|rule.class==class).map(|rule|rule.mode).fold(if g.revoked { ActionMode::Ask } else { g.mode.action() },ActionMode::max)).unwrap_or_else(|| if matches!(op.tool.as_str(),"room.create"|"room.rename"|"room.archive"|"room.trash"|"room.restore"|"room.delete"|"room.addParticipant"|"room.removeParticipant"|"room.approve"|"room.assign"|"room.editFile") {assistant.rules.iter().filter(|rule|rule.class==class).map(|rule|rule.mode).fold(ActionMode::Ask,ActionMode::max)} else {assistant.mode_for(class)})
+    assistant.permissions.resolve(op, false, false).map(|g| assistant.rules.iter().filter(|rule|rule.class==class).map(|rule|rule.mode).fold(if g.revoked || (g.scope!=crate::personal::permissions::Scope::AllProjects&&!op.tool.starts_with("room.")) { ActionMode::Ask } else { g.mode.action() },ActionMode::max)).unwrap_or_else(|| if matches!(op.tool.as_str(),"room.create"|"room.rename"|"room.archive"|"room.trash"|"room.restore"|"room.delete"|"room.addParticipant"|"room.removeParticipant"|"room.approve"|"room.assign"|"room.editFile") {assistant.rules.iter().filter(|rule|rule.class==class).map(|rule|rule.mode).fold(ActionMode::Ask,ActionMode::max)} else {assistant.mode_for(class)})
 }
 
 /// The decision marker for something a rule (not a person) let through.

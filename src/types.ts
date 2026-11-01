@@ -457,6 +457,11 @@ export interface WorktreeList { root: string; items: Worktree[]; checkCommand?: 
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 
 export interface Pane {
+  /** Last explicit metadata revision read from this pane's owning host. */
+  hostMetadataRevision?: number;
+  /** Keep a local rename visible until the owning host confirms it. */
+  hostTitlePending?: string;
+  hostArchivePending?: boolean;
   /** A worker destination created for a named assistant; only opt-in lists it. */
   assistantDraftFor?: {hostId:string;assistantId:string};
   /** This chat is mounted in another checkout of its project. */

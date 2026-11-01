@@ -38,11 +38,13 @@ import { overviewOwner, overviewOwnerKey, loadHandoffBatches, saveHandoffBatches
 import { ApexAgentAll } from "./ApexAgentAll";
 import { usePersonalAssistants } from "./usePersonalAssistants";
 import { assistantViewContext } from "./assistantViewContext.ts";
+import { deriveCompanionCatalog, reconcileCompanionSelection, companionFloatContext, companionViewContext, companionNewThreadTarget, loadCompanionSelection, saveCompanionSelection, type CompanionCatalog, type CompanionSelection } from "./assistantCompanionContext.ts";
 import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
 import { assistantCallCandidate } from "./assistantFloat";
 import { useAssistantFloat, type AssistantFloatHandle } from "./useAssistantFloat";
+import { assistantVoiceKeeperOwner } from "./voice/assistantVoiceOwner";
 import { AssistantVoiceKeeper } from "./voice/AssistantVoiceKeeper";
 import { AssistantDetails } from "./AssistantDetails";
 import { useAssistantOutputs } from "./useAssistantOutputs";
@@ -117,7 +119,7 @@ import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, Parti
 import { restartQuestions, updateActions, useUpdates } from "./updates.ts";
 import { UpdateNotices } from "./UpdateNotices.tsx";
 import { ipcWords } from "./electronShell";
-import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, workThreadPlace, type ChatPlace } from "./desktopChats.ts";
+import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, workThreadPlace, reconcileWorkPanes, type ChatPlace } from "./desktopChats.ts";
 import { ChatRail, NewChatDialog } from "./DesktopChatsUI.tsx";
 import { TalkOnlyChat } from "./TalkOnlyChat.tsx";
 import { ThreadTrash } from "./ThreadTrashPanel";
@@ -785,6 +787,11 @@ export function App() {
     connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
     onError: (text) => toast(text),
   });
+  const priorWorkCatalog=useRef(chats.catalog);
+  useEffect(()=>{
+    const previous=priorWorkCatalog.current;priorWorkCatalog.current=chats.catalog;
+    setPanes(before=>reconcileWorkPanes(before,workspaces,chats.catalog,previous,chats.online));
+  },[chats.catalog,workspaces,chats.online,setPanes]);
   const viewPanes = useMemo(() => withoutTrashedPanes(allViewPanes, workspaces, chats.catalog), [allViewPanes, workspaces, chats.catalog]);
   // Keep the saved layout, but Restore never reopens a thread that was put away.
   useEffect(() => {
@@ -950,7 +957,31 @@ export function App() {
     setPicking(false);
   };
 
-  const renamePane = (id: string, title: string) => setPanes(list => list.map(p => p.id === id ? {...p, title} : p));
+  const workTitleRequests=useRef(new Map<string,symbol>());
+  const syncWorkMeta=async(pane:Pane,change:{title?:string;archived?:boolean})=>{
+    if(pane.kind!=='chat'||(pane as Pane & {assistantTaskId?:string}).assistantTaskId)return;
+    const titleRequest=change.title!==undefined?Symbol():undefined;
+    if(titleRequest)workTitleRequests.current.set(pane.id,titleRequest);
+    const host=(pane as Pane & {hostId?:string}).hostId??workspaceHost(workspaces.find(w=>w.id===pane.workspaceId)??{id:'',name:'',path:''});
+    if(change.archived!==undefined)setPanes(list=>list.map(p=>p.id===pane.id?{...p,hostArchivePending:true}:p));
+    try {
+      const row=findRoom(chats.catalog,host,pane.id);
+      if(row) await chats.updateMeta(row,change);
+      else await hostBackend(host).call('chat_update_meta',{id:pane.id,...change});
+      await chats.refresh(host);
+      setPanes(list=>list.map(p=>p.id===pane.id?{...p,...(titleRequest&&workTitleRequests.current.get(pane.id)===titleRequest&&p.hostTitlePending===change.title?{hostTitlePending:undefined}:{}),...(change.archived!==undefined?{hostArchivePending:undefined}:{})}:p));
+    } catch(error) {
+      setPanes(list=>list.map(p=>p.id===pane.id?{...p,
+        ...(titleRequest&&workTitleRequests.current.get(pane.id)===titleRequest&&p.hostTitlePending===change.title?{title:pane.title,hostTitlePending:undefined}:{}),
+        ...(change.archived!==undefined?{archived:pane.archived,closed:pane.closed,hostArchivePending:undefined}:{})}:p));
+      toast(`Could not save thread metadata: ${String(error)}`);
+    }
+  };
+  const renamePane = (id: string, title: string) => {
+    const pane=panes.find(p=>p.id===id);if(!pane)return;
+    setPanes(list=>list.map(p=>p.id===id?{...p,title,...(p.kind==='chat'?{hostTitlePending:title}:{})}:p));
+    void syncWorkMeta(pane,{title});
+  };
 
   const [browserAddress, setBrowserAddress] = useState<{ url: string; anyPage?: boolean; hostId?: string } | null>(null);
   const [browserPin, setBrowserPin] = useState<{ hostId: string; focus: string } | null>(null);
@@ -1350,10 +1381,12 @@ export function App() {
     const ids = list.map((p) => p.id);
     if (ids.length === 0) return;
     setPanes((all) => archiveThreads(all, ids));
+    for(const pane of list)void syncWorkMeta(pane,{archived:true});
     for (const id of ids) { forgetServer(id); takeOff(id); }
-    toast(words, () => setPanes((all) => unarchiveThreads(all, ids)));
+    toast(words, () => {setPanes((all) => unarchiveThreads(all, ids));for(const pane of list)void syncWorkMeta(pane,{archived:false});});
   };
   const restoreArchived = (pane: Pane) => {
+    void syncWorkMeta(pane,{archived:false});
     setPanes((all) => unarchiveThreads(all, [pane.id]));
     focusPane({ ...pane, archived: undefined, closed: true });
   };
@@ -1965,13 +1998,35 @@ export function App() {
   const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
   const [assistantFloat, setAssistantFloat] = useState<AssistantFloatHandle | null>(null);
-  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant' || !!assistantFloat, bridge: true,
-    viewContext: (routeHostId, hostId) => assistantViewContext({routeHostId,hostId,panes:viewPanes,workspaces,focusedPane,excluded:deleting}),
-    currentThread: (routeHostId,hostId) => {
-      const view=assistantViewContext({routeHostId,hostId,panes:viewPanes,workspaces,focusedPane,excluded:deleting});
-      const pane=viewPanes.find(p=>p.id===view.focusedThreadId);
-      const workspace=pane&&workspaces.find(w=>w.id===pane.workspaceId);
-      return pane&&workspace?{id:pane.id,title:pane.title,project:{hostId,cwd:workspace.path}}:undefined;
+  const companionSelections=useRef(new Map<string,CompanionSelection>());
+  const [,refreshCompanionSelection]=useState(0);
+  function companionCatalogFor(owner:AssistantRef):CompanionCatalog {
+    const summary=assistants.assistants.find(item=>assistantIdentityKey(item.ref)===assistantIdentityKey(owner));
+    const host=assistants.hosts.find(item=>item.hostId===owner.hostId);
+    const routeHostId=host?.routeHostId??'';
+    return deriveCompanionCatalog({owner,assistant:{id:owner.assistantId,hostId:summary?.ref.hostId??'',projects:summary?.projects??[]},routeHostId,authenticatedHostId:authenticatedProjectHost(routeHostId),catalog:chats.catalog,panes:viewPanes,workspaces,focusedPane,excluded:deleting,authenticatedHostForRoute:authenticatedProjectHost,canonicalProjectForWorkspace,threadStatus:(route,id)=>{
+      const pane=viewPanes.find(p=>p.id===id&&workspaceHost(workspaces.find(w=>w.id===p.workspaceId)??{id:'',name:'',path:''})===route);
+      const state=pane&&threadStatus[pane.id];return state?.waiting?.length?'Needs you':state?.busy?'Working':state?'Idle':undefined;
+    }});
+  }
+  function companionChoiceFor(owner:AssistantRef,catalog:CompanionCatalog):CompanionSelection {
+    return companionSelections.current.get(assistantIdentityKey(owner))??loadCompanionSelection(localStorage,owner,catalog);
+  }
+  function chooseCompanionContext(owner:AssistantRef,patch:Partial<CompanionSelection>):void {
+    const catalog=companionCatalogFor(owner);
+    const next=reconcileCompanionSelection(catalog,{...companionChoiceFor(owner,catalog),...patch});
+    companionSelections.current.set(assistantIdentityKey(owner),next);
+    saveCompanionSelection(localStorage,owner,catalog,next);
+    refreshCompanionSelection(version=>version+1);
+  }
+  const assistants:ReturnType<typeof usePersonalAssistants> = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant' || !!assistantFloat, bridge: true,
+    viewContext: (routeHostId, hostId, owner) => owner?companionViewContext(companionCatalogFor(owner),companionChoiceFor(owner,companionCatalogFor(owner))):assistantViewContext({routeHostId,hostId,panes:viewPanes,workspaces,focusedPane,excluded:deleting}),
+    currentThread: (_routeHostId,_hostId,owner) => {
+      const catalog=companionCatalogFor(owner);
+      const view=companionViewContext(catalog,companionChoiceFor(owner,catalog));
+      const thread=catalog.threads.find(item=>item.id===view.focusedThreadId);
+      const project=thread&&catalog.projectByThread[thread.id];
+      return thread&&project?{id:thread.id,title:thread.title,project:{hostId:project.hostId,cwd:project.cwd}}:undefined;
     },
     onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
   const [openChat, setOpenChatState] = useState<ChatPlace | null>(() => readOpenChat(localStorage));
@@ -2041,22 +2096,22 @@ export function App() {
   const openAssistant = (ref:AssistantRef) => { assistants.select(ref); setMainView({kind:'assistant',assistant:ref,section:'chat'}); setCreatingAssistant(false); setSettingsOpen(null); closeApexAgent(); };
   const assistantHost = mainView.kind === 'assistant' ? assistants.hosts.find(host=>host.hostId===mainView.assistant.hostId) : undefined;
   const assistantBackend = assistantHost ? hostBackend(assistantHost.routeHostId) : null;
-  const authenticatedProjectHost = (routeHostId:string):string|undefined => {
+  function authenticatedProjectHost(routeHostId:string):string|undefined {
     try { const status=hostBackend(routeHostId).host?.connection.get().status;return status?.kind==='connected'?status.hostId:undefined; } catch { return undefined; }
-  };
-  const snapshotProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
+  }
+  function snapshotProjectForWorkspace(workspace:Workspace):ProjectRef|undefined {
     const hostId=authenticatedProjectHost(workspaceHost(workspace));
     const entry=Object.values(currentAssistantRegistry.owners).find(entry=>entry.owner.workspaceId===workspace.id&&entry.owner.cwd===workspace.path&&entry.owner.hostId===workspaceHost(workspace));
     const project=(entry as {snapshot?:{project?:ProjectRef}}|undefined)?.snapshot?.project;
     return project&&project.hostId===hostId&&project.workspaceId===workspace.id?project:undefined;
-  };
-  const projectAliasKey=(workspace:Workspace,hostId:string)=>JSON.stringify([hostId,workspaceHost(workspace),workspace.id,workspace.path]);
-  const canonicalProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
+  }
+  function projectAliasKey(workspace:Workspace,hostId:string):string {return JSON.stringify([hostId,workspaceHost(workspace),workspace.id,workspace.path]);}
+  function canonicalProjectForWorkspace(workspace:Workspace):ProjectRef|undefined {
     const snapshot=snapshotProjectForWorkspace(workspace);if(snapshot)return snapshot;
     const hostId=authenticatedProjectHost(workspaceHost(workspace));if(!hostId)return;
     const alias=assistantProjectAliases[projectAliasKey(workspace,hostId)];
     try {return alias?.route===hostBackend(workspaceHost(workspace))?alias.project:undefined;}catch{return undefined;}
-  };
+  }
   const projectUnavailable = (project:ProjectRef):string|undefined => resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) ? undefined : 'This exact project is unavailable. Reconnect its machine or restore its assigned folder.';
   const [workFocus,setWorkFocus]=useState<{project:ProjectRef;taskId:string;nonce:number}|null>(null);
   const workFocusOwner=mainView.kind==='assistant'?assistantIdentityKey(mainView.assistant):'';
@@ -2078,7 +2133,53 @@ export function App() {
     void voiceController.start(assistantCallCandidate(selectedAssistant, { hostId, assistantId }));
   };
   const floatLane = assistantFloat ? assistants.lane(assistantFloat.ref) : null;
-  const floatControls = useAssistantFloat({ float: assistantFloat, setFloat: setAssistantFloat, lane: floatLane, appearance: appearanceSettings ?? appearance, onDetails: ref => {
+  const floatHost = assistantFloat ? assistants.hosts.find(host => host.hostId === assistantFloat.ref.hostId) : undefined;
+  const floatBackend = floatHost && !offlineHost(floatHost.routeHostId) ? hostBackend(floatHost.routeHostId) : undefined;
+  const floatCatalog=assistantFloat?companionCatalogFor(assistantFloat.ref):null;
+  const floatContext=floatCatalog?companionFloatContext(floatCatalog,companionChoiceFor(floatCatalog.owner,floatCatalog)):undefined;
+  useEffect(()=>{
+    for(const summary of assistants.assistants){
+      const key=assistantIdentityKey(summary.ref);
+      const choice=companionSelections.current.get(key);
+      if(!choice)continue;
+      const catalog=companionCatalogFor(summary.ref);
+      if(!catalog.valid||!catalog.listed)continue;
+      const next=reconcileCompanionSelection(catalog,choice);
+      if(JSON.stringify(next)!==JSON.stringify(choice)){companionSelections.current.set(key,next);refreshCompanionSelection(version=>version+1);}
+      saveCompanionSelection(localStorage,summary.ref,catalog,next);
+    }
+  },[chats.catalog,assistants.assistants,workspaces,viewPanes]);
+  const floatControls = useAssistantFloat({ float: assistantFloat, setFloat: setAssistantFloat, lane: floatLane, backend:floatBackend, threadContext:floatContext,
+    onFollowThreads: ids=>{if(assistantFloat)chooseCompanionContext(assistantFloat.ref,{followedThreadIds:ids});},
+    onActiveThread: id=>{if(assistantFloat)chooseCompanionContext(assistantFloat.ref,{activeThreadId:id});},
+    onNewThread:async()=>{
+      if(!assistantFloat)throw new Error('Open an assistant before creating a thread.');
+      const owner={...assistantFloat.ref};
+      const catalog=companionCatalogFor(owner);
+      const choice=companionChoiceFor(owner,catalog);
+      const target=companionNewThreadTarget(catalog,choice);
+      if(target.kind!=='project')throw new Error(target.message);
+      const route=hostBackend(target.routeHostId);
+      const bound=()=>hostBackend(target.routeHostId)===route&&authenticatedProjectHost(target.routeHostId)===target.hostId&&!offlineHost(target.routeHostId);
+      if(!bound())throw new Error('Reconnect the thread’s owning machine before creating it.');
+      const id=newId('pane');
+      await route.call('room_create',{id,participants:[],options:{},cwd:target.project.cwd});
+      if(!bound())throw new Error('The machine changed after thread creation. Refresh its thread list before trying again.');
+      await route.call('chat_update_meta',{id,title:'New thread'});
+      await chats.refresh(target.routeHostId);
+      if(!bound())throw new Error('The thread was created, but its machine is no longer connected.');
+      const next={followedThreadIds:[...new Set([...choice.followedThreadIds,id])].slice(-64),activeThreadId:id};
+      companionSelections.current.set(assistantIdentityKey(owner),next);
+      refreshCompanionSelection(version=>version+1);
+      const workspace=resolveAssistantProject(target.project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
+      if(workspace){
+        const pane:Pane={id,workspaceId:workspace.id,kind:'chat',title:'New thread'};
+        setPanes(before=>before.some(item=>item.id===id)?before.map(item=>item.id===id?{...item,closed:false}:item):[...before,pane]);
+        setOpenChat(null);focusPane(pane);
+      }
+      return {id};
+    },
+    appearance: appearanceSettings ?? appearance, onDetails: ref => {
     setMainView({ kind: 'assistant', assistant: ref, section: 'chat' });
     showDetails();
   } });
@@ -2086,10 +2187,14 @@ export function App() {
     if (!selectedAssistant?.ref) return;
     floatControls.open(selectedAssistant.ref, selectedAssistant.name).catch(error => toast(String(error instanceof Error ? error.message : error)));
   };
-  const floatNeedsVoice = !!floatLane && !(selectedAssistant && floatLane.draftKey === selectedAssistant.draftKey);
+  // A live call outlives its floating view. Main assistant chat owns the same
+  // registration while selected; otherwise keep the actual voice owner alive.
+  const assistantVoiceState=useSyncExternalStore(voiceController.subscribe,voiceController.getState);
+  const keeperOwner=assistantVoiceKeeperOwner({voice:assistantVoiceState,available:assistants.assistants,selected:selectedAssistant?.ref,floating:assistantFloat?.ref});
+  const keeperLane=keeperOwner?assistants.lane(keeperOwner):null;
+  const keeperHost=keeperOwner?assistants.hosts.find(host=>host.hostId===keeperOwner.hostId):undefined;
+  const keeperBackend=keeperHost&&!offlineHost(keeperHost.routeHostId)?hostBackend(keeperHost.routeHostId):undefined;
   // The route to the assistant's machine, as the main view uses: `ref.hostId` is its identity.
-  const floatHost = assistantFloat ? assistants.hosts.find(host => host.hostId === assistantFloat.ref.hostId) : undefined;
-  const floatBackend = floatHost && !offlineHost(floatHost.routeHostId) ? hostBackend(floatHost.routeHostId) : undefined;
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
   /** What this session's tasks and its own chat made: documents, exports and pages. */
@@ -2359,6 +2464,7 @@ export function App() {
     setMainView({kind:"workspace"});
     setCreatingAssistant(false);
     // Opening a thread reads it, and brings it out of the archive.
+    if(pane.archived)void syncWorkMeta(pane,{archived:false});
     if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId && (pane.closed || pane.unread || pane.archived)) setPanes((list) => list.map((p) => {
       if (p.id !== pane.id) return p;
       const { unread: _read, archived: _out, ...rest } = p;
@@ -2676,8 +2782,10 @@ export function App() {
             assistantStatusFor={ref=>{const summary=assistants.assistants.find(item=>assistantIdentityKey(item.ref)===assistantIdentityKey(ref));return assistantStatus({offline:summary?.offline??false,paused:summary?.paused??false,personalTasks:summary?.personalTasks??[],delegatedTasks:summary?delegatedTasksForAssistant(currentAssistantRegistry.owners,ref,summary.projects):[]});}}
             assistantBackend={ref=>{const host=assistants.hosts.find(host=>host.hostId===ref.hostId);if(!host)return undefined;try{return hostBackend(host.routeHostId);}catch{return undefined;}}}
             selectedAssistant={mainView.kind==='assistant'?mainView.assistant:null}
+            floatingAssistant={floatControls.visible?assistantFloat?.ref:null}
             rosterProblem={rosterMessage(assistants.assistants,assistants.hosts)}
             onOpenAssistant={ref=>{setOpenChat(null);openAssistant(ref);}}
+            onPopOutAssistant={window.apexDeck?.popout?ref=>{const lane=assistants.lane(ref);if(lane)void floatControls.open(ref,lane.name).catch(error=>toast(String(error instanceof Error?error.message:error)));}:undefined}
             onCreateAssistant={()=>{setOpenChat(null);setCreatingAssistant(true);setMainView({kind:'workspace'});}}
             chats={<ChatRail chats={chats} openKey={openChat ? chatKey(openChat) : null} onNew={() => setNewChatOpen(true)} onOpen={(row) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
             trash={<ThreadTrash chats={chats} onRestore={restoreTrashedThread} />}
@@ -2844,7 +2952,7 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
           </div>
-          {floatNeedsVoice && floatLane && <AssistantVoiceKeeper lane={floatLane} backend={floatBackend} settings={settings.voice} onSettings={voice=>setSettings(s=>({...s,voice}))}/>}
+          {keeperOwner && keeperLane && <AssistantVoiceKeeper key={assistantIdentityKey(keeperOwner)} lane={keeperLane} backend={keeperBackend} settings={settings.voice} onSettings={voice=>setSettings(s=>({...s,voice}))}/>}
           {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace onPopOut={window.apexDeck?.popout&&selectedAssistant.ref?popOutAssistant:undefined} detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
             memoryProject={assistantNotebookProject}
             projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact managementOpen onDetailChange={()=>{}} detailBackLabel={workDetailOrigin==='chat'?'Chat':'Projects & access'} onDetailBack={()=>{if(workDetailOrigin==='chat')navigateAssistant('chat');}} focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}

@@ -8,15 +8,15 @@
 
 **Tech Stack:** Existing React/TypeScript, Rust host, signed Swift computer-use helper and Python upgrade transaction. No dependency upgrades or alternate model/API credentials.
 
-**Spec:** User decisions in this chat: all permitted threads searchable whether open or closed; open panes provide lightweight fresh titles/agents/status and focused context; voice remains with Alfred while viewing work; authorized instructions go to existing agents with report-back. Floating companion mockup is independently delegated and is not production UI authorization.
+**Spec:** User decisions in this chat: all permitted threads searchable whether open or closed; open panes provide lightweight fresh titles/agents/status and focused context; voice remains with Alfred while viewing work; authorized instructions go to existing agents with report-back. The user subsequently approved Quick finder and explicitly authorized its native implementation alongside the backend.
 
 ## Global Constraints
 
-- Reuse clean `ucu-integration`; branch `feat/alfred-live-context` from tested main `a5e59557`. Preserve the other feature checkouts and their dirty files.
+- Reuse clean `ucu-integration`; branch `feat/alfred-live-context` from tested main lineage (actual task base `047345f1`; latest main merged at `d33226b5`). Preserve the other feature checkouts and their dirty files.
 - Implement the user-authorized permission controls below; do not activate new grants or change existing saved grants merely by shipping the controls. No cookie/profile changes, real provider tests without explicit test scope, or model-supplied authority. Context is data, never authorization.
 - Snapshot pane context at send time, not reply time. Bind it to the assistant's actual machine; never redirect another machine's pane into a local room with a matching ID.
 - Keep read/search bounded and revocation-aware. Closed does not mean archived; archived and ungranted work remain excluded.
-- Production builds only beneath canonical `release/`. Require `npx tsc --noEmit` before local merge. No push or automatic running-app replacement.
+- Production builds only beneath canonical `release/`. Require `npx tsc --noEmit` before local merge. No push. Candidate installation and fresh native testing are authorized by the user; any authentication prompt must be completed by the user.
 
 ## Review Focus
 
@@ -41,7 +41,7 @@
 
 - [ ] Write failing tests for host isolation, open/closed filtering, capture-at-send across focus changes, legacy messages and host revalidation.
 - [ ] Carry only bounded IDs and the originating host, never client titles or grants. Resolve server-side against current permitted rooms. Share the send path across main chat, voice and float.
-- [ ] Expose a lightweight current-thread label in existing assistant/voice surfaces without implementing the separately proposed visual design.
+- [ ] Expose a lightweight current-thread label in existing assistant/voice surfaces alongside the subsequently approved native Quick finder design.
 - [ ] Verify TypeScript, affected JS and Rust checks; commit.
 
 ### Task 3: Diagnose and prevent stale helper registration
@@ -67,8 +67,20 @@
 - [ ] Add tests for one-shot versus persistent grants, explicit-human-request provenance, scope isolation, revocation, nested approvals, create/trash/permanent-delete distinctions and legacy policy compatibility.
 - [ ] Extend the mockup with permission management and delegated-approval states; clearly label simulated controls. Verify native behavior separately from mockup checks.
 
-### Task 5: Combined verification
+### Task 5: Approved native Quick finder companion
+
+**Scope update:** The user approved the focused Quick finder mockup and explicitly requested real implementation alongside the backend, with full end-to-end testing targeted within one hour from 12:08 Pacific on November 1 (13:08 target). A simulated demo does not satisfy acceptance.
+
+- [ ] Implement the approved compact native pill, genuine avatar-only size, connected picker and expanded chat using real parent-owned data. Keep the picker toggle anchored to the pill while its heading moves upward.
+- [ ] Distinguish multiple followed threads from independently pinned active context. Share immutable send-time IDs across typed, floating and voice turns; all identities remain host-revalidated.
+- [ ] Use the existing top sidebar assistant row: name opens the main chat; a separate outward-arrow button opens the float only while hidden. Both share the row highlight.
+- [ ] Verify minimized avatar restores on the first normal click or keyboard activation after dragging. Hide/minimize/close must not create a second microphone or end an active call; End voice remains explicit.
+- [ ] New chat creates and opens an actual empty native thread in the active permitted project, follows it, and makes it active without waking an agent.
+- [ ] Verify through real Chromium/native window tests, then the actual candidate app with live host data and a fresh harmless assistant exchange. Separate deterministic fixtures from observed native behavior.
+
+### Task 6: Combined verification and candidate installer
 
 - [ ] Run full JavaScript and relevant Rust suites, TypeScript, and one fresh whole-change review.
 - [ ] Fix important confirmed findings with reproducing regressions; preserve mockup independence.
 - [ ] Merge locally only after green checks, delete this task branch, and report exact validation and installed acceptance limitations.
+- [ ] Build production artifacts only inside canonical release/, verify signed payload/provenance, and prepare one upgrade installer for the integrated candidate. Preserve the primary checkout's unrelated files and existing releases until the replacement is verified.

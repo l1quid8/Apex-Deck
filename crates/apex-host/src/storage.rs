@@ -65,6 +65,12 @@ pub struct ChatMovedTo {
 #[serde(rename_all = "camelCase")]
 pub struct ChatRoomMeta {
     #[serde(default)]
+    pub metadata_revision: u64,
+    #[serde(default)]
+    pub title_managed: bool,
+    #[serde(default)]
+    pub archive_managed: bool,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub updated_at: u64,
@@ -126,6 +132,12 @@ fn crash_here(_: PromoteCrash) -> Result<(), String> { Ok(()) }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatListEntry {
+    #[serde(default)]
+    pub metadata_revision: u64,
+    #[serde(default)]
+    pub title_explicit: bool,
+    #[serde(default)]
+    pub archive_explicit: bool,
     pub id: String,
     pub kind: apex_core::RoomKind,
     pub title: String,
@@ -1005,6 +1017,7 @@ impl Store {
         let mut metas = self.chat_metas_held()?;
         let mut meta = metas.remove(id).unwrap_or_default();
         f(&mut meta);
+        meta.metadata_revision=meta.metadata_revision.checked_add(1).ok_or("Thread metadata revision exhausted.")?;
         metas.insert(id.into(), meta.clone());
         self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
         Ok(meta)
@@ -1056,6 +1069,7 @@ impl Store {
                 .max()
                 .unwrap_or(0);
             let updated_at = meta.updated_at.max(last_msg_at);
+            let title_explicit=meta.title_managed&&!meta.title.trim().is_empty();
             let title = if meta.title.trim().is_empty() {
                 "New chat".to_string()
             } else {
@@ -1082,6 +1096,9 @@ impl Store {
                 })
                 .collect();
             out.push(ChatListEntry {
+                metadata_revision: meta.metadata_revision,
+                title_explicit,
+                archive_explicit: meta.archive_managed,
                 id,
                 kind: saved.snapshot.kind,
                 title,

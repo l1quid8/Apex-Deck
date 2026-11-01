@@ -325,3 +325,36 @@ test('a fenced send blocks promotion across relaunch until its retry reaches the
   assert.deepEqual(workCopies.map(copy => copy.map(item => item.text)), [['must come with me']]);
   assert.deepEqual(readPromoteTickets(disk, DESKTOP_PROMOTES_KEY), {}, 'confirmed move clears its ticket');
 });
+
+test('host Work metadata creates a closed openable pane and converges rename archive restore deletion only on its route', async () => {
+  const {reconcileWorkPanes}=await import('../src/desktopChats.ts');
+  const ws=[{id:'local-w',name:'Local',path:'/repo'},{id:'remote-w',name:'Remote',path:'/repo',hostId:'vps'}];
+  const local={id:'same',kind:'chat',workspaceId:'local-w',title:'Local title'};
+  const initial=listed(emptyCatalog(),'vps',[{id:'same',kind:'work',cwd:'/repo',title:'Created',titleExplicit:true,metadataRevision:1}]);
+  let panes=reconcileWorkPanes([local],ws,initial,emptyCatalog(),()=>true);
+  // Pane ids are global in the renderer. Never steal a different host's pane.
+  assert.deepEqual(panes,[local]);
+  panes=reconcileWorkPanes([],ws,initial,emptyCatalog(),()=>true);
+  assert.equal(panes[0].title,'Created');assert.equal(panes[0].closed,true);assert.equal(panes[0].workspaceId,'remote-w');
+  const renamed=listed(initial,'vps',[{id:'same',kind:'work',cwd:'/repo',title:'Renamed',titleExplicit:true,metadataRevision:2}],2);
+  panes=reconcileWorkPanes(panes,ws,renamed,initial,()=>true);assert.equal(panes[0].title,'Renamed');
+  const archived=listed(renamed,'vps',[{id:'same',kind:'work',cwd:'/repo',title:'Renamed',titleExplicit:true,metadataRevision:3,archived:true}],3);
+  panes=reconcileWorkPanes(panes,ws,archived,renamed,()=>true);assert.equal(panes[0].archived,true);assert.equal(panes[0].closed,true);
+  panes=reconcileWorkPanes(panes,ws,renamed,archived,()=>true);assert.equal(panes[0].archived,true,'stale metadata cannot restore archive');
+  const restored=listed(archived,'vps',[{id:'same',kind:'work',cwd:'/repo',title:'Renamed',titleExplicit:true,metadataRevision:4}],4);
+  panes=reconcileWorkPanes(panes,ws,restored,archived,()=>true);assert.equal(panes[0].archived,undefined);assert.equal(panes[0].closed,true);
+  const deleted=listed(restored,'vps',[],5);
+  assert.equal(reconcileWorkPanes(panes,ws,deleted,restored,()=>false),panes,'offline is not deletion');
+  assert.equal(reconcileWorkPanes(panes,ws,emptyCatalog(),restored,()=>true),panes,'unlisted is not deletion');
+  assert.deepEqual(reconcileWorkPanes(panes,ws,deleted,restored,()=>true),[]);
+});
+
+test('host fallback titles never replace legacy local titles and in-flight user edits survive stale lists',async()=>{
+ const {reconcileWorkPanes}=await import('../src/desktopChats.ts');const ws=[{id:'w',path:'/repo',name:'P'}];
+ const panes=[{id:'a',workspaceId:'w',kind:'chat',title:'My local title'}];
+ let catalog=listed(emptyCatalog(),'local',[{id:'a',kind:'work',cwd:'/repo',title:'New chat',metadataRevision:0,titleExplicit:false}]);
+ assert.equal(reconcileWorkPanes(panes,ws,catalog,emptyCatalog(),()=>true)[0].title,'My local title');
+ catalog=listed(catalog,'local',[{id:'a',kind:'work',cwd:'/repo',title:'Old host title',metadataRevision:3,titleExplicit:true}],2);
+ const pending=[{...panes[0],hostTitlePending:'My new title',title:'My new title'}];
+ assert.equal(reconcileWorkPanes(pending,ws,catalog,emptyCatalog(),()=>true)[0].title,'My new title');
+});

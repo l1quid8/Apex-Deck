@@ -17,8 +17,8 @@ export type PersonalAssistantsOptions = {
   offlineHost: (routeHostId: string) => boolean;
   open?: boolean; device?: string; bridge?: boolean;
   onOpen?: (ref: AssistantRef | null) => void;
-  viewContext?: (routeHostId: string, hostId: string) => PersonalViewContext | undefined;
-  currentThread?: (routeHostId: string, hostId: string) => PersonalLane["currentThread"];
+  viewContext?: (routeHostId: string, hostId: string, owner: AssistantRef) => PersonalViewContext | undefined;
+  currentThread?: (routeHostId: string, hostId: string, owner: AssistantRef) => PersonalLane["currentThread"];
   storage?: Pick<Storage, "getItem" | "setItem">;
 };
 export type PersonalAssistantSummary = {
@@ -207,12 +207,12 @@ export class PersonalAssistantsCollection {
     });
     const sendContext = () => {
       if (route.supports?.("assistant_live_context_v1") !== true) return {};
-      const value = this.options.viewContext?.(row.routeHostId, row.ref.hostId);
+      const value = this.options.viewContext?.(row.routeHostId, row.ref.hostId,row.ref);
       if (!value || value.hostId !== row.ref.hostId) return {};
-      return { viewContext: { hostId: value.hostId, focusedThreadId: value.focusedThreadId, openThreadIds: [...value.openThreadIds].slice(0, 64) } };
+      return { viewContext: { hostId: value.hostId, focusedThreadId: value.focusedThreadId, openThreadIds: [...value.openThreadIds].slice(0, 64), ...(value.followedThreadIds?{followedThreadIds:[...value.followedThreadIds].slice(0,64)}:{}) } };
     };
-    const view = this.options.viewContext?.(row.routeHostId,row.ref.hostId);
-    const currentThread = this.options.currentThread?.(row.routeHostId,row.ref.hostId);
+    const view = this.options.viewContext?.(row.routeHostId,row.ref.hostId,row.ref);
+    const currentThread = this.options.currentThread?.(row.routeHostId,row.ref.hostId,row.ref);
     const permittedThread = view?.hostId === row.ref.hostId && view.focusedThreadId === currentThread?.id && row.assistant.projects?.some(binding =>
       binding.tools !== "off" && binding.project.hostId === currentThread?.project?.hostId && binding.project.cwd === currentThread.project.cwd);
     return {
