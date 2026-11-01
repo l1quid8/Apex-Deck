@@ -127,7 +127,7 @@ pub fn plan_delegation(
         return Err("That source event does not match the delegation.".into());
     }
     if event.state == crate::personal::EventState::Failed { return Err("A stopped or failed reply cannot propose project work.".into()); }
-    let EventSource::Human { text } = &event.source else {
+    let EventSource::Human { text, .. } = &event.source else {
         return Err("Only a human conversation event may propose work.".into());
     };
     if !assistant.messages.iter().any(|m| m.role == "human" && m.event_id.as_deref() == Some(event.id.as_str()) && m.legacy.is_none() && m.text == *text) {
@@ -253,14 +253,14 @@ impl crate::host::Host {
         let request_id = format!("ui-delegation:{}", input.delegation_id);
         let event_id = self.change_assistant(&input.assistant_id, |current| {
             if let Some(event) = current.events.iter().find(|event| event.request_id == request_id) {
-                if event.source != (EventSource::Human {text:input.brief.clone()}) || event.state != crate::personal::EventState::Done { return Err("Delegation ID already belongs to another human request.".into()); }
+                if event.source != (EventSource::Human {text:input.brief.clone(), view_context:None}) || event.state != crate::personal::EventState::Done { return Err("Delegation ID already belongs to another human request.".into()); }
                 return Ok(event.id.clone());
             }
             if current.revision != input.expected_revision { return Err("This assistant changed since the plan was read. Open it again.".into()); }
             let mut draft = current.clone();
             draft.counters.event += 1;
             let event_id = format!("pe-{}", draft.counters.event);
-            let event = PersonalEvent { id:event_id.clone(),request_id:request_id.clone(),source:EventSource::Human {text:input.brief.clone()},received_at:crate::personal::now(),state:crate::personal::EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false };
+            let event = PersonalEvent { id:event_id.clone(),request_id:request_id.clone(),source:EventSource::Human {text:input.brief.clone(), view_context:None},received_at:crate::personal::now(),state:crate::personal::EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false };
             draft.post("human", "chat", input.brief.clone(), None, Some(event_id.clone()), event.received_at);
             draft.events.push(event.clone());
             let mut checked = input.clone(); checked.source_event_id=event_id.clone();

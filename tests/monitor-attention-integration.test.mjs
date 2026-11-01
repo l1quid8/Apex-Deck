@@ -1,3 +1,6 @@
+import {closeTrashedPanes,withoutTrashedPanes} from '../src/threadTrash.ts';
+import {emptyCatalog,parseChatList,withListedRooms,findRoom} from '../src/chatCatalog.ts';
+import {workThreadPlace} from '../src/desktopChats.ts';
 import {assistantIdentityKey, assistantAppearance} from '../src/assistantIdentity.ts';
 import {assistantSidebarPanes, assistantThreadKey} from '../src/assistantSidebar.ts';
 import {rosterMessage} from '../src/assistantWorkspaceModel.ts';
@@ -111,11 +114,13 @@ function appHarness() {
   const personalRecord={id:'assistant-a',hostId:project.hostId,name:'Null',revision:1,messages:[],tasks:[],projects:[{project:{hostId:project.hostId,workspaceId:project.id,cwd:project.path},tools:'ask'}]};
   const personalLane={ref:assistantRef,draftKey:assistantIdentityKey(assistantRef),name:'Null',hostName:'Mac',assistant:personalRecord,offline:false,send:async()=>{}};
   const assistantCollection={archivedAssistants:[],restoreAssistant:async()=>{},assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false,paused:false,personalTasks:[],projects:[]}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
+  const chatCollection={catalog:emptyCatalog(),rows:[],archived:[],machines:[],rooms:{},problems:{},machineName:id=>id,backendOf:backendForHost};
   const defaults = {
+    closeTrashedPanes,withoutTrashedPanes,findRoom,workThreadPlace,
     ...assistantWorkspaceModel,
     assistantIdentityKey,rosterMessage,assistantSidebarPanes,assistantThreadKey,
     usePersonalAssistants:()=>assistantCollection,
-    useDesktopChats:()=>({catalog:{version:1,hosts:{},last:null},rows:[],archived:[],machines:[],rooms:{},problems:{},machineName:id=>id}),
+    useDesktopChats:()=>chatCollection,
     readOpenChat:()=>null,restoredChat:()=>'unknown',
 
     subscribeToImports,
@@ -161,7 +166,7 @@ function appHarness() {
     layoutKey: () => '',
     pickerRows: () => [], workInRows: () => [],
   };
-  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','AssistantWorkspace','AssistantEditor','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','ConfirmDialog','PathPrompt','SidebarHandle','RightPanel','ChatRail','ChatView','NewChatDialog']);
+  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','AssistantWorkspace','AssistantEditor','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ThreadTrash','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','ConfirmDialog','PathPrompt','SidebarHandle','RightPanel','ChatRail','ChatView','NewChatDialog']);
   const globalValues = {
     localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
     crypto: { randomUUID: () => `request-${++requestSequence}` },
@@ -193,7 +198,7 @@ function appHarness() {
   }
   function unmount() { alive = false; for (const effect of effects) effect?.cleanup?.(); }
   return {
-    render, unmount, backend, session, stored, assistantRef, personalLane, assistantCollection,
+    render, unmount, backend, session, stored, chatCollection, assistantRef, personalLane, assistantCollection,
     emitSession(workspaces) { sessionChanged?.({ ...session, workspaces, panes: session.panes }); },
     setConnection(status, hostId = 'host-a') {
       const previous = connectionStates.get(hostId) ?? { status: { kind: 'connected' }, revision: 1 };
@@ -762,4 +767,21 @@ test('saved retry refuses a reassigned conversation and leaves its original requ
   assert.equal(sends, 1);
   assert.equal(JSON.parse(h.stored.get(assistantTaskModel.pendingRequestStorageKey(recovery.pending.owner))).requestId, recovery.pending.requestId);
   h.unmount();
+});
+
+
+test('native Trash hides a saved Work pane and Restore returns it closed without opening or sending',async()=>{
+ const h=appHarness();h.render();await tick();let tree=h.render();
+ const before=child(tree,'ProjectSidebar').props.panes.find(p=>p.id==='thread-a');assert.ok(before);
+ h.chatCollection.catalog=withListedRooms(emptyCatalog(),'host-a','Owner',parseChatList('host-a',{rooms:[{id:'thread-a',kind:'work',cwd:project.path,title:'Ordinary thread',trashedAt:42}]}),1);
+ tree=h.render();assert.equal(child(tree,'ProjectSidebar').props.panes.some(p=>p.id==='thread-a'),false);
+ tree=h.render();const restore=child(tree,'ProjectSidebar').props.trash.props.onRestore;
+ const calls=[];h.chatCollection.setTrashed=async(row,trashed)=>{
+  calls.push([row.hostId,row.id,trashed]);
+  h.chatCollection.catalog=withListedRooms(emptyCatalog(),'host-a','Owner',parseChatList('host-a',{rooms:[{...row,trashedAt:undefined}]}),2);
+ };
+ await restore(findRoom(h.chatCollection.catalog,'host-a','thread-a'));
+ tree=h.render();const restored=child(tree,'ProjectSidebar').props.panes.find(p=>p.id==='thread-a');
+ assert.equal(restored.closed,true);assert.deepEqual(calls,[['host-a','thread-a',false]]);
+ assert.equal(child(tree,'ChatPane'),null);h.unmount();
 });

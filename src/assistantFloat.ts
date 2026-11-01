@@ -19,6 +19,7 @@ export type AssistantFloatState = {
   error: string;
   call: { muted: boolean; startedAt?: number } | null;
   alwaysOnTop: boolean;
+  currentThread?: {id:string;title:string};
 };
 export type AssistantFloatAction =
   | { type: "assistant-draft"; text: string }
@@ -54,6 +55,7 @@ export function assistantFloatState(input: { lane: PersonalLane; ref: AssistantR
     name: lane.name, ref, look: lane.assistant?.look ? { seed: lane.assistant.look.seed ?? ref.assistantId, color: lane.assistant.look.color ?? "#71e6b5" } : undefined,
     offline: lane.offline, paused: !!lane.assistant?.paused, lines: assistantFloatLines(lane), draft, error, alwaysOnTop,
     call: ours ? { muted: voice.muted, startedAt: voice.startedAt } : null,
+    ...(lane.currentThread?{currentThread:{id:lane.currentThread.id,title:lane.currentThread.title}}:{}),
   };
 }
 

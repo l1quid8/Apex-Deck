@@ -306,6 +306,34 @@ async fn launch(path: &Path, setup: bool) -> Result<(), String> {
     }
 }
 
+/// A bounded per-reply diagnostic. Never contains helper errors, paths or tokens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TurnStartFailure {
+    Verification,
+    Connection,
+    Registration,
+    Session,
+    AuthorityChanged,
+}
+impl TurnStartFailure {
+    pub(crate) fn notice(self) -> &'static str {
+        match self {
+            Self::Verification => "Unified Computer Use could not verify the installed helper. Reinstall the signed Apex Deck package before trying again.",
+            Self::Connection => "Unified Computer Use could not connect to its helper for this reply. Check Unified Computer Use in Settings before trying again.",
+            Self::Registration => "Unified Computer Use could not authorize this reply with its helper. A healthy helper status does not prove reply authorization. If Apex Deck was updated while the helper was running, finish active computer-use work, then sign out of macOS and sign back in before trying again.",
+            Self::Session => "Unified Computer Use could not create a secure computer session for this reply. Try again after checking Unified Computer Use in Settings.",
+            Self::AuthorityChanged => "Unified Computer Use authority changed while this reply was starting. Check Stop and app permissions in Settings before trying again.",
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn register_turn(stream: &mut tokio::io::BufReader<tokio::net::UnixStream>, params: Value) -> Result<(), TurnStartFailure> {
+    let registered = rpc(stream, "unified/register-turn", params).await.map_err(|_| TurnStartFailure::Registration)?;
+    if registered["registered"] != true { return Err(TurnStartFailure::Registration); }
+    Ok(())
+}
+
 pub(crate) struct TurnHook {
     pub host: Weak<Host>,
     pub computer: Arc<Computer>,
@@ -326,6 +354,13 @@ impl TurnLifecycleHook for TurnHook {
         request: &'a mut TurnRequest,
         access: Access,
     ) -> futures::future::BoxFuture<'a, Option<Box<dyn Send>>> {
+        Box::pin(async move { self.start_diagnosed(id, request, access).await.ok().flatten() })
+    }
+}
+impl TurnHook {
+    /// Uses the same registration as room turns, preserving a safe failure reason
+    /// for the reply that requested it. No global last-error can leak across turns.
+    pub(crate) fn start_diagnosed<'a>(&'a self, id: &'a ParticipantId, request: &'a mut TurnRequest, access: Access) -> futures::future::BoxFuture<'a, Result<Option<Box<dyn Send>>, TurnStartFailure>> {
         Box::pin(async move {
             request.computer = None;
             if !self.work_room
@@ -336,34 +371,34 @@ impl TurnLifecycleHook for TurnHook {
                 || !self.computer.enabled.load(Ordering::SeqCst)
                 || self.computer.stopped.load(Ordering::SeqCst)
             {
-                return None;
+                return Ok(None);
             }
             #[cfg(unix)]
             {
                 let generation = self.computer.generation(&self.thread);
-                let path = verified_bundle().await.ok()?;
+                let path = verified_bundle().await.map_err(|_| TurnStartFailure::Verification)?;
                 let mut stream = match connect().await {
                     Ok(s) => s,
                     Err(_) => {
-                        launch(&path, false).await.ok()?;
+                        launch(&path, false).await.map_err(|_| TurnStartFailure::Connection)?;
                         let started = std::time::Instant::now();
                         loop {
                             if let Ok(stream) = connect().await {
                                 break stream;
                             }
                             if started.elapsed() > Duration::from_secs(8) {
-                                return None;
+                                return Err(TurnStartFailure::Connection);
                             }
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     }
                 };
                 if !self.computer.ready(&self.thread, generation) {
-                    return None;
+                    return Err(TurnStartFailure::AuthorityChanged);
                 }
                 use ring::rand::{SecureRandom, SystemRandom};
                 let mut random = [0u8; 32];
-                SystemRandom::new().fill(&mut random).ok()?;
+                SystemRandom::new().fill(&mut random).map_err(|_| TurnStartFailure::Session)?;
                 let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
                 let control = !matches!(access, Access::Read);
                 let access = match access {
@@ -372,21 +407,17 @@ impl TurnLifecycleHook for TurnHook {
                     Access::Edits => "edits",
                     Access::Full => "full",
                 };
-                let registered=rpc(&mut stream,"unified/register-turn",json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await.ok()?;
-                if registered["registered"] != true
-                    || !self.computer.ready(&self.thread, generation)
-                {
-                    return None;
-                }
-                let shutdown = duplicate_control(stream.get_ref()).ok()?;
-                let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).ok()?).ok()?;
+                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
+                if !self.computer.ready(&self.thread, generation) { return Err(TurnStartFailure::AuthorityChanged); }
+                let shutdown = duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?;
+                let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?).map_err(|_| TurnStartFailure::Session)?;
                 {
                     let generations = self.computer.generations.lock().unwrap();
                     if generations.get(&self.thread).copied().unwrap_or(0) != generation
                         || !self.computer.enabled.load(Ordering::SeqCst)
                         || self.computer.stopped.load(Ordering::SeqCst)
                     {
-                        return None;
+                        return Err(TurnStartFailure::AuthorityChanged);
                     }
                     self.computer.active.lock().unwrap().insert(
                         token.clone(),
@@ -468,19 +499,20 @@ impl TurnLifecycleHook for TurnHook {
                         }
                     }
                 });
-                return Some(Box::new(Lease {
+                return Ok(Some(Box::new(Lease {
                     computer: Arc::downgrade(&self.computer),
                     token,
-                }) as Box<dyn Send>);
+                }) as Box<dyn Send>));
             }
             #[cfg(not(unix))]
             {
                 let _ = (id, access);
-                None
+                Ok(None)
             }
         })
     }
 }
+
 struct Lease {
     computer: Weak<Computer>,
     token: String,
@@ -727,6 +759,60 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn legacy_turn_hook_keeps_its_option_contract_and_clears_unavailable_tools() {
+        let data = std::env::temp_dir().join(format!("apex-computer-disabled-{}", std::process::id()));
+        let hook = TurnHook { host: Weak::new(), computer: Computer::new(&data), thread: "assistant:a".into(), work_room: true, ended: Some(Arc::new(tokio::sync::Notify::new())) };
+        let mut request = TurnRequest { computer: Some(ComputerTurn { relay: "/unused".into(), thread_id: "old".into(), participant_id: "p".into(), token: "private".into() }), ..TurnRequest::default() };
+        let id = ParticipantId::new("p");
+        assert!(hook.start(&id, &mut request, Access::Ask).await.is_none());
+        assert!(request.computer.is_none());
+        assert!(hook.start_diagnosed(&id, &mut request, Access::Ask).await.unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn healthy_helper_status_does_not_authorize_a_refused_registration() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (client, helper) = tokio::net::UnixStream::pair().unwrap();
+        let peer = tokio::spawn(async move {
+            let mut helper = tokio::io::BufReader::new(helper);
+            for result in [json!({"tapHealthy":true}), json!({"registered":false,"error":"secret-token-and-peer-error"})] {
+                let mut line = String::new();
+                helper.read_line(&mut line).await.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                helper.get_mut().write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":request["id"],"result":result})).as_bytes()).await.unwrap();
+            }
+        });
+        let mut client = tokio::io::BufReader::new(client);
+        assert_eq!(rpc(&mut client, "unified/status", json!({})).await.unwrap()["tapHealthy"], true);
+        let error = register_turn(&mut client, json!({"turnToken":"secret-token"})).await.unwrap_err();
+        assert_eq!(error, TurnStartFailure::Registration);
+        assert!(error.notice().contains("authorize this reply"));
+        assert!(!error.notice().contains("secret"));
+        peer.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn registration_requires_a_positive_helper_acknowledgement() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        for result in [json!({"registered":true}), json!({}), json!({"registered":"true"})] {
+            let expected = result["registered"] == true;
+            let (client, helper) = tokio::net::UnixStream::pair().unwrap();
+            let peer = tokio::spawn(async move {
+                let mut helper = tokio::io::BufReader::new(helper);
+                let mut line = String::new();
+                helper.read_line(&mut line).await.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                helper.get_mut().write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":request["id"],"result":result})).as_bytes()).await.unwrap();
+            });
+            let outcome = register_turn(&mut tokio::io::BufReader::new(client), json!({})).await;
+            assert_eq!(outcome.is_ok(), expected);
+            peer.await.unwrap();
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn authenticated_control_duplicate_is_close_on_exec() {

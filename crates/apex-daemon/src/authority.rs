@@ -60,7 +60,7 @@ pub fn command_needs(command: &Command) -> Need {
         // so even reading it needs a device allowed every thread at Full tier.
         ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
         | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
-        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
+        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
         | PersonalMachineResult { .. } | PersonalMachineAllow { .. } | PersonalMachineAllowed {} | PersonalExecuteLocal { .. }
@@ -111,6 +111,7 @@ pub fn command_needs(command: &Command) -> Need {
         // Full, inside one thread.
         RoomMount { id, .. } => full(thread(id)),
         RoomDelete { id } => full(thread(id)),
+        RoomSetTrashed { id, .. } => full(thread(id)),
         RoomUpdateParticipant { id, .. } => full(thread(id)),
         RoomAddParticipant { id, .. } => full(thread(id)),
         RoomRemoveParticipant { id, .. } => full(thread(id)),
@@ -307,6 +308,14 @@ pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_grants_require_global_full_but_trash_is_thread_scoped_full() {
+        let permission = Command::from_json(serde_json::json!({"cmd":"personal_permission_set","args":{"assistantId":"a","expectedRevision":0,"capability":"threadCreate","scope":{"kind":"allProjects"},"mode":"always","delegate":false}})).unwrap();
+        assert_eq!(command_needs(&permission), full(Scope::Global));
+        let trash = Command::from_json(serde_json::json!({"cmd":"room_set_trashed","args":{"id":"r","trashed":true}})).unwrap();
+        assert_eq!(command_needs(&trash), full(thread("r")));
+    }
     use crate::devices::tests::id;
     use serde_json::json;
 

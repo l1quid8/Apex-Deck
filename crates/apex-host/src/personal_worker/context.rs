@@ -101,7 +101,12 @@ pub fn assemble(assistant: &PersonalAssistant, text: &str, now: u64, connected: 
 
 /// The prompt, and the outside words in it.
 pub fn assemble_seen(assistant: &PersonalAssistant, text: &str, now: u64, connected: &[(&str, &str)]) -> (String, Seen) {
-    let budget = assistant.context_budget_chars.clamp(4_000, 400_000) as usize;
+    assemble_seen_reserved(assistant, text, now, connected, 0)
+}
+
+/// Reserve room for current authoritative context before old conversation lines.
+pub fn assemble_seen_reserved(assistant: &PersonalAssistant, text: &str, now: u64, connected: &[(&str, &str)], reserved: usize) -> (String, Seen) {
+    let budget = (assistant.context_budget_chars.clamp(4_000, 400_000) as usize).saturating_sub(reserved);
     let folder = assistant.allowed_folders.first().map(String::as_str).unwrap_or("(none)");
     let machines = if assistant.machines.is_empty() {
         String::new()

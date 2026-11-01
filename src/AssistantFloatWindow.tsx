@@ -53,6 +53,7 @@ export function AssistantFloat({ token }: { token: string }) {
       <button type="button" aria-pressed={state.alwaysOnTop} aria-label="Keep on top" title="Keep on top" onClick={() => { void bridge?.alwaysOnTop?.(token, !state.alwaysOnTop).then((on) => setState((s) => s && { ...s, alwaysOnTop: on })); }}>⌃</button>
       <button type="button" aria-label="Return to Deck" title="Return to Deck" onClick={() => act({ type: "assistant-return" })}>⤶</button>
     </header>
+    {state.currentThread&&<div className="assistant-float-context" role="status" title={state.currentThread.title}>Context: {state.currentThread.title}</div>}
     <div className="assistant-float-log" ref={log} role="log" aria-live="polite">
       {state.lines.length === 0 && <p className="assistant-float-empty">Say something to {state.name}.</p>}
       {state.lines.map((line) => <p key={line.id} data-role={line.role}>{line.approval ? "Waiting for your approval in Deck." : line.text}</p>)}

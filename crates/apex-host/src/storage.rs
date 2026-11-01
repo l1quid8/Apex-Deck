@@ -71,6 +71,8 @@ pub struct ChatRoomMeta {
     #[serde(default)]
     pub archived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_to: Option<String>,
@@ -130,6 +132,8 @@ pub struct ChatListEntry {
     pub participants: Vec<apex_core::ParticipantConfig>,
     pub updated_at: u64,
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed_at: Option<u64>,
     pub cwd: Option<String>,
     pub folder_name: Option<String>,
     pub promoted_from: Option<String>,
@@ -1084,6 +1088,7 @@ impl Store {
                 participants,
                 updated_at,
                 archived: meta.archived,
+                trashed_at: meta.trashed_at,
                 cwd: saved.cwd,
                 folder_name,
                 promoted_from: meta.promoted_from,

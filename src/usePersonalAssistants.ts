@@ -10,12 +10,15 @@ import type { PersonalAssistantRecord, PersonalLane, PersonalSettings, Connector
 import { unsupported as unsupportedCommand } from "./threadMove.ts";
 import { createProjectMemoryClient, PROJECT_MEMORY_CAPABILITY } from "./projectMemory.ts";
 
+import type { PersonalViewContext } from "./assistantViewContext.ts";
 export type PersonalAssistantsOptions = {
   hosts: Pick<HostEntry, "id" | "name" | "remote">[];
   hostBackend: (routeHostId: string) => Backend;
   offlineHost: (routeHostId: string) => boolean;
   open?: boolean; device?: string; bridge?: boolean;
   onOpen?: (ref: AssistantRef | null) => void;
+  viewContext?: (routeHostId: string, hostId: string) => PersonalViewContext | undefined;
+  currentThread?: (routeHostId: string, hostId: string) => PersonalLane["currentThread"];
   storage?: Pick<Storage, "getItem" | "setItem">;
 };
 export type PersonalAssistantSummary = {
@@ -202,12 +205,23 @@ export class PersonalAssistantsCollection {
         if (!this.rows.get(key)?.assistant.projects?.some(binding => projectIdentityKey(binding.project) === identity)) throw new Error("This project is no longer assigned to this assistant. Refresh its projects before reading memory.");
       },
     });
+    const sendContext = () => {
+      if (route.supports?.("assistant_live_context_v1") !== true) return {};
+      const value = this.options.viewContext?.(row.routeHostId, row.ref.hostId);
+      if (!value || value.hostId !== row.ref.hostId) return {};
+      return { viewContext: { hostId: value.hostId, focusedThreadId: value.focusedThreadId, openThreadIds: [...value.openThreadIds].slice(0, 64) } };
+    };
+    const view = this.options.viewContext?.(row.routeHostId,row.ref.hostId);
+    const currentThread = this.options.currentThread?.(row.routeHostId,row.ref.hostId);
+    const permittedThread = view?.hostId === row.ref.hostId && view.focusedThreadId === currentThread?.id && row.assistant.projects?.some(binding =>
+      binding.tools !== "off" && binding.project.hostId === currentThread?.project?.hostId && binding.project.cwd === currentThread.project.cwd);
     return {
       ref: { ...row.ref }, draftKey: key, attachmentKey: key,
+      currentThread: permittedThread && currentThread ? {...currentThread,project:currentThread.project && {...currentThread.project}} : undefined,
       name: row.assistant.name, assistant: row.assistant, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), problem: this.hosts.get(row.routeHostId)?.problem,
-      send: text => after("personal_send", { requestId: request(), text }),
+      send: text => after("personal_send", { requestId: request(), text, ...sendContext() }),
       sendRequest: route.supports?.("assistant_voice_v1") !== true ? undefined : async (text, requestId) => {
-        const result = await afterResult("personal_send", { requestId, text });
+        const result = await afterResult("personal_send", { requestId, text, ...sendContext() });
         if (!result.eventId) throw new Error("The host did not return the reply identity.");
         return {eventId: result.eventId};
       },
@@ -234,6 +248,7 @@ export class PersonalAssistantsCollection {
         if (!Number.isSafeInteger(configuration.expectedRevision) || configuration.expectedRevision < 0) throw new Error("Workspace settings require the editor's saved revision.");
         return afterResult("personal_workspace_configure", { ...configuration }).then(result=>result.assistant);
       },
+      setPermission: route.supports?.("assistant_permissions_v1") === true ? (capability, scope, mode, delegate) => after("personal_permission_set", { expectedRevision: row.assistant.permissions?.revision ?? 0, capability, scope, mode, delegate }) : undefined,
       addRule: (text, cls, mode) => after("personal_rule_add", { text, class: cls, mode }),
       removeRule: ruleId => after("personal_rule_remove", { ruleId }),
       remember: text => after("personal_memory_add", { text, ...memoryRevision() }),

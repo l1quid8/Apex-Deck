@@ -12,6 +12,9 @@
 //! decision is applied only from a `personal_decide` event whose parameter
 //! hash matches the task's current operation.
 
+#[path = "personal_permissions.rs"]
+pub mod permissions;
+
 use std::sync::Mutex;
 
 use apex_core::ParticipantConfig;
@@ -35,6 +38,7 @@ const MESSAGE_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "👀", "
 /// One change to `personal-assistants.json` at a time. Never held across a
 /// model call or a command run.
 static PERSONAL: Mutex<()> = Mutex::new(());
+pub(crate) fn authority_guard() -> std::sync::MutexGuard<'static, ()> { PERSONAL.lock().unwrap_or_else(|p|p.into_inner()) }
 
 #[cfg(test)]
 pub(crate) fn with_personal_lock_for_test<T>(run: impl FnOnce() -> T) -> T {
@@ -358,6 +362,8 @@ pub struct PersonalAssistant {
     pub quiet_hours: Option<QuietHours>,
     #[serde(default)]
     pub modes: ActionModes,
+    #[serde(default)]
+    pub permissions: permissions::PermissionPolicy,
     /// Where the current conversation began. Older messages stay saved and
     /// leave the model's context; memory, tasks and shared chats are untouched.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -441,10 +447,20 @@ pub struct PersonalMessage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalViewContext {
+    pub host_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_thread_id: Option<String>,
+    #[serde(default)]
+    pub open_thread_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum EventSource {
     /// Text the human typed in a client. The only source that can start a task.
-    Human { text: String },
+    Human { text: String, #[serde(default, rename = "viewContext", skip_serializing_if = "Option::is_none")] view_context: Option<PersonalViewContext> },
     /// The human's answer to one decision, bound to the operation it approves.
     Decision { decision_id: String, params_hash: String, approve: bool },
     Cancel { task_id: String },
@@ -1104,7 +1120,7 @@ impl crate::Host {
                 paused: false, revision: 1, created_at: at, counters: Counters::default(),
                 messages: vec![], events: vec![], tasks: vec![],
                 look: None, timezone: utc(), utc_offset_minutes: 0, quiet_hours: None,
-                modes: ActionModes::default(), conversation_from: 0, rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
+                modes: ActionModes::default(), permissions: permissions::PermissionPolicy::default(), conversation_from: 0, rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
                 context_budget_chars: default_context_budget(), facts: vec![], schedules: vec![], notices: vec![], costs: vec![],
                 machines: vec![], push_devices: vec![],
             };
@@ -1175,8 +1191,19 @@ impl crate::Host {
     /// Save the human's message and its event, then answer at once. The
     /// worker replies later.
     pub(crate) fn personal_send(&self, id: &str, request_id: &str, text: &str) -> Result<Accepted, String> {
+        self.personal_send_with_context(id, request_id, text, None)
+    }
+
+    pub(crate) fn personal_send_with_context(&self, id: &str, request_id: &str, text: &str, view_context: Option<PersonalViewContext>) -> Result<Accepted, String> {
         let text = message_text(text)?;
-        self.personal_accept(id, request_id, EventSource::Human { text: text.clone() }, Some(text))
+        if let Some(view) = &view_context {
+            let assistant = self.personal_get(id)?;
+            if view.host_id != assistant.host_id { return Err("The view context belongs to another machine.".into()); }
+            if view.open_thread_ids.len() > 64 || view.open_thread_ids.iter().chain(view.focused_thread_id.iter()).any(|id| id.is_empty() || id.len() > 256) {
+                return Err("The view context contains too many or invalid thread identities.".into());
+            }
+        }
+        self.personal_accept(id, request_id, EventSource::Human { text: text.clone(), view_context }, Some(text))
     }
 
     pub(crate) fn personal_decide(&self, id: &str, request_id: &str, decision_id: &str, params_hash: &str, approve: bool) -> Result<Accepted, String> {
@@ -1203,6 +1230,15 @@ impl crate::Host {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn human_event_retains_send_time_view_context() {
+        let value = serde_json::json!({"kind":"human", "text":"Fix this", "viewContext":{"hostId":"machine-a","focusedThreadId":"thread-a","openThreadIds":["thread-a","thread-b"]}});
+        let event: EventSource = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(event).unwrap(), value);
+        let old: EventSource = serde_json::from_value(serde_json::json!({"kind":"human","text":"Hi"})).unwrap();
+        assert_eq!(serde_json::to_value(old).unwrap(), serde_json::json!({"kind":"human","text":"Hi"}));
+    }
 
     #[tokio::test]
     async fn personal_list_keeps_deleted_task_review_diffs_off_the_phone() {
@@ -1267,7 +1303,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_restart_never_replays_a_reply_that_had_computer_tools() {
-        let event=|id:&str,computer_started|PersonalEvent{id:id.into(),request_id:id.into(),source:EventSource::Human{text:"Close the tab".into()},received_at:0,state:EventState::Processing,attempts:1,error:None,spend_approved:false,computer_started};
+        let event=|id:&str,computer_started|PersonalEvent{id:id.into(),request_id:id.into(),source:EventSource::Human{text:"Close the tab".into(),view_context:None},received_at:0,state:EventState::Processing,attempts:1,error:None,spend_approved:false,computer_started};
         let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
         assistant.events=vec![event("plain",false),event("acted",true)];
         assert!(assistant.recover());
@@ -1279,7 +1315,7 @@ pub(crate) mod tests {
     #[test]
     fn lifecycle_source_receipts_survive_event_pruning_until_explicit_purge() {
         let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[{"id":"pt-1","goal":"Task","completionCriteria":[],"targetHost":"h","status":"cancelled","fromEvent":"source","maxAttempts":3,"createdAt":0,"updatedAt":0,"deletedAt":1}]})).unwrap();
-        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into()},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false});}
+        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into(),view_context:None},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false});}
         assistant.prune_events();
         assert!(assistant.events.iter().any(|event|event.id=="source"),"source request authority cannot be discarded while a deleted task awaits Empty");
     }

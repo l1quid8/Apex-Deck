@@ -29,7 +29,7 @@ for (const command of ["monitor_assign", "monitor_message", "monitor_react", "mo
   "chat_create", "chat_update_meta", "chat_add_participant", "chat_update_participant", "chat_remove_participant",
   "chat_import", "chat_message_claim", "chat_merge_history", "chat_promote", "chat_promote_abandon",
   "personal_create", "personal_conversation_new", "personal_send", "personal_react", "personal_decide", "personal_cancel", "personal_task_lifecycle", "personal_archive", "personal_reply_cancel", "personal_pause", "personal_schedule_cancel",
-  "personal_configure", "personal_workspace_configure", "personal_project_delegate", "personal_avatar_generate", "personal_avatar_cancel", "personal_rule_add", "personal_rule_remove", "personal_memory_add", "personal_memory_correct",
+  "personal_configure", "personal_workspace_configure", "personal_project_delegate", "personal_avatar_generate", "personal_avatar_cancel", "personal_permission_set", "personal_rule_add", "personal_rule_remove", "personal_memory_add", "personal_memory_correct",
   "personal_memory_forget", "personal_notices_seen", "personal_push_register", "personal_machine_link", "personal_machine_unlink",
   "personal_machine_claim", "personal_machine_result", "personal_machine_allow", "personal_execute_local",
   "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote",

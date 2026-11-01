@@ -165,6 +165,55 @@ async fn a_status_question_reads_a_chat_and_answers_without_touching_it() {
 }
 
 #[tokio::test]
+async fn live_rooms_survive_a_full_assistant_history() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    fixture.host.change_assistant(&fixture.id, |a| {
+        a.context_budget_chars = 8_000;
+        for i in 0..20 { a.post("human", "chat", format!("Older discussion {i}: {}", "history ".repeat(80)), None, None, i); }
+        Ok(())
+    }).unwrap();
+    let fake = Fake::new(true);
+    fixture.host.personal_send(&fixture.id, "full-context", "Which project chats can you read?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let prompts = fake.prompts.lock().unwrap();
+    assert!(prompts[0].contains("Checkout fix"), "fresh room context must win space over old history");
+    assert!(prompts[0].contains("room.read"));
+    assert!(prompts[0].chars().count() <= 8_800, "history and discovery must share a bounded prompt: {}", prompts[0].chars().count());
+}
+
+#[tokio::test]
+async fn discovery_at_the_smallest_budget_does_not_double_the_prompt() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    fixture.host.change_assistant(&fixture.id, |a| { a.context_budget_chars = 4_000; Ok(()) }).unwrap();
+    let fake = Fake::new(true);
+    fixture.host.personal_send(&fixture.id, "small-context", "Which project chats can you read?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let prompt = &fake.prompts.lock().unwrap()[0];
+    assert!(prompt.contains("Checkout fix"));
+    assert!(prompt.chars().count() <= 4_800, "fixed instructions and bounded live context: {}", prompt.chars().count());
+}
+
+#[tokio::test]
+async fn a_closed_permitted_room_is_found_from_its_discussion() {
+    let fixture = Fixture::new();
+    let project = fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let saved = fixture.host.store().room(THREAD).unwrap().unwrap();
+    fixture.host.room_create("closed-research".into(), saved.snapshot.participants.clone(), Default::default(), Some(project.cwd.clone())).unwrap();
+    let mut closed = fixture.host.store().room("closed-research").unwrap().unwrap();
+    closed.snapshot.transcript.push(apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, late_reply_from: None, servers: vec![], seq: 0, speaker: apex_core::Speaker::Human, text: "Investigating zebra payment refunds".into(), at: None });
+    fixture.host.store().save_room("closed-research", &closed).unwrap();
+    let fake = Fake::new(true);
+    fixture.host.personal_send(&fixture.id, "closed-search", "Find our zebra payment discussion").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let prompts = fake.prompts.lock().unwrap();
+    assert!(prompts[0].contains("closed-research"), "a saved room need not have an open pane");
+    assert!(prompts[0].contains("zebra payment refunds"), "retrieval should surface relevant evidence, not only IDs");
+    assert_eq!(fake.runs(), 0);
+}
+
+#[tokio::test]
 async fn a_long_chat_read_keeps_the_newest_messages() {
     let fixture = Fixture::new();
     fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
@@ -182,6 +231,57 @@ async fn a_long_chat_read_keeps_the_newest_messages() {
     let kept = &task.receipts[0].output_excerpt;
     assert!(kept.contains("11-marker") && !kept.contains("(cut)"), "{kept}");
     assert!(!kept.contains("[Human] 0-marker"), "the oldest gives way first");
+}
+
+#[tokio::test]
+async fn view_context_is_frozen_and_only_resolves_current_permitted_rooms() {
+    use crate::personal::PersonalViewContext;
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let view = PersonalViewContext { host_id: fixture.get().host_id, focused_thread_id: Some(THREAD.into()), open_thread_ids: vec![THREAD.into(), "ungranted-private-id".into()] };
+    let accepted = fixture.host.personal_send_with_context(&fixture.id, "view-a", "Which chat is this?", Some(view.clone())).unwrap();
+    assert!(fixture.host.personal_send_with_context(&fixture.id, "view-a", "Which chat is this?", Some(PersonalViewContext { focused_thread_id: Some("changed".into()), ..view.clone() })).is_err(), "a retry cannot silently retarget the original request");
+    let fake = Fake::new(true);
+    fixture.drain(&fake.tools()).await;
+    let prompt = &fake.prompts.lock().unwrap()[0];
+    assert!(prompt.contains("focusedThreadId\":\"room-alfred\""));
+    assert!(!prompt.contains("ungranted-private-id"));
+    assert!(accepted.assistant.events.iter().any(|event| event.id == accepted.event_id));
+    let other = PersonalViewContext { host_id: "other-machine".into(), ..view };
+    assert!(fixture.host.personal_send_with_context(&fixture.id, "wrong-machine", "Here", Some(other)).is_err());
+}
+
+#[tokio::test]
+async fn archived_and_ungranted_rooms_are_excluded_from_live_discovery() {
+    let fixture = Fixture::new();
+    let project = fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let saved = fixture.host.store().room(THREAD).unwrap().unwrap();
+    fixture.host.room_create("private-other-project".into(), saved.snapshot.participants.clone(), Default::default(), Some(fixture.root.to_string_lossy().into_owned())).unwrap();
+    fixture.host.store().save_session(&serde_json::json!({"workspaces":[{"id":"w1","path":project.cwd}],"panes":[{"kind":"chat","id":THREAD,"title":"Archived secret","workspaceId":"w1","archived":true}]})).unwrap();
+    let (context, _) = fixture.host.personal_room_context(&fixture.get(), "Find chats", None, 4_000).unwrap();
+    assert!(!context.contains("private-other-project"));
+    assert!(!context.contains("Archived secret"));
+    assert!(context.contains("Showing 0 of 0"));
+}
+
+#[tokio::test]
+async fn automatic_discovery_obeys_conversation_and_status_ask_grants() {
+    use crate::personal::permissions::{Capability,Scope,GrantMode};
+    let fixture=Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let mut saved=fixture.host.store().room(THREAD).unwrap().unwrap();
+    saved.snapshot.transcript.push(apex_core::Message{origin_seq:None,origin:None,client_message_id:None,reply_to_client_message_id:None,late_reply_from:None,servers:vec![],seq:0,speaker:apex_core::Speaker::Human,text:"rare PVT-CONTENT-DO-NOT-INCLUDE".into(),at:Some(1)});
+    fixture.host.store().save_room(THREAD,&saved).unwrap();
+    fixture.host.change_assistant(&fixture.id,|a|{
+        a.permissions.set(Capability::ConversationRead,Scope::AllProjects,GrantMode::Ask,false)?;
+        a.permissions.set(Capability::StatusRead,Scope::AllProjects,GrantMode::Ask,false)?;
+        Ok(())
+    }).unwrap();
+    let (context,outside)=fixture.host.personal_room_context(&fixture.get(),"Find rare topic",None,6_000).unwrap();
+    assert!(!context.contains("PVT-CONTENT-DO-NOT-INCLUDE"),"automatic retrieval cannot bypass read approval");
+    assert!(!context.contains("\"state\":"),"live status requires its own grant");
+    assert!(context.contains("Checkout fix"),"assigned project titles remain discoverable");
+    assert!(!outside);
 }
 
 #[tokio::test]

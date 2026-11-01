@@ -37,6 +37,7 @@ import { ApexAgentTasks } from "./lazyViews";
 import { overviewOwner, overviewOwnerKey, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
 import { usePersonalAssistants } from "./usePersonalAssistants";
+import { assistantViewContext } from "./assistantViewContext.ts";
 import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
@@ -119,6 +120,8 @@ import { ipcWords } from "./electronShell";
 import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, workThreadPlace, type ChatPlace } from "./desktopChats.ts";
 import { ChatRail, NewChatDialog } from "./DesktopChatsUI.tsx";
 import { TalkOnlyChat } from "./TalkOnlyChat.tsx";
+import { ThreadTrash } from "./ThreadTrashPanel";
+import { closeTrashedPanes, withoutTrashedPanes } from "./threadTrash.ts";
 import { findRoom, type ChatEntry } from "./chatCatalog.ts";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -270,7 +273,7 @@ export function App() {
   });
   const [keptAssistantThreads,setKeptAssistantThreads]=useState<Set<string>>(()=>{try{return new Set(JSON.parse(localStorage.getItem('apex-assistant-kept-threads')??'[]'));}catch{return new Set();}});
   const keepAssistantThread=(pane:Pane&{hostId?:string})=>setKeptAssistantThreads(old=>{const next=new Set(old);next.add(assistantThreadKey(pane));localStorage.setItem('apex-assistant-kept-threads',JSON.stringify([...next]));return next;});
-  const viewPanes = useMemo(() => {
+  const allViewPanes = useMemo(() => {
     const closed = new Set(closedTaskPanes);
     return mergeAssistantPanes(panes, currentAssistantRegistry).map((pane) => {
       if (!pane.assistantTaskId) return pane;
@@ -772,6 +775,22 @@ export function App() {
     }
     return threadPaneStatus(threadStatus[pane.id], attention[pane.id]);
   };
+
+  // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
+  // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
+  const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
+  const chats = useDesktopChats({
+    machines: chatMachines,
+    backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
+    connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
+    onError: (text) => toast(text),
+  });
+  const viewPanes = useMemo(() => withoutTrashedPanes(allViewPanes, workspaces, chats.catalog), [allViewPanes, workspaces, chats.catalog]);
+  // Keep the saved layout, but Restore never reopens a thread that was put away.
+  useEffect(() => {
+    setPanes(before => closeTrashedPanes(before, workspaces, chats.catalog));
+    for (const pane of allViewPanes) if (pane.assistantTaskId && !viewPanes.includes(pane)) setTaskPaneClosed(pane.id, true);
+  }, [workspaces, chats.catalog, setPanes, allViewPanes, viewPanes]);
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
   const listed = useMemo(() => listedPanes(viewPanes, workspaces), [viewPanes, workspaces]);
@@ -1643,6 +1662,20 @@ export function App() {
     else if (action === "delete") deleteThread(pane);
   };
 
+  const threadTrashEntries = (pane: Pane, unavailable?: string): MenuEntry[] => {
+    const {hostId} = hostOfPane(pane);
+    if (pane.kind !== "chat" || chats.backendOf(hostId)?.supports?.("room_trash_v1") !== true) return [];
+    const reason = unavailable ?? (offlineHost(hostId) ? "Reconnect to move this thread to Trash." : undefined);
+    return [{
+      key: "trash", label: "Move to Trash", separated: true, disabled: !!reason, reason,
+      onSelect: () => {
+        const row = findRoom(chats.catalog, hostId, pane.id);
+        if (!row) { toast("This machine hasn't listed the thread yet. Reconnect and try again."); return; }
+        void chats.setTrashed(row, true).then(() => toast(`Moved ${pane.title} to Trash. Restore it from Trash in the sidebar.`)).catch(error => toast(String(error)));
+      },
+    }];
+  };
+
   /** A pane's ⋯ menu, on its head or its sidebar row. */
   const paneMenuEntries = (pane: Pane, from: "rail" | "head"): MenuEntry[] => {
     const taskId = (pane as Pane & { assistantTaskId?: string }).assistantTaskId;
@@ -1657,25 +1690,28 @@ export function App() {
         { key: "delete", label: "Delete", danger: true, separated: true, disabled: !finished,
           reason: finished ? undefined : status ? "This task is still going. Stop it in Tasks first, then delete its chat." : "Still loading this task's status.",
           onSelect: () => runPaneMenu(pane, "delete", from) },
+        ...threadTrashEntries(pane, finished ? undefined : "Stop this task in Tasks before moving its chat to Trash."),
       ];
     }
     const { workspace, hostId } = hostOfPane(pane);
     const found = agentsOn(hostId);
     const items = paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, found), tool: toolName(pane.agent, found), folder: workspace?.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned, unread: pane.unread, mac: isMac });
     const ssh = hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh;
-    return items.map((item) => ({
+    const entries: MenuEntry[] = items.map((item) => ({
       key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, keys: item.keys,
       submenu: item.action === "project" ? projectEntries(pane)
         : item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(chatFolder(pane, workspace), ssh), id: pane.id })
           .map((c) => ({ key: c.kind, label: c.label, side: c.side, disabled: c.disabled, reason: c.reason, onSelect: () => copyFromThread(pane, c.kind) })) : undefined,
       onSelect: item.submenu ? undefined : () => runPaneMenu(pane, item.action, from),
     }));
+    entries.push(...threadTrashEntries(pane));
+    return entries;
   };
 
   /** Whether a thread has started; one that hasn't reported yet counts by its saved activity. */
   const startedOf = (pane: Pane) => threadStatus[pane.id]?.started ?? Boolean(pane.activeAt);
   /** A host's backend by id: the Mac's own, or a saved server's. */
-  const hostBackend = (hostId: string): Backend => {
+  function hostBackend(hostId: string): Backend {
     if (!backend) throw new Error("The backend is not ready yet.");
     if (hostId === "local") return backend;
     if (!backend.machines) throw new Error("This server is unavailable.");
@@ -1929,16 +1965,15 @@ export function App() {
   const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
   const [assistantFloat, setAssistantFloat] = useState<AssistantFloatHandle | null>(null);
-  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant' || !!assistantFloat, bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
-  // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
-  // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
-  const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
-  const chats = useDesktopChats({
-    machines: chatMachines,
-    backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
-    connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
-    onError: (text) => toast(text),
-  });
+  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant' || !!assistantFloat, bridge: true,
+    viewContext: (routeHostId, hostId) => assistantViewContext({routeHostId,hostId,panes:viewPanes,workspaces,focusedPane,excluded:deleting}),
+    currentThread: (routeHostId,hostId) => {
+      const view=assistantViewContext({routeHostId,hostId,panes:viewPanes,workspaces,focusedPane,excluded:deleting});
+      const pane=viewPanes.find(p=>p.id===view.focusedThreadId);
+      const workspace=pane&&workspaces.find(w=>w.id===pane.workspaceId);
+      return pane&&workspace?{id:pane.id,title:pane.title,project:{hostId,cwd:workspace.path}}:undefined;
+    },
+    onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
   const [openChat, setOpenChatState] = useState<ChatPlace | null>(() => readOpenChat(localStorage));
   const setOpenChat = (place: ChatPlace | null) => { setOpenChatState(place); saveOpenChat(localStorage, place); };
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -1963,6 +1998,19 @@ export function App() {
     }
     setOpenChat(null);
     focusPane(place.pane);
+  };
+  const restoreTrashedThread = async (row: ChatEntry) => {
+    await chats.setTrashed(row, false);
+    if (row.kind === "work") {
+      const place = workThreadPlace(workspaces, panes, row.hostId, {...row,trashedAt:undefined}, () => newId("ws"), folderName);
+      if (typeof place === "string") {
+        toast(place === "clash" ? `Restored on ${chats.machineName(row.hostId)}. Close the thread with the same id on the other machine before opening this one.` : `Restored on ${chats.machineName(row.hostId)}. Open it from its project.`);
+        return;
+      }
+      if (place.added || place.restored) setWorkspaces(place.workspaces);
+      setPanes(before => place.added ? [...before,{...place.pane,closed:true}] : before.map(pane => pane.id === row.id && hostOfPane(pane).hostId === row.hostId ? {...pane,closed:true} : pane));
+    }
+    toast(`Restored ${row.title}. Open it from its usual list.`);
   };
   const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
   const taskRouteStatus = (id: string) => { try { return hostBackend(id).host?.connection.get().status; } catch { return undefined; } };
@@ -2632,6 +2680,7 @@ export function App() {
             onOpenAssistant={ref=>{setOpenChat(null);openAssistant(ref);}}
             onCreateAssistant={()=>{setOpenChat(null);setCreatingAssistant(true);setMainView({kind:'workspace'});}}
             chats={<ChatRail chats={chats} openKey={openChat ? chatKey(openChat) : null} onNew={() => setNewChatOpen(true)} onOpen={(row) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
+            trash={<ThreadTrash chats={chats} onRestore={restoreTrashedThread} />}
             section={section}
             panes={assistantSidebarPanes(viewPanes,currentAssistantRegistry,keptAssistantThreads)}
             workspaces={workspaces}

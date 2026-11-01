@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AssistantTask } from './assistantTaskModel.ts';
 import type { ProjectRef } from './assistantIdentity.ts';
+import { AssistantPermissions } from './AssistantPermissions.tsx';
 import { PersonalBrowser } from './PersonalBrowser.tsx';
 import { ProjectMemoryPanel } from './ProjectMemoryPanel.tsx';
 import { CLASS_LABEL, MODE_LABEL, TASK_STATUS, type ActionMode, type ConnectorState, type CostEntry, type PersonalAssistantRecord, type PersonalLane, type PersonalSettings, type PersonalTask, type ToolClass } from './personalAssistant.ts';
@@ -364,6 +365,7 @@ export function PersonalPanels({ lane, initial = 'activity', initialProject, del
             </div>
           </div>
         ))}
+        <AssistantPermissions lane={lane} />
         <h4>Standing rules</h4>
         {!rules.length && <p className="personal-panels-muted">No standing rules yet.</p>}
         {rules.map((item) => (

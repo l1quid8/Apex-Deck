@@ -43,6 +43,9 @@ export type Schedule = { id: string; goal: string; argv: string[]; everyMs?: num
 export type Notice = { id: string; text: string; taskId?: string; urgent: boolean; at: number; deliverAt: number; deliveredAt?: number; seenAt?: number; fingerprint: string };
 export type CostEntry = { at: number; purpose: "reply" | "helper" | "summary" | "check" | "avatar"; kind: "text" | "image" | "audio" | "video" | "tool"; source: "reported" | "estimated" | "unknown"; micros?: number; inputTokens?: number; outputTokens?: number; bytesOut: number; endpoint: string };
 export type StandingRule = { id: string; text: string; class: ToolClass; mode: ActionMode; createdAt: number };
+export type AssistantCapability = 'conversationRead' | 'fileRead' | 'statusRead' | 'threadCreate' | 'threadOrganize' | 'threadArchive' | 'threadTrash' | 'threadDelete' | 'participantAdd' | 'participantRemove' | 'agentAssign' | 'agentMessage' | 'workPause' | 'workResume' | 'fileEdit' | 'commandRun' | 'browserUse' | 'computerUse' | 'spend' | 'publish' | 'approvalDelegate';
+export type PermissionScope = {kind:'allProjects'} | {kind:'project';host:string;cwd:string} | {kind:'thread';host:string;cwd:string;thread:string};
+export type CapabilityGrant = { id:string; capability:AssistantCapability; scope:PermissionScope; mode:'ask'|'onRequest'|'always'; delegate:boolean; revoked:boolean };
 export type PersonalSettings = {
   name: string; style: string; look?: AssistantLook;
   timezone: string; quietHours?: { start: string; end: string };
@@ -67,6 +70,7 @@ export type PersonalAssistantRecord = PersonalSettings & {
   taskLifecycleSnapshotRevision?: number;
   deletedDelegatedTasks?: import("./assistantTaskModel.ts").AssistantTask[];
   events?: { id: string; requestId: string; state: 'received' | 'processing' | 'held' | 'done' | 'failed'; error?: string; source?: { kind: string; text?: string }; receivedAt?: number }[];
+  permissions?: {revision:number;grants:CapabilityGrant[];audit?:{actor:string;thread:string;request:string;operationHash:string;capability:AssistantCapability;grantIds:string[];revision:number;at:number;result:string}[]};
   rules?: StandingRule[]; facts?: Fact[]; schedules?: Schedule[]; notices?: Notice[]; costs?: CostEntry[];
   machines?: { hostId: string; name: string; folder: string; lastSeen?: number }[];
 };
@@ -86,6 +90,7 @@ export type PersonalLane = {
   ref?: import("./assistantIdentity.ts").AssistantRef;
   draftKey?: string;
   attachmentKey?: string;
+  currentThread?: { id: string; title: string; project?: {hostId:string;cwd:string} };
   name: string;
   hostName: string;
   assistant: PersonalAssistantRecord | null;
@@ -112,6 +117,7 @@ export type PersonalLane = {
   configure?(settings: Partial<PersonalSettings>): Promise<void>;
   /** Only available when the authenticated route advertises assistant_workspace_v4. */
   configureWorkspace?(configuration: PersonalWorkspaceConfigure): Promise<PersonalAssistantRecord | void>;
+  setPermission?(capability:AssistantCapability,scope:PermissionScope,mode:'ask'|'onRequest'|'always',delegate:boolean):Promise<void>;
   addRule?(text: string, cls: ToolClass, mode: ActionMode): Promise<void>;
   removeRule?(ruleId: string): Promise<void>;
   remember?(text: string): Promise<void>;

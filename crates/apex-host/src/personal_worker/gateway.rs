@@ -82,7 +82,7 @@ fn read_only_use(argv: &[String]) -> bool {
     args.iter().all(|a| !a.starts_with('-') || *a == "--" || *a == "-" || flags.contains(a))
 }
 
-fn resolved(path: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn resolved(path: &std::path::Path) -> Option<std::path::PathBuf> {
     use std::path::{Component, PathBuf};
     let mut result = PathBuf::new();
     for component in path.components() {
@@ -148,8 +148,8 @@ pub fn classify(op: &OperationSpec, folders: &[String]) -> (ToolClass, bool) {
         }
         // Opening any address the model picks can carry data to that site.
         "browser.open" => (ToolClass::Send, false),
-        crate::personal_worker::rooms::READ => (ToolClass::Read, false),
-        crate::personal_worker::rooms::SEND | crate::personal_worker::rooms::RESUME => (ToolClass::Send, false),
+        crate::personal_worker::rooms::READ | crate::personal_worker::rooms::READ_FILE | crate::personal_worker::rooms::STATUS => (ToolClass::Read, false),
+        crate::personal_worker::rooms::SEND | crate::personal_worker::rooms::RESUME | crate::personal_worker::rooms::ASSIGN => (ToolClass::Send, false),
         tool if tool.starts_with("github.") || tool.starts_with("gmail.") || tool.starts_with("drive.") => {
             if tool.ends_with(".read") || tool.ends_with(".search") || tool.ends_with(".get") || tool.ends_with(".open") { (ToolClass::Read, false) } else { (ToolClass::Send, false) }
         }
@@ -160,7 +160,7 @@ pub fn classify(op: &OperationSpec, folders: &[String]) -> (ToolClass, bool) {
 
 pub fn uses_network(op: &OperationSpec) -> bool {
     // Reading or stopping a chat stays here; a message reaches its bots' models.
-    if matches!(op.tool.as_str(), crate::personal_worker::rooms::READ | crate::personal_worker::rooms::STOP) { return false; }
+    if matches!(op.tool.as_str(), crate::personal_worker::rooms::READ | crate::personal_worker::rooms::STATUS | crate::personal_worker::rooms::STOP | crate::personal_worker::rooms::READ_FILE | crate::personal_worker::rooms::EDIT_FILE | crate::personal_worker::rooms::CREATE | crate::personal_worker::rooms::RENAME | crate::personal_worker::rooms::ARCHIVE | crate::personal_worker::rooms::TRASH | crate::personal_worker::rooms::RESTORE | crate::personal_worker::rooms::DELETE | crate::personal_worker::rooms::ADD | crate::personal_worker::rooms::REMOVE) { return false; }
     op.tool != crate::personal_worker::COMMAND_TOOL || NETWORK.contains(&program(&op.argv))
 }
 
@@ -214,7 +214,8 @@ pub fn gate(assistant: &PersonalAssistant, task: &PersonalTask, asked: Option<&s
     if task.kind == TaskKind::Helper && class != ToolClass::Read {
         return Gate::Refuse("A helper can only read, so it can't do that.");
     }
-    let mode = assistant.mode_for(class);
+    let mode = operation_mode(assistant, op, class);
+    if mode == ActionMode::OnRequest && assistant.permissions.resolve(op,false,false).is_some() && !crate::personal::permissions::explicit_request(assistant,task) {return Gate::Ask;}
     match mode {
         ActionMode::HandOff => Gate::HandOff,
         ActionMode::Ask => Gate::Ask,
@@ -231,6 +232,12 @@ pub fn gate(assistant: &PersonalAssistant, task: &PersonalTask, asked: Option<&s
             if said { Gate::Run(mode) } else { Gate::Ask }
         }
     }
+}
+
+/// Explicit capability policies override only the legacy class mode. Project,
+/// runtime, privacy, helper and private-file ceilings still apply above.
+pub fn operation_mode(assistant: &PersonalAssistant, op: &OperationSpec, class: ToolClass) -> ActionMode {
+    assistant.permissions.resolve(op, false, false).map(|g| assistant.rules.iter().filter(|rule|rule.class==class).map(|rule|rule.mode).fold(if g.revoked { ActionMode::Ask } else { g.mode.action() },ActionMode::max)).unwrap_or_else(|| if matches!(op.tool.as_str(),"room.create"|"room.rename"|"room.archive"|"room.trash"|"room.restore"|"room.delete"|"room.addParticipant"|"room.removeParticipant"|"room.approve"|"room.assign"|"room.editFile") {assistant.rules.iter().filter(|rule|rule.class==class).map(|rule|rule.mode).fold(ActionMode::Ask,ActionMode::max)} else {assistant.mode_for(class)})
 }
 
 /// The decision marker for something a rule (not a person) let through.

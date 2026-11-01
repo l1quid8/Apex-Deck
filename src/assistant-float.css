@@ -11,6 +11,7 @@
 .assistant-float-log p[data-role="system"] { opacity: .7; font-size: 12px; }
 .assistant-float-empty { opacity: .6; }
 .assistant-float-problem { margin: 0; padding: 6px 12px; color: var(--red, #ff7b72); font-size: 12px; }
+.assistant-float-context { flex: none; padding: 5px 12px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--line); }
 .assistant-float-call { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-top: 1px solid var(--line); }
 .assistant-float-composer { display: flex; align-items: flex-end; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
 .assistant-float-composer textarea { flex: 1; resize: none; background: var(--panel); color: inherit; border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px; font: inherit; }

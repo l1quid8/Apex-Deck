@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use apex_core::{Access, ParticipantConfig, TurnLifecycleHook, TurnRequest};
+use apex_core::{Access, ParticipantConfig, TurnRequest};
 
 use crate::personal::{ActionMode, PersonalAssistant, ToolClass};
 use crate::personal_workspace::ProjectTools;
@@ -60,6 +60,15 @@ pub(super) fn reach(assistant: &PersonalAssistant, profile: &ParticipantConfig, 
     Reach::Tools(if read_only { Access::Read } else { Access::Ask })
 }
 
+pub(super) fn prompt_with_diagnostic(reach: Reach, attached: bool, reports: bool, failure: Option<crate::computer::TurnStartFailure>) -> String {
+    if matches!(reach, Reach::Tools(_)) && !attached {
+        if let Some(failure) = failure {
+            return format!("\n\nComputer tools aren't available in this reply: {} If the human asks you to use the computer, say so plainly.", failure.notice());
+        }
+    }
+    prompt(reach, attached, reports)
+}
+
 pub(super) fn prompt(reach: Reach, attached: bool, reports: bool) -> String {
     let Reach::Tools(access) = reach else {
         let Reach::Off(why) = reach else { unreachable!() };
@@ -89,6 +98,72 @@ pub(super) fn settle_reply(mut reply: ModelReply, out: &ReasonOut) -> ModelReply
     reply
 }
 
+pub(super) const PERMISSION_TOOL:&str="computer.reply";
+fn computer_request(event:&crate::personal::PersonalEvent)->bool {
+    let crate::personal::EventSource::Human{text,..}=&event.source else {return false};
+    let text=text.to_lowercase();
+    if text.contains("what if")||text.contains("hypothetically") {return false}
+    let words:Vec<_>=text.split(|c:char|!c.is_alphanumeric()).collect();
+    let computer=words.iter().any(|w|["computer","screen","screenshot","browser","safari","chrome","desktop","finder"].contains(w));
+    let action=words.iter().any(|w|["open","click","navigate","scroll","type","press","use","inspect","look","read","show"].contains(w));
+    computer && action
+}
+pub(super) fn permission_operation(assistant:&PersonalAssistant,event:&crate::personal::PersonalEvent)->crate::personal::OperationSpec {
+    use sha2::{Digest,Sha256};
+    let source=serde_json::to_vec(&event.source).unwrap_or_default();
+    crate::personal::OperationSpec{tool:PERMISSION_TOOL.into(),host:assistant.host_id.clone(),cwd:String::new(),argv:vec![event.id.clone(),assistant.permissions.revision.to_string(),format!("{:x}",Sha256::digest(source))],plan:None}
+}
+fn computer_policy(assistant:&PersonalAssistant)->Option<&crate::personal::permissions::Grant> {
+    assistant.permissions.grants.iter().find(|g|g.capability==crate::personal::permissions::Capability::ComputerUse&&g.scope==crate::personal::permissions::Scope::AllProjects)
+}
+fn once_approved(assistant:&PersonalAssistant,event:&crate::personal::PersonalEvent)->bool {
+    let operation=permission_operation(assistant,event);
+    assistant.tasks.iter().any(|task|task.operation.as_ref()==Some(&operation)&&task.status==crate::personal::TaskStatus::Done&&task.decision.as_ref().is_some_and(|d|d.status==crate::personal::DecisionStatus::Approved&&d.params_hash==operation.hash()&&d.decided_by_event.as_deref().is_some_and(crate::personal::permissions::authorization_is_human_once)))
+}
+/// Holds only an explicit computer request, before registration or model work.
+/// Native per-app grants remain a second independent gate after this approval.
+pub(super) fn hold_for_permission(assistant:&mut PersonalAssistant,event:&crate::personal::PersonalEvent,at:u64)->bool {
+    use crate::personal::{TaskStatus,EventState,PersonalTask,TaskKind,DecisionKind};
+    let Some(grant)=computer_policy(assistant) else {return false};
+    if event.computer_started||!computer_request(event)||once_approved(assistant,event) {return false}
+    if !grant.revoked&&grant.mode!=crate::personal::permissions::GrantMode::Ask {return false}
+    let operation=permission_operation(assistant,event);
+    if assistant.tasks.iter().any(|t|t.operation.as_ref()==Some(&operation)&&t.status==TaskStatus::NeedsYou) {return true}
+    let id=assistant.next_task_id();
+    let mut decision=super::open_decision(assistant,DecisionKind::Approve,&operation,at);
+    decision.prompt="Allow computer tools for this reply only? Native app approvals still apply. Changing permissions invalidates this approval.".into();
+    assistant.tasks.push(PersonalTask{deleted_at:None,id:id.clone(),goal:"Use computer for this reply".into(),completion_criteria:vec![],target_host:assistant.host_id.clone(),status:TaskStatus::NeedsYou,class:ToolClass::Write,operation:Some(operation),decision:Some(decision),receipts:vec![],from_event:event.id.clone(),max_attempts:1,created_at:at,updated_at:at,last_update:Some("Waiting for permission for this reply.".into()),kind:TaskKind::Command,wait:None,runs_done:0,parent:None,schedule_id:None,assignment:None});
+    if let Some(saved)=assistant.events.iter_mut().find(|e|e.id==event.id) {saved.state=EventState::Held;}
+    assistant.post("system","approval","Allow once: computer tools for this reply. Native app approvals still apply.".into(),Some(id),Some(event.id.clone()),at);
+    true
+}
+pub(super) fn apply_permission_reach(assistant:&PersonalAssistant,event:&crate::personal::PersonalEvent,reports:bool,base:Reach)->Reach {
+    let Some(grant)=computer_policy(assistant) else {return base};
+    if event.computer_started {return Reach::Off("computer authority for this reply has already been used")}
+    if !computer_request(event) {return Reach::Off("this message does not explicitly request computer use")}
+    let allowed=once_approved(assistant,event)||(!grant.revoked&&match grant.mode {crate::personal::permissions::GrantMode::Always=>true,crate::personal::permissions::GrantMode::OnRequest=>!reports,crate::personal::permissions::GrantMode::Ask=>false});
+    if !allowed {return Reach::Off("computer use needs approval for this reply")}
+    base
+}
+/// Intercept before ordinary task decisions: this releases one held reply and
+/// never dispatches computer.reply through the command executor.
+pub(super) fn decide_permission(assistant:&mut PersonalAssistant,decision_id:&str,params_hash:&str,approve:bool,event_id:&str,at:u64)->Option<Result<Option<(Option<String>,String)>,String>> {
+    use crate::personal::{TaskStatus,DecisionStatus,EventState};
+    let index=assistant.tasks.iter().position(|t|t.operation.as_ref().is_some_and(|o|o.tool==PERMISSION_TOOL)&&t.decision.as_ref().is_some_and(|d|d.id==decision_id))?;
+    Some((|| {
+        let task=assistant.tasks[index].clone();let decision=task.decision.as_ref().ok_or("Approval unavailable.")?;
+        let held=assistant.events.iter().find(|e|e.id==task.from_event).cloned().ok_or("Reply unavailable.")?;
+        let operation=permission_operation(assistant,&held);
+        if held.computer_started||held.state!=EventState::Held||task.status!=TaskStatus::NeedsYou||decision.status!=DecisionStatus::Open||task.operation.as_ref()!=Some(&operation)||decision.params_hash!=params_hash||operation.hash()!=params_hash {return Err("That approval no longer matches this reply and its permissions.".into())}
+        let marker=crate::personal::permissions::marker(assistant,&task,true,false)?.unwrap_or_else(||event_id.into());
+        let saved=&mut assistant.tasks[index];saved.status=if approve{TaskStatus::Done}else{TaskStatus::Cancelled};saved.updated_at=at;
+        let decision=saved.decision.as_mut().unwrap();decision.status=if approve{DecisionStatus::Approved}else{DecisionStatus::Denied};decision.decided_at=Some(at);decision.decided_by_event=Some(marker);
+        let event=assistant.events.iter_mut().find(|e|e.id==task.from_event).unwrap();event.state=if approve{EventState::Received}else{EventState::Failed};
+        if !approve {event.error=Some("Computer use declined for this reply.".into());}
+        Ok(Some((Some(task.id),if approve{"Allowed once for this reply."}else{"Computer use declined; this reply was stopped."}.into())))
+    })())
+}
+
 impl Host {
     pub(super) fn personal_computer_reach(&self, assistant: &PersonalAssistant, profile: &ParticipantConfig, reports: bool) -> Reach {
         let (enabled, stopped) = self.computer.state();
@@ -97,12 +172,12 @@ impl Host {
 
     /// Registers this reply with the helper. The lease is the turn's authority;
     /// `ended` fires when Stop, a revoke or the helper itself takes it away.
-    pub(super) async fn personal_computer_turn(self: &Arc<Self>, assistant_id: &str, profile: &ParticipantConfig, access: Access, request: &mut TurnRequest, ended: &Arc<tokio::sync::Notify>) -> Option<Box<dyn Send>> {
+    pub(super) async fn personal_computer_turn(self: &Arc<Self>, assistant_id: &str, profile: &ParticipantConfig, access: Access, request: &mut TurnRequest, ended: &Arc<tokio::sync::Notify>) -> Result<Option<Box<dyn Send>>, crate::computer::TurnStartFailure> {
         let hook = crate::computer::TurnHook {
             host: Arc::downgrade(self), computer: Arc::clone(&self.computer),
             thread: thread(assistant_id), work_room: true, ended: Some(ended.clone()),
         };
-        hook.start(&profile.id, request, access).await
+        hook.start_diagnosed(&profile.id, request, access).await
     }
 }
 
@@ -116,6 +191,35 @@ mod tests {
         let mut assistant: PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
         assistant.modes = ActionModes::default();
         (assistant, profile)
+    }
+
+    #[test]
+    fn computer_ask_is_exact_per_reply_and_revocation_does_not_reuse_it() {
+        let (mut assistant,profile)=assistant();
+        let event:crate::personal::PersonalEvent=serde_json::from_value(serde_json::json!({"id":"pe-1","requestId":"human-1","source":{"kind":"human","text":"Open Safari"},"receivedAt":1,"state":"processing"})).unwrap();
+        assistant.events.push(event.clone());
+        assistant.permissions.set(crate::personal::permissions::Capability::ComputerUse,crate::personal::permissions::Scope::AllProjects,crate::personal::permissions::GrantMode::Ask,false).unwrap();
+        assert!(hold_for_permission(&mut assistant,&event,2));
+        assert_eq!(assistant.events[0].state,crate::personal::EventState::Held);
+        let decision=assistant.tasks[0].decision.as_ref().unwrap().clone();
+        assert!(matches!(apply_permission_reach(&assistant,&event,false,Reach::Tools(Access::Ask)),Reach::Off(_)));
+        decide_permission(&mut assistant,&decision.id,&decision.params_hash,true,"pe-2",3).unwrap().unwrap();
+        assert_eq!(apply_permission_reach(&assistant,&event,false,Reach::Tools(Access::Ask)),Reach::Tools(Access::Ask));
+        let mut other=event.clone();other.id="pe-3".into();assistant.events.push(other.clone());
+        assert!(matches!(apply_permission_reach(&assistant,&other,false,reach(&assistant,&profile,true,false,false)),Reach::Off(_)));
+        assistant.permissions.revision+=1;
+        assert!(matches!(apply_permission_reach(&assistant,&event,false,Reach::Tools(Access::Ask)),Reach::Off(_)));
+        assistant.events[0].computer_started=true;
+        let started=assistant.events[0].clone();assert!(!hold_for_permission(&mut assistant,&started,5));
+    }
+    #[test]
+    fn failed_registration_is_explained_only_in_its_own_reply() {
+        let failure = crate::computer::TurnStartFailure::Registration;
+        let unavailable = prompt_with_diagnostic(Reach::Tools(Access::Ask), false, false, Some(failure));
+        assert!(unavailable.contains("could not authorize this reply"));
+        assert!(!unavailable.contains("tools are available"));
+        assert!(!prompt_with_diagnostic(Reach::Tools(Access::Ask), true, false, None).contains("could not authorize"));
+        assert!(!prompt_with_diagnostic(Reach::Off("stopped"), false, false, Some(failure)).contains("could not authorize"));
     }
 
     #[test]

@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Reuse clean `ucu-integration`; branch `feat/alfred-live-context` from tested main `a5e59557`. Preserve the other feature checkouts and their dirty files.
-- No permission expansion, cookie/profile changes, real provider tests without explicit test scope, or model-supplied authority. Context is data, never authorization.
+- Implement the user-authorized permission controls below; do not activate new grants or change existing saved grants merely by shipping the controls. No cookie/profile changes, real provider tests without explicit test scope, or model-supplied authority. Context is data, never authorization.
 - Snapshot pane context at send time, not reply time. Bind it to the assistant's actual machine; never redirect another machine's pane into a local room with a matching ID.
 - Keep read/search bounded and revocation-aware. Closed does not mean archived; archived and ungranted work remain excluded.
 - Production builds only beneath canonical `release/`. Require `npx tsc --noEmit` before local merge. No push or automatic running-app replacement.
@@ -53,7 +53,21 @@
 - [ ] Return safe, actionable per-reply readiness information instead of silently swallowing the registration failure.
 - [ ] Run relevant package/helper/host regressions and commit.
 
-### Task 4: Combined verification
+### Task 4: Granular assistant authority and delegated approvals
+
+**Scope added by the user in this chat:** Alfred may manage threads and participants, coordinate agents, gather context, perform file/command/browser/computer work, and handle approvals on the user's behalf within explicitly delegated limits. These are requested capabilities, not grants activated by this scope change.
+
+- [ ] Inventory existing native operations and their permission boundaries before adding adapters; use direct host operations for app management and preserve computer-use authorization for visual interactions.
+- [ ] Define distinct capabilities for creating threads, renaming/organizing threads, archiving, moving to Trash, permanently deleting, adding/removing participants, assigning/messaging agents, and pausing/resuming work. Preserve recoverable and permanent deletion as separate actions.
+- [ ] Cover permitted conversation/file/status reads, file edits, commands/tests, browser/computer use, spending and publishing with explicit capability mappings. Existing grants remain effective; no ambient global computer grant substitutes for app permissions.
+- [ ] Provide Ask every time, Allow when I request it, and Always allow for each supported capability, scoped to a thread, project or all projects where applicable. Approval cards also support Allow once. Precisely define whether a grant covers execution, delegated approval, or both.
+- [ ] Treat approving other agents' requests as a separate delegable capability. Validate the underlying operation, target, scope, current grant and request provenance on the host at execution time. Alfred cannot approve its own privilege expansion or use an unrelated approval to authorize another action.
+- [ ] Let the user explicitly delegate spending, publishing and permanent deletion too; do not hard-code them as human-only. Retain separate controls for these capabilities and the limits the user actually chooses.
+- [ ] Record actor, underlying operation, target, authorizing grant and result for delegated decisions; provide revocation and clear outstanding-request behavior after revocation. Never expose credentials in the audit record.
+- [ ] Add tests for one-shot versus persistent grants, explicit-human-request provenance, scope isolation, revocation, nested approvals, create/trash/permanent-delete distinctions and legacy policy compatibility.
+- [ ] Extend the mockup with permission management and delegated-approval states; clearly label simulated controls. Verify native behavior separately from mockup checks.
+
+### Task 5: Combined verification
 
 - [ ] Run full JavaScript and relevant Rust suites, TypeScript, and one fresh whole-change review.
 - [ ] Fix important confirmed findings with reproducing regressions; preserve mockup independence.

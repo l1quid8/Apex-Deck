@@ -126,7 +126,7 @@ impl Host {
             let assistants = self.store().personal()?.unwrap_or_default().assistants;
             let assistant = assistants.iter().find(|a|a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("Assistant unavailable.")?;
             let event = assistant.events.iter().find(|e|e.id == lineage.source_event_id).ok_or("Source event unavailable.")?;
-            if !matches!(&event.source, crate::personal::EventSource::Human { text } if text == &input.original_request) { return Err("Delegation human request does not match its source.".into()); }
+            if !matches!(&event.source, crate::personal::EventSource::Human { text, .. } if text == &input.original_request) { return Err("Delegation human request does not match its source.".into()); }
             if !assistant.messages.iter().any(|m| m.role == "human" && m.event_id.as_deref() == Some(event.id.as_str()) && m.legacy.is_none() && m.text == input.original_request) { return Err("New delegation requires its verified human message.".into()); }
         }
         let workspace = input.owner.workspace_id.clone();

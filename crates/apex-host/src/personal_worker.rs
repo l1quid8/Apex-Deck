@@ -117,7 +117,7 @@ impl WorkerTools {
 
 /// Chat operations run on the host itself, so every worker knows them.
 fn tool_repeatable(tools: &WorkerTools, op: &OperationSpec) -> Option<bool> {
-    if rooms::known(&op.tool) { Some(op.tool == rooms::READ) } else { (tools.tool)(op) }
+    if rooms::known(&op.tool) { Some(matches!(op.tool.as_str(),rooms::READ|rooms::READ_FILE|rooms::STATUS)) } else { (tools.tool)(op) }
 }
 
 /// Kills the command's whole process group unless it finished by itself, so
@@ -452,6 +452,7 @@ fn dollars(micros: u64) -> String {
 
 /// Why this reply needs the human's OK to spend, if it does.
 fn spend_hold(assistant: &PersonalAssistant, profile: &ParticipantConfig, event: &PersonalEvent, now: u64) -> Option<String> {
+    if let Some(prompt) = crate::personal::permissions::reply_spend_hold(assistant,event) { return Some(prompt); }
     let limit = assistant.budget.daily_limit_micros?;
     if event.spend_approved {
         return None;
@@ -682,7 +683,7 @@ impl Host {
 
     async fn personal_event(self: &Arc<Self>, tools: &WorkerTools, snapshot: PersonalAssistant, event: PersonalEvent) -> Result<(), String> {
         match &event.source {
-            EventSource::Human { text } => self.personal_answer(tools, snapshot, &event, text.clone()).await,
+            EventSource::Human { text, .. } => self.personal_answer(tools, snapshot, &event, text.clone()).await,
             EventSource::Internal { what } => self.personal_internal(tools, snapshot, &event, what.clone()).await,
             _ => {
                 let stop = self.change_assistant(&snapshot.id, |assistant| Ok(apply_control(assistant, &event)))?;
@@ -712,10 +713,18 @@ impl Host {
         if let Some(prompt) = spend_hold(&snapshot, &profile, event, at) {
             return self.change_assistant(&snapshot.id, |assistant| { hold_for_spend(assistant, &event.id, prompt, at); Ok(()) });
         }
+        if matches!(self.personal_computer_reach(&snapshot, &profile, false), computer::Reach::Tools(_))
+            && snapshot.permissions.grants.iter().any(|grant| grant.capability == crate::personal::permissions::Capability::ComputerUse)
+            && self.change_assistant(&snapshot.id, |assistant| Ok(computer::hold_for_permission(assistant, event, at)))? {
+            return Ok(());
+        }
         let tools_on = if snapshot.privacy.local_only { vec![] } else { connectors::available() };
-        let (mut system, seen) = context::assemble_seen(&snapshot, &text, at, &tools_on);
-        let catalog = rooms::catalog(&self.personal_rooms(&snapshot)?.iter().map(|room| self.room_entry(room)).collect::<Vec<_>>())?;
-        if system.chars().count() + catalog.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&catalog); }
+        let room_budget = (snapshot.context_budget_chars as usize / 3).clamp(2_000, 12_000);
+        let view = match &event.source { EventSource::Human { view_context, .. } => view_context.as_ref(), _ => None };
+        let (catalog, outside) = self.personal_room_context(&snapshot, &text, view, room_budget)?;
+        let (mut system, mut seen) = context::assemble_seen_reserved(&snapshot, &text, at, &tools_on, catalog.chars().count());
+        system.push_str(&catalog);
+        seen.report |= outside;
 
         let mut request = read_only_request(system);
         request.turns.push(apex_core::ViewTurn { role: apex_core::Role::User, content: text.clone() });
@@ -733,20 +742,23 @@ impl Host {
         let active=current.events.iter().any(|e|e.id==event.id&&e.state==EventState::Processing);
         if !active { self.personal_stops.lock().unwrap().remove(&key); return Ok(()); }
         // The saved record, not this event's snapshot: a pause may have landed since.
-        let reach=self.personal_computer_reach(&current,current.profile.as_ref().unwrap_or(&profile),seen.report);
+        let reach=computer::apply_permission_reach(&current,event,seen.report,self.personal_computer_reach(&current,current.profile.as_ref().unwrap_or(&profile),seen.report));
         let ended=Arc::new(tokio::sync::Notify::new());
-        let lease=match reach {
-            computer::Reach::Tools(access)=>self.personal_computer_turn(&snapshot.id,&profile,access,&mut request,&ended).await,
-            computer::Reach::Off(_)=>None,
+        let (lease,computer_failure)=match reach {
+            computer::Reach::Tools(access)=>match self.personal_computer_turn(&snapshot.id,&profile,access,&mut request,&ended).await {
+                Ok(lease)=>(lease,None),
+                Err(failure)=>(None,Some(failure)),
+            },
+            computer::Reach::Off(_)=>(None,None),
         };
         let computing=request.computer.is_some();
-        request.system.push_str(&computer::prompt(reach,computing,seen.report));
+        request.system.push_str(&computer::prompt_with_diagnostic(reach,computing,seen.report,computer_failure));
         let bytes=request.system.len();
         if computing {
             let marked=self.change_assistant(&snapshot.id,|assistant| {
                 if let Some(saved)=assistant.events.iter_mut().find(|e|e.id==event.id) { saved.computer_started=true; }
                 // The helper may have taken a stricter save's revoke before this lease existed.
-                Ok(self.personal_computer_reach(assistant,assistant.profile.as_ref().unwrap_or(&profile),seen.report)!=reach)
+                Ok(computer::apply_permission_reach(assistant,event,seen.report,self.personal_computer_reach(assistant,assistant.profile.as_ref().unwrap_or(&profile),seen.report))!=reach)
             });
             match marked {
                 Ok(false)=>{}
@@ -794,7 +806,7 @@ impl Host {
         if let Some(why) = endpoint_refusal(&snapshot, &profile) {
             return self.refuse_event(&snapshot.id, &event.id, why);
         }
-        let question = snapshot.events.iter().find(|e| e.id == parent).and_then(|e| match &e.source { EventSource::Human { text } => Some(text.clone()), _ => None }).unwrap_or_default();
+        let question = snapshot.events.iter().find(|e| e.id == parent).and_then(|e| match &e.source { EventSource::Human { text, .. } => Some(text.clone()), _ => None }).unwrap_or_default();
         let reports: Vec<(String, String)> = if let Some(task) = what.strip_prefix("report:") {
             snapshot.tasks.iter().filter(|t| t.id == task)
                 .map(|t| (t.goal.clone(), t.receipts.last().map(|r| r.output_excerpt.clone()).unwrap_or_default()))
@@ -958,7 +970,7 @@ impl Host {
             let result = self.personal_room_op(assistant_id, task_id, &operation).await;
             return self.change_assistant(assistant_id, |assistant| {
                 finish_run(assistant, task_id, &op_id, &operation, Some(result), now());
-                if operation.tool == rooms::READ { queue_report(assistant, task_id, &op_id, now()); }
+                if matches!(operation.tool.as_str(),rooms::READ|rooms::READ_FILE|rooms::STATUS) { queue_report(assistant, task_id, &op_id, now()); }
                 Ok(())
             });
         }
@@ -1120,14 +1132,19 @@ fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &s
     }
     // What let it through must still hold now.
     let by = decision.decided_by_event.clone().unwrap_or_default();
+    if let Err(why) = crate::personal::permissions::validate_marker(assistant, &task, &by) {
+        reask(assistant, task_id, &operation, &why, at);
+        return None;
+    }
+    let human_approval = by.starts_with("pe-") || crate::personal::permissions::authorization_is_human_once(&by);
     match gateway::gate(assistant, &task, None) {
         gateway::Gate::Refuse(why) => return fail(assistant, task_id, why, at),
-        gateway::Gate::HandOff if !by.starts_with("pe-") => {
+        gateway::Gate::HandOff if !human_approval => {
             reask(assistant, task_id, &operation, "Your rules now hand this kind of step to you.", at);
             return None;
         }
         gateway::Gate::Run(_) => {}
-        _ if by.starts_with("rule:") => {
+        _ if !human_approval && (by.starts_with("rule:") || by.starts_with("permission:")) => {
             reask(assistant, task_id, &operation, "Your rules changed since this was set to run without asking.", at);
             return None;
         }
@@ -1528,9 +1545,11 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
     };
     let gate = gateway::gate(assistant, &task, Some(asked));
     let gate = match &room {
-        Some(target) => target.gate(gate, task.class, assistant.mode_for(task.class), &operation.argv, asked, outside),
+        Some(target) => target.gate(gate, task.class, gateway::operation_mode(assistant, &operation, task.class), &operation.argv, asked, outside),
         None => gate,
     };
+    let permission_marker = crate::personal::permissions::marker(assistant, &task, false, outside);
+    let gate = if matches!(gate, gateway::Gate::Run(_)) && permission_marker.is_err() { gateway::Gate::Ask } else { gate };
     let class_word = match task.class { ToolClass::Read => "reading", ToolClass::Write => "changing things", ToolClass::Send => "sending", ToolClass::Spend => "spending" };
     let plan = operation.plan.as_ref().map(|p| describe_plan(assistant, p)).filter(|p| !p.is_empty()).map(|p| format!(" ({p})")).unwrap_or_default();
     // The reply was written before the app set the limit; say what was actually set.
@@ -1549,7 +1568,7 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
             let mut decision = open_decision(assistant, DecisionKind::Approve, &operation, at);
             decision.status = DecisionStatus::Approved;
             decision.decided_at = Some(at);
-            decision.decided_by_event = Some(gateway::rule_marker(mode));
+            decision.decided_by_event = Some(permission_marker.ok().flatten().unwrap_or_else(|| gateway::rule_marker(mode)));
             task.decision = Some(decision);
             assistant.tasks.push(task);
             set_place(assistant, &task_id, local, at);
@@ -1685,9 +1704,12 @@ fn approval_line(assistant: &PersonalAssistant, decision: &PendingDecision, oper
 
 /// Hold a reply until the human OKs its cost.
 fn hold_for_spend(assistant: &mut PersonalAssistant, event_id: &str, prompt: String, at: u64) {
+    let Some(source) = assistant.events.iter().find(|e| e.id == event_id && e.state == EventState::Processing).cloned() else { return };
+    let scoped = crate::personal::permissions::reply_spend_operation(assistant,&source);
+    let operation = if assistant.permissions.resolve(&scoped,false,false).is_some() { scoped }
+        else { OperationSpec { tool: REPLY_TOOL.into(), host: assistant.host_id.clone(), cwd: String::new(), argv: vec![event_id.to_owned()], plan: None } };
     let Some(event) = assistant.events.iter_mut().find(|e| e.id == event_id && e.state == EventState::Processing) else { return };
     event.state = EventState::Held;
-    let operation = OperationSpec { tool: REPLY_TOOL.into(), host: assistant.host_id.clone(), cwd: String::new(), argv: vec![event_id.to_owned()], plan: None };
     let task_id = assistant.next_task_id();
     let mut decision = open_decision(assistant, DecisionKind::Spend, &operation, at);
     decision.prompt = prompt.clone();
@@ -1811,6 +1833,7 @@ pub(crate) fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalE
 
 /// The human's answer to one decision, on a task or a schedule.
 fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &str, approve: bool, event_id: &str, local: &str, at: u64) -> Result<Option<(Option<String>, String)>, String> {
+    if let Some(result) = computer::decide_permission(assistant,decision_id,params_hash,approve,event_id,at) { return result; }
     if let Some(index) = assistant.schedules.iter().position(|s| s.decision.as_ref().is_some_and(|d| d.id == decision_id)) {
         let schedule = assistant.schedules[index].clone();
         let decision = schedule.decision.clone().unwrap();
@@ -1881,6 +1904,10 @@ fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &st
             task.status = TaskStatus::Done;
             task.last_update = Some("You OK'd the cost.".into());
             let held = task.operation.as_ref().and_then(|op| op.argv.first().cloned());
+            let approved = task.clone();
+            if let Some(marker) = crate::personal::permissions::marker(assistant,&approved,true,false)? {
+                if let Some(decision) = assistant.task_mut(&task_id).ok_or("The cost approval disappeared.")?.decision.as_mut() { decision.decided_by_event=Some(marker); }
+            }
             if let Some(event) = held.and_then(|id| assistant.events.iter_mut().find(|e| e.id == id && e.state == EventState::Held)) {
                 event.state = EventState::Received;
                 event.spend_approved = true;
@@ -1888,6 +1915,10 @@ fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &st
             Ok(Some((Some(task_id), "OK, replying.".into())))
         }
         _ => {
+            let approved = assistant.tasks.iter().find(|task| task.id == task_id).cloned().ok_or("The task disappeared before approval.")?;
+            if let Some(marker) = crate::personal::permissions::marker(assistant, &approved, true, false)? {
+                if let Some(decision) = assistant.task_mut(&task_id).ok_or("The task disappeared before approval.")?.decision.as_mut() { decision.decided_by_event = Some(marker); }
+            }
             set_place(assistant, &task_id, local, at);
             let update = assistant.tasks.iter().find(|t| t.id == task_id).and_then(|t| t.last_update.clone()).unwrap_or_default();
             let line = if update.starts_with("Approved") {

@@ -5,6 +5,7 @@
 // that machine is off. Every message goes through the shared outbox (chatDelivery.ts), saved under
 // the desktop's own key so it never shares an outbox with a phone.
 
+import { setThreadTrashed, TrashDeliveryHolds } from "./threadTrash.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Backend } from "./backend";
 import type { HostConnectionStore } from "./hostConnections";
@@ -48,7 +49,7 @@ export function restoredChat(catalog: ChatCatalog, place: ChatPlace): "keep" | "
   const host = catalog.hosts[place.hostId];
   if (!host || host.listedAt === undefined) return "unknown";
   const row = findRoom(catalog, place.hostId, place.room);
-  return row && row.kind === "chat" && !row.movedTo ? "keep" : "drop";
+  return row && row.kind === "chat" && !row.movedTo && !row.trashedAt ? "keep" : "drop";
 }
 
 /** Where a chat's Work thread opens: its pane on the chat's own machine, adding the project
@@ -57,7 +58,7 @@ export function restoredChat(catalog: ChatCatalog, place: ChatPlace): "keep" | "
  *  Remove/Undo window comes back (`restored`). Null while that machine hasn't listed the
  *  Work thread yet, or a clash when that id is open from another machine. */
 export function workThreadPlace(workspaces: Workspace[], panes: Pane[], hostId: string, work: ChatEntry | null, makeId: () => string, nameOf: (path: string) => string): { workspaces: Workspace[]; pane: Pane; added: boolean; restored: string | null } | "unlisted" | "clash" {
-  if (!work || work.kind !== "work" || !work.cwd) return "unlisted";
+  if (!work || work.kind !== "work" || !work.cwd || work.trashedAt) return "unlisted";
   const hostOf = (pane: Pane) => (pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspaces.find((w) => w.id === pane.workspaceId) ?? { id: "", name: "", path: "" });
   const hiddenId = (id: string) => workspaces.some((w) => w.id === id && w.hidden) ? id : null;
   const open = panes.find((pane) => pane.id === work.id && pane.kind === "chat" && hostOf(pane) === hostId);
@@ -118,6 +119,7 @@ export function botPatch(saved: ParticipantConfig, change: ChatBotPatch): ChatBo
 /** Why a chat can't take a message right now, or null when it can. */
 /** Offline is not a block: the message waits in the outbox and goes when the machine is back. */
 export function sendBlock(row: ChatEntry, machine: ChatMachine, rooms: boolean | undefined, moving = false): string | null {
+  if (row.trashedAt) return "This thread is in Trash. Restore it before sending.";
   if (row.promotedTo) return "This chat moved to a Work thread. Carry on there.";
   if (moving) return "This chat is moving to a Work thread. Finish the move or start over, then send.";
   if (rooms === false) return `Update Deck on ${machine.name} to chat here.`;
@@ -145,6 +147,9 @@ export interface DesktopChats {
   refresh(hostId: string): Promise<void>;
   profiles(hostId: string): Promise<ChatProfile[]>;
   create(hostId: string, profiles: string[]): Promise<ChatEntry>;
+  setTrashed(row: ChatEntry, trashed: boolean): Promise<void>;
+  deliveryHeld(row: ChatEntry): boolean;
+  resumeDelivery(row: ChatEntry): Promise<void>;
   updateMeta(row: ChatEntry, change: { title?: string; archived?: boolean }): Promise<void>;
   addBot(row: ChatEntry, profile: string): Promise<void>;
   removeBot(row: ChatEntry, bot: string): Promise<void>;
@@ -188,9 +193,10 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
   const machineName = useCallback((hostId: string) => hostId === "local" ? "This Mac" : live.current.machines.find((m) => m.id === hostId)?.name ?? catalogRef.current.hosts[hostId]?.name ?? hostId, []);
 
   // One outbox for the window. A store that can't be read pauses sending instead of losing messages.
-  const deliveryRef = useRef<{ controller: ChatDeliveryController | null; problem: string | null } | null>(null);
+  const deliveryRef = useRef<{ controller: ChatDeliveryController | null; problem: string | null; holds: TrashDeliveryHolds | null } | null>(null);
   if (!deliveryRef.current) {
     try {
+      const holds = new TrashDeliveryHolds(storage ?? localStorage);
       const controller = new ChatDeliveryController({
         storage: new JsonChatDeliveryStorage(localStorage, { key: DESKTOP_CHAT_DELIVERY_KEY }),
         rpc: createChatDeliveryRpc((id) => {
@@ -198,12 +204,14 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
           return backend && connection ? { machine: { id, name: machineName(id) }, backend, connection } : undefined;
         }),
         onChange: () => setTick((n) => n + 1),
-        canSend: (_chat, message) => online(message.machine.id) && !held(message.machine.id, message.room),
+        canSend: (_chat, message) => online(message.machine.id) && !holds.blocked(message.machine.id, message.room) && !findRoom(catalogRef.current, message.machine.id, message.room)?.trashedAt && !held(message.machine.id, message.room),
       });
-      deliveryRef.current = { controller, problem: null };
-    } catch (error) { deliveryRef.current = { controller: null, problem: words(error) }; }
+      deliveryRef.current = { controller, problem: null, holds };
+    } catch (error) { deliveryRef.current = { controller: null, problem: words(error), holds: null }; }
   }
   const delivery = deliveryRef.current.controller;
+  try { deliveryRef.current.holds?.observe(catalog); }
+  catch (error) { deliveryRef.current.problem = words(error); }
 
   const refresh = useCallback(async (hostId: string) => {
     const backend = live.current.backendOf(hostId);
@@ -297,6 +305,23 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
       void refresh(hostId);
       return row;
     },
+    async setTrashed(row, trashed) {
+      if (!deliveryRef.current?.holds) throw new Error(deliveryRef.current?.problem ?? "Queued messages could not be protected. Nothing changed.");
+      // Save before the RPC: even a lost acknowledgement cannot let Restore replay messages.
+      deliveryRef.current.holds.hold(row.hostId,row.id);
+      const updated = await setThreadTrashed(need(row.hostId), row, trashed, online(row.hostId));
+      setCatalog((current) => withRoom(current, row.hostId, machineName(row.hostId), updated));
+      void refresh(row.hostId);
+    },
+    deliveryHeld: row => deliveryRef.current?.holds?.blocked(row.hostId,row.id) ?? true,
+    async resumeDelivery(row) {
+      if (!delivery || !deliveryRef.current?.holds) throw new Error(deliveryRef.current?.problem ?? "Sending is paused.");
+      need(row.hostId);
+      if (findRoom(catalogRef.current,row.hostId,row.id)?.trashedAt) throw new Error("Restore this thread before resuming queued messages.");
+      deliveryRef.current.holds.resume(row.hostId,row.id);
+      setTick(n=>n+1);
+      await delivery.flush(deliveryId({hostId:row.hostId,room:row.id}));
+    },
     async updateMeta(row, change) {
       upsert(row.hostId, await need(row.hostId).call<unknown>("chat_update_meta", { id: row.id, ...change }), { ...row, ...change });
       if (change.title !== undefined && delivery) {
@@ -330,7 +355,10 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
       if (!delivery) throw new Error(deliveryRef.current?.problem ?? "Sending is paused.");
       const id = deliveryId({ hostId: row.hostId, room: row.id });
       if (!delivery.snapshot().chats[id]) throw new Error(`Open this chat once while ${machineName(row.hostId)} is connected, then send.`);
+      if (findRoom(catalogRef.current, row.hostId, row.id)?.trashedAt) throw new Error("This thread is in Trash. Restore it before sending.");
       if (held(row.hostId, row.id)) throw new Error(sendBlock(row, { id: row.hostId, name: machineName(row.hostId) }, true, true) ?? "This chat moved to a Work thread.");
+      // A new human Send is explicit permission to leave this room's Trash hold.
+      deliveryRef.current?.holds?.resume(row.hostId,row.id);
       const messageId = delivery.enqueue(id, text, []);
       // A new chat takes its name from its first message, as a Work thread does.
       if (row.title === "New chat" && online(row.hostId)) api.updateMeta(row, { title: chatTitle(text) }).catch(() => {});
@@ -338,6 +366,8 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
     },
     retry(row, messageId) {
       if (!delivery) return;
+      if (findRoom(catalogRef.current,row.hostId,row.id)?.trashedAt) throw new Error("Restore this thread before retrying a message.");
+      deliveryRef.current?.holds?.resume(row.hostId,row.id);
       delivery.retry(deliveryId({ hostId: row.hostId, room: row.id }), messageId).catch((error) => live.current.onError(words(error)));
     },
     pickFolder: (hostId) => need(hostId).pickFolder(),

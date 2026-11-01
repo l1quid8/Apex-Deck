@@ -167,3 +167,30 @@ test('a newer task tombstone snapshot updates at the same assistant revision wit
 test('an archive response without persisted archivedAt cannot report successful removal',async()=>{
  const f=fixture();f.routes.a.supports=cap=>cap==='assistant_archive_v1';await f.collection.refresh();await assert.rejects(f.collection.lane(ref('alpha')).archiveAssistant(1),/confirm|archiv/i);assert.ok(f.collection.snapshot().assistants.some(row=>row.ref.hostId==='alpha'));
 });
+
+test('typed and voice sends capture current view on their own host before awaiting a reply',async()=>{
+ const f=fixture();f.routes.a.supports=()=>true;
+ let focused='thread-a';f.options.viewContext=(routeHostId)=>({hostId:routeHostId==='a'?'alpha':'mac',focusedThreadId:focused,openThreadIds:[focused]});
+ await f.collection.refresh();const lane=f.collection.lane(ref('alpha'));
+ const held=defer();f.handlers['a:personal_send']=async()=>{await held.promise;return {assistant:record('alpha','asst-1',2),eventId:'event-1'};};
+ const pending=lane.sendRequest('Ask Jigga to fix this','voice-request');focused='thread-b';held.resolve();await pending;
+ const sent=f.calls.find(([,cmd])=>cmd==='personal_send');assert.deepEqual(sent[2].viewContext,{hostId:'alpha',focusedThreadId:'thread-a',openThreadIds:['thread-a']});
+ await lane.send('What changed?');assert.deepEqual(f.calls.filter(([,cmd])=>cmd==='personal_send').at(-1)[2].viewContext,{hostId:'alpha',focusedThreadId:'thread-b',openThreadIds:['thread-b']});
+});
+
+test('pane context is omitted for old hosts and mismatched machine identities',async()=>{
+ const f=fixture();f.options.viewContext=()=>({hostId:'beta',focusedThreadId:'secret',openThreadIds:['secret']});await f.collection.refresh();
+ await f.collection.lane(ref('alpha')).send('Here');assert.equal(f.calls.at(-1)[2].viewContext,undefined);
+ f.routes.a.supports=()=>true;await f.collection.lane(ref('alpha')).send('Here');assert.equal(f.calls.at(-1)[2].viewContext,undefined);
+});
+
+test('current-thread label is local display data and must match a permitted project and current view',async()=>{
+ const f=fixture();f.routes.a.supports=()=>true;
+ f.lists.a[0].projects=[{project:{hostId:'alpha',workspaceId:'w',cwd:'/repo'},tools:'full'}];
+ f.options.viewContext=()=>({hostId:'alpha',focusedThreadId:'t',openThreadIds:['t']});
+ f.options.currentThread=()=>({id:'t',title:'Visible work',project:{hostId:'alpha',cwd:'/repo'}});
+ await f.collection.refresh();assert.equal(f.collection.lane(ref('alpha')).currentThread?.title,'Visible work');
+ await f.collection.lane(ref('alpha')).send('this');assert.equal(f.calls.at(-1)[2].viewContext.title,undefined);
+ f.options.currentThread=()=>({id:'t',title:'Other project',project:{hostId:'alpha',cwd:'/private'}});
+ assert.equal(f.collection.lane(ref('alpha')).currentThread,undefined);
+});

@@ -60,7 +60,7 @@ pub enum Command {
     /// An assistant proposes project work. Creates a proposal; never dispatches.
     PersonalProjectDelegate { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
     PersonalProjectDelegateUi { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
-    PersonalSend { assistant_id: String, request_id: String, text: String },
+    PersonalSend { assistant_id: String, request_id: String, text: String, #[serde(default)] view_context: Option<crate::personal::PersonalViewContext> },
     PersonalReact { assistant_id: String, message_id: String, emoji: String, enabled: bool },
     PersonalDecide { assistant_id: String, request_id: String, decision_id: String, params_hash: String, approve: bool },
     PersonalArchive { assistant_id: String, expected_revision: u64, archived: bool },
@@ -77,6 +77,7 @@ pub enum Command {
     PersonalAvatarAsset { assistant_id: Option<String>, owner: Option<crate::assistant_avatar::Owner>, generation_id: Option<String>, asset_id: String, sha256: String },
     PersonalWorkspaceConfigure { #[serde(flatten)] input: crate::personal_workspace::Configure },
     PersonalConfigure { assistant_id: String, settings: crate::personal_settings::Settings },
+    PersonalPermissionSet { assistant_id: String, expected_revision: u64, capability: crate::personal::permissions::Capability, scope: crate::personal::permissions::Scope, mode: crate::personal::permissions::GrantMode, delegate: bool },
     PersonalRuleAdd { assistant_id: String, text: String, class: crate::personal::ToolClass, mode: crate::personal::ActionMode },
     PersonalRuleRemove { assistant_id: String, rule_id: String },
     PersonalMemoryAdd { assistant_id: String, text: String, #[serde(default)] expected_revision: Option<u64> },
@@ -185,6 +186,7 @@ pub enum Command {
     ChatProfiles {},
     ChatList {},
     ChatCreate { id: String, participants: Vec<crate::chat_bots::ChatBotRequest>, options: RoomOptions, #[serde(default)] title: Option<String> },
+    RoomSetTrashed { id: String, trashed: bool },
     ChatUpdateMeta { id: String, #[serde(default)] title: Option<String>, #[serde(default)] archived: Option<bool>, #[serde(default)] moved_to: Option<Option<crate::storage::ChatMovedTo>> },
     ChatAddParticipant { id: String, participant: crate::chat_bots::ChatBotRequest },
     ChatUpdateParticipant { id: String, participant: ParticipantId, patch: crate::chat_bots::ChatBotPatch },
@@ -289,7 +291,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -454,7 +456,7 @@ impl Host {
             }
             PersonalProjectDelegate { input } => reply(self.personal_project_delegate(input).await?),
             PersonalProjectDelegateUi { input } => reply(self.personal_project_delegate_ui(input)?),
-            PersonalSend { assistant_id, request_id, text } => reply(self.personal_send(&assistant_id, &request_id, &text)?),
+            PersonalSend { assistant_id, request_id, text, view_context } => reply(self.personal_send_with_context(&assistant_id, &request_id, &text, view_context)?),
             PersonalReact { assistant_id, message_id, emoji, enabled } => reply(serde_json::json!({"assistant": self.personal_react(&assistant_id, &message_id, &emoji, enabled)?})),
             PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
             PersonalArchive { assistant_id, expected_revision, archived } => reply(self.personal_archive(&assistant_id, expected_revision, archived)?),
@@ -476,6 +478,7 @@ impl Host {
             PersonalAvatarAsset { assistant_id, owner, generation_id, asset_id, sha256 } => self.personal_avatar_asset(assistant_id, owner, generation_id, asset_id, sha256),
             PersonalWorkspaceConfigure { input } => reply(self.personal_workspace_configure(input).await?),
             PersonalConfigure { assistant_id, settings } => reply(self.personal_configure(&assistant_id, settings)?),
+            PersonalPermissionSet { assistant_id, expected_revision, capability, scope, mode, delegate } => reply(self.personal_permission_set(&assistant_id, expected_revision, capability, scope, mode, delegate)?),
             PersonalRuleAdd { assistant_id, text, class, mode } => reply(self.personal_rule_add(&assistant_id, &text, class, mode)?),
             PersonalRuleRemove { assistant_id, rule_id } => reply(self.personal_rule_remove(&assistant_id, &rule_id)?),
             PersonalMemoryAdd { assistant_id, text, expected_revision } => reply(self.personal_memory_add_at_revision(&assistant_id, &text, expected_revision)?),
@@ -608,6 +611,7 @@ impl Host {
             ChatProfiles {} => reply(self.chat_profiles()?),
             ChatList {} => reply(self.chat_list()?),
             ChatCreate { id, title, participants, options } => reply(self.chat_create(id, title, participants, options)?),
+            RoomSetTrashed { id, trashed } => reply(self.room_set_trashed(id, trashed)?),
             ChatUpdateMeta { id, title, archived, moved_to } => reply(self.chat_update_meta(id, title, archived, moved_to)?),
             ChatAddParticipant { id, participant } => reply(self.chat_add_participant(id, participant).await?),
             ChatUpdateParticipant { id, participant, patch } => reply(self.chat_update_participant(id, participant, patch).await?),

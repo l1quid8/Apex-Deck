@@ -67,6 +67,8 @@ export interface ProjectSidebarProps {
   onRestore(pane: Pane): void;
   /** The Chats section, drawn above Projects. */
   chats?: ReactNode;
+  /** Host-owned recoverable thread Trash, distinct from the local archive. */
+  trash?: ReactNode;
   style?: CSSProperties;
 }
 
@@ -361,6 +363,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </span>
         </div>
       )}
+      {props.trash}
       </div>
       <div className="rail-controls" aria-label="Preferences">
         <span className="rail-version" title={`Apex Deck ${__APP_VERSION__}`}>Apex Deck <span>{__APP_VERSION__}</span></span>

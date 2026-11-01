@@ -72,6 +72,7 @@ export function AssistantWorkspace({lane,backend,section,onNavigate,chat,project
     </div></details>
    </div>
   </header>
+  {lane.currentThread&&<div className="assistant-workspace-context" role="status" title={lane.currentThread.title}>Context: {lane.currentThread.title}</div>}
   {(lane.problem||error)&&<p className="assistant-workspace-problem" role="alert">{error||lane.problem}</p>}
   <div className="assistant-workspace-content" hidden={section!=='chat'}>{chat}</div>
   {section!=='chat'&&section!=='settings'&&<div className="assistant-workspace-subview">

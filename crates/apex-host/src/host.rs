@@ -669,6 +669,7 @@ impl Host {
     }
 
     fn require_idle(&self, id: &str) -> Result<(), String> {
+        self.require_not_trashed(id)?;
         if self.handle(id)?.runtime.busy() { Err("wait for the models to finish first".into()) } else { Ok(()) }
     }
 
@@ -969,6 +970,20 @@ impl Host {
     }
 
     /// Update catalog metadata for a chat room or promoted work room.
+    pub(crate) fn require_not_trashed(&self,id:&str)->Result<(),String> {
+        if self.store.chat_meta(id)?.is_some_and(|m|m.trashed_at.is_some()) {return Err("Restore this thread from Trash before starting work.".into())} Ok(())
+    }
+    /// Recoverable lifecycle transition, serialized against room replacement and
+    /// checkout actions. This never deletes room history or starts a turn.
+    pub fn room_set_trashed(&self,id:String,trashed:bool)->Result<crate::storage::ChatRoomMeta,String> {
+        let _lifecycle=self.room_lifecycle.lock().unwrap();
+        let handle=self.handle(&id).ok();
+        let _action=match &handle {Some(h)=>Some(h.checkout_action.try_write().map_err(|_|"Wait for the current room action to finish.")?),None=>None};
+        if self.store.room(&id)?.is_none() {return Err("Thread unavailable.".into())}
+        if handle.as_ref().is_some_and(|h|h.runtime.busy() || h.has_pending_human_waits()) {return Err("Stop work and resolve outstanding requests before moving this thread to Trash.".into())}
+        self.store.update_chat_meta(&id,|meta| {if trashed {meta.trashed_at=Some(meta.trashed_at.unwrap_or_else(now_millis));} else {meta.trashed_at=None;}meta.updated_at=meta.updated_at.max(now_millis());})
+    }
+
     pub fn chat_update_meta(
         &self,
         id: String,
@@ -1281,6 +1296,7 @@ impl Host {
     /// messages: they would land in the old chat, never in the Work thread.
     fn refuse_moved_chat(&self, id: &str) -> Result<(), String> {
         let Some(meta) = self.store.chat_meta(id)? else { return Ok(()) };
+        if meta.trashed_at.is_some() {return Err("Restore this thread from Trash before starting work.".into())}
         if meta.promoting.is_some() { return Err("This chat is moving to a Work thread. Send once the move finishes.".into()); }
         if let Some(to) = meta.promoted_to {
             let name = self.store.chat_meta(&to)?.map(|meta| meta.title.trim().to_owned()).filter(|title| !title.is_empty()).unwrap_or(to);
@@ -1859,6 +1875,71 @@ impl Host {
         }
     }
 
+    /// Alfred may answer a typed native request only with both a current
+    /// underlying grant and a distinct approval-delegation grant. It never
+    /// writes a new standing allowance on another agent's behalf.
+    pub(crate) fn room_pending_approvals(&self,id:&str)->Result<Vec<serde_json::Value>,String> {Ok(self.handle(id)?.live.lock().unwrap().approvals.clone())}
+    pub(crate) fn personal_room_approve(&self,assistant_id:&str,task_id:&str,operation:&crate::personal::OperationSpec)->Result<(),String> {
+        use crate::personal::permissions::{self,PermissionAudit};
+        let thread=operation.argv.first().ok_or("Thread unavailable.")?;
+        let request=operation.argv.get(1).ok_or("Approval request unavailable.")?;
+        let expected=operation.argv.get(2).ok_or("Approval binding unavailable.")?;
+        let handle=self.handle(thread)?;
+        // Preflight records a durable intent before delivery. If final saving
+        // fails after delivery, audit remains attempted rather than success.
+        let mut audit_hash=None;
+        self.change_assistant(assistant_id,|assistant| {
+            let room=self.personal_room_target(assistant,thread)?;
+            if room.project.host_id!=operation.host || room.project.cwd!=operation.cwd {return Err("The target project changed.".into())}
+            self.require_not_trashed(thread)?;
+            let task=assistant.tasks.iter().find(|t|t.id==task_id&&t.status==crate::personal::TaskStatus::Running).ok_or("Task stopped.")?;
+            if task.operation.as_ref().is_none_or(|o|o.hash()!=operation.hash()) {return Err("Approval operation changed.".into())}
+            permissions::validate_marker(assistant,task,task.decision.as_ref().and_then(|d|d.decided_by_event.as_deref()).unwrap_or_default())?;
+            let live=handle.live.lock().unwrap();
+            let pending=live.approvals.iter().find(|p|p["request"].as_str()==Some(request)).ok_or("That approval is no longer waiting.")?;
+            let actor=pending["id"].as_str().ok_or("Approval actor unavailable.")?;
+            let profile=handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|p.id.as_str()==actor).cloned().ok_or("The requesting participant no longer belongs to this thread.")?;
+            if let Some(why)=crate::personal_worker::endpoint_refusal(assistant,&profile) {return Err(why)}
+            let underlying=permissions::delegated_operation(operation,pending)?;
+            if underlying.argv.get(2)!=Some(expected) {return Err("The underlying approval changed. Read it again.".into())}
+            let requested=permissions::explicit_request(assistant,task);
+            let (auth,delegation)=assistant.permissions.authorize_delegated(&underlying,requested,false,false)?;
+            let mut grants=vec![auth.grant_id.unwrap_or_default(),delegation];
+            if pending["action"]["risky"]==true && pending["action"]["kind"]!="spend" {
+                // An opaque risky command may spend or publish. Both explicit
+                // delegations are required instead of inferring intent from text.
+                for tool in ["room.delegateSpend","room.delegatePublish"] {
+                    let risky=crate::personal::OperationSpec{tool:tool.into(),..underlying.clone()};
+                    let (extra,delegation)=assistant.permissions.authorize_delegated(&risky,requested,false,false)?;
+                    grants.extend([extra.grant_id.unwrap_or_default(),delegation]);
+                }
+            }
+            let hash=underlying.hash();audit_hash=Some(hash.clone());
+            if assistant.permissions.audit.len()>=500 {assistant.permissions.audit.remove(0);}
+            assistant.permissions.audit.push(PermissionAudit{actor:assistant.id.clone(),thread:thread.clone(),request:request.clone(),operation_hash:hash,capability:permissions::capability(&underlying),grant_ids:grants,revision:assistant.permissions.revision,at:crate::personal::now(),result:"attempted".into()});
+            Ok(())
+        })?;
+        self.change_assistant(assistant_id,|assistant| {
+            let audit=assistant.permissions.audit.iter().rev().find(|a|Some(&a.operation_hash)==audit_hash.as_ref()).ok_or("Audit intent unavailable.")?;
+            if audit.revision!=assistant.permissions.revision {return Err("Approval authority was revoked before delivery.".into())}
+            let task=assistant.tasks.iter().find(|t|t.id==task_id&&t.status==crate::personal::TaskStatus::Running).ok_or("Task stopped.")?;
+            if assistant.paused || assistant.archived_at.is_some() {return Err("Assistant stopped.".into())}
+            permissions::validate_marker(assistant,task,task.decision.as_ref().and_then(|d|d.decided_by_event.as_deref()).unwrap_or_default())?;
+            let room=self.personal_room_target(assistant,thread)?;
+            if room.project.host_id!=operation.host||room.project.cwd!=operation.cwd {return Err("Target changed.".into())}
+            let live=handle.live.lock().unwrap();
+            let pending=live.approvals.iter().find(|p|p["request"].as_str()==Some(request)).ok_or("That approval is no longer waiting.")?;
+            let actor=pending["id"].as_str().ok_or("Approval actor unavailable.")?;
+            let profile=handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|p.id.as_str()==actor).cloned().ok_or("The requesting participant left this thread.")?;
+            if let Some(why)=crate::personal_worker::endpoint_refusal(assistant,&profile) {return Err(why)}
+            if permissions::delegated_operation(operation,pending)?.argv.get(2)!=Some(expected) {return Err("The underlying approval changed.".into())}
+            let result=handle.approvals.resolve(request,apex_core::Decision::Approve);
+            let audit=assistant.permissions.audit.iter_mut().rev().find(|a|Some(&a.operation_hash)==audit_hash.as_ref()).ok_or("Audit intent unavailable.")?;
+            audit.result=if result {"approved"} else {"request no longer waiting"}.into();
+            if !result {return Err("That request is no longer waiting for an answer.".into())} Ok(())
+        })
+    }
+
     /// Stop always allowing something, so its card shows again. Saved at once.
     pub fn room_forget_allowed(&self, id: String, rule: apex_core::AllowedRule) -> Result<(), String> {
         let rooms = self.rooms.lock().unwrap();
@@ -1883,6 +1964,9 @@ impl Host {
     }
 
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
+        self.room_add_participant_checked(id,participant,&||Ok(None)).await
+    }
+    pub(crate) async fn room_add_participant_checked(self: &Arc<Self>, id:String, participant:ParticipantConfig, check: &(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
         self.ensure_task_read_access(&id, &participant)?;
         let handle = self.handle(&id)?;
         if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
@@ -1896,6 +1980,7 @@ impl Host {
         self.read_plans(&id, std::slice::from_ref(&participant), &context);
         let room = self.room(&id)?;
         let mut room = room.lock().await;
+        let _authority=check()?;
         self.require_idle(&id)?;
         if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
             return Err(why);
@@ -1910,6 +1995,9 @@ impl Host {
     }
 
     pub async fn chat_add_participant(self: &Arc<Self>, id: String, bot: crate::chat_bots::ChatBotRequest) -> Result<(), String> {
+        self.chat_add_participant_checked(id,bot,&||Ok(None)).await
+    }
+    pub(crate) async fn chat_add_participant_checked(self: &Arc<Self>, id:String, bot:crate::chat_bots::ChatBotRequest, check: &(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
         let profile = bot.profile.clone();
         let participant = crate::chat_bots::resolve(&self.chat_saved_profiles()?, bot)?;
         if !self.rooms.lock().unwrap().contains_key(&id) {
@@ -1928,6 +2016,7 @@ impl Host {
         self.read_plans(&id, std::slice::from_ref(&participant), &context);
         let room = self.room(&id)?;
         let mut room = room.lock().await;
+        let _authority=check()?;
         self.require_idle(&id)?;
         if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
             return Err(why);
@@ -2037,6 +2126,10 @@ impl Host {
     }
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
+        self.room_remove_participant_checked(id,participant,&||Ok(None)).await
+    }
+    pub(crate) async fn room_remove_participant_checked(&self, id:String, participant:ParticipantId, check: &(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
+        drop(check()?);
         self.computer.revoke(Some(&id),Some(participant.as_str()));
         // Worker removal pauses runner
         self.invalidate_room_runner(&id)?;
@@ -2049,6 +2142,7 @@ impl Host {
         self.require_idle(&id)?;
         let room = self.room(&id)?;
         let mut room = room.lock().await;
+        let _authority=check()?;
         self.require_idle(&id)?;
         room.remove_participant(&participant);
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
@@ -2056,6 +2150,9 @@ impl Host {
     }
 
     pub async fn chat_remove_participant(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
+        self.chat_remove_participant_checked(id,participant,&||Ok(None)).await
+    }
+    pub(crate) async fn chat_remove_participant_checked(self: &Arc<Self>, id:String, participant:ParticipantId, check: &(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
         if !self.rooms.lock().unwrap().contains_key(&id) {
             self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
         }
@@ -2068,6 +2165,7 @@ impl Host {
         self.require_idle(&id)?;
         let room = self.room(&id)?;
         let mut room = room.lock().await;
+        let _authority=check()?;
         self.require_idle(&id)?;
         let mut profiles: HashMap<_, _> = self.store.chat_meta(&id).ok().flatten().unwrap_or_default().profiles.into_iter().collect();
         profiles.extend(room.snapshot().import_profiles);
@@ -2635,6 +2733,10 @@ impl Host {
 
     /// Explicit deletion waits for a task's exact worker attempt before removing its saved room.
     pub async fn room_delete_owned(self: &Arc<Self>, id: String) -> Result<(), String> {
+        self.room_delete_owned_checked(id,&||Ok(None)).await
+    }
+    pub(crate) async fn room_delete_owned_checked(self:&Arc<Self>,id:String,check:&(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
+        drop(check()?);
         if let Some(entry) = self.assistant_tasks.execution(&id).map_err(|e|e.to_string())? {
             let task = self.assistant_tasks.get(&entry.task_id).map_err(|e|e.to_string())?.ok_or("Owning task not found")?;
             if !matches!(task.status, crate::assistant_tasks::TaskStatus::Done | crate::assistant_tasks::TaskStatus::Cancelled) {
@@ -2642,6 +2744,7 @@ impl Host {
             }
             self.assistant_changed(&entry.workspace_id);
         }
+        let _authority=check()?;
         self.room_delete(id)
     }
 
@@ -5329,5 +5432,46 @@ fn combine_result<T>(result: Result<T, String>, saved: Result<(), String>) -> Re
         (Ok(value), Ok(())) => Ok(value),
         (Err(a), Err(b)) => Err(format!("{a}; {b}")),
         (Err(e), _) | (_, Err(e)) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod assistant_permission_delivery_tests {
+    use super::*;
+    use crate::personal::{permissions::*, *};
+    #[tokio::test]
+    async fn delegated_native_approval_consumes_only_its_exact_current_request_and_audits_grants() {
+        let root=std::env::temp_dir().join(format!("apex-delegated-{}-{}",std::process::id(),now_millis()));
+        let cwd=root.join("project");std::fs::create_dir_all(&cwd).unwrap();
+        let cwd=cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+        let host=Host::new(HostPaths{data:root.join("data"),downloads:None},tokio::runtime::Handle::current());
+        std::fs::write(root.join("data/host-id"),"h\n").unwrap();
+        let worker:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"worker","display_name":"Worker","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"m"}})).unwrap();
+        host.room_create("r".into(),vec![worker],RoomOptions::default(),Some(cwd.clone())).unwrap();
+        host.store.save_session(&serde_json::json!({"workspaces":[{"id":"w","path":cwd}],"panes":[{"kind":"chat","id":"r","title":"Room","workspaceId":"w"}]})).unwrap();
+        let handle=host.handle("r").unwrap();
+        let (request,answer)=handle.approvals.open_for(ParticipantId::new("worker"));
+        let action:apex_core::ProposedAction=serde_json::from_value(serde_json::json!({"kind":"command","title":"Run command","detail":"true","risky":false})).unwrap();
+        host.room_event("r",RoomEvent::ApprovalRequested{id:ParticipantId::new("worker"),request:request.clone(),action});
+        let pending=host.room_pending_approvals("r").unwrap()[0].clone();
+        let base=OperationSpec{tool:"room.approve".into(),host:"h".into(),cwd:cwd.clone(),argv:vec!["r".into()],plan:None};
+        let binding=delegated_operation(&base,&pending).unwrap().argv[2].clone();
+        let operation=OperationSpec{argv:vec!["r".into(),request.clone(),binding],..base};
+        let mut assistant:PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[cwd],"projects":[{"project":{"hostId":"h","workspaceId":"w","cwd":cwd},"tools":"full"}],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[{"id":"pe-1","requestId":"human","source":{"kind":"human","text":"Approve Room request"},"receivedAt":0,"state":"done"}],"tasks":[]})).unwrap();
+        assistant.permissions.set(Capability::ApprovalDelegate,Scope::AllProjects,GrantMode::Always,false).unwrap();
+        assistant.permissions.set(Capability::CommandRun,Scope::AllProjects,GrantMode::Always,true).unwrap();
+        let mut task:PersonalTask=serde_json::from_value(serde_json::json!({"id":"pt-1","goal":"Approve","completionCriteria":[],"targetHost":"h","status":"running","operation":operation,"fromEvent":"pe-1","maxAttempts":1,"createdAt":0,"updatedAt":0,"decision":{"id":"pd-1","kind":"approve","paramsHash":operation.hash(),"prompt":"Approve","status":"approved","openedAt":0}})).unwrap();
+        task.decision.as_mut().unwrap().decided_by_event=marker(&assistant,&task,true,false).unwrap();
+        assistant.tasks.push(task);host.change_personal(|a|{a.push(assistant);Ok(())}).unwrap();
+        host.personal_room_approve("a","pt-1",&operation).unwrap();
+        assert_eq!(answer.await.unwrap(),apex_core::Decision::Approve);
+        let saved=host.personal_get("a").unwrap();
+        assert_eq!(saved.permissions.audit.len(),1);
+        assert_eq!(saved.permissions.audit[0].result,"approved");
+        assert_eq!(saved.permissions.audit[0].grant_ids.len(),2);
+        assert!(host.personal_room_approve("a","pt-1",&operation).is_err(),"one-shot request cannot authorize a second execution");
+        host.change_assistant("a",|a|{a.permissions.set(Capability::CommandRun,Scope::AllProjects,GrantMode::Ask,false)}).unwrap();
+        assert!(host.personal_room_approve("a","pt-1",&operation).is_err(),"revoked authority cannot execute");
+        drop(host);let _=std::fs::remove_dir_all(root);
     }
 }
