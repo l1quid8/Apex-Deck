@@ -24,14 +24,14 @@ function ChipsAndEffects({ studio }: { studio: AppearanceStudioState }) {
   const toggles = [["tool", "Tool"], ["effort", "Effort"], ["usage", "Usage"]] as const;
   return <>
     <p className="studio-panel-note">Not part of a preset. Try them in the preview; Apply sets them for all of Deck, in every theme.</p>
-    <section className="studio-block" aria-labelledby="studio-h-chips">
+    <section className="studio-block" data-ctl="chips" aria-labelledby="studio-h-chips">
       <div className="studio-block-head"><h3 id="studio-h-chips">Agent chips</h3></div>
       <ChipStylePicker value={chips.style ?? "classic"} onChange={(style) => studio.edit({ ...draft, botChips: { ...chips, style } })} />
       <div className="studio-check-row" role="group" aria-label="Show on chips">
-        {toggles.map(([part, label]) => <label key={part}><input id={`studio-chip-${part}`} type="checkbox" checked={chips[part]} onChange={(event) => studio.edit({ ...draft, botChips: { ...chips, [part]: event.currentTarget.checked } })} /> {label}</label>)}
+        {toggles.map(([part, label]) => <label key={part} data-ctl={part}><input id={`studio-chip-${part}`} type="checkbox" checked={chips[part]} onChange={(event) => studio.edit({ ...draft, botChips: { ...chips, [part]: event.currentTarget.checked } })} /> {label}</label>)}
       </div>
     </section>
-    <section className="studio-block">
+    <section className="studio-block" data-ctl="field">
       <LandingTextureControls value={draft.landingTexture} onChange={(landingTexture) => studio.edit({ ...draft, landingTexture })} switchId="studio-field-on" />
     </section>
   </>;
@@ -95,7 +95,7 @@ function Share({ studio, settings }: { studio: AppearanceStudioState; settings: 
       </div>
       {json !== null && <textarea id="studio-export-text" className="studio-text" rows={9} readOnly spellCheck={false} aria-label="Exported preset JSON" value={json} />}
     </section>
-    <section className="studio-block">
+    <section className="studio-block" data-ctl="transfer">
       <div className="studio-block-head"><h3><label htmlFor="studio-import-text">Import</label></h3></div>
       <textarea id="studio-import-text" className="studio-text" rows={5} spellCheck={false} maxLength={FILE_LIMIT} placeholder="Paste preset JSON here" value={importText} onChange={(event) => setImportText(event.currentTarget.value)} />
       <div className="studio-row-actions">
@@ -104,7 +104,7 @@ function Share({ studio, settings }: { studio: AppearanceStudioState; settings: 
         <input ref={picker} className="studio-vh" type="file" accept="application/json,.json" aria-label="Choose a preset JSON file" tabIndex={-1} onChange={(event) => void addFile(event)} />
       </div>
     </section>
-    <section className="studio-block">
+    <section className="studio-block" data-ctl="ai-prompt">
       <div className="studio-block-head"><h3><label htmlFor="studio-ai-look">Ask an AI for a preset</label></h3></div>
       <p className="studio-hint">Describe a look to get a prompt for your AI tool. Deck doesn't generate it.</p>
       <textarea id="studio-ai-look" className="studio-text" rows={2} maxLength={500} placeholder="Deep ocean at night, calm, with a soft teal accent" value={description} onChange={(event) => setDescription(event.currentTarget.value)} />

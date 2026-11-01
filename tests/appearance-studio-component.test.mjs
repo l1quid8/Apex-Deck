@@ -96,3 +96,22 @@ test('Chips & effects and Share follow the draft rules', { timeout: 200000 }, as
     assert.match(parsed.name,/Clay Warm \\(modified\\)/);
   `);
 });
+
+test('a search result opens the right tab, and glass results explain themselves on Clay', { timeout: 200000 }, async () => {
+  await withAppearanceApp('appearance-search', `${STUDIO_HELPERS}
+    await seed(${JSON.stringify(onSkin('clay', BUILTIN_SKINS))});
+    await openAppearance();
+    const search=async(word)=>{ await run("(()=>{const r=document.querySelector('.settings-search-wrap input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(r,"+JSON.stringify(word)+"); r.dispatchEvent(new Event('input',{bubbles:true}));})()"); await frame(); await sleep(60); await run("document.querySelector('.search-results-card button').click()"); await until("!!document.querySelector('.studio-editor')"); await sleep(80); };
+    const selected=()=>run("document.querySelector('.studio-tabs [aria-selected=true]').dataset.tab");
+    await search('Frost blur');
+    assert.equal(await selected(),'material');
+    assert.ok((await text()).includes('need glass'),'Clay says why, and stays Clay');
+    assert.equal(await run("document.querySelector('input[name=studio-theme]:checked').value"),'clay');
+    await search('Show effort');
+    assert.equal(await selected(),'details');
+    assert.equal(await run("!!document.querySelector('[data-ctl=effort]')"),true);
+    await search('Corners radius');
+    assert.equal(await selected(),'customize');
+    assert.equal(await run("document.activeElement.closest('[data-ctl]')?.dataset.ctl"),'corners','focus lands on the control');
+  `);
+});

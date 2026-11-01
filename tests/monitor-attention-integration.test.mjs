@@ -138,6 +138,7 @@ function appHarness() {
     canvasPanes: () => [],
     activeAfter: (_list, active) => active,
     loadWidths: () => ({ rail: null, details: null }), saveWidths: () => {},
+    useAppearanceDraft: () => ({ pending: [] }),
     SIDEBAR_DEFAULT: { details: 300 },
     SIDEBAR_DEFAULT: { details: 300 },
     detailsOverlay: () => false, detailsThread: () => null, noteFocus: (recent, id) => [id, ...(recent ?? []).filter((item) => item !== id)],

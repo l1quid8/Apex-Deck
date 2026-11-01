@@ -54,17 +54,19 @@ const SCOPE_LABEL: Record<SettingsScope, string> = {
 export const CATALOG_ENTRIES: CatalogEntry[] = [
   // Appearance - full coverage from mockup README
   { id: 'mode', section: 'appearance', label: 'Appearance mode - Light, Dark, System', keywords: ['dark','light','theme','mode','system','appearance'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'mode' },
-  { id: 'skin', section: 'appearance', label: 'Current skin', keywords: ['skin','theme','classic','gallery'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'skin' },
-  { id: 'skin-gallery', section: 'appearance', label: 'Built-in and saved skins', keywords: ['gallery','classic','smoked','tide','dusk','rose','frost','liquid','clay','saved','delete'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'skin-gallery' },
+  { id: 'skin', section: 'appearance', label: 'Current preset', keywords: ['skin','preset','theme','classic','gallery'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'skin' },
+  { id: 'skin-gallery', section: 'appearance', label: 'Built-in and saved presets', keywords: ['gallery','classic','smoked','tide','dusk','rose','frost','liquid','clay','saved','delete'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'skin-gallery' },
   { id: 'accent', section: 'appearance', label: 'Accent color and exact hex', keywords: ['accent','color','hex','picker','custom'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'accent' },
-  { id: 'clay-presets', section: 'appearance', label: 'Clay accent presets Terracotta Sage Slate', keywords: ['clay','terracotta','sage','slate','preset','ember','paper'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'clay-presets', advanced: true },
+  { id: 'clay-presets', section: 'appearance', label: 'Accent colors Terracotta Sage Slate', keywords: ['clay','terracotta','sage','slate','preset','ember','paper'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'clay-presets', advanced: true },
   { id: 'corners', section: 'appearance', label: 'Corners radius', keywords: ['corners','radius','round'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'corners', advanced: true },
   { id: 'glow', section: 'appearance', label: 'Glow strength', keywords: ['glow','glass','active'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'glow', advanced: true },
   { id: 'frost', section: 'appearance', label: 'Frost blur', keywords: ['frost','blur','glass'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'frost', advanced: true },
-  { id: 'surface', section: 'appearance', label: 'Surface opacity', keywords: ['surface','opacity','transparency'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'surface', advanced: true },
+  { id: 'surface', section: 'appearance', label: 'Opacity', keywords: ['surface','opacity','transparency'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'surface', advanced: true },
   { id: 'backdrop', section: 'appearance', label: 'Backdrop strength', keywords: ['backdrop','glass','strength'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'backdrop', advanced: true },
-  { id: 'flat', section: 'appearance', label: 'Flat surfaces', keywords: ['flat','solid','glass'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'flat', advanced: true },
-  { id: 'density', section: 'appearance', label: 'Reading density', keywords: ['density','compact','roomy','comfortable','rows'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'density' },
+  { id: 'flat', section: 'appearance', label: 'Solid panels', keywords: ['flat','solid','glass'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'flat', advanced: true },
+  { id: 'reply', section: 'appearance', label: 'Reply text serif or sans', keywords: ['reply','text','font','serif','sans','typeface'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'reply' },
+  { id: 'edges', section: 'appearance', label: 'Panel edges', keywords: ['panel','edges','dividers','lines','strong','soft'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'edges' },
+  { id: 'density', section: 'appearance', label: 'Density', keywords: ['density','compact','roomy','comfortable','rows'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'density' },
   { id: 'effects', section: 'appearance', label: 'Background effects', keywords: ['background','effects','pattern','glow','blur','ripple','animation','advanced','aurora','halo','mesh','horizon','stripes','rings','dots','spotlight','none','blobs'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'effects', advanced: true },
   { id: 'match-accent', section: 'appearance', label: 'Match accent', keywords: ['match','accent','glow','colors'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'match-accent', advanced: true },
   { id: 'glow-count', section: 'appearance', label: 'Number of glows', keywords: ['count','glows','add','remove'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'glow-count', advanced: true },
@@ -77,8 +79,8 @@ export const CATALOG_ENTRIES: CatalogEntry[] = [
   { id: 'chips', section: 'appearance', label: 'Agent chip style', keywords: ['chips','bot','agent','style','effort','usage','classic','dashed','tinted','stamp','stack','mono','ticket','keycap','tab','ledger','terminal','tiles'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'chips' },
   { id: 'effort', section: 'appearance', label: 'Show effort', keywords: ['effort','thinking'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'effort' },
   { id: 'usage', section: 'appearance', label: 'Show usage', keywords: ['usage','context','plan'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'usage' },
-  { id: 'saved-skins', section: 'appearance', label: 'Save named skin', keywords: ['save','skin','name','gallery'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'saved-skins', advanced: true },
-  { id: 'skin-transfer', section: 'appearance', label: 'Skin import export JSON', keywords: ['import','export','json','copy','paste','file','share'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'skin-transfer', advanced: true },
+  { id: 'saved-skins', section: 'appearance', label: 'Save named preset', keywords: ['save','skin','preset','name','gallery'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'saved-skins', advanced: true },
+  { id: 'skin-transfer', section: 'appearance', label: 'Preset import export JSON', keywords: ['import','export','json','copy','paste','file','share'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'skin-transfer', advanced: true },
   { id: 'ai-prompt', section: 'appearance', label: 'Copy AI prompt', keywords: ['ai','prompt','generate','skin'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'ai-prompt', advanced: true },
 
   // General
@@ -208,3 +210,17 @@ export function resolveSectionId(input: string): SettingsSectionId | null {
   if (lower==='gateway') return 'gateway';
   return null;
 }
+
+export type StudioTab = "customize" | "material" | "details" | "share";
+
+/** Where each Appearance search result lives on the Studio page. A key with no
+ *  `control` entry is the control's own data-ctl name. */
+export const STUDIO_ANCHORS: Record<string, { tab: StudioTab; control?: string }> = {
+  mode: { tab: "customize" }, skin: { tab: "customize", control: "preset" }, "skin-gallery": { tab: "customize", control: "preset" },
+  accent: { tab: "customize" }, "clay-presets": { tab: "customize", control: "accent" }, corners: { tab: "customize" }, density: { tab: "customize" }, reply: { tab: "customize" },
+  edges: { tab: "material" }, glow: { tab: "material" }, frost: { tab: "material" }, surface: { tab: "material" }, backdrop: { tab: "material" }, flat: { tab: "material" },
+  effects: { tab: "material", control: "pattern" }, "match-accent": { tab: "material", control: "glow-colors" }, "glow-count": { tab: "material" }, "glow-colors": { tab: "material" }, "glow-size": { tab: "material" },
+  "field-enable": { tab: "details", control: "field" }, "field-color": { tab: "details", control: "field" }, "rainbow-speed": { tab: "details", control: "field" }, "ripple-shape": { tab: "details", control: "field" },
+  chips: { tab: "details" }, effort: { tab: "details" }, usage: { tab: "details" },
+  "saved-skins": { tab: "customize", control: "preset" }, "skin-transfer": { tab: "share", control: "transfer" }, "ai-prompt": { tab: "share" },
+};

@@ -429,7 +429,7 @@ function General({ settings, onChange, backend: _backend, updates: _updates, onR
     <div className="settings-card">
       <Row label="Voice & call settings" note="All voice choices live in one place."><button className="link-btn" onClick={()=>onSection('calls')}>Open Calls</button></Row>
       <Row label="Saved work & storage" note="Locations, older records and maintenance."><button className="link-btn" onClick={()=>onSection('data')}>Open Data & storage</button></Row>
-      <Row label="Appearance mode" note="Light, Dark, or follow the system."><button className="link-btn" onClick={()=>onSection('appearance')}>Open Appearance</button></Row>
+      <Row label="Appearance mode" note="Light, Dark or follow the system, plus theme and presets."><button className="link-btn" onClick={()=>onSection('appearance')}>Open Appearance</button></Row>
     </div>
   </>;
 }

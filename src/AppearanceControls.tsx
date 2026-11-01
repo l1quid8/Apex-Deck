@@ -184,10 +184,10 @@ export function MaterialPanel({ ctx, theme, light, onUseLiquid }: { ctx: Ctx; th
           <button type="button" className="studio-btn studio-small" onClick={() => ctx.patch({ flat: false })}>Turn glass on</button>
         </div>
       : <>
-          <RangeRow ctx={ctx} name="Frost" field="blur" min={0} max={40} suffix="px" />
-          <RangeRow ctx={ctx} name="Opacity" field="opacity" min={30} max={100} suffix="%" />
-          <RangeRow ctx={ctx} name="Glow" field="glow" min={0} max={100} suffix="%" />
-          <RangeRow ctx={ctx} name="Backdrop" field="backdrop" min={0} max={100} suffix="%" />
+          <RangeRow ctx={ctx} id="frost" name="Frost" field="blur" min={0} max={40} suffix="px" />
+          <RangeRow ctx={ctx} id="surface" name="Opacity" field="opacity" min={30} max={100} suffix="%" />
+          <RangeRow ctx={ctx} id="glow" name="Glow" field="glow" min={0} max={100} suffix="%" />
+          <RangeRow ctx={ctx} id="backdrop" name="Backdrop" field="backdrop" min={0} max={100} suffix="%" />
           <Ctl ctx={ctx} id="pattern" name="Pattern" keys={["backdropPattern"]}>
             <div className="studio-pattern-strip" role="radiogroup" aria-label="Pattern">
               {BACKDROP_PATTERNS.map((pattern) => {

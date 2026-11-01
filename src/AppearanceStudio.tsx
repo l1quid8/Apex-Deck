@@ -1,7 +1,7 @@
 // The Appearance page: Mode beside Theme → Preset → Customize, a neutral editor
 // and a live preview. Nothing here changes Deck until Apply.
 
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { SaveDialog, StudioStatus, type Naming } from "./AppearanceStatus";
 
@@ -11,17 +11,17 @@ import { AppearancePresetRow } from "./AppearancePresetRow";
 import { AppearancePreview, type PreviewScene } from "./AppearancePreview";
 import { displayName, draftTheme, editedKeys, pickTheme } from "./appearanceDraft";
 import type { AppSettings } from "./settings";
+import { STUDIO_ANCHORS, type StudioTab } from "./settingsCatalog";
 import { builtinFor, effectiveLightFromMode, type AppearanceValues, type ColorMode, type ThemeId } from "./themes";
 import type { AppearanceStudioState } from "./useAppearanceDraft";
 
-export type StudioTab = "customize" | "material" | "details" | "share";
 const TABS: { id: StudioTab; name: string }[] = [
   { id: "customize", name: "Customize" }, { id: "material", name: "Material" }, { id: "details", name: "Chips & effects" }, { id: "share", name: "Share" },
 ];
 const THEMES: [ThemeId, string][] = [["clay", "Clay"], ["classic", "Classic"], ["liquid", "Liquid"]];
 const MODES: [ColorMode, string][] = [["light", "Light"], ["dark", "Dark"], ["system", "System"]];
 
-export function AppearanceStudio({ studio, settings, systemDark }: { studio: AppearanceStudioState; settings: AppSettings; systemDark: boolean; highlightId: string | null }) {
+export function AppearanceStudio({ studio, settings, systemDark, highlightId }: { studio: AppearanceStudioState; settings: AppSettings; systemDark: boolean; highlightId: string | null }) {
   const { draft } = studio;
   const saved = settings.appearance?.saved ?? [];
   const [tab, setTab] = useState<StudioTab>("customize");
@@ -41,6 +41,19 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
     },
   };
   const [naming, setNaming] = useState<Naming | null>(null);
+  // A search result opens its tab and lands on its control. A glass result on
+  // Clay opens Material, which says why it needs Liquid, and stays on Clay.
+  useEffect(() => {
+    const anchor = highlightId ? STUDIO_ANCHORS[highlightId] : undefined;
+    if (!anchor) return;
+    setTab(anchor.tab);
+    const frame = requestAnimationFrame(() => {
+      const control = document.querySelector<HTMLElement>(`.studio [data-ctl="${anchor.control ?? highlightId}"]`);
+      control?.scrollIntoView({ block: "center" });
+      (control?.querySelector<HTMLElement>("input, button, select, textarea") ?? control)?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [highlightId]);
   const onTheme = (next: ThemeId) => studio.edit(pickTheme(draft, next, saved));
   const onTabKey = (event: KeyboardEvent, index: number) => {
     const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
@@ -57,7 +70,7 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
     <div className="studio-workspace">
       <section className="studio-editor" aria-label="Appearance controls" tabIndex={-1}>
         <div className="studio-pinned">
-          <div className="studio-row">
+          <div className="studio-row" data-ctl="mode">
             <span className="studio-row-label" id="studio-h-mode">Mode</span>
             <Segmented name="studio-mode" labelledBy="studio-h-mode" options={MODES} value={draft.colorMode} onChange={(colorMode) => studio.edit({ ...draft, colorMode })} />
           </div>
@@ -66,7 +79,7 @@ export function AppearanceStudio({ studio, settings, systemDark }: { studio: App
             <span className="studio-row-label" id="studio-h-theme">Theme</span>
             <Segmented name="studio-theme" labelledBy="studio-h-theme" options={THEMES} value={theme} onChange={onTheme} />
           </div>
-          <AppearancePresetRow theme={theme} saved={saved} selected={draft.source} light={light} onPick={studio.pick} />
+          <div data-ctl="preset"><AppearancePresetRow theme={theme} saved={saved} selected={draft.source} light={light} onPick={studio.pick} /></div>
           <div className="studio-preset-meta">
             <span className="studio-preset-owner">{draft.source.kind === "saved" ? `${name}: yours, based on ${builtinFor(draft.values).name}` : `${name}: built-in, can't be changed`}</span>
             <span className="studio-preset-actions">
