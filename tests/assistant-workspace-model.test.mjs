@@ -136,3 +136,19 @@ test('an unchanged image avatar is not counted as a change',()=>{
  assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,look:look()}),[]);
  assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,look:{...look(),image:{assetId:'a2',sha256:'y'}}}),['Avatar']);
 });
+
+
+test("the capability note tells the truth about each limit, with no switch of its own", async () => {
+  const { computerSummary } = await import("../src/assistantCapabilities.ts");
+  const claude = { backend: { kind: "agent", tool: "claude_code" } };
+  const api = { backend: { kind: "open_ai_compatible" }, can_read_images: false };
+  const record = { modes: { write: "ask" }, rules: [] };
+  const base = { name: "Alfred", record, enabled: true, available: true };
+  assert.equal(computerSummary({ ...base, profile: claude }).state, "On");
+  assert.equal(computerSummary({ ...base, profile: { backend: { kind: "agent", tool: "gemini" } } }).state, "This model has no computer tools");
+  assert.equal(computerSummary({ ...base, profile: claude, enabled: false }).state, "Off for every agent");
+  assert.equal(computerSummary({ ...base, profile: claude, access: "read" }).state, "On · read only");
+  assert.equal(computerSummary({ ...base, profile: claude, record: { ...record, rules: [{ class: "write", mode: "handOff" }] } }).state, "On · read only");
+  assert.match(computerSummary({ ...base, profile: api }).notes.join(), /can't read screenshots/);
+  assert.deepEqual(computerSummary({ ...base, profile: { ...api, can_read_images: true } }).notes, []);
+});
