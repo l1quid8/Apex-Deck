@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { browserCaller, browserHostFor, chosenTab, coalesce, dialogChoices, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName } from "../src/browserTabs.ts";
+import { browserCaller, browserHostFor, chosenTab, coalesce, dialogChoices, finishClipboard, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName } from "../src/browserTabs.ts";
 
 const key = (key, more = {}) => ({ key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...more });
 const tab = (id, more = {}) => ({ id, url: "", title: "", control: { kind: "free" }, rooms: [], assistant: false, popup: false, dialogOpen: false, fileChooser: false, width: 1280, height: 800, ...more });
@@ -136,4 +136,44 @@ test("a dialog offers what the page asked for", () => {
   assert.deepEqual(dialogChoices({ type: "confirm", message: "m" }), { answer: false, ok: "OK", cancel: "Cancel" });
   assert.deepEqual(dialogChoices({ type: "prompt", message: "m" }), { answer: true, ok: "OK", cancel: "Cancel" });
   assert.deepEqual(dialogChoices({ type: "beforeunload", message: "" }), { answer: false, ok: "Leave", cancel: "Stay" });
+});
+
+test("Cut removes the text only after the clipboard has it", async () => {
+  const order = [];
+  const send = async (events) => { order.push(events[0].token); return { id: "a", committed: true }; };
+  const answer = await finishClipboard({ id: "a", copied: "words", cut: "t1" }, send, async (text) => { order.push(`clip:${text}`); });
+  assert.deepEqual(order, ["clip:words", "t1"]);
+  assert.equal(answer.committed, true);
+});
+
+test("a clipboard that refuses or is missing leaves the source text alone", async () => {
+  const sent = [];
+  const send = async (events) => { sent.push(events); return {}; };
+  await assert.rejects(finishClipboard({ id: "a", copied: "words", cut: "t1" }, send, async () => { throw new Error("denied"); }), /Nothing was cut/);
+  await assert.rejects(finishClipboard({ id: "a", copied: "words", cut: "t1" }, send, undefined), /Nothing was cut/);
+  assert.deepEqual(sent, []);
+});
+
+test("Copy sends nothing back, and says so when the clipboard refuses", async () => {
+  const sent = [];
+  const send = async (events) => { sent.push(events); return {}; };
+  const reply = { id: "a", copied: "words" };
+  assert.equal(await finishClipboard(reply, send, async () => {}), reply);
+  await assert.rejects(finishClipboard(reply, send, async () => { throw new Error("denied"); }), /clipboard/);
+  assert.deepEqual(sent, []);
+});
+
+test("a Cut's commit goes to the tab it was made on, not the one in view", async () => {
+  const seen = [];
+  const queue = inputQueue(async (deliver, events) => { await finishClipboard(await deliver(events), deliver, async () => {}); }, () => {}, () => {});
+  queue.add("host\0a", async (events) => { seen.push(["a", events[0].kind]); return { id: "a", copied: "x", cut: "t" }; }, { kind: "cut" });
+  queue.add("host\0b", async (events) => { seen.push(["b", events[0].kind]); return { id: "b" }; }, { kind: "text", text: "typed" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(seen.filter(([to]) => to === "b"), [["b", "text"]]);
+  assert.deepEqual(seen.filter(([to]) => to === "a"), [["a", "cut"], ["a", "cutCommit"]]);
+});
+
+test("a Cut abandoned by the host says the source text stayed", async () => {
+  const send = async () => { throw new Error("browser_cut_abandoned"); };
+  await assert.rejects(finishClipboard({ id: "a", copied: "words", cut: "t1" }, send, async () => {}), /nothing was cut/);
 });

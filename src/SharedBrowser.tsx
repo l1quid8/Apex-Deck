@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { sameServer } from "./previewAddress";
 import { normalise } from "./RightBrowser";
-import { browserCaller, buttonName, chosenTab, dialogChoices, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName, type BrowserTab, type PageEvent } from "./browserTabs";
+import { browserCaller, buttonName, chosenTab, dialogChoices, finishClipboard, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName, type BrowserTab, type PageEvent } from "./browserTabs";
 import "./shared-browser.css";
 
 const MAC = navigator.platform.toLowerCase().includes("mac");
@@ -123,10 +123,9 @@ export function SharedBrowser({ call, hostName, hostId = hostName, visible, thre
     return () => { clearTimeout(timer); watch.disconnect(); };
   }, [visible, current, human, call]);
 
-  const input = useRef<ReturnType<typeof inputQueue<BrowserTab & { copied?: string }>> | null>(null);
+  const input = useRef<ReturnType<typeof inputQueue<BrowserTab & { copied?: string; cut?: string }>> | null>(null);
   input.current ??= inputQueue(async (deliver, events) => {
-    const answer = await deliver(events);
-    if (answer.copied && events.some((event) => event.kind === "copy" || event.kind === "cut")) await navigator.clipboard?.writeText(answer.copied).catch(() => {});
+    const answer = await finishClipboard(await deliver(events), deliver, navigator.clipboard && ((text) => navigator.clipboard.writeText(text)));
     setTabs((list) => list.map((item) => item.id === answer.id ? answer : item));
   }, () => setProblem(""), fail);
   const send = useCallback((...events: PageEvent[]) => {

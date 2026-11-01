@@ -11,7 +11,7 @@ export type PageEvent =
   | { kind: "key"; action: "down" | "up"; key: string; code: string; vk: number; text: string; modifiers: number; commands: string[] }
   | { kind: "text"; text: string }
   | { kind: "navigate"; url: string }
-  | { kind: "back" } | { kind: "forward" } | { kind: "reload" } | { kind: "copy" } | { kind: "cut" }
+  | { kind: "back" } | { kind: "forward" } | { kind: "reload" } | { kind: "copy" } | { kind: "cut" } | { kind: "cutCommit"; token: string }
   | { kind: "dialog"; accept: boolean; text?: string };
 
 interface Modifiers { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }
@@ -71,6 +71,25 @@ export function inputQueue<R>(deliver: (send: (events: PageEvent[]) => Promise<R
       if (idle) void run(to, line);
     },
   };
+}
+
+/**
+ * Put a Copy or Cut on the clipboard. A Cut's text stays in the page until the clipboard has it,
+ * so a clipboard that's missing or refuses loses nothing, and the commit goes back on `send`,
+ * the tab the Cut came from.
+ */
+export async function finishClipboard<R extends { copied?: string; cut?: string }>(answer: R, send: (events: PageEvent[]) => Promise<R>, write: ((text: string) => Promise<void>) | undefined): Promise<R> {
+  if (!answer.copied) return answer;
+  try {
+    if (!write) throw new Error("no clipboard");
+    await write(answer.copied);
+  } catch {
+    throw new Error(answer.cut ? "Couldn't reach the clipboard. Nothing was cut." : "Couldn't reach the clipboard, so nothing was copied.");
+  }
+  if (!answer.cut) return answer;
+  return send([{ kind: "cutCommit", token: answer.cut }]).catch((cause) => {
+    throw String(cause).includes("browser_cut_abandoned") ? new Error("The selection changed, so nothing was cut. The text is still on your clipboard.") : cause;
+  });
 }
 
 /** What a page's dialog offers the person, as the page asked it. */

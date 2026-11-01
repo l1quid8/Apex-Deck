@@ -36,6 +36,15 @@ pub struct Holder {
     pub label: String,
 }
 
+/// A Cut waiting for the person's clipboard. The object lives in the page, so navigation ends it.
+#[derive(Debug)]
+pub struct PendingCut {
+    pub token: String,
+    pub frame: Option<String>,
+    pub session: Option<String>,
+    pub object: String,
+}
+
 #[derive(Debug)]
 pub struct Info {
     pub target: Option<String>,
@@ -50,11 +59,12 @@ pub struct Info {
     pub height: u32,
     pub scale: f64,
     pub file_chooser: Option<i64>,
+    pub cut: Option<PendingCut>,
 }
 
 impl Info {
     pub fn new(url: String, title: String, scope: Scope) -> Self {
-        Self { target: None, instance: 0, url, title, scope, control: Control::Free, popup: false, width: WIDTH, height: HEIGHT, scale: 1.0, file_chooser: None }
+        Self { target: None, instance: 0, url, title, scope, control: Control::Free, popup: false, width: WIDTH, height: HEIGHT, scale: 1.0, file_chooser: None, cut: None }
     }
 
     /// A lapsed bot no longer holds anything.
@@ -78,6 +88,7 @@ impl Info {
             Control::Bot { .. } => false,
             Control::Free => true,
         };
+        if changed { self.cut = None; }
         self.control = Control::Bot { owner: who.owner.clone(), thread: who.thread.clone(), participant: who.participant.clone(), label: who.label.clone(), until: now + LEASE };
         Ok(changed)
     }

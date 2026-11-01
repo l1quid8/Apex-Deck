@@ -219,6 +219,8 @@ async fn site() -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
+            // Each on its own, because a preconnect that never asks for anything mustn't hold up the rest.
+            tokio::spawn(async move {
             let mut request = [0u8; 2048];
             let n = socket.read(&mut request).await.unwrap_or(0);
             let path = String::from_utf8_lossy(&request[..n]).split_whitespace().nth(1).unwrap_or("/").to_owned();
@@ -245,6 +247,7 @@ async fn site() -> String {
             };
             let reply = format!("HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
             let _ = socket.write_all(reply.as_bytes()).await;
+            });
         }
     });
     address
@@ -490,6 +493,13 @@ async fn copy_and_cut_use_the_frame_with_the_keyboard() {
             service::Event::Key { action: "down".into(), key: "a".into(), code: "KeyA".into(), vk: 65, text: String::new(), modifiers: 4, commands: vec!["selectAll".into()] },
         ];
 
+        // Focus reaches a frame in another process a moment after the click.
+        let select = async || for _ in 0..50 {
+            service::tab_input(&id, click(120.0)).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if service::tab_input(&id, vec![service::Event::Copy]).await.unwrap()["copied"] == "frame words" { break; }
+        };
+
         // A password stays where it is, and the parent's own selection isn't offered instead.
         service::tab_input(&id, click(180.0)).await.unwrap();
         let cut = service::tab_input(&id, vec![service::Event::Cut]).await.unwrap();
@@ -497,14 +507,56 @@ async fn copy_and_cut_use_the_frame_with_the_keyboard() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(title().await, "frame words|frame secret", "{frame}");
 
-        service::tab_input(&id, click(120.0)).await.unwrap();
+        select().await;
         let copy = service::tab_input(&id, vec![service::Event::Copy]).await.unwrap();
         assert_eq!(copy["copied"], "frame words", "{frame}");
         assert_eq!(title().await, "frame words|frame secret", "{frame}: Copy changes nothing");
         let cut = service::tab_input(&id, vec![service::Event::Cut]).await.unwrap();
         assert_eq!(cut["copied"], "frame words", "{frame}");
+        let token = cut["cut"].as_str().unwrap().to_owned();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(title().await, "frame words|frame secret", "{frame}: nothing goes until the clipboard has it");
+        let commit = |token: &str| vec![service::Event::CutCommit { token: token.to_owned() }];
+        assert_eq!(service::tab_input(&id, commit("wrong")).await.unwrap_err(), "browser_cut_abandoned", "{frame}");
+
+        // The person moved the selection while the clipboard was being written.
+        let cut = service::tab_input(&id, vec![service::Event::Cut]).await.unwrap();
+        let moved = cut["cut"].as_str().unwrap().to_owned();
+        service::tab_input(&id, vec![service::Event::Key { action: "down".into(), key: "ArrowLeft".into(), code: "ArrowLeft".into(), vk: 37, text: String::new(), modifiers: 0, commands: vec![] }]).await.unwrap();
+        assert_eq!(service::tab_input(&id, commit(&moved)).await.unwrap_err(), "browser_cut_abandoned", "{frame}");
+        assert_eq!(title().await, "frame words|frame secret", "{frame}: a changed selection keeps its text");
+
+        // A bot that took the tab in between ends the Cut, even after it lets go.
+        select().await;
+        let cut = service::tab_input(&id, vec![service::Event::Cut]).await.unwrap();
+        let taken = cut["cut"].as_str().unwrap().to_owned();
+        tab.info.lock().unwrap().control = Control::Free;
+        let holder = Holder { owner: "bot".into(), thread: "room".into(), participant: "bot".into(), label: "bot".into() };
+        tab.info.lock().unwrap().claim(&holder, Instant::now()).unwrap();
+        assert!(tab.info.lock().unwrap().release("bot"));
+        tab.info.lock().unwrap().control = Control::Human;
+        assert_eq!(service::tab_input(&id, commit(&taken)).await.unwrap_err(), "browser_cut_abandoned", "{frame}");
+        assert_eq!(title().await, "frame words|frame secret", "{frame}: another holder keeps its text");
+
+        let cut = service::tab_input(&id, vec![service::Event::Cut]).await.unwrap();
+        let token = cut["cut"].as_str().unwrap().to_owned();
+        service::tab_input(&id, commit(&token)).await.unwrap();
         for _ in 0..100 { if title().await == "|frame secret" { break; } tokio::time::sleep(Duration::from_millis(50)).await; }
         assert_eq!(title().await, "|frame secret", "{frame}: the frame lost what the clipboard got");
+
+        // Leaving the page takes the pending Cut with it.
+        let again = || vec![service::Event::Navigate { url: format!("{site}/parent?frame={frame}") }];
+        let fresh = async || for _ in 0..100 { if title().await == "frame words|frame secret" { break; } tokio::time::sleep(Duration::from_millis(50)).await; };
+        service::tab_input(&id, again()).await.unwrap();
+        fresh().await;
+        select().await;
+        let cut = service::tab_input(&id, vec![service::Event::Cut]).await.unwrap();
+        let gone = cut["cut"].as_str().unwrap().to_owned();
+        service::tab_input(&id, again()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        fresh().await;
+        assert_eq!(service::tab_input(&id, commit(&gone)).await.unwrap_err(), "browser_cut_abandoned", "{frame}");
+        assert_eq!(title().await, "frame words|frame secret", "{frame}: a reloaded page is left alone");
         service::tab_close(&id).await.unwrap();
     }
     kill_browser().await;

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 
-use tabs::{Control, Info, Saved, SavedTab, Scope, HEIGHT, WIDTH};
+use tabs::{Control, Info, PendingCut, Saved, SavedTab, Scope, HEIGHT, WIDTH};
 
 pub(crate) mod tabs;
 pub(crate) mod work;
@@ -628,7 +628,7 @@ impl Tab {
 
 /// One frame of a tab: `session` when it runs in its own process, `context` when it shares its parent's.
 #[derive(Default)]
-struct Place { session: Option<String>, context: Option<i64> }
+struct Place { session: Option<String>, context: Option<i64>, frame: Option<String> }
 
 struct Page {
     socket: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -724,10 +724,10 @@ impl Page {
             self.call_in(session.as_deref(), "Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true })).await.map_err(|_| UNAVAILABLE)?;
             self.call_in(session.as_deref(), "Runtime.evaluate", json!({ "expression": "0" })).await.map_err(|_| UNAVAILABLE)?;
             place = match self.frames.get(&frame) {
-                Some(own) => Place { session: Some(own.clone()), context: None },
+                Some(own) => Place { session: Some(own.clone()), context: None, frame: Some(frame) },
                 None => {
                     let world = self.call_in(session.as_deref(), "Page.createIsolatedWorld", json!({ "frameId": frame, "worldName": "deck-selection" })).await.map_err(|_| UNAVAILABLE)?;
-                    Place { session, context: Some(world["executionContextId"].as_i64().ok_or(UNAVAILABLE)?) }
+                    Place { session, context: Some(world["executionContextId"].as_i64().ok_or(UNAVAILABLE)?), frame: Some(frame) }
                 }
             };
         }
@@ -744,6 +744,29 @@ impl Page {
     /// The selected text where the keyboard is. It fails rather than answer with some other frame's text.
     async fn selection(&mut self, place: &Place) -> Result<String, String> {
         Ok(self.in_frame(place, SELECTION, true).await?["value"].as_str().ok_or(UNAVAILABLE)?.to_owned())
+    }
+
+    /// Hold on to the selection where the keyboard is, for [`Page::cut_commit`]. Nothing changes yet.
+    async fn cut_prepare(&mut self, place: &Place) -> Result<Option<(String, String)>, String> {
+        let Some(object) = self.in_frame(place, CUT_PREPARE, false).await?["objectId"].as_str().map(str::to_owned) else { return Ok(None) };
+        let text = self.on_object(place.session.as_deref(), &object, "function(){return this.text}").await?;
+        Ok(Some((object, text.as_str().ok_or(UNAVAILABLE)?.to_owned())))
+    }
+
+    /// Delete the text the clipboard now has, if the same frame still has the same selection.
+    async fn cut_commit(&mut self, cut: PendingCut) -> Result<(), String> {
+        let place = self.focused_frame().await.map_err(|_| CUT_ABANDONED)?;
+        if place.frame != cut.frame { return Err(CUT_ABANDONED.into()); }
+        match self.on_object(cut.session.as_deref(), &cut.object, CUT_COMMIT).await {
+            Ok(Value::Bool(true)) => Ok(()),
+            _ => Err(CUT_ABANDONED.into()),
+        }
+    }
+
+    async fn on_object(&mut self, session: Option<&str>, object: &str, function: &str) -> Result<Value, String> {
+        let answer = self.call_in(session, "Runtime.callFunctionOn", json!({ "objectId": object, "functionDeclaration": function, "returnByValue": true })).await.map_err(|_| UNAVAILABLE)?;
+        if answer.get("exceptionDetails").is_some() { return Err(UNAVAILABLE.into()); }
+        Ok(answer["result"]["value"].clone())
     }
 
     async fn settle(&mut self) {
@@ -797,6 +820,7 @@ pub async fn open_text(url: &str) -> Result<(i32, String), String> {
         let mut info = tab.info.lock().unwrap();
         if let Some(refusal) = refused(info.holder(Instant::now())) { return Err(refusal.into()); }
         info.control = Control::Assistant;
+        info.cut = None;
     }
     let result = async {
         let mut page = tab.page().await?;
@@ -913,6 +937,7 @@ async fn set_control(tab: &Arc<Tab>, take: bool) {
         {
             let mut info = tab.info.lock().unwrap();
             if info.control == Control::Human { info.control = Control::Free; }
+            info.cut = None;
         }
         tab.bump();
         drop(tab.ops.lock().await);
@@ -1023,27 +1048,39 @@ pub enum Event {
     Forward,
     Reload,
     Copy,
+    /// Reads the selection and removes nothing; the reply's token comes back in `CutCommit`.
     Cut,
+    /// The clipboard has the text, so the selection can go.
+    CutCommit { token: String },
     Dialog { accept: bool, #[serde(default)] text: Option<String> },
 }
 
 /// Copy and Cut couldn't read the selection, so neither did anything.
 const UNAVAILABLE: &str = "browser_selection_unavailable";
+/// The selection moved, or the page or the tab's holder changed, so a Cut removed nothing.
+const CUT_ABANDONED: &str = "browser_cut_abandoned";
 /// Frames deeper than this aren't followed for Copy and Cut.
 const MAX_FRAME_DEPTH: usize = 8;
 /// The focused frame's element, in this document, if focus went into one.
 const FOCUSED_FRAME: &str = "(()=>{let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;return a&&(a.tagName==='IFRAME'||a.tagName==='FRAME')?a:null})()";
 const SELECTION: &str = "(()=>{let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;if(a&&a.type==='password')return'';if(a&&typeof a.selectionStart==='number')return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection())})()";
+const CUT_PREPARE: &str = "(()=>{let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;if(a&&a.type==='password')return null;if(a&&typeof a.selectionStart==='number'){let s=a.selectionStart,e=a.selectionEnd;return e>s?{a,s,e,v:a.value,text:a.value.slice(s,e)}:null}let p=getSelection();if(!p||!p.rangeCount||p.isCollapsed)return null;return{a,r:p.getRangeAt(0).cloneRange(),text:String(p)}})()";
+/// One step in the page, so nothing can move the selection between the check and the delete.
+/// An editing command, because a key would reach the page's own shortcuts.
+const CUT_COMMIT: &str = "function(){let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;if(a!==this.a)return false;if(this.r){let p=getSelection();if(!p||!p.rangeCount||String(p)!==this.text)return false;let r=p.getRangeAt(0);if(r.compareBoundaryPoints(Range.START_TO_START,this.r)||r.compareBoundaryPoints(Range.END_TO_END,this.r))return false}else if(a.selectionStart!==this.s||a.selectionEnd!==this.e||a.value!==this.v)return false;document.execCommand('delete');return true}";
 
 /// Apply the person's input to one tab. Touching a free tab takes it; pointer movement never
 /// does. A bot's tab has to be taken on purpose first.
 pub async fn tab_input(id: &str, events: Vec<Event>) -> Result<Value, String> {
     let tab = find(id)?;
-    let mut copied = None;
+    let (mut copied, mut cut) = (None, None);
     for event in events {
         let passive = matches!(&event, Event::Mouse { action, .. } if action == "move");
         if passive {
             if !tab.human() { continue; }
+        } else if matches!(&event, Event::CutCommit { .. }) {
+            // Finishing a Cut never takes a tab; whoever holds it now didn't ask for this.
+            if !tab.human() { return Err(CUT_ABANDONED.into()); }
         } else {
             tab.claim_human().await?;
         }
@@ -1085,21 +1122,27 @@ pub async fn tab_input(id: &str, events: Vec<Event>) -> Result<Value, String> {
             Event::Copy => {
                 let place = page.focused_frame().await?;
                 copied = Some(page.selection(&place).await?);
+                cut = None;
             }
             Event::Cut => {
                 let place = page.focused_frame().await?;
-                let text = page.selection(&place).await?;
-                // Nothing is removed that didn't reach the clipboard, which also spares password fields.
-                if text.is_empty() { continue; }
-                // An editing command, because a key would reach the page's own shortcuts.
-                page.in_frame(&place, "document.execCommand('delete')", true).await?;
+                // No selection also means a password field, which stays where it is.
+                let Some((object, text)) = page.cut_prepare(&place).await? else { continue };
+                let token = work::snapshot_id();
+                tab.info.lock().unwrap().cut = Some(PendingCut { token: token.clone(), frame: place.frame, session: place.session, object });
                 copied = Some(text);
+                cut = Some(token);
+            }
+            Event::CutCommit { token } => {
+                let pending = tab.info.lock().unwrap().cut.take().filter(|pending| pending.token == token);
+                page.cut_commit(pending.ok_or(CUT_ABANDONED)?).await?;
             }
             Event::Dialog { .. } => unreachable!("answered above"),
         }
     }
     let mut reply = tab.summary();
     if let Some(text) = copied { reply["copied"] = json!(text); }
+    if let Some(token) = cut { reply["cut"] = json!(token); }
     Ok(reply)
 }
 
