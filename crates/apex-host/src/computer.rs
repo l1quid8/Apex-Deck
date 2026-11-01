@@ -698,6 +698,104 @@ impl Host {
         self.computer.set_enabled(enabled)?;
         Ok(self.computer_status().await)
     }
+    pub async fn computer_assistant_grants(&self) -> Value {
+        let data_root = self.data_dir();
+        let grants = crate::assistant_computer::list_grants(&data_root);
+        json!({ "grants": grants })
+    }
+    pub async fn computer_assistant_set_grant(&self, assistant_id: String, app: String, enabled: bool) -> Result<Value, String> {
+        let data_root = self.data_dir();
+        // Validate assistant exists and not archived
+        let doc = self.store().personal()?.unwrap_or_default();
+        let assistant = doc.assistants.iter().find(|a| a.id == assistant_id).ok_or("Assistant not found.")?;
+        if assistant.archived_at.is_some() {
+            return Err("Assistant is archived.".into());
+        }
+        crate::assistant_computer::set_grant(&data_root, &assistant_id, &app, enabled)?;
+        if !enabled {
+            // Revoke any active computer turn for this assistant scope
+            let thread = format!("assistant:{}", assistant_id);
+            self.computer.revoke(Some(&thread), None);
+            self.room_stop(thread, None);
+        }
+        Ok(self.computer_assistant_grants().await)
+    }
+    pub fn personal_computer_supported(&self, assistant_id: &str) -> bool {
+        // Global enable + per-conversation grant + supported backend
+        if !self.computer.enabled.load(Ordering::SeqCst) || self.computer.stopped.load(Ordering::SeqCst) {
+            return false;
+        }
+        let data_root = self.data_dir();
+        if !crate::assistant_computer::list_grants(&data_root).contains_key(assistant_id) {
+            return false;
+        }
+        let doc = self.store().personal().ok().flatten().unwrap_or_default();
+        let assistant = match doc.assistants.iter().find(|a| a.id == assistant_id) {
+            Some(a) => a,
+            None => return false,
+        };
+        let Some(profile) = &assistant.profile else { return false; };
+        matches!(profile.backend, apex_core::Backend::OpenAiCompatible { .. } | apex_core::Backend::Agent { tool: apex_core::AgentTool::ClaudeCode | apex_core::AgentTool::Codex | apex_core::AgentTool::Muse, .. })
+    }
+    pub async fn personal_computer_turn(&self, assistant_id: String, participant_id: String) -> Option<apex_core::ComputerTurn> {
+        if !self.personal_computer_supported(&assistant_id) { return None; }
+        let thread = format!("assistant:{}", assistant_id);
+        if !self.computer.ready(&thread, self.computer.generation(&thread)) { return None; }
+        #[cfg(not(unix))]
+        { return None; }
+        #[cfg(unix)]
+        {
+            let generation = self.computer.generation(&thread);
+            let path = verified_bundle().await.ok()?;
+            let mut stream = match connect().await {
+                Ok(s) => s,
+                Err(_) => {
+                    launch(&path, false).await.ok()?;
+                    let started = std::time::Instant::now();
+                    loop {
+                        if let Ok(stream) = connect().await { break stream; }
+                        if started.elapsed() > Duration::from_secs(8) { return None; }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            };
+            if !self.computer.ready(&thread, generation) { return None; }
+            use ring::rand::{SecureRandom, SystemRandom};
+            let mut random = [0u8; 32];
+            SystemRandom::new().fill(&mut random).ok()?;
+            let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
+            let registered = rpc(&mut stream, "unified/register-turn", json!({
+                "threadId": thread,
+                "participantId": participant_id,
+                "turnToken": token,
+                "effectiveAccess": "full",
+                "enabled": true,
+                "grantScope": self.computer.grant_scope(generation)
+            })).await.ok()?;
+            if registered["registered"] != true || !self.computer.ready(&thread, generation) { return None; }
+            let shutdown = duplicate_control(stream.get_ref()).ok()?;
+            let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).ok()?).ok()?;
+            {
+                if self.computer.generations.lock().unwrap().get(&thread).copied().unwrap_or(0) != generation
+                    || !self.computer.enabled.load(Ordering::SeqCst)
+                    || self.computer.stopped.load(Ordering::SeqCst) {
+                    return None;
+                }
+                self.computer.active.lock().unwrap().insert(
+                    token.clone(),
+                    Active { thread: thread.clone(), participant: participant_id.clone(), token: token.clone(), socket: shutdown },
+                );
+            }
+            // We don't hold BrowserLink for assistant here; browser calls will use existing assistant-browser profile via separate path.
+            // Return turn for adapter to include apex-computer server.
+            Some(apex_core::ComputerTurn {
+                relay: path.join("Contents/Helpers/SpikeMCP"),
+                thread_id: thread,
+                participant_id,
+                token,
+            })
+        }
+    }
     pub async fn computer_stop(&self) -> Value {
         self.computer.stop();
         for thread in self.computer_room_ids() {

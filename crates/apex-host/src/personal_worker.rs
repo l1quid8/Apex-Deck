@@ -760,8 +760,16 @@ impl Host {
         }
 
         let bytes = system.len();
-        let mut request = read_only_request(system);
+        let mut request = read_only_request(system.clone());
         request.turns.push(apex_core::ViewTurn { role: apex_core::Role::User, content: text.clone() });
+        // UCU: global enable + per-conversation grant with assistant:<id> scope.
+        // Preserve foreground/background boundaries, never steal focus, no foreground fallback.
+        // If grant exists and global enabled, attempt to create ComputerTurn for this assistant.
+        if self.personal_computer_supported(&snapshot.id) {
+            if let Some(turn) = self.personal_computer_turn(snapshot.id.clone(), snapshot.id.clone()).await {
+                request.computer = Some(turn);
+            }
+        }
         // The composer saves attachments using the assistant's stable id as its room key.
         let attachment_roots = vec![self.attachment_dir(&snapshot.id)?.canonicalize()
             .map_err(|error| format!("Could not resolve assistant attachments: {error}"))?];
@@ -1089,15 +1097,47 @@ impl Host {
                         if !validated.workers.contains(r) { return Err(format!("Worker {r} is not in this chat.")); }
                     }
                 }
-                // Idempotency check via existing clientMessages
+                // Idempotency check via existing clientMessages – durable authority
                 if let Ok(Some(saved)) = self.store().room(&thread_id) {
                     if saved.snapshot.client_messages.contains_key(&request_id) {
                         return Ok(ToolRun { exit_code: 0, output: format!("Instruction already delivered to {} (idempotent).", validated.title) });
                     }
                 }
-                // For this slice, we do not mutate the room transcript directly; we return evidence of validated send.
-                // Actual durable send will be done via host room APIs once rooms are loaded; returning success allows follow-through.
-                Ok(ToolRun { exit_code: 0, output: format!("Validated send to {} ({}): {} [request_id={}]", validated.title, validated.thread_id, text.chars().take(300).collect::<String>(), request_id) })
+                // Real durable send via store: append to transcript + clientMessages, idempotent by request_id
+                // This reuses existing durable room authority, not a second queue.
+                {
+                    let saved_opt = self.store().room(&thread_id)?;
+                    if let Some(mut saved) = saved_opt {
+                        let seq = saved.snapshot.transcript.len();
+                        let msg = apex_core::Message {
+                            origin_seq: None,
+                            origin: None,
+                            client_message_id: Some(request_id.clone()),
+                            reply_to_client_message_id: None,
+                            late_reply_from: None,
+                            servers: vec![],
+                            seq,
+                            speaker: apex_core::Speaker::Human,
+                            text: text.clone(),
+                            at: Some(crate::personal::now()),
+                        };
+                        saved.snapshot.transcript.push(msg.clone());
+                        saved.snapshot.client_messages.insert(
+                            request_id.clone(),
+                            apex_core::ClientMessageRecord {
+                                state: apex_core::ClientMessageState::Done,
+                                human_seq: Some(seq),
+                                reply_seqs: vec![],
+                                request: None,
+                            },
+                        );
+                        self.store().save_room(&thread_id, &saved)?;
+                        self.room_event(&thread_id, apex_core::RoomEvent::MessageAdded { message: msg });
+                    } else {
+                        return Err("Room disappeared during send.".into());
+                    }
+                }
+                Ok(ToolRun { exit_code: 0, output: format!("Sent instruction to {} ({}): {} [request_id={}]", validated.title, validated.thread_id, text.chars().take(300).collect::<String>(), request_id) })
             },
             "personal.room_stop" => {
                 let keyword = if op.argv.len() >= 2 { op.argv[1].to_lowercase() } else { String::new() };
