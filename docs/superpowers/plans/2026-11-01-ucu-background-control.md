@@ -292,3 +292,7 @@ The answer for websites while the human keeps working is the browser Deck alread
 - Shortcuts such as Cmd-T don't exist here. `navigate` replaces the address bar.
 - Sites that detect headless browsers may behave differently.
 - A bot allowed here can act on every site signed in through Take over, so the permission popup says so.
+
+### Partly visible check on real Chrome
+
+One throwaway Chrome window, 275 points tall, with Deck in front. Reading, clicks, a reload, screenshots and typing into the address bar all worked, and the reading said `partly_visible`. Return in the address bar reported delivery and never navigated in 8 of 8 tries, including a real site. So a person's own browser can't be navigated from the background even when part of it shows, and Deck's own browser is the route for that.

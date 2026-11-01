@@ -241,6 +241,37 @@ final class BrowserLiveTests: XCTestCase {
     print("LIVE fronts", fronts, "stacks", stacks, "start", front, stack)
     XCTAssertFalse(fronts.contains(target), "the target never took the front")
   }
+  /// A real scroll through the real tap: it counts when its owner is the target and
+  /// not otherwise. APEX_LIVE_NUDGE posts one zero-distance scroll at the pointer.
+  func testRealScrollCountsOnlyWhereItLands() throws {
+    guard let nudge = ProcessInfo.processInfo.environment["APEX_LIVE_NUDGE"] else { throw XCTSkip("live only") }
+    let server = try liveServer("com.apple.finder")
+    server.activity.start()
+    defer { if let tap = server.activity.tap { CGEvent.tapEnable(tap: tap, enable: false) } }
+    XCTAssertTrue(server.latch.state().2, "tap must be running")
+    func scroll() throws -> UInt64 {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+      let before = server.latch.state().0
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: nudge); process.arguments = ["scroll"]
+      try process.run(); process.waitUntilExit()
+      RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+      return server.latch.state().0 &- before
+    }
+    let at = CGEvent(source: nil)?.location ?? .zero
+    let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    let under = rows.first { row in
+      guard let bounds = row[kCGWindowBounds as String] as? NSDictionary, let frame = CGRect(dictionaryRepresentation: bounds) else { return false }
+      return (row[kCGWindowLayer as String] as? Int) == 0 && frame.contains(at)
+    }?[kCGWindowOwnerPID as String] as? Int32
+    server.latch.setTarget(try XCTUnwrap(under))
+    let reached = try scroll()
+    server.latch.setTarget(-5)
+    let elsewhere = try scroll()
+    print("LIVE scroll over target moved the count by", reached, "; over another app by", elsewhere)
+    XCTAssertGreaterThan(reached, 0, "a scroll landing on the target counts")
+    XCTAssertEqual(elsewhere, 0, "a scroll landing in another app leaves the bot alone")
+  }
   func testBrowserTaskThroughHelperCode() throws {
     guard let bundle = ProcessInfo.processInfo.environment["APEX_LIVE_BROWSER"] else { throw XCTSkip("live only") }
     let ax = Accessibility(); ax.targetBundle = bundle

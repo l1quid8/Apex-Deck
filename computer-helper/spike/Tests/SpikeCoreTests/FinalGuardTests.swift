@@ -71,9 +71,9 @@ final class FinalGuardTests: XCTestCase {
     let latch = Latch(); latch.start(); latch.setTap(true); latch.setTarget(7)
     let epoch = latch.state().0
     latch.beginAction("x")
-    latch.human(motion: false, frontmost: 9, under: 9)
+    latch.human(motion: false, frontmost: 9, under: [9])
     XCTAssertNoThrow(try latch.check("x", epoch: epoch))
-    latch.human(motion: false, frontmost: 9, under: 7)
+    latch.human(motion: false, frontmost: 9, under: [7])
     XCTAssertThrowsError(try latch.check("x", epoch: epoch)) { XCTAssertEqual(($0 as? Refusal)?.code, "human_input_during_action") }
   }
   func testUnknownFrontmostOrNoTargetCountsAsInput() {

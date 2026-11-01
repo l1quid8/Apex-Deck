@@ -23,11 +23,15 @@ public enum HumanEvent {
     default: return false
     }
   }
-  /// `windows` run front to back. Only an ordinary window names an owner: a panel or overlay
-  /// above it may or may not pass input down, and a wrong answer would lose the person's priority.
-  public static func owner(at point: CGPoint, windows: [PointerWindow], own: Int32) -> Int32? {
-    let hit = windows.first { $0.pid != own && $0.alpha > 0 && $0.frame.contains(point) }
-    return hit?.layer == 0 ? hit?.pid : nil
+  /// `windows` run front to back. A panel above may or may not pass input down (the Dock keeps an
+  /// invisible one over the whole screen), so every app down to the top ordinary window counts.
+  public static func owners(at point: CGPoint, windows: [PointerWindow], own: Int32) -> Set<Int32> {
+    var found = Set<Int32>()
+    for window in windows where window.pid != own && window.alpha > 0 && window.frame.contains(point) {
+      found.insert(window.pid)
+      if window.layer == 0 { break }
+    }
+    return found
   }
 }
 public final class Latch {
@@ -99,12 +103,12 @@ public final class Latch {
   }
   /// Real input from the session tap. Input in another app can't reach the target, so it is
   /// ignored. An unknown front app counts, because Tyler's priority must not depend on a lookup.
-  /// `under` is the app under pointer input, which reaches a window without activating it, so a
-  /// `pointer` event whose owner is unknown counts too.
-  public func human(motion isMotion: Bool, frontmost: Int32?, under: Int32? = nil, pointer: Bool = false) {
+  /// `under` is the apps under pointer input, which reaches a window without activating it, so a
+  /// `pointer` event with no known owner counts too.
+  public func human(motion isMotion: Bool, frontmost: Int32?, under: Set<Int32> = [], pointer: Bool = false) {
     lock.lock()
-    let elsewhere = target != nil && frontmost != nil && frontmost != target && under != target
-      && !(pointer && under == nil)
+    let reached = target.map(under.contains) ?? false
+    let elsewhere = target != nil && frontmost != nil && frontmost != target && !reached && !(pointer && under.isEmpty)
     lock.unlock()
     guard !elsewhere else { return }
     if isMotion { motion() } else { event() }
