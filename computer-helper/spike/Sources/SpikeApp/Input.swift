@@ -219,13 +219,13 @@ extension Input {
   private func pointGuard(_ point: CGPoint, scope: ScreenshotScope, s: Snapshot, id: String, deadline: Double) throws {
     _ = try guardState(s, id, deadline)
     guard s.screenshotSafe, let window = s.window, rect(window) == scope.frame,
-      (attr(window, "AXWindowNumber") as? NSNumber)?.uint32Value == scope.windowID else { throw Refusal("screenshot_window_changed") }
+      windowNumber(window) == scope.windowID else { throw Refusal("screenshot_window_changed") }
     var target: AXUIElement?
     guard AXUIElementCopyElementAtPosition(ax.system, Float(point.x), Float(point.y), &target) == .success,
       let target = target, pid(target) == s.app.processIdentifier, safe(target) else { throw Refusal("point_foreign_secure_or_unknown") }
     var cursor: AXUIElement? = target
     var matched = false
-    for _ in 0..<20 {
+    for _ in 0..<Policy.maxAncestry {
       guard let current = cursor else { break }
       if same(current, window) { matched = true; break }
       cursor = element(current, kAXParentAttribute)

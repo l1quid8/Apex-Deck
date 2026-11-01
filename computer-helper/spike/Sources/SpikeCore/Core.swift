@@ -29,9 +29,11 @@ public enum Policy {
     let role = role.lowercased()
     return role.isEmpty || role.contains("secure") || role.contains("password") || (subrole.lowercased().contains("secure") || subrole.lowercased().contains("password"))
   }
+  /// Web pages nest far deeper than native windows. An unfinished walk stays unsafe.
+  public static let maxAncestry = 64
   public static func safeAncestry<E>(_ start: E, read: (E) -> (String, String, E?)?) -> Bool {
     var cursor: E? = start
-    for _ in 0..<20 {
+    for _ in 0..<maxAncestry {
       guard let e = cursor else { return false }
       guard let node = read(e) else { return false }
       if protectedRole(node.0, node.1) { return false }

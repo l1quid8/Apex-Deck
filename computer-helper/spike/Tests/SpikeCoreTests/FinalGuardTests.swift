@@ -67,6 +67,13 @@ final class FinalGuardTests: XCTestCase {
     try latch.dispatch("x", epoch: latch.state().0, validate: {}, post: { sent += 1 })
     XCTAssertEqual(sent, 1)
   }
+  func testDeepWebAncestryIsSafeButUnfinishedWalkIsNot() {
+    let deep = 40
+    XCTAssertTrue(Policy.safeAncestry(0) { n in
+      n == deep ? ("AXApplication", "", nil) : ("AXGroup", "", n + 1)
+    })
+    XCTAssertFalse(Policy.safeAncestry(0) { n in ("AXGroup", "", n + 1) })
+  }
   func testSecureRoleWithoutSubroleIsRefused() {
     XCTAssertFalse(Policy.safeAncestry(0) { n in
       n == 0 ? ("AXSecureTextField", "", 1) : ("AXApplication", "", nil)

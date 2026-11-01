@@ -10,6 +10,7 @@ struct EngineSnapshot {
   let focusedRef: String?
   let pid: Int32
   let windowID: String
+  let complete: Bool
 }
 
 /// A missing optional subrole is safe only when AX explicitly reports absence.
@@ -60,7 +61,8 @@ private final class EngineCheck {
         let target = Unmanaged<AXUIElement>.fromOpaque(pointer).takeUnretainedValue()
         if let expectedTarget = expectedTarget {
           let system = AXUIElementCreateSystemWide()
-          guard same(target, expectedTarget),
+          // Keyboard delivery first raises the field's own window. Focus must still be the field.
+          guard same(target, expectedTarget) || same(target, element(expectedTarget, kAXWindowAttribute)),
             let focused = element(system, kAXFocusedUIElementAttribute),
             SpikeApp.pid(focused) == pid, same(focused, expectedTarget)
           else { throw Refusal("engine_typing_target_changed") }
@@ -114,7 +116,8 @@ final class NativeEngine {
       text.utf8.count <= 24_000
     else { throw Refusal("engine_invalid_response") }
     let snapshot = EngineSnapshot(id: id, text: text, refs: refs,
-      focusedRef: value["focused_ref"] as? String, pid: pid, windowID: windowID)
+      focusedRef: value["focused_ref"] as? String, pid: pid, windowID: windowID,
+      complete: value["complete"] as? Bool ?? false)
     snapshots[id] = snapshot
     return snapshot
   }

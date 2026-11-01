@@ -46,22 +46,21 @@ final class EngineSession {
     current = nil
     let epoch = native.epoch
     try latch.check(id, epoch: epoch)
-    guard let window = native.window, let raw = attr(window, "AXWindowNumber") as? NSNumber,
-      raw.int64Value > 0, raw.uint64Value <= UInt64(UInt32.max)
+    guard let window = native.window, let number = windowNumber(window)
     else { throw Refusal("engine_exact_window_number_unavailable") }
-    let expectedWindow = "w-\(raw.uint32Value)"
+    let expectedWindow = "w-\(number)"
     _ = try ax.validate(native, epoch: epoch)
     let captured = try engine.capture(pid: native.app.processIdentifier, windowID: expectedWindow) {
       try self.checkContinuation(native, id: id, latch: latch)
     }
     try latch.check(id, epoch: epoch)
     guard captured.pid == native.app.processIdentifier, captured.windowID == expectedWindow,
-      let final = native.window.flatMap({ attr($0, "AXWindowNumber") as? NSNumber }),
-      final.uint32Value == raw.uint32Value
+      windowNumber(window) == number
     else { throw Refusal("engine_window_identity_changed") }
     _ = try ax.validate(native, epoch: epoch)
     current = captured
     var output = captured.text
+    if !captured.complete { output += "reading: partial; scroll or read a smaller area for more\n" }
     if let action = lastAction {
       output += "last_action: " + Self.actionSummary(action) + "\n"
     }

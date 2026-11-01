@@ -25,6 +25,17 @@ final class EngineTests: XCTestCase {
 }
 
 final class EngineSessionTests: XCTestCase {
+  func testPartialReadingKeepsPixelsOnlyWhenTheWholeWindowWasScanned() {
+    var tree = Tree(targetPID: 1)
+    tree.truncated = true
+    XCTAssertTrue(tree.pixelsSafe)
+    tree.unscanned = true
+    XCTAssertFalse(tree.pixelsSafe)
+    tree = Tree(targetPID: 1); tree.foreign = true
+    XCTAssertFalse(tree.pixelsSafe)
+    tree = Tree(targetPID: 1); tree.screenshotSafe = false
+    XCTAssertFalse(tree.pixelsSafe)
+  }
   func testNativeContinuationKeepsAppIdentityWithoutPinningPreActionFocus() {
     let launch = Date(timeIntervalSince1970: 1)
     XCTAssertTrue(EngineSession.continuationMatches(pid: 10, launch: launch,

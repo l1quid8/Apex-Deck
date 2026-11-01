@@ -38,6 +38,16 @@ func safe(_ e: AXUIElement) -> Bool {
     return (role, subrole, parent)
   }
 }
+/// `AXWindowNumber` is not exposed on current macOS. This is the same private call
+/// the engine uses to name windows, so both sides agree on the CoreGraphics number.
+private typealias WindowBridge = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+private let windowBridge: WindowBridge? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXUIElementGetWindow")
+  .map { unsafeBitCast($0, to: WindowBridge.self) }
+func windowNumber(_ e: AXUIElement) -> CGWindowID? {
+  var number: CGWindowID = 0
+  guard let windowBridge = windowBridge, windowBridge(e, &number) == .success, number > 0 else { return nil }
+  return number
+}
 func selectedRange(_ e: AXUIElement) -> CFRange? {
   guard let v = attr(e, kAXSelectedTextRangeAttribute), CFGetTypeID(v) == AXValueGetTypeID() else {
     return nil
@@ -92,15 +102,21 @@ struct Tree {
   var lines = [String]()
   var visited = Set<AXUIElement>()
   var roles = [String: Int]()
+  /// The control list is partial. That alone says nothing about what pixels show.
   var truncated = false
+  /// Part of the window was never scanned, so a protected control cannot be ruled out.
+  var unscanned = false
+  var foreign = false
   var actionCount = 0
   var screenshotSafe = true
   var deadline = ProcessInfo.processInfo.systemUptime + 2
+  var pixelsSafe: Bool { screenshotSafe && !unscanned && !foreign }
   mutating func walk(_ e: AXUIElement, _ depth: Int = 0) {
-    guard depth <= 20, visited.count < 2000, controls.count < 500,
+    guard depth <= Policy.maxAncestry, visited.count < 12_000,
       ProcessInfo.processInfo.systemUptime < deadline
     else {
       truncated = true
+      unscanned = true
       return
     }
     guard visited.insert(e).inserted else { return }
@@ -108,7 +124,7 @@ struct Tree {
     let role = string(e, kAXRoleAttribute) ?? ""
     roles[role, default: 0] += 1
     if pid(e) != targetPID {
-      screenshotSafe = false
+      foreign = true
       lines.append("foreign-owned surface pid=\(pid(e)); controls omitted")
       return
     }
@@ -121,33 +137,36 @@ struct Tree {
       lines.append("protected control omitted")
       return
     }
-    var actions: CFArray?
-    AXUIElementCopyActionNames(e, &actions)
-    let press = (actions as? [String] ?? []).contains(kAXPressAction)
-    if press { actionCount += 1 }
-    let label = (string(e, kAXTitleAttribute) ?? string(e, kAXDescriptionAttribute) ?? "").prefix(
-      200)
-    let value = (string(e, kAXValueAttribute) ?? "").prefix(200)
-    let index = controls.count + 1
-    controls.append(Control(e: e, fingerprint: fingerprint(e), press: press))
-    let enabled = attr(e, kAXEnabledAttribute) as? Bool ?? false
-    let line =
-      "\(index). \(role) \(enabled ? "enabled":"disabled") \(press ? "press":"") \(label) \(value)"
-    if lines.joined(separator: "\n").utf8.count + line.utf8.count < 24000 {
-      lines.append(line)
+    // Past the listing limit, keep scanning roles only so pixels can still be judged.
+    if controls.count < 500, !truncated {
+      var actions: CFArray?
+      AXUIElementCopyActionNames(e, &actions)
+      let press = (actions as? [String] ?? []).contains(kAXPressAction)
+      if press { actionCount += 1 }
+      let label = (string(e, kAXTitleAttribute) ?? string(e, kAXDescriptionAttribute) ?? "").prefix(
+        200)
+      let value = (string(e, kAXValueAttribute) ?? "").prefix(200)
+      let index = controls.count + 1
+      let enabled = attr(e, kAXEnabledAttribute) as? Bool ?? false
+      let line =
+        "\(index). \(role) \(enabled ? "enabled":"disabled") \(press ? "press":"") \(label) \(value)"
+      if lines.joined(separator: "\n").utf8.count + line.utf8.count < 24000 {
+        controls.append(Control(e: e, fingerprint: fingerprint(e), press: press))
+        lines.append(line)
+      } else {
+        truncated = true
+      }
     } else {
       truncated = true
-      return
     }
     var count = 0
     let childrenResult = AXUIElementGetAttributeValueCount(e, kAXChildrenAttribute as CFString, &count)
     if childrenResult == .success {
       var offset = 0
       while offset < count {
-        guard ProcessInfo.processInfo.systemUptime < deadline, visited.count < 2000,
-          controls.count < 500
-        else {
+        guard ProcessInfo.processInfo.systemUptime < deadline, visited.count < 12_000 else {
           truncated = true
+          unscanned = true
           break
         }
         var children: CFArray?
@@ -157,6 +176,7 @@ struct Tree {
             e, kAXChildrenAttribute as CFString, offset, size, &children) == .success
         else {
           truncated = true
+          unscanned = true
           break
         }
         guard let listed = children as? [AXUIElement], listed.count == size else {
@@ -201,8 +221,13 @@ final class Accessibility {
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
     var tree = Tree(targetPID: app.processIdentifier)
     if let window = window { tree.walk(window) }
+    // A foreign surface can host another app's sheet, so reading stays refused.
+    // Partial, unreadable or protected content only limits pixels, decided here.
+    guard !tree.foreign else { throw Refusal("protected_or_unverified_surface") }
+    let pixelsSafe = window != nil && tree.pixelsSafe
     if let menu = element(root, kAXMenuBarAttribute) { tree.walk(menu) }
-    guard tree.screenshotSafe, !tree.truncated else { throw Refusal("protected_or_unverified_surface") }
+    // The focus checks below get their own time if a large tree used up the walk's.
+    Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 0.5
     let id = UUID().uuidString
     let focusSafe = focus.map { safe($0) && pid($0) == app.processIdentifier } ?? false
     let value = focusSafe ? string(focus!, kAXValueAttribute) : nil
@@ -214,7 +239,7 @@ final class Accessibility {
       id: id, app: app, launch: app.launchDate!, window: window,
       document: window.flatMap { string($0, kAXDocumentAttribute) }, focus: focus, value: value,
       range: range, epoch: epoch, focusFingerprint: focusSafe ? fingerprint(focus!) : nil,
-      controls: tree.controls, output: output, screenshotSafe: tree.screenshotSafe && !tree.truncated)
+      controls: tree.controls, output: output, screenshotSafe: pixelsSafe)
   }
   func validate(_ s: Snapshot, epoch: UInt64) throws -> AXUIElement {
     try verifyIdentity?(s.app)
@@ -244,7 +269,7 @@ final class Accessibility {
       let hit = hit, pid(hit) == targetPID, safe(hit)
     else { throw Refusal("hit_test_foreign_or_unknown") }
     var current: AXUIElement? = hit
-    for _ in 0..<20 {
+    for _ in 0..<Policy.maxAncestry {
       guard let e = current else { break }
       if same(e, target) { return }
       current = element(e, kAXParentAttribute)
