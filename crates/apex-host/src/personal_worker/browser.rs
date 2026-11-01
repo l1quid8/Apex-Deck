@@ -18,6 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 pub(crate) mod work;
 
 static PROFILE: OnceLock<PathBuf> = OnceLock::new();
+static CLOSING: AtomicBool = AtomicBool::new(false);
 static STATE: tokio::sync::Mutex<Option<Running>> = tokio::sync::Mutex::const_new(None);
 /// The human is driving: the assistant doesn't touch the browser.
 static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
@@ -112,6 +113,7 @@ pub fn available() -> bool {
 }
 
 async fn ensure() -> Result<u16, String> {
+    if CLOSING.load(Ordering::SeqCst) { return Err("The assistant browser is shutting down.".into()); }
     let mut state = STATE.lock().await;
     if let Some(running) = state.as_mut() {
         if matches!(running.child.try_wait(), Ok(None)) {
@@ -133,9 +135,13 @@ async fn ensure() -> Result<u16, String> {
     #[cfg(target_os = "linux")]
     command.arg("--no-sandbox");
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
-    let child = command.spawn().map_err(|e| format!("Could not start the browser: {e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("Could not start the browser: {e}"))?;
     let mut port = None;
     for _ in 0..100 {
+        if CLOSING.load(Ordering::SeqCst) {
+            let _ = child.kill().await;
+            return Err("The assistant browser is shutting down.".into());
+        }
         if let Some(found) = std::fs::read_to_string(&marker).ok().and_then(|t| t.lines().next()?.trim().parse::<u16>().ok()) {
             port = Some(found);
             break;
@@ -440,6 +446,36 @@ pub async fn input(input: Input) -> Result<View, String> {
     drop(page);
     drop(ops);
     view().await
+}
+
+/// Close only this host's owned browser before service exit; keep its profile on disk.
+pub(crate) async fn shutdown(data_dir: &std::path::Path) {
+    if PROFILE.get() != Some(&data_dir.join("assistant-browser")) { return; }
+    CLOSING.store(true, Ordering::SeqCst);
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut held) = DIALOG_WATCH.try_lock() {
+        if let Some(watch) = held.take() { watch.task.abort(); }
+    }
+    let running = STATE.lock().await.take();
+    if let Some(mut running) = running {
+        let close = async {
+            let version: Value = reqwest::Client::new().get(format!("http://127.0.0.1:{}/json/version", running.port))
+                .timeout(Duration::from_secs(1)).send().await.map_err(|e|e.to_string())?.json().await.map_err(|e|e.to_string())?;
+            let url = version["webSocketDebuggerUrl"].as_str().ok_or("Browser control unavailable")?;
+            let (mut socket, _) = tokio_tungstenite::connect_async(url).await.map_err(|e|e.to_string())?;
+            socket.send(Message::Text(json!({"id":1,"method":"Browser.close","params":{}}).to_string().into())).await.map_err(|e|e.to_string())
+        };
+        // An exited child's former port may now belong to an unrelated process.
+        if matches!(running.child.try_wait(), Ok(None)) {
+            let _ = tokio::time::timeout(Duration::from_secs(1), close).await;
+        }
+        if !matches!(tokio::time::timeout(Duration::from_secs(2), running.child.wait()).await, Ok(Ok(_))) {
+            let _ = running.child.kill().await;
+        }
+    }
+    if let Ok(mut page) = PAGE.try_lock() { *page = None; }
+    *PINNED.lock().unwrap() = None;
+    DIALOG_OPEN.store(false, Ordering::SeqCst);
 }
 
 /// The human takes the browser (`true`) or hands it back (`false`).

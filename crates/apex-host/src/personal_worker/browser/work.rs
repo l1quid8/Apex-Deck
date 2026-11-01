@@ -42,7 +42,7 @@ pub(crate) struct Call<'a> {
 
 impl Call<'_> {
     fn open(&self) -> Result<(), String> {
-        if !(self.live)() {
+        if !(self.live)() || super::CLOSING.load(Ordering::SeqCst) {
             return Err("turn_unregistered_or_ended".into());
         }
         if TAKEN_OVER.load(Ordering::SeqCst) {
@@ -495,6 +495,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
 fn reset() {
+    super::CLOSING.store(false, Ordering::SeqCst);
     *WRITER.lock().unwrap() = None;
     READINGS.lock().unwrap().clear();
     TAKEN_OVER.store(false, Ordering::SeqCst);
@@ -683,9 +684,10 @@ mod tests {
         let stopped = || false;
         assert_eq!(call(&turn("bot", &stopped), "read_screen", &json!({})).await.unwrap_err(), "turn_unregistered_or_ended");
         release("other");
-        if let Some(mut running) = super::super::STATE.lock().await.take() {
-            let _ = running.child.kill().await;
-        }
+        let host = crate::Host::new(crate::HostPaths {data:profile.clone(),downloads:None}, tokio::runtime::Handle::current());
+        host.wind_down(Duration::from_secs(1)).await;
+        assert!(super::super::STATE.lock().await.is_none(), "service shutdown must close its owned browser");
+        assert!(profile.join("assistant-browser").exists(), "shutdown preserves the saved browser profile");
         let _ = std::fs::remove_dir_all(profile);
     }
 

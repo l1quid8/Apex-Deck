@@ -3039,6 +3039,7 @@ impl Host {
         while self.chains.load(Ordering::SeqCst) > 0 && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        crate::personal_worker::browser::shutdown(&self.paths.data).await;
         self.shutdown();
     }
 }
