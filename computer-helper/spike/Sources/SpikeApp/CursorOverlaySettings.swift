@@ -173,7 +173,7 @@ enum CursorOverlaySettings {
     get {
       if let v = UserDefaults.standard.object(forKey: travelMinKey) as? Int { return v }
       if let n = UserDefaults.standard.object(forKey: travelMinKey) as? NSNumber { return n.intValue }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) as? [String: Any], let motion = blob["motion"] as? [String: Any], let v = motion["travelMinMs"] as? Int { return v }
+      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let motion = blob["motion"] as? [String: Any], let v = motion["travelMinMs"] as? Int { return v }
       return 90
     }
     set { UserDefaults.standard.set(max(30, newValue), forKey: travelMinKey) }
@@ -183,7 +183,7 @@ enum CursorOverlaySettings {
     get {
       if let v = UserDefaults.standard.object(forKey: travelMaxKey) as? Int { return v }
       if let n = UserDefaults.standard.object(forKey: travelMaxKey) as? NSNumber { return n.intValue }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) as? [String: Any], let motion = blob["motion"] as? [String: Any], let v = motion["travelMaxMs"] as? Int { return v }
+      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let motion = blob["motion"] as? [String: Any], let v = motion["travelMaxMs"] as? Int { return v }
       return 320
     }
     set { UserDefaults.standard.set(newValue, forKey: travelMaxKey) }
@@ -193,7 +193,7 @@ enum CursorOverlaySettings {
     get {
       if let v = UserDefaults.standard.object(forKey: dwellKey) as? Int { return v }
       if let n = UserDefaults.standard.object(forKey: dwellKey) as? NSNumber { return n.intValue }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) as? [String: Any], let motion = blob["motion"] as? [String: Any], let v = motion["dwellMs"] as? Int { return v }
+      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let motion = blob["motion"] as? [String: Any], let v = motion["dwellMs"] as? Int { return v }
       return 0
     }
     set { UserDefaults.standard.set(max(0, min(300, newValue)), forKey: dwellKey) }
@@ -203,7 +203,7 @@ enum CursorOverlaySettings {
     get {
       if let v = UserDefaults.standard.object(forKey: bowKey) as? Double { return v }
       if let n = UserDefaults.standard.object(forKey: bowKey) as? NSNumber { return n.doubleValue }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) as? [String: Any], let motion = blob["motion"] as? [String: Any], let v = motion["bow"] as? Double { return v }
+      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let motion = blob["motion"] as? [String: Any], let v = motion["bow"] as? Double { return v }
       return 1.0
     }
     set { UserDefaults.standard.set(max(0, min(3, newValue)), forKey: bowKey) }
@@ -213,7 +213,7 @@ enum CursorOverlaySettings {
     get {
       if let v = UserDefaults.standard.object(forKey: overshootKey) as? Double { return v }
       if let n = UserDefaults.standard.object(forKey: overshootKey) as? NSNumber { return n.doubleValue }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) as? [String: Any], let motion = blob["motion"] as? [String: Any], let v = motion["overshoot"] as? Double { return v }
+      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let motion = blob["motion"] as? [String: Any], let v = motion["overshoot"] as? Double { return v }
       return 0.035
     }
     set { UserDefaults.standard.set(max(0, min(0.15, newValue)), forKey: overshootKey) }
@@ -223,7 +223,7 @@ enum CursorOverlaySettings {
     get {
       if let v = UserDefaults.standard.object(forKey: tremorKey) as? Double { return v }
       if let n = UserDefaults.standard.object(forKey: tremorKey) as? NSNumber { return n.doubleValue }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) as? [String: Any], let motion = blob["motion"] as? [String: Any], let v = motion["tremor"] as? Double { return v }
+      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let motion = blob["motion"] as? [String: Any], let v = motion["tremor"] as? Double { return v }
       return 1.1
     }
     set { UserDefaults.standard.set(max(0, min(4.0, newValue)), forKey: tremorKey) }
@@ -234,7 +234,7 @@ enum CursorOverlaySettings {
   static var customImagePath: String? {
     get {
       if let v = UserDefaults.standard.string(forKey: customImageKey), !v.isEmpty { return v }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) as? [String: Any] {
+      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) {
         if let path = blob["customImage"] as? [String: Any], let p = path["path"] as? String { return p }
         if let p = blob["customImagePath"] as? String { return p }
       }
@@ -307,11 +307,14 @@ enum CursorOverlaySettings {
       }
     }
     if let rim = src["rim"] as? String {
-      guard validateHex(rim) else { if !rim.isEmpty { return "rim must be hex" } else { UserDefaults.standard.removeObject(forKey: rimKey); /* allow empty */ }; () }
-      if !rim.isEmpty { UserDefaults.standard.set(rim, forKey: rimKey) }
-    } else if let rimNull = src["rim"] as? NSNull {
+      if rim.isEmpty || rim.lowercased() == "null" {
+        UserDefaults.standard.removeObject(forKey: rimKey)
+      } else {
+        guard validateHex(rim) else { return "rim must be hex" }
+        UserDefaults.standard.set(rim, forKey: rimKey)
+      }
+    } else if src["rim"] is NSNull {
       UserDefaults.standard.removeObject(forKey: rimKey)
-      _ = rimNull
     }
     if let accent = src["accent"] as? String {
       guard validateHex(accent) else { return "accent must be hex" }
@@ -379,7 +382,7 @@ enum CursorOverlaySettings {
     if travelMinMs > travelMaxMs { return "travelMin must be <= travelMax" }
 
     // Also persist blob for status reporting convenience
-    var snapshot = toDictionary()
+    let snapshot = toDictionary()
     // blobKey kept for compatibility but now mirror granular keys
     UserDefaults.standard.set(snapshot, forKey: blobKey)
     return nil
@@ -397,7 +400,7 @@ enum CursorOverlaySettings {
     if let path = customImagePath {
       customImg = ["path": path, "hotspotX": hotspotX, "hotspotY": hotspotY]
     }
-    var motion: [String: Any] = [
+    let motion: [String: Any] = [
       "travelMinMs": travelMinMs,
       "travelMaxMs": travelMaxMs,
       "dwellMs": dwellMs,

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   assistantIdentityKey,
   projectIdentityKey,
+  tryProjectIdentityKey,
   assistantAppearance,
   createAssistantAppearance,
 } from '../src/assistantIdentity.ts';
@@ -44,7 +45,9 @@ test('malformed project refs cannot resolve a project', () => {
     { ...project, cwd: '' }, { ...project, cwd: 'relative/project' }, { ...project, cwd: '~/project' },
     { ...project, cwd: '/work/project\0other' }, { ...project, cwd: '/work/project\n' }]) {
     assert.throws(() => projectIdentityKey(invalid), TypeError);
+    assert.equal(tryProjectIdentityKey(invalid), null);
   }
+  assert.equal(tryProjectIdentityKey(project), '["host-a","ws-1","/work/project"]');
 });
 
 test('remote project keys preserve Windows absolute paths and reject drive-relative paths', () => {

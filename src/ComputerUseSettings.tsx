@@ -230,11 +230,11 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     <div className="section-title">Cursor indicator</div>
     <div className="settings-card" id="cursor">
       <div className="settings-row">
-        <div className="settings-label"><strong>Cursor style</strong><small>Visual overlay only — does not change your OS mouse. Simple and ring-only presets degrade gracefully if renderer hides arrow.</small></div>
+        <div className="settings-label"><strong>Cursor style</strong><small>Visual overlay only — does not change your OS mouse. Click ring only displays click ripple and highlight rings without drawing an arrow pointer.</small></div>
         <div className="inline-options" role="group" aria-label="Cursor preset">
           <button aria-pressed={prefs.preset==='default'} onClick={()=>handlePreset('default')} disabled={busy}>Default</button>
           <button aria-pressed={prefs.preset==='simple'} onClick={()=>handlePreset('simple')} disabled={busy}>Simple pointer</button>
-          <button aria-pressed={prefs.preset==='ring-only'} onClick={()=>handlePreset('ring-only')} disabled={busy} title="Best effort: arrow with ripple if hide not supported">Click ring only</button>
+          <button aria-pressed={prefs.preset==='ring-only'} onClick={()=>handlePreset('ring-only')} disabled={busy} title="Displays click ripple and highlight rings without drawing an arrow pointer">Click ring only</button>
           <button aria-pressed={prefs.preset==='custom'} onClick={()=>handlePreset('custom')} disabled={busy}>Custom image</button>
         </div>
       </div>
@@ -282,22 +282,27 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
         <summary>Customize cursor — motion & dwell</summary>
         <div className="advanced-body">
           <div className="settings-row">
-            <div className="settings-label"><strong>Travel timing</strong><small>How fast the overlay travels. Travel max + dwell ≤700 ms (upstream budget).</small></div>
+            <div className="settings-label"><strong>Linger timing</strong><small>How long the overlay lingers after an action lands (0–300 ms).</small></div>
             <div style={{ display: 'grid', gap: 8 }}>
-              <label>Travel min ms <input type="range" min={30} max={320} step={5} value={prefs.motion.travelMinMs} disabled={busy} onChange={e=>void commitPrefs({ ...prefs, motion: { ...prefs.motion, travelMinMs: parseInt(e.target.value) } })} /> <output>{prefs.motion.travelMinMs}</output></label>
-              <label>Travel max ms <input type="range" min={30} max={600} step={5} value={prefs.motion.travelMaxMs} disabled={busy} onChange={e=>void commitPrefs({ ...prefs, motion: { ...prefs.motion, travelMaxMs: parseInt(e.target.value) } })} /> <output>{prefs.motion.travelMaxMs}</output></label>
-              <label>Dwell ms (linger after travel) <input type="range" min={0} max={300} step={5} value={prefs.motion.dwellMs} disabled={busy} onChange={e=>void commitPrefs({ ...prefs, motion: { ...prefs.motion, dwellMs: parseInt(e.target.value) } })} /> <output>{prefs.motion.dwellMs}</output></label>
+              <label>Dwell ms <input type="range" min={0} max={300} step={5} value={prefs.motion.dwellMs} disabled={busy} onChange={e=>void commitPrefs({ ...prefs, motion: { ...prefs.motion, dwellMs: parseInt(e.target.value) } })} /> <output>{prefs.motion.dwellMs} ms</output></label>
             </div>
           </div>
-          <div className="settings-row">
-            <div className="settings-label"><strong>Path shape</strong><small>Bow, overshoot, tremor — presentation only, not physical input.</small></div>
+          <div className="settings-row" style={{ opacity: 0.65 }}>
+            <div className="settings-label"><strong>Travel timing (unavailable in landing-only overlay)</strong><small>Travel path animation across the screen is not active in the landing-only overlay; the indicator displays directly at the action point.</small></div>
             <div style={{ display: 'grid', gap: 8 }}>
-              <label>Bow <input type="range" min={0} max={3} step={0.1} value={prefs.motion.bow} disabled={busy} onChange={e=>void commitPrefs({ ...prefs, motion: { ...prefs.motion, bow: parseFloat(e.target.value) } })} /> <output>{prefs.motion.bow.toFixed(1)}</output></label>
-              <label>Overshoot <input type="range" min={0} max={0.15} step={0.005} value={prefs.motion.overshoot} disabled={busy} onChange={e=>void commitPrefs({ ...prefs, motion: { ...prefs.motion, overshoot: parseFloat(e.target.value) } })} /> <output>{prefs.motion.overshoot.toFixed(3)}</output></label>
-              <label>Tremor <input type="range" min={0} max={4} step={0.1} value={prefs.motion.tremor} disabled={busy} onChange={e=>void commitPrefs({ ...prefs, motion: { ...prefs.motion, tremor: parseFloat(e.target.value) } })} /> <output>{prefs.motion.tremor.toFixed(1)}</output></label>
+              <label>Travel min ms <input type="range" min={30} max={320} step={5} value={prefs.motion.travelMinMs} disabled={true} title="Unavailable in landing-only overlay" /> <output>{prefs.motion.travelMinMs} ms</output></label>
+              <label>Travel max ms <input type="range" min={30} max={600} step={5} value={prefs.motion.travelMaxMs} disabled={true} title="Unavailable in landing-only overlay" /> <output>{prefs.motion.travelMaxMs} ms</output></label>
             </div>
           </div>
-          <p className="settings-note">Note: click-ring-only (no arrow) requires renderer support to hide the built-in dart. Current renderer always draws arrow or custom image; preset above degrades to small arrow + ripple. Motion parameters are presentation only — physical input keeps its own motion.</p>
+          <div className="settings-row" style={{ opacity: 0.65 }}>
+            <div className="settings-label"><strong>Path shape (unavailable in landing-only overlay)</strong><small>Trajectory curve, overshoot, and tremor are not active in the landing-only overlay.</small></div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label>Bow <input type="range" min={0} max={3} step={0.1} value={prefs.motion.bow} disabled={true} title="Unavailable in landing-only overlay" /> <output>{prefs.motion.bow.toFixed(1)}</output></label>
+              <label>Overshoot <input type="range" min={0} max={0.15} step={0.005} value={prefs.motion.overshoot} disabled={true} title="Unavailable in landing-only overlay" /> <output>{prefs.motion.overshoot.toFixed(3)}</output></label>
+              <label>Tremor <input type="range" min={0} max={4} step={0.1} value={prefs.motion.tremor} disabled={true} title="Unavailable in landing-only overlay" /> <output>{prefs.motion.tremor.toFixed(1)}</output></label>
+            </div>
+          </div>
+          <p className="settings-note">Note: The overlay indicator displays directly at the action coordinates with spring pop, pulse, and ripple animations. Travel path tracing across the screen is not rendered. Dwell ms controls how long the indicator lingers before fading.</p>
         </div>
       </details>
     </div>
@@ -316,6 +321,5 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     </div>
 
     {error && <p role="alert" className="danger-text">{error}</p>}
-    <p className="settings-note">Unsupported: true click-ring-only (arrow hidden) needs renderer change — currently best-effort small arrow + ripple. Custom pointer vs arrow images (two slots) partially wired: we persist arrow image via customImage; pointer-on-arrival image uses same path when configured. Two-image separation (arrow vs pointer) will require helper manifest update.</p>
   </>;
 }

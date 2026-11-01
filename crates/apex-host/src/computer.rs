@@ -429,33 +429,24 @@ impl Host {
                     if let Some(overlay) = helper.get("cursorOverlay") {
                         if !overlay.is_null() {
                             status["cursorOverlayFromHelper"] = overlay.clone();
-                            // Sync: if helper has valid prefs, persist to host file for launch/reconnect consensus.
-                            // Host pushes its prefs on explicit set calls; here we adopt helper's if helper was changed via menu or prior run.
-                            // We only overwrite host file if helper's json parses as valid and differs from host default in a meaningful way,
-                            // or if host file is default and helper is customized.
-                            // This keeps single source on reconnect: last writer wins via status fetch.
+                            // Host persisted `computer-cursor.json` is the authority and must never be
+                            // overwritten by helper status. If helper differs from host prefs,
+                            // push host's persisted prefs to helper.
                             if let Ok(helper_prefs) = serde_json::from_value::<crate::cursor_overlay::CursorOverlayPrefs>(overlay.clone()) {
-                                if helper_prefs.validate().is_ok() {
-                                    let host_prefs = prefs.clone();
-                                    // If host differs, save helper's into host (helper is ground truth for visual state)
-                                    // But we keep host's custom_image path if helper lacks image file – degrade to file existence check inside save will keep path absolute.
-                                    if helper_prefs != host_prefs {
-                                        // Best-effort sync, ignore save errors (status still returns helper's view)
-                                        let _ = crate::cursor_overlay::save(&self.computer.data_root, &helper_prefs);
-                                        // Also update local status to reflect helper's view for UI immediate consistency
-                                        status["cursorOverlay"] = serde_json::to_value(&helper_prefs).unwrap_or(overlay.clone());
-                                        status["cursorOverlayLabelsEnabled"] = json!(helper_prefs.labels_enabled);
-                                    }
+                                if helper_prefs != prefs {
+                                    let push_payload = json!({
+                                        "cursorOverlay": prefs.clone(),
+                                    });
+                                    let _ = rpc(&mut stream, "unified/set-cursor-overlay", push_payload).await;
                                 }
                             }
                         }
                     }
+                    status["cursorOverlay"] = serde_json::to_value(&prefs).unwrap_or(json!({}));
+                    status["cursorOverlayLabelsEnabled"] = json!(prefs.labels_enabled);
                     status["stopped"] = json!(
                         self.computer.stopped.load(Ordering::SeqCst) || helper["stopped"] == true
                     );
-                    if status["cursorOverlayLabelsEnabled"].is_null() {
-                        status["cursorOverlayLabelsEnabled"] = json!(prefs.labels_enabled);
-                    }
                     return status;
                 }
             }

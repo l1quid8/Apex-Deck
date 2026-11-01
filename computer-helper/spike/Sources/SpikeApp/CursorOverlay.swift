@@ -321,7 +321,7 @@ private final class OverlayView: NSView {
 
         let imgLayer = CALayer()
         imgLayer.contents = img
-        imgLayer.contentsGravity = .resizeAspectFit
+        imgLayer.contentsGravity = .resizeAspect
         imgLayer.frame = CGRect(origin: layerOrigin, size: imgSize)
         imgLayer.shadowColor = NSColor.black.cgColor
         imgLayer.shadowOpacity = 0.35
