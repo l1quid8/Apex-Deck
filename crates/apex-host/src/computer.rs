@@ -1,4 +1,5 @@
 //! Unified Computer Use authority belongs to a live host turn, never a server name.
+use crate::personal_worker::browser::work as browser;
 use crate::Host;
 use apex_core::{Access, ComputerTurn, ParticipantId, TurnLifecycleHook, TurnRequest};
 use serde_json::{json, Value};
@@ -22,12 +23,62 @@ fn instance_id() -> String {
 struct Active {
     thread: String,
     participant: String,
+    token: String,
     socket: std::os::unix::net::UnixStream,
 }
 #[cfg(unix)]
 impl Drop for Active {
     fn drop(&mut self) {
+        browser::release(&self.token);
         let _ = self.socket.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Browser calls from one turn. Host authority is rechecked for every step of every call,
+/// so nothing the helper or a bot says can outlive the turn.
+#[cfg(unix)]
+struct BrowserLink {
+    computer: Weak<Computer>,
+    thread: String,
+    generation: u64,
+    token: String,
+    control: bool,
+    writer: tokio::sync::Mutex<tokio::net::UnixStream>,
+    calls: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+#[cfg(unix)]
+impl BrowserLink {
+    fn live(&self, cancelled: &AtomicBool) -> bool {
+        !cancelled.load(Ordering::SeqCst)
+            && self.computer.upgrade().is_some_and(|computer| {
+                computer.ready(&self.thread, self.generation)
+                    && computer.active.lock().unwrap().contains_key(&self.token)
+            })
+    }
+    fn cancel(&self, call: &str) {
+        if let Some(cancelled) = self.calls.lock().unwrap().get(call) {
+            cancelled.store(true, Ordering::SeqCst);
+        }
+    }
+    async fn run(self: Arc<Self>, call: String, tool: String, arguments: Value) {
+        use tokio::io::AsyncWriteExt;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.calls.lock().unwrap().insert(call.clone(), cancelled.clone());
+        let live = {
+            let (link, cancelled) = (self.clone(), cancelled.clone());
+            move || link.live(&cancelled)
+        };
+        let turn = browser::Call { owner: &self.token, control: self.control, live: &live };
+        let outcome = browser::call(&turn, &tool, &arguments).await;
+        self.calls.lock().unwrap().remove(&call);
+        let mut reply = json!({"callId":call,"turnToken":self.token});
+        match outcome {
+            Ok(result) => reply["result"] = result,
+            Err(error) => reply["error"] = json!(error),
+        }
+        let line = format!("{}\n", json!({"jsonrpc":"2.0","method":"unified/browser-result","params":reply}));
+        let mut writer = self.writer.lock().await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), writer.write_all(line.as_bytes())).await;
     }
 }
 
@@ -292,6 +343,7 @@ impl TurnLifecycleHook for TurnHook {
                 let mut random = [0u8; 32];
                 SystemRandom::new().fill(&mut random).ok()?;
                 let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
+                let control = !matches!(access, Access::Read);
                 let access = match access {
                     Access::Read => "read",
                     Access::Ask => "ask",
@@ -305,6 +357,7 @@ impl TurnLifecycleHook for TurnHook {
                     return None;
                 }
                 let shutdown = duplicate_control(stream.get_ref()).ok()?;
+                let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).ok()?).ok()?;
                 {
                     let generations = self.computer.generations.lock().unwrap();
                     if generations.get(&self.thread).copied().unwrap_or(0) != generation
@@ -318,6 +371,7 @@ impl TurnLifecycleHook for TurnHook {
                         Active {
                             thread: self.thread.clone(),
                             participant: id.as_str().into(),
+                            token: token.clone(),
                             socket: shutdown,
                         },
                     );
@@ -334,13 +388,22 @@ impl TurnLifecycleHook for TurnHook {
                     id.clone(),
                     token.clone(),
                 );
+                let link = Arc::new(BrowserLink {
+                    computer: Arc::downgrade(&self.computer),
+                    thread: thread.clone(),
+                    generation,
+                    token: token.clone(),
+                    control,
+                    writer: tokio::sync::Mutex::new(writer),
+                    calls: Mutex::default(),
+                });
                 tokio::spawn(async move {
                     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
                     let mut reader = stream;
                     loop {
                         let mut line = Vec::new();
                         let Ok(n) = (&mut reader)
-                            .take(128 * 1024)
+                            .take(512 * 1024)
                             .read_until(b'\n', &mut line)
                             .await
                         else {
@@ -353,15 +416,27 @@ impl TurnLifecycleHook for TurnHook {
                             continue;
                         };
                         let p = &message["params"];
-                        if message["method"] == "unified/stop"
-                            && p["turnToken"] == expected
-                            && p["threadId"] == thread
-                            && p["participantId"] == participant.as_str()
+                        if p["turnToken"] != expected
+                            || p["threadId"] != thread
+                            || p["participantId"] != participant.as_str()
                         {
+                            continue;
+                        }
+                        if message["method"] == "unified/stop" {
                             if let Some(host) = host.upgrade() {
                                 host.room_stop(thread.clone(), None);
                             }
                             break;
+                        }
+                        let call = p["callId"].as_str().unwrap_or_default().to_owned();
+                        if message["method"] == "unified/browser-cancel" {
+                            link.cancel(&call);
+                        } else if message["method"] == "unified/browser-call" {
+                            if let Some(host) = host.upgrade() {
+                                host.use_assistant_browser();
+                            }
+                            let tool = p["tool"].as_str().unwrap_or_default().to_owned();
+                            tokio::spawn(link.clone().run(call, tool, p["arguments"].clone()));
                         }
                     }
                 });
@@ -508,6 +583,33 @@ mod tests {
         assert!(flags >= 0);
         assert_ne!(flags & libc::FD_CLOEXEC, 0, "authenticated control must not enter provider children");
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn browser_calls_die_with_the_turn_and_with_cancel() {
+        let data = std::env::temp_dir().join(format!("apex-computer-browser-{}", std::process::id()));
+        std::fs::create_dir_all(&data).unwrap();
+        let computer = Computer::new(&data);
+        computer.set_enabled(true).unwrap();
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        computer.active.lock().unwrap().insert("token".into(), Active { thread: "t".into(), participant: "p".into(), token: "token".into(), socket });
+        let (writer, reader) = tokio::net::UnixStream::pair().unwrap();
+        let link = BrowserLink { computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
+        let link = Arc::new(link);
+        link.clone().run("call-1".into(), "Runtime.evaluate".into(), json!({})).await;
+        let mut line = String::new();
+        tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(reader), &mut line).await.unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["method"], "unified/browser-result");
+        assert_eq!(reply["params"], json!({"callId":"call-1","turnToken":"token","error":"unknown_tool"}));
+        let running = AtomicBool::new(false);
+        assert!(link.live(&running));
+        assert!(!link.live(&AtomicBool::new(true)), "a cancelled call stops");
+        computer.revoke(Some("other"), None);
+        assert!(link.live(&running), "another thread's revoke leaves this one alone");
+        computer.revoke(Some("t"), None);
+        assert!(!link.live(&running), "Stop or any revoke ends every step that follows");
+        std::fs::remove_dir_all(data).unwrap();
+    }
     #[test]
     fn stop_and_disable_invalidate_pending_and_active_turns() {
         let data =
@@ -546,6 +648,7 @@ mod tests {
             Active {
                 thread: "r".into(),
                 participant: "p".into(),
+                token: "old".into(),
                 socket,
             },
         );

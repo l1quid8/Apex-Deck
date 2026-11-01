@@ -486,13 +486,18 @@ impl Host {
         self.start_personal_worker_with(WorkerTools::real())
     }
 
+    /// Work bots can reach the browser before the assistant has ever started.
+    pub(crate) fn use_assistant_browser(&self) {
+        browser::use_profile(self.data_dir().join("assistant-browser"));
+    }
+
     pub fn start_personal_worker_with(self: &Arc<Self>, tools: WorkerTools) -> Result<(), String> {
         let mut worker = self.personal_worker.lock().unwrap();
         if worker.as_ref().is_some_and(|task| !task.is_finished()) {
             return Ok(());
         }
         self.personal_recover()?;
-        browser::use_profile(self.data_dir().join("assistant-browser"));
+        self.use_assistant_browser();
         let owner = Arc::downgrade(self);
         let wake = self.personal_wake.clone();
         *worker = Some(self.runtime().spawn(async move {

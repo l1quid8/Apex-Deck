@@ -9,11 +9,14 @@ final class ClientSession {
   var imageScope: ScreenshotScope?
   var snapshot: Snapshot?
   let engine = EngineSession()
+  /// The bot chose Deck's own browser. Guarded by the server's `activeLock`.
+  var usingBrowser = false
 }
 final class Server {
   let ax = Accessibility()
   var latch: Latch { activeState.latch }
   let turns = TurnRegistry()
+  let browser = BrowserBroker()
   lazy var activity = ActivityTap(latch)
   var input: Input { Input(ax: ax, latch: latch) }
   let queue = DispatchQueue(label: "unified-computer.actions")
@@ -107,10 +110,15 @@ final class Server {
       shutdown(client, SHUT_RDWR)
       queue.async { state.imageScope = nil; state.snapshot = nil; state.engine.invalidate(); close(client) }
     }
-    Wire.lines(fd: client) { data in
+    // Only the daemon sends frames as large as a screenshot.
+    Wire.lines(fd: client, limit: authenticated ? Wire.screenshotResponseLineLimit : Wire.requestLineLimit) { data in
       guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let method = object["method"] as? String else { return }
       let params = object["params"] as? [String: Any] ?? [:]
       if method == "notifications/cancelled" { if let id = params["requestId"] { state.latch.cancel(String(describing: id)) }; return }
+      if method == "unified/browser-result" {
+        if authenticated, controlToken != nil, params["turnToken"] as? String == controlToken { self.browser.deliver(params) }
+        return
+      }
       guard let id = object["id"] else { return }
       if method == "unified/register-turn" {
         do {
@@ -165,6 +173,12 @@ final class Server {
       if method == "ping" { self.queue.async { self.response(id, [:], client) }; return }
       if method == "tools/list" { self.queue.async { self.response(id, ["tools": Self.tools], client) }; return }
       guard method == "tools/call", controlToken == nil else { self.fail(id, "unsupported_method", client); return }
+      let tool = params["name"] as? String ?? "", toolArguments = params["arguments"] as? [String: Any] ?? [:]
+      self.activeLock.lock()
+      let brokered = BrowserBroker.routes(tool, toolArguments, active: state.usingBrowser)
+      if tool == "request_app", !brokered { state.usingBrowser = false }
+      self.activeLock.unlock()
+      if brokered { DispatchQueue.global().async { self.browserCall(id, tool, toolArguments, state: state, client: client) }; return }
       self.activeLock.lock()
       let busy = self.activeID != nil
       if !busy { self.activeID = String(describing: id) }
@@ -214,6 +228,53 @@ final class Server {
       }
     }
   }
+  /// Runs off the action queue: the host serialises browser work, and a slow page must not
+  /// hold up another bot's desktop action.
+  func browserCall(_ id: Any, _ tool: String, _ args: [String: Any], state: ClientSession, client: Int32) {
+    let request = String(describing: id)
+    do {
+      guard let token = state.token else { throw Refusal("turn_unregistered_or_ended") }
+      try replyCheck(state, request)
+      if tool == "request_app" {
+        guard args.count == 1 else { throw Refusal("unexpected_arguments") }
+        if (try? turns.identity(BrowserBroker.resource, token: token)) != BrowserBroker.identity {
+          try ask(BrowserBroker.identity, name: BrowserBroker.name, detail: "This is Deck's own background browser, not your Chrome or Brave. It has no window, so bots use it without your pointer, keyboard or focus. It keeps the sites signed in through Take over, and a bot allowed here can act on those sites.\n\nAllow Once ends with this bot's turn. Allow for This Work Thread covers every supported bot in this thread until you press Stop or access is revoked. Other threads still ask. Take over keeps every bot out until you hand it back.", token: token, state: state, request: request)
+        }
+      }
+      _ = try turns.identity(BrowserBroker.resource, token: token)
+      if !state.usingBrowser { activeLock.lock(); state.usingBrowser = true; activeLock.unlock() }
+      let owner = try turns.requester(token)
+      let result = try browser.call(tool == "request_app" ? "read_screen" : tool, tool == "request_app" ? [:] : args,
+        turn: ["threadId": owner.0, "participantId": owner.1, "turnToken": token],
+        send: { message in
+          guard let control = self.turns.controlConnection(token) else { return }
+          self.send(message, control); close(control)
+        }, check: { try self.replyCheck(state, request) })
+      let reply = try BrowserBroker.content(result)
+      if result["image"] != nil {
+        _ = Wire.publishScreenshot(["jsonrpc": "2.0", "id": id, "result": reply], fd: client, output: output,
+          check: { try self.replyCheck(state, request) }, invalidate: { state.latch.stop() })
+      } else { response(id, reply, client) }
+    } catch let error as Refusal { fail(id, error.code, client) } catch { fail(id, "internal_error", client) }
+  }
+  /// Waits for the person's answer and records it. Throws unless they allowed it.
+  func ask(_ identity: AppIdentity, name: String, detail: String, token: String, state: ClientSession, request: String) throws {
+    let control = try turns.canControl(token)
+    let owner = try turns.requester(token)
+    let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(name).\n\n\(detail)")
+    DispatchQueue.main.async { prompt.show() }
+    defer { DispatchQueue.main.async { prompt.dismiss() } }
+    let deadline = ProcessInfo.processInfo.systemUptime + 120
+    while prompt.decision() == nil {
+      try turns.check(token); try state.latch.check(request)
+      guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("app_grant_deadline") }
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    let decision = prompt.decision()
+    try turns.check(token)
+    guard decision != .denied else { throw Refusal("app_grant_denied") }
+    try turns.grant(identity, token: token, forThread: decision == .thread)
+  }
   func observe(id: String, epoch: UInt64? = nil) throws -> Snapshot {
     try checkProofHost()
     // Without a held epoch this is a plain reading, which input never refuses. It records
@@ -237,7 +298,7 @@ final class Server {
     if name == "list_apps" {
       guard args.isEmpty else { throw Refusal("unexpected_arguments") }
       let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy != .prohibited && Policy.target($0.bundleIdentifier ?? "") }
-      let rows = apps.prefix(100).map { ["app": $0.bundleIdentifier ?? "", "name": $0.localizedName ?? ""] }
+      let rows = [["app": BrowserBroker.resource, "name": BrowserBroker.name]] + apps.prefix(100).map { ["app": $0.bundleIdentifier ?? "", "name": $0.localizedName ?? ""] }
       let bytes = try JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys])
       return ["content": [["type": "text", "text": String(data: bytes, encoding: .utf8) ?? "[]"]]]
     }
@@ -294,25 +355,13 @@ final class Server {
       let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { throw Refusal("protected_or_unavailable_app") }
     let identity = try AppIdentity.capture(url, bundle: bundle)
     if (try? turns.identity(bundle, token: token)) != identity {
-      let control = try turns.canControl(token)
-      let owner = try turns.requester(token)
-      let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? bundle).\n\n\(bundle)\n\(identity.path)\n\nAllow Once ends with this bot's turn. Allow for This Work Thread lets every supported bot in this thread use this app, with no more prompts, until you press Stop or access is revoked. Other threads still ask. Bots work in the background, but starting an app that isn't running can bring it forward. Password fields and system security settings are protected.")
-      DispatchQueue.main.async { prompt.show() }
-      defer { DispatchQueue.main.async { prompt.dismiss() } }
-      let deadline = ProcessInfo.processInfo.systemUptime + 120
-      while prompt.decision() == nil {
-        try turns.check(token); try latch.check(id)
-        guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("app_grant_deadline") }
-        Thread.sleep(forTimeInterval: 0.02)
-      }
-      let decision = prompt.decision()
-      try turns.check(token)
-      guard decision != .denied else { throw Refusal("app_grant_denied") }
-      try turns.grant(identity, token: token, forThread: decision == .thread)
+      try ask(identity, name: Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? bundle,
+        detail: "\(bundle)\n\(identity.path)\n\nAllow Once ends with this bot's turn. Allow for This Work Thread lets every supported bot in this thread use this app, with no more prompts, until you press Stop or access is revoked. Other threads still ask. Bots work in the background, but starting an app that isn't running can bring it forward. Password fields and system security settings are protected.",
+        token: token, state: activeState, request: id)
     }
     let control = try turns.canControl(token)
     if control, try lease.claim(token) { activity.invalidateObservations() }
-    let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter { !$0.isTerminated }
+    let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter { !$0.isTerminated && $0.activationPolicy != .prohibited }
     guard running.count <= 1 else { throw Refusal("target_ambiguous") }
     let launching = running.isEmpty
     guard control || !launching else { throw Refusal("read_access_cannot_launch_app") }
@@ -398,8 +447,9 @@ final class Server {
     let str: [String: Any] = ["type": "string"]
     let snap: [String: Any] = ["snapshot": str]
     let element: [String: Any] = ["type": "integer", "minimum": 1]
-    return [tool("list_apps", "List running eligible native apps. Requires an enabled active session.", [:], [], true),
-      tool("request_app", "Request a native per-app session grant by bundle ID. Never brings a running app forward. Starting a stopped app needs a writable session and can bring it forward, which the reply reports as launch_took_focus.", ["app": str], ["app"]),
+    return [tool("list_apps", "List running eligible native apps, plus \(BrowserBroker.resource), Deck's own background browser. Requires an enabled active session.", [:], [], true),
+      tool("request_app", "Request a per-app session grant by bundle ID. Never brings a running app forward. Starting a stopped app needs a writable session and can bring it forward, which the reply reports as launch_took_focus. Request \(BrowserBroker.resource) for websites: it has no window, keeps Take over sign-ins, and uses neither the person's pointer nor focus. Once requested, the tools below act on that browser until another app is requested.", ["app": str], ["app"]),
+      tool("navigate", "Open an http or https address in Deck's own background browser. Requires the \(BrowserBroker.resource) grant.", ["url": str], ["url"]),
       tool("read_screen", "Read the granted app's window and retained element references. Works behind other windows and on minimized windows, and reports visibility: frontmost, partly_visible, covered, minimized or hidden. Controls marked offscreen can still be used. While a browser window is fully covered its page can lag, and a page loaded then can return web_content_unavailable. No tool fixes that from the background: the window has to be showing.", [:], [], true),
       tool("list_windows", "List windows of the granted app with minimized/focused state.", [:], [], true),
       ScreenshotPolicy.tool,
