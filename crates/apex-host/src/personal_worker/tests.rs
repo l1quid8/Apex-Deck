@@ -22,6 +22,8 @@ struct Fake {
     reason_calls: AtomicUsize,
     runs: StdMutex<Vec<OperationSpec>>,
     prompts: StdMutex<Vec<String>>,
+    requests: StdMutex<Vec<TurnRequest>>,
+    attachment_roots: StdMutex<Vec<Vec<std::path::PathBuf>>>,
 }
 
 impl Fake {
@@ -35,6 +37,8 @@ impl Fake {
             reason_calls: AtomicUsize::new(0),
             runs: StdMutex::new(vec![]),
             prompts: StdMutex::new(vec![]),
+            requests: StdMutex::new(vec![]),
+            attachment_roots: StdMutex::new(vec![]),
         })
     }
 
@@ -45,10 +49,12 @@ impl Fake {
     fn tools(self: &Arc<Self>) -> WorkerTools {
         let (a, b, c) = (self.clone(), self.clone(), self.clone());
         WorkerTools {
-            reason: Arc::new(move |_, request: TurnRequest| {
+            reason: Arc::new(move |_, request: TurnRequest, attachment_roots| {
                 let fake = a.clone();
                 Box::pin(async move {
                     fake.prompts.lock().unwrap().push(request.system.clone());
+                    fake.requests.lock().unwrap().push(request);
+                    fake.attachment_roots.lock().unwrap().push(attachment_roots);
                     fake.reason_calls.fetch_add(1, Ordering::SeqCst);
                     while fake.model_hangs.load(Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -78,6 +84,26 @@ impl Fake {
 }
 
 const DISK_TASK: &str = r#"{"reply":"I can check that. Approve the command and I'll run it.","task":{"goal":"Report free disk space","criteria":["report free space on /"],"argv":["df","-h","/"]}}"#;
+
+#[tokio::test]
+async fn a_human_screenshot_reaches_the_assistant_as_a_user_turn() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    let image = fixture.host.save_attachment(&fixture.id, "screen.png", b"\x89PNG\r\n\x1a\nfixture").unwrap();
+    let text = format!("What does this show?\nAttached image: {image}");
+    fixture.host.personal_send(&fixture.id, "screenshot", &text).unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.host.personal_send(&fixture.id, "next-message", "Thanks").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let requests = fake.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].turns, vec![apex_core::ViewTurn { role: apex_core::Role::User, content: text }]);
+    assert_eq!(requests[0].access, Some(apex_core::Access::Read));
+    assert!(requests[0].computer.is_none());
+    assert_eq!(requests[1].turns, vec![apex_core::ViewTurn { role: apex_core::Role::User, content: "Thanks".into() }], "earlier screenshots stay history rather than being resent");
+    let own = fixture.root.join("data/attachments").join(&fixture.id).canonicalize().unwrap();
+    assert_eq!(*fake.attachment_roots.lock().unwrap(), vec![vec![own.clone()], vec![own]]);
+}
 
 struct Fixture {
     root: std::path::PathBuf,

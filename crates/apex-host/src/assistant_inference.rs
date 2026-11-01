@@ -1,7 +1,7 @@
 //! Assistant conversation inference. Task execution stays in personal_worker.
 use apex_core::{Backend, ParticipantConfig, Reply, TurnRequest};
 
-pub(crate) async fn reply(config: ParticipantConfig, request: TurnRequest) -> Result<Reply, String> {
+pub(crate) async fn reply(config: ParticipantConfig, request: TurnRequest, attachment_roots: Vec<std::path::PathBuf>) -> Result<Reply, String> {
     apex_adapters::assistant_profile_ok(&config)?;
     if let Backend::OpenAiCompatible { base_url, model, api_key_env } = &config.backend {
         if let Some(name)=api_key_env {
@@ -12,7 +12,7 @@ pub(crate) async fn reply(config: ParticipantConfig, request: TurnRequest) -> Re
         }
     }
     let limit=if matches!(config.backend,Backend::OpenAiCompatible{..}) {120} else {300};
-    let context=apex_adapters::BuildContext { path:crate::agents::login_path(), ..Default::default() };
+    let context=apex_adapters::BuildContext { path:crate::agents::login_path(), attachment_roots, ..Default::default() };
     let participant=apex_adapters::build_assistant(config,&context)?;
     tokio::time::timeout(std::time::Duration::from_secs(limit),participant.respond(request,&|_|{}))
         .await.map_err(|_|"The assistant provider timed out. You can retry or select another provider.".to_string())?

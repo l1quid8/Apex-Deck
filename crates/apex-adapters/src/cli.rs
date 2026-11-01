@@ -105,7 +105,7 @@ impl CliParticipant {
         Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, computer: None }
     }
 
-    /// Start a text-only turn with tools disabled at both the CLI and
+    /// Start a conversation turn with tools disabled at both the CLI and
     /// protocol boundaries. Known agents use provider-specific tool removal and private process isolation.
     pub fn with_tools_disabled(mut self) -> Self {
         self.tools_disabled = true;
@@ -113,7 +113,6 @@ impl CliParticipant {
         self.config.access = Access::Read;
         self.phone = None;
         self.codex_hook = None;
-        self.attachment_roots.clear();
         self
     }
 
@@ -784,7 +783,7 @@ impl Participant for CliParticipant {
             let isolation = tokio::task::spawn_blocking(move || crate::gateway_sandbox::Isolation::new_with_path(&backend, path.as_deref()))
                 .await.map_err(|_| ParticipantError::Failed("Gateway isolation setup failed".into()))??;
             let isolation = std::sync::Arc::new(isolation);
-            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, computer: None };
+            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: self.attachment_roots.clone(), phone: None, computer: None };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
@@ -795,7 +794,7 @@ impl Participant for CliParticipant {
         if !images.is_empty() {
             match &self.config.backend {
                 Backend::Agent { tool: AgentTool::Grok, .. } => {
-                    let files = crate::attachments::Staged::new()?;
+                    let files = self.isolation.as_ref().map_or_else(crate::attachments::Staged::new, |isolation| isolation.stage_images())?;
                     let path = files.grok(&prompt, &images)?;
                     // Replace /dev/stdin with a .json file so Grok parses ACP blocks.
                     if let Some(index) = args.iter().position(|arg| arg == "--prompt-file") {
@@ -804,7 +803,7 @@ impl Participant for CliParticipant {
                     staged = Some(files);
                 }
                 Backend::Agent { tool: AgentTool::Gemini, .. } => {
-                    let files = crate::attachments::Staged::new()?;
+                    let files = self.isolation.as_ref().map_or_else(crate::attachments::Staged::new, |isolation| isolation.stage_images())?;
                     prompt = files.gemini(&prompt, &images)?;
                     let directory = files.dir.to_string_lossy().into_owned();
                     if let Some(index) = args.iter().position(|arg| arg == "--include-directories") {
@@ -928,6 +927,25 @@ mod tests {
         let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None};
         let result=bot.respond(request,&|_|{}).await;
         assert!(matches!(result,Err(ref why) if why.to_string().contains("Text-only turns cannot")),"workspace escalation must refuse before launching any provider");
+    }
+
+    #[test]
+    fn tool_free_assistant_keeps_explicit_image_authority() {
+        let folder = crate::attachments::Staged::new().unwrap();
+        let image = folder.dir.join("screen.png");
+        std::fs::write(&image, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let config = serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"claude_code"},"access":"full"})).unwrap();
+        let bot = super::CliParticipant::new(config).with_context(&crate::BuildContext {
+            attachment_roots: vec![folder.dir.canonicalize().unwrap()], ..Default::default()
+        }).with_tools_disabled();
+        let request = apex_core::TurnRequest { turns: vec![apex_core::ViewTurn {
+            role: apex_core::Role::User, content: format!("Attached image: {}", image.display())
+        }], ..Default::default() };
+        let images = crate::attachments::for_request(&request, &bot.attachment_roots).unwrap();
+        assert_eq!(crate::attachments::claude_content("describe", &images)[1]["source"]["data"], "iVBORw0KGgpmaXh0dXJl");
+        assert!(bot.tools_disabled && bot.mcp_disabled);
+        assert_eq!(bot.config.access, apex_core::Access::Read);
+        assert!(bot.phone.is_none() && bot.codex_hook.is_none());
     }
 
     #[cfg(target_os = "macos")]

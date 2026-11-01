@@ -52,6 +52,9 @@ pub fn isolation_available(path: Option<&str>) -> Result<(), String> {
 }
 
 impl Isolation {
+    pub(crate) fn stage_images(&self) -> Result<Staged, ParticipantError> {
+        Staged::new_in(&self.root.dir.join("tmp"))
+    }
     #[allow(dead_code)]
     pub fn new(backend: &Backend) -> Result<Self, ParticipantError> {
         Self::new_with_path(backend, None)
@@ -667,6 +670,22 @@ mod tests {
         let output=command.output().await.unwrap();
         assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),serde_json::json!([]));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn assistant_sandbox_can_read_its_staged_image_input() {
+        let isolation = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap();
+        let files = isolation.stage_images().unwrap();
+        let input = files.dir.join("screen.png");
+        std::fs::write(&input, b"validated image bytes").unwrap();
+        let output = isolation.command("/bin/cat", &[input.to_string_lossy().into_owned()], None)
+            .unwrap().output().await.unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(output.stdout, b"validated image bytes");
+        let dir = files.dir.clone();
+        drop(files);
+        assert!(!dir.exists());
     }
 
 

@@ -72,7 +72,8 @@ impl ReasonOut {
 
 /// What the worker calls out to. Tests swap in fakes.
 /// Asks the model for its next move, given the assistant and what it was asked.
-type ReasonFn = Arc<dyn Fn(ParticipantConfig, TurnRequest) -> BoxFuture<Result<ReasonOut, String>> + Send + Sync>;
+// Attachment authority comes from the host's saved assistant owner, never prompt text.
+type ReasonFn = Arc<dyn Fn(ParticipantConfig, TurnRequest, Vec<std::path::PathBuf>) -> BoxFuture<Result<ReasonOut, String>> + Send + Sync>;
 /// Runs one operation and reports what it did.
 type ExecuteFn = Arc<dyn Fn(OperationSpec, Started) -> BoxFuture<Result<ToolRun, String>> + Send + Sync>;
 /// Says whether this machine can run a tool, and whether running it twice is safe.
@@ -90,8 +91,8 @@ pub struct WorkerTools {
 impl WorkerTools {
     pub fn real() -> Self {
         WorkerTools {
-            reason: Arc::new(|config, request| Box::pin(async move {
-                crate::assistant_inference::reply(config, request).await.map(|reply| ReasonOut {
+            reason: Arc::new(|config, request, attachment_roots| Box::pin(async move {
+                crate::assistant_inference::reply(config, request, attachment_roots).await.map(|reply| ReasonOut {
                     text: reply.text, cost_micros: reply.cost_micros, input_tokens: reply.input_tokens, output_tokens: reply.output_tokens,
                 })
             })),
@@ -720,6 +721,11 @@ impl Host {
         if system.chars().count() + catalog.chars().count() <= snapshot.context_budget_chars as usize { system.push_str(&catalog); }
 
         let bytes = system.len();
+        let mut request = read_only_request(system);
+        request.turns.push(apex_core::ViewTurn { role: apex_core::Role::User, content: text.clone() });
+        // The composer saves attachments using the assistant's stable id as its room key.
+        let attachment_roots = vec![self.attachment_dir(&snapshot.id)?.canonicalize()
+            .map_err(|error| format!("Could not resolve assistant attachments: {error}"))?];
         // No lock is held across the model call. A restart here leaves the
         // event `Processing`, which recovery turns back into `Received`; the
         // call has no side effects, so running it again commits one reply.
@@ -729,7 +735,7 @@ impl Host {
         let active=self.personal_get(&snapshot.id)?.events.iter().any(|e|e.id==event.id&&e.state==EventState::Processing);
         if !active { self.personal_stops.lock().unwrap().remove(&key); return Ok(()); }
         let answer=tokio::select! {
-            output=(tools.reason)(profile.clone(),read_only_request(system))=>Some(output),
+            output=(tools.reason)(profile.clone(),request,attachment_roots)=>Some(output),
             _=stop.notified()=>None,
         };
         self.personal_stops.lock().unwrap().remove(&key);
@@ -764,7 +770,7 @@ impl Host {
         }
         let system = context::consolidate_prompt(&snapshot, &question, &reports, now());
         let bytes = system.len();
-        match (tools.reason)(profile.clone(), read_only_request(system)).await {
+        match (tools.reason)(profile.clone(), read_only_request(system), vec![]).await {
             Ok(out) => {
                 let cost = cost_entry("summary", &out, bytes, endpoint(&profile), now());
                 // Only the text is used: a summary of helper reports can't start anything.
@@ -926,7 +932,7 @@ impl Host {
     async fn personal_helper(&self, tools: &WorkerTools, assistant_id: &str, task_id: &str, profile: ParticipantConfig, assignment: String, stop: &tokio::sync::Notify) -> Result<(), String> {
         let system = context::helper_prompt(&assignment);
         let bytes = system.len();
-        let call = (tools.reason)(profile.clone(), read_only_request(system));
+        let call = (tools.reason)(profile.clone(), read_only_request(system), vec![]);
         let result = tokio::select! {
             result = call => Some(result),
             () = stop.notified() => None,

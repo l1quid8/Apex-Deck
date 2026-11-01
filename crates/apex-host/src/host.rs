@@ -2642,7 +2642,7 @@ impl Host {
     /// Photos and files attached in the composer live with the app's data, one
     /// folder per thread, so they stay out of the workspace and its diff.
     /// Agents are allowed to read the `attachments` folder; see `new`.
-    fn attachment_dir(&self, room: &str) -> Result<PathBuf, String> {
+    pub(crate) fn attachment_dir(&self, room: &str) -> Result<PathBuf, String> {
         let room = export::safe_file_name(room)?;
         let dir = self.paths.data.join("attachments").join(room);
         std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make the attachments folder: {e}"))?;
