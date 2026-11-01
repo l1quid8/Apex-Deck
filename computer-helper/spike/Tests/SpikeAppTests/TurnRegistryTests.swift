@@ -95,6 +95,22 @@ final class TurnRegistryTests: XCTestCase {
   }
 }
 
+final class RunningAppIdentityTests: XCTestCase {
+  func testRunningCalculatorMatchesCapturedUniversalBundleAndRejectsChangedSignature() throws {
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.calculator").first,
+      let url = app.bundleURL else { throw XCTSkip("Calculator is not running") }
+    // Newer macOS Calculator bundles have arm64e and arm64e.x1 slices;
+    // the running slice need not be the default selected from the bundle.
+    let identity = try AppIdentity.capture(url, bundle: "com.apple.calculator")
+    XCTAssertNoThrow(try identity.validate(app))
+    let changed = AppIdentity(bundle: identity.bundle, path: identity.path,
+      executable: identity.executable, signature: Data([0]))
+    XCTAssertThrowsError(try changed.validate(app)) { error in
+      XCTAssertEqual((error as? Refusal)?.code, "app_identity_changed")
+    }
+  }
+}
+
 final class SafariWebAppIdentityTests: XCTestCase {
   private let uuid = "2D312C6E-5EA1-488C-B953-E02B7C796B19"
   private var bundle: String { "com.apple.Safari.WebApp.\(uuid)" }

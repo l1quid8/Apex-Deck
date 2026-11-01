@@ -237,7 +237,9 @@ struct AppIdentity: Equatable {
     var info: CFDictionary?
     guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: app.processIdentifier] as CFDictionary, [], &running) == errSecSuccess,
       let running = running, SecCodeCheckValidity(running, [], nil) == errSecSuccess,
-      SecCodeCopyStaticCode(running, [], &runningStatic) == errSecSuccess, let runningStatic = runningStatic,
+      // Match capture's universal bundle representation, rather than only the
+      // running slice (which can differ from the bundle's default architecture).
+      SecCodeCopyStaticCode(running, SecCSFlags(rawValue: kSecCSUseAllArchitectures), &runningStatic) == errSecSuccess, let runningStatic = runningStatic,
       SecCodeCopySigningInformation(runningStatic, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
       (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data == signature else { throw Refusal("running_app_identity_changed") }
   }
