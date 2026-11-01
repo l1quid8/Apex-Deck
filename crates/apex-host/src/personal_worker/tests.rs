@@ -156,6 +156,26 @@ async fn a_status_question_reads_a_chat_and_answers_without_touching_it() {
 }
 
 #[tokio::test]
+async fn a_long_chat_read_keeps_the_newest_messages() {
+    let fixture = Fixture::new();
+    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let mut saved = fixture.host.store().room(THREAD).unwrap().unwrap();
+    for seq in 0..12 {
+        let text = format!("{seq}-marker {}", "x".repeat(590));
+        saved.snapshot.transcript.push(apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, late_reply_from: None, servers: vec![], seq, speaker: apex_core::Speaker::Human, text, at: None });
+    }
+    fixture.host.store().save_room(THREAD, &saved).unwrap();
+    let fake = Fake::new(true);
+    fake.say(&room_reply(rooms::READ, &[THREAD]));
+    fixture.host.personal_send(&fixture.id, "status", "Any news?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let task = fixture.task();
+    let kept = &task.receipts[0].output_excerpt;
+    assert!(kept.contains("11-marker") && !kept.contains("(cut)"), "{kept}");
+    assert!(!kept.contains("[Human] 0-marker"), "the oldest gives way first");
+}
+
+#[tokio::test]
 async fn an_explicit_instruction_lands_once_and_is_read_back() {
     let fixture = Fixture::new();
     fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
