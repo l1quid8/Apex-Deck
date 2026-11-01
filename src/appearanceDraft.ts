@@ -143,6 +143,17 @@ export function editedKeys(draft: AppearanceDraft, saved: SkinFile[]): Key[] {
   return values.accentColor ? keys.filter((key) => key !== "hue") : keys;
 }
 
+/** Put some keys back to the preset's values. */
+export function revertKeys(draft: AppearanceDraft, keys: Key[], saved: SkinFile[]): AppearanceDraft {
+  const base = baseValues(draft.source, saved);
+  const values: AppearanceValues = { ...draft.values };
+  for (const key of keys) {
+    if (base[key] === undefined) delete values[key];
+    else Object.assign(values, { [key]: base[key] });
+  }
+  return { ...draft, values };
+}
+
 const editsIn = (keys: Key[], values: AppearanceValues, base: AppearanceValues): Partial<AppearanceValues> =>
   Object.fromEntries(keys.filter((key) => !same(values[key], base[key])).map((key) => [key, values[key]]));
 

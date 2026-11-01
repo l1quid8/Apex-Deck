@@ -62,3 +62,11 @@ export const onSkin = (id, BUILTIN_SKINS, extra = {}) => {
   const skin = BUILTIN_SKINS.find((s) => s.id === id);
   return { appearance: { current: { format: 'apex-glass-playground', version: 2, name: skin.name, appearance: skin.appearance }, saved: [], colorMode: 'dark' }, ...extra };
 };
+
+export const STUDIO_HELPERS = `
+  const labels=()=>run("[...document.querySelectorAll('.studio-panel:not([hidden]) .studio-ctl-name')].map(e=>e.textContent)");
+  const tab=async(name)=>{ await run("document.querySelector('.studio-tabs [role=tab][data-tab=\\""+name+"\\"]').click()"); await frame(); };
+  const pickTheme=async(name)=>{ await run("document.querySelector('input[name=studio-theme][value="+name+"]').click()"); await frame(); };
+  const buttons=()=>run("[...document.querySelectorAll('.studio-status button, .studio-preset-meta button')].filter(b=>!b.hidden).map(b=>b.textContent)");
+  const text=()=>run("document.querySelector('.studio-editor').innerText");
+`;

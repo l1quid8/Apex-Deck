@@ -188,3 +188,11 @@ test('settings.json read keeps the draft and survives a bad one', () => {
   assert.equal(readSettings({ appearanceDraft: { version: 9 } }).appearanceDraft, undefined);
   assert.ok(readSettings({ appearanceDraft: goodDraft() }).appearanceDraft);
 });
+test('a control reverts to its preset alone', () => {
+  const d = { ...draft.workingDraft(base()), values: { ...clayValues, radius: 20, density: 0.72 } };
+  const e = draft.revertKeys(d, ['radius'], []);
+  assert.equal(e.values.radius, clayValues.radius);
+  assert.equal(e.values.density, 0.72);
+  const exact = { ...d, values: { ...clayValues, ...themes.colorAppearance('#35aabb') } };
+  assert.equal('accentColor' in draft.revertKeys(exact, ['accentColor', 'hue'], []).values, false);
+});

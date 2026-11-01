@@ -47,7 +47,7 @@ function normalizeHex(input: string): string | null {
 }
 
 /** One exact glow color: a color picker plus a hex box that commits on blur or Enter. */
-function GlowColorRow({ index, color, onCommit }: { index: number; color: string; onCommit: (hex: string) => void }) {
+export function GlowColorRow({ index, color, onCommit }: { index: number; color: string; onCommit: (hex: string) => void }) {
   const [text, setText] = useState(color);
   const [error, setError] = useState(false);
   useEffect(() => { setText(color); setError(false); }, [color]);
@@ -76,7 +76,7 @@ function GlowColorRow({ index, color, onCommit }: { index: number; color: string
 }
 
 /** Controls for the glyph field behind empty threads. Rendered only where the parent passes them. */
-function LandingTextureControls({ value, onChange }: { value: LandingTextureSettings; onChange: (value: LandingTextureSettings) => void }) {
+export function LandingTextureControls({ value, onChange }: { value: LandingTextureSettings; onChange: (value: LandingTextureSettings) => void }) {
   const [hexText, setHexText] = useState(value.color);
   const [hexBad, setHexBad] = useState(false);
   useEffect(() => { setHexText(value.color); setHexBad(false); }, [value.color]);

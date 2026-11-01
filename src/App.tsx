@@ -14,7 +14,8 @@ import { connection, statusWords } from "./connection";
 import { SettingsPage, type SettingsSection } from "./lazyViews";
 import { DEFAULT_LANDING_TEXTURE, DEFAULT_SETTINGS, effectiveLandingTexture, readSettings, type AppSettings } from "./settings";
 import { DEFAULT_APPEARANCE } from "./themes";
-import { useAppearance } from "./useAppearance";
+import { useAppearance, useSystemDark } from "./useAppearance";
+import { useAppearanceDraft } from "./useAppearanceDraft";
 import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { ArtifactsHost } from "./ArtifactsPanel";
@@ -367,6 +368,8 @@ export function App() {
   const renameSeq = useRef(0);
   const renameNote = useRef<ReturnType<typeof renameNotes> | null>(null);
   renameNote.current ??= renameNotes(toast);
+  const systemDark = useSystemDark();
+  const appearanceStudio = useAppearanceDraft(settings, setSettings, toast, systemDark);
   const onCopyRenamed = useCallback((seq: number, outcome: CopyOutcome) => renameNote.current?.heard(seq, outcome), []);
   /** Agents whose name changed from `before` to `after`, for every thread to rename its copy of. */
   const noteRenames = (before: ParticipantConfig[], after: ParticipantConfig[]) => {
@@ -2923,7 +2926,7 @@ export function App() {
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}
-        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
+        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} appearanceStudio={appearanceStudio} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
       {connectionDialog && backend.hosts && <ConnectionDialog mode={connectionDialog} hosts={hostList} api={backend.hosts}
