@@ -15,7 +15,12 @@ export function useAssistantVoice({lane,backend,settings,onSettings,onFocus}:{la
  const live=useRef({lane,backend,config,onSettings,onFocus});live.current={lane,backend,config,onSettings,onFocus};
  const bridge=useMemo(()=>available?createPersonalVoiceBridge({scope:{hostId,roomId,participantId:id},send:(text,request)=>live.current.lane!.sendRequest!(text,request),stop:event=>live.current.lane!.cancelReply!(event),read:()=>live.current.backend!.call<PersonalAssistantRecord>('personal_get',{assistantId:id})}):null,[available,hostId,id,roomId,backend]);
  useEffect(()=>{if(!bridge)return;const key=scopeKey({hostId,roomId});return()=>{unregisterVoiceThread(key);bridge.dispose();};},[bridge,hostId,roomId]);
- useEffect(()=>{if(!bridge)return;registerVoiceThread(scopeKey({hostId,roomId}),{candidates,settings:config,save:s=>live.current.onSettings?.(s),focus:()=>live.current.onFocus?.(),bridge:()=>bridge});});
+ useEffect(()=>{if(!bridge)return;registerVoiceThread(scopeKey({hostId,roomId}),{
+   candidates,settings:config,save:s=>live.current.onSettings?.(s),focus:()=>live.current.onFocus?.(),bridge:()=>bridge,
+   // GPT-Live for assistant conversation: same daemon mint path as room voice, using assistant:<id> scope.
+   // Uses existing ephemeral session service, never raw provider key in UI. Transcript/tool handoff returns to same PersonalLane.sendRequest event stream.
+   realtimeSession: (args) => live.current.backend!.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args as any),
+ });});
  useEffect(()=>{if(bridge&&record)bridge.update(record);},[bridge,record]);
  const who:VoiceWho=()=>({seed:record?.look?.seed??id,color:record?.look?.color??'#71e6b5'});
  const props={settings:config,candidates,who};
