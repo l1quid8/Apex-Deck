@@ -4317,9 +4317,9 @@ button.mod-status:hover { color: var(--text); }
 .update-notice-words ul { margin: 6px 0 0; padding-left: 18px; }
 .update-notice-words li + li { margin-top: 4px; }
 
-/* ── Settings v2: true black palette, grouped nav, search, mode cards ── */
+/* ── Settings v2: theme surfaces, grouped nav, search, mode cards ── */
 .settings.settings-v2 { background: var(--bg); }
-.settings-nav.settings-nav-v2 { background: var(--bg); border-right: 1px solid var(--line); width: 264px; }
+.settings-nav.settings-nav-v2 { background: var(--panel); border-right: 1px solid var(--line); width: 264px; }
 .settings-nav-v2 .settings-nav-head h1 { color: var(--text); }
 .settings-search-wrap { position: relative; margin: 6px 8px 10px; }
 .settings-search-wrap .search-icon { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; pointer-events: none; }
@@ -4420,10 +4420,4 @@ button.mod-status:hover { color: var(--text); }
   .settings-row { flex-direction: column; align-items: stretch; gap: 10px; }
   .settings-label { max-width: none; }
 }
-
-/* Ensure true black canvas for dark effective mode regardless of theme */
-:root:not([data-deck-light=true]) body,
-:root:not([data-deck-light=true]) .settings,
-:root:not([data-deck-light=true]) .settings-main { background: #000000; }
-:root:not([data-deck-light=true]) .settings-nav { background: #000000; }
 
