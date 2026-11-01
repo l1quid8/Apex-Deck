@@ -111,8 +111,12 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
         preset: (p.preset as any) ?? prefs.preset,
         labelsEnabled: (s.cursorOverlayLabelsEnabled ?? p.labelsEnabled) as any ?? prefs.labelsEnabled,
       });
+      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
     }
-    catch (e: any) { setError(e?.message || 'The request could not finish. Open Unified Computer Use from the menu bar and check its status.'); }
+    catch (e: any) {
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: 'cursor' })); } catch {}
+      setError(e?.message || 'The request could not finish. Open Unified Computer Use from the menu bar and check its status.');
+    }
     finally { setBusy(false); }
   };
 
@@ -135,7 +139,9 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
           customImage: (hp as any).customImage ?? next.customImage ?? null,
         });
       }
+      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
     } catch (e: any) {
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: 'cursor' })); } catch {}
       setError(e?.message || 'Could not save cursor settings. Helper acknowledgement failed; host prefs kept but helper may be offline.');
       // rollback optimistic to previous validated state if save failed
       setPrefs(prev);
@@ -180,7 +186,7 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     });
     setBusy(true); setError('');
     try {
-      const s = await backend.call<ComputerStatus>('computer_set_cursor_image', { image_base64: base64 });
+      const s = await backend.call<ComputerStatus>('computer_set_cursor_image', { imageBase64: base64, image_base64: base64 });
       setStatus(s);
       const hp = (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? s.cursorOverlay;
       if (hp) {
@@ -194,7 +200,9 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
       } else {
         setPrefs(prev => ({ ...prev, preset: 'custom' }));
       }
+      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
     } catch (e: any) {
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: 'cursor' })); } catch {}
       setError(e?.message || 'Could not save custom cursor. Falls back to built-in.');
     } finally { setBusy(false); }
   };

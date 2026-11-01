@@ -131,6 +131,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [focusedResultIdx, setFocusedResultIdx] = useState(-1);
   const saveGen = useRef(0);
+  const saveFailed = useRef(false);
   const lastSettingsJson = useRef<string>('');
   const expandedAdvanced = useRef<Set<string>>(new Set());
 
@@ -271,27 +272,38 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
       if (saveGen.current === 0) { saveGen.current = 1; return; }
     }
     const gen = ++saveGen.current;
+    saveFailed.current = false;
     setSaveState('saving');
     const timer = setTimeout(() => {
       if (gen !== saveGen.current) return; // stale completion must not overwrite newer edit
+      if (saveFailed.current) return; // failed save must not falsely report Saved
       // Only show Saved if no newer edit queued
       setSaveState('saved');
-      setTimeout(() => { if (gen === saveGen.current) setSaveState('idle'); }, 1800);
+      setTimeout(() => { if (gen === saveGen.current && !saveFailed.current) setSaveState('idle'); }, 1800);
     }, 600);
     return () => clearTimeout(timer);
   }, [settings]);
 
-  // Listen for storage save errors to surface "Could not save" tied to latest gen
+  // Listen for storage save errors or successful save events
   useEffect(() => {
     const onStorageError = (e: Event) => {
       const detail = (e as CustomEvent).detail as string | undefined;
-      if (!detail || detail.toLowerCase().includes('settings')) {
+      if (!detail || detail.toLowerCase().includes('settings') || detail.toLowerCase().includes('cursor')) {
+        saveFailed.current = true;
         setSaveState('error');
       }
     };
+    const onSaved = () => {
+      saveFailed.current = false;
+      setSaveState('saved');
+      setTimeout(() => { if (!saveFailed.current) setSaveState('idle'); }, 1800);
+    };
     window.addEventListener('settings-save-error' as any, onStorageError);
-    // Also listen to generic storage-error bubbling from App toast pattern via MutationObserver of body text? Fallback: window error event
-    return () => window.removeEventListener('settings-save-error' as any, onStorageError);
+    window.addEventListener('settings-saved' as any, onSaved);
+    return () => {
+      window.removeEventListener('settings-save-error' as any, onStorageError);
+      window.removeEventListener('settings-saved' as any, onSaved);
+    };
   }, []);
 
   const currentSec = CATALOG_SECTIONS.find(s=>s.id===resolvedSection) ?? CATALOG_SECTIONS[0];

@@ -214,24 +214,22 @@ private final class OverlayView: NSView {
     showRipple = CursorOverlaySettings.ripple
     showHighlight = CursorOverlaySettings.highlight
 
-    // Custom image loading with validation fallback
-    if let path = CursorOverlaySettings.customImagePath, !path.isEmpty {
+    // Custom image loading with validation fallback (only active for custom preset)
+    if preset == .custom, let path = CursorOverlaySettings.customImagePath, !path.isEmpty {
       if let err = CursorOverlaySettings.validateImageFile(at: path) {
         // Degrade gracefully to default if invalid
         NSLog("CursorOverlay custom image invalid (%@): %@", path, err)
         customImage = nil
-        if preset == .custom { preset = .default }
+        preset = .default
       } else if let img = NSImage(contentsOfFile: path) {
         customImage = img
       } else {
         customImage = nil
+        preset = .default
       }
     } else {
       customImage = nil
-    }
-    // If preset is custom but image missing, fallback to default
-    if preset == .custom && customImage == nil {
-      preset = .default
+      if preset == .custom { preset = .default }
     }
 
     needsDisplay = true
@@ -306,18 +304,14 @@ private final class OverlayView: NSView {
     }
 
     if !isRingOnly {
-      if let img = customImage {
+      if preset == .custom, let img = customImage {
         // Draw custom PNG image, scaled by sizeMultiplier, hotspot handled
         let baseSize: CGFloat = 32 * sizeMultiplier
         let imgSize = NSSize(width: baseSize, height: baseSize)
         let hsX = CGFloat(CursorOverlaySettings.hotspotX)
         let hsY = CGFloat(CursorOverlaySettings.hotspotY)
-        // Clamp hotspot to image bounds if needed
-        // Origin at tip minus hotspot
-        let origin = CGPoint(x: pointerPoint.x - hsX * sizeMultiplier, y: pointerPoint.y - hsY * sizeMultiplier - imgSize.height + hsY * sizeMultiplier)
-        // For simplicity if hotspot 0,0, draw with top-left at pointer (arrow tip at image origin)
-        // We'll draw with pointer at origin adjusted
-        let layerOrigin = CGPoint(x: pointerPoint.x - hsX, y: pointerPoint.y - imgSize.height + hsY)
+        // Origin at tip minus scaled hotspot
+        let layerOrigin = CGPoint(x: pointerPoint.x - hsX * sizeMultiplier, y: pointerPoint.y - imgSize.height + hsY * sizeMultiplier)
 
         let imgLayer = CALayer()
         imgLayer.contents = img

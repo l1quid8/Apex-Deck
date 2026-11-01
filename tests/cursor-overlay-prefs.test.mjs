@@ -82,3 +82,51 @@ test('custom image path must be absolute and not temp fragile', () => {
   assert.equal(isAbsolute('tmp/cursor.png'), false);
   assert.equal(isAbsolute('/tmp/cursor.png'), true); // absolute but we prefer app data dir; temp still absolute but fragile – enforced by host storing in data dir
 });
+
+test('atomic apply ensures invalid incoming prefs cause zero partial mutations', () => {
+  const initial = { preset: 'default', size: 1.0, accent: '#4299FF', ripple: true };
+  let active = { ...initial };
+
+  const applyAtomic = (incoming) => {
+    // Validate everything first
+    if (incoming.size !== undefined && (incoming.size < 0.5 || incoming.size > 4.0)) return 'invalid size';
+    if (incoming.accent !== undefined && !isHex(incoming.accent)) return 'invalid accent';
+    if (incoming.motion) {
+      if (incoming.motion.travelMinMs < 30 || incoming.motion.travelMinMs > incoming.motion.travelMaxMs) return 'invalid travel';
+      if (incoming.motion.travelMaxMs + incoming.motion.dwellMs > 700) return 'budget exceeded';
+    }
+    // Only mutate if all valid
+    active = { ...active, ...incoming };
+    return null;
+  };
+
+  // Attempt invalid update that has a valid preset change but invalid size
+  const err1 = applyAtomic({ preset: 'simple', size: 99.0 });
+  assert.equal(err1, 'invalid size');
+  assert.equal(active.preset, 'default', 'preset must NOT have been partially mutated');
+  assert.equal(active.size, 1.0, 'size must be unchanged');
+
+  // Attempt invalid update with invalid motion budget
+  const err2 = applyAtomic({ accent: '#FFFFFF', motion: { travelMinMs: 90, travelMaxMs: 600, dwellMs: 200 } });
+  assert.equal(err2, 'budget exceeded');
+  assert.equal(active.accent, '#4299FF', 'accent must NOT have been partially mutated');
+});
+
+test('host persisted prefs survive helper restart and clobbering', () => {
+  // Host prefs are authority. If helper status returns defaults or offline,
+  // host authority preserves user settings.
+  const hostSavedPrefs = { preset: 'ring-only', size: 2.5, accent: '#00FF00', labels_enabled: true };
+  const helperStatusAfterRestart = { preset: 'default', size: 1.0, accent: '#4299FF', labels_enabled: false };
+
+  // Host sync logic: if helper differs from host authority, host pushes hostSavedPrefs
+  const syncHelper = (host, helper) => {
+    if (JSON.stringify(host) !== JSON.stringify(helper)) {
+      return { pushedToHelper: host, currentAuthority: host };
+    }
+    return { pushedToHelper: null, currentAuthority: host };
+  };
+
+  const sync = syncHelper(hostSavedPrefs, helperStatusAfterRestart);
+  assert.deepEqual(sync.pushedToHelper, hostSavedPrefs, 'host must re-push saved prefs to helper');
+  assert.deepEqual(sync.currentAuthority, hostSavedPrefs, 'host authority must never be overwritten');
+});

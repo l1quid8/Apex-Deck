@@ -428,3 +428,27 @@ test('settings safely ignores workspaces with empty or invalid paths without thr
  assert.equal(input(tree,'Use Temp No project'),null);
  assert.equal(input(tree,'Use Spaces only'),null);
 });
+
+test('existing granted valid projects are preserved and not dropped when projectless workspaces exist',async()=>{
+ const initialProject = { hostId: 'mac', workspaceId: 'ws-valid', cwd: '/Users/tylercaldwell/code/valid' };
+ const h=settingsMount({
+  lane: {
+   assistant: {
+    ...record,
+    allowedFolders: ['/Users/tylercaldwell/code/valid'],
+    projects: [{ project: initialProject, tools: 'ask' }]
+   }
+  },
+  projects:[
+   {id:'ws-valid',name:'Valid Project',path:'/Users/tylercaldwell/code/valid'},
+   {id:'ws-empty',name:'Temp No project',path:''},
+  ]
+ });
+ const tree=await h.ready();
+ const checkbox = input(tree,'Use Valid Project');
+ assert.ok(checkbox);
+ assert.equal(checkbox.props.checked, true);
+ await submit(h);
+ assert.equal(h.calls.length, 1);
+ assert.deepEqual(h.calls[0].projects, [{ project: initialProject, tools: 'ask' }]);
+});

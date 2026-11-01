@@ -99,7 +99,14 @@ pub enum Command {
     ComputerSetEnabled { enabled: bool },
     ComputerSetActionLabels { enabled: bool },
     ComputerSetCursorOverlay { prefs: serde_json::Value },
-    ComputerSetCursorImage { image_base64: String, #[serde(default)] hotspot_x: Option<f64>, #[serde(default)] hotspot_y: Option<f64> },
+    ComputerSetCursorImage {
+        #[serde(alias = "image_base64")]
+        image_base64: String,
+        #[serde(default, alias = "hotspot_x")]
+        hotspot_x: Option<f64>,
+        #[serde(default, alias = "hotspot_y")]
+        hotspot_y: Option<f64>,
+    },
     ComputerResetCursorOverlay {},
     ComputerStop {},
     PhoneStatus {},

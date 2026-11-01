@@ -665,7 +665,10 @@ export function App() {
   // Preservation: failed saves retain local value for retry (queue keeps pending value), stale completions not shown as success due to generation check in SettingsPage.
   useEffect(() => {
     if (!backend || !settingsRead.current) return;
-    settingsQueue.current = settingsQueue.current.catch(() => {}).then(() => backend.settingsSave(settings));
+    settingsQueue.current = settingsQueue.current.catch(() => {}).then(async () => {
+      await backend.settingsSave(settings);
+      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
+    });
     settingsQueue.current.catch((error) => {
       const msg = `Could not save settings: ${String(error)}`;
       setStorageError(msg);

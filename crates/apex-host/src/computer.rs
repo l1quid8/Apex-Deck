@@ -491,34 +491,29 @@ impl Host {
         Ok(self.computer_status().await)
     }
     pub async fn computer_set_action_labels(&self, enabled: bool) -> Result<Value, String> {
-        // atomic validated persistence: save must succeed
-        {
-            let mut prefs = self.computer.cursor_prefs();
-            prefs.labels_enabled = enabled;
-            crate::cursor_overlay::save(&self.computer.data_root, &prefs).map_err(|e| e)?;
-        }
+        let mut prefs = self.computer.cursor_prefs();
+        prefs.labels_enabled = enabled;
+        prefs.validate().map_err(|e| e)?;
+
         #[cfg(unix)]
         {
             match connect().await {
                 Ok(mut stream) => {
                     match rpc(&mut stream, "unified/set-action-labels", json!({"enabled":enabled})).await {
-                        Ok(_) => Ok(self.computer_status().await),
+                        Ok(_) => {}
                         Err(e) => {
-                            // Helper reachable but refused – surface failure
-                            Err(format!("Helper failed to apply action labels: {e}"))
+                            // Helper reachable but refused – surface failure without mutating host disk
+                            return Err(format!("Helper failed to apply action labels: {e}"));
                         }
                     }
                 }
                 Err(_) => {
                     // Helper not running – degrade gracefully, host prefs are source of truth
-                    Ok(self.computer_status().await)
                 }
             }
         }
-        #[cfg(not(unix))]
-        {
-            Ok(self.computer_status().await)
-        }
+        crate::cursor_overlay::save(&self.computer.data_root, &prefs).map_err(|e| e)?;
+        Ok(self.computer_status().await)
     }
 
     pub async fn computer_set_cursor_overlay(&self, prefs: Value) -> Result<Value, String> {
@@ -567,16 +562,16 @@ impl Host {
             crate::cursor_overlay::CursorPreset::RingOnly => {
                 current.ripple = true;
                 current.highlight = true;
-                // best approximation; actual no-arrow requires renderer support
             }
             crate::cursor_overlay::CursorPreset::Default => {
-                // keep as set, but ensure ripple/highlight true if not explicitly changed
+                // keep as set
             }
             crate::cursor_overlay::CursorPreset::Custom => {}
         }
         current.validate().map_err(|e| e)?;
-        crate::cursor_overlay::save(&self.computer.data_root, &current).map_err(|e| e)?;
-        // Attempt helper RPC with acknowledgement – surface failure if helper reachable
+
+        // If helper is online, apply to helper FIRST.
+        // If helper returns an error, do NOT save to host disk so disk state stays clean.
         #[cfg(unix)]
         {
             match connect().await {
@@ -588,9 +583,10 @@ impl Host {
                         return Err(format!("Helper failed to apply cursor overlay: {err}"));
                     }
                 }
-                Err(_) => { /* degrade gracefully if helper offline */ }
+                Err(_) => { /* helper offline – persist locally, will sync when helper is online */ }
             }
         }
+        crate::cursor_overlay::save(&self.computer.data_root, &current).map_err(|e| e)?;
         Ok(self.computer_status().await)
     }
 
