@@ -73,9 +73,10 @@ public final class Latch {
   }
   /// Real input from the session tap. Input in another app can't reach the target, so it is
   /// ignored. An unknown front app counts, because Tyler's priority must not depend on a lookup.
-  public func human(motion isMotion: Bool, frontmost: Int32?) {
+  /// `under` is the app under a click, which can reach a window without activating it.
+  public func human(motion isMotion: Bool, frontmost: Int32?, under: Int32? = nil) {
     lock.lock()
-    let elsewhere = target != nil && frontmost != nil && frontmost != target
+    let elsewhere = target != nil && frontmost != nil && frontmost != target && under != target
     lock.unlock()
     guard !elsewhere else { return }
     if isMotion { motion() } else { event() }

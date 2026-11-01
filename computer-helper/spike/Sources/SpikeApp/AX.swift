@@ -22,6 +22,23 @@ func element(_ e: AXUIElement, _ key: String) -> AXUIElement? {
   return (v as! AXUIElement)
 }
 func string(_ e: AXUIElement, _ key: String) -> String? { attr(e, key) as? String }
+/// A timeout or generic failure can come back after the app acted, as with a button that
+/// opens a dialog. Only a call the app turned away proves nothing happened.
+func axOutcome(_ error: AXError) -> TypeLadder.Write {
+  switch error {
+  case .success: return .applied
+  case .attributeUnsupported, .actionUnsupported, .illegalArgument, .invalidUIElement, .notImplemented: return .refused
+  default: return .unknown
+  }
+}
+func axRefusal(_ code: String, _ error: AXError) -> Refusal {
+  axOutcome(error) == .refused ? Refusal(code) : Refusal("\(code); delivery=delivery_uncertain; retry=unsafe")
+}
+func perform(_ e: AXUIElement, _ action: String, failure: String) throws {
+  AXUIElementSetMessagingTimeout(e, 1)
+  let error = AXUIElementPerformAction(e, action as CFString)
+  guard error == .success else { throw axRefusal(failure, error) }
+}
 func actions(_ e: AXUIElement) -> [String] {
   var names: CFArray?
   guard AXUIElementCopyActionNames(e, &names) == .success else { return [] }

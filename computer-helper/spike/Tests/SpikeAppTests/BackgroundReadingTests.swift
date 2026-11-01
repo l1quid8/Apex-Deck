@@ -42,8 +42,27 @@ final class BackgroundReadingTests: XCTestCase {
     XCTAssertFalse(EngineSession.keepsObservation(tool: "type_text", code: "type_verification_failed; delivery=delivered_unverified; retry=unsafe"))
   }
 
-  func testTypingThatLandedReadsAsDeliveredSoItIsNotRepeated() {
-    XCTAssertNotNil(EngineSession.deliveredNote("type_verification_failed; delivery=delivered_unverified; retry=unsafe"))
-    XCTAssertNil(EngineSession.deliveredNote("type_verification_failed; delivery=delivery_uncertain; retry=unsafe"))
+  func testOnlyAFinishedActionWhoseReadingFailedCountsAsDone() {
+    XCTAssertNotNil(EngineSession.deliveredNote("window_unavailable; delivery=delivered_verified verification_scope=element_value application_commit=not_verified"))
+    for code in ["type_verification_failed; delivery=delivered_unverified; retry=unsafe",
+      "cancelled_or_stopped; delivery=delivered_unverified; retry=unsafe"] {
+      XCTAssertNil(EngineSession.deliveredNote(code), "partial or wrong text must stay an error")
+    }
+  }
+
+  func testAnAccessibilityErrorOnlyProvesNothingLandedWhenTheCallWasRefused() {
+    XCTAssertEqual(axOutcome(.success), .applied)
+    for error in [AXError.attributeUnsupported, .actionUnsupported, .illegalArgument, .invalidUIElement, .notImplemented] {
+      XCTAssertEqual(axOutcome(error), .refused)
+    }
+    for error in [AXError.cannotComplete, .failure, .noValue] { XCTAssertEqual(axOutcome(error), .unknown) }
+    XCTAssertEqual(axRefusal("press_failed", .actionUnsupported).code, "press_failed")
+    XCTAssertEqual(axRefusal("press_failed", .cannotComplete).code, "press_failed; delivery=delivery_uncertain; retry=unsafe")
+  }
+
+  func testGrantPromptNeverActivatesTheHelper() {
+    let panel = AppGrantPrompt(text: "x").build()
+    XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
+    XCTAssertEqual(panel.level, .floating)
   }
 }

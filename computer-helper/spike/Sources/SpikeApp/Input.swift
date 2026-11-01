@@ -21,9 +21,15 @@ final class ActivityTap {
   }
   func invalidateObservations() { all { $0.invalidate() } }
   /// Input that did not come from this helper. Each bot only cares about its own target.
-  func outside(_ type: CGEventType) {
+  func outside(_ type: CGEventType, _ event: CGEvent? = nil) {
     let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-    all { $0.human(motion: type == .mouseMoved, frontmost: front) }
+    var under: Int32?
+    if let event = event, [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(type) {
+      let window = CGWindowID(event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
+      let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, window) as? [[String: Any]]
+      under = info?.first?[kCGWindowOwnerPID as String] as? Int32
+    }
+    all { $0.human(motion: type == .mouseMoved, frontmost: front, under: under) }
   }
   func stopAll() { all { $0.stop() } }
   private func health(_ healthy: Bool) { all { $0.setTap(healthy) } }
@@ -66,7 +72,7 @@ final class ActivityTap {
           let own = event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(ProcessInfo.processInfo.processIdentifier)
           let keyboard = type == .keyDown || type == .keyUp || type == .flagsChanged
           owner.latch.count((own ? "ownTagged" : "other") + (keyboard ? "Keyboard" : "Mouse"))
-          if !own { owner.outside(type) }
+          if !own { owner.outside(type, event) }
         }
         return Unmanaged.passUnretained(event)
       }, userInfo: Unmanaged.passUnretained(self).toOpaque())
@@ -135,7 +141,7 @@ final class Input {
       try latch.dispatch(id, epoch: s.epoch, validate: {
         _ = try self.guardFocus(s, id, deadline)
       }, post: {
-        guard AXUIElementPerformAction(focus, semantic as CFString) == .success else { throw Refusal("key_action_failed") }
+        try perform(focus, semantic, failure: "key_action_failed")
       })
       return
     }
@@ -180,7 +186,7 @@ extension Input {
       let window = try self.pointGuard(scope: scope, s: s, id: id, deadline: deadline)
       guard same(try self.control(at: point, window: window, s: s), target) else { throw Refusal("point_target_changed") }
     }, post: {
-      guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else { throw Refusal("press_failed") }
+      try perform(target, kAXPressAction, failure: "press_failed")
     })
   }
 }

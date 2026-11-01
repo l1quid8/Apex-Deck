@@ -122,6 +122,7 @@ Tyler can only affect the target if his input can reach it, so the guard becomes
 | Types, clicks or scrolls in another app | Nothing. The bot continues |
 | Types or clicks while the target is frontmost | Spoils the reading and interrupts a running action, as now |
 | Switches to the target or clicks it | `didActivateApplication` counts as input, so the running action stops at its next check |
+| Clicks a window of the target without activating it, such as a Cmd-click | Same. The click's window names its owner |
 | Scrolls over a covered target without clicking it | Not detected. The live control recheck before every action covers this |
 
 Stop, the turn checks and the "input watcher unavailable" refusal are unchanged. This replaces the earlier rule not to scope activity by app: it relies on the frontmost app for keys and on activation for clicks, not on per-event targets.

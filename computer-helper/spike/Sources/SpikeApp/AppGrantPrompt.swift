@@ -14,12 +14,14 @@ final class AppGrantPrompt: NSObject, NSWindowDelegate {
   func show() {
     guard decision() == nil else { return }
     let window = build()
-    panel = window; window.center(); window.makeKeyAndOrderFront(nil)
-    NSApplication.shared.activate(ignoringOtherApps: true)
+    // Shown over the person's work without taking their keyboard or the front app.
+    panel = window; window.center(); window.orderFrontRegardless()
   }
   func build() -> NSPanel {
     let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 340),
-      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+      styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
+    window.level = .floating
+    window.hidesOnDeactivate = false
     window.title = "Unified Computer Use — App Access"
     window.isReleasedWhenClosed = false; window.delegate = self
     let title = NSTextField(wrappingLabelWithString: "Allow access to this app?")

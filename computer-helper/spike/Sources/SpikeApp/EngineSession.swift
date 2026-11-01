@@ -38,10 +38,11 @@ final class EngineSession {
     return code + "; " + Self.actionSummary(lastAction)
   }
 
-  /// An action that went through must never read as a failure: a model would
-  /// repeat it. Only the follow-up reading failed, so say that and nothing else.
+  /// An action that finished must never read as a failure: a model would repeat it.
+  /// Only the follow-up reading failed, which `failureCode` marks with the action's
+  /// summary. Text that went in partly or wrongly is not finished, so it stays an error.
   static func deliveredNote(_ code: String) -> String? {
-    guard code.contains("delivery=delivered_") else { return nil }
+    guard code.contains("delivery=delivered_"), code.contains("verification_scope=") else { return nil }
     return "action_delivered; do not repeat it. The follow-up reading failed, so call read_screen before the next action. Detail: \(code)"
   }
   /// Nothing reached the app, so the bot's reading is still as good as it was.
@@ -160,8 +161,13 @@ final class EngineSession {
       let ref = try reference(element: number, snapshot: s.id)
       try ax.validate(s)
       current = nil
-      field = try engine.focus(observation: s.id, ref: ref) {
-        try self.checkContinuation(s, id: id, latch: latch)
+      do {
+        field = try engine.focus(observation: s.id, ref: ref) {
+          try self.checkContinuation(s, id: id, latch: latch)
+        }
+      } catch let error as Refusal where error.code.contains("delivery=delivered_") {
+        // Only the focus moved. No text went in, whatever the engine says of that step.
+        throw Refusal("type_interrupted_before_text; delivery=not_delivered; retry=safe")
       }
     } else {
       field = try ax.liveFocus(s)
@@ -182,9 +188,9 @@ final class EngineSession {
     if let frame = rect(field) {
       CursorOverlayIntegration.show(at: CGPoint(x: frame.midX, y: frame.midY), pid: s.app.processIdentifier, label: "Type", action: .type)
     }
-    func write(_ attribute: String, _ text: String) -> Bool {
+    func write(_ attribute: String, _ text: String) -> TypeLadder.Write {
       AXUIElementSetMessagingTimeout(field, 1)
-      return AXUIElementSetAttributeValue(field, attribute as CFString, text as CFString) == .success
+      return axOutcome(AXUIElementSetAttributeValue(field, attribute as CFString, text as CFString))
     }
     try TypeLadder.run(text: text, value: value,
       selection: selectedRange(field).map { NSRange(location: $0.location, length: $0.length) },

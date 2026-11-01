@@ -53,21 +53,21 @@ final class ValidationTests: XCTestCase {
     var caret = selection
     try TypeLadder.run(text: text, value: field.value, selection: selection, gate: gate, insert: { chunk in
       field.writes.append("selected")
-      guard field.insertWorks, let range = caret else { return true } // API reports success either way.
+      guard field.insertWorks, let range = caret else { return .applied } // API reports success either way.
       field.value = (field.value as NSString).replacingCharacters(in: range, with: chunk)
       caret = NSRange(location: range.location + chunk.utf16.count, length: 0)
-      return true
+      return .applied
     }, replace: { value in
       field.writes.append("value")
       if field.valueWorks { field.value = value }
-      return true
+      return .applied
     }, settled: { _, _ in field.value })
   }
   func testOnlyTheFinalReadBackIsPatient() throws {
     var waits = [Double]()
     let field = Field("abc"); field.insertWorks = false
     try TypeLadder.run(text: "x", value: "abc", selection: NSRange(location: 3, length: 0), gate: {},
-      insert: { _ in true }, replace: { field.value = $0; return true },
+      insert: { _ in .applied }, replace: { field.value = $0; return .applied },
       settled: { _, wait in waits.append(wait); return field.value })
     XCTAssertEqual(waits, [TypeLadder.quickly, TypeLadder.patiently])
   }
@@ -98,8 +98,36 @@ final class ValidationTests: XCTestCase {
   func testAFieldThatChangedSomethingElseIsDeliveredButUnverified() {
     let field = Field("abc")
     XCTAssertThrowsError(try TypeLadder.run(text: "x", value: "abc", selection: NSRange(location: 3, length: 0), gate: {},
-      insert: { _ in field.value = "abcx.com"; return true }, replace: { _ in true }, settled: { _, _ in field.value })) {
+      insert: { _ in field.value = "abcx.com"; return .applied }, replace: { _ in .applied }, settled: { _, _ in field.value })) {
       XCTAssertEqual(($0 as? Refusal)?.code, "type_verification_failed; delivery=delivered_unverified; retry=unsafe")
+    }
+  }
+  private func ladder(insert: TypeLadder.Write, replace: TypeLadder.Write, gate: @escaping () throws -> Void = {}) throws {
+    try TypeLadder.run(text: "x", value: "abc", selection: NSRange(location: 3, length: 0), gate: gate,
+      insert: { _ in insert }, replace: { _ in replace }, settled: { _, _ in "abc" })
+  }
+  func testOnlyAPlainRefusalOfEveryRungIsSafeToRetry() {
+    XCTAssertThrowsError(try ladder(insert: .refused, replace: .refused)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "type_verification_failed; delivery=not_delivered; retry=safe")
+    }
+  }
+  func testAWriteThatMayStillLandIsNeverSafeToRetry() {
+    for first in [TypeLadder.Write.applied, .unknown] {
+      XCTAssertThrowsError(try ladder(insert: first, replace: .refused)) {
+        XCTAssertEqual(($0 as? Refusal)?.code, "type_verification_failed; delivery=delivery_uncertain; retry=unsafe")
+      }
+    }
+    XCTAssertThrowsError(try ladder(insert: .refused, replace: .unknown)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "type_verification_failed; delivery=delivery_uncertain; retry=unsafe")
+    }
+  }
+  func testStopAfterAnAmbiguousWriteSaysSo() {
+    var gates = 0
+    XCTAssertThrowsError(try ladder(insert: .applied, replace: .applied, gate: {
+      gates += 1
+      if gates == 2 { throw Refusal("cancelled_or_stopped") }
+    })) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "cancelled_or_stopped; delivery=delivery_uncertain; retry=unsafe")
     }
   }
   func testStopBetweenChunksCutsTypingOffAndSaysSomeWentIn() {
@@ -140,6 +168,10 @@ final class ValidationTests: XCTestCase {
   func testPointOverCanvasHasNoControlAndNeverPressesTheWindow() {
     let nodes = [1: Node(window: false, press: false, parent: 2), 2: Node(window: true, press: true, parent: nil)]
     XCTAssertThrowsError(try nearest(1, nodes)) { XCTAssertEqual(($0 as? Refusal)?.code, "pixel_target_has_no_control") }
+  }
+  func testAPressableControlInAnotherWindowIsNeverPressed() {
+    let nodes = [1: Node(window: false, press: true, parent: 2), 2: Node(window: false, press: false, parent: nil)]
+    XCTAssertThrowsError(try nearest(1, nodes)) { XCTAssertEqual(($0 as? Refusal)?.code, "point_window_mismatch") }
   }
   func testPointOutsideTheWindowIsAMismatch() {
     let nodes = [1: Node(window: false, press: false, parent: nil)]
