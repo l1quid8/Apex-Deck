@@ -644,11 +644,11 @@ mod tests {
         crate::keys::save("APEX_MCP_TEST_KEY", "sk-saved").unwrap();
 
         let config = json!({ "mcpServers": {
-            "pomerado": { "command": "pomerado-mcp", "args": ["mint"], "env": { "OPENAI_API_KEY": "${APEX_MCP_TEST_KEY}" } }
+            "key-server": { "command": "key-server", "args": ["serve"], "env": { "OPENAI_API_KEY": "${APEX_MCP_TEST_KEY}" } }
         }});
         let servers = from_config(Some(&config), None, &[], &|name: &str| crate::keys::lookup(name));
-        let pomerado = servers.iter().find(|s| s.name == "pomerado").expect("pomerado is configured");
-        match &pomerado.transport {
+        let server = servers.iter().find(|s| s.name == "key-server").expect("key-server is configured");
+        match &server.transport {
             Transport::Stdio { env: envs, .. } => {
                 assert!(envs.contains(&("OPENAI_API_KEY".into(), "sk-saved".into())), "saved key reaches the server: {envs:?}");
             }

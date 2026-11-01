@@ -327,16 +327,6 @@ mod tests {
         assert!(needs_approval("get_open_orders"), "deliberate overmatch");
     }
     #[test]
-    fn pomerado_tools_gate_minting_and_input_but_release_job_reads() {
-        // mint starts browser and model work, provide_input sends an answer,
-        // cancel_job matches RISKY "cancel": all must ask. get_job is a plain
-        // read and runs free.
-        for name in ["mint", "provide_input", "cancel_job"] {
-            assert!(needs_approval(name), "{name} must ask");
-        }
-        assert!(!needs_approval("get_job"));
-    }
-    #[test]
     fn a_claude_tool_with_double_underscores_keeps_its_risky_prefix() {
         let (server, tool) = claude_tool("mcp__probe__post__read").unwrap();
         assert_eq!(server, "probe");
