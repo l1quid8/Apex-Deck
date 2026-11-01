@@ -55,9 +55,34 @@ export interface BuiltinSkin {
   appearance: AppearanceValues;
 }
 
+export type ColorMode = 'system' | 'light' | 'dark';
+
 export interface AppearanceSettings {
   current: SkinFile;
   saved: SkinFile[];
+  /** Explicit light/dark/system choice, separate from skin's portable light hint. */
+  colorMode?: ColorMode;
+}
+
+export function resolveColorMode(mode: ColorMode | undefined, systemDark: boolean): 'light' | 'dark' {
+  if (mode === 'light') return 'light';
+  if (mode === 'dark') return 'dark';
+  if (mode === 'system') return systemDark ? 'dark' : 'light';
+  // Back-compat: undefined mode treated as explicit from legacy skin storage
+  return 'dark';
+}
+
+export function isColorMode(value: unknown): value is ColorMode {
+  return value === 'system' || value === 'light' || value === 'dark';
+}
+
+/** Effective light boolean derived from colorMode and system preference, without mutating skin. */
+export function effectiveLightFromMode(colorMode: ColorMode | undefined, systemDark: boolean, fallbackLight: boolean): boolean {
+  if (colorMode === 'light') return true;
+  if (colorMode === 'dark') return false;
+  if (colorMode === 'system') return !systemDark ? true : false;
+  // Migration path: if no explicit mode, preserve existing appearance.light
+  return fallbackLight;
 }
 
 const appearance = (values: AppearanceValues): AppearanceValues => Object.freeze(values);
@@ -369,7 +394,7 @@ export function skinPrompt(description: string): string {
 }
 
 export function defaultAppearanceSettings(): AppearanceSettings {
-  return { current: { ...DEFAULT_SKIN, appearance: { ...DEFAULT_APPEARANCE } }, saved: [] };
+  return { current: { ...DEFAULT_SKIN, appearance: { ...DEFAULT_APPEARANCE } }, saved: [], colorMode: 'system' };
 }
 
 /** Read stored appearance settings defensively: current falls back, while each saved skin is salvaged independently. */
@@ -385,7 +410,20 @@ export function readAppearance(raw: unknown): AppearanceSettings {
       try { saved.push(parseSkin(JSON.stringify(candidate))); } catch { /* skip this saved skin only */ }
     }
   }
-  return { current, saved };
+  // Migration: explicit colorMode wins; legacy files map appearance.light -> explicit mode
+  let colorMode: ColorMode | undefined;
+  if (isColorMode((raw as any).colorMode)) {
+    colorMode = (raw as any).colorMode as ColorMode;
+  } else {
+    // No explicit mode: preserve current look from existing appearance.light
+    try {
+      const curLight = (current.appearance as AppearanceValues).light;
+      colorMode = curLight ? 'light' : 'dark';
+    } catch {
+      colorMode = 'system';
+    }
+  }
+  return { current, saved, colorMode };
 }
 
 /** Normalize picker/hex input and derive a hue for the background color field. */

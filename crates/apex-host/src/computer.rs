@@ -35,6 +35,7 @@ pub(crate) struct Computer {
     enabled: AtomicBool,
     stopped: AtomicBool,
     settings: PathBuf,
+    data_root: PathBuf,
     /// New each daemon start, so remembered thread grants never outlive it.
     instance: String,
     generations: Mutex<HashMap<String, u64>>,
@@ -52,11 +53,15 @@ impl Computer {
             enabled: AtomicBool::new(enabled),
             stopped: AtomicBool::new(false),
             settings,
+            data_root: data.to_path_buf(),
             instance: instance_id(),
             generations: Mutex::default(),
             #[cfg(unix)]
             active: Mutex::default(),
         })
+    }
+    fn cursor_prefs(&self) -> crate::cursor_overlay::CursorOverlayPrefs {
+        crate::cursor_overlay::load(&self.data_root)
     }
     fn generation(&self, thread: &str) -> u64 {
         *self
@@ -394,7 +399,18 @@ impl Drop for Lease {
 impl Host {
     pub async fn computer_status(&self) -> Value {
         let available = bundle().is_some();
-        let mut status = json!({"available":available,"enabled":self.computer.enabled.load(Ordering::SeqCst),"accessibilityTrusted":false,"listenEventAccess":false,"screenCaptureAccess":false,"tapHealthy":false,"stopped":self.computer.stopped.load(Ordering::SeqCst)});
+        let prefs = self.computer.cursor_prefs();
+        let mut status = json!({
+            "available": available,
+            "enabled": self.computer.enabled.load(Ordering::SeqCst),
+            "accessibilityTrusted": false,
+            "listenEventAccess": false,
+            "screenCaptureAccess": false,
+            "tapHealthy": false,
+            "stopped": self.computer.stopped.load(Ordering::SeqCst),
+            "cursorOverlayLabelsEnabled": prefs.labels_enabled,
+            "cursorOverlay": prefs,
+        });
         #[cfg(unix)]
         if available {
             if let Ok(mut stream) = connect().await {
@@ -406,8 +422,28 @@ impl Host {
                         "tapHealthy",
                         "cursorOverlayLabelsEnabled",
                     ] {
-                        status[key] = json!(helper[key] == true);
+                        if !helper[key].is_null() {
+                            status[key] = helper[key].clone();
+                        }
                     }
+                    if let Some(overlay) = helper.get("cursorOverlay") {
+                        if !overlay.is_null() {
+                            status["cursorOverlayFromHelper"] = overlay.clone();
+                            // Host persisted `computer-cursor.json` is the authority and must never be
+                            // overwritten by helper status. If helper differs from host prefs,
+                            // push host's persisted prefs to helper.
+                            if let Ok(helper_prefs) = serde_json::from_value::<crate::cursor_overlay::CursorOverlayPrefs>(overlay.clone()) {
+                                if helper_prefs != prefs {
+                                    let push_payload = json!({
+                                        "cursorOverlay": prefs.clone(),
+                                    });
+                                    let _ = rpc(&mut stream, "unified/set-cursor-overlay", push_payload).await;
+                                }
+                            }
+                        }
+                    }
+                    status["cursorOverlay"] = serde_json::to_value(&prefs).unwrap_or(json!({}));
+                    status["cursorOverlayLabelsEnabled"] = json!(prefs.labels_enabled);
                     status["stopped"] = json!(
                         self.computer.stopped.load(Ordering::SeqCst) || helper["stopped"] == true
                     );
@@ -455,17 +491,150 @@ impl Host {
         Ok(self.computer_status().await)
     }
     pub async fn computer_set_action_labels(&self, enabled: bool) -> Result<Value, String> {
+        let mut prefs = self.computer.cursor_prefs();
+        prefs.labels_enabled = enabled;
+        prefs.validate().map_err(|e| e)?;
+
         #[cfg(unix)]
         {
-            let mut stream = connect().await?;
-            let result = rpc(&mut stream, "unified/set-action-labels", json!({"enabled":enabled})).await?;
-            if result["cursorOverlayLabelsEnabled"] != enabled {
-                return Err("Unified Computer Use did not acknowledge the label setting.".into());
+            match connect().await {
+                Ok(mut stream) => {
+                    match rpc(&mut stream, "unified/set-action-labels", json!({"enabled":enabled})).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            // Helper reachable but refused – surface failure without mutating host disk
+                            return Err(format!("Helper failed to apply action labels: {e}"));
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Helper not running – degrade gracefully, host prefs are source of truth
+                }
             }
-            return Ok(self.computer_status().await);
         }
-        #[cfg(not(unix))]
-        { let _ = enabled; Err("Unified Computer Use requires macOS.".into()) }
+        crate::cursor_overlay::save(&self.computer.data_root, &prefs).map_err(|e| e)?;
+        Ok(self.computer_status().await)
+    }
+
+    pub async fn computer_set_cursor_overlay(&self, prefs: Value) -> Result<Value, String> {
+        // Validate via our prefs type
+        let mut current = self.computer.cursor_prefs();
+        // Merge incoming fields onto current
+        if let Ok(incoming) = serde_json::from_value::<crate::cursor_overlay::CursorOverlayPrefs>(prefs.clone()) {
+            incoming.validate().map_err(|e| e)?;
+            current = incoming;
+        } else {
+            // partial merge: accept flat json with known keys
+            if let Some(v) = prefs.get("preset").and_then(|v| v.as_str()) {
+                current.preset = match v {
+                    "simple" => crate::cursor_overlay::CursorPreset::Simple,
+                    "ring-only" | "ringOnly" => crate::cursor_overlay::CursorPreset::RingOnly,
+                    "custom" => crate::cursor_overlay::CursorPreset::Custom,
+                    _ => crate::cursor_overlay::CursorPreset::Default,
+                };
+            }
+            if let Some(v) = prefs.get("size").and_then(|v| v.as_f64()) { current.size = v; }
+            if let Some(v) = prefs.get("fill").and_then(|v| v.as_str()) { current.fill = Some(v.to_string()); }
+            if let Some(v) = prefs.get("rim").and_then(|v| v.as_str()) { current.rim = Some(v.to_string()); }
+            if let Some(v) = prefs.get("accent").and_then(|v| v.as_str()) { current.accent = Some(v.to_string()); }
+            if let Some(v) = prefs.get("ripple").and_then(|v| v.as_bool()) { current.ripple = v; }
+            if let Some(v) = prefs.get("highlight").and_then(|v| v.as_bool()) { current.highlight = v; }
+            if let Some(v) = prefs.get("labelsEnabled").and_then(|v| v.as_bool()) { current.labels_enabled = v; }
+            if let Some(motion) = prefs.get("motion") {
+                if let Some(v) = motion.get("travelMinMs").and_then(|v| v.as_u64()) { current.motion.travel_min_ms = v; }
+                if let Some(v) = motion.get("travelMaxMs").and_then(|v| v.as_u64()) { current.motion.travel_max_ms = v; }
+                if let Some(v) = motion.get("dwellMs").and_then(|v| v.as_u64()) { current.motion.dwell_ms = v; }
+                if let Some(v) = motion.get("bow").and_then(|v| v.as_f64()) { current.motion.bow = v; }
+                if let Some(v) = motion.get("overshoot").and_then(|v| v.as_f64()) { current.motion.overshoot = v; }
+                if let Some(v) = motion.get("tremor").and_then(|v| v.as_f64()) { current.motion.tremor = v; }
+            }
+            // clear custom image when preset not custom
+            if !matches!(current.preset, crate::cursor_overlay::CursorPreset::Custom) {
+                // keep image if user didn't change preset? we allow ring-only without image
+            }
+        }
+        // Apply preset side-effects (simple/front)
+        match current.preset {
+            crate::cursor_overlay::CursorPreset::Simple => {
+                current.ripple = false;
+                current.highlight = false;
+            }
+            crate::cursor_overlay::CursorPreset::RingOnly => {
+                current.ripple = true;
+                current.highlight = true;
+            }
+            crate::cursor_overlay::CursorPreset::Default => {
+                // keep as set
+            }
+            crate::cursor_overlay::CursorPreset::Custom => {}
+        }
+        current.validate().map_err(|e| e)?;
+
+        // If helper is online, apply to helper FIRST.
+        // If helper returns an error, do NOT save to host disk so disk state stays clean.
+        #[cfg(unix)]
+        {
+            match connect().await {
+                Ok(mut stream) => {
+                    let helper_payload = json!({
+                        "cursorOverlay": current.clone(),
+                    });
+                    if let Err(err) = rpc(&mut stream, "unified/set-cursor-overlay", helper_payload).await {
+                        return Err(format!("Helper failed to apply cursor overlay: {err}"));
+                    }
+                }
+                Err(_) => { /* helper offline – persist locally, will sync when helper is online */ }
+            }
+        }
+        crate::cursor_overlay::save(&self.computer.data_root, &current).map_err(|e| e)?;
+        Ok(self.computer_status().await)
+    }
+
+    pub async fn computer_set_cursor_image(&self, base64_png: String, hotspot_x: Option<f64>, hotspot_y: Option<f64>) -> Result<Value, String> {
+        let b64 = if let Some(comma) = base64_png.find(',') { &base64_png[comma+1..] } else { &base64_png };
+        let bytes = {
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            STANDARD.decode(b64.trim()).map_err(|_| "Invalid base64 PNG data".to_string())?
+        };
+        let mut img = crate::cursor_overlay::validate_and_store_image(&self.computer.data_root, &bytes)?;
+        if let Some(x) = hotspot_x { img.hotspot_x = x; }
+        if let Some(y) = hotspot_y { img.hotspot_y = y; }
+        if img.hotspot_x < 0.0 || img.hotspot_x > 512.0 || img.hotspot_y < 0.0 || img.hotspot_y > 512.0 {
+            return Err("hotspot must be between 0 and 512".into());
+        }
+        let mut prefs = self.computer.cursor_prefs();
+        prefs.custom_image = Some(img);
+        prefs.preset = crate::cursor_overlay::CursorPreset::Custom;
+        prefs.validate().map_err(|e| e)?;
+        crate::cursor_overlay::save(&self.computer.data_root, &prefs).map_err(|e| e)?;
+        #[cfg(unix)]
+        {
+            match connect().await {
+                Ok(mut stream) => {
+                    if let Err(err) = rpc(&mut stream, "unified/set-cursor-overlay", json!({ "cursorOverlay": prefs.clone() })).await {
+                        return Err(format!("Helper failed to apply custom image: {err}"));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        Ok(self.computer_status().await)
+    }
+
+    pub async fn computer_reset_cursor_overlay(&self) -> Result<Value, String> {
+        let prefs = crate::cursor_overlay::reset(&self.computer.data_root).map_err(|e| e)?;
+        #[cfg(unix)]
+        {
+            if let Ok(mut stream) = connect().await {
+                // Prefer dedicated reset RPC, fallback to set overlay
+                if rpc(&mut stream, "unified/reset-cursor-overlay", json!({})).await.is_err() {
+                    if let Ok(mut s2) = connect().await {
+                        let _ = rpc(&mut s2, "unified/set-cursor-overlay", json!({ "cursorOverlay": prefs.clone() })).await;
+                    }
+                }
+            }
+        }
+        Ok(self.computer_status().await)
     }
     pub async fn computer_set_enabled(&self, enabled: bool) -> Result<Value, String> {
         if enabled {

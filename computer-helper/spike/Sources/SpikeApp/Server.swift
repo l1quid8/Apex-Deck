@@ -56,10 +56,15 @@ final class Server {
   }
   func status() -> [String: Any] {
     let state = activity.latch.state()
+    var cursorOverlayDict = CursorOverlaySettings.toDictionary()
+    // Ensure enabled flag mirrors isEnabled
+    cursorOverlayDict["enabled"] = CursorOverlaySettings.isEnabled
+    cursorOverlayDict["labelsEnabled"] = CursorOverlaySettings.showLabel
     return ["accessibilityTrusted": ax.trusted(), "screenCaptureAccess": CGPreflightScreenCaptureAccess(),
       "listenEventAccess": CGPreflightListenEventAccess(), "tapHealthy": state.2, "stopped": turns.isStopped,
       "cursorOverlayEnabled": CursorOverlaySettings.isEnabled,
       "cursorOverlayLabelsEnabled": CursorOverlaySettings.showLabel,
+      "cursorOverlay": cursorOverlayDict,
       "pid": ProcessInfo.processInfo.processIdentifier]
   }
   func send(_ value: [String: Any], _ client: Int32) { output.lock(); defer { output.unlock() }; Wire.send(value, fd: client) }
@@ -148,7 +153,60 @@ final class Server {
         guard let enabled = params["enabled"] as? Bool else { self.fail(id, "invalid_request", client); return }
         CursorOverlaySettings.showLabel = enabled
         CursorOverlay.shared.cleanup()
-        self.response(id, ["cursorOverlayLabelsEnabled": enabled], client); return
+        self.response(id, self.status(), client); return
+      }
+      if method == "unified/set-cursor-overlay" {
+        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        if let err = CursorOverlaySettings.apply(dict: params) {
+          self.fail(id, err, client); return
+        }
+        // Return full status for host sync
+        self.response(id, self.status(), client); return
+      }
+      if method == "unified/set-cursor-image" {
+        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        // Expect base64 PNG or absolute path – host already saved image, so accept path first
+        if let path = params["path"] as? String, !path.isEmpty {
+          if let err = CursorOverlaySettings.validateImageFile(at: path) {
+            self.fail(id, err, client); return
+          }
+          UserDefaults.standard.set(path, forKey: CursorOverlaySettings.customImageKey)
+          UserDefaults.standard.set("custom", forKey: CursorOverlaySettings.presetKey)
+          self.response(id, self.status(), client); return
+        }
+        if let b64 = params["imageBase64"] as? String ?? params["image_base64"] as? String {
+          // For direct base64 via helper – store in temp app support and validate
+          guard let data = Data(base64Encoded: b64) else { self.fail(id, "invalid_base64", client); return }
+          if data.count > 2*1024*1024 { self.fail(id, "image must be ≤2MiB", client); return }
+          // Validate PNG magic
+          let pngMagic = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+          if !data.starts(with: pngMagic) { self.fail(id, "cursor images must be PNG", client); return }
+          let tmpDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Apex Deck/computer-cursor", isDirectory: true)
+          if let dir = tmpDir {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let hash = data.hashValue
+            let dest = dir.appendingPathComponent("cursor-\(abs(hash)).png")
+            do {
+              try data.write(to: dest, options: .atomic)
+              if let err = CursorOverlaySettings.validateImageFile(at: dest.path) {
+                try? FileManager.default.removeItem(at: dest)
+                self.fail(id, err, client); return
+              }
+              UserDefaults.standard.set(dest.path, forKey: CursorOverlaySettings.customImageKey)
+              UserDefaults.standard.set("custom", forKey: CursorOverlaySettings.presetKey)
+            } catch {
+              self.fail(id, "could not save image: \(error.localizedDescription)", client); return
+            }
+          }
+          self.response(id, self.status(), client); return
+        }
+        self.fail(id, "invalid_request", client); return
+      }
+      if method == "unified/reset-cursor-overlay" {
+        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        CursorOverlaySettings.resetToDefaults()
+        CursorOverlaySettings.showLabel = false
+        self.response(id, self.status(), client); return
       }
       if method == "unified/resume" {
         guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }

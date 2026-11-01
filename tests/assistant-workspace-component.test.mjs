@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {createRequire} from 'node:module';
-import {assistantAppearance,createAssistantAppearance,projectIdentityKey} from '../src/assistantIdentity.ts';
+import {assistantAppearance,createAssistantAppearance,projectIdentityKey,tryProjectIdentityKey} from '../src/assistantIdentity.ts';
 import {runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields} from '../src/assistantWorkspaceModel.ts';
 import {providerEnabled,providerForConfig} from '../src/providers.ts';
 import {CALL_VOICES,defaultVoiceOf,readVoiceSettings} from '../src/voice/settings.ts';
@@ -31,7 +31,7 @@ function mount(overrides={}){
  const hooks={useRef(initial){const i=cursor++;return states[i]??(states[i]={current:initial});},useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}},useSyncExternalStore(sub,get){return get();}};
  const voiceController={subscribe:()=>()=>{},getState:()=>({status:'off',muted:false})};
  const Clock=()=>null;
- const bindings={assistantTextProvider,assistantRuntimeModels,loadAssistantRuntimeProviders,VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel,voiceController,Clock,useSyncExternalStore:hooks.useSyncExternalStore};
+ const bindings={assistantTextProvider,assistantRuntimeModels,loadAssistantRuntimeProviders,VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,tryProjectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel,voiceController,Clock,useSyncExternalStore:hooks.useSyncExternalStore};
  const components=new Function(...Object.keys(bindings),`${compiled}\nreturn {AssistantEditor,AssistantWorkspace};`)(...Object.values(bindings));
  return{props,calls,unmount(){cleanups.forEach(fn=>fn?.());},render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
 }
@@ -412,4 +412,43 @@ test('creating an assistant with a CLI provider default persists null instead of
  let tree=await h.ready();assert.equal(input(tree,'Assistant model').props.value,'');
  input(tree,'Assistant name').props.onChange({target:{value:'Default provider QA'}});await submit(h);
  assert.equal(created.length,1);assert.equal(created[0].profile.backend.kind,'agent');assert.equal(created[0].profile.backend.model,null);assert.equal(created[0].profile.effort,null);
+});
+
+test('settings safely ignores workspaces with empty or invalid paths without throwing',async()=>{
+ const h=settingsMount({
+  projects:[
+   {id:'ws-valid',name:'Valid Project',path:'/Users/tylercaldwell/code/valid'},
+   {id:'ws-empty',name:'Temp No project',path:''},
+   {id:'ws-spaces',name:'Spaces only',path:'   '},
+  ]
+ });
+ const tree=await h.ready();
+ assert.ok(tree);
+ assert.ok(input(tree,'Use Valid Project'));
+ assert.equal(input(tree,'Use Temp No project'),null);
+ assert.equal(input(tree,'Use Spaces only'),null);
+});
+
+test('existing granted valid projects are preserved and not dropped when projectless workspaces exist',async()=>{
+ const initialProject = { hostId: 'mac', workspaceId: 'ws-valid', cwd: '/Users/tylercaldwell/code/valid' };
+ const h=settingsMount({
+  lane: {
+   assistant: {
+    ...record,
+    allowedFolders: ['/Users/tylercaldwell/code/valid'],
+    projects: [{ project: initialProject, tools: 'ask' }]
+   }
+  },
+  projects:[
+   {id:'ws-valid',name:'Valid Project',path:'/Users/tylercaldwell/code/valid'},
+   {id:'ws-empty',name:'Temp No project',path:''},
+  ]
+ });
+ const tree=await h.ready();
+ const checkbox = input(tree,'Use Valid Project');
+ assert.ok(checkbox);
+ assert.equal(checkbox.props.checked, true);
+ await submit(h);
+ assert.equal(h.calls.length, 1);
+ assert.deepEqual(h.calls[0].projects, [{ project: initialProject, tools: 'ask' }]);
 });

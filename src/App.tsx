@@ -202,8 +202,10 @@ export function App() {
     if (status.lastAt) setPanes((list) => noteActive(list, paneId, status.lastAt!));
   }, []);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const appearance = settings.appearance?.current.appearance ?? DEFAULT_APPEARANCE;
-  useAppearance(appearance);
+  const appearanceSettings = settings.appearance;
+  const appearance = appearanceSettings?.current.appearance ?? DEFAULT_APPEARANCE;
+  // Pass full settings when available so System mode can react to OS changes; fallback to raw appearance for legacy boot
+  useAppearance(appearanceSettings ?? appearance);
   const disabledProviders = settings.disabledProviders;
   /** The settings section shown, or null while the deck is. */
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
@@ -660,10 +662,18 @@ export function App() {
   }, [backend, settingsOpen]);
 
   // settings.json, beside the session file. Written in order, like the session.
+  // Preservation: failed saves retain local value for retry (queue keeps pending value), stale completions not shown as success due to generation check in SettingsPage.
   useEffect(() => {
     if (!backend || !settingsRead.current) return;
-    settingsQueue.current = settingsQueue.current.catch(() => {}).then(() => backend.settingsSave(settings));
-    settingsQueue.current.catch((error) => setStorageError(`Could not save settings: ${String(error)}`));
+    settingsQueue.current = settingsQueue.current.catch(() => {}).then(async () => {
+      await backend.settingsSave(settings);
+      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
+    });
+    settingsQueue.current.catch((error) => {
+      const msg = `Could not save settings: ${String(error)}`;
+      setStorageError(msg);
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: msg })); } catch {}
+    });
   }, [backend, settings]);
 
   // The workspace in view is always a listed one: removing it moves on to the first listed.
@@ -1542,7 +1552,7 @@ export function App() {
       push(rec.token, {
         title: pane.title,
         cwd: chatFolder(pane, workspace),
-        appearance,
+        appearance: appearanceSettings ?? appearance,
         workspaceId: pane.workspaceId,
         ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
         ...(pane.kind === "preview" ? { previewSource: previewSourceOf(pane) } : {}),
@@ -1554,7 +1564,7 @@ export function App() {
       const tab = panel.tabs.find((t) => t.id === rec.id) ?? rec.tab;
       const selected = followedTabPane(tab.kind, listed, focusedPane, detailsTarget);
       const followWorkspace = workspaces.find((w) => w.id === (selected?.workspaceId ?? activeWorkspace)) ?? null;
-      const patch: PopoutUpdate = { title: tabTitle(tab), appearance };
+      const patch: PopoutUpdate = { title: tabTitle(tab), appearance: appearanceSettings ?? appearance };
       if (tab.kind === "browser" && tab.url !== undefined) patch.url = tab.url;
       if (tab.kind === "dashboard") patch.dashboardRows = dashboardRows;
       if (followWorkspace) {
@@ -2804,7 +2814,7 @@ export function App() {
               onKeepThread={(project,id)=>{const pane=viewPanes.find(p=>p.id===id&&p.workspaceId===project.workspaceId);if(pane)keepAssistantThread(pane);else toast('Reconnect this task conversation before keeping it.');}}
               onOpenThread={(project,id)=>{const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);const destination=workspace?assistantWorkerThreadDestination(workspace,id,viewPanes,new Set([...deleting,...poppedIds])):null;if(!destination?.pane){toast('Reconnect this project or return its worker thread to Deck to open it.');return;}focusPane(destination.pane);setMaximized(destination.maximized);}}
             />:undefined}
-            editor={assistantBackend ? <AssistantEditor onArchived={()=>setMainView({kind:'workspace'})} onOpenBrowser={openAssistantBrowser} machineName={selectedAssistant.hostName} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;})} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
+            editor={assistantBackend ? <AssistantEditor onArchived={()=>setMainView({kind:'workspace'})} onOpenBrowser={openAssistantBrowser} machineName={selectedAssistant.hostName} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;}).filter(workspace=>Boolean(workspace.path?.trim()))} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
             chat={<ApexAgentAll delegatedTasks={selectedDelegatedTasks} voiceBackend={assistantBackend??undefined} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} voiceHeader={assistantVoiceHost} onVoiceFocus={()=>navigateAssistant('chat')} onOpenBrowser={openAssistantBrowser} onOpenProjectTask={key=>{const task=selectedDelegatedTasks.find(t=>projectTaskKey(t.owner.hostId,t.owner.workspaceId,t.id)===key);if(!task)return false;const lists=assistantWorkItems([], [task],assistantProjectName);const item=Object.values(lists).flat().find(i=>i.taskId===task.id);if(!item)return false;openWorkItem(item,'chat');return true;}} key={selectedAssistant.draftKey} focusTask={chatFocus} onFocusHandled={()=>setChatFocus(null)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} draftKey={selectedAssistant.draftKey} assistantAvatar={<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={panel=>navigateAssistant(panel==='activity'?'chat':panel)} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
             offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence}  overviewEntries={[]} personal={selectedAssistant}
             taskContext={assistantTaskContext && scopedAssistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}

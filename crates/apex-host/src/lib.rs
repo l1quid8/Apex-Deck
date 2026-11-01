@@ -3,6 +3,7 @@
 
 mod authority_file;
 mod computer;
+pub mod cursor_overlay;
 mod journal;
 #[cfg(feature="test-support")]
 pub mod test_support;
