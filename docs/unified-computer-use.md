@@ -7,7 +7,7 @@ Unified Computer Use lets Deck bots read and control granted Mac applications th
 1. Open **Settings → Unified Computer Use** and enable it.
 2. Choose **Open Unified Computer Use**. Grant that exact helper Accessibility and Input Monitoring in macOS when requested. Screenshots also need Screen Recording. macOS may require quitting and reopening the helper after a grant.
 3. Use an API, Claude Code or Codex bot with tools enabled in a Work thread. Ask it to use `apex-computer`, request an app by its bundle identifier, read the screen, and act on a fresh observation. Approve the requested app in the helper's native dialog. For a first task: “Open TextEdit, create a new document and type Hello Tyler. Do not save it.”
-4. There is no per-bot switch: every supported bot in a Work thread can ask for these tools. For an API model that accepts images, open the bot's settings and turn on **This model can read images** so it receives screenshots. Leave it off for text-only models. This setting describes the model; it grants no access.
+4. There is no per-bot switch: every supported bot in a Work thread can ask for these tools, including API, Claude, Codex and Muse bots. For an API model that accepts images, open the bot's settings, then Advanced, and turn on **This model can read images** so it receives screenshots. This setting describes the model; it grants no access. A bot without confirmed image support shows a notice in its work steps when it uses these tools, and carries on with accessibility text.
 
 ## App access
 

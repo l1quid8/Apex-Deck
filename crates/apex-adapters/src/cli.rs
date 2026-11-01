@@ -213,6 +213,11 @@ impl CliParticipant {
                         args.extend(["--mcp-config".into(),crate::computer::claude_config(computer).to_string()]);
                     }
                 }
+                if *tool == AgentTool::Muse && !self.mcp_disabled && !self.tools_disabled {
+                    if let Some(computer) = &self.computer {
+                        args.extend(crate::computer::muse_flags(computer));
+                    }
+                }
                 Ok((program.clone(), args, output_format(*tool, &program)))
             }
             _ => Err(ParticipantError::NotConfigured("backend is not a command-line tool".into())),
@@ -383,6 +388,7 @@ impl CliParticipant {
             effort: effort.as_deref(),
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
+            trusted_computer: self.computer.is_some() && !self.mcp_disabled && !self.tools_disabled,
         };
         match muse_server::run(child, turn, prompt, images, on_progress, approver).await {
             Ok(reply) => Ok(reply),

@@ -49,9 +49,32 @@ pub(crate) fn codex_flags(turn: &ComputerTurn) -> Vec<String> {
     ]
 }
 
+/// Muse takes each server as one `-c` entry. Values are `${VAR}` references,
+/// so the turn token stays in the child environment. A clashing server in the
+/// person's settings refuses the run instead of inheriting trust.
+pub(crate) fn muse_flags(turn: &ComputerTurn) -> Vec<String> {
+    let env: serde_json::Map<String, Value> = ENV_KEYS
+        .into_iter()
+        .map(|key| (key.to_string(), json!(format!("${{{key}}}"))))
+        .collect();
+    vec![
+        "-c".into(),
+        format!("mcpServers.{SERVER}={}", json!({"command": turn.relay, "args": [], "env": env})),
+        "-c".into(),
+        format!("mcpServers.apex_computer={}", json!({"command": turn.relay, "args": [], "enabled": false})),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn muse_flags_pass_the_token_by_reference_only() {
+        let turn = ComputerTurn { relay: "/A/SpikeMCP".into(), thread_id: "r".into(), participant_id: "p".into(), token: "PRIVATE_TURN_TOKEN".into() };
+        let flags = muse_flags(&turn).join(" ");
+        assert!(flags.contains("${APEX_COMPUTER_TURN_TOKEN}"));
+        assert!(!flags.contains("PRIVATE_TURN_TOKEN"));
+    }
     #[test]
     fn capability_stays_in_child_environment_and_never_launch_flags_or_debug() {
         let turn = ComputerTurn {
