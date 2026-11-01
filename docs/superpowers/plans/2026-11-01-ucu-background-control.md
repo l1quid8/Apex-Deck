@@ -197,7 +197,62 @@ Found while building:
 - **The web check needs the engine.** Only the engine switches a browser's page tree on, so `web_content_unavailable` is decided from its reading.
 - **Test windows can take the front.** Closing and creating Chromium windows over the debug port took the front twice. The tool-path runs never did.
 
-Not settled: whether a partly visible window behaves better, and how real Brave behaves. Partly visible needs a window on Tyler's screen, so the signed acceptance run is the place to find out. Acceptance step 5 can't pass on a fully covered Chromium window until Return is solved; the likely answer is an address-free route, or a named refusal for that case.
+Not settled: whether a partly visible window behaves better, and how real Brave behaves. Partly visible needs a window on Tyler's screen, so the signed acceptance run is the place to find out. Acceptance step 5 can't pass on a fully covered Chromium window; see Covered browser finding.
+
+## Covered browser finding
+
+Read from Chromium source on 2026-11-01, not measured. No live UI test ran for this section. Brave 156 was not inspected beyond its `scripting.sdef`. `fix/ucu-covered-browser` carries the code below.
+
+This is the normal case, not an edge. A read-only window list on Tyler's Mac showed Brave, ChatGPT and Deck stacked at 1512x865 with Brave fully covered.
+
+**Why the page goes blind.** A fully covered window is occluded according to macOS, and `-[WebContentsViewCocoa updateWebContentsVisibility]` turns that into `kOccluded`, which hides the page. Blink builds the accessibility tree during rendering updates: `AXObjectCacheImpl::ScheduleAXUpdate` only asks for a visual update. So a document that loads while hidden has no way to deliver its tree. The only runtime off switch is `--disable-backgrounding-occluded-windows`, read at launch by `WebContentsImpl::UpdateWebContentsVisibility`. That needs Brave restarted with the flag, which Tyler's normal launch doesn't do.
+
+**What this implies beyond the page loaded while covered.** A page that already has a tree can stop updating too, because the same updates feed it. That fits the slow read-backs in Build outcome. Screenshots should lag for the same reason. Neither is measured, so readings and images of a covered browser now say they may lag instead of claiming to be current.
+
+**Routes ruled out for address navigation:**
+
+| Route | Why not |
+|---|---|
+| AppleScript `set URL` | Runs `OpenURL` with a user gesture, so `kShowWindow`, `BrowserView::Show`, `Activate`, then `activateIgnoringOtherApps:YES` and `makeKeyAndOrderFront:` in the widget bridge. By source this takes the front, breaking rule 1. Needs one measurement before it is closed for good. It also adds an Automation permission per browser |
+| `open -g` or `NSWorkspace.open` with a URL | Not traced to the end. Launching took the front when measured. Assume the same `Show` path until measured |
+| AppleScript `execute javascript` | Off by default behind Allow JavaScript from Apple Events. Code execution in logged-in pages, so not worth asking for |
+| A newline through `AXSelectedText` or `AXValue` | The address bar's accessibility action only inserts text. Confirm is key handling |
+| `AXConfirm`, suggestion rows | Measured: no effect, no rows |
+| Focus without raise, SkyLight | Rejected above. Private, and touches Tyler's front app |
+
+Even a quiet navigation wouldn't be enough, because the page it opened would be blind.
+
+**Result: on Tyler's real browser, fully covered, navigation to a new address has no background route, and a page that loads there can't be read.** Partly visible windows are not hidden by macOS, so they may work. That is the main open question. What still works on a covered browser, as measured: reading and acting on a page that already has a tree, typing into the address bar, and pressing buttons.
+
+**What changed in code.** No route was added. The helper now says what is true:
+
+- `visibility` separates `partly_visible` from `covered`, from window bounds. It was `covered` for any app not in front. Bounds can't see translucency, so a window under a glass window can read as `covered` while macOS says it shows.
+- Return in a browser's own controls on a fully covered window returns `browser_control_needs_visible_window` before sending anything. Controls inside the page keep the old path, and the reading stays valid. Frontmost and partly visible windows are unchanged.
+- Covered browser readings carry `page_freshness: may_lag_while_covered`. Tool descriptions state both limits.
+
+**Global input imports.** The signed helper still imports `CGEventPost`, `CGEventCreateMouseEvent` and `CGEventCreateScrollWheelEvent2` from the vendored engine. They are linked, not reachable: the bridge has one action path, `background()`, always headless, and the vendored physical click, wheel and key paths require a headed policy. The bridge never calls the vendored global key path. This rests on reading the code, not on removing the symbols.
+
+### Checks for the live window
+
+Run with a front-app and pointer sampler, on a scratch browser, while another app is in front:
+
+1. Partly visible window: does the page tree survive a reload, and does Return in the address bar land? This decides how much of the task works.
+2. Fully covered window: click a control that changes the page, then read and screenshot it. Is either stale?
+3. Fully covered window: does the refusal fire, and does uncovering the window bring a blind page back?
+4. Does a Glass Deck window count as occluding? Compare the `visibility` label with the page's real state.
+5. One `set URL` on a scratch browser with the sampler running, only to close the row above.
+
+### Recommendation
+
+Don't chase this further inside the accessibility path. For "go to any address while I keep working", the answer is a browser session the helper owns:
+
+| Option | Gives | Costs |
+|---|---|---|
+| **Bot browser (recommended)**: helper-started Chromium with its own profile, the occlusion flags, and DevTools over a private pipe | Navigation, reading and screenshots with no window Tyler has to see, no pointer, no focus | No logins until Tyler signs in there once. A new browser tool set beside the app tools. Launch must be proven quiet, and headless mode is the likely answer |
+| Connected Brave through an extension | Tyler's logins | An install step, a debugger banner, and a bot inside his logged-in browser, including trading sessions |
+| Brave relaunched with the flag | Fixes blind pages only | Return is still unsolved, and a normal Dock launch drops the flag |
+
+Keep Unified Computer Use on the real browser for pages already open, and for windows that show.
 
 ## Review outcome
 

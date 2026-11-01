@@ -36,7 +36,7 @@ final class BackgroundReadingTests: XCTestCase {
 
   func testRefusalsThatDeliveredNothingKeepTheReading() {
     for (tool, code) in [("press_key", "shortcut_needs_foreground"), ("press_key", "key_needs_visible_window"),
-      ("click_point", "pixel_target_has_no_control"), ("get_screenshot", "minimized_stale_image")] {
+      ("press_key", "browser_control_needs_visible_window"), ("click_point", "pixel_target_has_no_control"), ("get_screenshot", "minimized_stale_image")] {
       XCTAssertTrue(EngineSession.keepsObservation(tool: tool, code: code), code)
     }
     XCTAssertFalse(EngineSession.keepsObservation(tool: "type_text", code: "type_verification_failed; delivery=delivered_unverified; retry=unsafe"))

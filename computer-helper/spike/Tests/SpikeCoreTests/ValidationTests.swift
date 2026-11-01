@@ -30,10 +30,58 @@ final class ValidationTests: XCTestCase {
     XCTAssertNil(Policy.semanticAction(key: "Tab"))
   }
   func testVisibilityNamesTheStrongestState() {
-    XCTAssertEqual(Policy.visibility(frontmost: true, minimized: false, hidden: false), "frontmost")
-    XCTAssertEqual(Policy.visibility(frontmost: false, minimized: false, hidden: false), "covered")
-    XCTAssertEqual(Policy.visibility(frontmost: true, minimized: true, hidden: false), "minimized")
-    XCTAssertEqual(Policy.visibility(frontmost: false, minimized: true, hidden: true), "hidden")
+    XCTAssertEqual(Policy.visibility(frontmost: true, minimized: false, hidden: false, covered: false), "frontmost")
+    XCTAssertEqual(Policy.visibility(frontmost: false, minimized: false, hidden: false, covered: false), "partly_visible")
+    XCTAssertEqual(Policy.visibility(frontmost: false, minimized: false, hidden: false, covered: true), "covered")
+    XCTAssertEqual(Policy.visibility(frontmost: true, minimized: true, hidden: false, covered: false), "minimized")
+    XCTAssertEqual(Policy.visibility(frontmost: false, minimized: true, hidden: true, covered: true), "hidden")
+  }
+  func testAWindowIsCoveredOnlyWhenNothingOfItShows() {
+    let window = CGRect(x: 100, y: 100, width: 400, height: 300)
+    XCTAssertFalse(Policy.fullyCovered(window, by: []))
+    XCTAssertTrue(Policy.fullyCovered(window, by: [window]))
+    XCTAssertTrue(Policy.fullyCovered(window, by: [CGRect(x: 0, y: 0, width: 900, height: 900)]))
+    XCTAssertFalse(Policy.fullyCovered(window, by: [CGRect(x: 100, y: 100, width: 399, height: 300)]), "a one-point sliver still shows")
+    XCTAssertFalse(Policy.fullyCovered(window, by: [CGRect(x: 900, y: 900, width: 50, height: 50)]))
+    XCTAssertTrue(Policy.fullyCovered(window, by: [
+      CGRect(x: 100, y: 100, width: 200, height: 300), CGRect(x: 300, y: 100, width: 200, height: 300),
+    ]), "two windows can cover it between them")
+    XCTAssertFalse(Policy.fullyCovered(window, by: [
+      CGRect(x: 100, y: 100, width: 190, height: 300), CGRect(x: 300, y: 100, width: 200, height: 300),
+    ]), "a gap between them still shows")
+  }
+  func testOnlyAConfirmInACoveredBrowsersOwnControlsIsRefused() {
+    func refused(key: String = "Return", browser: Bool = true, frontmost: Bool = false,
+      insidePage: Bool = false, covered: Bool = true) -> Bool {
+      Policy.browserConfirmNeedsVisibleWindow(key: key, browser: browser, frontmost: frontmost,
+        insidePage: insidePage, covered: covered)
+    }
+    XCTAssertTrue(refused())
+    XCTAssertFalse(refused(key: "Tab"))
+    XCTAssertFalse(refused(browser: false))
+    XCTAssertFalse(refused(frontmost: true))
+    XCTAssertFalse(refused(insidePage: true), "a page field stays delivered and reported unverified")
+    XCTAssertFalse(refused(covered: false), "a partly visible window is still attempted")
+  }
+  func testOnlyAProvenWalkPlacesAControlOutsideThePage() {
+    final class Node {
+      let role: String; let parent: Node?
+      init(_ role: String, _ parent: Node? = nil) { self.role = role; self.parent = parent }
+    }
+    let read: (Node) -> (String, Node?)? = { ($0.role, $0.parent) }
+    let window = Node("AXWindow", Node("AXApplication"))
+    XCTAssertFalse(Policy.insidePage(Node("AXTextField", Node("AXToolbar", window)), read: read))
+    XCTAssertTrue(Policy.insidePage(Node("AXTextField", Node("AXGroup", Node("AXWebArea", window))), read: read))
+    XCTAssertTrue(Policy.insidePage(window) { _ in nil }, "an unreadable parent proves nothing")
+    var deep = window
+    for _ in 0..<300 { deep = Node("AXGroup", deep) }
+    XCTAssertTrue(Policy.insidePage(deep, read: read), "a walk that runs out proves nothing")
+  }
+  func testOnlyACoveredBrowserPageIsFlaggedAsPossiblyBehind() {
+    XCTAssertTrue(Policy.pageMayLag(browser: true, visibility: "covered"))
+    XCTAssertFalse(Policy.pageMayLag(browser: true, visibility: "partly_visible"))
+    XCTAssertFalse(Policy.pageMayLag(browser: true, visibility: "frontmost"))
+    XCTAssertFalse(Policy.pageMayLag(browser: false, visibility: "covered"))
   }
   func testMissingWebContentIsNeverAnEmptyLookingReading() {
     XCTAssertTrue(Policy.webContentMissing(browser: true, webAreas: 0, scanned: true))

@@ -145,6 +145,11 @@ final class Input {
       })
       return
     }
+    if Policy.browserConfirmNeedsVisibleWindow(key: key, browser: ax.browser(s.app),
+      frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier == s.app.processIdentifier,
+      insidePage: insidePage(focus), covered: s.window.flatMap(windowNumber).map(windowFullyCovered) ?? false) {
+      throw Refusal("browser_control_needs_visible_window")
+    }
     try pair(code: code, flags: CGEventFlags(rawValue: flags), snapshot: s, id: id, deadline: deadline)
   }
 }
