@@ -56,6 +56,8 @@ export type PersonalAssistantRecord = PersonalSettings & {
   legacy?: PersonalLegacyMarker;
   archivedAt?: number;
   id: string; hostId: string; allowedFolders: string[]; paused?: boolean; revision: number;
+  /** Where the current conversation began. Older messages stay saved. */
+  conversationFrom?: number;
   /** Assistant-owned snapshot; changing it never edits a reusable Agents profile. */
   profile: ParticipantConfig | null;
   /** Missing on older hosts; assignments do not create machine/folder grants. */
@@ -104,6 +106,8 @@ export type PersonalLane = {
   taskLifecycle?(action: 'delete' | 'restore' | 'empty', task?: { source: 'personal' | 'delegated'; taskId: string; revision?: number }, expectedDeleted?: string[]): Promise<void>;
   /** Pause stops new work starting; the assistant keeps answering. */
   pause?(paused: boolean): Promise<void>;
+  /** Start fresh: earlier messages leave the view and the model's context, nothing is deleted. */
+  newConversation?(): Promise<void>;
   /** Change name, style, modes, quiet hours, budget or privacy. Only what's given changes. */
   configure?(settings: Partial<PersonalSettings>): Promise<void>;
   /** Only available when the authenticated route advertises assistant_workspace_v4. */

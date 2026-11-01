@@ -108,6 +108,8 @@ pub struct ActionModes {
     pub spend: ActionMode,
 }
 
+fn is_zero(value: &u64) -> bool { *value == 0 }
+
 impl Default for ActionModes {
     fn default() -> Self {
         ActionModes { read: ActionMode::Auto, write: ActionMode::Ask, send: ActionMode::Ask, spend: ActionMode::Ask }
@@ -356,6 +358,10 @@ pub struct PersonalAssistant {
     pub quiet_hours: Option<QuietHours>,
     #[serde(default)]
     pub modes: ActionModes,
+    /// Where the current conversation began. Older messages stay saved and
+    /// leave the model's context; memory, tasks and shared chats are untouched.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub conversation_from: u64,
     #[serde(default)]
     pub rules: Vec<StandingRule>,
     #[serde(default)]
@@ -1079,7 +1085,7 @@ impl crate::Host {
                 paused: false, revision: 1, created_at: at, counters: Counters::default(),
                 messages: vec![], events: vec![], tasks: vec![],
                 look: None, timezone: utc(), utc_offset_minutes: 0, quiet_hours: None,
-                modes: ActionModes::default(), rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
+                modes: ActionModes::default(), conversation_from: 0, rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
                 context_budget_chars: default_context_budget(), facts: vec![], schedules: vec![], notices: vec![], costs: vec![],
                 machines: vec![], push_devices: vec![],
             };

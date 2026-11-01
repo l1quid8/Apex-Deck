@@ -86,6 +86,8 @@ export interface DeckBridge {
     onUpdate(cb: (patch: PopoutUpdate) => void): () => void;
     onAction(cb: (token: string, action: PopoutAction) => void): () => void;
     onClosed(cb: (token: string) => void): () => void;
+        /** Reads the assistant window's pin, or sets it when `on` is given. */
+        alwaysOnTop?(token: string, on?: boolean): Promise<boolean>;
   };
   smoke: boolean;
 }

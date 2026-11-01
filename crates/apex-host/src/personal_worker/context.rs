@@ -180,7 +180,7 @@ pub fn assemble(assistant: &PersonalAssistant, text: &str, now: u64, connected: 
     // The new message is sent as the user turn, so it isn't repeated here.
     let current = assistant.messages.iter().rposition(|m| m.role == "human" && m.text == text);
     for (index, message) in assistant.messages.iter().enumerate().rev() {
-        if Some(index) == current { continue; }
+        if Some(index) == current || message.at < assistant.conversation_from { continue; }
         // Memory notes repeat what memory holds; forgotten words must not come back this way.
         if message.role == "system" && message.text.starts_with("Memory:") { continue; }
         let line = context_line(message, now);

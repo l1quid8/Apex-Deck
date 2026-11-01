@@ -38,6 +38,9 @@ import { usePersonalAssistants } from "./usePersonalAssistants";
 import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
+import { assistantCallCandidate } from "./assistantFloat";
+import { useAssistantFloat, type AssistantFloatHandle } from "./useAssistantFloat";
+import { AssistantVoiceKeeper } from "./voice/AssistantVoiceKeeper";
 import { AssistantDetails } from "./AssistantDetails";
 import { useAssistantOutputs } from "./useAssistantOutputs";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
@@ -1921,7 +1924,8 @@ export function App() {
   const reachable = (hostId:string) => { if(hostId==='local'||!backend?.machines)return true;try{return backend.machines.connection(hostId).get().status.kind==='connected';}catch{return false;} };
   const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
-  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
+  const [assistantFloat, setAssistantFloat] = useState<AssistantFloatHandle | null>(null);
+  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant' || !!assistantFloat, bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
   // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
   // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
   const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
@@ -2019,19 +2023,19 @@ export function App() {
   const startAssistantCall = () => {
     if (!selectedAssistant) return;
     const hostId = selectedAssistant.ref?.hostId ?? selectedAssistant.assistant?.hostId ?? selectedAssistant.hostName;
-    const id = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
-    const candidate = {
-      hostId,
-      roomId: `assistant:${id}`,
-      participantId: id,
-      profileId: `assistant:${id}`,
-      name: selectedAssistant.name,
-      roomTitle: selectedAssistant.name,
-      agentVoice: selectedAssistant.assistant?.profile?.voice,
-      aliases: [],
-    };
-    void voiceController.start(candidate);
+    const assistantId = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
+    void voiceController.start(assistantCallCandidate(selectedAssistant, { hostId, assistantId }));
   };
+  const floatLane = assistantFloat ? assistants.lane(assistantFloat.ref) : null;
+  const floatControls = useAssistantFloat({ float: assistantFloat, setFloat: setAssistantFloat, lane: floatLane, appearance: appearanceSettings ?? appearance, onDetails: ref => {
+    setMainView({ kind: 'assistant', assistant: ref, section: 'chat' });
+    showDetails();
+  } });
+  const popOutAssistant = () => {
+    if (!selectedAssistant?.ref) return;
+    floatControls.open(selectedAssistant.ref, selectedAssistant.name).catch(error => toast(String(error instanceof Error ? error.message : error)));
+  };
+  const floatNeedsVoice = !!floatLane && !(selectedAssistant && floatLane.draftKey === selectedAssistant.draftKey);
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
   /** What this session's tasks and its own chat made: documents, exports and pages. */
@@ -2783,7 +2787,8 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
           </div>
-          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
+          {floatNeedsVoice && floatLane && <AssistantVoiceKeeper lane={floatLane} backend={hostBackend(assistantFloat!.ref.hostId)??undefined} settings={settings.voice} onSettings={voice=>setSettings(s=>({...s,voice}))}/>}
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace onPopOut={window.apexDeck?.popout&&selectedAssistant.ref?popOutAssistant:undefined} detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
             memoryProject={assistantNotebookProject}
             projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact managementOpen onDetailChange={()=>{}} detailBackLabel={workDetailOrigin==='chat'?'Chat':'Projects & access'} onDetailBack={()=>{if(workDetailOrigin==='chat')navigateAssistant('chat');}} focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
               onEnsureCoordinator={async(project)=>{

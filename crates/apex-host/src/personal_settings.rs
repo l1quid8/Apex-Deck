@@ -127,6 +127,10 @@ impl crate::Host {
         }).inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
     }
 
+    pub fn personal_conversation_new(&self, id: &str) -> Result<Changed, String> {
+        self.changed(id, |assistant| { assistant.conversation_from = now(); Ok(()) })
+    }
+
     /// A standing rule only ever makes the assistant more careful.
     pub fn personal_rule_add(&self, id: &str, text: &str, class: ToolClass, mode: ActionMode) -> Result<Changed, String> {
         let text = text.trim();

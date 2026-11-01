@@ -132,7 +132,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   })), [assistant, personalTag, delegatedTasks]);
   const conversationName = assistantDisplayName(personal?.name);
   const allEntries = useMemo(() => [...(embedded ? [] : mergeProjectConversations(monitors, names)), ...overviewEntries, ...personalEntries].sort((a, b) => a.message.at - b.message.at), [embedded, monitors, names, overviewEntries, personalEntries]);
-  const entries = useMemo(() => allEntries.filter((entry) => entry.message.at > clearedAt && (!filterWorkspaceId || entry.workspaceId === filterWorkspaceId) && !('personal' in entry && entry.personal.kind === 'notice')), [allEntries, clearedAt, filterWorkspaceId]);
+  const entries = useMemo(() => allEntries.filter((entry) => entry.message.at > Math.max(clearedAt, assistant?.conversationFrom ?? 0) && (!filterWorkspaceId || entry.workspaceId === filterWorkspaceId) && !('personal' in entry && entry.personal.kind === 'notice')), [allEntries, clearedAt, filterWorkspaceId]);
   // A teammate nobody has talked to yet: show the welcome, not an empty transcript.
   const firstRun = embedded && !!assistant && allEntries.length === 0 && !assistant.tasks?.length;
   // Only the filtered project's findings and failed checks show while filtering.

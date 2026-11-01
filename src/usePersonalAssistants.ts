@@ -226,6 +226,7 @@ export class PersonalAssistantsCollection {
       decide: (decisionId, paramsHash, approve) => after("personal_decide", { requestId: request(), decisionId, paramsHash, approve }),
       cancel: taskId => after("personal_cancel", { requestId: request(), taskId }),
       pause: paused => after("personal_pause", { requestId: request(), paused }),
+      newConversation: () => after("personal_conversation_new", {}),
       configure: settings => { this.legacySettings(settings); return after("personal_configure", { settings }); },
       configureWorkspace: route.supports?.("assistant_workspace_v4") !== true ? undefined : configuration => {
         if (route.supports?.("assistant_workspace_v4") !== true) throw new Error("This machine no longer supports workspace settings. Reconnect and refresh.");

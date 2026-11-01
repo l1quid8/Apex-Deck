@@ -1686,3 +1686,14 @@ async fn stopping_a_cost_held_reply_supersedes_its_spend_approval() {
  assert!(f.get().tasks.iter().all(|t|t.decision.as_ref().is_none_or(|d|d.status!=DecisionStatus::Open)));
  assert_eq!(fake.reason_calls.load(Ordering::SeqCst),0);
 }
+
+#[test]
+fn a_new_conversation_leaves_the_model_context_but_keeps_everything_saved() {
+    let mut assistant: PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+    assistant.post("human", "chat", "BEFORE".into(), None, None, 100);
+    assistant.post("human", "chat", "AFTER".into(), None, None, 300);
+    assistant.conversation_from = 200;
+    let prompt = context::assemble(&assistant, "now", 400, &[]);
+    assert!(prompt.contains("AFTER") && !prompt.contains("BEFORE"));
+    assert_eq!(assistant.messages.len(), 2, "history stays");
+}
