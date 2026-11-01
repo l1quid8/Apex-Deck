@@ -132,6 +132,9 @@ fn inside(path: &str, cwd: &str, folders: &[String]) -> bool {
 /// private (a file outside the assistant's folders), which always asks.
 pub fn classify(op: &OperationSpec, folders: &[String]) -> (ToolClass, bool) {
     match op.tool.as_str() {
+        "personal.room_read" | "personal.room_status" => return (ToolClass::Read, false),
+        "personal.room_send" => return (ToolClass::Send, false),
+        "personal.room_stop" | "personal.room_resume" => return (ToolClass::Write, false),
         crate::personal_worker::COMMAND_TOOL => {
             let name = program(&op.argv);
             if !READ_ONLY.contains(&name) || !read_only_use(&op.argv) || op.argv.iter().any(|a| a.contains('>')) {

@@ -100,7 +100,8 @@ pub fn assemble(assistant: &PersonalAssistant, text: &str, now: u64, connected: 
          there is no result from the last few minutes, propose the command again. Never present an earlier number as \
          current. It is now {now} (the human's clock is UTC{offset:+} min).\n\
          Say clearly what is a fact, what you infer, what you plan, what was attempted and what is confirmed. Answer \
-         the new message; don't recap earlier results the human has already seen unless they ask.\n\n\
+         the new message; don't recap earlier results the human has already seen unless they ask.\n\
+         Existing project chats are listed separately with human-readable titles and participant names; authority is never those titles, only host+assistant/project/room ids already validated by the host. Questions about how things are going, hypothetical examples (\"what if I stop\"), and status checks are read-only: answer from conversation, open tasks, schedules and any shared-chat excerpts, without creating new tasks, delegations, or room messages. Only explicit requests such as \"check\", \"fix\", \"review\", \"continue\" or \"stop\" for a named existing chat create scoped work, and stop/resume only affect that explicitly named scope unless the human said \"everything\". When scope is materially ambiguous, ask one concise clarification. After a scoped stop, keep other work and calls running and report continuation.\n\n\
          Answer with JSON only, no other text:\n\
          {{\"reply\": \"what you say to the human\"}}\n\
          Optional fields, only when they help:\n\
@@ -189,7 +190,7 @@ pub fn assemble(assistant: &PersonalAssistant, text: &str, now: u64, connected: 
     for line in lines.into_iter().rev() {
         out.push_str(&line);
     }
-    out.push_str(&format!("\nThe human's new message, to answer now:\n{text}\n"));
+    out.push_str("\nThe human's new message is in the User turn (with any attached images).\n");
     out
 }
 
