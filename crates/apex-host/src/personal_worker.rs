@@ -63,6 +63,8 @@ pub struct ReasonOut {
     pub cost_micros: Option<u64>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Computer tools ran in this reply, so its words may carry screen content.
+    pub computer_used: bool,
     /// Computer tools ran on accessibility text alone.
     pub text_only_computer: bool,
 }
@@ -95,8 +97,9 @@ impl WorkerTools {
     pub fn real() -> Self {
         WorkerTools {
             reason: Arc::new(|config, request, attachment_roots| Box::pin(async move {
-                crate::assistant_inference::reply(config, request, attachment_roots).await.map(|(reply, text_only_computer)| ReasonOut {
-                    text: reply.text, cost_micros: reply.cost_micros, input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, text_only_computer,
+                crate::assistant_inference::reply(config, request, attachment_roots).await.map(|(reply, computer)| ReasonOut {
+                    text: reply.text, cost_micros: reply.cost_micros, input_tokens: reply.input_tokens, output_tokens: reply.output_tokens,
+                    computer_used: computer.used, text_only_computer: computer.text_only,
                 })
             })),
             execute: Arc::new(|spec, started| Box::pin(run_operation(spec, started))),
@@ -222,6 +225,10 @@ struct ModelReply {
 }
 
 impl ModelReply {
+    fn proposes_anything(&self) -> bool {
+        !self.delegations.is_empty() || self.task.is_some() || self.schedule.is_some() || !self.helpers.is_empty() || !self.remember.is_empty() || !self.forget.is_empty()
+    }
+
     fn plain(text: &str) -> Self {
         ModelReply { reply: text.trim().to_owned(), delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![] }
     }
@@ -721,9 +728,11 @@ impl Host {
         let key=format!("reply:{}:{}",snapshot.id,event.id);
         let stop=Arc::new(tokio::sync::Notify::new());
         self.personal_stops.lock().unwrap().insert(key.clone(),stop.clone());
-        let active=self.personal_get(&snapshot.id)?.events.iter().any(|e|e.id==event.id&&e.state==EventState::Processing);
+        let current=self.personal_get(&snapshot.id)?;
+        let active=current.events.iter().any(|e|e.id==event.id&&e.state==EventState::Processing);
         if !active { self.personal_stops.lock().unwrap().remove(&key); return Ok(()); }
-        let reach=self.personal_computer_reach(&snapshot,&profile);
+        // The saved record, not this event's snapshot: a pause may have landed since.
+        let reach=self.personal_computer_reach(&current,&profile);
         let ended=Arc::new(tokio::sync::Notify::new());
         let lease=match reach {
             computer::Reach::Tools(access)=>self.personal_computer_turn(&snapshot.id,&profile,access,&mut request,&ended).await,
@@ -733,10 +742,15 @@ impl Host {
         request.system.push_str(&computer::prompt(reach,computing));
         let bytes=request.system.len();
         if computing {
-            self.change_assistant(&snapshot.id,|assistant| {
+            let marked=self.change_assistant(&snapshot.id,|assistant| {
                 if let Some(saved)=assistant.events.iter_mut().find(|e|e.id==event.id) { saved.computer_started=true; }
-                Ok(())
-            })?;
+                Ok(assistant.paused)
+            });
+            match marked {
+                Ok(false)=>{}
+                Ok(true)=>self.computer.revoke(Some(&computer::thread(&snapshot.id)),None),
+                Err(error)=>{ self.personal_stops.lock().unwrap().remove(&key); return Err(error); }
+            }
         }
         // Stop first: nothing of a stopped reply may run, and dropping the call ends its tools.
         let answer=tokio::select! {
@@ -754,8 +768,7 @@ impl Host {
         match answer {
             Ok(out) => {
                 let cost = cost_entry("reply", &out, bytes, endpoint(&profile), now());
-                let mut reply = parse_reply(&out.text);
-                if out.text_only_computer { reply.reply = format!("{}\n\n{}", reply.reply, computer::TEXT_ONLY_NOTE); }
+                let reply = computer::settle_reply(parse_reply(&out.text), &out);
                 self.commit_reply(tools, &snapshot.id, &event.id, &text, reply, cost)
             }
             Err(error) => self.finish_event(&snapshot.id, &event.id, Err(error)),

@@ -4,8 +4,11 @@ use apex_core::{Backend, ParticipantConfig, Reply, TurnRequest};
 /// A computer reply can wait on the human's app prompts and on slow apps.
 const COMPUTER_LIMIT_SECONDS: u64 = 15 * 60;
 
-/// The reply, and whether it used computer tools on accessibility text alone.
-pub(crate) async fn reply(config: ParticipantConfig, request: TurnRequest, attachment_roots: Vec<std::path::PathBuf>) -> Result<(Reply, bool), String> {
+/// What a reply did with its computer tools.
+#[derive(Default)]
+pub(crate) struct ComputerUse { pub used: bool, pub text_only: bool }
+
+pub(crate) async fn reply(config: ParticipantConfig, request: TurnRequest, attachment_roots: Vec<std::path::PathBuf>) -> Result<(Reply, ComputerUse), String> {
     apex_adapters::assistant_profile_ok(&config)?;
     if let Backend::OpenAiCompatible { base_url, model, api_key_env } = &config.backend {
         if let Some(name)=api_key_env {
@@ -19,11 +22,16 @@ pub(crate) async fn reply(config: ParticipantConfig, request: TurnRequest, attac
     let limit=if computer {COMPUTER_LIMIT_SECONDS} else if matches!(config.backend,Backend::OpenAiCompatible{..}) {120} else {300};
     let context=apex_adapters::BuildContext { path:crate::agents::login_path(), attachment_roots, ..Default::default() };
     let participant=if computer {apex_adapters::build_computer_assistant(config,&context)?} else {apex_adapters::build_assistant(config,&context)?};
-    let text_only=std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::{AtomicBool,Ordering::Relaxed};
+    let (used,text_only)=(AtomicBool::new(false),AtomicBool::new(false));
     let reply=tokio::time::timeout(std::time::Duration::from_secs(limit),participant.respond_with_progress(request,&|update| {
-        if matches!(update,apex_core::Progress::Work(step) if step.key==crate::personal_worker::TEXT_ONLY_STEP) {text_only.store(true,std::sync::atomic::Ordering::Relaxed);}
+        // These are the turn's only tools, so any step but thinking is one of them.
+        if let apex_core::Progress::Work(step)=update {
+            if step.kind!=apex_core::work_steps::StepKind::Thinking {used.store(true,Relaxed);}
+            if step.key==crate::personal_worker::TEXT_ONLY_STEP {text_only.store(true,Relaxed);}
+        }
     }))
         .await.map_err(|_|"The assistant provider timed out. You can retry or select another provider.".to_string())?
         .map_err(|error|error.to_string())?;
-    Ok((reply,text_only.into_inner()))
+    Ok((reply,ComputerUse{used:used.into_inner(),text_only:text_only.into_inner()}))
 }

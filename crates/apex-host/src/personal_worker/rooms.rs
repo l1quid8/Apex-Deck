@@ -66,10 +66,17 @@ impl Target {
     /// that to judgment, or when outside words could have planted the idea.
     pub fn gate(&self, gate: Gate, class: ToolClass, mode: ActionMode, asked: &str, outside: bool) -> Gate {
         if class == ToolClass::Read || !matches!(gate, Gate::Run(_)) || !(outside || mode == ActionMode::OnRequest) { return gate; }
-        let asked = asked.to_lowercase();
-        let named = self.workers.iter().map(|(_, name)| name).chain([&self.title]).any(|name| !name.trim().is_empty() && asked.contains(&name.to_lowercase()));
+        let asked = words(asked);
+        // A thread id standing in for a missing title is no name anyone said.
+        let names = self.workers.iter().map(|(_, name)| name).chain(Some(&self.title).filter(|title| **title != self.thread));
+        let named = names.map(|name| words(name)).any(|name| !name.is_empty() && asked.windows(name.len()).any(|said| said == name));
         if named { gate } else { Gate::Ask }
     }
+}
+
+/// Whole words, the way the gateway matches a program name: "Null" is not in "nullable".
+fn words(text: &str) -> Vec<String> {
+    text.to_lowercase().split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').filter(|word| !word.is_empty()).map(str::to_owned).collect()
 }
 
 fn split(ids: &str) -> Vec<&str> {
@@ -231,5 +238,25 @@ impl Host {
         };
         let names: Vec<&str> = room.workers.iter().filter(|(id, _)| targets.iter().any(|t| t.as_str() == id)).map(|(_, name)| name.as_str()).collect();
         Ok(ToolRun { exit_code: 0, output: format!("In {} as message {} for {}{}.", room.title, message.seq, names.join(", "), if already { " (it was already there)" } else { "" }) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::personal_workspace::ProjectTools;
+
+    #[test]
+    fn a_gated_send_needs_the_whole_name_not_a_piece_of_a_word() {
+        let target = |title: &str, thread: &str| Target {
+            project: serde_json::from_value(json!({"hostId":"h","workspaceId":"w","cwd":"/p"})).unwrap(), thread: thread.into(), title: title.into(),
+            workers: vec![("n".into(), "Null".into()), ("d".into(), "Deep Geek".into())], tools: ProjectTools::Ask,
+        };
+        let run = || Gate::Run(ActionMode::OnRequest);
+        let gate = |t: &Target, asked: &str| t.gate(run(), ToolClass::Send, ActionMode::OnRequest, asked, false);
+        let chat = target("UI", "thread-1");
+        for asked in ["What is a nullable field?", "How would we build this?"] { assert!(matches!(gate(&chat, asked), Gate::Ask), "{asked}"); }
+        for asked in ["Tell Null to stop.", "ask deep geek for a review", "post in UI please"] { assert!(matches!(gate(&chat, asked), Gate::Run(_)), "{asked}"); }
+        assert!(matches!(gate(&target("thread-1", "thread-1"), "send to thread-1"), Gate::Ask), "an id is no title");
     }
 }
