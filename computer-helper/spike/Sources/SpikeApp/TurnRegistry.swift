@@ -74,6 +74,13 @@ final class TurnRegistry {
     guard let turn = turns[token], !turn.stopped else { throw Refusal("turn_unregistered_or_ended") }
     return turn.access != "read"
   }
+  /// A private copy, so a reply racing the turn's end can't reach a reused descriptor.
+  func controlConnection(_ token: String) -> Int32? {
+    lock.lock(); defer { lock.unlock() }
+    guard let turn = turns[token], !turn.stopped else { return nil }
+    let control = dup(turn.control)
+    return control >= 0 ? control : nil
+  }
   func end(_ token: String) { lock.lock(); turns.removeValue(forKey: token); retired.insert(token); latches.removeValue(forKey: token)?.forEach { $0.value?.stop() }; lock.unlock() }
   func grant(_ identity: AppIdentity, token: String, forThread: Bool = false) throws {
     lock.lock(); defer { lock.unlock() }

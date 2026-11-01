@@ -274,3 +274,21 @@ Points from the review that this ADR does not adopt:
 - **Guard scoping stays on frontmost plus activation**, not per-event target PIDs, because macOS only reported a reliable target for clicks.
 - **Web scrolling stays on `reveal`.** A scroll action on `scrollarea` hasn't been measured; `AXScrollToVisible` has.
 - **Base directly on `3cc1d53d`.** Cherry-picking it would duplicate the commit.
+
+## Websites: Deck's own browser (2026-11-01)
+
+The answer for websites while the human keeps working is the browser Deck already runs, not a window on their screen and not a second profile. `personal_worker/browser.rs` keeps one headless Chromium with the `assistant-browser` profile, and Take over is how the human signs in to it. The `persist:deck-browser` profile in `desktop/browser.mjs` is a different store and was left alone.
+
+**Route.** The bot keeps talking to the same `apex-computer` server. `request_app dev.apexdeck.assistant-browser` asks for permission once, then `navigate`, `read_screen`, `get_screenshot`, `click`, `click_point`, `type_text`, `press_key`, `scroll` and `reveal` act on that browser until another app is requested. The helper sends each call down the daemon's authenticated control connection and waits off its action queue. The host runs fixed operations in `browser/work.rs`, so no bot ever gets the debugging port, a raw protocol call or a way to run script.
+
+**Authority.** Before every step that can change the page the host rechecks turn, generation, cancellation, Take over and the single writer. A read-only or Plan turn can only observe. A reading is tied to the page target, document and an epoch that moves on every change by anyone, including the human, so a stale reading is refused. Take over waits for the step in flight and refuses everything queued behind it.
+
+**Secrets.** Password, one-time-code and card fields show no value, take no typing, and block screenshots of that page. Sign-ins happen through Take over.
+
+**Limits.**
+- One shared page. A link that opens a new tab isn't followed, and the bot stays on the page it had.
+- Controls inside iframes aren't listed. Password checks don't see them either, so a screenshot can show a framed login, though the field itself still shows dots.
+- A page dialog gets the cautious answer, which is Cancel. Bots don't see it happened.
+- Shortcuts such as Cmd-T don't exist here. `navigate` replaces the address bar.
+- Sites that detect headless browsers may behave differently.
+- A bot allowed here can act on every site signed in through Take over, so the permission popup says so.

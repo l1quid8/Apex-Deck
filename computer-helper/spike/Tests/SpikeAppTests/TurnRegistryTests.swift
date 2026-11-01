@@ -152,4 +152,74 @@ final class SafariWebAppIdentityTests: XCTestCase {
       XCTAssertEqual((error as? Refusal)?.code, "app_identity_changed")
     }
   }
+  func testBrowserCallsRouteOnlyOnceTheBotChoseTheBrowser() {
+    XCTAssertTrue(BrowserBroker.routes("navigate", [:], active: false))
+    XCTAssertTrue(BrowserBroker.routes("request_app", ["app": BrowserBroker.resource], active: false))
+    XCTAssertFalse(BrowserBroker.routes("request_app", ["app": "com.apple.TextEdit"], active: true))
+    XCTAssertFalse(BrowserBroker.routes("click", [:], active: false))
+    XCTAssertTrue(BrowserBroker.routes("click", [:], active: true))
+    XCTAssertFalse(BrowserBroker.routes("list_apps", [:], active: true), "listing stays on the shared queue")
+  }
+  private func brokerTurn() -> [String: Any] { ["threadId": "t", "participantId": "p", "turnToken": String(repeating: "c", count: 64)] }
+  func testBrowserRepliesFindTheirOwnCallAndTheBotNeverSeesTheTransport() throws {
+    let broker = BrowserBroker()
+    var sent = [[String: Any]]()
+    let lock = NSLock()
+    let reply = expectation(description: "reply")
+    DispatchQueue.global().async {
+      let result = try? broker.call("read_screen", [:], turn: self.brokerTurn(), send: { message in
+        lock.withLock { sent.append(message) }
+        let id = (message["params"] as? [String: Any])?["callId"] as? String ?? ""
+        broker.deliver(["callId": "someone-else", "result": ["text": "wrong"]])
+        broker.deliver(["callId": id, "result": ["text": "reading"]])
+      }, check: {})
+      XCTAssertEqual(result?["text"] as? String, "reading")
+      reply.fulfill()
+    }
+    wait(for: [reply], timeout: 3)
+    let params = try XCTUnwrap(sent.first?["params"] as? [String: Any])
+    XCTAssertEqual(sent.first?["method"] as? String, "unified/browser-call")
+    XCTAssertEqual(params["tool"] as? String, "read_screen")
+    XCTAssertEqual(params["turnToken"] as? String, String(repeating: "c", count: 64))
+  }
+  func testHostRefusalsKeepTheirCode() {
+    let broker = BrowserBroker()
+    XCTAssertThrowsError(try broker.call("click", [:], turn: brokerTurn(), send: { message in
+      broker.deliver(["callId": (message["params"] as? [String: Any])?["callId"] as Any, "error": "browser_taken_over"])
+    }, check: {})) { XCTAssertEqual(($0 as? Refusal)?.code, "browser_taken_over") }
+  }
+  func testStopWhileWaitingCancelsAtTheHostAndNeverClaimsAnOutcome() {
+    let broker = BrowserBroker()
+    var sent = [String]()
+    let lock = NSLock()
+    var calls = 0
+    XCTAssertThrowsError(try broker.call("click", [:], turn: brokerTurn(), send: { message in
+      lock.withLock { sent.append(message["method"] as? String ?? "") }
+    }, check: {
+      calls += 1
+      if calls > 2 { throw Refusal("cancelled_or_stopped") }
+    })) { XCTAssertEqual(($0 as? Refusal)?.code, "delivery_uncertain; do not repeat it. Read the screen first.") }
+    XCTAssertEqual(sent, ["unified/browser-call", "unified/browser-cancel"])
+  }
+  func testStoppedReadStaysARefusal() {
+    let broker = BrowserBroker()
+    XCTAssertThrowsError(try broker.call("read_screen", [:], turn: brokerTurn(), send: { _ in }, check: { throw Refusal("cancelled_or_stopped") })) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "cancelled_or_stopped")
+    }
+  }
+  func testBrowserGrantBelongsToItsThreadAndAReadApprovalNeverActs() throws {
+    let turns = TurnRegistry()
+    func turn(_ token: Character, _ thread: String, _ access: String) -> [String: Any] {
+      ["threadId": thread, "participantId": "p\(token)", "turnToken": String(repeating: token, count: 64), "enabled": true, "effectiveAccess": access, "grantScope": "s"]
+    }
+    let reader = try turns.register(turn("a", "one", "read"), control: -1)
+    try turns.grant(BrowserBroker.identity, token: reader, forThread: true)
+    let writer = try turns.register(turn("b", "one", "full"), control: -1)
+    XCTAssertThrowsError(try turns.identity(BrowserBroker.resource, token: writer), "read approval doesn't carry to control")
+    try turns.grant(BrowserBroker.identity, token: writer, forThread: true)
+    let elsewhere = try turns.register(turn("d", "two", "full"), control: -1)
+    XCTAssertThrowsError(try turns.identity(BrowserBroker.resource, token: elsewhere), "other threads still ask")
+    let again = try turns.register(turn("e", "one", "full"), control: -1)
+    XCTAssertEqual(try turns.identity(BrowserBroker.resource, token: again), BrowserBroker.identity)
+  }
 }

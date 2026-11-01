@@ -76,7 +76,7 @@ pub fn prompt_section(text: &str) -> String {
  let mut section = format!("\nThe human asked you to use these MCP servers, apps, or installed plugins: {}.\n", names.join(", "));
  section.push_str("Resolve each name against your available servers, app connector identities, and installed plugins. For an app, use its tools within codex_apps; for a plugin, follow its available skills and use its associated tools. Do not assume an app or plugin name is a literal MCP server name. If the requested capability is unavailable, tell the human. This request does not enable servers or bypass approvals.\n");
  if names.iter().any(|name| unified_computer_use_server().matches(name)) {
-  section.push_str("Unified Computer Use means Deck's bundled native desktop tools under apex-computer. Use those tools for the requested desktop task. If unavailable, ask the human to enable Settings → Unified Computer Use. Existing app permissions, Plan mode and Stop still apply.\n");
+  section.push_str("Unified Computer Use means Deck's bundled native desktop tools under apex-computer. Use those tools for the requested desktop task. For websites, request dev.apexdeck.assistant-browser and use navigate: it is Deck's own background browser, which leaves the human's windows, pointer and focus alone. If unavailable, ask the human to enable Settings → Unified Computer Use. Existing app permissions, Plan mode and Stop still apply.\n");
  }
  section
 }

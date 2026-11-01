@@ -3,10 +3,11 @@
 //! in. The assistant only reads pages with it (`browser.open`). The human
 //! can "Take over": the app shows the page and sends clicks and typing,
 //! for example to sign in, and the assistant keeps out until they're done.
+//! Work-thread bots reach the same browser through [`work`].
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
@@ -14,10 +15,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 
+pub(crate) mod work;
+
 static PROFILE: OnceLock<PathBuf> = OnceLock::new();
 static STATE: tokio::sync::Mutex<Option<Running>> = tokio::sync::Mutex::const_new(None);
 /// The human is driving: the assistant doesn't touch the browser.
 static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
+/// One operation at a time. Take over waits here, so nothing checked before it can still land after it.
+static OPS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Moves on anything that can change the page, so an older reading can't be acted on.
+static EPOCH: AtomicU64 = AtomicU64::new(0);
+/// The one page everyone shares, so the human takes over what the bot was using.
+static PINNED: Mutex<Option<String>> = Mutex::new(None);
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 
@@ -105,7 +114,7 @@ async fn ensure() -> Result<u16, String> {
         }
     }
     let program = binary().ok_or("There's no Chromium on this machine for the assistant's browser.")?;
-    let profile = PROFILE.get().cloned().unwrap_or_else(|| std::env::temp_dir().join("apex-assistant-browser"));
+    let profile = PROFILE.get().cloned().ok_or("The assistant's browser has no profile folder yet.")?;
     std::fs::create_dir_all(&profile).map_err(|e| format!("Could not make the browser's profile folder: {e}"))?;
     let marker = profile.join("DevToolsActivePort");
     let _ = std::fs::remove_file(&marker);
@@ -136,6 +145,8 @@ async fn ensure() -> Result<u16, String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Target {
+    #[serde(default)]
+    id: String,
     #[serde(rename = "type")]
     kind: String,
     web_socket_debugger_url: Option<String>,
@@ -145,13 +156,19 @@ async fn page() -> Result<Page, String> {
     let port = ensure().await?;
     let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
     let targets: Vec<Target> = http.get(format!("http://127.0.0.1:{port}/json/list")).send().await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
-    let url = match targets.into_iter().find(|t| t.kind == "page").and_then(|t| t.web_socket_debugger_url) {
-        Some(url) => url,
-        None => http.put(format!("http://127.0.0.1:{port}/json/new?about:blank")).send().await.map_err(|e| e.to_string())?
-            .json::<Target>().await.map_err(|e| e.to_string())?.web_socket_debugger_url.ok_or("The browser has no page.")?,
+    let pinned = PINNED.lock().unwrap().clone();
+    let mut pages: Vec<Target> = targets.into_iter().filter(|t| t.kind == "page" && t.web_socket_debugger_url.is_some()).collect();
+    let target = match pages.iter().position(|t| pinned.as_ref() == Some(&t.id)) {
+        Some(at) => pages.swap_remove(at),
+        None if !pages.is_empty() => pages.swap_remove(0),
+        None => http.put(format!("http://127.0.0.1:{port}/json/new?about:blank")).send().await.map_err(|e| e.to_string())?.json::<Target>().await.map_err(|e| e.to_string())?,
     };
+    *PINNED.lock().unwrap() = Some(target.id.clone());
+    let url = target.web_socket_debugger_url.ok_or("The browser has no page.")?;
     let (socket, _) = tokio_tungstenite::connect_async(url.as_str()).await.map_err(|e| format!("Could not reach the browser: {e}"))?;
-    let mut page = Page { socket, next: 0 };
+    let mut page = Page { socket, next: 0, target: target.id };
+    // Needed for the dialog events `call` answers. A dialog already open is announced again.
+    page.call("Page.enable", json!({})).await?;
     page.call("Emulation.setDeviceMetricsOverride", json!({ "width": WIDTH, "height": HEIGHT, "deviceScaleFactor": 1, "mobile": false })).await?;
     Ok(page)
 }
@@ -159,6 +176,7 @@ async fn page() -> Result<Page, String> {
 struct Page {
     socket: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     next: u64,
+    target: String,
 }
 
 impl Page {
@@ -173,6 +191,11 @@ impl Page {
                 .map_err(|e| e.to_string())?;
             let Message::Text(text) = frame else { continue };
             let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            // A dialog freezes the page and nobody can see it, so it gets the cautious answer.
+            if value["method"] == "Page.javascriptDialogOpening" {
+                self.next += 1;
+                self.socket.send(Message::Text(json!({ "id": self.next, "method": "Page.handleJavaScriptDialog", "params": { "accept": false } }).to_string().into())).await.map_err(|e| e.to_string())?;
+            }
             if value["id"] == json!(id) {
                 if let Some(error) = value.get("error") {
                     return Err(format!("The browser refused {method}: {}", error["message"].as_str().unwrap_or("unknown error")));
@@ -182,13 +205,26 @@ impl Page {
         }
     }
 
+    async fn press(&mut self, code: &str, vk: i32, text: &str, modifiers: i32) -> Result<(), String> {
+        self.call("Input.dispatchKeyEvent", json!({ "type": "keyDown", "key": code, "code": code, "windowsVirtualKeyCode": vk, "text": text, "modifiers": modifiers })).await?;
+        self.call("Input.dispatchKeyEvent", json!({ "type": "keyUp", "key": code, "code": code, "windowsVirtualKeyCode": vk, "modifiers": modifiers })).await?;
+        Ok(())
+    }
+
     async fn eval(&mut self, expression: &str) -> Result<Value, String> {
         let result = self.call("Runtime.evaluate", json!({ "expression": expression, "returnByValue": true })).await?;
         Ok(result["result"]["value"].clone())
     }
 
     async fn settle(&mut self) {
+        self.settle_while(&|| true).await
+    }
+
+    async fn settle_while(&mut self, keep: &(dyn Fn() -> bool + Send + Sync)) {
         for _ in 0..60 {
+            if !keep() {
+                return;
+            }
             if self.eval("document.readyState").await.ok().and_then(|v| v.as_str().map(str::to_owned)).as_deref() == Some("complete") {
                 break;
             }
@@ -198,12 +234,20 @@ impl Page {
         tokio::time::sleep(Duration::from_millis(600)).await;
     }
 
-    async fn navigate(&mut self, url: &str) -> Result<(), String> {
+    async fn load(&mut self, url: &str) -> Result<(), String> {
         let url = url.trim();
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return Err("Only http and https pages can be opened.".into());
         }
-        self.call("Page.navigate", json!({ "url": url })).await?;
+        let result = self.call("Page.navigate", json!({ "url": url })).await?;
+        match result["errorText"].as_str() {
+            Some(error) => Err(format!("The page didn't load: {error}")),
+            None => Ok(()),
+        }
+    }
+
+    async fn navigate(&mut self, url: &str) -> Result<(), String> {
+        self.load(url).await?;
         self.settle().await;
         Ok(())
     }
@@ -211,10 +255,15 @@ impl Page {
 
 /// `browser.open`: load a page and return its title, address and text.
 pub async fn open_text(url: &str) -> Result<(i32, String), String> {
+    let _ops = OPS.lock().await;
     if TAKEN_OVER.load(Ordering::SeqCst) {
         return Err("You're using the browser right now (Take over). I'll leave it alone until you hand it back.".into());
     }
+    if work::work_in_progress() {
+        return Err("A Work bot is using the browser right now. Try again when it finishes.".into());
+    }
     let mut page = page().await?;
+    EPOCH.fetch_add(1, Ordering::SeqCst);
     page.navigate(url).await?;
     let text = page.eval("`${document.title}\\n${location.href}\\n\\n${document.body ? document.body.innerText : ''}`").await?;
     Ok((0, text.as_str().unwrap_or_default().to_owned()))
@@ -254,10 +303,12 @@ pub enum Input {
 
 /// The human's click or keystroke while they've taken over.
 pub async fn input(input: Input) -> Result<View, String> {
+    let ops = OPS.lock().await;
     if !TAKEN_OVER.load(Ordering::SeqCst) {
         return Err("Take over the browser first.".into());
     }
     let mut page = page().await?;
+    EPOCH.fetch_add(1, Ordering::SeqCst);
     match input {
         Input::Click { x, y } => {
             for kind in ["mousePressed", "mouseReleased"] {
@@ -267,13 +318,8 @@ pub async fn input(input: Input) -> Result<View, String> {
         }
         Input::Type { text } => { page.call("Input.insertText", json!({ "text": text })).await?; }
         Input::Key { key } => {
-            let (code, vk, text) = match key.as_str() {
-                "Enter" => ("Enter", 13, "\r"), "Backspace" => ("Backspace", 8, ""), "Tab" => ("Tab", 9, ""), "Escape" => ("Escape", 27, ""),
-                "ArrowDown" => ("ArrowDown", 40, ""), "ArrowUp" => ("ArrowUp", 38, ""),
-                _ => return Err("That key isn't supported.".into()),
-            };
-            page.call("Input.dispatchKeyEvent", json!({ "type": "keyDown", "key": code, "code": code, "windowsVirtualKeyCode": vk, "text": text })).await?;
-            page.call("Input.dispatchKeyEvent", json!({ "type": "keyUp", "key": code, "code": code, "windowsVirtualKeyCode": vk })).await?;
+            let (code, vk, text, modifiers) = work::key_event(&key).ok_or("That key isn't supported.")?;
+            page.press(code, vk, text, modifiers).await?;
             tokio::time::sleep(Duration::from_millis(300)).await;
             page.settle().await;
         }
@@ -285,11 +331,15 @@ pub async fn input(input: Input) -> Result<View, String> {
         Input::Back => { page.eval("history.back()").await?; page.settle().await; }
     }
     drop(page);
+    drop(ops);
     view().await
 }
 
 /// The human takes the browser (`true`) or hands it back (`false`).
 pub async fn take_over(on: bool) -> Result<View, String> {
     TAKEN_OVER.store(on, Ordering::SeqCst);
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+    // Whatever was mid-step finishes first, and everything queued behind it is refused.
+    drop(OPS.lock().await);
     view().await
 }
