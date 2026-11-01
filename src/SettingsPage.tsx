@@ -352,7 +352,7 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
           {saveState==='saving' ? 'Saving…' : saveState==='saved' ? '✓ Saved' : saveState==='error' ? 'Could not save' : ''}
         </span>
         <span><kbd>⌘,</kbd> opens · <kbd>Esc</kbd> closes</span>
-        <span>Changes save as you make them.</span>
+        <span>{resolvedSection==='appearance' ? 'Appearance changes wait for Apply.' : 'Changes save as you make them.'}</span>
       </div>
     </aside>
     <main className={`settings-main${studio ? ' studio-main' : ''}`} ref={mainRef} tabIndex={-1}>

@@ -9,6 +9,9 @@ test('every theme shows only controls that do something', { timeout: 200000 }, a
     await seed(${JSON.stringify(onSkin('clay', BUILTIN_SKINS))});
     await openAppearance();
     assert.ok((await text()).includes('Cards and composer only. Columns stay flush.'),'Corners keeps its Clay scope note');
+    const foot=await run("document.querySelector('.settings-nav-foot').innerText");
+    assert.ok(!foot.includes('Changes save as you make them'),'the sidebar does not promise instant changes here');
+    assert.ok(foot.includes('Apply'),'it says Apply decides');
     await tab('material');
     assert.deepEqual(await labels(),['Panel edges'],'Clay Material has Panel edges and no glass control');
     assert.ok((await text()).includes('Frost, glow and backgrounds need glass'),'Clay says why');
