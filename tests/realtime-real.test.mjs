@@ -88,6 +88,17 @@ function cand(name, id, host, room) {
   return { name, participantId:id, hostId:host, roomId:room };
 }
 
+// The provider echoes app-owned metadata on response.created. Never infer an
+// input from whichever transcript happened to arrive most recently.
+function voiceInput(dc, itemId, transcript, responseId = `response-${itemId}`) {
+  dc._receive({ type:"input_audio_buffer.speech_started", item_id:itemId });
+  dc._receive({ type:"input_audio_buffer.committed", item_id:itemId });
+  dc._receive({ type:"conversation.item.input_audio_transcription.completed", item_id:itemId, transcript });
+  const created = dc.sent.map(JSON.parse).filter(e => e.type === "response.create").at(-1);
+  dc._receive({ type:"response.created", response:{ id:responseId, metadata:created?.response?.metadata } });
+  return responseId;
+}
+
 test("switch during startup uses current default in opening instructions (real modules)", async () => {
   FakePC.last = null;
   let resolveMint;
@@ -210,10 +221,11 @@ test("single tool call added->done->response.done submits exactly one request (r
   assert.ok(dc, "dc exists");
   dc._open();
 
-  dc._receive({ type:"response.output_item.added", item: { type:"function_call", call_id:"call-1", name:"ask_agent", arguments:"{}" } });
+  const responseId = voiceInput(dc, "audio-1", "do x");
+  dc._receive({ type:"response.output_item.added", response_id:responseId, item: { type:"function_call", call_id:"call-1", name:"ask_agent", arguments:"{}" } });
   dc._receive({ type:"response.function_call_arguments.delta", call_id:"call-1", delta:'{"agent":"Bob","request":"do x"}' });
-  dc._receive({ type:"response.function_call_arguments.done", call_id:"call-1", name:"ask_agent", arguments:'{"agent":"Bob","request":"do x"}' });
-  dc._receive({ type:"response.done", response: { output: [{ type:"function_call", call_id:"call-1", name:"ask_agent", arguments:'{"agent":"Bob","request":"do x"}' }] } });
+  dc._receive({ type:"response.function_call_arguments.done", response_id:responseId, call_id:"call-1", name:"ask_agent", arguments:'{"agent":"Bob","request":"do x"}' });
+  dc._receive({ type:"response.done", response: { id:responseId, status:"completed", output: [{ type:"function_call", call_id:"call-1", name:"ask_agent", arguments:'{"agent":"Bob","request":"do x"}' }] } });
 
   await new Promise(r=>setTimeout(r, 30));
   assert.equal(submitted.length, 1, "exactly one submission expected, got "+submitted.length);
@@ -316,8 +328,10 @@ test("an assistant call uses the one conversation: one send, mute and end leave 
   dc._open();
   const opening = dc.sent.map(s => JSON.parse(s)).find(s => s.type === "session.update");
   assert.match(opening.session.instructions, /live voice of "Alfred"/);
-  const call = (id) => dc._receive({ type:"response.function_call_arguments.done", call_id:id, name:"ask_agent", arguments:'{"agent":"Alfred","request":"status?"}' });
-  call("c1"); call("c1");
+  const call = (id, responseId) => dc._receive({ type:"response.function_call_arguments.done", response_id:responseId, call_id:id, name:"ask_agent", arguments:'{"agent":"Alfred","request":"status?"}' });
+  const responseId = voiceInput(dc, "assistant-audio-1", "status?");
+  call("c1", responseId); call("c1", responseId);
+  dc._receive({type:"response.done",response:{id:responseId,status:"completed",output:[]}});
   await new Promise(r => setTimeout(r, 20));
   assert.equal(sent.length, 1, "a repeated tool event reaches the conversation once");
   record = { ...record, events:[{ id:"pe-1", state:"held" }] };
@@ -337,4 +351,201 @@ test("an assistant call uses the one conversation: one send, mute and end leave 
   assert.equal(mics[1].getAudioTracks()[0].stopped, true, "rejoining leaves one live mic");
   await controller.end();
   bridge.dispose();
+});
+
+async function authorityFixture() {
+  const submitted = [], canceled = [], errors = [], listeners = new Set();
+  let muted = false;
+  const scope = {hostId:"h1", roomId:"r1", participantId:"b2"};
+  const client = await connectRealtime({
+    candidates:()=>[cand("Bob","b2")],
+    bridge:()=>({subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},async submit(turn){submitted.push(turn);},async cancel(id){canceled.push(id);}}),
+    voiceSettings:()=>({engine:"realtime"}),
+    mintSession:async()=>({client_secret:"ek_fake",model:"gpt-realtime",voice:"verse"}),
+  },scope,{onEvent(){},onAudio(){},onError(error){errors.push(error);},onClose(){}},{muted:()=>muted,stream:()=>new FakeStream()});
+  const dc=FakePC.last.dc;dc._open();
+  const tool=(id,responseId,name="ask_agent",request="MODEL INVENTED REQUEST")=>dc._receive({type:"response.function_call_arguments.done",response_id:responseId,call_id:id,name,arguments:JSON.stringify({agent:"Bob",request})});
+  return {client,dc,submitted,canceled,errors,tool,scope,listeners,mute(value){muted=value;client.setMuted?.(value);}};
+}
+
+test("model calls require one fresh committed transcript and use its exact text", async()=>{
+  const f=await authorityFixture();
+  f.tool("without-audio","unknown");
+  assert.equal(f.submitted.length,0,"a model tool call alone has no human authority");
+  const response=voiceInput(f.dc,"audio-authority","Please inspect the current error.");
+  f.tool("bound",response);
+  f.tool("second-call",response);
+  assert.equal(f.submitted.length,1);
+  assert.equal(f.submitted[0].text,"Please inspect the current error.");
+  assert.equal(f.submitted[0].utteranceId,"audio-authority");
+  f.client.close();
+});
+
+test("readback cannot create a human request or stop, even with a fresh unbound transcript", async()=>{
+  const f=await authorityFixture();
+  const response=voiceInput(f.dc,"audio-readback","Inspect the error");
+  f.tool("work",response);
+  f.dc._receive({type:"response.done",response:{id:response,status:"completed",output:[]}});
+  const turn=f.submitted[0];
+  for(const fn of [...f.listeners])fn({type:"done",requestId:turn.requestId,scope:f.scope});
+  const readback=f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create").at(-1);
+  assert.equal(readback.response.tool_choice,"none");
+  assert.equal(readback.response.metadata,undefined);
+  f.dc._receive({type:"response.created",response:{id:"readback-response"}});
+  f.tool("loop","readback-response");f.tool("stop-loop","readback-response","stop_agent");
+  assert.equal(f.submitted.length,1);assert.equal(f.canceled.length,0);
+  f.client.close();
+});
+
+test("mute, barge-in, canceled responses and close revoke old voice authority", async()=>{
+  const f=await authorityFixture();
+  let response=voiceInput(f.dc,"audio-muted","Inspect the error");
+  f.mute(true);f.mute(false);f.tool("late-muted",response);
+  response=voiceInput(f.dc,"audio-barge","Inspect the error");
+  f.dc._receive({type:"input_audio_buffer.speech_started",item_id:"next-speech"});f.tool("late-barge",response);
+  response=voiceInput(f.dc,"audio-canceled","Inspect the error");
+  f.dc._receive({type:"response.done",response:{id:response,status:"cancelled",output:[]}});f.tool("late-cancel",response);
+  response=voiceInput(f.dc,"audio-closed","Inspect the error");f.client.close();f.tool("late-close",response);
+  assert.equal(f.submitted.length,0);
+});
+
+test("out-of-order, empty and failed ASR never borrow another input's authority", async()=>{
+  const f=await authorityFixture();
+  f.dc._receive({type:"conversation.item.input_audio_transcription.completed",item_id:"uncommitted",transcript:"Invented authority"});
+  f.tool("uncommitted","unknown");
+  f.dc._receive({type:"input_audio_buffer.speech_started",item_id:"empty"});
+  f.dc._receive({type:"input_audio_buffer.committed",item_id:"empty"});
+  f.dc._receive({type:"conversation.item.input_audio_transcription.completed",item_id:"empty",transcript:"  "});
+  f.dc._receive({type:"input_audio_buffer.speech_started",item_id:"failed"});
+  f.dc._receive({type:"input_audio_buffer.committed",item_id:"failed"});
+  f.dc._receive({type:"conversation.item.input_audio_transcription.failed",item_id:"failed"});
+  f.dc._receive({type:"response.created",response:{id:"stale-asr-response",metadata:{apex_voice_input:"unknown"}}});
+  f.tool("failed-input-tool","stale-asr-response");
+  const response=voiceInput(f.dc,"fresh","Please stop Bob");
+  f.tool("stop",response,"stop_agent");f.tool("stop-reuse",response,"stop_agent");
+  assert.equal(f.submitted.length,0);
+  // A valid stop consumes its utterance even when there is no pending work.
+  f.tool("reuse-as-work",response);
+  assert.equal(f.submitted.length,0);
+  const creates=f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create" && e.response.metadata);
+  assert.equal(creates.length,1);
+  f.client.close();
+});
+
+test("muted speech cannot regain authority through late commit after unmute", async()=>{
+  const f=await authorityFixture();
+  f.dc._receive({type:"input_audio_buffer.speech_started",item_id:"old-speech"});
+  f.mute(true);f.mute(false);
+  f.dc._receive({type:"input_audio_buffer.committed",item_id:"old-speech"});
+  f.dc._receive({type:"conversation.item.input_audio_transcription.completed",item_id:"old-speech",transcript:"Old speech"});
+  const creates=f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create");
+  assert.equal(creates.length,0);
+  const fresh=voiceInput(f.dc,"new-speech","New speech");f.tool("new",fresh);
+  assert.equal(f.submitted[0].text,"New speech");f.client.close();
+});
+
+test("stop tool selection cannot turn a request to keep working into cancellation", async()=>{
+  const f=await authorityFixture();
+  const work=voiceInput(f.dc,"work-speech","Inspect the error");f.tool("work",work);
+  f.dc._receive({type:"response.done",response:{id:work,status:"completed",output:[]}});
+  const noStop=voiceInput(f.dc,"keep-going","Don't stop Bob, continue working.");f.tool("bad-stop",noStop,"stop_agent");
+  assert.equal(f.canceled.length,0);
+  f.dc._receive({type:"response.done",response:{id:noStop,status:"completed",output:[]}});
+  const stop=voiceInput(f.dc,"stop-speech","Please stop Bob");f.tool("good-stop",stop,"stop_agent");
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(f.canceled.length,1);f.client.close();
+});
+
+test("waiting, approval, failed-work and routing-error speech never has tools or human authority", async()=>{
+  const f=await authorityFixture();
+  const response=voiceInput(f.dc,"all-readbacks","Inspect the error");f.tool("work",response);
+  f.dc._receive({type:"response.done",response:{id:response,status:"completed",output:[]}});
+  const finishReadback=id=>{f.dc._receive({type:"response.created",response:{id}});f.dc._receive({type:"response.done",response:{id,status:"completed",output:[]}});};
+  await new Promise(resolve=>setTimeout(resolve,820));
+  finishReadback("waiting-speech");
+  for(const fn of [...f.listeners])fn({type:"approval",requestId:f.submitted[0].requestId,scope:f.scope});
+  finishReadback("approval-speech");
+  for(const fn of [...f.listeners])fn({type:"failed",text:"failed",requestId:f.submitted[0].requestId,scope:f.scope});
+  finishReadback("failure-speech");
+  const unknown=voiceInput(f.dc,"unknown-target","Ask missing agent to inspect the error");
+  f.dc._receive({type:"response.function_call_arguments.done",response_id:unknown,call_id:"missing",name:"ask_agent",arguments:JSON.stringify({agent:"Missing",request:"inspect"})});
+  f.dc._receive({type:"response.done",response:{id:unknown,status:"completed",output:[]}});
+  const readbacks=f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create"&&!e.response.metadata);
+  assert.equal(readbacks.length,4);
+  for(const [index,readback] of readbacks.entries()){
+    assert.equal(readback.response.tool_choice,"none");
+    const id=`readback-${index}`;f.dc._receive({type:"response.created",response:{id}});f.tool(`loop-${index}`,id);
+  }
+  assert.equal(f.submitted.length,1);f.client.close();
+});
+
+test("transcription completion before commit waits for its exact item; response done and item done preserve correlation",async()=>{
+ const f=await authorityFixture();
+ f.dc._receive({type:"input_audio_buffer.speech_started",item_id:"reordered"});
+ f.dc._receive({type:"conversation.item.input_audio_transcription.completed",item_id:"reordered",transcript:"exact transcript"});
+ assert.equal(f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create").length,0);
+ f.dc._receive({type:"input_audio_buffer.committed",item_id:"reordered"});
+ const created=f.dc.sent.map(JSON.parse).at(-1);
+ f.dc._receive({type:"response.created",response:{id:"correct",metadata:created.response.metadata}});
+ const item={type:"function_call",call_id:"item-done",name:"ask_agent",arguments:JSON.stringify({agent:"Bob",request:"invented text"})};
+ f.dc._receive({type:"response.output_item.done",response_id:"unrelated",item});
+ assert.equal(f.submitted.length,0);
+ f.dc._receive({type:"response.output_item.done",response_id:"correct",item});
+ f.dc._receive({type:"response.done",response:{id:"correct",status:"completed",output:[{...item,call_id:"second"}]}});
+ assert.equal(f.submitted.length,1);assert.equal(f.submitted[0].text,"exact transcript");f.client.close();
+});
+
+test("replayed audio item events and copied response metadata cannot authorize a second human turn",async()=>{
+ const f=await authorityFixture();
+ const response=voiceInput(f.dc,"once-only","Inspect once");
+ const metadata=f.dc.sent.map(JSON.parse).at(-1).response.metadata;
+ f.dc._receive({type:"response.created",response:{id:"metadata-replay",metadata}});
+ f.tool("copied-metadata","metadata-replay");assert.equal(f.submitted.length,0);
+ f.tool("first",response);assert.equal(f.submitted.length,1);
+ const replay=voiceInput(f.dc,"once-only","Inspect once");f.tool("second",replay);
+ assert.equal(f.submitted.length,1);f.client.close();
+});
+
+test("fresh speech awaiting ASR holds old agent readback and gets the next response",async()=>{
+ const f=await authorityFixture();
+ const response=voiceInput(f.dc,"old-work","Inspect the error");f.tool("work",response);
+ f.dc._receive({type:"response.done",response:{id:response,status:"completed",output:[]}});
+ f.dc._receive({type:"input_audio_buffer.speech_started",item_id:"fresh-turn"});
+ for(const fn of [...f.listeners])fn({type:"done",requestId:f.submitted[0].requestId,scope:f.scope});
+ assert.equal(f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create").length,1,"readback waits while user speech is awaiting ASR");
+ f.dc._receive({type:"input_audio_buffer.committed",item_id:"fresh-turn"});
+ f.dc._receive({type:"conversation.item.input_audio_transcription.completed",item_id:"fresh-turn",transcript:"Fresh request"});
+ const next=f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create").at(-1);
+ assert.ok(next.response.metadata?.apex_voice_input);
+ f.dc._receive({type:"response.created",response:{id:"fresh-response",metadata:next.response.metadata}});
+ f.tool("fresh-work","fresh-response");assert.equal(f.submitted.at(-1).text,"Fresh request");f.client.close();
+});
+
+test("a fresh transcribed input waits for an already active readback instead of overlapping response.create",async()=>{
+ const f=await authorityFixture();
+ const response=voiceInput(f.dc,"work-before-readback","Inspect the error");f.tool("work",response);
+ f.dc._receive({type:"response.done",response:{id:response,status:"completed",output:[]}});
+ for(const fn of [...f.listeners])fn({type:"done",requestId:f.submitted[0].requestId,scope:f.scope});
+ f.dc._receive({type:"response.created",response:{id:"active-readback"}});
+ f.dc._receive({type:"input_audio_buffer.speech_started",item_id:"queued-input"});
+ f.dc._receive({type:"input_audio_buffer.committed",item_id:"queued-input"});
+ f.dc._receive({type:"conversation.item.input_audio_transcription.completed",item_id:"queued-input",transcript:"Queued request"});
+ assert.equal(f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create").length,2,"no concurrent create while readback is active");
+ f.dc._receive({type:"response.done",response:{id:"active-readback",status:"cancelled",output:[]}});
+ const next=f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create").at(-1);
+ f.dc._receive({type:"response.created",response:{id:"queued-response",metadata:next.response.metadata}});
+ f.tool("queued-work","queued-response");assert.equal(f.submitted.at(-1).text,"Queued request");f.client.close();
+});
+
+test("a correlated response creation failure revokes input and reports a visible call error",async()=>{
+ const f=await authorityFixture();
+ f.dc._receive({type:"input_audio_buffer.speech_started",item_id:"creation-failed"});
+ f.dc._receive({type:"input_audio_buffer.committed",item_id:"creation-failed"});
+ f.dc._receive({type:"conversation.item.input_audio_transcription.completed",item_id:"creation-failed",transcript:"Inspect the error"});
+ const request=f.dc.sent.map(JSON.parse).filter(e=>e.type==="response.create").at(-1);
+ assert.equal(typeof request.event_id,"string");
+ f.dc._receive({type:"error",error:{event_id:request.event_id,message:"provider detail"}});
+ f.dc._receive({type:"response.created",response:{id:"after-error-response",metadata:request.response.metadata}});
+ f.tool("after-error","after-error-response");assert.equal(f.submitted.length,0);assert.equal(f.errors.length,1);
+ assert.match(f.errors[0].message,/Start a new call/);f.client.close();
 });
