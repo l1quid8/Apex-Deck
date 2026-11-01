@@ -1,8 +1,34 @@
+import CoreGraphics
 import Foundation
 
 public struct Refusal: Error {
   public let code: String
   public init(_ code: String) { self.code = code }
+}
+public struct PointerWindow {
+  public let pid: Int32
+  public let layer: Int
+  public let alpha: Double
+  public let frame: CGRect
+  public init(pid: Int32, layer: Int, alpha: Double, frame: CGRect) {
+    self.pid = pid; self.layer = layer; self.alpha = alpha; self.frame = frame
+  }
+}
+public enum HumanEvent {
+  /// Buttons, drags and scrolling act on the window under the pointer, whichever app is in front.
+  public static func pointerAction(_ type: CGEventType) -> Bool {
+    switch type {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp,
+      .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel: return true
+    default: return false
+    }
+  }
+  /// `windows` run front to back. Only an ordinary window names an owner: a panel or overlay
+  /// above it may or may not pass input down, and a wrong answer would lose the person's priority.
+  public static func owner(at point: CGPoint, windows: [PointerWindow], own: Int32) -> Int32? {
+    let hit = windows.first { $0.pid != own && $0.alpha > 0 && $0.frame.contains(point) }
+    return hit?.layer == 0 ? hit?.pid : nil
+  }
 }
 public final class Latch {
   public init() {}
@@ -73,10 +99,12 @@ public final class Latch {
   }
   /// Real input from the session tap. Input in another app can't reach the target, so it is
   /// ignored. An unknown front app counts, because Tyler's priority must not depend on a lookup.
-  /// `under` is the app under a click, which can reach a window without activating it.
-  public func human(motion isMotion: Bool, frontmost: Int32?, under: Int32? = nil) {
+  /// `under` is the app under pointer input, which reaches a window without activating it, so a
+  /// `pointer` event whose owner is unknown counts too.
+  public func human(motion isMotion: Bool, frontmost: Int32?, under: Int32? = nil, pointer: Bool = false) {
     lock.lock()
     let elsewhere = target != nil && frontmost != nil && frontmost != target && under != target
+      && !(pointer && under == nil)
     lock.unlock()
     guard !elsewhere else { return }
     if isMotion { motion() } else { event() }
