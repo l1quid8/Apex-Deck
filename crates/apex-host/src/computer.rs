@@ -517,43 +517,11 @@ impl Host {
     }
 
     pub async fn computer_set_cursor_overlay(&self, prefs: Value) -> Result<Value, String> {
-        // Validate via our prefs type
-        let mut current = self.computer.cursor_prefs();
-        // Merge incoming fields onto current
-        if let Ok(incoming) = serde_json::from_value::<crate::cursor_overlay::CursorOverlayPrefs>(prefs.clone()) {
-            incoming.validate().map_err(|e| e)?;
-            current = incoming;
-        } else {
-            // partial merge: accept flat json with known keys
-            if let Some(v) = prefs.get("preset").and_then(|v| v.as_str()) {
-                current.preset = match v {
-                    "simple" => crate::cursor_overlay::CursorPreset::Simple,
-                    "ring-only" | "ringOnly" => crate::cursor_overlay::CursorPreset::RingOnly,
-                    "custom" => crate::cursor_overlay::CursorPreset::Custom,
-                    _ => crate::cursor_overlay::CursorPreset::Default,
-                };
-            }
-            if let Some(v) = prefs.get("size").and_then(|v| v.as_f64()) { current.size = v; }
-            if let Some(v) = prefs.get("fill").and_then(|v| v.as_str()) { current.fill = Some(v.to_string()); }
-            if let Some(v) = prefs.get("rim").and_then(|v| v.as_str()) { current.rim = Some(v.to_string()); }
-            if let Some(v) = prefs.get("accent").and_then(|v| v.as_str()) { current.accent = Some(v.to_string()); }
-            if let Some(v) = prefs.get("ripple").and_then(|v| v.as_bool()) { current.ripple = v; }
-            if let Some(v) = prefs.get("highlight").and_then(|v| v.as_bool()) { current.highlight = v; }
-            if let Some(v) = prefs.get("labelsEnabled").and_then(|v| v.as_bool()) { current.labels_enabled = v; }
-            if let Some(motion) = prefs.get("motion") {
-                if let Some(v) = motion.get("travelMinMs").and_then(|v| v.as_u64()) { current.motion.travel_min_ms = v; }
-                if let Some(v) = motion.get("travelMaxMs").and_then(|v| v.as_u64()) { current.motion.travel_max_ms = v; }
-                if let Some(v) = motion.get("dwellMs").and_then(|v| v.as_u64()) { current.motion.dwell_ms = v; }
-                if let Some(v) = motion.get("bow").and_then(|v| v.as_f64()) { current.motion.bow = v; }
-                if let Some(v) = motion.get("overshoot").and_then(|v| v.as_f64()) { current.motion.overshoot = v; }
-                if let Some(v) = motion.get("tremor").and_then(|v| v.as_f64()) { current.motion.tremor = v; }
-            }
-            // clear custom image when preset not custom
-            if !matches!(current.preset, crate::cursor_overlay::CursorPreset::Custom) {
-                // keep image if user didn't change preset? we allow ring-only without image
-            }
-        }
-        // Apply preset side-effects (simple/front)
+        // Strict typed validation: reject malformed payload atomically instead of lossy fallback
+        let mut current: crate::cursor_overlay::CursorOverlayPrefs = serde_json::from_value(prefs)
+            .map_err(|e| format!("Invalid cursor overlay preferences: {e}"))?;
+
+        // Apply preset side-effects (simple/ring-only)
         match current.preset {
             crate::cursor_overlay::CursorPreset::Simple => {
                 current.ripple = false;
@@ -563,10 +531,7 @@ impl Host {
                 current.ripple = true;
                 current.highlight = true;
             }
-            crate::cursor_overlay::CursorPreset::Default => {
-                // keep as set
-            }
-            crate::cursor_overlay::CursorPreset::Custom => {}
+            crate::cursor_overlay::CursorPreset::Default | crate::cursor_overlay::CursorPreset::Custom => {}
         }
         current.validate().map_err(|e| e)?;
 
@@ -606,7 +571,6 @@ impl Host {
         prefs.custom_image = Some(img);
         prefs.preset = crate::cursor_overlay::CursorPreset::Custom;
         prefs.validate().map_err(|e| e)?;
-        crate::cursor_overlay::save(&self.computer.data_root, &prefs).map_err(|e| e)?;
         #[cfg(unix)]
         {
             match connect().await {
@@ -618,6 +582,7 @@ impl Host {
                 Err(_) => {}
             }
         }
+        crate::cursor_overlay::save(&self.computer.data_root, &prefs).map_err(|e| e)?;
         Ok(self.computer_status().await)
     }
 

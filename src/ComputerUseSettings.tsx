@@ -64,12 +64,14 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
   const [busy, setBusy] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const cursorOpSeq = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
       const s = await backend.call<ComputerStatus>('computer_status');
       setStatus(s);
-      const p = (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? s.cursorOverlay ?? DEFAULT_PREFS;
+      // Prefer authoritative host cursorOverlay; offline prefs survive reconnect
+      const p = s.cursorOverlay ?? (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? DEFAULT_PREFS;
       // normalize
       const merged: CursorOverlayPrefs = {
         ...DEFAULT_PREFS,
@@ -101,9 +103,13 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
   }, [backend.demo, refresh]);
 
   const act = async (command: string, args?: Record<string, unknown>) => {
+    const seq = ++cursorOpSeq.current;
+    try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'cursor' } })); } catch {}
     setBusy(true); setError('');
-    try { const s = await backend.call<ComputerStatus>(command, args); setStatus(s);
-      const p = (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? s.cursorOverlay ?? DEFAULT_PREFS;
+    try {
+      const s = await backend.call<ComputerStatus>(command, args);
+      setStatus(s);
+      const p = s.cursorOverlay ?? (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? DEFAULT_PREFS;
       setPrefs({
         ...DEFAULT_PREFS,
         ...p,
@@ -111,24 +117,24 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
         preset: (p.preset as any) ?? prefs.preset,
         labelsEnabled: (s.cursorOverlayLabelsEnabled ?? p.labelsEnabled) as any ?? prefs.labelsEnabled,
       });
-      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
-    }
-    catch (e: any) {
-      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: 'cursor' })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'cursor' } })); } catch {}
+    } catch (e: any) {
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'cursor', error: e?.message } })); } catch {}
       setError(e?.message || 'The request could not finish. Open Unified Computer Use from the menu bar and check its status.');
-    }
-    finally { setBusy(false); }
+    } finally { setBusy(false); }
   };
 
   const commitPrefs = async (next: CursorOverlayPrefs) => {
+    const seq = ++cursorOpSeq.current;
+    try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'cursor' } })); } catch {}
     const prev = prefs;
     setPrefs(next);
     setBusy(true); setError('');
     try {
       const s = await backend.call<ComputerStatus>('computer_set_cursor_overlay', { prefs: next as any });
       setStatus(s);
-      // Sync from helper ack (atomic validated persistence) – helper is now source of truth when reachable
-      const hp = (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? s.cursorOverlay;
+      // Prefer authoritative host cursorOverlay; offline prefs survive reconnect
+      const hp = s.cursorOverlay ?? (s.cursorOverlayFromHelper as CursorOverlayPrefs);
       if (hp) {
         setPrefs({
           ...DEFAULT_PREFS,
@@ -139,9 +145,9 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
           customImage: (hp as any).customImage ?? next.customImage ?? null,
         });
       }
-      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
+      try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'cursor' } })); } catch {}
     } catch (e: any) {
-      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: 'cursor' })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'cursor', error: e?.message } })); } catch {}
       setError(e?.message || 'Could not save cursor settings. Helper acknowledgement failed; host prefs kept but helper may be offline.');
       // rollback optimistic to previous validated state if save failed
       setPrefs(prev);
@@ -184,11 +190,14 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
       r.onerror = () => reject(new Error('read failed'));
       r.readAsDataURL(file);
     });
+    const seq = ++cursorOpSeq.current;
+    try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'cursor' } })); } catch {}
     setBusy(true); setError('');
     try {
-      const s = await backend.call<ComputerStatus>('computer_set_cursor_image', { imageBase64: base64, image_base64: base64 });
+      // Send only canonical key imageBase64 to prevent serde duplicate-field rejection
+      const s = await backend.call<ComputerStatus>('computer_set_cursor_image', { imageBase64: base64 });
       setStatus(s);
-      const hp = (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? s.cursorOverlay;
+      const hp = s.cursorOverlay ?? (s.cursorOverlayFromHelper as CursorOverlayPrefs);
       if (hp) {
         setPrefs({
           ...DEFAULT_PREFS,
@@ -200,9 +209,9 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
       } else {
         setPrefs(prev => ({ ...prev, preset: 'custom' }));
       }
-      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
+      try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'cursor' } })); } catch {}
     } catch (e: any) {
-      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: 'cursor' })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'cursor', error: e?.message } })); } catch {}
       setError(e?.message || 'Could not save custom cursor. Falls back to built-in.');
     } finally { setBusy(false); }
   };

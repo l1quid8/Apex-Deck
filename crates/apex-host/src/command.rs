@@ -816,6 +816,51 @@ mod tests {
     }
 
     #[test]
+    fn computer_set_cursor_image_deserializes_canonical_and_legacy() {
+        // Canonical camelCase from UI
+        let canonical = Command::from_json(json!({
+            "cmd": "computer_set_cursor_image",
+            "args": {
+                "imageBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==",
+                "hotspotX": 12.0,
+                "hotspotY": 14.0
+            }
+        })).expect("canonical key should deserialize");
+        let Command::ComputerSetCursorImage { image_base64, hotspot_x, hotspot_y } = canonical else {
+            panic!("expected ComputerSetCursorImage");
+        };
+        assert!(image_base64.starts_with("iVBOR"));
+        assert_eq!(hotspot_x, Some(12.0));
+        assert_eq!(hotspot_y, Some(14.0));
+
+        // Legacy snake_case format
+        let legacy = Command::from_json(json!({
+            "cmd": "computer_set_cursor_image",
+            "args": {
+                "image_base64": "iVBORw0KGgoAAAANSUhEUg==",
+                "hotspot_x": 0.0,
+                "hotspot_y": 0.0
+            }
+        })).expect("legacy key should deserialize");
+        let Command::ComputerSetCursorImage { image_base64: leg_b64, hotspot_x: leg_x, hotspot_y: leg_y } = legacy else {
+            panic!("expected ComputerSetCursorImage");
+        };
+        assert_eq!(leg_b64, "iVBORw0KGgoAAAANSUhEUg==");
+        assert_eq!(leg_x, Some(0.0));
+        assert_eq!(leg_y, Some(0.0));
+
+        // Duplicate field: sending both imageBase64 and image_base64 fails serde deserialization
+        let dup = Command::from_json(json!({
+            "cmd": "computer_set_cursor_image",
+            "args": {
+                "imageBase64": "abc",
+                "image_base64": "abc"
+            }
+        }));
+        assert!(dup.is_err(), "duplicate alias fields must be rejected by serde");
+    }
+
+    #[test]
     fn names_lists_every_command() {
         let names = names();
         assert_eq!(names.len(), 194);

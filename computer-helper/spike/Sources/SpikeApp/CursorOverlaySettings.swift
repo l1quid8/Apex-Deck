@@ -107,7 +107,6 @@ enum CursorOverlaySettings {
   static var fillHex: String? {
     get {
       if let v = UserDefaults.standard.string(forKey: fillKey), validateHex(v) { return v }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let v = blob["fill"] as? String, validateHex(v) { return v }
       return defaultFillHex
     }
     set {
@@ -123,7 +122,6 @@ enum CursorOverlaySettings {
   static var rimHex: String? {
     get {
       if let v = UserDefaults.standard.string(forKey: rimKey), validateHex(v) { return v }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let v = blob["rim"] as? String, validateHex(v) { return v }
       return defaultRimHex
     }
     set {
@@ -138,7 +136,6 @@ enum CursorOverlaySettings {
   static var accentHex: String {
     get {
       if let v = UserDefaults.standard.string(forKey: accentKey), validateHex(v) { return v }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey), let v = blob["accent"] as? String, validateHex(v) { return v }
       return defaultAccentHex
     }
     set {
@@ -234,10 +231,6 @@ enum CursorOverlaySettings {
   static var customImagePath: String? {
     get {
       if let v = UserDefaults.standard.string(forKey: customImageKey), !v.isEmpty { return v }
-      if let blob = UserDefaults.standard.dictionary(forKey: blobKey) {
-        if let path = blob["customImage"] as? [String: Any], let p = path["path"] as? String { return p }
-        if let p = blob["customImagePath"] as? String { return p }
-      }
       return nil
     }
     set {
@@ -327,6 +320,8 @@ enum CursorOverlaySettings {
     if let accent = src["accent"] as? String {
       guard validateHex(accent) else { return "accent must be hex" }
       stagedMutations.append { UserDefaults.standard.set(accent, forKey: accentKey) }
+    } else if src["accent"] is NSNull {
+      stagedMutations.append { UserDefaults.standard.removeObject(forKey: accentKey) }
     }
 
     // ripple/highlight
@@ -425,11 +420,19 @@ enum CursorOverlaySettings {
           guard (0...512).contains(hy.doubleValue) else { return "hotspotY must be 0...512" }
           stagedMutations.append { UserDefaults.standard.set(hy.doubleValue, forKey: hotspotYKey) }
         }
-      } else if ci["path"] is NSNull {
-        stagedMutations.append { UserDefaults.standard.removeObject(forKey: customImageKey) }
+      } else if ci["path"] is NSNull || (ci["path"] as? String)?.isEmpty == true {
+        stagedMutations.append {
+          UserDefaults.standard.removeObject(forKey: customImageKey)
+          UserDefaults.standard.removeObject(forKey: hotspotXKey)
+          UserDefaults.standard.removeObject(forKey: hotspotYKey)
+        }
       }
     } else if src["customImage"] is NSNull {
-      stagedMutations.append { UserDefaults.standard.removeObject(forKey: customImageKey) }
+      stagedMutations.append {
+        UserDefaults.standard.removeObject(forKey: customImageKey)
+        UserDefaults.standard.removeObject(forKey: hotspotXKey)
+        UserDefaults.standard.removeObject(forKey: hotspotYKey)
+      }
     }
 
     // legacy direct image path
@@ -447,9 +450,15 @@ enum CursorOverlaySettings {
       mutate()
     }
 
-    // Also persist blob for status reporting convenience
-    let snapshot = toDictionary()
-    UserDefaults.standard.set(snapshot, forKey: blobKey)
+    // Clear stale blob before taking snapshot so getters do not fall back to old blob values
+    UserDefaults.standard.removeObject(forKey: blobKey)
+
+    // Also persist plist-compatible blob for status reporting convenience
+    var plistDict = toDictionary()
+    for (k, v) in plistDict {
+      if v is NSNull { plistDict.removeValue(forKey: k) }
+    }
+    UserDefaults.standard.set(plistDict, forKey: blobKey)
     return nil
   }
 
@@ -482,9 +491,9 @@ enum CursorOverlaySettings {
       "motion": motion,
     ]
     if let fill = fillHex { dict["fill"] = fill } else { dict["fill"] = NSNull() }
-    if let rim = rimHex { dict["rim"] = rim }
+    if let rim = rimHex { dict["rim"] = rim } else { dict["rim"] = NSNull() }
     dict["accent"] = accentHex
-    if let ci = customImg { dict["customImage"] = ci }
+    if let ci = customImg { dict["customImage"] = ci } else { dict["customImage"] = NSNull() }
     dict["enabled"] = isEnabled
     return dict
   }

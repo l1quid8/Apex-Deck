@@ -212,6 +212,7 @@ export function App() {
   /** False until settings.json has been read, so a file that can't be read is never overwritten. */
   const settingsRead = useRef(false);
   const settingsQueue = useRef<Promise<void>>(Promise.resolve());
+  const settingsSaveSeq = useRef(0);
   const closeSettings = useCallback(() => setSettingsOpen(null), []);
   // The mod panel's Options button opens Settings → Mods.
   useEffect(() => {
@@ -662,17 +663,19 @@ export function App() {
   }, [backend, settingsOpen]);
 
   // settings.json, beside the session file. Written in order, like the session.
-  // Preservation: failed saves retain local value for retry (queue keeps pending value), stale completions not shown as success due to generation check in SettingsPage.
+  // Preservation: failed saves retain local value for retry (queue keeps pending value), stale completions not shown as success due to versioned operation tracking.
   useEffect(() => {
     if (!backend || !settingsRead.current) return;
+    const seq = ++settingsSaveSeq.current;
+    try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'settings' } })); } catch {}
     settingsQueue.current = settingsQueue.current.catch(() => {}).then(async () => {
       await backend.settingsSave(settings);
-      try { window.dispatchEvent(new CustomEvent('settings-saved')); } catch {}
+      try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'settings' } })); } catch {}
     });
     settingsQueue.current.catch((error) => {
       const msg = `Could not save settings: ${String(error)}`;
       setStorageError(msg);
-      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: msg })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'settings', error: msg } })); } catch {}
     });
   }, [backend, settings]);
 

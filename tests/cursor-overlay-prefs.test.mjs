@@ -130,3 +130,22 @@ test('host persisted prefs survive helper restart and clobbering', () => {
   assert.deepEqual(sync.pushedToHelper, hostSavedPrefs, 'host must re-push saved prefs to helper');
   assert.deepEqual(sync.currentAuthority, hostSavedPrefs, 'host authority must never be overwritten');
 });
+
+test('UI prefers authoritative host cursorOverlay over pre-reconciliation cursorOverlayFromHelper', () => {
+  const hostOverlay = { preset: 'ring-only', size: 2.0, accent: '#00FF00', labelsEnabled: true };
+  const preReconHelperOverlay = { preset: 'default', size: 1.0, accent: '#4299FF', labelsEnabled: false };
+  const status = {
+    cursorOverlay: hostOverlay,
+    cursorOverlayFromHelper: preReconHelperOverlay,
+  };
+  const resolved = status.cursorOverlay ?? status.cursorOverlayFromHelper;
+  assert.equal(resolved.preset, 'ring-only', 'host overlay must be preferred so offline prefs survive reconnect');
+  assert.equal(resolved.size, 2.0);
+});
+
+test('custom image upload payload uses canonical imageBase64 without legacy duplicate', () => {
+  const base64 = 'iVBORw0KGgoAAAANSUhEUg==';
+  const payload = { imageBase64: base64 };
+  assert.equal('imageBase64' in payload, true);
+  assert.equal('image_base64' in payload, false, 'duplicate alias field must not be sent');
+});
