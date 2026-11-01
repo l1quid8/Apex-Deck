@@ -45,6 +45,7 @@ export type CostEntry = { at: number; purpose: "reply" | "helper" | "summary" | 
 export type StandingRule = { id: string; text: string; class: ToolClass; mode: ActionMode; createdAt: number };
 export type AssistantCapability = 'conversationRead' | 'fileRead' | 'statusRead' | 'threadCreate' | 'threadOrganize' | 'threadArchive' | 'threadTrash' | 'threadDelete' | 'participantAdd' | 'participantRemove' | 'agentAssign' | 'agentMessage' | 'workPause' | 'workResume' | 'fileEdit' | 'commandRun' | 'browserUse' | 'computerUse' | 'spend' | 'publish' | 'approvalDelegate';
 export type PermissionScope = {kind:'allProjects'} | {kind:'project';host:string;cwd:string} | {kind:'thread';host:string;cwd:string;thread:string};
+export type PersonalApprovalOptions = {decisionId:string;paramsHash:string;permissionRevision:number;capability:AssistantCapability;label:string;scopes:{scope:PermissionScope;label:string}[];reason?:string|null};
 export type CapabilityGrant = { id:string; capability:AssistantCapability; scope:PermissionScope; mode:'ask'|'onRequest'|'always'; delegate:boolean; revoked:boolean };
 export type PersonalSettings = {
   name: string; style: string; look?: AssistantLook;
@@ -106,6 +107,8 @@ export type PersonalLane = {
   saveAttachment(name: string, bytes: Uint8Array): Promise<string>;
   pickFolder(): Promise<string | null>;
   decide(decisionId: string, paramsHash: string, approve: boolean): Promise<void>;
+  approvalOptions?(decisionId:string,paramsHash:string):Promise<PersonalApprovalOptions>;
+  decideAlways?(options:PersonalApprovalOptions,scope:PermissionScope):Promise<void>;
   cancel(taskId: string): Promise<void>;
   /** Host-backed deletion; restoring cancelled tasks never restarts them. Empty requires the exact displayed key set. */
   taskLifecycle?(action: 'delete' | 'restore' | 'empty', task?: { source: 'personal' | 'delegated'; taskId: string; revision?: number }, expectedDeleted?: string[]): Promise<void>;

@@ -61,7 +61,7 @@ function harness(props, { effects = false, voice = {} } = {}) {
     const settings = readVoiceSettings(input.settings);
     return { settings, candidates: [], slot: { live: false, look: settings.look }, hint: undefined, who: () => undefined, ...voice };
   };
-  const bindings = { taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
+  const bindings = { PersonalAlwaysPermission: () => null, taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
   const component = new Function(...Object.keys(bindings), `${compiled}\nreturn ApexAgentAll;`)(...Object.values(bindings));
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
@@ -478,7 +478,7 @@ test('an open approval is one link in the conversation; its detail shows the exa
   const { calls, lane } = personalLane([personalTask('needsYou')], messages);
   const h = harness({ workspaces: projects, monitors: [], personal: lane });
   const chat = h.render();
-  assert.equal(find(chat, node => node.type === 'button' && textOf(node) === 'Approve'), null, 'no approval buttons in the conversation');
+  assert.equal(find(chat, node => node.type === 'button' && textOf(node) === 'Allow once'), null, 'no approval buttons in the conversation');
   assert.match(textOf(chat), /Task · Needs you · Report free disk space ›/);
   const tree = openFirstTaskLink(h);
   const text = textOf(tree);
@@ -486,7 +486,7 @@ test('an open approval is one link in the conversation; its detail shows the exa
   assert.match(text, /\/root\/apex-assistant-slice/);
   assert.match(text, /apex-terminal/);
   assert.match(text, /Needs you/);
-  find(tree, node => node.type === 'button' && textOf(node) === 'Approve').props.onClick();
+  find(tree, node => node.type === 'button' && textOf(node) === 'Allow once').props.onClick();
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, [['decide', 'pd-1', 'sha256:abc', true]]);
 });
@@ -494,10 +494,10 @@ test('an open approval is one link in the conversation; its detail shows the exa
 test('a settled or superseded approval has no buttons, and only the newest line asks', () => {
   const messages = [pm('pm-2', 'system', 'approval', 2, 'Approval needed: old', 'pt-1'), pm('pm-3', 'system', 'approval', 3, 'Approval needed: new', 'pt-1')];
   const asking = openFirstTaskLink(harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask('needsYou')], messages).lane }));
-  assert.equal(collectAll(asking, node => node.type === 'button' && textOf(node) === 'Approve').length, 1);
+  assert.equal(collectAll(asking, node => node.type === 'button' && textOf(node) === 'Allow once').length, 1);
   for (const task of [personalTask('done', 'approved'), personalTask('needsYou', 'superseded'), personalTask('cancelled', 'denied')]) {
     const tree = openFirstTaskLink(harness({ workspaces: projects, monitors: [], personal: personalLane([task], messages).lane }));
-    assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Approve'), null, task.status);
+    assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Allow once'), null, task.status);
   }
 });
 
@@ -575,13 +575,13 @@ test('Notifications owns approvals, proposed schedules and delivered notices; op
   lane.assistant.schedules = [{ id: 'schedule-1', goal: 'Check disk every morning', argv: ['df', '-h', '/'], dailyAt: '08:00', status: 'proposed', createdAt: 1, runs: 0, paramsHash: 'sha256:schedule', decision: { id: 'schedule-decision', kind: 'schedule', paramsHash: 'sha256:schedule', prompt: '', status: 'open', openedAt: 2 } }];
   const h = harness({ workspaces: projects, monitors: [], personal: lane });
   let tree = h.render();
-  assert.doesNotMatch(textOf(tree), /Confirm schedule|Approve|Disk check completed/);
+  assert.doesNotMatch(textOf(tree), /Confirm schedule|Allow once|Disk check completed/);
   find(tree, node => node.type === 'button' && node.props.role === 'tab' && /Notifications/.test(textOf(node))).props.onClick();
   await new Promise(resolve => setImmediate(resolve));
   tree = h.render();
   assert.deepEqual(seen, ['seen']);
   assert.match(textOf(tree), /Confirm schedule/);
-  assert.match(textOf(tree), /Approve/);
+  assert.match(textOf(tree), /Allow once/);
   assert.match(textOf(tree), /Disk check completed/);
   assert.match(textOf(tree), /Notifications · 2/);
   assert.match(find(tree, node => node.type === 'article' && /Disk check completed/.test(textOf(node))).props.className, /is-seen/);
@@ -1011,7 +1011,7 @@ test('embedded chat renders tasks as plain messages with at most two action butt
  const tree=h.render();
  assert.equal(find(tree,n=>n.props?.className==='apex-agent-task-link'),null,'no boxed task link or pill');
  assert.equal(find(tree,n=>/apex-agent-task-card/.test(n.props?.className??'')),null,'no bulky task card');
- const buttons=collectAll(tree,n=>n.type==='button'&&(textOf(n)==='Approve'||textOf(n)==='Decline'));
+ const buttons=collectAll(tree,n=>n.type==='button'&&(textOf(n)==='Allow once'||textOf(n)==='Decline'));
  assert.equal(buttons.length,2,'at most two decision buttons');
  const details=find(tree,n=>n.type==='details'&&n.props?.className==='dot-details');
  assert.ok(details,'details disclosure is present');
@@ -1026,9 +1026,9 @@ test('answered decision shows user reply bubble and hides buttons in embedded ch
  const task=personalTask('done','approved');
  const {lane}=personalLane([task],messages);
  const tree=harness({embedded:true,personal:lane,workspaces:[],monitors:[]}).render();
- assert.equal(find(tree,n=>n.type==='button'&&textOf(n)==='Approve'),null,'buttons disappear once answered');
+ assert.equal(find(tree,n=>n.type==='button'&&textOf(n)==='Allow once'),null,'buttons disappear once answered');
  const userMsgs=collectAll(tree,n=>n.props?.className==='apex-agent-message-row human');
- assert.ok(userMsgs.some(m=>textOf(m).includes('Approve')),'user answer shows as chat bubble');
+ assert.ok(userMsgs.some(m=>textOf(m).includes('Allowed once')),'user answer shows as chat bubble');
 });
 
 const rain={enabled:true,mode:'rainbow',color:'#3def91',rainbowSpeed:1,rippleShape:'diamond'};

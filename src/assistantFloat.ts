@@ -52,7 +52,8 @@ export type AssistantFloatAction =
   | { type: "assistant-present"; presentation: AssistantFloatPresentation }
   | { type: "assistant-follow"; threadIds: string[] }
   | { type: "assistant-active-thread"; threadId: string | null }
-  | { type: "assistant-hide" };
+  | { type: "assistant-hide" }
+  | { type: "assistant-pin"; on: boolean };
 
 export const assistantCallRoom = (ref: AssistantRef) => `assistant:${ref.assistantId}`;
 
@@ -92,6 +93,7 @@ export function validFloatAction(action: unknown): action is AssistantFloatActio
     case "assistant-draft": return typeof a.text === "string" && a.text.length <= 100_000;
     case "assistant-send": return typeof a.text === "string" && !!a.text.trim() && a.text.length <= 100_000 && /^[A-Za-z0-9_:-]{1,128}$/.test(a.requestId);
     case "assistant-mute": return typeof a.muted === "boolean";
+    case "assistant-pin": return typeof a.on === "boolean";
     case "assistant-present": return ['pill', 'threads', 'chat', 'minimized'].includes(a.presentation);
     case "assistant-follow": return Array.isArray(a.threadIds) && a.threadIds.length <= 500 && a.threadIds.every(id => typeof id === 'string' && id.length > 0 && id.length <= 1024) && new Set(a.threadIds).size === a.threadIds.length;
     case "assistant-active-thread": return a.threadId === null || (typeof a.threadId === 'string' && a.threadId.length > 0 && a.threadId.length <= 1024);

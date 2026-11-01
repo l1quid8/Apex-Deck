@@ -62,6 +62,8 @@ pub enum Command {
     PersonalProjectDelegateUi { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
     PersonalSend { assistant_id: String, request_id: String, text: String, #[serde(default)] view_context: Option<crate::personal::PersonalViewContext> },
     PersonalReact { assistant_id: String, message_id: String, emoji: String, enabled: bool },
+    PersonalApprovalOptions { assistant_id: String, decision_id: String, params_hash: String },
+    PersonalDecideAlways { assistant_id: String, request_id: String, decision_id: String, params_hash: String, expected_revision: u64, capability: crate::personal::permissions::Capability, scope: crate::personal::permissions::Scope },
     PersonalDecide { assistant_id: String, request_id: String, decision_id: String, params_hash: String, approve: bool },
     PersonalArchive { assistant_id: String, expected_revision: u64, archived: bool },
     PersonalTaskLifecycle { #[serde(flatten)] input: crate::personal_task_lifecycle::LifecycleInput },
@@ -291,7 +293,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecideAlways { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -458,6 +460,8 @@ impl Host {
             PersonalProjectDelegateUi { input } => reply(self.personal_project_delegate_ui(input)?),
             PersonalSend { assistant_id, request_id, text, view_context } => reply(self.personal_send_with_context(&assistant_id, &request_id, &text, view_context)?),
             PersonalReact { assistant_id, message_id, emoji, enabled } => reply(serde_json::json!({"assistant": self.personal_react(&assistant_id, &message_id, &emoji, enabled)?})),
+            PersonalApprovalOptions { assistant_id, decision_id, params_hash } => reply(self.personal_approval_options(&assistant_id,&decision_id,&params_hash)?),
+            PersonalDecideAlways { assistant_id, request_id, decision_id, params_hash, expected_revision, capability, scope } => reply(self.personal_decide_always(&assistant_id,&request_id,&decision_id,&params_hash,expected_revision,capability,scope)?),
             PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
             PersonalArchive { assistant_id, expected_revision, archived } => reply(self.personal_archive(&assistant_id, expected_revision, archived)?),
             PersonalTaskLifecycle { input } => reply(self.personal_task_lifecycle(input).await?),
@@ -929,7 +933,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 216);
+        assert_eq!(names.len(), 218);
         for name in [
             "room_curate",
             "room_curate_undo",

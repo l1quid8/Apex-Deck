@@ -99,6 +99,8 @@ export function useAssistantFloat({ float, setFloat, lane, appearance, onDetails
         case "assistant-present":
           setPresentation(action.presentation);
           void bridge.assistantLayout?.(token,action.presentation);break;
+        case "assistant-pin":
+          if(bridge.alwaysOnTop)void bridge.alwaysOnTop(token,action.on).then(on=>{if(live.current.float?.token===token)setAlwaysOnTop(on)}).catch(fail);break;
         case "assistant-hide":setVisible(false);void bridge.assistantVisibility?.(token,false);break;
         case "assistant-details": live.current.onDetails(float.ref); break;
         case "assistant-return": void bridge.close(float.token).catch(() => {}); break;
@@ -116,8 +118,13 @@ export function useAssistantFloat({ float, setFloat, lane, appearance, onDetails
   }, [bridge, appearance, setFloat]);
   const pin = useCallback(async (on: boolean) => {
     if (!float || !bridge?.alwaysOnTop) return;
-    setAlwaysOnTop(await bridge.alwaysOnTop(float.token, on));
+    const token=float.token,result=await bridge.alwaysOnTop(token,on);
+    if(live.current.float?.token===token)setAlwaysOnTop(result);
   }, [bridge, float]);
-  useEffect(() => { if (float && bridge?.alwaysOnTop) void bridge.alwaysOnTop(float.token).then(setAlwaysOnTop).catch(() => {}); }, [float?.token]);
+  useEffect(() => {
+    let cancelled=false;
+    if(float&&bridge?.alwaysOnTop)void bridge.alwaysOnTop(float.token).then(on=>{if(!cancelled)setAlwaysOnTop(on)}).catch(()=>{});
+    return()=>{cancelled=true};
+  }, [bridge,float?.token]);
   return { open, pin, visible:!!float&&visible, presentation };
 }

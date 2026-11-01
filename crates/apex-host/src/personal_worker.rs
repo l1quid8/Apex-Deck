@@ -1556,7 +1556,9 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
             .ok_or_else(|| format!("there's no machine called \"{name}\" linked to the assistant")),
     };
     let probe = OperationSpec { tool: tool.clone(), host: String::new(), cwd: String::new(), argv: proposed.argv.clone(), plan: None };
-    let problem = if tool_repeatable(tools, &probe).is_none() {
+    let problem = if tool == COMMAND_TOOL && proposed.argv.first().is_some_and(|name| rooms::known(name)) {
+        Some("native room actions are not command-line programs; set task.tool to the room action and omit it from argv, for example {\"tool\":\"room.assign\",\"argv\":[\"thread\",\"worker\",\"message\"]}".to_owned())
+    } else if tool_repeatable(tools, &probe).is_none() {
         Some(format!("{tool} isn't something this machine can run for the assistant"))
     } else if let Some(why) = room.as_ref().and_then(|target| target.refusal(&tool, &proposed.argv, proposed.every_minutes.is_some() || proposed.start_in_minutes.is_some() || proposed.after.is_some(), proposed.machine.is_some())) {
         Some(why)
@@ -1881,7 +1883,7 @@ pub(crate) fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalE
 }
 
 /// The human's answer to one decision, on a task or a schedule.
-fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &str, approve: bool, event_id: &str, local: &str, at: u64) -> Result<Option<(Option<String>, String)>, String> {
+pub(crate) fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &str, approve: bool, event_id: &str, local: &str, at: u64) -> Result<Option<(Option<String>, String)>, String> {
     if let Some(result) = computer::decide_permission(assistant,decision_id,params_hash,approve,event_id,at) { return result; }
     if let Some(index) = assistant.schedules.iter().position(|s| s.decision.as_ref().is_some_and(|d| d.id == decision_id)) {
         let schedule = assistant.schedules[index].clone();
@@ -2001,3 +2003,27 @@ pub(crate) mod rooms;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod native_proposal_regression {
+    use super::*;
+
+    #[test]
+    fn native_room_program_in_command_argv_is_refused_before_an_executable_task_exists() {
+        for tool in [None, Some("host.command")] {
+            let mut assistant: PersonalAssistant = serde_json::from_value(serde_json::json!({
+                "id":"a","name":"A","style":"","hostId":"h","profile":null,
+                "allowedFolders":["/p"],"paused":false,"revision":1,"createdAt":0,
+                "counters":{"message":0,"event":0,"task":0,"decision":0},
+                "messages":[],"events":[],"tasks":[]
+            })).unwrap();
+            let mut input=serde_json::json!({"goal":"Assign a worker","argv":["room.assign","thread","worker","Review this"]});
+            if let Some(tool)=tool {input["tool"]=tool.into();}
+            let proposed: ProposedTask=serde_json::from_value(input).unwrap();
+            propose_task(&mut assistant,&WorkerTools::real(),"h","pe-1","Assign a worker",proposed,None,false,5);
+            assert!(assistant.tasks.is_empty(),"a native action must never become a command approval or executable task");
+            let refusal=&assistant.messages.last().expect("visible refusal").text;
+            assert!(refusal.contains("No task was made")&&refusal.contains("room.assign")&&refusal.contains("tool"),"refusal should explain the native tool form: {refusal}");
+        }
+    }
+}

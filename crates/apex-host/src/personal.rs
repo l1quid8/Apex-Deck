@@ -1156,6 +1156,8 @@ impl crate::Host {
                 }
                 return Ok((existing.id.clone(), true));
             }
+            let permission_key=format!("{:x}",Sha256::digest(request.as_bytes()));
+            if assistant.extra.get("alwaysApprovalReceipts").and_then(|v|v.get(&permission_key)).is_some() {return Err("That request belongs to a saved permission confirmation.".into())}
             if assistant.extra.get("purgedTaskAuthority").and_then(serde_json::Value::as_object).is_some_and(|records|records.values().any(|record|record["requestId"].as_str()==Some(&request))) {
                 return Err("This request belongs to a permanently deleted task and cannot run again.".into());
             }

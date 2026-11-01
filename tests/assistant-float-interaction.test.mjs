@@ -23,3 +23,5 @@ test('float actions accept only bounded presentations and thread identity change
   assert.equal(model.validFloatAction({type:'assistant-active-thread',threadId:''}),false);
   assert.equal(model.validFloatAction({type:'assistant-hide'}),true);
 });
+
+test('pin action accepts boolean choices only',()=>{assert.equal(model.validFloatAction({type:'assistant-pin',on:true}),true);assert.equal(model.validFloatAction({type:'assistant-pin',on:false}),true);for(const on of [undefined,'true',1,null])assert.equal(model.validFloatAction({type:'assistant-pin',on}),false)});

@@ -238,8 +238,88 @@ pub fn scope_supported(capability:Capability,scope:&Scope)->bool {
     }
 }
 
+#[derive(Clone,Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct ApprovalScopeChoice {pub scope:Scope,pub label:String}
+#[derive(Clone,Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct ApprovalOptions {pub decision_id:String,pub params_hash:String,pub permission_revision:u64,pub capability:Capability,pub label:String,pub scopes:Vec<ApprovalScopeChoice>,pub reason:Option<String>}
+fn approval_task<'a>(assistant:&'a super::PersonalAssistant,id:&str,hash:&str)->Result<&'a super::PersonalTask,String> {
+    let task=assistant.tasks.iter().find(|t|t.decision.as_ref().is_some_and(|d|d.id==id)).ok_or("That approval is no longer available.")?;
+    let decision=task.decision.as_ref().ok_or("Approval unavailable.")?;
+    if assistant.archived_at.is_some()||task.deleted_at.is_some()||task.status!=super::TaskStatus::NeedsYou||decision.status!=super::DecisionStatus::Open||decision.params_hash!=hash||task.operation.as_ref().is_none_or(|o|o.hash()!=hash){return Err("That approval changed. Refresh before deciding.".into())} Ok(task)
+}
+fn always_supported(task:&super::PersonalTask)->bool {
+    let Some(op)=&task.operation else{return false};
+    matches!(task.decision.as_ref().map(|d|d.kind),Some(super::DecisionKind::Approve|super::DecisionKind::Spend))
+      && (crate::personal_worker::rooms::known(&op.tool)||op.tool==crate::personal_worker::COMMAND_TOOL||op.tool=="browser.open"||op.tool=="computer.reply"||matches!(op.tool.as_str(),"model.reply"|"model.summary"|"model.helper"))
+      && scope_supported(capability(op),&Scope::AllProjects)
+}
+fn capability_label(cap:Capability)->&'static str {match cap {
+    Capability::ConversationRead=>"Read conversations",Capability::FileRead=>"Read files",Capability::StatusRead=>"Read status",
+    Capability::ThreadCreate=>"Create threads",Capability::ThreadOrganize=>"Rename and organize threads",Capability::ThreadArchive=>"Archive threads",Capability::ThreadTrash=>"Move threads to Trash",Capability::ThreadDelete=>"Permanently delete threads",Capability::ParticipantAdd=>"Add participants",Capability::ParticipantRemove=>"Remove participants",Capability::AgentAssign=>"Assign agents",Capability::AgentMessage=>"Message agents",Capability::WorkPause=>"Pause work",Capability::WorkResume=>"Resume work",Capability::FileEdit=>"Edit files",Capability::CommandRun=>"Run commands and tests",Capability::BrowserUse=>"Use browser",Capability::ComputerUse=>"Use computer",Capability::Spend=>"Spend",Capability::Publish=>"Publish",Capability::ApprovalDelegate=>"Approve other agents' requests",
+}}
+/// Work on a draft: neither a failed/stale decision nor a held reply that already
+/// started can leave a persistent privilege change behind.
+fn approve_with_always(assistant:&mut super::PersonalAssistant,id:&str,hash:&str,revision:u64,scope:Scope,event_id:&str,local:&str,at:u64)->Result<Capability,String> {
+    let task=approval_task(assistant,id,hash)?.clone();let op=task.operation.as_ref().ok_or("Operation unavailable.")?;let cap=capability(op);
+    if assistant.permissions.revision!=revision {return Err("Permissions changed. Review the current scope before saving.".into())}
+    if !always_supported(&task)||!scope_supported(cap,&scope)||!scope.matches(op)||(scope!=Scope::AllProjects&&!op.tool.starts_with("room.")) {return Err("Always allow is not supported for this action and scope.".into())}
+    if matches!(op.tool.as_str(),"model.reply"|"model.summary") && !assistant.events.iter().any(|e|op.argv.first()==Some(&e.id)&&e.state==super::EventState::Held&&!e.computer_started) {return Err("That reply is no longer waiting for a cost decision.".into())}
+    let mut draft=assistant.clone();
+    let delegated=draft.permissions.grants.iter().find(|g|g.capability==cap&&g.scope==scope).is_some_and(|g|g.delegate);
+    draft.permissions.set(cap,scope,GrantMode::Always,delegated)?;
+    let mut current_hash=hash.to_owned();
+    if op.tool=="computer.reply"||op.tool.starts_with("model.") {
+        if op.argv.get(1)!=Some(&revision.to_string()){return Err("This held request needs to be refreshed before saving a permission.".into())}
+        let mut rebound=op.clone();rebound.argv[1]=draft.permissions.revision.to_string();current_hash=rebound.hash();
+        let t=draft.tasks.iter_mut().find(|t|t.id==task.id).ok_or("Task unavailable.")?;t.operation=Some(rebound);t.decision.as_mut().ok_or("Approval unavailable.")?.params_hash=current_hash.clone();
+    }
+    if let Some((task_id,line))=crate::personal_worker::decide(&mut draft,id,&current_hash,true,event_id,local,at)? {draft.post("system","update",line,task_id,Some(event_id.into()),at);}
+    draft.post("system","update","Saved Always allow for this scope and approved this action. Existing access, app and budget limits still apply. Revoke it in Rules.".into(),Some(task.id),Some(event_id.into()),at);
+    *assistant=draft;Ok(cap)
+}
+
 /// Called only through an authenticated Full-access command, never the model tool surface.
 impl crate::Host {
+    pub fn personal_approval_options(&self,id:&str,decision_id:&str,params_hash:&str)->Result<ApprovalOptions,String> {
+        let a=self.personal_get(id)?;let task=approval_task(&a,decision_id,params_hash)?;let op=task.operation.as_ref().ok_or("Operation unavailable.")?;let cap=capability(op);
+        let mut scopes=Vec::new();
+        if always_supported(task) {
+            if op.tool.starts_with("room.") {
+                let target=self.personal_room_target(&a,op.argv.first().map(String::as_str).unwrap_or_default())?;
+                if target.project.host_id!=op.host||target.project.cwd!=op.cwd {return Err("The action target moved. Refresh it.".into())}
+                let thread=Scope::Thread{host:op.host.clone(),cwd:op.cwd.clone(),thread:target.thread.clone()};
+                if scope_supported(cap,&thread) {scopes.push(ApprovalScopeChoice{scope:thread,label:format!("This thread: {}",target.title)});}
+                let project=Scope::Project{host:op.host.clone(),cwd:op.cwd.clone()};if scope_supported(cap,&project){scopes.push(ApprovalScopeChoice{scope:project,label:format!("This project: {}",op.cwd)});}
+            }
+            let all_label=if op.tool==crate::personal_worker::COMMAND_TOOL {"This assistant (commands are not confined to a project)"}else if matches!(cap,Capability::ComputerUse|Capability::BrowserUse){"This assistant, across apps"}else if cap==Capability::Spend{"This assistant: replies, helpers and summaries"}else{"All assigned projects"};
+            scopes.push(ApprovalScopeChoice{scope:Scope::AllProjects,label:all_label.into()});
+        }
+        Ok(ApprovalOptions{decision_id:decision_id.into(),params_hash:params_hash.into(),permission_revision:a.permissions.revision,capability:cap,label:capability_label(cap).into(),reason:scopes.is_empty().then(||"This request supports one-time approval only.".into()),scopes})
+    }
+    pub fn personal_decide_always(&self,id:&str,request:&str,decision_id:&str,params_hash:&str,expected_revision:u64,expected_capability:Capability,scope:Scope)->Result<crate::personal_settings::Changed,String> {
+        use sha2::{Digest,Sha256};
+        let request=super::request_id(request)?;let key=format!("{:x}",Sha256::digest(request.as_bytes()));
+        let fingerprint=format!("{:x}",Sha256::digest(serde_json::to_vec(&(decision_id,params_hash,expected_revision,expected_capability,&scope)).map_err(|e|e.to_string())?));
+        let local=self.local_host_id()?;
+        let applied=self.change_assistant(id,|a| {
+            if let Some(receipt)=a.extra.get("alwaysApprovalReceipts").and_then(|v|v.get(&key)) {if receipt["fingerprint"]!=fingerprint {return Err("That permission request ID belongs to a different confirmation.".into())}return Ok(false)}
+            if a.events.iter().any(|e|e.request_id==request){return Err("That request ID already belongs to another action.".into())}
+            if a.extra.get("purgedTaskAuthority").and_then(serde_json::Value::as_object).is_some_and(|m|m.values().any(|v|v["requestId"]==request)){return Err("That request ID belongs to permanently deleted work.".into())}
+            let task=approval_task(a,decision_id,params_hash)?;let op=task.operation.as_ref().ok_or("Operation unavailable.")?;
+            if capability(op)!=expected_capability {return Err("The capability changed. Review this action again.".into())}
+            if op.tool.starts_with("room.") {let target=self.personal_room_target(a,op.argv.first().map(String::as_str).unwrap_or_default())?;if target.project.host_id!=op.host||target.project.cwd!=op.cwd {return Err("The target moved. Refresh it.".into())}}
+            if a.extra.get("alwaysApprovalReceipts").and_then(serde_json::Value::as_object).is_some_and(|m|m.len()>=2000){return Err("Permission confirmation history is full. Set the permission explicitly in Rules instead.".into())}
+            let mut draft=a.clone();draft.counters.event+=1;let event_id=format!("pe-{}",draft.counters.event);let at=super::now();
+            approve_with_always(&mut draft,decision_id,params_hash,expected_revision,scope.clone(),&event_id,&local,at)?;
+            draft.events.push(super::PersonalEvent{id:event_id.clone(),request_id:request.clone(),source:super::EventSource::Decision{decision_id:decision_id.into(),params_hash:params_hash.into(),approve:true},received_at:at,state:super::EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false});
+            let receipts=draft.extra.entry("alwaysApprovalReceipts").or_insert_with(||serde_json::json!({})).as_object_mut().ok_or("Invalid permission confirmation ledger.")?;
+            receipts.insert(key.clone(),serde_json::json!({"fingerprint":fingerprint,"eventId":event_id,"actor":"human","capability":expected_capability,"scope":scope,"decisionId":decision_id,"paramsHash":params_hash,"previousRevision":expected_revision,"revision":draft.permissions.revision,"at":at}));*a=draft;Ok(true)
+        })?;
+        if applied {self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)),None);}
+        Ok(crate::personal_settings::Changed{assistant:self.personal_get(id)?})
+    }
     pub fn personal_permission_set(&self,id:&str,expected_revision:u64,capability:Capability,scope:Scope,mode:GrantMode,delegate:bool)->Result<crate::personal_settings::Changed,String> {
         self.change_assistant(id,|a| {
             if a.permissions.revision!=expected_revision {return Err("Permissions changed. Refresh before saving.".into())}
@@ -266,7 +346,77 @@ impl crate::Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
     fn op(tool: &str, thread: &str) -> OperationSpec { OperationSpec { tool:tool.into(),host:"h".into(),cwd:"/p".into(),argv:vec![thread.into()],plan:None } }
+    fn approval_assistant(tool:&str)->super::super::PersonalAssistant {
+        let operation=OperationSpec{tool:tool.into(),host:"h".into(),cwd:"/p".into(),argv:vec!["thread".into()],plan:None};
+        serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":["/p"],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":1,"task":1,"decision":1},"messages":[],"events":[{"id":"pe-1","requestId":"human","source":{"kind":"human","text":"Delete thread"},"receivedAt":0,"state":"done"}],"tasks":[{"id":"pt-1","goal":"Action","completionCriteria":[],"targetHost":"h","status":"needsYou","operation":operation,"fromEvent":"pe-1","maxAttempts":1,"createdAt":0,"updatedAt":0,"decision":{"id":"pd-1","kind":"approve","paramsHash":operation.hash(),"prompt":"Approve","status":"open","openedAt":0}}]})).unwrap()
+    }
+    #[test]
+    fn always_grant_and_current_action_are_atomic_exact_and_preserve_delegation() {
+        let mut assistant=approval_assistant("room.delete");let hash=assistant.tasks[0].operation.as_ref().unwrap().hash();
+        assistant.permissions.set(Capability::ThreadDelete,Scope::AllProjects,GrantMode::Ask,true).unwrap();
+        approve_with_always(&mut assistant,"pd-1",&hash,1,Scope::AllProjects,"pe-2","h",5).unwrap();
+        assert_eq!(assistant.permissions.revision,2);
+        assert_eq!(assistant.permissions.grants[0].mode,GrantMode::Always);
+        assert!(assistant.permissions.grants[0].delegate);
+        assert_eq!(assistant.tasks[0].status,super::super::TaskStatus::Queued);
+        validate_marker(&assistant,&assistant.tasks[0],assistant.tasks[0].decision.as_ref().unwrap().decided_by_event.as_deref().unwrap()).unwrap();
+        let mut stale=approval_assistant("room.delete");let before=stale.clone();
+        assert!(approve_with_always(&mut stale,"pd-1","wrong",0,Scope::AllProjects,"pe-2","h",5).is_err());assert_eq!(stale,before);
+        assert!(approve_with_always(&mut stale,"pd-1",&hash,99,Scope::AllProjects,"pe-2","h",5).is_err());assert_eq!(stale,before);
+        assert!(approve_with_always(&mut stale,"pd-1",&hash,0,Scope::Thread{host:"h".into(),cwd:"/p".into(),thread:"other".into()},"pe-2","h",5).is_err());assert_eq!(stale,before);
+    }
+    #[test]
+    fn widening_execution_scope_does_not_copy_narrow_delegated_approval_authority() {
+        let mut assistant=approval_assistant("room.delete");let hash=assistant.tasks[0].operation.as_ref().unwrap().hash();
+        assistant.permissions.set(Capability::ThreadDelete,Scope::Thread{host:"h".into(),cwd:"/p".into(),thread:"thread".into()},GrantMode::Ask,true).unwrap();
+        approve_with_always(&mut assistant,"pd-1",&hash,1,Scope::AllProjects,"pe-2","h",5).unwrap();
+        assert!(!assistant.permissions.grants.iter().find(|g|g.scope==Scope::AllProjects).unwrap().delegate,"execution consent must never broaden approval delegation");
+    }
+    #[test]
+    fn always_computer_rebinds_only_unstarted_exact_held_reply_without_expanding_failed_actions() {
+        let mut assistant=approval_assistant("computer.reply");
+        assistant.permissions.set(Capability::ComputerUse,Scope::AllProjects,GrantMode::Ask,false).unwrap();
+        assistant.events[0].state=super::super::EventState::Held;
+        let mut op=assistant.tasks[0].operation.clone().unwrap();op.cwd=String::new();op.argv=vec!["pe-1".into(),"1".into(),format!("{:x}",sha2::Sha256::digest(serde_json::to_vec(&assistant.events[0].source).unwrap()))];
+        assistant.tasks[0].operation=Some(op.clone());assistant.tasks[0].decision.as_mut().unwrap().params_hash=op.hash();
+        let mut started=assistant.clone();started.events[0].computer_started=true;let before=started.clone();
+        assert!(approve_with_always(&mut started,"pd-1",&op.hash(),1,Scope::AllProjects,"pe-2","h",5).is_err());assert_eq!(started,before);
+        approve_with_always(&mut assistant,"pd-1",&op.hash(),1,Scope::AllProjects,"pe-2","h",5).unwrap();
+        assert_eq!(assistant.events[0].state,super::super::EventState::Received);
+        assert_eq!(assistant.tasks[0].operation.as_ref().unwrap().argv[1],"2");
+        assert_eq!(assistant.tasks[0].status,super::super::TaskStatus::Done);
+    }
+    #[test]
+    fn always_spending_keeps_budget_and_rebinds_only_a_current_held_cost_request() {
+        let mut assistant=approval_assistant("model.reply");assistant.budget.daily_limit_micros=Some(0);
+        assistant.events[0].state=super::super::EventState::Held;
+        let op=reply_spend_operation(&assistant,&assistant.events[0]);assistant.tasks[0].operation=Some(op.clone());assistant.tasks[0].decision.as_mut().unwrap().params_hash=op.hash();assistant.tasks[0].decision.as_mut().unwrap().kind=super::super::DecisionKind::Spend;
+        let mut stale=assistant.clone();stale.events[0].state=super::super::EventState::Failed;let before=stale.clone();
+        assert!(approve_with_always(&mut stale,"pd-1",&op.hash(),0,Scope::AllProjects,"pe-2","h",5).is_err());assert_eq!(stale,before);
+        approve_with_always(&mut assistant,"pd-1",&op.hash(),0,Scope::AllProjects,"pe-2","h",5).unwrap();
+        assert_eq!(assistant.budget.daily_limit_micros,Some(0));assert_eq!(assistant.events[0].state,super::super::EventState::Received);
+        assert!(model_spend_approved(&assistant,&reply_spend_operation(&assistant,&assistant.events[0])));
+    }
+    #[tokio::test]
+    async fn atomic_always_retry_after_revocation_and_history_pruning_never_regrants() {
+        let path=std::env::temp_dir().join(format!("apex-always-{}-{}",std::process::id(),super::super::now()));
+        let host=crate::Host::new(crate::HostPaths{data:path.clone(),downloads:None},tokio::runtime::Handle::current());std::fs::write(path.join("host-id"),"h\n").unwrap();
+        let assistant=approval_assistant(crate::personal_worker::COMMAND_TOOL);let hash=assistant.tasks[0].operation.as_ref().unwrap().hash();
+        host.change_personal(|a|{a.push(assistant);Ok(())}).unwrap();
+        let choices=host.personal_approval_options("a","pd-1",&hash).unwrap();assert_eq!(choices.scopes.len(),1);assert_eq!(choices.capability,Capability::CommandRun);
+        host.personal_decide_always("a","always-1","pd-1",&hash,0,Capability::CommandRun,Scope::AllProjects).unwrap();
+        host.personal_permission_set("a",1,Capability::CommandRun,Scope::AllProjects,GrantMode::Ask,false).unwrap();
+        host.change_assistant("a",|a|{a.events.clear();a.tasks.clear();Ok(())}).unwrap();
+        let before=host.personal_get("a").unwrap();
+        host.personal_decide_always("a","always-1","pd-1",&hash,0,Capability::CommandRun,Scope::AllProjects).unwrap();
+        assert_eq!(host.personal_get("a").unwrap(),before);
+        assert!(host.personal_decide_always("a","always-1","pd-1","different",0,Capability::CommandRun,Scope::AllProjects).is_err());
+        assert_eq!(host.personal_get("a").unwrap(),before);
+        assert!(crate::storage::Store::new(path.join("saved-chats-v1")).personal().unwrap().unwrap().assistants[0].extra["alwaysApprovalReceipts"].is_object());
+        drop(host);let _=std::fs::remove_dir_all(path);
+    }
     #[test]
     fn narrow_ask_never_falls_back_to_broad_always_for_unscoped_adapters() {
         for (capability,tool,argv) in [(Capability::CommandRun,"host.command",vec!["rm","x"]),(Capability::FileRead,"host.command",vec!["cat","x"]),(Capability::BrowserUse,"browser.open",vec!["url"]),(Capability::Spend,"model.reply",vec!["event"])] {

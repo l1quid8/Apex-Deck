@@ -194,3 +194,15 @@ test('current-thread label is local display data and must match a permitted proj
  f.options.currentThread=()=>({id:'t',title:'Other project',project:{hostId:'alpha',cwd:'/private'}});
  assert.equal(f.collection.lane(ref('alpha')).currentThread,undefined);
 });
+
+test('Always approval reads exact host-derived choices and submits one atomic current-revision command',async()=>{
+ const f=fixture();f.routes.local.supports=cap=>cap==='assistant_approval_grants_v1';
+ const options={decisionId:'pd',paramsHash:'exact',permissionRevision:4,capability:'threadDelete',label:'Permanently delete threads',scopes:[{scope:{kind:'thread',host:'mac',cwd:'/p',thread:'t'},label:'This thread'}]};
+ f.handlers['local:personal_approval_options']=()=>options;
+ await f.collection.refresh();const lane=f.collection.lane(ref('mac'));const current=await lane.approvalOptions('pd','exact');
+ await lane.decideAlways(current,current.scopes[0].scope);
+ const grants=f.calls.filter(([,cmd])=>cmd==='personal_decide_always');assert.equal(grants.length,1);
+ assert.deepEqual({...grants[0][2],requestId:'normalized'}, {assistantId:'asst-1',requestId:'normalized',decisionId:'pd',paramsHash:'exact',expectedRevision:4,capability:'threadDelete',scope:options.scopes[0].scope});
+ assert.equal(f.calls.some(([,cmd])=>cmd==='personal_permission_set'||cmd==='personal_decide'),false,'never split grant and old-hash approval into two calls');
+ const old=fixture();await old.collection.refresh();assert.equal(old.collection.lane(ref('mac')).decideAlways,undefined);
+});

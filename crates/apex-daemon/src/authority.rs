@@ -59,7 +59,7 @@ pub fn command_needs(command: &Command) -> Need {
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
         ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
-        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
+        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalApprovalOptions { .. } | PersonalDecideAlways { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
         | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
@@ -376,6 +376,8 @@ mod tests {
             ("personal_permission_set", Some((Full, "global")), json!({"assistantId":"asst-1","expectedRevision":0,"capability":"threadCreate","scope":{"kind":"allProjects"},"mode":"always","delegate":false})),
             ("room_set_trashed", Some((Full, "thread")), json!({"id":"mine","trashed":true})),
             ("personal_react", Some((Full, "global")), json!({ "assistantId": "asst-1", "messageId": "m1", "emoji": "👍", "enabled": true })),
+            ("personal_approval_options",Some((Full,"global")),json!({"assistantId":"a","decisionId":"pd-1","paramsHash":"hash"})),
+            ("personal_decide_always",Some((Full,"global")),json!({"assistantId":"a","requestId":"r","decisionId":"pd-1","paramsHash":"hash","expectedRevision":0,"capability":"threadDelete","scope":{"kind":"allProjects"}})),
             ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
             ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),
             ("personal_task_lifecycle", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "action": "delete", "task": { "source": "personal", "taskId": "pt-1" } })),

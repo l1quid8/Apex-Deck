@@ -238,6 +238,11 @@ export class PersonalAssistantsCollection {
       },
       saveAttachment: (name, bytes) => attachment(() => route.saveAttachment(need(), name, bytes)),
       pickFolder: async () => { need(); const path = await route.pickFolder(); if (!path) return null; return attachment(() => route.copyAttachment(need(), path)); },
+      approvalOptions: route.supports?.("assistant_approval_grants_v1") !== true ? undefined : async (decisionId,paramsHash) => {
+        const result=await call<import("./personalAssistant.ts").PersonalApprovalOptions>("personal_approval_options",{assistantId:need(),decisionId,paramsHash});need();
+        if(result.decisionId!==decisionId||result.paramsHash!==paramsHash)throw new Error("The host returned a different approval.");return result;
+      },
+      decideAlways: route.supports?.("assistant_approval_grants_v1") !== true ? undefined : (options,scope) => after("personal_decide_always",{requestId:request(),decisionId:options.decisionId,paramsHash:options.paramsHash,expectedRevision:options.permissionRevision,capability:options.capability,scope}),
       decide: (decisionId, paramsHash, approve) => after("personal_decide", { requestId: request(), decisionId, paramsHash, approve }),
       cancel: taskId => after("personal_cancel", { requestId: request(), taskId }),
       pause: paused => after("personal_pause", { requestId: request(), paused }),

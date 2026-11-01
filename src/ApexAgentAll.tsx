@@ -1,3 +1,4 @@
+import { PersonalAlwaysPermission } from './PersonalApprovalActions';
 import { taskMessageDeleted } from './assistantTaskVisibility';
 import type { AssistantTask } from './assistantTaskModel';
 import { createPortal } from 'react-dom';
@@ -457,13 +458,14 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           <button className="primary" disabled={off} onClick={answer(true)}>I did it</button>
           <button disabled={off} onClick={answer(false)}>Skip</button>
         </> : decision!.kind === 'spend' ? <>
-          <button className="primary" disabled={off} onClick={answer(true)}>Go ahead</button>
+          <button className="primary" disabled={off} onClick={answer(true)}>Allow once</button>
           <button disabled={off} onClick={answer(false)}>Not now</button>
         </> : <>
-          <button className="primary" disabled={off} onClick={answer(true)}>{decision!.kind === 'uncertain' ? 'Run again' : 'Approve'}</button>
+          <button className="primary" disabled={off} onClick={answer(true)}>{decision!.kind === 'uncertain' ? 'Run again' : 'Allow once'}</button>
           <button disabled={off} onClick={answer(false)}>Decline</button>
         </>}
       </div>}
+      {asking&&<PersonalAlwaysPermission lane={personal!} task={task} disabled={off}/>}
       <div className="apex-agent-task-card-foot">
         {!detail && <button type="button" className="apex-agent-task-toggle" aria-expanded={expanded} onClick={() => setOpenTasks((ids) => expanded ? ids.filter((id) => id !== task.id) : [...ids, task.id])}>Details &amp; history {expanded ? '▴' : '▾'}</button>}
         {stoppable && <button disabled={off} onClick={() => void run(() => personal!.cancel(task.id))}>Stop task</button>}
@@ -659,7 +661,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
             const answer = (approve: boolean) => () => void run(() => personal!.decide(decision!.id, decision!.paramsHash, approve));
 
             const answerLabel = decision?.status === 'approved'
-              ? (decision.kind === 'handOff' ? 'I did it' : decision.kind === 'spend' ? 'Go ahead' : decision.kind === 'uncertain' ? 'Run again' : 'Approve')
+              ? (decision.kind === 'handOff' ? 'I did it' : decision.kind === 'spend' ? 'Allowed once' : decision.kind === 'uncertain' ? 'Run again' : 'Allowed once')
               : decision?.status === 'denied'
               ? (decision.kind === 'handOff' ? 'Skip' : decision.kind === 'spend' ? 'Not now' : 'Decline')
               : null;
@@ -667,10 +669,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
             const [primaryLabel, secondaryLabel] = decision?.kind === 'handOff'
               ? ['I did it', 'Skip']
               : decision?.kind === 'spend'
-              ? ['Go ahead', 'Not now']
+              ? ['Allow once', 'Not now']
               : decision?.kind === 'uncertain'
               ? ['Run again', 'Decline']
-              : ['Approve', 'Decline'];
+              : ['Allow once', 'Decline'];
 
             const promptText = asking
               ? (decision!.kind === 'handOff' ? 'Your turn: run this yourself, then tell me.' : (decision!.kind === 'spend' || decision!.kind === 'uncertain') && decision!.prompt ? decision!.prompt : task.goal ? `Approval needed: ${task.goal}` : 'Approval needed to run this:')
@@ -706,6 +708,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
                       <div className="dot-actions">
                         <button type="button" className="primary" disabled={off} onClick={answer(true)}>{primaryLabel}</button>
                         <button type="button" disabled={off} onClick={answer(false)}>{secondaryLabel}</button>
+                        <PersonalAlwaysPermission lane={personal!} task={task} disabled={off}/>
                       </div>
                       {operationDetails}
                     </div>
