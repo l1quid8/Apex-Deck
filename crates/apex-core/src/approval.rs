@@ -203,6 +203,8 @@ pub struct ApprovalDesk {
     always: Mutex<Vec<AllowedRule>>,
     /// Questions waiting for words, not a yes or no. Ids share `next`.
     asking: Waiting<Answer>,
+    /// What a bot is told when its plan is approved, by card id.
+    plan_notes: Mutex<HashMap<String, String>>,
 }
 
 impl ApprovalDesk {
@@ -285,6 +287,17 @@ impl ApprovalDesk {
             Some((_, sender)) => sender.send(decision).is_ok(),
             None => false,
         }
+    }
+
+    /// Leave the instruction for the bot whose plan card `request` is. Set
+    /// before the card is resolved, so the waking turn finds it.
+    pub fn set_plan_note(&self, request: &str, note: String) {
+        self.plan_notes.lock().unwrap().insert(request.to_string(), note);
+    }
+
+    /// The instruction left for `request`, once.
+    pub fn take_plan_note(&self, request: &str) -> Option<String> {
+        self.plan_notes.lock().unwrap().remove(request)
     }
 
     /// Take a proposal down without an answer, as when the tool that asked

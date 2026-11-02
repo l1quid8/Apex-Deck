@@ -340,6 +340,19 @@ export interface Question { header: string; question: string; options: QuestionO
 export interface NextStep { label: string; prompt: string }
 export type QuestionEnd = "answered" | "skipped" | "dropped";
 
+export type PlanStepState = "open" | "active" | "done" | "skipped" | "cancelled";
+export type PlanRunState = "waiting" | "revising" | "running" | "stopped" | "done";
+export interface PlanRunStep { id: string; text: string; state: PlanStepState; off_plan: boolean }
+export interface PlanRun {
+  request: string;
+  by: string;
+  detail: string;
+  version: number;
+  state: PlanRunState;
+  steps: PlanRunStep[];
+  reporting: boolean;
+}
+
 export type RoomEvent = { recovery_seq?: number } & (
   | { type: "voice_event"; client_turn_id: string; id:string; event:RoomEvent }
   | { type: "participant_changed"; participant: ParticipantConfig }
@@ -367,6 +380,8 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "next_steps"; id: string; steps: NextStep[]; pending: boolean }
   /** The thread's Plan switch was turned on or off. */
   | { type: "plan_changed"; on: boolean }
+  /** A plan run was created or changed. Holds the whole run. */
+  | { type: "plan_run"; run: PlanRun }
   /** The thread's whole "Always allow" list, after it changed. */
   | { type: "allowed_changed"; allowed: AllowedRule[] }
   /** A bot changed a file. */

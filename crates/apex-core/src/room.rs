@@ -111,6 +111,8 @@ pub enum RoomEvent {
     },
     /// The thread's Plan switch was turned on or off.
     PlanChanged { on: bool },
+    /// A plan run was created or changed. It is the whole run.
+    PlanRun { run: crate::PlanRun },
     /// The thread's "Always allow" list changed. It is the whole list.
     AllowedChanged { allowed: Vec<crate::AllowedRule> },
     /// A participant changed a file.
@@ -493,6 +495,10 @@ pub struct RoomSnapshot {
     pub plan: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub checklists: HashMap<ParticipantId, Checklist>,
+    /// Approved and waiting plans, newest last, at most 20. A fork starts
+    /// without them.
+    #[serde(default)]
+    pub plan_runs: Vec<crate::PlanRun>,
 }
 
 impl RoomSnapshot {
@@ -533,6 +539,7 @@ impl RoomSnapshot {
             usage: HashMap::new(),
             plan: self.plan,
             checklists: self.checklists.iter().filter(|(_, list)| list.seq < upto).map(|(id, list)| (id.clone(), list.clone())).collect(),
+            plan_runs: Vec::new(),
         }
     }
 }
@@ -566,6 +573,7 @@ pub struct Room {
     /// The Plan switch. Shared with the host, which flips it while a turn
     /// may hold the room.
     plan: Arc<AtomicBool>,
+    plan_runs: Arc<Mutex<Vec<crate::PlanRun>>>,
     /// Whether bots are told they may end a reply with an interactive answer
     /// card. Always on: every thread starts with it.
     answers: Arc<AtomicBool>,
@@ -614,6 +622,7 @@ impl Room {
             usage: self.usage.clone(),
             plan: self.plan.load(Ordering::SeqCst),
             checklists: self.checklists.lock().unwrap().clone(),
+            plan_runs: self.plan_runs.lock().unwrap().clone(),
         }
     }
 
@@ -646,6 +655,7 @@ impl Room {
             usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(plan)),
+            plan_runs: Arc::new(Mutex::new(snapshot.plan_runs)),
             // Card guidance is always on.
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(desk),
@@ -677,6 +687,7 @@ impl Room {
             options,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(false)),
+            plan_runs: Arc::default(),
             // Card guidance is always on.
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(ApprovalDesk::default()),
@@ -1084,6 +1095,11 @@ impl Room {
     /// between turns and discards replies that arrive after it is set.
     pub fn stop_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.stop)
+    }
+
+    /// The plan runs, for the host to change without the room's lock.
+    pub fn plan_runs_handle(&self) -> Arc<Mutex<Vec<crate::PlanRun>>> {
+        Arc::clone(&self.plan_runs)
     }
 
     /// The Plan switch, for the host to flip without the room's lock.

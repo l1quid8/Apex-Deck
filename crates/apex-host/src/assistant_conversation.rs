@@ -55,6 +55,7 @@ mod tests {
                     usage: Default::default(),
                     plan: false,
                     checklists: Default::default(),
+                    plan_runs: Default::default(),
                 },
             }],
             evidence: vec![ConversationEvidence {
@@ -718,6 +719,7 @@ mod tests {
                 usage: Default::default(),
                 plan: false,
                 checklists: Default::default(),
+                plan_runs: Default::default(),
             },
         }
     }

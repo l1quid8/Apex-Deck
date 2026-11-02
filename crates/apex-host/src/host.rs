@@ -100,6 +100,9 @@ pub(crate) struct RoomHandle {
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
     plan: Arc<AtomicBool>,
+    /// The thread's plan runs, shared with the room. Take the checkpoint
+    /// lock first when holding both.
+    plan_runs: Arc<Mutex<Vec<apex_core::PlanRun>>>,
     /// Settings → Interactive answers, shared with the room.
     answers: Arc<AtomicBool>,
     /// Actions the room's participants have proposed and are waiting on.
@@ -620,7 +623,9 @@ impl Host {
             }
         }
         if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event); }
+        let plan_changes = handle.map(|handle| track_plan_runs(handle, &event, plan_off)).unwrap_or_default();
         self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
+        if let Some(handle) = handle { self.publish_plan_runs(room, handle, plan_changes); }
         // The caller may hold this room's event lock, so the switch is set
         // and announced here directly rather than through `room_set_plan`.
         if let (true, Some(handle)) = (plan_off, handle) {
@@ -628,6 +633,23 @@ impl Host {
                 eprintln!("[apex-deck] could not turn Plan off: {why}");
             }
             self.emit(HostEvent::Room { room: room.to_string(), event: RoomEvent::PlanChanged { on: false }, recovery_seq: None });
+        }
+    }
+
+    /// Save the room's plan runs and announce the ones that changed. Unnumbered,
+    /// like `PlanChanged`: the caller may hold this room's event lock.
+    fn publish_plan_runs(&self, room: &str, handle: &RoomHandle, changed: Vec<apex_core::PlanRun>) {
+        if changed.is_empty() { return; }
+        {
+            let mut checkpoint = handle.checkpoint.lock().unwrap();
+            checkpoint.snapshot.plan_runs = handle.plan_runs.lock().unwrap().clone();
+            if handle.deleted.load(Ordering::SeqCst) { return; }
+            if let Err(why) = self.store.save_room(room, &checkpoint) {
+                eprintln!("[apex-deck] could not save the plan run: {why}");
+            }
+        }
+        for run in changed {
+            self.emit(HostEvent::Room { room: room.to_string(), event: RoomEvent::PlanRun { run }, recovery_seq: None });
         }
     }
 
@@ -1181,6 +1203,7 @@ impl Host {
         let journal_hint = room.journal_path_handle();
         let stop = room.stop_handle();
         let plan = room.plan_handle();
+        let plan_runs = room.plan_runs_handle();
         let answers = room.answers_handle();
         // Card guidance is always on.
         answers.store(true, Ordering::SeqCst);
@@ -1222,7 +1245,7 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id.clone(), RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, journal, journal_hint, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id.clone(), RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, journal, journal_hint, stop, plan, plan_runs, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
         if let Some(error) = journal_warning {
             self.room_event(&id, RoomEvent::JournalWarning { error });
         }
@@ -1915,18 +1938,46 @@ impl Host {
     /// `approval_requested` event. An answer that arrives after the proposal
     /// was settled another way (by stop, say) is an error the interface can
     /// ignore.
-    pub fn room_decide(&self, id: String, request: String, approve: bool, always: Option<bool>) -> Result<(), String> {
+    ///
+    /// `skip` lists the steps of a plan card to leave out. Phones send none.
+    pub fn room_decide(&self, id: String, request: String, approve: bool, always: Option<bool>, skip: Option<Vec<String>>) -> Result<(), String> {
         let handle = self.handle(&id)?;
         let decision = match (approve, always.unwrap_or(false)) {
             (false, _) => apex_core::Decision::Reject,
             (true, false) => apex_core::Decision::Approve,
             (true, true) => apex_core::Decision::ApproveAlways,
         };
-        if handle.approvals.resolve(&request, decision) {
-            Ok(())
+        let skip = skip.unwrap_or_default();
+        let plan_card = handle.live.lock().unwrap().approvals.iter().any(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan");
+        let gone = || "that request is no longer waiting for an answer".to_string();
+        // Held across `resolve`, so the woken bot's to-dos meet the new state.
+        let mut runs = handle.plan_runs.lock().unwrap();
+        let at = if plan_card { runs.iter().rposition(|r| r.request == request && r.state == apex_core::PlanRunState::Waiting) } else { None };
+        let Some(at) = at else {
+            if !skip.is_empty() { return Err("only a plan card can skip steps".into()); }
+            drop(runs);
+            return if handle.approvals.resolve(&request, decision) { Ok(()) } else { Err(gone()) };
+        };
+        let mut run = runs[at].clone();
+        if approve {
+            if let Some(unknown) = skip.iter().find(|s| !run.steps.iter().any(|step| step.id == **s)) {
+                return Err(format!("the plan has no step {unknown}"));
+            }
+            if !run.steps.is_empty() && run.steps.iter().all(|step| skip.contains(&step.id)) {
+                return Err("at least one step must stay in the plan".into());
+            }
+            if let Some(note) = run.approve(&skip) { handle.approvals.set_plan_note(&request, note); }
         } else {
-            Err("that request is no longer waiting for an answer".to_string())
+            run.state = apex_core::PlanRunState::Revising;
         }
+        if !handle.approvals.resolve(&request, decision) {
+            handle.approvals.take_plan_note(&request);
+            return Err(gone());
+        }
+        runs[at] = run.clone();
+        drop(runs);
+        self.publish_plan_runs(&id, &handle, vec![run]);
+        Ok(())
     }
 
     /// Alfred may answer a typed native request only with both a current
@@ -3242,6 +3293,55 @@ fn merge_participant(current: &ParticipantConfig, base: &ParticipantConfig, next
     serde_json::from_value(merge(&json(current)?, &json(base)?, &json(next)?)).map_err(|e| format!("invalid participant settings: {e}"))
 }
 
+const MAX_PLAN_RUNS: usize = 20;
+
+/// Move the room's plan runs on for `event`; returns the runs that changed.
+/// `plan_approved` says `event` is the yes to a plan card. `room_decide`
+/// starts the run first; this catches yeses given any other way. A refusal
+/// here is a stop or a tool giving up, so only `room_decide` makes Revising.
+fn track_plan_runs(handle: &RoomHandle, event: &RoomEvent, plan_approved: bool) -> Vec<apex_core::PlanRun> {
+    use apex_core::{PlanRun, PlanRunState};
+    let mut runs = handle.plan_runs.lock().unwrap();
+    let mut changed = Vec::new();
+    match event {
+        RoomEvent::ApprovalRequested { id, request, action } if action.kind == apex_core::ActionKind::Plan => {
+            let version = runs.iter().rev().find(|r| r.by == *id).map_or(0, |r| r.version) + 1;
+            let run = PlanRun::new(request.clone(), id.clone(), action.detail.clone(), version);
+            runs.push(run.clone());
+            if runs.len() > MAX_PLAN_RUNS { let extra = runs.len() - MAX_PLAN_RUNS; runs.drain(..extra); }
+            changed.push(run);
+        }
+        RoomEvent::ApprovalResolved { request, .. } if plan_approved => {
+            if let Some(run) = runs.iter_mut().rev().find(|r| r.request == *request).filter(|r| r.state == PlanRunState::Waiting) {
+                if let Some(note) = run.approve(&[]) { handle.approvals.set_plan_note(request, note); }
+                changed.push(run.clone());
+            }
+        }
+        RoomEvent::Todo { id, items } => {
+            if let Some(run) = runs.iter_mut().rev().find(|r| r.by == *id).filter(|r| matches!(r.state, PlanRunState::Running | PlanRunState::Stopped)) {
+                let before = run.clone();
+                run.apply_todos(items);
+                if *run != before { changed.push(run.clone()); }
+            }
+        }
+        RoomEvent::ParticipantIdle { id } | RoomEvent::Failed { id, .. } => {
+            if let Some(run) = runs.iter_mut().rev().find(|r| r.by == *id && r.state == PlanRunState::Running) {
+                run.turn_ended();
+                changed.push(run.clone());
+            }
+        }
+        // Every turn is over.
+        RoomEvent::Idle => {
+            for run in runs.iter_mut().filter(|r| r.state == PlanRunState::Running) {
+                run.turn_ended();
+                changed.push(run.clone());
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
 /// One shared checkpoint for all running chains. Completed messages are saved
 /// before emission; a failed write cancels work and is reported to the caller.
 fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent) -> Result<(), String> {
@@ -3666,7 +3766,7 @@ mod tests {
         assert_eq!(host.runner_service.lock().unwrap().state("r").unwrap().unwrap().pending_request_id.as_deref(),Some(first.as_str()));
         act(&host,"resume").await;let second=pending(&host,Some(&first)).await;
         assert_eq!(bot.acted.load(Ordering::SeqCst),0);act(&host,"end").await;
-        assert!(host.room_decide("r".into(),first,true,None).is_err());assert!(host.room_decide("r".into(),second,true,None).is_err());
+        assert!(host.room_decide("r".into(),first,true,None,None).is_err());assert!(host.room_decide("r".into(),second,true,None,None).is_err());
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert_eq!(bot.calls.load(Ordering::SeqCst),2);assert_eq!(bot.acted.load(Ordering::SeqCst),0);assert_eq!(host.runner_service.lock().unwrap().state("r").unwrap().unwrap().phase,RunnerPhase::Ended);
         host.shutdown();std::fs::remove_dir_all(path).unwrap();
@@ -4004,7 +4104,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { legacy: None, journal: None, journal_hint: Arc::default(), checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
+        let handle = RoomHandle { legacy: None, journal: None, journal_hint: Arc::default(), checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), plan_runs: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { mounts: vec![], cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }
@@ -4627,6 +4727,218 @@ mod host_tests {
         assert_eq!(host.room_state("r".into()).unwrap()["plan"], false);
         assert!(!host.store.room("r").unwrap().unwrap().snapshot.plan);
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    mod plan_run {
+        use super::*;
+        use apex_core::work_steps::{TodoItem, TodoStatus};
+        use apex_core::{PlanRun, PlanRunState, PlanStepState};
+        use futures::channel::oneshot::Receiver;
+
+        const PLAN: &str = "1. A\n2. B\n3. C\n";
+
+        fn room(name: &str) -> (Arc<Host>, tokio::runtime::Runtime, PathBuf) {
+            let (host, runtime, data) = host(name);
+            host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+            (host, runtime, data)
+        }
+        fn action(kind: apex_core::ActionKind, detail: &str) -> apex_core::ProposedAction {
+            apex_core::ProposedAction { kind, title: "Start the work?".into(), detail: detail.into(), expires_at: None, risky: false }
+        }
+        /// A card the desk really waits on, so `room_decide` can answer it.
+        fn card(host: &Arc<Host>, bot: &str, kind: apex_core::ActionKind, detail: &str) -> (String, Receiver<apex_core::Decision>) {
+            let id = ParticipantId::new(bot);
+            let (request, answer) = host.handle("r").unwrap().approvals.open_for(id.clone());
+            host.room_event("r", RoomEvent::ApprovalRequested { id, request: request.clone(), action: action(kind, detail) });
+            (request, answer)
+        }
+        fn plan_card(host: &Arc<Host>, bot: &str) -> (String, Receiver<apex_core::Decision>) { card(host, bot, apex_core::ActionKind::Plan, PLAN) }
+        fn todo(host: &Arc<Host>, bot: &str, text: &str, status: TodoStatus) {
+            host.room_event("r", RoomEvent::Todo { id: ParticipantId::new(bot), items: vec![TodoItem { text: text.into(), status }] });
+        }
+        fn runs(host: &Arc<Host>) -> Vec<PlanRun> {
+            serde_json::from_value(host.room_state("r".into()).unwrap()["snapshot"]["plan_runs"].clone()).unwrap()
+        }
+        fn saved(host: &Arc<Host>) -> Vec<PlanRun> { host.store.room("r").unwrap().unwrap().snapshot.plan_runs }
+        fn skip(ids: &[&str]) -> Option<Vec<String>> { Some(ids.iter().map(|s| s.to_string()).collect()) }
+
+        #[test]
+        fn a_plan_card_opens_a_waiting_run() {
+            let (host, _runtime, data) = room("plan-run-open");
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&seen);
+            host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+            let (request, _answer) = plan_card(&host, "jigga");
+            let list = runs(&host);
+            assert_eq!((list.len(), list[0].state, list[0].version, list[0].steps.len()), (1, PlanRunState::Waiting, 1, 3));
+            assert_eq!(list[0].request, request);
+            assert_eq!(saved(&host), list, "saved at once");
+            assert!(seen.lock().unwrap().iter().any(|e| matches!(e, HostEvent::Room { event: RoomEvent::PlanRun { run }, .. } if run.request == request)));
+            let (_other, _a) = card(&host, "jigga", apex_core::ActionKind::Command, "ls");
+            assert_eq!(runs(&host).len(), 1, "other cards open no run");
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn skips_reach_the_run_and_the_desk_note() {
+            let (host, _runtime, data) = room("plan-run-skip");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), request.clone(), true, None, skip(&["S2"])).unwrap();
+            let run = &runs(&host)[0];
+            assert_eq!(run.state, PlanRunState::Running);
+            assert_eq!(run.steps[1].state, PlanStepState::Skipped);
+            let note = host.handle("r").unwrap().approvals.take_plan_note(&request).expect("note before the bot resumes");
+            assert!(note.contains("Do NOT do these steps: B"));
+            assert_eq!(host.handle("r").unwrap().approvals.take_plan_note(&request), None, "taken once");
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn keep_planning_marks_revising_and_the_next_card_is_version_2() {
+            let (host, _runtime, data) = room("plan-run-revise");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), request, false, None, None).unwrap();
+            assert_eq!(runs(&host)[0].state, PlanRunState::Revising);
+            let (_next, _a) = plan_card(&host, "jigga");
+            let list = runs(&host);
+            assert_eq!((list[1].version, list[1].state), (2, PlanRunState::Waiting));
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_card_refused_by_stop_is_not_keep_planning() {
+            let (host, _runtime, data) = room("plan-run-stop-card");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_event("r", RoomEvent::ApprovalResolved { id: ParticipantId::new("jigga"), request, approved: false });
+            assert_eq!(runs(&host)[0].state, PlanRunState::Waiting);
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn an_approval_that_skips_room_decide_still_starts_the_run() {
+            let (host, _runtime, data) = room("plan-run-alfred");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_event("r", RoomEvent::ApprovalResolved { id: ParticipantId::new("jigga"), request: request.clone(), approved: true });
+            assert_eq!(runs(&host)[0].state, PlanRunState::Running);
+            assert!(host.handle("r").unwrap().approvals.take_plan_note(&request).is_some());
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn todos_from_another_bot_do_not_touch_the_run() {
+            let (host, _runtime, data) = room("plan-run-other");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), request, true, None, None).unwrap();
+            todo(&host, "null", "[S1] A", TodoStatus::Completed);
+            assert_eq!(runs(&host)[0].steps[0].state, PlanStepState::Open);
+            todo(&host, "jigga", "[S1] A", TodoStatus::Completed);
+            assert_eq!(runs(&host)[0].steps[0].state, PlanStepState::Done);
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn todos_only_reach_the_bots_newest_run_once_it_runs() {
+            let (host, _runtime, data) = room("plan-run-newest");
+            let (first, _a) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), first, true, None, None).unwrap();
+            let (_second, _b) = plan_card(&host, "jigga");
+            todo(&host, "jigga", "[S1] A", TodoStatus::Completed);
+            let list = runs(&host);
+            assert_eq!(list[0].steps[0].state, PlanStepState::Open, "older run left alone");
+            assert_eq!(list[1].steps[0].state, PlanStepState::Open, "a waiting run ticks nothing");
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn two_bots_keep_separate_runs() {
+            let (host, _runtime, data) = room("plan-run-two");
+            let (a, _x) = plan_card(&host, "jigga");
+            let (b, _y) = plan_card(&host, "null");
+            assert_eq!(runs(&host).iter().map(|r| r.version).collect::<Vec<_>>(), [1, 1]);
+            host.room_decide("r".into(), a, true, None, None).unwrap();
+            host.room_decide("r".into(), b, false, None, None).unwrap();
+            let list = runs(&host);
+            assert_eq!((list[0].state, list[1].state), (PlanRunState::Running, PlanRunState::Revising));
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_turn_ending_stops_only_that_bots_running_run() {
+            let (host, _runtime, data) = room("plan-run-end");
+            let (a, _x) = plan_card(&host, "jigga");
+            let (b, _y) = plan_card(&host, "null");
+            host.room_decide("r".into(), a, true, None, None).unwrap();
+            host.room_decide("r".into(), b, true, None, None).unwrap();
+            host.room_event("r", RoomEvent::ParticipantIdle { id: ParticipantId::new("jigga") });
+            let list = runs(&host);
+            assert_eq!((list[0].state, list[1].state), (PlanRunState::Stopped, PlanRunState::Running));
+            host.room_event("r", RoomEvent::Failed { id: ParticipantId::new("null"), error: "x".into() });
+            assert_eq!(runs(&host)[1].state, PlanRunState::Stopped);
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_reopened_room_has_its_run_and_ticks() {
+            let (host, _runtime, data) = room("plan-run-reopen");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), request, true, None, None).unwrap();
+            todo(&host, "jigga", "[S1] A", TodoStatus::Completed);
+            let snapshot = host.store.room("r").unwrap().unwrap().snapshot;
+            assert_eq!(snapshot.plan_runs[0].steps[0].state, PlanStepState::Done);
+            let room = Room::restore(vec![], snapshot);
+            assert_eq!(room.snapshot().plan_runs[0].steps[0].state, PlanStepState::Done);
+            assert!(room.snapshot().fork(0).plan_runs.is_empty(), "a fork starts without them");
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn an_old_snapshot_without_plan_runs_still_loads() {
+            let mut value = serde_json::to_value(Room::new(vec![], RoomOptions::default()).snapshot()).unwrap();
+            value.as_object_mut().unwrap().remove("plan_runs");
+            let snapshot: RoomSnapshot = serde_json::from_value(value).unwrap();
+            assert!(snapshot.plan_runs.is_empty());
+        }
+
+        #[test]
+        fn runs_are_capped_at_20_newest_last() {
+            let (host, _runtime, data) = room("plan-run-cap");
+            for _ in 0..22 { std::mem::forget(plan_card(&host, "jigga")); }
+            let list = runs(&host);
+            assert_eq!((list.len(), list[19].version), (20, 22));
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_skip_for_a_non_plan_card_is_refused() {
+            let (host, _runtime, data) = room("plan-run-nonplan");
+            let (request, _answer) = card(&host, "jigga", apex_core::ActionKind::Command, "ls");
+            assert!(host.room_decide("r".into(), request.clone(), true, None, skip(&["S1"])).is_err());
+            host.room_decide("r".into(), request, true, None, None).expect("the refusal left the card waiting");
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_skip_of_every_step_or_an_unknown_step_is_refused() {
+            let (host, _runtime, data) = room("plan-run-badskip");
+            let (request, _answer) = plan_card(&host, "jigga");
+            assert!(host.room_decide("r".into(), request.clone(), true, None, skip(&["S1", "S2", "S3"])).is_err());
+            assert!(host.room_decide("r".into(), request.clone(), true, None, skip(&["S9"])).is_err());
+            assert_eq!(runs(&host)[0].state, PlanRunState::Waiting);
+            assert_eq!(host.handle("r").unwrap().approvals.take_plan_note(&request), None);
+            host.room_decide("r".into(), request, true, None, skip(&["S1", "S2"])).expect("still waiting");
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_stale_answer_changes_no_run() {
+            let (host, _runtime, data) = room("plan-run-stale");
+            let (request, answer) = plan_card(&host, "jigga");
+            drop(answer);
+            assert!(host.room_decide("r".into(), request.clone(), true, None, None).is_err());
+            assert_eq!(runs(&host)[0].state, PlanRunState::Waiting);
+            assert_eq!(host.handle("r").unwrap().approvals.take_plan_note(&request), None);
+            let _ = std::fs::remove_dir_all(data);
+        }
     }
 
     fn scripted(id: &str, lines: &[&str]) -> apex_core::ParticipantConfig {
