@@ -164,6 +164,31 @@ pub fn chat_profile_ok(config: &ParticipantConfig, path: Option<&str>) -> Result
     }
 }
 
+/// Preflight the verified tool-free curator path, including its actual executable.
+/// Gemini's normal `agy` route cannot provide this isolation.
+pub fn curator_profile_ok(config: &ParticipantConfig, path: Option<&str>) -> Result<(), String> {
+    if matches!(config.backend, Backend::Agent { tool: AgentTool::Gemini, .. }) {
+        let search = path
+            .map(str::to_owned)
+            .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+        #[cfg(windows)]
+        let available = executable::on_path("gemini", &search);
+        #[cfg(not(windows))]
+        let available = std::env::split_paths(&search).any(|dir| {
+            let Ok(metadata) = std::fs::metadata(dir.join("gemini")) else { return false; };
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))] { metadata.is_file() }
+        });
+        if !available {
+            return Err("The tool-free Gemini CLI (`gemini`) is unavailable; `agy` cannot be used for this turn.".into());
+        }
+    }
+    chat_profile_ok(config, path)
+}
+
 /// Single room-participant builder: `Work` rooms get full tools and workspace context;
 /// `Chat` rooms are built with tools disabled, no `cwd`, no `media_dir`, no attachment roots, and `Access::Read`.
 pub fn participant_for_room(
@@ -397,5 +422,29 @@ mod tests {
     fn invalid_bytes_are_replaced_instead_of_stalling_the_stream() {
         let mut chunks = Utf8Chunks::default();
         assert_eq!(chunks.push(&[b'a', 0xff, b'b']), "a\u{fffd}b");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod curator_preflight_tests {
+    use super::*;
+    #[test]
+    fn gemini_curator_requires_the_isolated_cli_not_agy() {
+        let root = std::env::temp_dir().join(format!("curate-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("agy"), "").unwrap();
+        let mut config = ScriptedParticipant::new("forge", &["ok"]).config().clone();
+        config.backend = Backend::Agent { tool: AgentTool::Gemini, model: None };
+        let path = root.to_str().unwrap();
+        let error = curator_profile_ok(&config, Some(path)).unwrap_err();
+        assert!(error.contains("gemini"));
+        std::fs::write(root.join("gemini"), "").unwrap();
+        assert!(curator_profile_ok(&config, Some(path)).is_err(), "a non-executable file is not a CLI");
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.join("gemini"), std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(curator_profile_ok(&config, Some(path)).is_ok());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

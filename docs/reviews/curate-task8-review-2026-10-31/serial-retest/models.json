@@ -1,0 +1,59 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "deepseek-v4-flash",
+      "object": "model",
+      "created": 1767225600,
+      "owned_by": "ds4.c",
+      "name": "DeepSeek V4 Flash",
+      "context_length": 65536,
+      "top_provider": {
+        "context_length": 65536,
+        "max_completion_tokens": 65536,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "tools",
+        "tool_choice",
+        "max_tokens",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "ignore_eos",
+        "stop",
+        "seed",
+        "stream",
+        "reasoning_effort"
+      ]
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "object": "model",
+      "created": 1767225600,
+      "owned_by": "ds4.c",
+      "name": "DeepSeek V4 Flash",
+      "context_length": 65536,
+      "top_provider": {
+        "context_length": 65536,
+        "max_completion_tokens": 65536,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "tools",
+        "tool_choice",
+        "max_tokens",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "ignore_eos",
+        "stop",
+        "seed",
+        "stream",
+        "reasoning_effort"
+      ]
+    }
+  ]
+}
