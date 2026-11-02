@@ -37,7 +37,8 @@ export function AssistantFloat({token}:{token:string}){
   const present=(next:AssistantFloatPresentation)=>{setMore(false);setLocalPresentation(next);act({type:'assistant-present',presentation:next})};
   useLayoutEffect(()=>{void bridge?.assistantLayout?.(token,more&&presentation==='pill'?'menu':presentation)},[bridge,token,presentation,more]);
   useEffect(()=>{if(presentation==='threads')search.current?.focus();else if(presentation==='chat')box.current?.focus();else avatar.current?.focus()},[presentation]);
-  useEffect(()=>{log.current?.scrollTo({top:log.current.scrollHeight})},[state?.lines.length]);
+  const latestLine=state?.lines.at(-1);
+  useEffect(()=>{log.current?.scrollTo({top:log.current.scrollHeight})},[presentation,state?.lines.length,latestLine?.id,latestLine?.text,latestLine?.approval]);
   useEffect(()=>{if(!more)return;menu.current?.querySelector<HTMLButtonElement>('button')?.focus();const outside=(e:PointerEvent)=>{if(!menu.current?.contains(e.target as Node)&&!moreButton.current?.contains(e.target as Node))setMore(false)};document.addEventListener('pointerdown',outside);return()=>document.removeEventListener('pointerdown',outside)},[more]);
   const send=()=>{const text=draft.trim();if(!text)return;setDraft('');act({type:'assistant-send',text,requestId:crypto.randomUUID()})};
   const onDragStart=(e:ReactPointerEvent)=>{
