@@ -72,6 +72,9 @@ pub struct CurateReply {
     pub outcome: apex_core::CurateOutcome,
 }
 
+/// How long after a batch ends the plan is read, so the provider has counted it.
+const PLAN_READ_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
     /// Serializes snapshot reads with persistence and numbered event emission.
@@ -803,6 +806,24 @@ impl Host {
     /// Runs in the background; it asks no model anything. A provider can put a
     /// model in a quota group of its own, so each model is read separately.
     fn read_plans(self: &Arc<Self>, room: &str, configs: &[ParticipantConfig], context: &BuildContext) {
+        self.read_plans_when(room, configs, context, false);
+    }
+
+    /// Plan use only changes when a turn spends it, so each batch's end reads it
+    /// again. A short wait lets the provider's own figures catch up.
+    fn read_plans_after_turn(self: &Arc<Self>, room: &str, configs: &[ParticipantConfig], context: &BuildContext) {
+        self.read_plans_when(room, configs, context, true);
+    }
+
+    /// `room_refresh_plans`: the app came back to this chat, or it has been working a while.
+    pub fn room_refresh_plans(self: &Arc<Self>, id: String) -> Result<(), String> {
+        let configs = self.handle(&id)?.checkpoint.lock().unwrap().snapshot.participants.clone();
+        let context = self.room_context(&id)?;
+        self.read_plans(&id, &configs, &context);
+        Ok(())
+    }
+
+    fn read_plans_when(self: &Arc<Self>, room: &str, configs: &[ParticipantConfig], context: &BuildContext, after_turn: bool) {
         let mut reads: Vec<(AgentTool, Option<String>)> = Vec::new();
         for config in configs {
             if let apex_core::Backend::Agent { tool, model } = &config.backend {
@@ -815,7 +836,13 @@ impl Host {
         for (tool, model) in reads {
             let (host, room, context) = (Arc::clone(self), room.to_string(), context.clone());
             self.runtime.spawn(async move {
-                if let Some(plan) = apex_adapters::plan_usage(tool, model.as_deref(), &context).await {
+                let plan = if after_turn {
+                    tokio::time::sleep(PLAN_READ_SETTLE).await;
+                    apex_adapters::plan_usage_after_turn(tool, model.as_deref(), &context).await
+                } else {
+                    apex_adapters::plan_usage(tool, model.as_deref(), &context).await
+                };
+                if let Some(plan) = plan {
                     // The model rides along so a chat with two models of one
                     // provider shows each its own group.
                     host.room_event(&room, RoomEvent::plan_for(&plan, model));
@@ -1355,7 +1382,7 @@ impl Host {
         Ok(batch)
     }
 
-    pub(crate) async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
+    pub(crate) async fn run_batch(self: &Arc<Self>, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
         let _chain = Chain::start(&self.chains);
         let client_message_id = batch.client_message_id().map(str::to_owned);
         let error = Mutex::new(None);
@@ -1376,9 +1403,10 @@ impl Host {
                 let _ = tokio::task::spawn_blocking(move || snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Idle, None, &retired)).await;
             }
         }
-        let _room = handle.room.lock().await;
+        let room = handle.room.lock().await;
         if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
             self.room_event(id, RoomEvent::Idle);
+            self.read_plans_after_turn(id, &room.configs(), &handle.context);
         }
         Ok(())
     }
