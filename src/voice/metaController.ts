@@ -387,6 +387,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       const held = choices?.some((c) => same(c, parsed.candidate)) ? heldText : "";
       pendingSwitchText = "";
       await switchAgent(parsed.candidate);
+      if (currentEpoch !== epoch) return;
       text = parsed.text || held;
       if (!text) return;
     }
@@ -429,10 +430,16 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     // Reconnect Meta to new scope's participant context if needed
     try { metaAbort?.abort(); } catch {}
     metaAsr?.close();
+    const connecting = connectMeta(scope);
+    const attempt = metaAbort;
     try {
-      const newMeta = await connectMeta(scope);
-      metaAsr = newMeta;
-    } catch {}
+      metaAsr = await connecting;
+    } catch (e) {
+      // Hanging up, a newer switch or helper recovery cancels this attempt on purpose.
+      if (attempt?.signal.aborted) return;
+      error(Error(`Could not reconnect to Meta (${e instanceof Error ? e.message : String(e)}). Start a new call.`));
+      return;
+    }
     if (pending) await submit(pending, crypto.randomUUID(), false);
   }
 
