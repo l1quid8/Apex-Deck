@@ -98,10 +98,12 @@ export interface SetupRuns {
   clear(): void;
   /** Saves a changed server key. Only a person looking at it may call this. */
   trust(key: ServerKey): void;
+  /** User decision for host trust (Trust this machine / Not now) */
+  decideTrust(trust: boolean): void;
 }
 
 export function setupRuns(deps: () => SetupDeps): SetupRuns {
-  let run: { cancel(): void; events: SetupEvent[]; watchers: Set<(event: SetupEvent) => void> } | null = null;
+  let run: { cancel(): void; decideTrust: (trust: boolean) => void; events: SetupEvent[]; watchers: Set<(event: SetupEvent) => void> } | null = null;
   return {
     start(request) {
       const watchers = new Set<(event: SetupEvent) => void>();
@@ -110,7 +112,7 @@ export function setupRuns(deps: () => SetupDeps): SetupRuns {
         events.push(event);
         watchers.forEach((heard) => heard(event));
       });
-      run = { cancel: started.cancel, events, watchers };
+      run = { cancel: started.cancel, decideTrust: started.decideTrust, events, watchers };
     },
     current: () => run !== null,
     watch(heard) {
@@ -123,5 +125,6 @@ export function setupRuns(deps: () => SetupDeps): SetupRuns {
     cancel: () => run?.cancel(),
     clear() { run = null; },
     trust: (key) => deps().rememberKey(key.hostPort, key.fingerprint),
+    decideTrust: (trust) => run?.decideTrust(trust),
   };
 }

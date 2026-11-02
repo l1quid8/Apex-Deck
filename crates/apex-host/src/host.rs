@@ -2610,6 +2610,74 @@ impl Host {
         crate::folder_trust::withdraw(&self.paths.data, Path::new(&path))?;
         Ok(serde_json::json!({ "withdrawn": path }))
     }
+    pub fn trust_status(&self) -> Result<serde_json::Value, String> {
+        let path = self.paths.data.join("host-trust.json");
+        let content = std::fs::read_to_string(&path).ok();
+        if let Some(text) = content {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                return Ok(serde_json::json!({
+                    "exists": true,
+                    "trusted": v.get("trusted").and_then(|x| x.as_bool()).unwrap_or(false),
+                    "epoch": v.get("epoch").and_then(|x| x.as_str()).unwrap_or(""),
+                    "trusted_at_ms": v.get("trusted_at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
+                    "boot_id": v.get("boot_id").and_then(|x| x.as_str()).unwrap_or(""),
+                    "raw": v
+                }));
+            }
+        }
+        // Also include folder trust list
+        let accepted = crate::folder_trust::list_accepted(&self.paths.data);
+        Ok(serde_json::json!({
+            "exists": false,
+            "trusted": false,
+            "epoch": "",
+            "trusted_at_ms": 0,
+            "boot_id": "",
+            "accepted_folders": accepted.iter().map(|(p,w,when)| serde_json::json!({"path": p, "who": w, "when_ms": when})).collect::<Vec<_>>()
+        }))
+    }
+    pub fn trust_run(&self, no_reboot: bool) -> Result<serde_json::Value, String> {
+        // Directly call the same logic as apex-daemon trust-host --no-reboot
+        // For simplicity, we delegate to a file write of random epoch, same as daemon's run_no_reboot
+        let data = &self.paths.data;
+        let record_path = data.join("host-trust.json");
+        // generate epoch
+        let mut buf = [0u8; 32];
+        if let Ok(f) = std::fs::File::open("/dev/urandom") {
+            use std::io::Read;
+            let mut f = f;
+            let _ = f.read_exact(&mut buf);
+        }
+        if buf.iter().all(|&b| b == 0) {
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            for (i, chunk) in buf.chunks_mut(8).enumerate() {
+                let v = t.wrapping_add(std::process::id() as u64).wrapping_add(i as u64 * 0x9e3779b97f4a7c15);
+                chunk.copy_from_slice(&v.to_le_bytes()[..chunk.len().min(8)]);
+            }
+        }
+        let epoch: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|s| s.trim().to_string());
+        let record = serde_json::json!({
+            "trusted": true,
+            "epoch": epoch,
+            "trusted_at_ms": now_ms,
+            "boot_id": boot_id
+        });
+        std::fs::create_dir_all(data).map_err(|e| e.to_string())?;
+        std::fs::write(&record_path, format!("{}\n", serde_json::to_string_pretty(&record).unwrap())).map_err(|e| e.to_string())?;
+        // On Linux, sync dir for durability
+        #[cfg(unix)]
+        {
+            if let Some(parent) = record_path.parent() {
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+            }
+        }
+        let _ = no_reboot;
+        Ok(serde_json::json!({ "trusted": true, "epoch": epoch, "trusted_at_ms": now_ms }))
+    }
     pub async fn worktree_add(&self, path: String, request: worktrees::AddRequest) -> Result<worktrees::Worktree, String> {
         tokio::task::spawn_blocking(move || worktrees::add(Path::new(&path), request)).await.map_err(|e| e.to_string())?
     }

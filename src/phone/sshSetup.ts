@@ -192,6 +192,8 @@ export type SetupEvent =
   | { kind: "finishing" }
   /** Saved on the phone the moment the machine pairs, so closing the screen can't lose it. */
   | { kind: "paired"; name: string }
+  /** Host trust decision: fresh server with no host-trust.json, ask if user trusts it. */
+  | { kind: "trust"; fresh: boolean; message: string }
   /** `trust` is set when the server's key changed: the key the person may choose to trust. */
   | { kind: "failed"; id: string; label: string; message: string; trust?: ServerKey }
   | { kind: "done"; message: string };

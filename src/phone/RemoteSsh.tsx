@@ -21,6 +21,7 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
   const [lines, setLines] = useState<Line[] | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [paired, setPaired] = useState(false);
+  const [trustAsk, setTrustAsk] = useState<{ message: string } | null>(null);
   const [end, setEnd] = useState<{ failed: boolean; message: string; trust?: ServerKey } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const heardRef = useRef<(event: SetupEvent) => void>(() => {});
@@ -44,6 +45,7 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
     if (event.kind === "step") setLines((list) => [...(list ?? []).filter((line) => line.id !== event.id), { id: event.id, text: event.text }]);
     else if (event.kind === "finishing") setFinishing(true);
     else if (event.kind === "paired") setPaired(true);
+    else if (event.kind === "trust") setTrustAsk({ message: event.message });
     else if (event.kind === "done") setEnd({ failed: false, message: event.message });
     else {
       setLines((list) => [...(list ?? []).filter((line) => line.id !== event.id), { id: event.id, text: event.label, failed: true }]);
@@ -87,12 +89,23 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null
       <div className="ph-list">
         {lines.map((line) => <div key={line.id} className="ph-srow"><span className="ph-srow-icon">{line.failed ? <span className="ph-red"><X size={16} /></span> : <Check size={16} />}</span><span className={`ph-grow${line.failed ? " ph-red" : ""}`}>{line.text}</span></div>)}
       </div>
+      {trustAsk && (
+        <div className="ph-card ph-trust-card" role="dialog" aria-label="Trust this machine">
+          <h3>Trust this machine?</h3>
+          <p className="ph-sheet-text">{trustAsk.message}</p>
+          <p className="ph-muted">Deck can&apos;t check this machine for you. Only continue if you trust what has run on this account. Your tap carries the decision over your SSH session.</p>
+          <div className="ph-row2">
+            <button type="button" className="primary" onClick={() => { setTrustAsk(null); setup?.decideTrust(true); }}>Trust this machine</button>
+            <button type="button" className="ph-plain" onClick={() => { setTrustAsk(null); setup?.decideTrust(false); }}>Not now</button>
+          </div>
+        </div>
+      )}
       <p className={`ph-sheet-text${failed ? " ph-red" : " ph-quiet"}`} role={failed ? "alert" : "status"}>{status}</p>
       {end?.trust && <button type="button" className="ph-plain ph-wide" onClick={() => { setup?.trust(end.trust!); back(); }}>I rebuilt this server. Trust {end.trust.fingerprint}</button>}
       {failed
         ? <button type="button" className="primary ph-wide" onClick={back}>Back</button>
         : <button type="button" className="primary ph-wide" disabled={!paired} onClick={() => { if (end) setup?.clear(); onDone(); }}>Done</button>}
-      {!paired && !end && <button type="button" className="ph-plain ph-wide" disabled={finishing} onClick={() => setup?.cancel()}>{finishing ? "Finishing pairing" : "Stop setup"}</button>}
+      {!paired && !end && !trustAsk && <button type="button" className="ph-plain ph-wide" disabled={finishing} onClick={() => setup?.cancel()}>{finishing ? "Finishing pairing" : "Stop setup"}</button>}
     </>;
   }
 

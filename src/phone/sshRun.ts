@@ -110,7 +110,7 @@ const tail = (result: ExecResult): string => (result.stderr || result.stdout).tr
  * until the machine is told to approve: past that the pairing can land on the
  * machine, so the run has to finish it.
  */
-export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: SetupEvent) => void): { cancel(): void; done: Promise<void> } {
+export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: SetupEvent) => void): { cancel(): void; decideTrust: (trust: boolean) => void; done: Promise<void> } {
   const secrets = request;
   let cancelled = false;
   let paired = false;
@@ -118,6 +118,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
   let stopPair = () => {};
   let stopConnect = () => {};
   let session: SshSession | null = null;
+  let trustDecision: { resolve: (trust: boolean) => void } | null = null;
   const stopIfCancelled = () => { if (cancelled) throw stopFailure(); };
   const step = (id: string, text: string) => { stopIfCancelled(); emit({ kind: "step", id, text }); };
   const where = request.label || request.host;
@@ -244,6 +245,45 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     const remote = await ssh.exec(REMOTE_ON, { timeoutS: 40 });
     if (remote.code !== 0) throw new StepFailure("start", "Couldn't start Deck", tail(remote) || "Deck didn't answer on the server.");
 
+    // ---- Task 10: Trust this machine? ----
+    // After Deck started and before pairing, check if host-trust exists.
+    // If not, pause and ask user. Offer only when no data folder found (fresh server).
+    try {
+      const trustCheck = await ssh.exec("cat ~/.local/share/apex-deck/host-trust.json 2>/dev/null || cat $HOME/.local/share/apex-deck/host-trust.json 2>/dev/null || echo __notrust__", { timeoutS: 10 });
+      const isFresh = trustCheck.stdout.includes("__notrust__") || trustCheck.stdout.trim() === "";
+      if (isFresh) {
+        const freshTrustMessage = "Trust this machine? Your phone can press Allow here only if you trust what has run on this account. Deck can't check that. Pick Trust for a new server, or one you know.";
+        emit({ kind: "trust", fresh: true, message: freshTrustMessage });
+        const shouldTrust = await new Promise<boolean>((resolve) => {
+          trustDecision = { resolve };
+        });
+        trustDecision = null;
+        if (shouldTrust) {
+          // Run trust-host --no-reboot over the signed-in SSH session, so person's own credentials and tap carry decision.
+          const trustCmd = `${PROBE_BIN} >/dev/null 2>&1 && apex-daemon trust-host --no-reboot 2>&1 || $HOME/.local/bin/apex-daemon trust-host --no-reboot 2>&1 || /usr/local/bin/apex-daemon trust-host --no-reboot 2>&1`;
+          const trustResult = await ssh.exec(trustCmd, { timeoutS: 30 });
+          if (trustResult.code === 0) {
+            step("trust", "Trusted this machine — new epoch, old devices must pair again");
+          } else {
+            // If trust fails, continue as not trusted (pair without epoch) but inform
+            step("trust", `Not trusted yet — ${trustResult.stdout.trim() || trustResult.stderr.trim() || "trust-host failed"}, pairing without epoch`);
+          }
+        } else {
+          step("trust", "Not trusted yet — paired device can't act until you run apex-daemon trust-host on the server");
+        }
+      } else {
+        // Existing data folder: show row "Not trusted yet" logic is handled elsewhere; here we just note trusted exists
+        try {
+          const parsed = JSON.parse(trustCheck.stdout);
+          if (parsed.trusted) {
+            step("trust", `Host trusted on ${new Date(parsed.trusted_at_ms || Date.now()).toLocaleDateString()}`);
+          }
+        } catch {}
+      }
+    } catch {
+      // Trust check failure is non-fatal, continue
+    }
+
     const tools = report((await ssh.exec(AI_TOOLS, { timeoutS: 500 })).stdout);
     const missing = ["claude", "codex"].filter((tool) => tools[tool] !== "installed");
     const signIn = ["claude", "codex"].filter((tool) => tools[tool] === "installed" && tools[`${tool}-login`] !== "yes");
@@ -303,7 +343,11 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
       cancelled = true;
       stopConnect();
       stopPair();
+      trustDecision?.resolve(false);
       void (session as SshSession | null)?.close().catch(() => {});
+    },
+    decideTrust(trust: boolean) {
+      trustDecision?.resolve(trust);
     },
   };
 }

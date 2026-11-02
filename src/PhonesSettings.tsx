@@ -5,6 +5,7 @@ import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { PairPhoneSheet } from "./PairPhoneSheet";
 import { TIERS, devicesApi, lastSeenText, shortId, threadsText, type PairedDevice, type Tier } from "./pairedDevices";
 import { pairingApi, parseAddresses, phonesStatus, type RemoteInfo } from "./pairing";
+import { TrustHostSettings } from "./TrustHostSettings";
 
 // Settings → Phones: Pair phone, whether phones can connect at all, each
 // paired phone with its access level and Revoke, and under Advanced the
@@ -61,7 +62,24 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
     cancel: "Keep on",
     onConfirm: () => void turn(false),
   });
-  const setTier = (device: PairedDevice, tier: Tier) => devicesCall.setTier(device.endpointId, tier).then(loadDevices, fail);
+  const setTier = (device: PairedDevice, tier: Tier) => {
+    const needsFaceId = tier === "full" && device.tier !== "full";
+    if (needsFaceId) {
+      // Face ID step: phone's own guard against holding unlocked phone. Per spec, does not prove to daemon.
+      setAsking({
+        title: "Face ID required",
+        body: "Raising access to Full lets this device press Allow and run as you. Confirm with Face ID (or device passcode) to continue.",
+        action: "Confirm with Face ID",
+        cancel: "Cancel",
+        onConfirm: () => {
+          setAsking(null);
+          devicesCall.setTier(device.endpointId, tier).then(loadDevices, fail);
+        },
+      });
+      return;
+    }
+    devicesCall.setTier(device.endpointId, tier).then(loadDevices, fail);
+  };
   const revoke = (device: PairedDevice) => setAsking({
     title: `Revoke ${device.label}?`,
     body: "It's disconnected now and can never connect again with this pairing. Anything it already started keeps running.",
@@ -91,6 +109,7 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
   const status = on === null || devices === null ? null : phonesStatus(on, devices.length);
   const changed = info ? addresses.trim() !== info.advertise.join(", ") : addresses.trim() !== "";
   return (<>
+    <TrustHostSettings backend={backend} />
     <div className="settings-actions phones-status">
       <button onClick={() => setPairing(true)}>Pair phone</button>
       {remote && <div className="phones-status-text" role="status">

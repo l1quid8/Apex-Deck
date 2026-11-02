@@ -180,6 +180,8 @@ pub fn command_needs(command: &Command) -> Need {
         RoomRunnerState { id } => read(thread(id)),
         FolderAccept { .. } => full(Global),
         FolderWithdraw { .. } => full(Global),
+        TrustStatus {} => full(Global),
+        TrustRun { .. } => full(Global),
     }
 }
 
@@ -547,6 +549,8 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         ModFsStat { .. } => None,
         ModEnvGet { .. } => None,
         FolderWithdraw { .. } => None,
+        TrustStatus {} => None,
+        TrustRun { .. } => Raises,
     }
 }
 
@@ -827,6 +831,8 @@ mod tests {
             ("room_runner_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
             ("folder_accept", Some((Full, "global")), json!({ "path": "/tmp/p", "who": "user" })),
             ("folder_withdraw", Some((Full, "global")), json!({ "path": "/tmp/p" })),
+            ("trust_status", Some((Full, "global")), json!({})),
+            ("trust_run", Some((Full, "global")), json!({ "no_reboot": true })),
         ]
     }
 

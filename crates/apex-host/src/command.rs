@@ -186,6 +186,8 @@ pub enum Command {
     RoomMount { id: String, cwd: String },
     FolderAccept { path: String, who: Option<String> },
     FolderWithdraw { path: String },
+    TrustStatus {},
+    TrustRun { no_reboot: bool },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     ChatProfiles {},
     ChatList {},
@@ -711,6 +713,8 @@ impl Host {
             ModEnvGet { name } => reply(self.mod_env_get(name)),
             FolderAccept { path, who } => reply(self.folder_accept(path, who)?),
             FolderWithdraw { path } => reply(self.folder_withdraw(path)?),
+            TrustStatus {} => reply(self.trust_status()?),
+            TrustRun { no_reboot } => reply(self.trust_run(no_reboot)?),
         }
     }
 }
@@ -937,7 +941,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 220);
+        assert_eq!(names.len(), 222);
         for name in [
             "room_curate",
             "room_curate_undo",
