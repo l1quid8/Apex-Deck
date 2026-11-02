@@ -113,6 +113,11 @@ impl RoomHandle {
         let live = self.live.lock().unwrap();
         !live.approvals.is_empty() || !live.questions.is_empty()
     }
+    /// When a worker last did something, and whether a command is still running.
+    pub(crate) fn worker_activity(&self) -> (u64, bool) {
+        let live = self.live.lock().unwrap();
+        (live.last_activity_ms, !live.running_commands.is_empty())
+    }
     pub(crate) fn busy(&self) -> bool { self.runtime.busy() || self.checkout_action.try_write().is_err() }
 }
 
@@ -124,6 +129,9 @@ struct LiveRoomState {
     questions: Vec<serde_json::Value>,
     /// The latest suggested next steps, while they stand.
     next_steps: Option<serde_json::Value>,
+    /// The watchdog's view of the worker. Only worker activity moves it.
+    last_activity_ms: u64,
+    running_commands: std::collections::HashSet<String>,
 }
 
 /// Where the host keeps its files.
@@ -564,6 +572,15 @@ impl Host {
             if let RoomEvent::ApprovalResolved { request, approved: true, .. } = &event {
                 plan_off = live.approvals.iter().any(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan");
             }
+            if matches!(event, RoomEvent::TurnStarted { .. } | RoomEvent::Delta { .. } | RoomEvent::Activity { .. } | RoomEvent::WorkStep { .. } | RoomEvent::Todo { .. } | RoomEvent::MessageAdded { .. } | RoomEvent::Usage { .. } | RoomEvent::ApprovalResolved { .. } | RoomEvent::QuestionResolved { .. }) {
+                live.last_activity_ms = crate::personal::now();
+            }
+            if let RoomEvent::WorkStep { id, step } = &event {
+                let key = format!("{id}:{}", step.key);
+                if step.status == apex_core::work_steps::StepStatus::Running { live.running_commands.insert(key); } else { live.running_commands.remove(&key); }
+            }
+            if let RoomEvent::TurnStarted { id } = &event { let own = format!("{id}:"); live.running_commands.retain(|key| !key.starts_with(&own)); }
+            if matches!(event, RoomEvent::Idle | RoomEvent::Stopped) { live.running_commands.clear(); }
             match &event {
                 RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); live.next_steps = None; }
                 RoomEvent::QuestionRequested { id, request, questions } => {

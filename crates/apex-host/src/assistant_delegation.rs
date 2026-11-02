@@ -325,7 +325,7 @@ impl crate::host::Host {
                 for attempt in task.attempts.iter().filter(|a| a.finished_at_ms.is_some()) {
                     let receipt = serde_json::to_string(&(&lineage.project, &task.id, &attempt.run_id)).map_err(|e| e.to_string())?;
                     if !assistant.delegated_result_receipts.insert(receipt.clone()) { continue; }
-                    let label = match attempt.status { crate::assistant_tasks::TaskStatus::Done => "Result available", crate::assistant_tasks::TaskStatus::ReadyForReview => "Result ready for your review", crate::assistant_tasks::TaskStatus::Cancelled => "Task cancelled", _ => "Task needs your attention" };
+                    let label = if attempt.status == crate::assistant_tasks::TaskStatus::Interrupted && attempt.result.as_deref() == Some(crate::assistant_watchdog::RESTARTED_RESULT) { crate::assistant_watchdog::RESTARTED_LABEL } else { match attempt.status { crate::assistant_tasks::TaskStatus::Done => "Result available", crate::assistant_tasks::TaskStatus::ReadyForReview => "Result ready for your review", crate::assistant_tasks::TaskStatus::Cancelled => "Task cancelled", _ => "Task needs your attention" } };
                     let brief: String = task.brief.chars().take(140).collect();
                     assistant.post("assistant", "result", format!("{label}: {brief}"), Some(task.id.clone()), Some(lineage.source_event_id.clone()), crate::personal::now());
                     assistant.revision += 1;

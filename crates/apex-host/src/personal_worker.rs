@@ -526,9 +526,14 @@ impl Host {
             let mut jobs = tokio::task::JoinSet::new();
             // Keys held by each running job, so a panicked job still frees them.
             let mut held: HashMap<tokio::task::Id, Vec<String>> = HashMap::new();
+            let mut watch_clock = crate::assistant_watchdog::WatchClock::new(now());
             loop {
                 let Some(host) = owner.upgrade() else { break };
                 let mut delay = Duration::from_secs(60);
+                let at = now();
+                if let Err(error) = host.watch_delegated_work(at, watch_clock.pass(at)) {
+                    eprintln!("Delegated work watchdog: {error}");
+                }
                 match host.personal_tick(now()) {
                     Ok(tick) => {
                         if let Some(next) = tick.next {
