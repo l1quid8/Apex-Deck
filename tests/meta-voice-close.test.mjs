@@ -34,7 +34,7 @@ class FakeSocket {
 
 const scope = { hostId: "h", roomId: "r", participantId: "a" };
 
-async function call({ mint = async () => ({ token: "t", model: "m" }), candidates = [], stop = async () => {}, autoStart = true, connectGate } = {}) {
+async function call({ mint = async () => ({ token: "t", model: "m" }), candidates = [], stop = async () => {}, autoStart = true, connectGate, cancel = async () => {} } = {}) {
   globalThis.WebSocket = FakeSocket;
   FakeSocket.all = [];
   FakeSocket.afterAck = undefined;
@@ -61,7 +61,7 @@ async function call({ mint = async () => ({ token: "t", model: "m" }), candidate
         submitted.push(turn);
         return {};
       },
-      cancel: async () => {},
+      cancel,
       subscribe: () => () => {},
     }),
     voice: (scope) => "voice-" + scope.participantId,
@@ -487,4 +487,22 @@ test("noise over a Meta call does not cancel anything, and an empty final resume
   assert.equal(c.getState().status, "listening");
   assert.equal(cancels(), before);
   assert.equal(submitted.length, 0);
+});
+
+test("a second sentence while the first waits on cleanup keeps both", async () => {
+  let release;
+  const { c, submitted, socket } = await call({ cancel: () => new Promise((r) => (release = r)) });
+  const finished = (turnId, transcript) => socket().onmessage({ data: JSON.stringify({ type: "speechComplete", turnId, transcript }) });
+  await tick();
+  finished(1, "first");
+  await tick();
+  finished(2, "Give me three different");
+  await tick();
+  finished(3, "options to choose from");
+  await tick();
+  release();
+  await tick();
+  assert.deepEqual(submitted.map((t) => t.text), ["first", "Give me three different options to choose from"]);
+  release = undefined;
+  await c.end();
 });

@@ -71,6 +71,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
   const utterances = new Set<string>();
   let pendingSwitchText = "";
   let submitting = 0;
+  // Words heard but not yet with the agent. Newer words join them, so a pause never loses the first half.
+  let unsent = "";
   const submittedAt = new Map<string, number>();
   const seenTiming = new Set<string>();
   const metric = (stage: string, ms: number, requestId?: string) => {
@@ -165,6 +167,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     client = undefined;
     generation++;
     pendingSwitchText = "";
+    unsent = "";
     release();
     flow.reset();
     const stopping = cleanup;
@@ -308,13 +311,17 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
           }
           if (utterances.has(utteranceId)) return;
           utterances.add(utteranceId);
-          // Newer words also replace a message still waiting to go out.
+          const words = unsent ? unsent + " " + transcript : transcript;
           if (flow.speechConfirmed() || submitting) stopAudio();
           interrupt();
           submitting++;
-          void submit(transcript, utteranceId)
+          unsent = words;
+          void submit(words, utteranceId)
             .catch((err) => error(Error(String(err))))
-            .finally(() => submitting--);
+            .finally(() => {
+              submitting--;
+              if (unsent === words) unsent = "";
+            });
         },
         onError: (err) => error(err),
         onClose: (reason) => {
@@ -464,6 +471,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     };
     set({ error: undefined });
     flow.turnStart();
+    unsent = "";
     try {
       await bridge.submit(turn);
     } catch (e) {
@@ -714,7 +722,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     },
     start,
     end,
-    switchAgent: async (scope: CallScope) => { await switchAgent(scope); },
+    // Words meant for the agent you are leaving stay with it.
+    switchAgent: async (scope: CallScope) => { unsent = ""; await switchAgent(scope); },
     mute(value: boolean) {
       if (value) {
         markMutedTurns();

@@ -181,7 +181,7 @@ test("permission denial releases runtime and leaves a visible scoped error", asy
   assert.equal(c.getState().status, "error");
 });
 
-test("repeated interruption drops old transcript waiting on cleanup", async () => {
+test("repeated interruption keeps every word that was waiting on cleanup", async () => {
   const f = fixture();
   let release;
   f.bridge.cancel = () => new Promise((r) => (release = r));
@@ -193,16 +193,66 @@ test("repeated interruption drops old transcript waiting on cleanup", async () =
   await new Promise((r) => setTimeout(r, 0));
   event("speechStart", 0);
   await new Promise((r) => setTimeout(r, 0));
-  event("transcript", 0, { utteranceId: "u1", text: "stale second" });
+  event("transcript", 0, { utteranceId: "u1", text: "Give me three different" });
   event("speechStart", 1);
-  event("transcript", 1, { utteranceId: "u2", text: "replacement third" });
+  event("transcript", 1, { utteranceId: "u2", text: "options to choose from" });
   await new Promise((r) => setTimeout(r, 0));
   release();
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(
     f.posted.map((x) => x.text),
-    ["first", "replacement third"],
+    ["first", "Give me three different options to choose from"],
   );
+  f.bridge.cancel = async () => {};
+  await f.c.end();
+});
+
+test("words waiting on cleanup go out once, after a third transcript too", async () => {
+  const f = fixture();
+  let release;
+  f.bridge.cancel = () => new Promise((r) => (release = r));
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  let generation = 0;
+  const say = (utteranceId, text) => {
+    f.event({ type: "transcript", callId: start.callId, generation, utteranceId, text });
+    generation = f.sent.filter((m) => m.type === "cancel").at(-1)?.generation ?? generation;
+  };
+  say("u0", "first");
+  await new Promise((r) => setTimeout(r, 0));
+  say("u1", "one");
+  say("u2", "two");
+  say("u3", "three");
+  await new Promise((r) => setTimeout(r, 0));
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(f.posted.map((x) => x.text), ["first", "one two three"]);
+  say("u4", "fresh");
+  await new Promise((r) => setTimeout(r, 0));
+  release?.();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(f.posted.at(-1).text, "fresh", "sent words must not be repeated");
+  f.bridge.cancel = async () => {};
+  await f.c.end();
+});
+
+test("switching agents by hand leaves unsent words behind", async () => {
+  const f = fixture();
+  let release;
+  f.bridge.cancel = () => new Promise((r) => (release = r));
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "transcript", callId: start.callId, generation: 0, utteranceId: "u0", text: "first" });
+  await new Promise((r) => setTimeout(r, 0));
+  f.event({ type: "transcript", callId: start.callId, generation: 0, utteranceId: "u1", text: "for the old agent" });
+  await new Promise((r) => setTimeout(r, 0));
+  await f.c.switchAgent({ hostId: "h", roomId: "r2", participantId: "b" });
+  const generation = f.sent.filter((m) => m.type === "cancel").at(-1).generation;
+  f.event({ type: "transcript", callId: start.callId, generation, utteranceId: "u2", text: "for the new agent" });
+  await new Promise((r) => setTimeout(r, 0));
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(f.posted.map((x) => x.text), ["first", "for the new agent"]);
   f.bridge.cancel = async () => {};
   await f.c.end();
 });

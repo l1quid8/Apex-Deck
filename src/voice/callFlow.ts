@@ -36,6 +36,11 @@ export function createCallFlow(hooks: CallFlowHooks) {
     if (held && resume) hooks.hold(false);
     held = false;
   };
+  const pause = () => {
+    if (held) return;
+    held = true;
+    hooks.hold(true);
+  };
   const settle = () => {
     if (owed === 0) speaking = false;
   };
@@ -43,10 +48,7 @@ export function createCallFlow(hooks: CallFlowHooks) {
     speechStart() {
       if (hearing) return;
       hearing = true;
-      if (speaking || owed > 0) {
-        held = true;
-        hooks.hold(true);
-      }
+      if (speaking || owed > 0) pause();
       timer = setTimeout(() => {
         hooks.log("holdTimeout", {});
         hearing = false;
@@ -81,9 +83,12 @@ export function createCallFlow(hooks: CallFlowHooks) {
     },
     spoken() {
       owed++;
+      // A reply that turns up mid-sentence waits for the verdict like one already playing.
+      if (hearing) pause();
     },
     playing() {
       speaking = true;
+      if (hearing) pause();
       publish("playing");
     },
     drained() {
@@ -99,6 +104,8 @@ export function createCallFlow(hooks: CallFlowHooks) {
     flushed() {
       owed = 0;
       speaking = false;
+      // The player drops its pause when it flushes.
+      held = false;
       publish("flushed");
     },
     attention(value: boolean) {

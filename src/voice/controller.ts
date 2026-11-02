@@ -76,6 +76,8 @@ export function createVoiceController<R = VoiceRuntime>(
   const utterances = new Set<string>();
   let pendingSwitchText = "";
   let submitting = 0;
+  // Words heard but not yet with the agent. Newer words join them, so a pause never loses the first half.
+  let unsent = "";
   let playbackRequest = "";
   const submittedAt = new Map<string, number>();
   const seenTiming = new Set<string>();
@@ -174,6 +176,7 @@ export function createVoiceController<R = VoiceRuntime>(
     client = undefined;
     generation++;
     pendingSwitchText = "";
+    unsent = "";
     // Ending a call only stops the audio. The agent keeps working and its
     // reply still lands in the thread.
     release();
@@ -430,6 +433,7 @@ export function createVoiceController<R = VoiceRuntime>(
     };
     set({ error: undefined });
     flow.turnStart();
+    unsent = "";
     try {
       await bridge.submit(turn);
     } catch (e) {
@@ -511,13 +515,17 @@ export function createVoiceController<R = VoiceRuntime>(
       const id = (e as HelperEvent & { utteranceId: string }).utteranceId;
       if (!id || utterances.has(id)) return;
       utterances.add(id);
-      // Newer words also replace a message still waiting to go out.
+      const words = unsent ? unsent + " " + (e.text ?? "") : e.text ?? "";
       if (flow.speechConfirmed() || submitting) stopAudio();
       interrupt();
       submitting++;
-      void submit(e.text ?? "", id)
+      unsent = words;
+      void submit(words, id)
         .catch((err) => error(Error(String(err))))
-        .finally(() => submitting--);
+        .finally(() => {
+          submitting--;
+          if (unsent === words) unsent = "";
+        });
     } else if (e.type === "audioEnd" && e.segmentId !== undefined)
       audio?.segmentEnd(e.segmentId, generation);
     else if (e.type === "error")
@@ -711,7 +719,11 @@ export function createVoiceController<R = VoiceRuntime>(
     },
     start,
     end,
-    switchAgent,
+    // Words meant for the agent you are leaving stay with it.
+    switchAgent: (scope: CallScope) => {
+      unsent = "";
+      return switchAgent(scope);
+    },
     mute(value: boolean) {
       if (value) flow.speechRejected("muted");
       set({ muted: value });

@@ -112,3 +112,26 @@ test("confirmed speech with nothing playing has nothing to stop", () => {
   flow.speechStart();
   assert.equal(flow.speechConfirmed(), false);
 });
+
+test("a reply that arrives while you are talking waits for the verdict", () => {
+  const { flow, holds, last } = make();
+  flow.turnStart();
+  flow.speechStart();
+  assert.deepEqual(holds, [], "nothing to pause yet");
+  flow.spoken();
+  assert.deepEqual(holds, [true], "paused before its audio can start");
+  flow.playing();
+  assert.equal(last(), "hearing");
+  flow.speechRejected("echo");
+  assert.deepEqual(holds, [true, false]);
+  assert.equal(last(), "speaking");
+});
+
+test("a flush while you talk does not stop the next reply from being paused", () => {
+  const { flow, holds } = make();
+  flow.spoken(); flow.playing(); flow.speechStart();
+  flow.flushed();
+  flow.spoken();
+  assert.deepEqual(holds, [true, true], "a flush clears the player's pause, so it must be set again");
+  flow.reset();
+});
