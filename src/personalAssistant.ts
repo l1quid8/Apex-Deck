@@ -30,6 +30,8 @@ export type PersonalTask = {
   operation?: { tool: string; host: string; cwd: string; argv: string[]; plan?: RunPlan };
   decision?: PersonalDecision; receipts: PersonalReceipt[]; lastUpdate?: string; updatedAt: number; createdAt?: number;
   wait?: TaskWait; runsDone?: number; parent?: string; scheduleId?: string;
+  /** The host's original human event, for task timing when available. */
+  fromEvent?: string;
 };
 export type Fact = {
   id: string; text: string; kind: "preference" | "fact" | "decision" | "commitment";

@@ -6,7 +6,7 @@ import { transform } from 'sucrase';
 import { personalTaskForRow } from '../src/workspaceTasks.ts';
 const source=await fs.readFile(new URL('../src/PersonalWorkspaceTaskDetail.tsx',import.meta.url),'utf8');
 const code=transform(source.replace(/^import .*;\n/gm,'').replace(/export (function|const)/g,'$1'),{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
-const Detail=new Function('React','useState','personalTaskForRow','TASK_STATUS','PersonalAlwaysPermission',`${code}; return PersonalWorkspaceTaskDetail;`)(React,initial=>[initial,()=>{}],personalTaskForRow,{needsYou:'Needs you'},()=>null);
+const Detail=new Function('React','useState','personalTaskForRow','TASK_STATUS','PersonalAlwaysPermission','PersonalTaskTiming',`${code}; return PersonalWorkspaceTaskDetail;`)(React,initial=>[initial,()=>{}],personalTaskForRow,{needsYou:'Needs you'},()=>null,()=>null);
 const row={source:'personal',assistant:{hostId:'owner',assistantId:'asst-1'},taskId:'pt-1',offline:false};
 const task={id:'pt-1',goal:'Original work',status:'needsYou',completionCriteria:[],receipts:[],decision:{id:'decision-1',paramsHash:'sha256:original',status:'open',prompt:'Approve original?'}};
 function buttons(node) { if(!node||typeof node!=='object')return[];if(Array.isArray(node))return node.flatMap(buttons);return [...(node.type==='button'?[node]:[]),...buttons(node.props?.children)]; }

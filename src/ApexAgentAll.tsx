@@ -1,4 +1,6 @@
 import { PersonalAlwaysPermission } from './PersonalApprovalActions';
+import { PersonalTaskTiming } from './PersonalTaskTiming';
+import { assistantConversationMessages, type AssistantConversationMessage } from './assistantConversation';
 import { taskMessageDeleted } from './assistantTaskVisibility';
 import type { AssistantTask } from './assistantTaskModel';
 import { createPortal } from 'react-dom';
@@ -127,10 +129,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   // Projects plus the personal assistant: a reply goes to whichever is named, or the last one discussed.
   const lanes = [...watched.map((workspace) => ({ id: workspace.id, name: workspace.name })), ...(assistant ? [{ id: PERSONAL, name: personal!.name }] : [])];
   const laneNames: Record<string, string> = assistant ? { ...names, [PERSONAL]: personalTag } : names;
-  const personalEntries = useMemo(() => (assistant?.messages ?? []).filter(m=>!taskMessageDeleted(m,assistant?.tasks??[],delegatedTasks,assistant?.purgedDelegatedTaskIds??[])).map((item: PersonalMessage) => ({
+  const personalEntries = useMemo(() => assistantConversationMessages((assistant?.messages ?? []).filter(m=>!taskMessageDeleted(m,assistant?.tasks??[],delegatedTasks,assistant?.purgedDelegatedTaskIds??[])), assistant?.tasks ?? [], Math.max(clearedAt, assistant?.conversationFrom ?? 0)).map((item) => ({
     workspaceId: PERSONAL, project: personalTag, personal: item,
     message: { id: item.id, role: item.role === 'human' ? 'human' : 'assistant', text: item.text, at: item.at, evidence: [] as MonitorEvidence[], reactions: item.reactions },
-  })), [assistant, personalTag, delegatedTasks]);
+  })), [assistant, personalTag, delegatedTasks, clearedAt]);
   const conversationName = assistantDisplayName(personal?.name);
   const allEntries = useMemo(() => [...(embedded ? [] : mergeProjectConversations(monitors, names)), ...overviewEntries, ...personalEntries].sort((a, b) => a.message.at - b.message.at), [embedded, monitors, names, overviewEntries, personalEntries]);
   const entries = useMemo(() => allEntries.filter((entry) => entry.message.at > Math.max(clearedAt, assistant?.conversationFrom ?? 0) && (!filterWorkspaceId || entry.workspaceId === filterWorkspaceId) && !('personal' in entry && entry.personal.kind === 'notice')), [allEntries, clearedAt, filterWorkspaceId]);
@@ -395,13 +397,6 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   };
   const cadenceOf = (schedule: { everyMs?: number; dailyAt?: string }) => schedule.everyMs ? everyText(schedule.everyMs) : schedule.dailyAt ? `Daily at ${schedule.dailyAt}` : 'Scheduled';
   const taskOf = (id?: string): PersonalTask | undefined => assistant?.tasks.find((task) => task.id === id&&task.deletedAt==null);
-  // In the conversation, a task's approval, result and app lines collapse into one link, placed at its first such line.
-  const collapsesToLink = (item: PersonalMessage) => !!item.taskId && !!taskOf(item.taskId) && (item.kind === 'approval' || item.kind === 'result' || item.role === 'system');
-  const linkLine = new Map<string, string>();
-  for (const entry of entries) {
-    const item = 'personal' in entry ? entry.personal as PersonalMessage : null;
-    if (item && collapsesToLink(item) && !linkLine.has(item.taskId!)) linkLine.set(item.taskId!, item.id);
-  }
   const clock = (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   const plain = (text: string) => text.split('```').filter((_, index) => index % 2 === 0).join(' ').replace(/`/g, '').replace(/\s+/g, ' ').trim();
   // Every personal task as a Tasks row, with its owning host in the key.
@@ -452,6 +447,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       <h3 tabIndex={detail ? -1 : undefined} ref={detail ? (el) => { if (el && focusedDetail.current !== task.id) { focusedDetail.current = task.id; el.focus(); } } : undefined}>{task.goal}</h3>
       {asking ? <p>{decision!.kind === 'handOff' ? 'Your turn: run this yourself, then tell me.' : decision!.kind === 'spend' || decision!.kind === 'uncertain' ? decision!.prompt : 'Approval needed to run this:'}</p> : latest && <p>{plain(latest.text)}</p>}
       {meta && <p className="apex-agent-task-meta">{meta}</p>}
+      {detail && <PersonalTaskTiming task={task} assistant={assistant} />}
       {asking && operationRows}
       {asking && <div className="apex-agent-buttons apex-agent-task-decide">
         {decision!.kind === 'handOff' ? <>
@@ -646,25 +642,16 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         </div>
       </div>}
       {entries.map(({ workspaceId, project, message, ...entry }, entryIndex) => {
-        const item = 'personal' in entry ? entry.personal as PersonalMessage : null;
+        const item = 'personal' in entry ? entry.personal as AssistantConversationMessage : null;
         if (item) {
           const task = taskOf(item.taskId);
-          if (task && collapsesToLink(item)) {
-            if (linkLine.get(task.id) !== item.id) return null;
+          if (task && item.kind === 'approval' && task.status === 'needsYou' && task.decision?.status === 'open') {
             if (!embedded) {
               return <p className="apex-agent-task-line" key={`${workspaceId}:${message.id}`}><button type="button" className="apex-agent-task-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>{taskLinkText(task)}</button></p>;
             }
-            const asking = task.status === 'needsYou' && task.decision?.status === 'open';
             const decision = task.decision;
-            const answered = decision && decision.status !== 'open';
             const off = busy || personal!.offline;
             const answer = (approve: boolean) => () => void run(() => personal!.decide(decision!.id, decision!.paramsHash, approve));
-
-            const answerLabel = decision?.status === 'approved'
-              ? (decision.kind === 'handOff' ? 'I did it' : decision.kind === 'spend' ? 'Allowed once' : decision.kind === 'uncertain' ? 'Run again' : 'Allowed once')
-              : decision?.status === 'denied'
-              ? (decision.kind === 'handOff' ? 'Skip' : decision.kind === 'spend' ? 'Not now' : 'Decline')
-              : null;
 
             const [primaryLabel, secondaryLabel] = decision?.kind === 'handOff'
               ? ['I did it', 'Skip']
@@ -674,14 +661,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
               ? ['Run again', 'Decline']
               : ['Allow once', 'Decline'];
 
-            const promptText = asking
-              ? (decision!.kind === 'handOff' ? 'Your turn: run this yourself, then tell me.' : (decision!.kind === 'spend' || decision!.kind === 'uncertain') && decision!.prompt ? decision!.prompt : task.goal ? `Approval needed: ${task.goal}` : 'Approval needed to run this:')
-              : null;
-
-            const lines = linesOf(task);
-            const latest = [...lines].reverse().find((line) => line.kind === 'result') ?? lines[lines.length - 1];
-            const resultText = latest ? plain(latest.text) : task.goal;
-            const noFiles = task.class !== 'write';
+            const promptText = decision.kind === 'handOff' ? 'Your turn: run this yourself, then tell me.' : decision.prompt || (task.goal ? `Approval needed: ${task.goal}` : 'Approval needed to run this:');
 
             const operationDetails = task.operation && (
               <details className="dot-details">
@@ -700,40 +680,18 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
                 {(entryIndex === 0 || new Date(entries[entryIndex - 1].message.at).toDateString() !== new Date(item.at).toDateString()) && (
                   <div className="assistant-conversation-day">{new Date(item.at).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}</div>
                 )}
-                {asking ? (
-                  <article className="apex-agent-message-row assistant">
-                    <div className="assistant-chat-message assistant apex-agent-personal">
-                      <small className="apex-agent-message-meta">{assistantAvatar}{personal!.name}<time>{clock(task.updatedAt)}</time></small>
-                      <p>{promptText}</p>
-                      <div className="dot-actions">
-                        <button type="button" className="primary" disabled={off} onClick={answer(true)}>{primaryLabel}</button>
-                        <button type="button" disabled={off} onClick={answer(false)}>{secondaryLabel}</button>
-                        <PersonalAlwaysPermission lane={personal!} task={task} disabled={off}/>
-                      </div>
-                      {operationDetails}
+                <article className="apex-agent-message-row assistant">
+                  <div className="assistant-chat-message assistant apex-agent-personal">
+                    <small className="apex-agent-message-meta">{assistantAvatar}{personal!.name}<time>{clock(task.updatedAt)}</time></small>
+                    <p>{promptText}</p>
+                    <div className="dot-actions">
+                      <button type="button" className="primary" disabled={off} onClick={answer(true)}>{primaryLabel}</button>
+                      <button type="button" disabled={off} onClick={answer(false)}>{secondaryLabel}</button>
+                      <PersonalAlwaysPermission lane={personal!} task={task} disabled={off}/>
                     </div>
-                  </article>
-                ) : (
-                  <>
-                    {answered && answerLabel && (
-                      <article className="apex-agent-message-row human">
-                        <div className="assistant-chat-message human apex-agent-personal">
-                          <p>{answerLabel}</p>
-                        </div>
-                      </article>
-                    )}
-                    <article className="apex-agent-message-row assistant">
-                      <div className="assistant-chat-message assistant apex-agent-personal">
-                        <small className="apex-agent-message-meta">{assistantAvatar}{personal!.name}<time>{clock(task.updatedAt)}</time></small>
-                        <p>{resultText}</p>
-                        {task.status === 'done' && noFiles && <p className="dot-note muted">No files were changed.</p>}
-                        <div className="dot-actions">
-                          <button type="button" className="apex-agent-task-link plain dot-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>Open details ›</button>
-                        </div>
-                      </div>
-                    </article>
-                  </>
-                )}
+                    {operationDetails}
+                  </div>
+                </article>
               </div>
             );
           }
@@ -742,6 +700,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           const personalBody = <>
             <small className="apex-agent-message-meta">{embedded&&item.role==='assistant'&&assistantAvatar}{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.legacy && <LegacyBadge />}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}{embedded&&item.role==='assistant'&&<time>{clock(item.at)}</time>}</small>
             {item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
+            {item.taskProblem && task && <button type="button" className="apex-agent-task-link plain dot-link" onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>Review task</button>}
           </>;
           const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
             addReplyQuote({ messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL });

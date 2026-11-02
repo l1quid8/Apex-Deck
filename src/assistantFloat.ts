@@ -3,6 +3,8 @@
 
 import { assistantAppearance, type AssistantRef } from "./assistantIdentity.ts";
 import type { PersonalLane } from "./personalAssistant.ts";
+import { assistantConversationMessages } from './assistantConversation.ts';
+import { taskMessageDeleted } from './assistantTaskVisibility.ts';
 
 const SHOWN_MESSAGES = 60;
 const LIVE_CALL = new Set(["warming", "listening", "hearing", "waiting", "thinking", "speaking"]);
@@ -22,7 +24,7 @@ export function createAssistantFloatDragGuard(now = () => performance.now()) {
   };
 }
 
-export type AssistantFloatLine = { id: string; role: string; text: string; approval: boolean };
+export type AssistantFloatLine = { id: string; role: string; text: string; approval: boolean; problem?: boolean };
 export type AssistantFloatState = {
   name: string;
   ref: AssistantRef;
@@ -66,10 +68,10 @@ export function assistantCallCandidate(lane: PersonalLane, ref: AssistantRef) {
 export function assistantFloatLines(lane: PersonalLane): AssistantFloatLine[] {
   const assistant = lane.assistant;
   const from = assistant?.conversationFrom ?? 0;
-  return (assistant?.messages ?? [])
+  return assistantConversationMessages((assistant?.messages ?? []).filter(message => !taskMessageDeleted(message, assistant?.tasks ?? [], [], assistant?.purgedDelegatedTaskIds ?? [])), assistant?.tasks ?? [], from)
     .filter((message) => message.at > from && message.kind !== "notice")
     .slice(-SHOWN_MESSAGES)
-    .map(({ id, role, text, kind }) => ({ id, role, text, approval: kind === "approval" }));
+    .map(({ id, role, text, kind, taskProblem }) => ({ id, role, text, approval: kind === "approval", ...(taskProblem ? { problem: true } : {}) }));
 }
 
 export function assistantFloatState(input: { lane: PersonalLane; ref: AssistantRef; draft: string; error: string; alwaysOnTop: boolean; voice: { status: string; muted: boolean; startedAt?: number; scope?: { hostId: string; roomId: string } } }): AssistantFloatState {
