@@ -103,9 +103,13 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       return;
     }
     const scope = state.scope;
+    // end() advances the epoch synchronously; only its own cleanup may show this error.
+    const endingEpoch = epoch + 1;
     void end("error: " + e.message)
       .catch(() => {})
-      .finally(() => set({ status: "error", scope, error: e.message }));
+      .finally(() => {
+        if (epoch === endingEpoch) set({ status: "error", scope, error: e.message });
+      });
   }
 
   function detach() {
@@ -168,7 +172,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
   async function reconnect(cause: Error) {
     if (reconnecting) return;
     reconnecting = true;
-    const myEpoch = epoch, scope = state.scope;
+    const myEpoch = epoch;
     note("helper disconnected", { reason: cause.message });
     client?.close(cause.message);
     client = undefined;
@@ -179,32 +183,47 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     generation++;
     audio?.flush(generation);
     set({ status: "warming", reconnecting: true });
+    // Any other value means a switch took ownership of Meta during recovery.
+    let recoveryMeta: AbortController | undefined;
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
+        let metaAttempt: AbortController | undefined;
         try {
           const runtime = await deps.runtime.start();
-          if (myEpoch !== epoch || !callId || !scope) {
+          if (myEpoch !== epoch || !callId || !state.scope) {
             await deps.runtime.stop(runtime);
             return;
           }
           runtimeAcquired = runtime;
           const connected = await connectHelper(runtime);
-          if (myEpoch !== epoch || !callId) {
+          if (myEpoch !== epoch || !callId || !state.scope) {
             connected.close();
             return;
           }
           client = connected;
-          const meta = await connectMeta(scope);
-          if (myEpoch !== epoch || !callId) {
+          // Recovery always restores TTS, even if a switch has taken over Meta.
+          sendStart(state.scope);
+          // A switch during runtime/helper startup owns the replacement Meta connection.
+          if (metaAbort !== recoveryMeta) return;
+          const connecting = connectMeta(state.scope);
+          // connectMeta assigns metaAbort synchronously before its first await.
+          metaAttempt = metaAbort as AbortController | undefined;
+          recoveryMeta = metaAttempt;
+          const meta = await connecting;
+          if (metaAttempt?.signal.aborted || myEpoch !== epoch || !callId) {
             meta.close();
             return;
           }
           metaAsr = meta;
-          sendStart(scope);
           set({ reconnecting: false });
           note("helper reconnected", { attempt });
           return;
         } catch (e) {
+          // A switch owns the replacement connection; cancellation is not a retryable failure.
+          if (metaAttempt?.signal.aborted || myEpoch !== epoch || !callId) return;
+          // Each retry starts its own helper; close the failed attempt first.
+          client?.close("recovery attempt failed");
+          client = undefined;
           note("reconnect failed", { attempt, reason: e instanceof Error ? e.message : String(e) });
         }
       }
@@ -269,7 +288,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
         },
         onError: (err) => error(err),
         onClose: (reason) => {
-          if (callId) error(Error(`Meta closed the speech connection (${reason}). Start a new call.`));
+          if (callId && metaAbort === abort) error(Error(`Meta closed the speech connection (${reason}). Start a new call.`));
         },
       },
       { signal: abort.signal },
@@ -386,8 +405,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     if (parsed.kind === "switch") {
       const held = choices?.some((c) => same(c, parsed.candidate)) ? heldText : "";
       pendingSwitchText = "";
-      await switchAgent(parsed.candidate);
-      if (currentEpoch !== epoch) return;
+      const switchedGeneration = await switchAgent(parsed.candidate);
+      if (switchedGeneration === undefined || currentEpoch !== epoch || switchedGeneration !== generation) return;
       text = parsed.text || held;
       if (!text) return;
     }
@@ -415,7 +434,10 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
   }
 
   async function switchAgent(scope: CallScope) {
-    if (!callId) return start(scope);
+    if (!callId) {
+      await start(scope);
+      return;
+    }
     if (state.candidates?.some((c) => same(c, scope)) && !deps.candidates().some((c) => same(c, scope))) {
       set({ status: "needs-attention", error: "That thread is no longer available. Choose another thread." });
       return;
@@ -430,17 +452,26 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     // Reconnect Meta to new scope's participant context if needed
     try { metaAbort?.abort(); } catch {}
     metaAsr?.close();
+    const switchEpoch = epoch;
     const connecting = connectMeta(scope);
     const attempt = metaAbort;
     try {
-      metaAsr = await connecting;
+      const connected = await connecting;
+      if (attempt?.signal.aborted || switchEpoch !== epoch || !callId) {
+        connected.close();
+        return;
+      }
+      metaAsr = connected;
     } catch (e) {
       // Hanging up, a newer switch or helper recovery cancels this attempt on purpose.
       if (attempt?.signal.aborted) return;
       error(Error(`Could not reconnect to Meta (${e instanceof Error ? e.message : String(e)}). Start a new call.`));
       return;
     }
+    // Only a successful, still-current switch may release accompanying speech.
+    const switchedGeneration = generation;
     if (pending) await submit(pending, crypto.randomUUID(), false);
+    return switchedGeneration;
   }
 
   function helper(e: HelperEvent) {
@@ -617,7 +648,9 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       deps.focus(scope);
     } catch (e) {
       if (myEpoch !== epoch) return;
+      const endingEpoch = epoch + 1;
       await end("start failed");
+      if (epoch !== endingEpoch) return;
       const msg = e instanceof Error ? e.message : String(e);
       set({ status: "error", scope, error: msg });
     }
@@ -631,7 +664,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     },
     start,
     end,
-    switchAgent,
+    switchAgent: async (scope: CallScope) => { await switchAgent(scope); },
     mute(value: boolean) {
       set({ muted: value });
     },
