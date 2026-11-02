@@ -21,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
@@ -94,6 +94,9 @@ pub(crate) struct AssistantRun {
     pub budget_pause: AtomicBool,
     pub manual_pause: AtomicBool,
     pub watchdog_stop: AtomicBool,
+    /// When the result save began; zero until then.
+    pub saving_since: AtomicU64,
+    pub save_limit_ms: AtomicU64,
     pub error: Mutex<Option<String>>,
 }
 impl AssistantRun {
@@ -107,6 +110,8 @@ impl AssistantRun {
             budget_pause: AtomicBool::new(false),
             manual_pause: AtomicBool::new(false),
             watchdog_stop: AtomicBool::new(false),
+            saving_since: AtomicU64::new(0),
+            save_limit_ms: AtomicU64::new(assistant_git::SAVE_LIMIT.as_millis() as u64),
             error: Mutex::new(None),
         }
     }
@@ -2579,10 +2584,13 @@ fn spawn_task_attempt(
             .as_ref()
             .is_some_and(|task| task.mode == TaskMode::Isolated);
         let read_only = task_before.as_ref().is_some_and(|task| task.mode == TaskMode::ReadOnly);
-        let snapshot = if read_only { Ok(None) } else if is_isolated {
-            assistant_git::capture_result(result_path, &task_id).map(Some)
-        } else {
-            assistant_git::capture(result_path, &task_id, "result").map(Some)
+        let baseline = task_before.as_ref().and_then(|task| task.result_data.as_ref()).and_then(|data| data["baselineSnapshot"]["commit"].as_str()).map(str::to_owned);
+        let saved = if read_only { Ok(None) } else { save_attempt_result(&run, result_path.to_owned(), task_id.clone(), is_isolated, baseline).await.map(Some) };
+        let save_too_long = matches!(&saved, Err(error) if error == assistant_git::SAVE_TOO_LONG);
+        let (snapshot, review_diff) = match saved {
+            Ok(Some((snapshot, diff))) => (Ok(Some(snapshot)), diff),
+            Ok(None) => (Ok(None), None),
+            Err(error) => (Err(error), None),
         };
         let error = handle
             .task_error
@@ -2625,12 +2633,9 @@ fn spawn_task_attempt(
             .and_then(|task| task.result_data)
             .unwrap_or_else(|| json!({}));
         if let Ok(Some(snapshot)) = snapshot {
-            if let Some(baseline) = result_data["baselineSnapshot"]["commit"]
-                .as_str()
-                .map(str::to_owned)
-            {
-                result_data["baselineCommit"] = json!(baseline);
-                match assistant_git::review_diff(result_path, &baseline, &snapshot.commit) {
+            if let Some(review_diff) = review_diff {
+                result_data["baselineCommit"] = result_data["baselineSnapshot"]["commit"].clone();
+                match review_diff {
                     Ok(diff) => {
                         result_data["diff"] = json!(diff);
                         result_data["reviewDiff"] = json!(diff);
@@ -2689,8 +2694,27 @@ fn spawn_task_attempt(
             .remove(&task_id);
         run.finished.store(true, Ordering::SeqCst);
         run.done.notify_waiters();
+        if save_too_long && status == TaskStatus::Failed {
+            if let Err(error) = host_for_task.tell_save_too_long(&task_id, &run_id) { eprintln!("Delegated work watchdog: {error}"); }
+        }
         host_for_task.assistant_changed(&owner.workspace_id);
     });
+}
+
+/// Snapshot plus review diff, under one time limit. This runs off the async
+/// threads because a slow save would otherwise stall every other room.
+async fn save_attempt_result(run: &Arc<AssistantRun>, path: PathBuf, task_id: String, isolated: bool, baseline: Option<String>) -> Result<(assistant_git::GitSnapshot, Option<Result<String, String>>), String> {
+    run.saving_since.store(crate::personal::now(), Ordering::SeqCst);
+    let limit = assistant_git::GitLimit::new(std::time::Duration::from_millis(run.save_limit_ms.load(Ordering::SeqCst)), Some(Arc::clone(&run.stop)));
+    tokio::task::spawn_blocking(move || assistant_git::within(limit, || {
+        let snapshot = if isolated { assistant_git::capture_result(&path, &task_id)? } else { assistant_git::capture(&path, &task_id, "result")? };
+        let diff = match baseline.map(|baseline| assistant_git::review_diff(&path, &baseline, &snapshot.commit)) {
+            // A stopped diff isn't a failed one: a paused job must stay paused.
+            Some(Err(error)) if error == assistant_git::SAVE_STOPPED || error == assistant_git::SAVE_TOO_LONG => return Err(error),
+            diff => diff,
+        };
+        Ok((snapshot, diff))
+    })).await.map_err(|error| error.to_string())?
 }
 
 fn same_checkout(a: &assistant_git::GitSnapshot, b: &assistant_git::GitSnapshot) -> bool {
@@ -4840,34 +4864,121 @@ mod tests {
         assert!(restarted.result_data.as_ref().unwrap()["watchdog"]["restarted"] == true);
     }
 
-    #[test]
-    fn a_job_stuck_saving_its_result_is_reported_not_restarted() {
-        let f = fixture();
-        let (task, assistant) = controlled_delegation(&f, "review-capture", TaskMode::InPlace);
-        std::fs::write(f.root.join(".git/review-filter.sh"), "touch .git/review-filter-entered\nwhile [ ! -e .git/review-filter-release ]; do sleep 0.05; done\ncat\n").unwrap();
+    /// Holds the real result save open with a hung Git filter. It gives up by
+    /// itself so a failing test can't leave it running.
+    fn hold_result_save(f: &Fixture, task: &AssistantTask) {
+        std::fs::write(f.root.join(".git/review-filter.sh"), "echo $$ > .git/review-filter-pid\ntouch .git/review-filter-entered\ni=0\nwhile [ ! -e .git/review-filter-release ] && [ $i -lt 1000 ]; do sleep 0.05; i=$((i+1)); done\ncat\n").unwrap();
         assert!(Command::new("git").current_dir(&f.root).args(["config", "filter.watchdog-review.clean", "sh .git/review-filter.sh"]).status().unwrap().success());
         std::fs::write(f.root.join(".gitattributes"), "tracked.txt filter=watchdog-review\n").unwrap();
         std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
         std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();
         let handle = f.host.handle(task.execution_thread_id.as_deref().unwrap()).unwrap();
         for _ in 0..1_000 {
-            if f.root.join(".git/review-filter-entered").exists() && !handle.runtime.busy() { break }
+            if f.root.join(".git/review-filter-entered").exists() && !handle.runtime.busy() { return }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let entered = f.root.join(".git/review-filter-entered").exists();
-        let idle = !handle.runtime.busy();
-        let before = f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        panic!("did not enter the real result-capture boundary");
+    }
+
+    fn filter_is_dead(f: &Fixture) -> bool {
+        let pid: i32 = std::fs::read_to_string(f.root.join(".git/review-filter-pid")).unwrap().trim().parse().unwrap();
+        unsafe { libc::kill(pid, 0) != 0 }
+    }
+
+    fn act(f: &Fixture, id: &str, action: &str) -> Result<AssistantTask, String> {
+        let task = f.host.assistant_tasks.get(id).unwrap().unwrap();
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id,revision:task.revision,owner:task.owner,action:action.into(),mode:None,text:None,destination:None,new_worker_profiles:vec![],checks:None,spend_limit_micros:None}))
+    }
+
+    #[test]
+    fn pausing_during_a_hung_review_diff_leaves_the_job_paused_not_failed() {
+        let f = fixture();
+        let (task, _) = controlled_delegation(&f, "pause-diff", TaskMode::InPlace);
+        std::fs::write(f.root.join(".git/review-diff.sh"), "echo $$ > .git/review-filter-pid\ntouch .git/review-filter-entered\ni=0\nwhile [ $i -lt 1000 ]; do sleep 0.05; i=$((i+1)); done\ncat \"$1\"\n").unwrap();
+        assert!(Command::new("git").current_dir(&f.root).args(["config", "diff.watchdog-review.textconv", "sh .git/review-diff.sh"]).status().unwrap().success());
+        std::fs::write(f.root.join(".gitattributes"), "tracked.txt diff=watchdog-review\n").unwrap();
+        std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
+        std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();
+        for _ in 0..1_000 {
+            if f.root.join(".git/review-filter-entered").exists() { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(f.root.join(".git/review-filter-entered").exists(), "did not enter the review diff");
+        act(&f, &task.id, "pause").unwrap();
+        for _ in 0..1_000 {
+            if !f.host.assistant_runs.lock().unwrap().contains_key(&task.id) { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status, TaskStatus::Interrupted);
+        assert!(filter_is_dead(&f));
+    }
+
+    #[test]
+    fn a_save_inside_its_limit_is_left_alone_and_one_past_it_is_reported_once() {
+        let f = fixture();
+        let (task, assistant) = controlled_delegation(&f, "review-capture", TaskMode::InPlace);
+        hold_result_save(&f, &task);
+        let reports = |f: &Fixture| watchdog_messages(f, &assistant).iter().filter(|s| s.contains("stuck saving")).count();
+        let stopped = |f: &Fixture| f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run| run.watchdog_stop.load(Ordering::SeqCst));
+        f.host.watch_delegated_work(crate::personal::now() + 25 * 60_000, 0).unwrap();
+        assert_eq!(reports(&f), 0, "a long healthy save is not an alarm");
+        assert!(!stopped(&f), "stopping can't interrupt the save, and a restart would add a second writer");
         f.host.watch_delegated_work(crate::personal::now() + 3 * 60 * 60_000, 0).unwrap();
-        let stopped = f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run| run.watchdog_stop.load(Ordering::SeqCst));
         f.host.watch_delegated_work(crate::personal::now() + 3 * 60 * 60_000 + 60_000, 0).unwrap();
-        let reports = watchdog_messages(&f, &assistant).iter().filter(|s| s.contains("stuck saving")).count();
+        assert_eq!(reports(&f), 1);
+        assert!(!stopped(&f), "stopping can't interrupt the save, and a restart would add a second writer");
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status, TaskStatus::Running);
         std::fs::write(f.root.join(".git/review-filter-release"), "release").unwrap();
-        let finished = wait_for(&f, &task.id);
-        assert!(entered && idle, "did not enter the real result-capture boundary");
-        assert_eq!(before.status, TaskStatus::Running);
-        assert!(!stopped, "stopping can't interrupt the save, and a restart would add a second writer");
-        assert_eq!(reports, 1);
-        assert_eq!(finished.status, TaskStatus::ReadyForReview);
+        assert_eq!(wait_for(&f, &task.id).status, TaskStatus::ReadyForReview);
+    }
+
+    #[test]
+    fn a_save_past_its_limit_fails_the_job_keeps_the_work_and_tells_the_human() {
+        let f = fixture();
+        let (task, assistant) = controlled_delegation(&f, "limit-save", TaskMode::InPlace);
+        f.host.assistant_runs.lock().unwrap().get(&task.id).unwrap().save_limit_ms.store(2_000, Ordering::SeqCst);
+        hold_result_save(&f, &task);
+        let failed = wait_for(&f, &task.id);
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(failed.result.as_deref(), Some(assistant_git::SAVE_TOO_LONG));
+        assert!(filter_is_dead(&f));
+        assert_eq!(std::fs::read_to_string(f.root.join("tracked.txt")).unwrap(), "completed edit\n");
+        let told = |f: &Fixture| watchdog_messages(f, &assistant).into_iter().filter(|s| s.contains("took too long")).count();
+        for _ in 0..1_000 {
+            if told(&f) > 0 { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(told(&f), 1);
+        assert!(!f.host.assistant_runs.lock().unwrap().contains_key(&task.id), "the attempt must really end");
+        assert!(failed.result_data.as_ref().unwrap()["leaseHeld"] == true, "the work stays protected until the human decides");
+        let cancelled = act(&f, &task.id, "cancel").unwrap();
+        assert!(cancelled.result_data.as_ref().unwrap()["leaseHeld"] == false);
+    }
+
+    #[test]
+    fn cancelling_a_hung_save_ends_it_and_frees_the_checkout() {
+        let f = fixture();
+        let (task, _) = controlled_delegation(&f, "cancel-save", TaskMode::InPlace);
+        hold_result_save(&f, &task);
+        let cancelled = act(&f, &task.id, "cancel").unwrap();
+        assert_eq!(cancelled.status, TaskStatus::Cancelled);
+        assert!(cancelled.result_data.as_ref().unwrap()["leaseHeld"] == false);
+        assert!(filter_is_dead(&f));
+    }
+
+    #[test]
+    fn pausing_a_hung_save_ends_it_and_keeps_the_work() {
+        let f = fixture();
+        let (task, _) = controlled_delegation(&f, "pause-save", TaskMode::InPlace);
+        hold_result_save(&f, &task);
+        act(&f, &task.id, "pause").unwrap();
+        for _ in 0..1_000 {
+            if !f.host.assistant_runs.lock().unwrap().contains_key(&task.id) { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status, TaskStatus::Interrupted);
+        assert!(filter_is_dead(&f));
+        assert_eq!(std::fs::read_to_string(f.root.join("tracked.txt")).unwrap(), "completed edit\n");
     }
 
 }
