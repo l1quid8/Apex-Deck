@@ -11,7 +11,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
   var cursorOverlayItem: NSMenuItem!
   func applicationDidFinishLaunching(_ notification: Notification) {
     item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    item.button?.title = "Unified Computer Use"
+    if let button = item.button { StatusBarIcon.apply(StatusBarIcon.load(), to: button) }
     let menu = NSMenu()
     menu.addItem(withTitle: "Stop Unified Computer Use", action: #selector(stop), keyEquivalent: "").target = self
     menu.addItem(.separator())
