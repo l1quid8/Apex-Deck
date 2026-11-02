@@ -76,8 +76,12 @@ impl PlanRun {
         PlanRun { request, by, detail, version, state: PlanRunState::Waiting, steps, reporting: false }
     }
 
-    /// Mark skips and start running. Returns the instruction for the bot, or
-    /// `None` (state unchanged) when the plan has no steps.
+    /// Mark skips (Open steps only) and start running. Returns the instruction
+    /// for the bot, or `None` when the plan has no steps; the run still becomes
+    /// Running, so `turn_ended` finishes it as Done.
+    ///
+    /// Callers must not skip every step: such a run has nothing to do and ends
+    /// Stopped, never Done. The panel forbids it and the host must refuse it.
     pub fn approve(&mut self, skip: &[String]) -> Option<String> {
         self.state = PlanRunState::Running;
         if self.steps.is_empty() {
@@ -440,5 +444,12 @@ mod tests {
         r.steps[0].state = PlanStepState::Done;
         r.approve(&["S1".to_string()]);
         assert_eq!(r.steps[0].state, PlanStepState::Done);
+    }
+    #[test]
+    fn approving_with_every_step_skipped_ends_stopped_not_done() {
+        let mut r = run("1. A\n2. B\n");
+        r.approve(&["S1".to_string(), "S2".to_string()]);
+        r.turn_ended();
+        assert_eq!(r.state, PlanRunState::Stopped);
     }
 }
