@@ -6,6 +6,11 @@ func same(_ a: AXUIElement?, _ b: AXUIElement?) -> Bool {
   guard let a = a, let b = b else { return a == nil && b == nil }
   return CFEqual(a, b)
 }
+/// Untargeted input is only safe when focus belongs to the window being read.
+func focusForReadWindow(_ focus: AXUIElement?, focusedWindow: AXUIElement?, readWindow: AXUIElement) -> AXUIElement? {
+  guard let focusedWindow = focusedWindow, same(focusedWindow, readWindow) else { return nil }
+  return focus
+}
 func attr(_ e: AXUIElement, _ key: String) -> CFTypeRef? {
   if let deadline = Thread.current.threadDictionary["axDeadline"] as? Double,
     ProcessInfo.processInfo.systemUptime >= deadline
@@ -259,7 +264,7 @@ final class Accessibility {
       : BackgroundSupport.readableWindow(infos: BackgroundSupport.windowInfos(root: root, focusedWindow: focused))?.element ?? focused
     guard let window = best else { throw Refusal("app_has_no_window") }
     // Keys and text would land in the window the bot isn't reading, so its focus doesn't count.
-    if let focused = focused, !same(focused, window) { focus = nil }
+    focus = focusForReadWindow(focus, focusedWindow: focused, readWindow: window)
     var tree = Tree(targetPID: app.processIdentifier)
     tree.walk(window)
     // A foreign surface can host another app's sheet, so reading stays refused.
