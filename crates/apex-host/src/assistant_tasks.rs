@@ -581,6 +581,22 @@ impl AssistantTasks {
             .is_some_and(|limit|limit > 0 && limit <= available.saturating_sub(committed))
     }
 
+    pub(crate) fn standing_spent_or_reserved(&self, assistant: &crate::personal_workspace::AssistantRef, day: u64) -> u64 {
+        standing_budget_committed(&self.inner.document.lock().unwrap(), assistant, day, None)
+    }
+
+    pub(crate) fn hold_standing_queue(&self, current: &AssistantTask, reason: &str) -> Result<AssistantTask, TaskError> {
+        let mut document=self.inner.document.lock().unwrap();let before=document.clone();
+        let task=document.tasks.get_mut(&current.id).ok_or_else(||TaskError::new(TaskErrorKind::NotFound,"Task not found."))?;
+        check_owner_revision(task,current.revision,&current.owner)?;
+        if task.status!=TaskStatus::Queued || !task.attempts.is_empty() || task.result_data.as_ref().is_none_or(|data|data["standingTrust"]!=true) {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition,"Only an unstarted standing delegation can wait for a provider cost."));
+        }
+        if task.result.as_deref()==Some(reason) {return Ok(task.clone())}
+        task.result=Some(reason.into());task.updated_at_ms=now_ms();
+        let held=task.clone();save_mutation(&self.inner,&mut document,before)?;Ok(held)
+    }
+
     /// Proactive proposals never dispatch until separately authorized.
     pub fn create_proposal(
         &self,
@@ -1283,8 +1299,9 @@ fn standing_budget_committed(document: &Document, assistant: &crate::personal_wo
         exclude != Some(task.id.as_str()) && task.lineage.as_ref().is_some_and(|lineage|&lineage.assistant==assistant)
             && task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true && data["budgetDay"].as_u64()==Some(day))
     }).map(|task| {
-        if matches!(task.status,TaskStatus::Done|TaskStatus::Cancelled|TaskStatus::Failed) {
-            if task.attempts.is_empty() {return 0}
+        if matches!(task.status,TaskStatus::Done|TaskStatus::Cancelled|TaskStatus::Failed) && task.attempts.is_empty() {return 0}
+        let settled=task.attempts.last().is_some_and(|attempt|attempt.finished_at_ms.is_some());
+        if settled && !matches!(task.status,TaskStatus::Queued|TaskStatus::Running) {
             if let Some(usage)=task.usage.as_ref().filter(|usage|usage.unknown_cost_turns==0) {
                 if let Some(cost)=usage.cost_micros {return cost}
             }

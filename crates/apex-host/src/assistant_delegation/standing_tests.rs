@@ -38,7 +38,7 @@ fn fixture(access: Access, tools: ProjectTools, version: Option<u32>) -> Fixture
     host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();
     host.change_assistant(&assistant.id,|a| {a.workspace_config_version=version;a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools}];Ok(())}).unwrap();
     let accepted=host.personal_send(&assistant.id,"source","Please fix login in this project").unwrap();
-    host.change_assistant(&assistant.id,|a| {a.events.iter_mut().find(|e|e.id==accepted.event_id).unwrap().state=EventState::Processing;Ok(())}).unwrap();
+    host.change_assistant(&assistant.id,|a| {a.events.iter_mut().find(|e|e.id==accepted.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
     let current=host.personal_get(&assistant.id).unwrap();
     let input=DelegationInput {assistant_id:assistant.id,project,source_event_id:accepted.event_id,delegation_id:"coding-handoff".into(),brief:"Fix login".into(),destination:TaskDestination {thread_id:Some("worker-chat".into()),workers:vec!["coder".into()],new_thread:false},mode:TaskMode::Isolated,review_criteria:vec!["Login works".into()],expected_revision:current.revision};
     Fixture {host,_runtime:runtime,base,input}
@@ -165,7 +165,116 @@ fn full_delegation_reserves_remaining_daily_budget_and_retains_unknown_cost_poli
     let first=f.host.prepare_personal_delegation(input.clone()).unwrap();
     let queued=task(&f,&first);let data=queued.result_data.as_ref().unwrap();
     assert_eq!(data["spendLimitMicros"],50_000);assert_eq!(data["unknownCostAccepted"],true);
+    let assistant=f.host.personal_get(&input.assistant_id).unwrap();
+    assert_eq!(f.host.effective_personal_spent_today(&assistant,crate::personal::now()),50_000);
     input.delegation_id="another-worker".into();
     assert!(f.host.prepare_personal_delegation(input).is_err());
     assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1,"budget refusal must not leave another approval card");
+}
+
+#[test]
+fn verified_ui_full_delegation_starts_a_worker_and_ask_keeps_a_proposal() {
+    for access in [Access::Full,Access::Ask] {
+        let f=fixture(access,ProjectTools::Full,Some(4));
+        let mut input=f.input.clone();input.source_event_id.clear();input.delegation_id="ui-handoff".into();
+        let receipt=f._runtime.block_on(f.host.call_assuming_verified_ui_for_test(crate::command::Command::PersonalProjectDelegateUi {input})).unwrap();
+        let queued=task(&f,&receipt);
+        if access==Access::Full {
+            let finished=wait_for(&f,&queued.id);
+            assert_eq!(finished.status,TaskStatus::ReadyForReview,"{:?}",finished.result);
+            assert_eq!(finished.attempts.len(),1);
+        } else {
+            assert_eq!(queued.status,TaskStatus::Proposed);
+            assert!(queued.attempts.is_empty());
+        }
+    }
+}
+
+#[test]
+fn reported_finished_worker_cost_releases_unused_reserve_without_reconciliation_charging_twice() {
+    let f=fixture(Access::Full,ProjectTools::Full,Some(4));
+    f.host.change_assistant(&f.input.assistant_id,|a| {a.budget.daily_limit_micros=Some(50_000);a.budget.unknown_cost_ok=true;Ok(())}).unwrap();
+    let mut input=f.input.clone();input.expected_revision=f.host.personal_get(&input.assistant_id).unwrap().revision;
+    let receipt=f.host.prepare_personal_delegation(input.clone()).unwrap();
+    let queued=task(&f,&receipt);
+    f.host.redispatch_recovered_queued().unwrap();
+    let finished=wait_for(&f,&queued.id);
+    assert_eq!(finished.status,TaskStatus::ReadyForReview);
+    // The durable usage-ingestion boundary receives the provider's known cost.
+    f.host.assistant_tasks.record_run_usage(&finished.id,&finished.attempts[0].run_id,crate::assistant_tasks::TaskUsage {input_tokens:None,output_tokens:None,cost_micros:Some(10_000),unknown_cost_turns:0}).unwrap();
+    f.host.reconcile_delegation_results().unwrap();
+    f.host.reconcile_delegation_results().unwrap();
+    let assistant=f.host.personal_get(&input.assistant_id).unwrap();
+    assert_eq!(assistant.spent_today(crate::personal::now()),0,"delegated usage stays in its own ledger");
+    assert_eq!(f.host.effective_personal_spent_today(&assistant,crate::personal::now()),10_000);
+    input.delegation_id="next-known-cost-task".into();input.expected_revision=assistant.revision;
+    let next=f.host.prepare_personal_delegation(input).unwrap();
+    assert_eq!(task(&f,&next).result_data.as_ref().unwrap()["spendLimitMicros"],40_000);
+    let assistant=f.host.personal_get(&f.input.assistant_id).unwrap();
+    assert_eq!(f.host.effective_personal_spent_today(&assistant,crate::personal::now()),50_000);
+}
+
+fn check_ui_delegation_waits_for_inflight_cost(kind: &str) {
+    let f=fixture(Access::Full,ProjectTools::Full,Some(4));
+    f.host.change_assistant(&f.input.assistant_id,|assistant| {
+        assistant.budget.daily_limit_micros=Some(50_000);assistant.budget.unknown_cost_ok=true;
+        if kind=="reply" {
+            assistant.events.iter_mut().find(|event|event.id==f.input.source_event_id).unwrap().state=EventState::Processing;
+        } else {
+            assistant.tasks.push(serde_json::from_value(json!({
+                "id":"inflight-helper","goal":"Research","completionCriteria":[],"targetHost":assistant.host_id,
+                "status":"running","operation":null,"decision":null,"receipts":[],"fromEvent":f.input.source_event_id,
+                "maxAttempts":2,"createdAt":1,"updatedAt":1,"class":"read","kind":"helper","runsDone":0,
+                "parent":f.input.source_event_id,"assignment":"Research the project"
+            })).unwrap());
+        }
+        Ok(())
+    }).unwrap();
+    let mut input=f.input.clone();input.source_event_id.clear();input.delegation_id=format!("ui-during-{kind}");
+    input.expected_revision=f.host.personal_get(&input.assistant_id).unwrap().revision;
+    let result=f._runtime.block_on(f.host.call_assuming_verified_ui_for_test(crate::command::Command::PersonalProjectDelegateUi {input:input.clone()}));
+    assert!(result.is_err(),"{kind}: an outstanding provider cost must prevent reserving the same allowance");
+    assert!(f.host.assistant_tasks.list(None).unwrap().is_empty(),"{kind}: refusal must not create a proposal or queued task");
+    f.host.change_assistant(&f.input.assistant_id,|assistant| {
+        if kind=="reply" {assistant.events.iter_mut().find(|event|event.id==f.input.source_event_id).unwrap().state=EventState::Done;}
+        else {assistant.tasks.iter_mut().find(|task|task.id=="inflight-helper").unwrap().status=crate::personal::TaskStatus::Done;}
+        assistant.add_cost(crate::personal::CostEntry {at:crate::personal::now(),purpose:kind.into(),kind:"text".into(),source:crate::personal::CostSource::Reported,micros:Some(5_000),input_tokens:None,output_tokens:None,bytes_out:0,endpoint:"fixture".into()});
+        Ok(())
+    }).unwrap();
+    input.expected_revision=f.host.personal_get(&input.assistant_id).unwrap().revision;
+    let receipt=f._runtime.block_on(f.host.call_assuming_verified_ui_for_test(crate::command::Command::PersonalProjectDelegateUi {input})).unwrap();
+    let queued=task(&f,&receipt);
+    assert_eq!(queued.result_data.as_ref().unwrap()["spendLimitMicros"],45_000);
+    assert_eq!(wait_for(&f,&queued.id).status,TaskStatus::ReadyForReview);
+    let assistant=f.host.personal_get(&f.input.assistant_id).unwrap();
+    assert_eq!(assistant.costs.len(),1);assert_eq!(assistant.budget.daily_limit_micros,Some(50_000));
+    assert!(!assistant.messages.iter().any(|message|message.kind=="approval"));
+}
+
+#[test]
+fn ui_delegation_waits_for_inflight_reply_cost_before_reserving_daily_budget() {
+    check_ui_delegation_waits_for_inflight_cost("reply");
+}
+
+#[test]
+fn ui_delegation_waits_for_inflight_helper_cost_before_reserving_daily_budget() {
+    check_ui_delegation_waits_for_inflight_cost("helper");
+}
+
+#[test]
+fn held_standing_delegation_resumes_on_personal_worker_wake_without_manual_retry() {
+    let f=fixture(Access::Full,ProjectTools::Full,Some(4));
+    f.host.change_assistant(&f.input.assistant_id,|assistant| {assistant.budget.daily_limit_micros=Some(50_000);assistant.budget.unknown_cost_ok=true;Ok(())}).unwrap();
+    let mut input=f.input.clone();input.expected_revision=f.host.personal_get(&input.assistant_id).unwrap().revision;
+    let receipt=f.host.prepare_personal_delegation(input).unwrap();let queued=task(&f,&receipt);
+    f.host.change_assistant(&f.input.assistant_id,|assistant| {assistant.events.iter_mut().find(|event|event.id==f.input.source_event_id).unwrap().state=EventState::Processing;Ok(())}).unwrap();
+    f.host.redispatch_recovered_queued().unwrap();
+    let held=f.host.assistant_tasks.get(&queued.id).unwrap().unwrap();
+    assert_eq!(held.status,TaskStatus::Queued);assert!(held.attempts.is_empty());
+    assert!(held.result.as_deref().is_some_and(|reason|reason.contains("record its cost")));
+    f.host.change_assistant(&f.input.assistant_id,|assistant| {assistant.events.iter_mut().find(|event|event.id==f.input.source_event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
+    f.host.start_personal_worker_with(crate::personal_worker::WorkerTools::real()).unwrap();
+    let finished=wait_for(&f,&queued.id);
+    assert_eq!(finished.status,TaskStatus::ReadyForReview,"{:?}",finished.result);
+    assert_eq!(finished.attempts.len(),1);
 }
