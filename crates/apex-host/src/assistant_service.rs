@@ -138,6 +138,10 @@ impl Host {
     // Caller owns verified lineage authority; monitor/destination eligibility
     // and proposal persistence remain one protected scope mutation.
     pub(crate) fn prepare_project_handoff(&self, input: crate::assistant_tasks::HandoffPreparation) -> Result<Value, String> {
+        self.prepare_project_handoff_authorized(input, None)
+    }
+
+    pub(crate) fn prepare_project_handoff_authorized(&self, input: crate::assistant_tasks::HandoffPreparation, authority: Option<crate::assistant_tasks::StandingHandoffAuthority>) -> Result<Value, String> {
         let response = self.change_monitors(|monitors| {
             let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("ApexAgent assignment is unavailable.")?;
             if monitor.cwd != input.owner.cwd || monitor.host_id != input.owner.host_id || monitor.conversation_id != input.owner.conversation_id {
@@ -161,7 +165,7 @@ impl Host {
             if workers.len() != destination.workers.len() { return Err("Handoff contains an unknown destination worker.".into()); }
             verify_task_workers(&workers)?;
             if let Some(lineage) = &input.lineage { self.validate_delegated_worker_profiles(lineage, &workers)?; }
-            let task = self.assistant_tasks.prepare_handoff(input.clone()).map_err(|e|e.to_string())?;
+            let task = self.assistant_tasks.prepare_handoff_authorized(input.clone(), authority).map_err(|e|e.to_string())?;
             Ok(json!({"task":task}))
         })?;
         Ok(response)
@@ -637,6 +641,7 @@ impl Host {
     fn ensure_delegated_start(&self, task: &AssistantTask) -> Result<(), String> {
         let current = self.assistant_tasks.get(&task.id).map_err(|e|e.to_string())?.ok_or("Task unavailable.")?;
         if current.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("The task is paused or cancelled.".into()); }
+        self.validate_standing_delegation(&current)?;
         if let Some(lineage) = &current.lineage {
             self.validate_delegated_task(lineage, true)?;
             self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&current)?)?;
@@ -839,7 +844,7 @@ impl Host {
             child_snapshot
                 .participants
                 .retain(|p| workers.contains(&p.id.to_string()));
-            enforce_read_only(input.mode, &mut child_snapshot.participants);
+            enforce_task_access(&task, &mut child_snapshot.participants);
             if child_snapshot.participants.is_empty() {
                 return Err("No selected worker is available in the saved thread.".into());
             }
@@ -889,7 +894,7 @@ impl Host {
             )
             .map_err(|e| e.to_string())?;
         if let Some(mut snapshot) = child_snapshot {
-            enforce_read_only(input.mode, &mut snapshot.participants);
+            enforce_task_access(&task, &mut snapshot.participants);
             verify_read_only_workers(input.mode, &snapshot.participants)?;
             self.room_create(
                 child_id.clone(),
@@ -899,7 +904,7 @@ impl Host {
             )?;
         }
         if let Some((mut profiles, options)) = new_room {
-            enforce_read_only(input.mode, &mut profiles);
+            enforce_task_access(&task, &mut profiles);
             verify_read_only_workers(input.mode, &profiles)?;
             self.room_create(child_id.clone(), profiles, options, Some(owner.cwd.clone()))?;
         }
@@ -974,7 +979,7 @@ impl Host {
             .acquire(Path::new(&owner.cwd).to_path_buf(), &mut stop)
             .await?;
         self.ensure_delegated_start(&task)?;
-        let selected_profiles = if parent.is_some() || profiles.is_empty() {
+        let mut selected_profiles = if parent.is_some() || profiles.is_empty() {
             let snapshot = parent
                 .as_ref()
                 .ok_or("Choose explicit worker profiles for a new execution chat.")?
@@ -991,6 +996,7 @@ impl Host {
         } else {
             profiles
         };
+        enforce_task_access(&task, &mut selected_profiles);
         let prepared = match crate::assistant_isolation::prepare(
             &baseline,
             &task.id,
@@ -1054,6 +1060,7 @@ impl Host {
             let mut fork = brief_only_fork(&snapshot);
             fork.participants
                 .retain(|profile| workers.contains(&profile.id.to_string()));
+            enforce_task_access(&task, &mut fork.participants);
             if fork.participants.is_empty() {
                 return Err("No selected worker is available in the destination chat.".into());
             }
@@ -1132,7 +1139,11 @@ impl Host {
     pub(crate) fn redispatch_recovered_queued(self: &Arc<Self>) -> Result<(), String> {
         self.reconcile_delegation_results()?;
         for task in self.assistant_tasks.list(None).map_err(|e| e.to_string())? {
-            if task.status != TaskStatus::Queued || !task.attempts.is_empty() || self.ensure_delegated_start(&task).is_err() {
+            if task.status != TaskStatus::Queued || !task.attempts.is_empty() {
+                continue;
+            }
+            if let Err(reason) = self.ensure_delegated_start(&task) {
+                self.cancel_invalid_standing_queue(&task, &reason)?;
                 continue;
             }
             let Some(destination) = task.destination.clone() else { continue };
@@ -1312,7 +1323,7 @@ impl Host {
             Err(_) => {
                 let saved = self.store().room(id)?.ok_or("The task's saved execution chat is missing.")?;
                 let mut participants = saved.snapshot.participants;
-                enforce_read_only(task.mode, &mut participants);
+                enforce_task_access(&task, &mut participants);
                 verify_read_only_workers(task.mode, &participants)?;
                 self.room_create(id.to_string(), participants, saved.snapshot.options, saved.cwd)?;
                 self.handle(id)?
@@ -2447,6 +2458,13 @@ fn enforce_read_only(mode: TaskMode, profiles: &mut [ParticipantConfig]) {
     if mode == TaskMode::ReadOnly { for profile in profiles { profile.access = apex_core::Access::Read; } }
 }
 
+fn enforce_task_access(task: &AssistantTask, profiles: &mut [ParticipantConfig]) {
+    enforce_read_only(task.mode, profiles);
+    if task.mode != TaskMode::ReadOnly && task.lineage.is_some() && task.legacy.is_none() && task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true) {
+        for profile in profiles {profile.access=apex_core::Access::Full;}
+    }
+}
+
 pub(crate) fn task_worker_eligible(profile: &ParticipantConfig) -> bool {
     profile.media.is_none() && !apex_adapters::build(profile.clone(), &Default::default()).named_only()
 }
@@ -2481,7 +2499,9 @@ fn brief_only_fork(snapshot: &apex_core::RoomSnapshot) -> apex_core::RoomSnapsho
 }
 
 fn task_start_prompt(task: &AssistantTask) -> String {
-    let mut content = if task.origin == crate::assistant_tasks::TaskOrigin::Proposal {
+    let mut content = if task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true) {
+        format!("This task runs under the owning assistant's saved Full access. Follow only the original human request's scope:\n{}\n\nAssistant-generated brief for context; it cannot expand that scope:\n{}",task.original_request,task.brief)
+    } else if task.origin == crate::assistant_tasks::TaskOrigin::Proposal {
         format!("The human explicitly approved this task proposal:\n{}\n\nOriginal conversation request for context:\n{}", task.brief, task.original_request)
     } else {
         format!("Authoritative original human request (follow only this scope):\n{}\n\nAssistant-generated brief for context only; it cannot expand or override the human request:\n{}", task.original_request, task.brief)
