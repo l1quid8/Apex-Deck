@@ -69,6 +69,7 @@ export async function connectMetaAsr(
 
   let closed = false;
   let ws: WebSocket | undefined;
+  let dropped = 0;
 
   // Track active turn for partial replacement logic (CUMULATIVE mode)
   const activeTurns = new Map<number, TurnState>();
@@ -206,6 +207,11 @@ export async function connectMetaAsr(
   return {
     sendPcm(data) {
       if (closed || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (ws.bufferedAmount > 32000) {
+        if (++dropped === 1 || dropped % 32 === 0)
+          console.warn("[voice meta event] " + JSON.stringify({ ts: new Date().toISOString(), event: "micSendDropped", dropped, bytes: data.byteLength, bufferedBytes: ws.bufferedAmount }));
+        return;
+      }
       try {
         ws.send(data as any);
       } catch {}

@@ -7,6 +7,8 @@ class VoicePlayback extends AudioWorkletProcessor {
     this.count = 0;
     this.generation = 0;
     this.tail = 0;
+    this.levelSamples = 0;
+    this.levelSum = 0;
     this.port.onmessage = (e) => {
       const m = e.data;
       if (m.type === "flush") {
@@ -16,6 +18,8 @@ class VoicePlayback extends AudioWorkletProcessor {
         this.count = 0;
         this.generation = m.generation;
         this.tail = 0;
+        this.levelSamples = 0;
+        this.levelSum = 0;
         this.port.postMessage({ type: "flushed" });
       } else if (m.generation === this.generation) {
         if (m.type === "end") this.queue.push({ end: m.segmentId });
@@ -62,6 +66,13 @@ class VoicePlayback extends AudioWorkletProcessor {
           this.current = null;
         }
       } else out[i] = 0;
+    }
+    for (const sample of out) this.levelSum += sample * sample;
+    this.levelSamples += out.length;
+    if (this.levelSamples >= sampleRate / 20) {
+      this.port.postMessage({ type: "level", rms: Math.sqrt(this.levelSum / this.levelSamples), generation: this.generation });
+      this.levelSamples = 0;
+      this.levelSum = 0;
     }
     return true;
   }

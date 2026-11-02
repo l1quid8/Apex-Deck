@@ -44,6 +44,7 @@ const same = (a: CallScope, b: CallScope) =>
   a.hostId === b.hostId && a.roomId === b.roomId && a.participantId === b.participantId;
 
 export function createMetaVoiceController(deps: MetaControllerDeps) {
+  let markMutedTurns = () => {};
   let state: VoiceState = { status: "off", muted: false, voices: [] };
   const listeners = new Set<() => void>();
   let runtimeAcquired: VoiceRuntime | undefined;
@@ -83,6 +84,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     }
   };
   const set = (patch: Partial<VoiceState>) => {
+    if (patch.status && patch.status !== state.status)
+      note("stateTransition", { from: state.status, to: patch.status });
     state = { ...state, ...patch };
     listeners.forEach((fn) => fn());
   };
@@ -93,7 +96,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     control({ type: "cancel", resetInput });
   };
   const note = (event: string, detail: Record<string, unknown> = {}) =>
-    console.warn("[voice meta event] " + JSON.stringify({ callId, event, ...detail }));
+    console.warn("[voice meta event] " + JSON.stringify({ ts: new Date().toISOString(), callId, event, ...detail }));
 
   let reconnecting = false;
   function error(e: Error) {
@@ -135,7 +138,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
 
   async function end(reason = "ended by user") {
     if (callId || state.status !== "off")
-      console.warn("[voice meta end] " + JSON.stringify({ callId, reason, status: state.status }));
+      console.warn("[voice meta end] " + JSON.stringify({ ts: new Date().toISOString(), callId, reason, status: state.status }));
     epoch++;
     try { metaAbort?.abort(); } catch {}
     metaAbort = undefined;
@@ -257,6 +260,9 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       mintSession: (args) => deps.mintSession({ ...args, model: wantedModel }),
     };
 
+    const mutedTurns = new Set<number>();
+    const liveTurns = new Set<number>();
+    markMutedTurns = () => { for (const id of liveTurns) mutedTurns.add(id); };
     const client = await connectMetaAsr(
       metaDeps,
       scope,
@@ -265,22 +271,29 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
           // ignore for now, but could emit debug
         },
         onTranscript: (transcript, _turnId, _isFinal, _utteranceId) => {
-          if (state.muted) return;
+          liveTurns.add(_turnId);
+          if (state.muted) mutedTurns.add(_turnId);
+          if (state.muted || mutedTurns.has(_turnId)) return;
           // Partial feedback – show hearing state
           if (transcript && transcript.trim()) set({ status: "hearing" });
         },
-        onSpeechStart: () => {
+        onSpeechStart: (turnId) => {
+          liveTurns.add(turnId);
+          if (state.muted) mutedTurns.add(turnId);
           if (!state.muted) {
             stopAudio();
             interrupt();
             set({ status: "hearing" });
           }
         },
-        onSpeechEnd: () => {
-          if (!state.muted) set({ status: "waiting" });
+        onSpeechEnd: (turnId) => {
+          if (!state.muted && !mutedTurns.has(turnId)) set({ status: "waiting" });
         },
         onSpeechComplete: (transcript, _turnId, utteranceId) => {
-          if (state.muted) return;
+          liveTurns.delete(_turnId);
+          const rejected = mutedTurns.delete(_turnId);
+          note("sttResult", { turnId: _turnId, charLen: transcript.length, rejected: state.muted || rejected });
+          if (state.muted || rejected) return;
           if (!transcript || !transcript.trim()) return;
           if (utterances.has(utteranceId)) return;
           utterances.add(utteranceId);
@@ -608,14 +621,16 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
           // Also feed to local helper for its internal VAD? We skip helper audio upload for meta path to avoid duplicate STT triggering.
           // But we still need to keep helper alive – its audio path not used for STT in meta mode.
         },
-        (_id) => {
-          // drain
+        (id) => {
+          note("playbackComplete", { segmentId: id });
+          control({ type: "playbackComplete", segmentId: id });
+          if (callId && !active) set({ status: "listening" });
         },
         () => {
           set({ status: "speaking" });
         },
         (e) => error(e),
-        () => {},
+        (bytes) => control({ type: "playbackProgress", bytes }),
       );
       if (myEpoch !== epoch) {
         audioInstance.close();
@@ -666,6 +681,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     end,
     switchAgent: async (scope: CallScope) => { await switchAgent(scope); },
     mute(value: boolean) {
+      if (value) markMutedTurns();
+      note("mute", { muted: value });
       set({ muted: value });
     },
     preview(voice: string) {
