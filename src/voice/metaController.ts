@@ -135,7 +135,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     epoch++;
     try { metaAbort?.abort(); } catch {}
     metaAbort = undefined;
-    metaAsr?.close(reason);
+    metaAsr?.close();
     metaAsr = undefined;
     const owned = runtimeAcquired;
     runtimeAcquired = undefined;
@@ -172,7 +172,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     note("helper disconnected", { reason: cause.message });
     client?.close(cause.message);
     client = undefined;
-    metaAsr?.close(cause.message);
+    metaAsr?.close();
     metaAsr = undefined;
     try { metaAbort?.abort(); } catch {}
     metaAbort = undefined;
@@ -269,10 +269,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
         },
         onError: (err) => error(err),
         onClose: (reason) => {
-          if (callId && !state.muted && state.status !== "off") {
-            // Meta closed – try to reconnect via helper reconnect path if still active
-            if (reason.includes("1000") || reason.includes("closed 1000")) return; // normal after endStream
-          }
+          if (callId) error(Error(`Meta closed the speech connection (${reason}). Start a new call.`));
         },
       },
       { signal: abort.signal },
@@ -431,7 +428,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     deps.focus(scope);
     // Reconnect Meta to new scope's participant context if needed
     try { metaAbort?.abort(); } catch {}
-    metaAsr?.close("switch");
+    metaAsr?.close();
     try {
       const newMeta = await connectMeta(scope);
       metaAsr = newMeta;

@@ -16,7 +16,7 @@ export type MetaClient = {
   /** Send raw PCM int16 bytes or control frame */
   sendPcm(pcmBytes: ArrayBuffer | Uint8Array): void;
   endStream(): void;
-  close(reason?: string): void;
+  close(): void;
 };
 
 type ConnectOpts = {
@@ -47,6 +47,7 @@ export async function connectMetaAsr(
     onSpeechEnd: (turnId: number) => void;
     onSpeechComplete: (transcript: string, turnId: number, utteranceId: string) => void;
     onError: (error: Error) => void;
+    /** Meta ended the stream; closing or aborting from here does not fire this. */
     onClose: (reason: string) => void;
   },
   opts: ConnectOpts = {},
@@ -180,7 +181,7 @@ export async function connectMetaAsr(
         }
         if (!closed) {
           closed = true;
-          events.onClose(`closed ${ev.code}`);
+          events.onClose(ev.reason ? `${ev.code}: ${ev.reason}` : String(ev.code));
         }
       };
     });
@@ -189,6 +190,7 @@ export async function connectMetaAsr(
   ws = await connectWs();
 
   if (signal?.aborted) {
+    closed = true;
     try { ws.close(); } catch {}
     throw new DOMException("Aborted", "AbortError");
   }
@@ -196,6 +198,7 @@ export async function connectMetaAsr(
   // Wire abort signal
   if (signal) {
     signal.addEventListener("abort", () => {
+      closed = true;
       try { ws?.close(); } catch {}
     }, { once: true });
   }
@@ -213,11 +216,10 @@ export async function connectMetaAsr(
         ws.send(JSON.stringify({ type: "endStream" }));
       } catch {}
     },
-    close(reason = "closed") {
+    close() {
       if (closed) return;
       closed = true;
       try { ws?.close(); } catch {}
-      events.onClose(reason);
     },
   };
 }
