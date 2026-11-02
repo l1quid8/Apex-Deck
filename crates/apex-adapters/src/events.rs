@@ -1222,6 +1222,19 @@ impl EventReader {
                             self.final_text = Some(resp.to_string());
                         }
                     }
+                    // agy can end a turn with no words at a refused tool, and
+                    // a blank reply would hide that the access level stopped it.
+                    if self.final_text.as_deref().is_none_or(|text| text.trim().is_empty()) {
+                        let denied: Vec<&str> = res["denied_actions"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|action| action["display_name"].as_str().or_else(|| action["action"].as_str()))
+                            .collect();
+                        if !denied.is_empty() {
+                            self.final_text = Some(format!("Stopped: this access level does not allow {}.", denied.join(", ")));
+                        }
+                    }
                     if let Some(usage) = res.get("usage") {
                         if let Some(inp) = usage["input_tokens"].as_u64() {
                             self.input_tokens = Some(inp);
@@ -2276,6 +2289,21 @@ mod tests {
                 window_tokens: 1_000_000,
             }]
         );
+    }
+
+    #[test]
+    fn an_antigravity_turn_stopped_by_its_access_level_says_so() {
+        let silent = r#"{"event":"result","result":{"status":"SUCCESS","response":"","denied_actions":[{"action":"write_file","display_name":"WriteFile"}]}}
+"#;
+        let mut reader = EventReader::new(OutputFormat::AntigravityStream, None);
+        reader.push(silent);
+        assert_eq!(reader.outcome().text, "Stopped: this access level does not allow WriteFile.");
+
+        let spoken = r#"{"event":"result","result":{"status":"SUCCESS","response":"I could not write it.","denied_actions":[{"action":"write_file"}]}}
+"#;
+        let mut reader = EventReader::new(OutputFormat::AntigravityStream, None);
+        reader.push(spoken);
+        assert_eq!(reader.outcome().text, "I could not write it.");
     }
 
     // ------------------------------------------------------------ work steps
