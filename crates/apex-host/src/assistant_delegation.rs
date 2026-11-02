@@ -336,6 +336,17 @@ impl crate::host::Host {
         })
     }
 
+    /// Delegated tasks belong to a project's coordinator. A project without one
+    /// is connected here, with no checks, using the path the app saved for it.
+    fn project_coordinator(&self, project: &ProjectRef) -> Result<crate::monitor::ProjectMonitor, String> {
+        if let Some(monitor) = self.monitor_get(&project.workspace_id)? { return Ok(monitor); }
+        let workspaces = self.session()?.and_then(|session| session.workspaces).unwrap_or_default();
+        let saved = workspaces.iter().find(|ws| ws["id"].as_str() == Some(&project.workspace_id)).ok_or("Project assignment is unavailable.")?;
+        let cwd = saved["path"].as_str().unwrap_or(&project.cwd).to_owned();
+        let host_id = saved["hostId"].as_str().unwrap_or("local").to_owned();
+        self.monitor_connect(project.workspace_id.clone(), cwd, host_id)
+    }
+
     /// The explicit delegation form supplies its own human authorization. Keep
     /// that event Done so the personal model never also processes the brief.
     /// Retries keep the same event and the ordinary delegation receipt.
@@ -344,7 +355,7 @@ impl crate::host::Host {
         let assistant = self.personal_get(&input.assistant_id)?;
         let binding = assistant.projects.iter().find(|b| b.project == input.project).ok_or("Project is not assigned.")?;
         if self.validate_project_binding(&assistant, binding.clone())?.project != input.project { return Err("Project path is no longer canonical.".into()); }
-        let monitor = self.monitor_get(&input.project.workspace_id)?.ok_or("Project assignment is unavailable.")?;
+        let monitor = self.project_coordinator(&input.project)?;
         let owner = TaskOwner { workspace_id:monitor.workspace_id.clone(),cwd:monitor.cwd.clone(),host_id:monitor.host_id.clone(),conversation_id:monitor.conversation_id.clone() };
         let request_id = format!("ui-delegation:{}", input.delegation_id);
         let event_id = self.change_assistant(&input.assistant_id, |current| {
@@ -410,7 +421,7 @@ impl crate::host::Host {
             return Ok(json!({"taskId":task.id,"project":lineage.project,"lineage":lineage,"status":task.status,"receiptId":saved.request_id,"standingTrust":task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true)}));
         }
         let event = assistant.events.iter().find(|e| e.id == input.source_event_id).ok_or("That source event is not owned by this assistant.")?;
-        let monitor = self.monitor_get(&input.project.workspace_id)?.ok_or("Project assignment is unavailable.")?;
+        let monitor = self.project_coordinator(&input.project)?;
         let owner = TaskOwner { workspace_id:monitor.workspace_id.clone(), cwd:monitor.cwd.clone(), host_id:monitor.host_id.clone(), conversation_id:monitor.conversation_id.clone() };
         let mut plan = plan_delegation(assistant, &input, event, owner, monitor.revision)?;
         let destination = input.destination.thread_id.as_deref().ok_or("Choose a saved project chat.")?;

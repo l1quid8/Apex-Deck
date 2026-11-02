@@ -147,7 +147,7 @@ pub fn command_needs(command: &Command) -> Need {
         ChatPromoteAbandon { .. } => full(Global),
         SessionSave { .. } => full(Global),
         // ApexAgent reads whole project folders and any chat in them.
-        MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
+        MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorConnect { .. } | MonitorWatchSave { .. } | MonitorWatchStop { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
         SettingsLoad {} => full(Global),
         SettingsSave { .. } => full(Global),
         ReadAttachment { .. } => full(Global),
@@ -362,6 +362,9 @@ mod tests {
             ("monitor_assign", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "text": "t", "profile": participant })),
             ("monitor_sources_update", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "files": [], "threads": [], "mode": "add" })),
             ("monitor_profile_update", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "revision": 1, "profile": participant })),
+            ("monitor_connect", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local" })),
+            ("monitor_watch_save", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "watchRevision": 1, "text": "t", "profile": participant })),
+            ("monitor_watch_stop", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c" })),
             ("monitor_message", Some((Full, "global")), json!({ "workspaceId": "w", "text": "t" })),
             ("monitor_pause", Some((Full, "global")), json!({ "workspaceId": "w", "paused": true })),
             ("personal_list", Some((Full, "global")), json!({})),

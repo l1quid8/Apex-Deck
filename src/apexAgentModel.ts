@@ -49,8 +49,12 @@ export interface ProjectMonitor {
   files: string[];
   threads: string[];
   paused: boolean;
+  /** Connected for delegation, or stopped: no checks run until Start watching. */
+  checksOff?: boolean;
   completed: boolean;
   revision: number;
+  /** Guards the Watch form against settings changed since it opened. */
+  watchRevision?: number;
   /** Ordered host state within this assignment; absent on older helpers. */
   snapshotVersion?: number;
   messages: MonitorMessage[];

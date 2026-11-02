@@ -140,6 +140,9 @@ pub enum Command {
     MonitorProfileUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, revision: u64, profile: ParticipantConfig },
     MonitorMessage { workspace_id: String, text: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorReact { workspace_id: String, message_id: String, emoji: String, enabled: bool, cwd: String, host_id: String, conversation_id: String },
+    MonitorConnect { workspace_id: String, cwd: String, host_id: String },
+    MonitorWatchSave { workspace_id: String, cwd: String, host_id: String, conversation_id: String, watch_revision: u64, text: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, profile: ParticipantConfig, #[serde(default)] start: bool },
+    MonitorWatchStop { workspace_id: String, cwd: String, host_id: String, conversation_id: String },
     MonitorPause { workspace_id: String, paused: bool, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorCheckNow { workspace_id: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorResolve { workspace_id: String, finding_id: String, status: String, #[serde(default)] snoozed_until: Option<u64>, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
@@ -557,6 +560,19 @@ impl Host {
                 let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
                 reply(self.monitor_message_owned(&workspace_id, owner, &text)?)
             }
+            MonitorConnect { workspace_id, cwd, host_id } => {
+                let host = self.clone();
+                reply(blocking(move || host.monitor_connect(workspace_id, cwd, host_id)).await?)
+            }
+            MonitorWatchSave { workspace_id, cwd, host_id, conversation_id, watch_revision, text, files, threads, profile, start } => {
+                let host = self.clone();
+                let owner = crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id };
+                let settings = crate::monitor_commands::WatchSettings { text, files, threads, profile };
+                reply(blocking(move || host.monitor_watch_save(&workspace_id, owner, watch_revision, settings, start)).await?)
+            }
+            MonitorWatchStop { workspace_id, cwd, host_id, conversation_id } => {
+                reply(self.monitor_watch_stop(&workspace_id, crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id })?)
+            }
             MonitorReact { workspace_id, message_id, emoji, enabled, cwd, host_id, conversation_id } => {
                 let owner = crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id };
                 reply(self.monitor_react_owned(&workspace_id, owner, &message_id, &emoji, enabled)?)
@@ -933,7 +949,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 218);
+        assert_eq!(names.len(), 221);
         for name in [
             "room_curate",
             "room_curate_undo",
@@ -988,7 +1004,7 @@ mod tests {
             assert!(names.contains(&phone.to_string()), "{phone}");
         }
         assert!(names.contains(&"monitor_suggest_sources".to_string()));
-        for write in ["monitor_assign", "monitor_sources_update", "monitor_message", "monitor_pause", "monitor_check_now", "monitor_resolve"] {
+        for write in ["monitor_assign", "monitor_connect", "monitor_watch_save", "monitor_watch_stop", "monitor_sources_update", "monitor_message", "monitor_pause", "monitor_check_now", "monitor_resolve"] {
             assert!(names.contains(&write.to_string()), "{write}");
         }
     }

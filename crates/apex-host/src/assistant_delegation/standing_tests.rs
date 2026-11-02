@@ -190,6 +190,42 @@ fn verified_ui_full_delegation_starts_a_worker_and_ask_keeps_a_proposal() {
     }
 }
 
+fn without_coordinator(f:&Fixture) {f.host.change_monitors(|monitors|{monitors.clear();Ok(())}).unwrap();}
+
+fn assert_checks_stay_off(f:&Fixture) {
+    let monitor=f.host.monitor_get("workspace").unwrap().unwrap();
+    assert!(monitor.checks_off&&monitor.paused,"delegating must not start paid checks");
+    assert_eq!(monitor.next_check_at,None);
+    assert_eq!(monitor.pending_check_at,None);
+    assert!(f.host.change_monitor("workspace",|m,at|{assert!(m.claim(at,true).is_none());Ok(())}).is_ok());
+}
+
+#[test]
+fn the_delegate_form_connects_a_new_project_with_paid_checks_off() {
+    for access in [Access::Full,Access::Ask] {
+        let f=fixture(access,ProjectTools::Full,Some(4));without_coordinator(&f);
+        let connected=f.host.monitor_connect("workspace".into(),f.input.project.cwd.clone(),"owner".into()).unwrap();
+        let mut input=f.input.clone();input.source_event_id.clear();input.delegation_id="ui-off".into();
+        let receipt=f._runtime.block_on(f.host.call_assuming_verified_ui_for_test(crate::command::Command::PersonalProjectDelegateUi {input})).unwrap();
+        let queued=task(&f,&receipt);
+        assert_eq!(queued.owner.conversation_id,connected.conversation_id);
+        if access==Access::Full {assert_eq!(wait_for(&f,&queued.id).status,TaskStatus::ReadyForReview);}
+        else {assert_eq!(queued.status,TaskStatus::Proposed);}
+        assert_checks_stay_off(&f);
+    }
+}
+
+#[test]
+fn alfred_delegating_to_a_new_project_connects_it_with_paid_checks_off() {
+    let f=fixture(Access::Ask,ProjectTools::Full,Some(4));without_coordinator(&f);
+    let mut input=f.input.clone();input.expected_revision=f.host.personal_get(&input.assistant_id).unwrap().revision;
+    let receipt=f.host.prepare_personal_delegation(input).unwrap();
+    let proposed=task(&f,&receipt);
+    assert_eq!(proposed.status,TaskStatus::Proposed);
+    assert_eq!(proposed.owner.host_id,f.input.project.host_id,"the saved project's own host id");
+    assert_checks_stay_off(&f);
+}
+
 #[test]
 fn reported_finished_worker_cost_releases_unused_reserve_without_reconciliation_charging_twice() {
     let f=fixture(Access::Full,ProjectTools::Full,Some(4));

@@ -225,6 +225,9 @@ struct ModelReply {
     remember: Vec<ProposedFact>,
     #[serde(default)]
     forget: Vec<String>,
+    /// Delegations Deck couldn't read; the rest of the reply still counts.
+    #[serde(skip)]
+    bad_delegations: usize,
 }
 
 impl ModelReply {
@@ -233,7 +236,7 @@ impl ModelReply {
     }
 
     fn plain(text: &str) -> Self {
-        ModelReply { reply: text.trim().to_owned(), delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![] }
+        ModelReply { reply: text.trim().to_owned(), delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![], bad_delegations: 0 }
     }
 }
 
@@ -312,11 +315,26 @@ struct ProposedFact {
 
 /// The outermost JSON object in the model's text, or the text as a plain reply.
 fn parse_reply(text: &str) -> ModelReply {
-    let parsed = serde_json::from_str::<ModelReply>(text.trim()).ok().or_else(|| {
-        let (start, end) = (text.find('{')?, text.rfind('}')?);
-        serde_json::from_str::<ModelReply>(text.get(start..=end)?).ok()
-    });
+    let outermost = || { let (start, end) = (text.find('{')?, text.rfind('}')?); text.get(start..=end) };
+    let parsed = reply_json(text.trim()).or_else(|| reply_json(outermost()?));
     parsed.unwrap_or_else(|| ModelReply::plain(text))
+}
+
+/// A reply with a delegation Deck can't read loses that delegation, not the
+/// whole reply, so the human never sees raw JSON in place of a failed job.
+fn reply_json(text: &str) -> Option<ModelReply> {
+    if let Ok(reply) = serde_json::from_str(text) { return Some(reply); }
+    let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let reply = value.as_object_mut()?;
+    let delegations = reply.get("delegations")?.clone();
+    let listed = delegations.as_array().cloned().unwrap_or_else(|| vec![delegations]);
+    let readable: Vec<serde_json::Value> = listed.iter().filter(|item| serde_json::from_value::<ProposedDelegation>((*item).clone()).is_ok()).cloned().collect();
+    let bad_delegations = listed.len() - readable.len();
+    reply.insert("delegations".into(), serde_json::Value::Array(readable));
+    reply.entry("reply").or_insert(serde_json::Value::String(String::new()));
+    let mut parsed: ModelReply = serde_json::from_value(value).ok()?;
+    parsed.bad_delegations = bad_delegations;
+    Some(parsed)
 }
 
 fn excerpt(text: &str) -> String {
@@ -911,6 +929,20 @@ impl Host {
         })
     }
 
+    /// The worker's name as the human knows it, for the chat note.
+    fn delegation_worker(&self, proposed: &ProposedDelegation) -> String {
+        let id = proposed.destination.workers.first().cloned().unwrap_or_default();
+        let room = proposed.destination.thread_id.as_deref().and_then(|thread| self.store().room(thread).ok().flatten());
+        room.and_then(|room| room.snapshot.participants.iter().find(|profile| profile.id.to_string() == id).map(|profile| profile.display_name.clone())).unwrap_or(id)
+    }
+
+    /// The project's saved name, or its folder name.
+    fn delegation_project(&self, project: &crate::personal_workspace::ProjectRef) -> String {
+        let saved = self.session().ok().flatten().and_then(|session| session.workspaces).unwrap_or_default();
+        let name = saved.iter().find(|ws| ws["id"].as_str() == Some(&project.workspace_id)).and_then(|ws| ws["name"].as_str()).map(str::to_owned);
+        name.unwrap_or_else(|| std::path::Path::new(&project.cwd).file_name().map_or_else(|| project.cwd.clone(), |name| name.to_string_lossy().into_owned()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn commit_reply(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, reply: ModelReply, cost: CostEntry, seen: context::Seen, screen: bool) -> Result<(), String> {
         let local = self.local_host_id()?;
@@ -934,14 +966,18 @@ impl Host {
                 delegation_id: format!("{event_id}:{index}"), brief: proposed.brief.clone(), destination: proposed.destination.clone(),
                 mode: proposed.mode, review_criteria: proposed.review_criteria.clone(), expected_revision: current.revision,
             };
+            let (worker, place) = (self.delegation_worker(proposed), self.delegation_project(&proposed.project));
             delegation_notes.push(match self.prepare_personal_delegation_with_reply_cost(input,cost.micros.unwrap_or(0)) {
                 Ok(receipt) if receipt["standingTrust"]==true => {
                     dispatch_delegations=true;
-                    format!("Queued project task {} under your Full access.",receipt["taskId"].as_str().unwrap_or("unknown"))
+                    ("update", format!("The job for {worker} is queued in {place}."), receipt["taskId"].as_str().map(str::to_owned))
                 },
-                Ok(receipt) => format!("Proposed project task {}. It waits for your explicit approval in Tasks.", receipt["taskId"].as_str().unwrap_or("unknown")),
-                Err(error) => format!("Project proposal could not be saved: {error}"),
+                Ok(receipt) => ("update", format!("The plan for {worker} is ready in {place}. Nothing starts until you approve it."), receipt["taskId"].as_str().map(str::to_owned)),
+                Err(error) => ("delegation_failed", format!("I couldn't start that job: {error} Nothing is running."), None),
             });
+        }
+        if reply.bad_delegations > 0 {
+            delegation_notes.push(("delegation_failed", "I couldn't start that job. Deck turned down the project details I sent, so nothing is running.".to_owned(), None));
         }
         self.change_assistant(assistant_id, |assistant| {
             let at = now();
@@ -950,10 +986,13 @@ impl Host {
             event.state = EventState::Done;
             event.error = None;
             assistant.add_cost(cost);
+            let silent = reply.reply.trim().is_empty() && !delegation_notes.is_empty();
             let text = if reply.reply.trim().is_empty() { "…".to_owned() } else { reply.reply.trim().to_owned() };
-            if screen { assistant.post_outside(OutsideSource::Screen, text, Some(event_id.to_owned()), at); }
-            else { assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at); }
-            for note in delegation_notes { assistant.post("system", "update", note, None, Some(event_id.to_owned()), at); }
+            if !silent {
+                if screen { assistant.post_outside(OutsideSource::Screen, text, Some(event_id.to_owned()), at); }
+                else { assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at); }
+            }
+            for (kind, note, task_id) in delegation_notes { assistant.post("assistant", kind, note, task_id, Some(event_id.to_owned()), at); }
             // Outside words in the prompt could have planted a "remember";
             // only the human's own words may forget.
             let outside = seen.any();
