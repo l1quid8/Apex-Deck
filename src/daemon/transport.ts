@@ -37,6 +37,7 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Part
         || args?.action === "note" || args?.action === "set_budget" || args?.action === "resume_budget";
       if (cmd.startsWith("assistant_") && needsWorkspaceV3) client.requireCapability?.("assistant_workspace_v3", "assistant read-only tasks, routing and spend controls");
       if (cmd === "monitor_profile_update") client.requireCapability?.("monitor_profile_update", "Changing the assistant profile");
+      if (cmd === "monitor_connect" || cmd === "monitor_watch_save" || cmd === "monitor_watch_stop") client.requireCapability?.("monitor_watch_v1", "Connecting a project without paid checks");
       return client.call(cmd, args);
     },
     listen: async (event, cb) => client.on(event, cb),

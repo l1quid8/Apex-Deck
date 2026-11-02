@@ -47,6 +47,14 @@ pub struct Assignment {
     pub profile: ParticipantConfig,
 }
 
+/// What the Watch form saves for a project.
+pub struct WatchSettings {
+    pub text: String,
+    pub files: Vec<String>,
+    pub threads: Vec<String>,
+    pub profile: ParticipantConfig,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct MonitorOwner {
     pub cwd: String,
@@ -137,8 +145,20 @@ impl Host {
             }
         }
         self.change_monitors(|monitors| {
-            if only_if_absent && monitors.iter().any(|m| m.workspace_id == workspace_id) {
-                return Err("ApexAgent already has a responsibility for this project. Refresh before trying again.".into());
+            if only_if_absent {
+                if let Some(monitor) = monitors.iter_mut().find(|m| m.workspace_id == workspace_id) {
+                    if !monitor.checks_off {
+                        return Err("ApexAgent already has a responsibility for this project. Refresh before trying again.".into());
+                    }
+                    // Replacing a connected project would orphan its delegated tasks.
+                    if monitor.cwd != cwd {
+                        return Err("This project is connected to a different folder.".into());
+                    }
+                    let at = now();
+                    monitor.apply_watch_settings(responsibility, files, threads, profile);
+                    monitor.start_watching(at);
+                    return Ok(monitor.clone());
+                }
             }
             if !only_if_absent && self.assistant_tasks.list(Some(&workspace_id)).map_err(|e|e.to_string())?.iter().any(|task| !matches!(task.status, crate::assistant_tasks::TaskStatus::Done | crate::assistant_tasks::TaskStatus::Cancelled) || task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true)) {
                 return Err("Finish or cancel this project's assistant tasks before replacing its responsibility.".into());
@@ -160,6 +180,78 @@ impl Host {
             monitor.record_activity(at, "assigned", "ApexAgent was given this responsibility.");
             monitors.push(monitor.clone());
             Ok(monitor)
+        })
+    }
+
+    /// Connect a project so Alfred can delegate in it, with no checks scheduled.
+    /// A project that already has a coordinator keeps it unchanged.
+    pub fn monitor_connect(&self, workspace_id: String, cwd: String, host_id: String) -> Result<ProjectMonitor, String> {
+        if workspace_id.is_empty() || host_id.is_empty() {
+            return Err("ApexAgent needs a saved project.".into());
+        }
+        monitor_evidence::validate_files(&cwd, &[])?;
+        self.change_monitors(|monitors| {
+            if let Some(existing) = monitors.iter().find(|m| m.workspace_id == workspace_id) {
+                if existing.cwd != cwd || existing.host_id != host_id {
+                    return Err("The project coordinator belongs to a different folder or machine.".into());
+                }
+                return Ok(existing.clone());
+            }
+            let at = now();
+            let conversation_id = format!("apex-agent-{workspace_id}-{at}");
+            let mut monitor = ProjectMonitor::connected(workspace_id, conversation_id, cwd, host_id, at);
+            monitor.record_activity(at, "connected", "The project was connected for delegated tasks.");
+            monitors.push(monitor.clone());
+            Ok(monitor)
+        })
+    }
+
+    /// Save the Watch form as one change. Saving never makes a check due;
+    /// `start` does, and is the only way off a connected or stopped project.
+    pub(crate) fn monitor_watch_save(&self, workspace_id: &str, owner: MonitorOwner, watch_revision: u64, settings: WatchSettings, start: bool) -> Result<ProjectMonitor, String> {
+        let WatchSettings { text: responsibility, files, threads, profile } = settings;
+        let responsibility = text(&responsibility)?;
+        crate::monitor_check::monitor_profile_ok(&profile)?;
+        if files.len() > MAX_FILES {
+            return Err(format!("ApexAgent can monitor at most {MAX_FILES} files."));
+        }
+        let files = monitor_evidence::validate_files(&owner.cwd, &files)?;
+        let mut seen = std::collections::HashSet::new();
+        let threads: Vec<_> = threads.into_iter().filter(|id| seen.insert(id.clone())).collect();
+        if threads.len() > MAX_THREADS {
+            return Err(format!("ApexAgent can follow at most {MAX_THREADS} chats."));
+        }
+        let mut kept = Vec::new();
+        for id in threads {
+            // A chat deleted since the form opened is dropped, as in a sources save.
+            let Some(room) = self.store().room(&id)? else { continue };
+            if room.cwd.as_deref() != Some(owner.cwd.as_str()) {
+                return Err(format!("Chat '{id}' belongs to a different project folder."));
+            }
+            kept.push(id);
+        }
+        self.change_monitor_owned(workspace_id, Some(owner), |monitor, at| {
+            if monitor.watch_revision != watch_revision {
+                return Err("These settings changed since this form opened. Close it and open it again.".into());
+            }
+            let same = monitor.responsibility == responsibility && monitor.files == files && monitor.threads == kept && monitor.profile.as_ref() == Some(&profile);
+            if same && !start {
+                return Ok(());
+            }
+            monitor.apply_watch_settings(responsibility, files, kept, profile);
+            if start {
+                monitor.start_watching(at);
+            } else {
+                monitor.record_activity(at, "watch_saved", "ApexAgent's watch settings changed.");
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn monitor_watch_stop(&self, workspace_id: &str, owner: MonitorOwner) -> Result<ProjectMonitor, String> {
+        self.change_monitor_owned(workspace_id, Some(owner), |monitor, at| {
+            monitor.stop_watching(at);
+            Ok(())
         })
     }
 
@@ -262,6 +354,7 @@ impl Host {
             monitor.threads = next_threads;
             let at = now();
             monitor.revision = monitor.revision.saturating_add(1);
+            monitor.watch_revision = monitor.watch_revision.saturating_add(1);
             monitor.active_check = None;
             monitor.pending_check_at = None;
             monitor.wake_reason = "sources_updated".into();
@@ -285,6 +378,7 @@ impl Host {
             monitor.profile_id = profile.id.to_string();
             monitor.profile = Some(profile);
             monitor.revision = monitor.revision.checked_add(1).ok_or("ApexAgent revision exhausted.")?;
+            monitor.watch_revision = monitor.watch_revision.saturating_add(1);
             monitor.active_check = None;
             monitor.pending_check_at = None;
             monitor.wake_reason = "profile_updated".into();
@@ -627,6 +721,195 @@ mod tests {
         assert_eq!(after.wake_reason, "redirected");
         assert_eq!(after.messages.last().unwrap().text, "Defer SSO, keep November 1");
         assert!(f.host.monitor_message("missing", "hi").is_err());
+    }
+
+    fn run_scheduled_check(f: &Fixture, calls: &std::sync::atomic::AtomicUsize) {
+        f.host.change_monitor("w", |m, _| { m.next_check_at = Some(0); Ok(()) }).unwrap();
+        f._runtime.block_on(f.host.monitor_check_with("w", false, |_, _| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(Ok(serde_json::json!({
+                "message":"", "messageEvidence":[], "findings":[], "nextStep":"Watch",
+                "nextCheckInMinutes":15, "wakeReason":"scheduled"
+            }).to_string()))
+        })).unwrap();
+    }
+
+    #[test]
+    fn a_changed_duty_is_assessed_at_the_next_scheduled_check() {
+        let f = fixture("changed-duty");
+        f.host.monitor_assign(assignment(&f)).unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        run_scheduled_check(&f, &calls);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let before = f.host.monitor_get("w").unwrap().unwrap();
+        f.host.monitor_watch_save("w", owner_of(&before), before.watch_revision, settings("Watch a different responsibility"), false).unwrap();
+        run_scheduled_check(&f, &calls);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "new settings must be assessed even when the files are unchanged");
+        run_scheduled_check(&f, &calls);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "once assessed, unchanged files skip the model again");
+    }
+
+    #[test]
+    fn start_watching_makes_a_real_check_after_an_earlier_stop() {
+        let f = fixture("restart-watch");
+        f.host.monitor_assign(assignment(&f)).unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        run_scheduled_check(&f, &calls);
+        let before = f.host.monitor_get("w").unwrap().unwrap();
+        let stopped = f.host.monitor_watch_stop("w", owner_of(&before)).unwrap();
+        f.host.monitor_watch_save("w", owner_of(&stopped), stopped.watch_revision, settings("Watch a new duty after restart"), true).unwrap();
+        run_scheduled_check(&f, &calls);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "Start watching must not reuse the old duty's result");
+    }
+
+    #[test]
+    fn a_watch_form_opened_before_a_sources_update_is_refused() {
+        let f = fixture("stale-watch-sources");
+        let before = f.host.monitor_assign(assignment(&f)).unwrap();
+        std::fs::write(f.project.join("README.md"), "New selected source").unwrap();
+        let updated = f.host.monitor_sources_update("w", &before.cwd, &before.host_id, &before.conversation_id, vec!["README.md".into()], vec![], "add").unwrap();
+        assert!(updated.files.contains(&"README.md".into()));
+        assert!(f.host.monitor_watch_save("w", owner_of(&before), before.watch_revision, settings("Edited from the old form"), false).is_err());
+        assert_eq!(f.host.monitor_get("w").unwrap().unwrap().files, updated.files);
+    }
+
+    #[test]
+    fn a_watch_form_opened_before_a_profile_update_is_refused() {
+        let f = fixture("stale-watch-profile");
+        let before = f.host.monitor_assign(assignment(&f)).unwrap();
+        let mut next = profile();
+        next.id = apex_core::ParticipantId::new("new-profile");
+        f.host.monitor_profile_update("w", owner_of(&before), before.revision, next).unwrap();
+        assert!(f.host.monitor_watch_save("w", owner_of(&before), before.watch_revision, settings("Edited from the old form"), false).is_err());
+        assert_eq!(f.host.monitor_get("w").unwrap().unwrap().profile_id, "new-profile");
+    }
+
+    fn owner_of(monitor: &ProjectMonitor) -> MonitorOwner {
+        MonitorOwner { cwd: monitor.cwd.clone(), host_id: monitor.host_id.clone(), conversation_id: monitor.conversation_id.clone() }
+    }
+
+    fn settings(text: &str) -> WatchSettings {
+        WatchSettings { text: text.into(), files: vec!["docs/plan.md".into()], threads: Vec::new(), profile: profile() }
+    }
+
+    fn connect(f: &Fixture) -> ProjectMonitor {
+        f.host.monitor_connect("w".into(), f.project.to_string_lossy().into_owned(), "local".into()).unwrap()
+    }
+
+    #[test]
+    fn connecting_a_project_schedules_no_check_and_survives_a_restart() {
+        let f = fixture("connect");
+        let connected = connect(&f);
+        assert!(connected.checks_off && connected.paused);
+        assert_eq!(connected.next_check_at, None);
+        assert_eq!(connected.pending_check_at, None);
+        assert!(connected.responsibility.is_empty() && connected.messages.is_empty());
+        assert!(f.host.change_monitor("w", |m, at| { assert!(m.claim(at, true).is_none()); Ok(()) }).is_ok());
+        assert!(f.host.monitor_check_now("w").is_err());
+        assert_eq!(reopen(&f).monitor_get("w").unwrap().unwrap().conversation_id, connected.conversation_id);
+    }
+
+    #[test]
+    fn connecting_again_keeps_the_same_coordinator_and_leaves_watching_alone() {
+        let f = fixture("connect-again");
+        let first = connect(&f);
+        assert_eq!(connect(&f), first);
+        let g = fixture("connect-watched");
+        let watched = g.host.monitor_assign(assignment(&g)).unwrap();
+        let still = connect(&g);
+        assert_eq!(still, watched);
+        assert!(!still.paused && !still.checks_off);
+        let elsewhere = f.host.monitor_connect("w".into(), g.project.to_string_lossy().into_owned(), "local".into());
+        assert!(elsewhere.is_err());
+    }
+
+    #[test]
+    fn resume_cannot_restart_checks_the_human_turned_off() {
+        let f = fixture("no-silent-resume");
+        connect(&f);
+        let after = f.host.monitor_pause("w", false).unwrap();
+        assert!(after.paused && after.checks_off);
+        assert_eq!(after.next_check_at, None);
+        let g = fixture("no-silent-resume-stopped");
+        let watched = g.host.monitor_assign(assignment(&g)).unwrap();
+        g.host.monitor_watch_stop("w", owner_of(&watched)).unwrap();
+        let after = g.host.monitor_pause("w", false).unwrap();
+        assert!(after.paused && after.checks_off);
+    }
+
+    #[test]
+    fn start_watching_keeps_the_coordinator_and_makes_one_check_due() {
+        let f = fixture("start");
+        let connected = connect(&f);
+        let started = f.host.monitor_watch_save("w", owner_of(&connected), connected.watch_revision, settings("Keep it moving"), true).unwrap();
+        assert_eq!(started.conversation_id, connected.conversation_id);
+        assert!(!started.paused && !started.checks_off);
+        assert_eq!(started.responsibility, "Keep it moving");
+        assert_eq!(started.files, vec!["docs/plan.md".to_string()]);
+        assert_eq!(started.profile_id, "helper");
+        assert_eq!(started.wake_reason, "watch_started");
+        assert!(started.next_check_at.is_some());
+        assert_eq!(reopen(&f).monitor_get("w").unwrap(), Some(started));
+    }
+
+    #[test]
+    fn saving_settings_while_watching_keeps_the_schedule_and_refuses_a_stale_form() {
+        let f = fixture("save");
+        let watched = f.host.monitor_assign(assignment(&f)).unwrap();
+        let due = now() + 3_600_000;
+        let scheduled = f.host.change_monitor("w", |m, _| { m.next_check_at = Some(due); m.wake_reason = "scheduled".into(); Ok(()) }).unwrap();
+        let saved = f.host.monitor_watch_save("w", owner_of(&watched), scheduled.watch_revision, settings("A new duty"), false).unwrap();
+        assert_eq!(saved.responsibility, "A new duty");
+        assert_eq!(saved.next_check_at, Some(due));
+        assert_eq!(saved.wake_reason, "scheduled");
+        assert!(saved.watch_revision > scheduled.watch_revision);
+        assert_eq!(saved.revision, scheduled.revision, "a plan waiting for approval must stay valid");
+        assert_eq!(saved.messages, scheduled.messages);
+        assert!(f.host.monitor_watch_save("w", owner_of(&watched), scheduled.watch_revision, settings("Too late"), false).is_err());
+        assert_eq!(f.host.monitor_get("w").unwrap(), Some(saved.clone()));
+        assert_eq!(f.host.monitor_watch_save("w", owner_of(&watched), saved.watch_revision, settings("A new duty"), false).unwrap(), saved);
+    }
+
+    #[test]
+    fn saving_settings_drops_a_deleted_chat() {
+        let f = fixture("save-chats");
+        let watched = f.host.monitor_assign(assignment(&f)).unwrap();
+        let mut gone = settings("Keep going");
+        gone.threads = vec!["deleted-chat".into()];
+        let saved = f.host.monitor_watch_save("w", owner_of(&watched), watched.watch_revision, gone, false).unwrap();
+        assert!(saved.threads.is_empty());
+    }
+
+    #[test]
+    fn stop_watching_clears_the_schedule_and_keeps_the_settings_and_coordinator() {
+        let f = fixture("stop");
+        let watched = f.host.monitor_assign(assignment(&f)).unwrap();
+        let claimed = f.host.change_monitor("w", |m, at| { assert!(m.claim(at, true).is_some()); Ok(()) }).unwrap();
+        let stopped = f.host.monitor_watch_stop("w", owner_of(&watched)).unwrap();
+        assert!(stopped.paused && stopped.checks_off);
+        assert_eq!(stopped.next_check_at, None);
+        assert_eq!(stopped.active_check, None);
+        assert_eq!(stopped.conversation_id, watched.conversation_id);
+        assert_eq!(stopped.revision, claimed.revision, "a plan waiting for approval must stay valid");
+        assert_eq!(stopped.responsibility, watched.responsibility);
+        assert_eq!(stopped.files, watched.files);
+        assert!(!stopped.is_current(claimed.active_check.as_ref().unwrap()));
+        let restarted = f.host.monitor_watch_save("w", owner_of(&watched), stopped.watch_revision, settings("Back on"), true).unwrap();
+        assert_eq!(restarted.revision, stopped.revision);
+        assert!(!restarted.checks_off && restarted.next_check_at.is_some());
+        let stopped = f.host.monitor_watch_stop("w", owner_of(&watched)).unwrap();
+        assert_eq!(f.host.monitor_watch_stop("w", owner_of(&watched)).unwrap(), stopped);
+    }
+
+    #[test]
+    fn the_old_start_form_upgrades_a_connected_project_in_place() {
+        let f = fixture("assign-over-connect");
+        let connected = connect(&f);
+        let started = f.host.monitor_assign_if_absent(assignment(&f), true).unwrap();
+        assert_eq!(started.conversation_id, connected.conversation_id);
+        assert!(!started.paused && !started.checks_off);
+        assert_eq!(started.responsibility, "Keep the launch on track");
+        assert!(f.host.monitor_assign_if_absent(assignment(&f), true).is_err(), "a watched project still refuses a second assignment");
     }
 
     #[test]

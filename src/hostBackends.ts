@@ -25,7 +25,7 @@ const writes = new Set([
   "botCopiesSetCheck", "worktreeAdd", "worktreeRemove", "worktreeForget", "worktreePrune",
 ]);
 const rawWrites = new Set([...writes].map(key => key.replace(/[A-Z]/g, letter => "_" + letter.toLowerCase())));
-for (const command of ["monitor_assign", "monitor_message", "monitor_react", "monitor_pause", "monitor_check_now", "monitor_resolve",
+for (const command of ["monitor_assign", "monitor_connect", "monitor_watch_save", "monitor_watch_stop", "monitor_message", "monitor_react", "monitor_pause", "monitor_check_now", "monitor_resolve",
   "chat_create", "chat_update_meta", "chat_add_participant", "chat_update_participant", "chat_remove_participant",
   "chat_import", "chat_message_claim", "chat_merge_history", "chat_promote", "chat_promote_abandon",
   "personal_create", "personal_conversation_new", "personal_send", "personal_react", "personal_decide_always", "personal_decide", "personal_cancel", "personal_task_lifecycle", "project_task_lifecycle", "personal_todo", "personal_archive", "personal_reply_cancel", "personal_pause", "personal_schedule_cancel",

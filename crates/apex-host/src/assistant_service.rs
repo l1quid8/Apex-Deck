@@ -4631,6 +4631,13 @@ mod tests {
 
     /// A worker whose model endpoint accepts the call and then never answers.
     fn hung_delegation(f: &Fixture, request: &str) -> (AssistantTask, String) {
+        let (task,assistant)=hung_plan(f,request);
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
+        (wait_for_attempt(f,&task.id,1),assistant)
+    }
+
+    /// The same job as a plan still waiting for approval.
+    fn hung_plan(f: &Fixture, request: &str) -> (AssistantTask, String) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || { let mut held = Vec::new(); for stream in listener.incoming() { held.push(stream); } });
@@ -4651,9 +4658,7 @@ mod tests {
         let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:request.into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some(room),workers:vec!["hung".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
         let receipt=f.host.prepare_personal_delegation(input).unwrap();
         let task=f.host.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap();
-        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
-        let running=wait_for_attempt(f,&task.id,1);
-        (running,assistant.id)
+        (task,assistant.id)
     }
 
     /// The task once attempt `number` is live, without waiting for it to end.
@@ -4701,6 +4706,46 @@ mod tests {
         assert_eq!(said.iter().filter(|text|text.contains("Still stuck")).count(),1,"{said:?}");
         let notices=f.host.personal_get(&assistant).unwrap().notices;
         assert_eq!(notices.iter().filter(|n|n.urgent).count(),1);
+    }
+
+    fn stop_watching(f: &Fixture) -> crate::monitor::ProjectMonitor {
+        let monitor=f.host.monitor_get(&f.owner.workspace_id).unwrap().unwrap();
+        let owner=crate::monitor_commands::MonitorOwner {cwd:monitor.cwd.clone(),host_id:monitor.host_id.clone(),conversation_id:monitor.conversation_id.clone()};
+        f.host.monitor_watch_stop(&f.owner.workspace_id,owner).unwrap()
+    }
+
+    #[test]
+    fn stop_watching_leaves_a_running_job_and_its_watchdog_alone() {
+        let f = fixture();
+        let (task,_)=hung_delegation(&f,"stop-running");
+        let stopped=stop_watching(&f);
+        assert!(stopped.checks_off && stopped.next_check_at.is_none());
+        let after=f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        assert_eq!(after.status,TaskStatus::Running);
+        assert_eq!(after.attempts.len(),1);
+        assert_eq!(after.owner,task.owner);
+        assert!(after.attempts[0].finished_at_ms.is_none(),"the live attempt keeps running");
+        assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|!run.stop.load(Ordering::SeqCst)&&!run.watchdog_stop.load(Ordering::SeqCst)));
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        let restarted=wait_for_attempt(&f,&task.id,2);
+        assert_eq!(restarted.attempts[0].result.as_deref(),Some(crate::assistant_watchdog::RESTARTED_RESULT),"the watchdog still covers the job");
+        assert!(f.host.monitor_get(&f.owner.workspace_id).unwrap().unwrap().checks_off,"a restart turns no paid checks back on");
+    }
+
+    #[test]
+    fn a_plan_waiting_for_approval_still_starts_after_watching_stops() {
+        let f = fixture();
+        let (task,_)=hung_plan(&f,"stop-proposed");
+        let stopped=stop_watching(&f);
+        let owner=crate::monitor_commands::MonitorOwner {cwd:stopped.cwd.clone(),host_id:stopped.host_id.clone(),conversation_id:stopped.conversation_id.clone()};
+        let settings=crate::monitor_commands::WatchSettings {text:"Back on".into(),files:vec![],threads:vec![],profile:profile("reasoner", Backend::OpenAiCompatible {base_url:"http://127.0.0.1:9/v1".into(),model:"fixture".into(),api_key_env:None}, Access::Read)};
+        let started=f.host.monitor_watch_save(&f.owner.workspace_id,owner.clone(),stopped.watch_revision,settings,true).unwrap();
+        f.host.monitor_watch_stop(&f.owner.workspace_id,owner).unwrap();
+        assert_eq!(started.revision,stopped.revision);
+        let current=f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        assert_eq!(current.status,TaskStatus::Proposed);
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:current.id.clone(),revision:current.revision,owner:current.owner.clone(),action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:current.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
+        wait_for_attempt(&f,&task.id,1);
     }
 
     #[test]

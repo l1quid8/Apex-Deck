@@ -53,3 +53,17 @@
 .assistant-projects .assistant-project-card[data-compact]>.assistant-project-actions button:hover:not(:disabled){color:var(--text);background:transparent}
 .assistant-project-connection-problem{margin:7px 0 0;font-size:11px;line-height:17px;color:var(--muted)}
 @container (max-width:520px){.assistant-project-compact-main{gap:10px}.assistant-project-connection{max-width:100px}.assistant-projects .assistant-project-card[data-compact]>.assistant-project-actions{gap:12px}}
+.assistant-projects .assistant-project-card[data-compact]>.assistant-project-actions button.assistant-project-delegate{color:var(--text);font-weight:500}
+.assistant-projects .assistant-project-job{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;margin-top:10px;padding:9px 11px;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:var(--text);font-size:12px;text-align:left;cursor:pointer}
+.assistant-projects .assistant-project-job:hover{background:var(--hover)}
+.assistant-project-job>span:first-child{min-width:0}
+.assistant-project-job strong{display:block;overflow:hidden;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
+.assistant-project-job small{display:block;margin-top:3px;color:var(--muted);font-size:11px}
+.assistant-project-job-state{flex:none;color:var(--muted);font-size:11px}
+.assistant-project-watchdog{margin:14px 0 0;padding:11px 13px;border:1px solid var(--line);border-radius:var(--radius);color:var(--muted);font-size:12px;line-height:1.55}
+.assistant-project-watchdog strong{color:var(--text);font-weight:500}
+.assistant-watch-check{flex-direction:row!important;align-items:center;gap:8px!important;color:var(--muted)}
+.assistant-watch-actions{display:flex;justify-content:flex-end;gap:8px}
+.assistant-chat-action{display:block;width:fit-content;margin-top:8px;padding:6px 12px;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:var(--text);font-size:12px;cursor:pointer}
+.assistant-chat-action:hover{background:var(--hover)}
+.assistant-projects.is-compact .assistant-project-toolbar .assistant-project-actions button.primary{padding:5px 13px;border-radius:var(--radius);background:var(--accent);color:var(--bg);font-weight:600}

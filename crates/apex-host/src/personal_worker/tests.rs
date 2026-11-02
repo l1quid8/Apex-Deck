@@ -495,7 +495,9 @@ async fn discovery_at_the_smallest_budget_does_not_double_the_prompt() {
     fixture.drain(&fake.tools()).await;
     let prompt = &fake.prompts.lock().unwrap()[0];
     assert!(prompt.contains("Checkout fix"));
-    assert!(prompt.chars().count() <= 4_900, "fixed instructions and bounded live context: {}", prompt.chars().count());
+    // The fixture's folder appears in the prompt, and its length follows TMPDIR.
+    let measured = prompt.replace(&*fixture.root.to_string_lossy(), "").chars().count();
+    assert!(measured <= 4_900, "fixed instructions and bounded live context: {measured}");
 }
 
 #[tokio::test]
@@ -1971,6 +1973,58 @@ fn coding_delegation_is_a_separate_proposal_not_a_research_helper() {
     assert_eq!(parsed.delegations.len(), 1);
     assert!(parsed.helpers.is_empty());
     assert!(parsed.task.is_none());
+}
+
+#[test]
+fn a_bad_delegation_is_counted_and_the_rest_of_the_reply_survives() {
+    let parsed = parse_reply(r#"{"reply":"Delegating now.","delegations":[{"project":"ws-1","brief":"Fix login","destination":{"threadId":"chat","workers":["coder"],"newThread":false},"mode":"isolated"}],"remember":[{"text":"Likes tests"}]}"#);
+    assert_eq!(parsed.reply, "Delegating now.");
+    assert!(parsed.delegations.is_empty());
+    assert_eq!(parsed.bad_delegations, 1);
+    assert_eq!(parsed.remember.len(), 1);
+    let mixed = parse_reply(r#"Sure. {"reply":"Two jobs.","delegations":[{"project":"ws-1"},{"project":{"hostId":"h","workspaceId":"w","cwd":"/repo"},"brief":"Fix login","destination":{"threadId":"chat","workers":["coder"],"newThread":false},"mode":"isolated"}]}"#);
+    assert_eq!((mixed.delegations.len(), mixed.bad_delegations), (1, 1));
+    let no_reply = parse_reply(r#"{"delegations":"watchdog-test"}"#);
+    assert_eq!((no_reply.reply.as_str(), no_reply.bad_delegations), ("", 1));
+    let chat = parse_reply("Here is a plan: {not json}");
+    assert_eq!((chat.reply.as_str(), chat.bad_delegations), ("Here is a plan: {not json}", 0));
+}
+
+#[tokio::test]
+async fn a_bad_delegation_gets_one_plain_failure_instead_of_raw_json() {
+    let f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Ask);
+    let fake=Fake::new(true);
+    fake.say(r#"{"reply":"","delegations":[{"project":"ws-1","brief":"Fix login","destination":{"threadId":"room-alfred","workers":["jigga"],"newThread":false},"mode":"isolated"}]}"#);
+    f.host.personal_send(&f.id,"bad-delegation","Delegate the login fix").unwrap();
+    f.drain(&fake.tools()).await;
+    let a=f.get();
+    assert!(!a.messages.iter().any(|m|m.text.contains("\"delegations\"")||m.text=="…"),"{:?}",a.messages.iter().map(|m|&m.text).collect::<Vec<_>>());
+    let failed:Vec<_>=a.messages.iter().filter(|m|m.kind=="delegation_failed").collect();
+    assert_eq!(failed.len(),1);
+    assert_eq!(failed[0].role,"assistant");
+    assert_eq!(failed[0].text,"I couldn't start that job. Deck turned down the project details I sent, so nothing is running.");
+    assert!(f.host.assistant_tasks.list(None).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_saved_plan_names_the_worker_and_project_and_links_its_task() {
+    let f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Ask);
+    let reply=serde_json::json!({"reply":"I'll hand that over.","delegations":[{"project":project,"brief":"Fix login","destination":{"threadId":THREAD,"workers":["jigga"],"newThread":false},"mode":"read_only"}]}).to_string();
+    let fake=Fake::new(true);fake.say(&reply);
+    f.host.personal_send(&f.id,"good-delegation","Delegate the login fix").unwrap();
+    f.drain(&fake.tools()).await;
+    let task=f.host.assistant_tasks.list(None).unwrap().pop().unwrap();
+    let a=f.get();
+    let note=a.messages.iter().find(|m|m.task_id.as_deref()==Some(task.id.as_str())).unwrap();
+    assert_eq!((note.role.as_str(),note.kind.as_str()),("assistant","update"));
+    assert_eq!(note.text,"The plan for Jigga is ready in slice. Nothing starts until you approve it.");
+    let monitor=f.host.monitor_get("w1").unwrap().unwrap();
+    assert!(monitor.checks_off&&monitor.next_check_at.is_none(),"Alfred's delegation leaves paid checks off");
+}
+
+#[test]
+fn delegation_prompt_says_to_copy_the_whole_project_object() {
+    assert!(rooms::catalog(&[]).unwrap().contains("delegations:[{project:{hostId,workspaceId,cwd},brief"));
 }
 
 #[tokio::test]

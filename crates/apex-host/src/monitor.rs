@@ -26,8 +26,16 @@ pub struct ProjectMonitor {
     pub files: Vec<String>,
     pub threads: Vec<String>,
     pub paused: bool,
+    /// The human hasn't asked for checks here, or stopped them. Always paused
+    /// as well; only Start watching clears it, so no resume can start checks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checks_off: bool,
     pub completed: bool,
     pub revision: u64,
+    /// Guards the Watch form. Watching changes leave `revision` alone, because
+    /// a plan waiting for approval goes stale when `revision` moves.
+    #[serde(default)]
+    pub watch_revision: u64,
     /// Monotonic owner snapshot generation. Unlike `revision`, this advances
     /// for persisted state changes that must not cancel a running check.
     #[serde(default)]
@@ -162,8 +170,10 @@ impl ProjectMonitor {
             files,
             threads,
             paused: false,
+            checks_off: false,
             completed: false,
             revision: 1,
+            watch_revision: 0,
             snapshot_version: 0,
             messages: Vec::new(),
             findings: Vec::new(),
@@ -191,6 +201,60 @@ impl ProjectMonitor {
         monitor
     }
 
+    /// A project Alfred can delegate in, with no responsibility and no checks.
+    pub fn connected(workspace_id: String, conversation_id: String, cwd: String, host_id: String, now: u64) -> Self {
+        let mut monitor = Self::new(workspace_id, conversation_id, cwd, host_id, String::new(), String::new(), Vec::new(), Vec::new(), now);
+        monitor.messages.clear();
+        monitor.message_id_counter = 0;
+        monitor.paused = true;
+        monitor.checks_off = true;
+        monitor.next_check_at = None;
+        monitor.wake_reason = "connected".into();
+        monitor
+    }
+
+    /// Checks end here and stay off through any resume. The coordinator and
+    /// its settings stay, because delegated tasks belong to it.
+    pub fn stop_watching(&mut self, now: u64) {
+        if self.checks_off {
+            return;
+        }
+        self.paused = true;
+        self.checks_off = true;
+        self.watch_revision = self.watch_revision.saturating_add(1);
+        self.active_check = None;
+        self.pending_check_at = None;
+        self.next_check_at = None;
+        self.wake_reason = "watching_stopped".into();
+        self.record_activity(now, "watching_stopped", "Project watching was stopped.");
+    }
+
+    /// The one way checks turn on for a connected or stopped project.
+    pub fn start_watching(&mut self, now: u64) {
+        self.paused = false;
+        self.checks_off = false;
+        self.completed = false;
+        self.error = None;
+        self.next_check_at = Some(now);
+        self.wake_reason = "watch_started".into();
+        self.record_activity(now, "watching_started", "Project watching started.");
+    }
+
+    /// New watch settings. A check running on the old ones no longer counts,
+    /// and neither does the last result: unchanged files must not skip them.
+    /// The schedule stays as it was.
+    pub fn apply_watch_settings(&mut self, responsibility: String, files: Vec<String>, threads: Vec<String>, profile: apex_core::ParticipantConfig) {
+        self.responsibility = responsibility;
+        self.files = files;
+        self.threads = threads;
+        self.profile_id = profile.id.to_string();
+        self.profile = Some(profile);
+        self.watch_revision = self.watch_revision.saturating_add(1);
+        self.active_check = None;
+        self.evidence_fingerprint = None;
+        self.error = None;
+    }
+
     pub fn redirect(&mut self, text: String, now: u64) -> Result<(), String> {
         // Human direction must outlive the bounded conversation window.
         // Keep its order so a later correction can supersede an earlier one.
@@ -207,7 +271,7 @@ impl ProjectMonitor {
     }
 
     pub fn set_paused(&mut self, paused: bool, now: u64) {
-        if self.paused == paused {
+        if self.paused == paused || (self.checks_off && !paused) {
             return;
         }
         self.paused = paused;

@@ -94,12 +94,15 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
     && snapshot.hostId === requestOwner.routeHostId
   );
 
+  // A project connected for delegation, or stopped, offers Start watching again.
+  const watched = monitor && !monitor.checksOff ? monitor : null;
+
   useEffect(() => {
-    if (monitor) return;
+    if (watched) return;
     const storedId = window.localStorage?.getItem('apex-agent-profile') ?? null;
     setProfileId((current) => current && profilesAvailable.some((profile) => profile.id === current)
       ? current : defaultMonitorProfileId(profilesAvailable, storedId));
-  }, [monitor, profilesAvailable]);
+  }, [watched, profilesAvailable]);
 
   useEffect(() => {
     componentAlive.current = true;
@@ -259,11 +262,11 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
     });
   };
 
-  const profileName = monitor
-    ? profiles.find((profile) => profile.id === monitor.profileId)?.display_name ?? 'Saved profile — no longer in Agents'
+  const profileName = watched
+    ? profiles.find((profile) => profile.id === watched.profileId)?.display_name ?? 'Saved profile — no longer in Agents'
     : '';
   // Chats the monitor still names but that no longer exist stay out of the list; the save reports them as removed.
-  const watchedBody = monitor && <div className="apex-agent-sources-watched">
+  const watchedBody = watched && <div className="apex-agent-sources-watched">
     <p className="apex-agent-sources-profile">AI profile · <strong>{profileName}</strong></p>
     <section className="apex-agent-sources-section">
       <h3>Chats</h3>
@@ -288,8 +291,8 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
   </div>;
   // Save and a way out sit outside the scrolling list, so both stay on screen even if the top bar can't be reached.
   const saveBar = <div className="apex-agent-sources-actions apex-agent-sources-save">
-    {monitor && notice && <p className="apex-agent-sources-notice" role="status">{notice}</p>}
-    {monitor && <button className="primary" type="button" disabled={busy} onClick={saveSources}>{busy ? 'Saving…' : 'Save sources'}</button>}
+    {watched && notice && <p className="apex-agent-sources-notice" role="status">{notice}</p>}
+    {watched && <button className="primary" type="button" disabled={busy} onClick={saveSources}>{busy ? 'Saving…' : 'Save sources'}</button>}
     <button type="button" className="apex-agent-sources-done" onClick={onBack}>Done</button>
   </div>;
 
@@ -309,7 +312,7 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
 
   const content = loading
     ? <p className="apex-agent-muted" role="status">Opening this project’s sources…</p>
-    : monitor ? watchedBody : loadError ? null : startForm;
+    : watched ? watchedBody : loadError ? null : startForm;
 
   return <section className="apex-agent-sources" role="region" aria-label={`Sources for ${workspace.name}`} onKeyDown={(event) => { if (event.key === 'Escape') onBack(); }}>
     <header className="apex-agent-sources-head">

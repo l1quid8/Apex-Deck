@@ -20,7 +20,7 @@ import './assistant-tasks.css';
 import './apex-agent-dock.css';
 import type { ToolServer, Workspace } from './types';
 import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget, withoutLaneMentions, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
-import { TaskViewContext, personalTaskGroup, personalTaskKey, type TaskGroup, type TaskSummary } from './apexAgentTaskView.ts';
+import { TaskViewContext, personalTaskGroup, personalTaskKey, projectTaskKey, type TaskGroup, type TaskSummary } from './apexAgentTaskView.ts';
 import type { PersonalLane, PersonalMessage, PersonalTask } from './personalAssistant.ts';
 import { PersonalPanels, type PanelName } from './PersonalPanels.tsx';
 import './personal-panels.css';
@@ -65,11 +65,13 @@ function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) =
 }
 
 /** One conversation across every watched project. Replies go to the project they name, or the last one discussed. */
-export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled, voiceBackend, voiceSettings, onVoiceSettings, voiceHeader, onOpenBrowser, onVoiceFocus, onOpenProjectTask, delegatedTasks=[] }: {
+export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled, voiceBackend, voiceSettings, onVoiceSettings, voiceHeader, onOpenBrowser, onVoiceFocus, onOpenProjectTask, onDelegateTask, delegatedTasks=[] }: {
   /** The personal assistant on its durable host, shown as one more lane in this conversation. */
   delegatedTasks?: AssistantTask[];
   onVoiceFocus?: () => void;
   onOpenProjectTask?: (key: string) => boolean;
+  /** Opens the Delegate a task form, for a job Alfred couldn't start. */
+  onDelegateTask?: () => void;
   voiceBackend?: Backend;
   voiceSettings?: VoiceSettings;
   onVoiceSettings?: (settings: VoiceSettings) => void;
@@ -697,10 +699,13 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           }
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           const personalBubble = `assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
+          const plannedJob = item.role === 'assistant' && item.kind === 'update' && item.taskId ? delegatedTasks.find((job) => job.id === item.taskId) : undefined;
           const personalBody = <>
             <small className="apex-agent-message-meta">{embedded&&item.role==='assistant'&&assistantAvatar}{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.legacy && <LegacyBadge />}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}{embedded&&item.role==='assistant'&&<time>{clock(item.at)}</time>}</small>
             {item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
             {item.taskProblem && task && <button type="button" className="apex-agent-task-link plain dot-link" onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>Review task</button>}
+            {item.kind === 'delegation_failed' && onDelegateTask && <button type="button" className="assistant-chat-action" onClick={onDelegateTask}>Delegate a task</button>}
+            {plannedJob && <button type="button" className="assistant-chat-action" onClick={() => onOpenProjectTask?.(projectTaskKey(plannedJob.owner.hostId, plannedJob.owner.workspaceId, plannedJob.id))}>{plannedJob.status === 'proposed' ? 'Review plan' : 'Open task'}</button>}
           </>;
           const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
             addReplyQuote({ messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL });

@@ -53,7 +53,7 @@ function harness(extra={},initialTask=null,routingThreads=[]){
   const calls=[],states=[],refs=[],effects=[];let cursor=0,task=initialTask;
   const React={createElement:(type,props,...children)=>({type,props:props??{},children:children.flat(Infinity)})};
   const hooks={useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return [states[i],next=>{states[i]=typeof next==='function'?next(states[i]):next;}];},useRef(initial){const i=cursor++;return refs[i]??={current:initial};},useEffect(fn,deps){const i=cursor++,before=effects[i];if(!before||deps.some((value,index)=>!Object.is(value,before.deps[index])))effects[i]={fn,deps,changed:true,cleanup:before?.cleanup};}};
-  const deps={...identity,...model,...tasks,...status};
+  const deps={...identity,...model,...tasks,...status,AssistantWatchDialog:function AssistantWatchDialog(){},setInterval:()=>0,clearInterval(){}};
   const component=new Function('React',...Object.keys(hooks),...Object.keys(deps),`${compiled};return AssistantProjects;`)(React,...Object.values(hooks),...Object.values(deps));
   const backend={demo:false,call:async(cmd,args)=>{calls.push({cmd,args});if(cmd==='assistant_tasks_list')return {project,workspaceId:'workspace',tasks:Array.isArray(task)?task:task?[task]:[],routingThreads,executions:[],revision:1};if(cmd==='assistant_task_action'){task={...task,status:args.action==='pause'?task.status:args.action==='resume'?task.status:args.action==='accept'||args.action==='review'?'done':'cancelled',desiredState:args.action==='pause'?'paused':'running',revision:task.revision+1};return task;}if(cmd==='personal_project_delegate_ui'){task={...baseTask,id:'new',status:'proposed',originalRequest:args.brief,brief:args.brief,reviewCriteria:args.reviewCriteria,destination:args.destination,mode:args.mode};return {taskId:task.id,status:'proposed'};}return {taskId:'new',status:'proposed'};}};
   const props={lane:{assistant:record,name:'Ada',offline:false},backend,projects:[{project,name:'Project'}],availableProjects:[{project,name:'Project'}],taskScopes:[],profiles:[profile],...extra};
@@ -128,7 +128,7 @@ test('failed delegated work stays assigned until explicit cancellation, then the
 });
 
 test('separate-copy editing mode is sent only after explicit Task access selection',async()=>{
- const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=> 'new-thread'});let tree=h.render();await tick();tree=h.render();await button(tree,'Delegate a task').props.onClick();tree=h.render();await tick();tree=h.render();const access=find(tree,node=>node.type==='select'&&node.props['aria-label']==='Task access');assert.equal(access.props.value,'read_only');assert.match(text(tree),/cannot edit project files/);access.props.onChange({target:{value:'isolated'}});find(tree,node=>node.type==='select'&&node.props['aria-label']==='Worker').props.onChange({target:{value:'worker'}});find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.onChange({target:{value:'Edit in a separate copy'}});tree=h.render();assert.match(text(tree),/compatible worker/);find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();await tick();assert.equal(h.calls.find(call=>call.cmd==='personal_project_delegate_ui').args.mode,'isolated');
+ const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=> 'new-thread'});let tree=h.render();await tick();tree=h.render();await button(tree,'Delegate a task').props.onClick();tree=h.render();await tick();tree=h.render();const access=find(tree,node=>node.type==='select'&&node.props['aria-label']==='Task access');assert.equal(access.props.value,'read_only');assert.match(text(tree),/can’t edit project files/);access.props.onChange({target:{value:'isolated'}});find(tree,node=>node.type==='select'&&node.props['aria-label']==='Worker').props.onChange({target:{value:'worker'}});find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task brief').props.onChange({target:{value:'Edit in a separate copy'}});tree=h.render();assert.match(text(tree),/private copy of this project/);find(tree,node=>node.type==='form').props.onSubmit({preventDefault(){}});await tick();await tick();assert.equal(h.calls.find(call=>call.cmd==='personal_project_delegate_ui').args.mode,'isolated');
 });
 
 test('Project tools Off blocks new delegation regardless of read-only default',async()=>{
@@ -335,7 +335,7 @@ test('failed startup preflight retries the same exact worker room without creati
 
 test('compact project management shows connection and access without repeating Work tasks or boilerplate',async()=>{
  const h=harness({compact:true,taskScopes:[{project,owner}],lane:{assistant:record,name:'Ada',offline:false,configureWorkspace:async()=>{}}},[{...baseTask,id:'active',brief:'Active task'}, {...baseTask,id:'done',brief:'Finished task',status:'done'}]);h.render();await tick();const tree=h.render();
- assert.equal(find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task'),null);assert.doesNotMatch(text(tree),/Active task|Finished task|No project goal recorded|No active assignments|Completed and previous assignments/);assert.match(text(tree),/Connected/);assert.match(text(tree),/Ask first/);assert.match(text(tree),/\/work\/project/);assert.ok(button(tree,'Assign projects'));assert.ok(button(tree,'Manage access'));assert.equal(button(tree,'Delegate a task'),null);
+ assert.equal(find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task'),null);assert.doesNotMatch(text(tree),/Finished task|No project goal recorded|No active assignments|Completed and previous assignments/);assert.match(text(tree),/Connected/);assert.match(text(tree),/Ask first/);assert.match(text(tree),/\/work\/project/);assert.ok(button(tree,'Assign projects'));assert.ok(button(tree,'Manage access'));assert.equal(find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-job')?.children.length,2);assert.match(text(tree),/Active task/);assert.ok(button(tree,'Delegate a task'));
 });
 
 test('creation requests open the normal modal while management is collapsed, once across rerender and remount',async()=>{
@@ -355,4 +355,80 @@ test('a focused task detail stays visible when compact project management is clo
 test('mounting with an already existing creation nonce does not invent a fresh click',async()=>{
  let ensured=0;const h=harness({compact:true,managementOpen:false,newTaskRequest:2001,onEnsureCoordinator:async()=>{ensured++;return {project,owner};}});h.render();await tick();let tree=h.render();assert.equal(ensured,0);assert.equal(find(tree,node=>node.props.role==='dialog'),null);
  h.props.newTaskRequest=2002;h.render();await tick();tree=h.render();assert.equal(ensured,1);assert.ok(find(tree,node=>node.props.role==='dialog'));
+});
+
+function watchHarness(extra={},initialTask=null,start=null){
+  const h=harness({compact:true,...extra},initialTask);let monitor=start;const call=h.backend.call;
+  h.backend.supports=capability=>capability==='monitor_watch_v1';
+  h.backend.call=async(cmd,args)=>{
+    if(cmd==='monitor_get'){h.calls.push({cmd,args});return monitor;}
+    if(cmd==='monitor_watch_save'){h.calls.push({cmd,args});monitor={...monitor,checksOff:false,paused:false,profileId:args.profile.id,responsibility:args.text,watchRevision:monitor.watchRevision+1};return monitor;}
+    if(cmd==='monitor_watch_stop'){h.calls.push({cmd,args});monitor={...monitor,checksOff:true,paused:true,watchRevision:monitor.watchRevision+1};return monitor;}
+    return call(cmd,args);
+  };
+  return {...h,connect(){monitor={workspaceId:'workspace',cwd:'/work/project',hostId:'route-host',conversationId:'monitor',profileId:'',responsibility:'',checksOff:true,paused:true,watchRevision:0,threads:[],files:[]};}};
+}
+const dialogOf=tree=>find(tree,node=>node.type?.name==='AssistantWatchDialog');
+const settings={text:'Keep it on track',files:[],threads:[],profile};
+const settle=async h=>{let tree=h.render();for(let i=0;i<4;i++){await tick();tree=h.render();}return tree;};
+test('delegating from the compact list connects the project without touching watch settings',async()=>{
+  let ensured=0;const h=watchHarness({onEnsureCoordinator:async()=>{ensured++;return {project,owner};}});
+  let tree=await settle(h);assert.match(text(tree),/Not watching/);
+  await button(tree,'Delegate a task').props.onClick();tree=await settle(h);
+  assert.equal(ensured,1);assert.ok(find(tree,node=>node.props.role==='dialog'));
+  assert.equal(h.calls.some(call=>['monitor_watch_save','monitor_assign'].includes(call.cmd)),false);
+  assert.match(text(tree),/Not watching/);
+});
+test('Start watching connects a new project, then saves with the fresh watch revision and start on',async()=>{
+  const seen=[];const h=watchHarness({onEnsureCoordinator:async()=>{h.connect();return {project,owner};},onWatchChanged:monitor=>seen.push(monitor)});
+  let tree=await settle(h);await button(tree,'Watch project').props.onClick();tree=await settle(h);
+  assert.equal(dialogOf(tree).props.monitor,null);
+  assert.equal(h.calls.some(call=>call.cmd==='monitor_watch_save'),false,'opening the form changes nothing');
+  dialogOf(tree).props.onSubmit(settings);tree=await settle(h);
+  const save=h.calls.find(call=>call.cmd==='monitor_watch_save');
+  assert.equal(save.args.start,true);assert.equal(save.args.watchRevision,0);assert.equal(save.args.conversationId,'monitor');assert.equal(save.args.text,'Keep it on track');
+  assert.equal(dialogOf(tree),null);assert.match(text(tree),/Watching · Codex/);assert.ok(button(tree,'Watch settings'));assert.equal(seen.length,1);
+});
+test('a form opened with no coordinator refuses to overwrite watching set up meanwhile',async()=>{
+  const h=watchHarness({onEnsureCoordinator:async()=>{h.connect();await h.backend.call('monitor_watch_save',{text:'Elsewhere',profile});h.calls.length=0;return {project,owner};}});
+  let tree=await settle(h);await button(tree,'Watch project').props.onClick();tree=await settle(h);
+  dialogOf(tree).props.onSubmit(settings);tree=await settle(h);
+  assert.equal(h.calls.some(call=>call.cmd==='monitor_watch_save'),false);
+  assert.ok(dialogOf(tree),'the form stays open');assert.match(dialogOf(tree).props.error,/changed since this form opened/);
+});
+test('saving a watched project keeps checks as they are and Stop watching leaves its job alone',async()=>{
+  const live={workspaceId:'workspace',cwd:'/work/project',hostId:'route-host',conversationId:'monitor',profileId:'worker',responsibility:'Old duty',checksOff:false,paused:false,watchRevision:7,threads:[],files:[]};
+  const h=watchHarness({taskScopes:[{project,owner}]},baseTask,live);
+  let tree=await settle(h);assert.match(text(tree),/Inspect login/);assert.match(text(tree),/Watchdog on/);
+  await button(tree,'Watch settings').props.onClick();tree=await settle(h);
+  dialogOf(tree).props.onSubmit(settings);tree=await settle(h);
+  const save=h.calls.find(call=>call.cmd==='monitor_watch_save');assert.equal(save.args.start,false);assert.equal(save.args.watchRevision,7);
+  await button(tree,'Watch settings').props.onClick();tree=await settle(h);
+  dialogOf(tree).props.onStop();tree=await settle(h);
+  assert.ok(h.calls.some(call=>call.cmd==='monitor_watch_stop'));
+  assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false,'stopping sends the job nothing');
+  assert.match(text(tree),/Not watching/);assert.match(text(tree),/Inspect login/);assert.match(text(tree),/Running jobs carry on/);
+});
+test('a stopped project starts again only through the form, with its kept settings',async()=>{
+  const stopped={workspaceId:'workspace',cwd:'/work/project',hostId:'route-host',conversationId:'monitor',profileId:'worker',responsibility:'Old duty',checksOff:true,paused:true,watchRevision:3,threads:[],files:[]};
+  const h=watchHarness({},null,stopped);let tree=await settle(h);assert.ok(button(tree,'Watch project'));
+  await button(tree,'Watch project').props.onClick();tree=await settle(h);
+  dialogOf(tree).props.onSubmit(settings);await settle(h);
+  assert.equal(h.calls.find(call=>call.cmd==='monitor_watch_save').args.start,true);
+});
+test('a host without the watch capability offers no Watch button',async()=>{
+  const h=harness({compact:true});const tree=await settle(h);
+  assert.equal(button(tree,'Watch project'),null);assert.equal(h.calls.some(call=>call.cmd==='monitor_get'),false);
+});
+test('a chat request opens the Delegate form once',async()=>{
+  let handled=0;const h=harness({compact:true,delegateRequest:5,onDelegateHandled:()=>{handled++;h.props.delegateRequest=null;},onEnsureCoordinator:async()=>({project,owner})});
+  const tree=await settle(h);assert.equal(handled,1);assert.ok(find(tree,node=>node.props.role==='dialog'));
+});
+test('job rows say what is running, what waits for approval and what the Watchdog covers',()=>{
+  const attempts=[{startedAtMs:1000}];
+  assert.deepEqual(model.projectJobState({status:'proposed',attempts:[]},0),{state:'Waiting for approval',detail:'Not started'});
+  assert.deepEqual(model.projectJobState({status:'running',desiredState:'running',attempts},1000+3*60000+5),{state:'Running · 3m',detail:'Watchdog on'});
+  assert.deepEqual(model.projectJobState({status:'running',desiredState:'running',attempts},1000+65*60000),{state:'Running · 1h 5m',detail:'Watchdog on'});
+  assert.equal(model.projectJobState({status:'running',desiredState:'paused',attempts},1000).detail,'');
+  assert.equal(model.projectJobState({status:'needs_you',attempts},1000).detail,'');
 });

@@ -9,7 +9,7 @@ import type { AssistantLook, AssistantProjectBinding } from "./assistantIdentity
 import type { ProjectMemoryApi } from "./projectMemory.ts";
 
 export type PersonalLegacyMarker = { sourceSha256: string; importedAtMs: number; originalId?: string; originalStatus?: string; verified: false };
-export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[]; legacy?: PersonalLegacyMarker };
+export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice" | "delegation_failed"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[]; legacy?: PersonalLegacyMarker };
 export type ToolClass = "read" | "write" | "send" | "spend";
 /** Dot's four rule choices: do it without asking, only when I say so, ask first, hand it to me. */
 export type ActionMode = "auto" | "onRequest" | "ask" | "handOff";
