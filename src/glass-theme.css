@@ -495,9 +495,12 @@
   box-shadow: 0 0 0 1px rgb(209 138 0 / .18), 0 0 calc(22px * var(--deck-glow, 0)) -8px #d18a00;
   font-size: max(12px, 1em);
 }
-:root[data-deck-theme="glass"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) ,
-:root[data-deck-theme="flat"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]),
-:root[data-deck-theme="clay"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) {
+:root[data-deck-theme="glass"] .approval .approval-head strong,
+:root[data-deck-theme="glass"] .approval :is(.approval-host, .approval-kind, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]),
+:root[data-deck-theme="flat"] .approval .approval-head strong,
+:root[data-deck-theme="flat"] .approval :is(.approval-host, .approval-kind, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]),
+:root[data-deck-theme="clay"] .approval .approval-head strong,
+:root[data-deck-theme="clay"] .approval :is(.approval-host, .approval-kind, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) {
   color: #2d220d;
   font-size: max(12px, 1em);
 }
@@ -539,7 +542,9 @@
 
 /* Plans are review content: follow the active palette, keeping an amber
    boundary and explicit decisions. Other permission cards retain the solid
-   safety treatment above. Scope these rules to plans in every skin. */
+   safety treatment above. Scope these rules to plans in every skin. These tie
+   the rules above on specificity and win by order, so keep compound selectors
+   out of the :is() lists there: :is() takes its strongest member's weight. */
 :root .approval.approval-plan-card {
   background: var(--panel);
   color: var(--text);
