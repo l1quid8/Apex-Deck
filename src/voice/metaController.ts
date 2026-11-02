@@ -452,7 +452,6 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       const voices = e.voices ?? [];
       const valid = state.scope && voices.includes(deps.voice(state.scope));
       const muted = state.muted || !valid;
-      audio?.mute(muted);
       set({
         status: valid ? "listening" : "needs-attention",
         voices,
@@ -567,9 +566,9 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
           // Actually controller's audio handling: audio frames go via client.audio() call, not via openAudio directly.
           // openAudio's onFrame is for mic PCM to send to backend (we handle meta forwarding here).
           if (myEpoch !== epoch || !callId) return;
-          if (state.muted) return;
+          // Meta ends a live stream that falls behind real time, so muting sends silence.
           // Convert Int16Array to bytes for Meta (little-endian already)
-          const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+          const bytes = state.muted ? new Uint8Array(pcm.byteLength) : new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
           metaAsr?.sendPcm(bytes);
           // Also feed to local helper for its internal VAD? We skip helper audio upload for meta path to avoid duplicate STT triggering.
           // But we still need to keep helper alive – its audio path not used for STT in meta mode.
@@ -631,11 +630,6 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     switchAgent,
     mute(value: boolean) {
       set({ muted: value });
-      audio?.mute(value);
-      if (value) {
-        // On mute, clear meta turn handling
-        metaAsr?.sendPcm(new Uint8Array()); // no-op
-      }
     },
     preview(voice: string) {
       void sample(voice).catch(() => {});
