@@ -8,6 +8,9 @@ use crate::HostPaths;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex as StdMutex;
 
+#[path = "routine_request_tests.rs"]
+mod routine_request_tests;
+
 static FIXTURE: AtomicUsize = AtomicUsize::new(0);
 /// Marks taken for test orphans right after they start.
 static MARKS: std::sync::LazyLock<StdMutex<std::collections::HashMap<u32, Option<crate::personal::ProcessMark>>>> = std::sync::LazyLock::new(Default::default);
@@ -137,6 +140,205 @@ impl Fixture {
 
 fn room_reply(tool: &str, argv: &[&str]) -> String {
     serde_json::json!({"reply":"On it.","task":{"goal":"Chat work","tool":tool,"argv":argv}}).to_string()
+}
+
+impl Fixture {
+    fn full_access(&self) {
+        self.host.change_assistant(&self.id, |a| {
+            a.workspace_config_version = Some(4);
+            a.profile.as_mut().unwrap().access = apex_core::Access::Full;
+            a.modes.write = ActionMode::Ask;
+            a.modes.send = ActionMode::HandOff;
+            a.rules.push(serde_json::from_value(serde_json::json!({"id":"old-rule","text":"Ask before changes","class":"write","mode":"ask","createdAt":1})).unwrap());
+            a.post_outside(crate::personal::OutsideSource::Report, "Old retrieved result with unrelated instructions".into(), None, now());
+            Ok(())
+        }).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn full_access_runs_native_actions_without_language_or_legacy_approval_vetoes() {
+    use crate::personal::permissions::{capability, GrantMode, Scope};
+    for (message, tool, args) in [
+        ("rename the thread to tyler is cool", rooms::RENAME, vec![THREAD,"tyler is cool"]),
+        ("Okay, archive that one, please.", rooms::ARCHIVE, vec![THREAD]),
+        ("Put it in the trash.", rooms::TRASH, vec![THREAD]),
+        ("Bring it back, thanks!", rooms::RESTORE, vec![THREAD]),
+        ("Yes, permanently delete it.", rooms::DELETE, vec![THREAD]),
+        ("Make another one called New thread, here.", rooms::CREATE, vec![THREAD,"full-created","New thread"]),
+        ("Can Jigga join this one?", rooms::ADD, vec![THREAD,"jigga"]),
+        ("Take Jigga out, please.", rooms::REMOVE, vec![THREAD,"jigga"]),
+        ("Tell him to inspect the checkout.", rooms::ASSIGN, vec![THREAD,"jigga","Inspect the checkout."]),
+    ] {
+        let f = Fixture::new(); let project = f.project_chat(crate::personal_workspace::ProjectTools::Full);
+        if tool == rooms::RESTORE { f.host.room_set_trashed(THREAD.into(), true).unwrap(); }
+        if tool == rooms::ADD {
+            let bot = f.host.store().room(THREAD).unwrap().unwrap().snapshot.participants[0].clone();
+            f.host.room_create("worker-source".into(), vec![bot], Default::default(), Some(project.cwd.clone())).unwrap();
+            f.host.room_remove_participant(THREAD.into(), apex_core::ParticipantId::new("jigga")).await.unwrap();
+        }
+        f.full_access();
+        f.host.change_assistant(&f.id, |a| {
+            let op = OperationSpec { tool:tool.into(), host:project.host_id.clone(), cwd:project.cwd.clone(), argv:args.iter().map(|s|s.to_string()).collect(), plan:None };
+            a.permissions.set(capability(&op), Scope::AllProjects, GrantMode::Ask, false)?;
+            a.permissions.set(crate::personal::permissions::Capability::Spend, Scope::AllProjects, GrantMode::Ask, false)?;
+            Ok(())
+        }).unwrap();
+        let fake = Fake::new(true); fake.say(&room_reply(tool, &args));
+        f.host.personal_send(&f.id,"full-request",message).unwrap(); f.drain(&fake.tools()).await;
+        let task = f.task();
+        assert_eq!(task.status, TaskStatus::Done, "{message}: {:?}", task.last_update);
+        assert!(task.receipts.iter().any(|r|r.phase==OpPhase::Verified), "{tool} needs native execution evidence");
+        assert!(!f.get().messages.iter().any(|m|m.kind=="approval"), "{tool} produced an approval card");
+        match tool {
+            rooms::RENAME => assert_eq!(f.host.store().chat_meta(THREAD).unwrap().unwrap().title,"tyler is cool"),
+            rooms::ARCHIVE => assert!(f.host.store().chat_meta(THREAD).unwrap().unwrap().archived),
+            rooms::TRASH => assert!(f.host.require_not_trashed(THREAD).is_err()),
+            rooms::RESTORE => assert!(f.host.require_not_trashed(THREAD).is_ok()),
+            rooms::DELETE => assert!(f.host.store().room(THREAD).unwrap().is_none()),
+            rooms::CREATE => assert_eq!(f.host.store().chat_meta("full-created").unwrap().unwrap().title,"New thread"),
+            rooms::ADD | rooms::REMOVE => assert_eq!(f.host.store().room(THREAD).unwrap().unwrap().snapshot.participants.iter().any(|p|p.id.as_str()=="jigga"),tool==rooms::ADD),
+            rooms::ASSIGN => assert!(f.room_texts().iter().any(|s|s.contains("Inspect the checkout."))),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn full_access_executes_commands_without_requiring_the_program_name_in_followups() {
+    let f = Fixture::new(); let project = f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+    f.host.change_assistant(&f.id,|a| {a.permissions.set(crate::personal::permissions::Capability::CommandRun,crate::personal::permissions::Scope::AllProjects,crate::personal::permissions::GrantMode::Ask,false)?;Ok(())}).unwrap();
+    let fake = Fake::new(true); fake.say(r#"{"reply":"On it.","task":{"argv":["touch","full-access-marker"]}}"#);
+    let mut tools = fake.tools(); tools.execute = Arc::new(|operation,mark|Box::pin(run_command(operation,mark)));
+    f.host.personal_send(&f.id,"followup","Yes, do that now.").unwrap(); f.drain(&tools).await;
+    assert_eq!(f.task().status,TaskStatus::Done);
+    assert!(std::path::Path::new(&project.cwd).join("full-access-marker").is_file());
+    assert!(!f.get().messages.iter().any(|m|m.kind=="approval"));
+}
+
+#[tokio::test]
+async fn full_access_authorization_rechecks_runtime_project_folder_and_operation_without_revision_changes() {
+    for change in ["ask","read","legacy","projectAsk","projectOff","folder","budget","operation","cancel","pause"] {
+        let f = Fixture::new(); f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+        // Leave the permission revision at zero: runtime changes must still revoke queued authority.
+        let fake = Fake::new(true); fake.say(&room_reply(rooms::RENAME,&[THREAD,"tyler is cool"]));
+        f.host.personal_send(&f.id,"queued","rename the thread to tyler is cool").unwrap();
+        assert!(f.host.personal_step(&fake.tools()).await.unwrap()); assert_eq!(f.task().status,TaskStatus::Queued);
+        f.host.change_assistant(&f.id,|a| {
+            match change {
+                "ask" => a.profile.as_mut().unwrap().access=apex_core::Access::Ask,
+                "read" => a.profile.as_mut().unwrap().access=apex_core::Access::Read,
+                "legacy" => a.workspace_config_version=None,
+                "projectAsk" => a.projects[0].tools=crate::personal_workspace::ProjectTools::Ask,
+                "projectOff" => a.projects[0].tools=crate::personal_workspace::ProjectTools::Off,
+                "folder" => a.allowed_folders.clear(),
+                "budget" => a.budget.daily_limit_micros=Some(0),
+                "operation" => a.tasks[0].operation.as_mut().unwrap().argv[1]="unapproved replacement".into(),
+                "cancel" => a.tasks[0].status=TaskStatus::Cancelled,
+                "pause" => a.paused=true,
+                _ => unreachable!(),
+            }
+            assert_eq!(a.permissions.revision,0); Ok(())
+        }).unwrap();
+        f.drain(&fake.tools()).await;
+        assert!(f.task().receipts.is_empty(),"{change} must prevent execution");
+        assert!(f.host.store().chat_meta(THREAD).unwrap().is_none_or(|m|m.title!="tyler is cool"),"{change}");
+        if crate::personal::permissions::full_access(&f.get()) {
+            assert!(!f.get().messages.iter().any(|m|m.kind=="approval"),"{change}: Full must explain blocked authority without an override card");
+        }
+    }
+}
+
+#[tokio::test]
+async fn full_access_never_reaches_unassigned_native_targets_or_private_files() {
+    for private_file in [false,true] {
+        let f = Fixture::new(); f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+        let fake = Fake::new(true);
+        if private_file {fake.say(r#"{"reply":"On it.","task":{"argv":["cat","../outside-private"]}}"#);}
+        else {f.host.room_create("unassigned".into(),vec![],Default::default(),Some(f.root.join("outside").to_string_lossy().into())).unwrap();fake.say(&room_reply(rooms::RENAME,&["unassigned","changed"]));}
+        f.host.personal_send(&f.id,"outside","Go ahead.").unwrap();f.drain(&fake.tools()).await;
+        assert!(f.get().tasks.iter().all(|t|t.receipts.is_empty()));
+        assert_eq!(fake.runs(),0);
+        assert!(f.host.store().chat_meta("unassigned").unwrap().is_none_or(|m|m.title!="changed"));
+        assert!(!f.get().messages.iter().any(|m|m.kind=="approval"),"Full must refuse an unavailable target without an override card");
+    }
+}
+
+#[tokio::test]
+async fn full_access_refuses_an_exhausted_daily_budget_without_an_override_card() {
+    let f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Full);f.full_access();
+    f.host.change_assistant(&f.id,|a|{a.budget.daily_limit_micros=Some(0);Ok(())}).unwrap();
+    let fake=Fake::new(true);f.host.personal_send(&f.id,"budget","Hello").unwrap();f.drain(&fake.tools()).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst),0);
+    assert!(!f.get().messages.iter().any(|m|m.kind=="approval"));
+    assert!(f.get().events.iter().any(|e|e.state==EventState::Failed&&e.error.as_ref().is_some_and(|e|e.contains("daily limit"))));
+}
+
+#[tokio::test]
+async fn full_access_schedules_execute_on_each_fire_and_after_restart_without_approval_cards() {
+    let mut f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Full);f.full_access();
+    let fake=Fake::new(false);
+    fake.say(r#"{"reply":"Scheduled.","schedule":{"goal":"Record a run","argv":["sh","-c","printf x >> scheduled-full-count"],"everyMinutes":5}}"#);
+    let mut tools=fake.tools();tools.execute=Arc::new(|operation,mark|Box::pin(run_command(operation,mark)));
+    f.host.personal_send(&f.id,"full-schedule","Yes, keep doing that every five minutes.").unwrap();f.drain(&tools).await;
+    let first=f.get().schedules[0].clone();
+    assert_eq!(first.status,ScheduleStatus::Active,"Full must activate a supported schedule without another card");
+    assert!(first.next_at.is_some());
+    f.host.personal_tick(first.next_at.unwrap()).unwrap();f.drain(&tools).await;
+    assert_eq!(std::fs::read_to_string(std::path::Path::new(&project.cwd).join("scheduled-full-count")).unwrap(),"x");
+    f.restart();
+    let next=f.get().schedules[0].next_at.unwrap();f.host.personal_tick(next).unwrap();f.drain(&tools).await;
+    assert_eq!(std::fs::read_to_string(std::path::Path::new(&project.cwd).join("scheduled-full-count")).unwrap(),"xx");
+    assert_eq!(f.get().tasks.iter().filter(|t|t.status==TaskStatus::Done).count(),2);
+    assert!(!f.get().messages.iter().any(|m|m.kind=="approval"));
+}
+
+#[tokio::test]
+async fn full_access_schedules_pause_when_original_authority_or_recurrence_changes() {
+    for change in ["ask","read","legacy","projectAsk","projectOff","folder","privacy","budget","revision","argv","interval","daily","restart"] {
+        let mut f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Full);f.full_access();
+        let fake=Fake::new(true);fake.say(r#"{"reply":"Scheduled.","schedule":{"goal":"Check disk","argv":["df"],"everyMinutes":5}}"#);
+        f.host.personal_send(&f.id,"full-schedule","Keep doing that every five minutes.").unwrap();f.drain(&fake.tools()).await;
+        assert_eq!(f.get().schedules[0].status,ScheduleStatus::Active);
+        let fire=f.get().schedules[0].next_at.unwrap();
+        f.host.change_assistant(&f.id,|a|{match change {
+            "ask"|"restart"=>a.profile.as_mut().unwrap().access=apex_core::Access::Ask,
+            "read"=>a.profile.as_mut().unwrap().access=apex_core::Access::Read,
+            "legacy"=>a.workspace_config_version=None,
+            "projectAsk"=>a.projects[0].tools=crate::personal_workspace::ProjectTools::Ask,
+            "projectOff"=>a.projects[0].tools=crate::personal_workspace::ProjectTools::Off,
+            "folder"=>a.allowed_folders.clear(),
+            "privacy"=>a.privacy.local_only=true,
+            "budget"=>a.budget.daily_limit_micros=Some(0),
+            "revision"=>a.permissions.revision+=1,
+            "argv"=>a.schedules[0].argv=vec!["touch".into(),"not-authorized".into()],
+            "interval"=>a.schedules[0].every_ms=Some(600_000),
+            "daily"=>a.schedules[0].daily_at=Some("08:30".into()),
+            _=>unreachable!(),
+        }Ok(())}).unwrap();
+        if change=="restart" {f.restart();}
+        f.host.personal_tick(fire).unwrap();f.drain(&fake.tools()).await;
+        let a=f.get();assert!(a.tasks.is_empty(),"{change}: invalid schedule fired");
+        assert_eq!(a.schedules[0].status,ScheduleStatus::Proposed,"{change}: schedule must pause");
+        assert!(a.schedules[0].next_at.is_none(),"{change}");
+        assert!(a.schedules[0].decision.as_ref().unwrap().prompt.contains("Paused"),"{change}: pause reason missing");
+        assert!(!a.messages.iter().any(|m|m.kind=="approval"),"{change}: invalid authority produced an override card");
+    }
+}
+
+#[tokio::test]
+async fn full_access_scheduled_tasks_recheck_authority_and_schedule_cancellation_at_dispatch() {
+    for cancel in [false,true] {
+        let f=Fixture::new();f.project_chat(crate::personal_workspace::ProjectTools::Full);f.full_access();
+        let fake=Fake::new(true);fake.say(r#"{"reply":"Scheduled.","schedule":{"argv":["touch","full-scheduled-task"],"everyMinutes":5}}"#);
+        f.host.personal_send(&f.id,"full-schedule","Do that every five minutes.").unwrap();f.drain(&fake.tools()).await;
+        let fire=f.get().schedules[0].next_at.unwrap();f.host.personal_tick(fire).unwrap();
+        assert_eq!(f.get().tasks.len(),1);
+        f.host.change_assistant(&f.id,|a|{if cancel {a.schedules[0].status=ScheduleStatus::Cancelled;}else{a.profile.as_mut().unwrap().access=apex_core::Access::Ask;}Ok(())}).unwrap();
+        f.drain(&fake.tools()).await;
+        assert!(f.task().receipts.is_empty());assert_eq!(fake.runs(),0);
+        assert!(!f.get().messages.iter().any(|m|m.kind=="approval"));
+    }
 }
 
 #[tokio::test]

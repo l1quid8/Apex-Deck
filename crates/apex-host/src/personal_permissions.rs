@@ -20,7 +20,8 @@ impl Scope {
     fn matches(&self,op:&OperationSpec)->bool { match self {
         Self::AllProjects=>true,
         Self::Project{host,cwd}=>*host==op.host && *cwd==op.cwd,
-        Self::Thread{host,cwd,thread}=>*host==op.host && *cwd==op.cwd && op.tool.starts_with("room.") && op.argv.first()==Some(thread),
+        Self::Thread{host,cwd,thread}=>*host==op.host && *cwd==op.cwd && op.tool.starts_with("room.")
+            && if op.tool=="room.deleteMany" {bulk_threads(op).is_some_and(|targets|targets.iter().all(|id|id==thread))} else {op.argv.first()==Some(thread)},
     } }
     fn rank(&self)->u8 { match self { Self::AllProjects=>0,Self::Project{..}=>1,Self::Thread{..}=>2 } }
 }
@@ -36,7 +37,73 @@ pub struct Authorization { pub revision:u64,pub grant_id:Option<String>,pub oper
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="camelCase")]
 pub struct PermissionAudit { pub actor:String,pub thread:String,pub request:String,pub operation_hash:String,pub capability:Capability,pub grant_ids:Vec<String>,pub revision:u64,pub at:u64,pub result:String }
+fn bulk_threads(op:&OperationSpec)->Option<Vec<String>> {
+    let targets:Vec<serde_json::Value>=serde_json::from_str(op.argv.get(1)?).ok()?;
+    if targets.is_empty()||targets.len()>20 {return None}
+    let ids=targets.iter().map(|target|target.as_str().or_else(||target.get("id").and_then(serde_json::Value::as_str)).filter(|id|!id.is_empty()).map(str::to_owned)).collect::<Option<Vec<_>>>()?;
+    if ids.iter().collect::<std::collections::HashSet<_>>().len()!=ids.len()||!ids.iter().any(|id|Some(id)==op.argv.first()) {return None}
+    Some(ids)
+}
 static APPROVAL_EPOCH:std::sync::OnceLock<String>=std::sync::OnceLock::new();
+/// Full is an authenticated standing trust choice from the versioned runtime
+/// settings. Legacy modes, retrieved text and capability grants cannot create it.
+pub fn full_access(assistant:&super::PersonalAssistant)->bool {
+    assistant.workspace_config_version==Some(4)
+        && assistant.profile.as_ref().is_some_and(|profile|profile.access==apex_core::Access::Full)
+}
+/// Only adapters with native validation participate in standing trust.
+pub(crate) fn full_access_operation(assistant:&super::PersonalAssistant,op:&OperationSpec)->bool {
+    full_access(assistant) && (crate::personal_worker::rooms::known(&op.tool)
+        || matches!(op.tool.as_str(),crate::personal_worker::COMMAND_TOOL|"browser.open"|"computer.reply"|"model.reply"|"model.helper"|"model.summary"))
+}
+/// A direct reversible native request can supply exact one-request authority.
+/// Explicit restrictions still require a decision in Ask mode.
+pub(crate) fn routine_request_allowed(assistant:&super::PersonalAssistant,task:&super::PersonalTask)->bool {
+    if assistant.workspace_config_version!=Some(4)
+        || assistant.profile.as_ref().is_none_or(|profile|profile.access!=apex_core::Access::Ask) {return false}
+    let Some(op)=task.operation.as_ref() else {return false};
+    if !matches!(op.tool.as_str(),"room.create"|"room.rename"|"room.archive"|"room.trash"|"room.restore"|"room.addParticipant"|"room.removeParticipant")
+        || op.plan.is_some() || task.kind!=super::TaskKind::Command {return false}
+    if assistant.rules.iter().any(|rule|rule.class==task.class&&matches!(rule.mode,ActionMode::Ask|ActionMode::HandOff)) {return false}
+    if assistant.permissions.resolve(op,false,false).is_some_and(|grant|grant.revoked||grant.mode==GrantMode::Ask) {return false}
+    !matches!(crate::personal_worker::gateway::gate(assistant,task,None),crate::personal_worker::gateway::Gate::Refuse(_)|crate::personal_worker::gateway::Gate::HandOff)
+}
+fn routine_policy_hash(assistant:&super::PersonalAssistant)->String {
+    use sha2::{Digest,Sha256};
+    format!("{:x}",Sha256::digest(serde_json::to_vec(&(
+        assistant.workspace_config_version,assistant.profile.as_ref().map(|profile|profile.access),
+        &assistant.projects,&assistant.allowed_folders,&assistant.machines,&assistant.privacy,&assistant.rules,&assistant.modes
+    )).unwrap_or_default()))
+}
+fn full_policy_hash(assistant:&super::PersonalAssistant)->String {
+    use sha2::{Digest,Sha256};
+    format!("{:x}",Sha256::digest(serde_json::to_vec(&(
+        assistant.workspace_config_version,&assistant.profile,&assistant.projects,&assistant.allowed_folders,
+        &assistant.machines,&assistant.privacy,&assistant.budget
+    )).unwrap_or_default()))
+}
+/// Authorize a typed native approval under the assistant's standing trust.
+/// Unsupported approvals cannot be upgraded into wider agent privileges.
+pub(crate) fn full_delegated_authority(assistant:&super::PersonalAssistant,op:&OperationSpec,may_spend:bool)->Result<Vec<String>,String> {
+    if !full_access(assistant) || assistant.paused || assistant.archived_at.is_some() {return Err("Full access is no longer active.".into())}
+    if !matches!(op.tool.as_str(),"room.delegateEdit"|"room.delegateCommand"|"room.delegateSpend") {return Err("This approval has no supported typed adapter.".into())}
+    let binding=assistant.projects.iter().find(|binding|binding.project.host_id==op.host&&binding.project.cwd==op.cwd).ok_or("That approval's project is not assigned.")?;
+    if binding.tools!=crate::personal_workspace::ProjectTools::Full {return Err("Full delegation requires Full tools in this existing project.".into())}
+    let cwd=crate::personal_worker::gateway::resolved(std::path::Path::new(&op.cwd)).ok_or("The project folder is unavailable.")?;
+    if !assistant.allowed_folders.iter().filter_map(|folder|crate::personal_worker::gateway::resolved(std::path::Path::new(folder))).any(|folder|cwd.starts_with(folder)) {return Err("The approval is outside the existing folder grants.".into())}
+    if may_spend || op.tool=="room.delegateSpend" {
+        if let Some(limit)=assistant.budget.daily_limit_micros {
+            if assistant.spent_today(super::now())>=limit {return Err("Today's daily limit is exhausted. Change the budget before continuing.".into())}
+            if !assistant.budget.unknown_cost_ok {return Err("This native approval does not report a bounded cost. Allow unknown cost in Settings before continuing.".into())}
+        }
+    }
+    Ok(vec![format!("runtime-full:{}",full_policy_hash(assistant)),"runtime-full:delegation".into()])
+}
+pub(crate) fn routine_marker(assistant:&super::PersonalAssistant,task:&super::PersonalTask)->Result<String,String> {
+    if !routine_request_allowed(assistant,task) {return Err("This operation needs a separate approval.".into())}
+    let auth=Authorization{revision:assistant.permissions.revision,grant_id:Some(format!("routine-request:{}",routine_policy_hash(assistant))),operation_hash:task.operation.as_ref().ok_or("Missing operation.")?.hash(),human_once:true};
+    Ok(format!("permission:{}",serde_json::to_string(&auth).map_err(|e|e.to_string())?))
+}
 pub fn delegated_operation(room:&OperationSpec,pending:&serde_json::Value)->Result<OperationSpec,String> {
     let kind=pending["action"]["kind"].as_str().ok_or("Approval action kind unavailable.")?;
     if kind=="edit" {
@@ -65,7 +132,7 @@ pub fn capability(op:&OperationSpec)->Capability { match op.tool.as_str() {
     "room.approve"=>Capability::ApprovalDelegate,"room.delegateEdit"=>Capability::FileEdit,"room.delegateCommand"=>Capability::CommandRun,"room.delegateSpend"=>Capability::Spend,"room.delegatePublish"=>Capability::Publish,
     "room.read"|"room.search"=>Capability::ConversationRead,"room.create"=>Capability::ThreadCreate,
     "room.rename"|"room.organize"|"room.restore"=>Capability::ThreadOrganize,"room.archive"=>Capability::ThreadArchive,
-    "room.trash"=>Capability::ThreadTrash,"room.delete"=>Capability::ThreadDelete,
+    "room.trash"=>Capability::ThreadTrash,"room.delete"|"room.deleteMany"=>Capability::ThreadDelete,
     "room.addParticipant"=>Capability::ParticipantAdd,"room.removeParticipant"=>Capability::ParticipantRemove,
     "room.assign"=>Capability::AgentAssign,"room.send"=>Capability::AgentMessage,
     "room.stop"=>Capability::WorkPause,"room.resume"=>Capability::WorkResume,
@@ -95,11 +162,13 @@ impl PermissionPolicy {
         // lineage. Narrow allowances cannot authorize them. Narrow restrictions
         // conservatively hold them on that host instead of falling through to a
         // broad Always rule (cwd does not confine arbitrary program I/O).
+        let bulk_restriction=if op.tool=="room.deleteMany" {bulk_threads(op).and_then(|targets|self.grants.iter().filter(|grant|grant.capability==Capability::ThreadDelete&&(grant.revoked||grant.mode!=GrantMode::Always)&&match &grant.scope {Scope::Thread{host,cwd,thread}=>host==&op.host&&cwd==&op.cwd&&targets.contains(thread),_=>false}).max_by_key(|grant|grant.scope.rank()))}else{None};
         let raw=!op.tool.starts_with("room.");
         let restriction=if raw {self.grants.iter().filter(|g|g.capability==capability(op)&&g.scope!=Scope::AllProjects&&(g.revoked||g.mode!=GrantMode::Always)&&match &g.scope {Scope::Project{host,..}|Scope::Thread{host,..}=>host==&op.host,_=>false}).max_by_key(|g|g.scope.rank())} else {None};
-        restriction.or_else(||self.grants.iter().filter(|g|g.capability==capability(op) && g.scope.matches(op) && (!raw||g.scope==Scope::AllProjects)).max_by_key(|g|g.scope.rank()))
+        bulk_restriction.or(restriction).or_else(||self.grants.iter().filter(|g|g.capability==capability(op) && g.scope.matches(op) && (!raw||g.scope==Scope::AllProjects)).max_by_key(|g|g.scope.rank()))
     }
     pub fn authorize(&self,op:&OperationSpec,requested:bool,outside:bool)->Result<Authorization,String> {
+        if op.tool=="room.deleteMany"&&bulk_threads(op).is_none() {return Err("The complete deletion target set is unavailable.".into())}
         let g=self.resolve(op,requested,outside).ok_or("No capability grant.")?;
         if (g.scope!=Scope::AllProjects&&!op.tool.starts_with("room.")) || g.revoked || g.mode==GrantMode::Ask || (outside && !matches!(capability(op),Capability::ConversationRead|Capability::FileRead|Capability::StatusRead)) || (g.mode==GrantMode::OnRequest && !requested) {return Err("This operation requires approval.".into())}
         Ok(Authorization{revision:self.revision,grant_id:Some(g.id.clone()),operation_hash:op.hash(),human_once:false})
@@ -135,6 +204,7 @@ pub fn model_spend_approved(assistant:&super::PersonalAssistant,operation:&Opera
     assistant.tasks.iter().any(|t|t.operation.as_ref()==Some(operation)&&(t.kind==super::TaskKind::Helper||t.receipts.is_empty())&&t.decision.as_ref().is_some_and(|d|d.status==super::DecisionStatus::Approved&&d.params_hash==operation.hash()&&d.decided_by_event.as_deref().is_some_and(|m|authorization_is_human_once(m)&&validate_marker(assistant,t,m).is_ok())))
 }
 pub fn model_spend_hold(assistant:&super::PersonalAssistant,operation:&OperationSpec,human:bool)->Option<String> {
+    if full_access_operation(assistant,operation) {return None}
     let grant=assistant.permissions.resolve(operation,false,false)?;
     if model_spend_approved(assistant,operation) {return None}
     if grant.scope==Scope::AllProjects&&!grant.revoked&&(grant.mode==GrantMode::Always||(grant.mode==GrantMode::OnRequest&&human)) {return None}
@@ -148,6 +218,10 @@ pub fn reply_spend_hold(assistant:&super::PersonalAssistant,event:&super::Person
 /// invalidate queued operations even if a legacy class still permits them.
 pub fn marker(assistant:&super::PersonalAssistant,task:&super::PersonalTask,human_once:bool,outside:bool)->Result<Option<String>,String> {
     let op=task.operation.as_ref().ok_or("Missing operation.")?;
+    if !human_once && full_access_operation(assistant,op) {
+        let auth=Authorization{revision:assistant.permissions.revision,grant_id:Some(format!("runtime-full:{}",full_policy_hash(assistant))),operation_hash:op.hash(),human_once:false};
+        return Ok(Some(format!("permission:{}",serde_json::to_string(&auth).map_err(|e|e.to_string())?)))
+    }
     if assistant.permissions.resolve(op,false,false).is_none() && assistant.permissions.revision==0 {return Ok(None)}
     let human=explicit_request(assistant,task);
     if !human_once && outside && !matches!(capability(op),Capability::ConversationRead|Capability::FileRead|Capability::StatusRead) {return Err("Outside content cannot authorize an action.".into())}
@@ -222,6 +296,21 @@ pub fn validate_marker(assistant:&super::PersonalAssistant,task:&super::Personal
     };
     let auth:Authorization=serde_json::from_str(value).map_err(|_|"Invalid permission authorization.")?;
     let op=task.operation.as_ref().ok_or("Missing operation.")?;
+    if let Some(policy)=auth.grant_id.as_deref().and_then(|id|id.strip_prefix("routine-request:")) {
+        if auth.revision!=assistant.permissions.revision || auth.operation_hash!=op.hash()
+            || policy!=routine_policy_hash(assistant) || !routine_request_allowed(assistant,task) {
+            return Err("The requested operation or its access changed. Review this action again.".into())
+        }
+        return Ok(())
+    }
+    if let Some(policy)=auth.grant_id.as_deref().and_then(|id|id.strip_prefix("runtime-full:")) {
+        if auth.revision!=assistant.permissions.revision || auth.operation_hash!=op.hash()
+            || policy!=full_policy_hash(assistant) || !full_access_operation(assistant,op)
+            || !matches!(crate::personal_worker::gateway::gate(assistant,task,None),crate::personal_worker::gateway::Gate::Run(ActionMode::Auto)) {
+            return Err("The operation or Full access changed. Review this action again.".into())
+        }
+        return Ok(())
+    }
     let human=explicit_request(assistant,task);
     assistant.permissions.revalidate(op,&auth,human,false)
 }
@@ -251,7 +340,7 @@ fn approval_task<'a>(assistant:&'a super::PersonalAssistant,id:&str,hash:&str)->
 }
 fn always_supported(task:&super::PersonalTask)->bool {
     let Some(op)=&task.operation else{return false};
-    matches!(task.decision.as_ref().map(|d|d.kind),Some(super::DecisionKind::Approve|super::DecisionKind::Spend))
+    op.tool!="room.deleteMany" && matches!(task.decision.as_ref().map(|d|d.kind),Some(super::DecisionKind::Approve|super::DecisionKind::Spend))
       && (crate::personal_worker::rooms::known(&op.tool)||op.tool==crate::personal_worker::COMMAND_TOOL||op.tool=="browser.open"||op.tool=="computer.reply"||matches!(op.tool.as_str(),"model.reply"|"model.summary"|"model.helper"))
       && scope_supported(capability(op),&Scope::AllProjects)
 }
@@ -351,6 +440,20 @@ mod tests {
     fn approval_assistant(tool:&str)->super::super::PersonalAssistant {
         let operation=OperationSpec{tool:tool.into(),host:"h".into(),cwd:"/p".into(),argv:vec!["thread".into()],plan:None};
         serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":["/p"],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":1,"task":1,"decision":1},"messages":[],"events":[{"id":"pe-1","requestId":"human","source":{"kind":"human","text":"Delete thread"},"receivedAt":0,"state":"done"}],"tasks":[{"id":"pt-1","goal":"Action","completionCriteria":[],"targetHost":"h","status":"needsYou","operation":operation,"fromEvent":"pe-1","maxAttempts":1,"createdAt":0,"updatedAt":0,"decision":{"id":"pd-1","kind":"approve","paramsHash":operation.hash(),"prompt":"Approve","status":"open","openedAt":0}}]})).unwrap()
+    }
+    #[test]
+    fn bulk_delete_authority_never_expands_a_single_thread_grant_or_offers_persistent_approval() {
+        let operation=OperationSpec{tool:"room.deleteMany".into(),host:"h".into(),cwd:"/p".into(),argv:vec!["one".into(),r#"["one","two"]"#.into()],plan:None};
+        assert_eq!(capability(&operation),Capability::ThreadDelete);
+        let mut policy=PermissionPolicy::default();
+        policy.set(Capability::ThreadDelete,Scope::Thread{host:"h".into(),cwd:"/p".into(),thread:"one".into()},GrantMode::Always,false).unwrap();
+        assert!(policy.authorize(&operation,true,false).is_err());
+        policy.set(Capability::ThreadDelete,Scope::AllProjects,GrantMode::Always,false).unwrap();
+        assert!(policy.authorize(&operation,true,false).is_ok());
+        policy.set(Capability::ThreadDelete,Scope::Thread{host:"h".into(),cwd:"/p".into(),thread:"two".into()},GrantMode::Ask,false).unwrap();
+        assert!(policy.authorize(&operation,true,false).is_err());
+        let assistant=approval_assistant("room.deleteMany");
+        assert!(!always_supported(&assistant.tasks[0]),"a one-card batch decision must not widen a standing delete scope");
     }
     #[test]
     fn always_grant_and_current_action_are_atomic_exact_and_preserve_delegation() {

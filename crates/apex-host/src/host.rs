@@ -1905,9 +1905,12 @@ impl Host {
             let underlying=permissions::delegated_operation(operation,pending)?;
             if underlying.argv.get(2)!=Some(expected) {return Err("The underlying approval changed. Read it again.".into())}
             let requested=permissions::explicit_request(assistant,task);
-            let (auth,delegation)=assistant.permissions.authorize_delegated(&underlying,requested,false,false)?;
-            let mut grants=vec![auth.grant_id.unwrap_or_default(),delegation];
-            if pending["action"]["risky"]==true && pending["action"]["kind"]!="spend" {
+            let full=permissions::full_access(assistant);
+            let mut grants=if full {permissions::full_delegated_authority(assistant,&underlying,pending["action"]["risky"]==true)?} else {
+                let (auth,delegation)=assistant.permissions.authorize_delegated(&underlying,requested,false,false)?;
+                vec![auth.grant_id.unwrap_or_default(),delegation]
+            };
+            if !full && pending["action"]["risky"]==true && pending["action"]["kind"]!="spend" {
                 // An opaque risky command may spend or publish. Both explicit
                 // delegations are required instead of inferring intent from text.
                 for tool in ["room.delegateSpend","room.delegatePublish"] {
@@ -1934,7 +1937,9 @@ impl Host {
             let actor=pending["id"].as_str().ok_or("Approval actor unavailable.")?;
             let profile=handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|p.id.as_str()==actor).cloned().ok_or("The requesting participant left this thread.")?;
             if let Some(why)=crate::personal_worker::endpoint_refusal(assistant,&profile) {return Err(why)}
-            if permissions::delegated_operation(operation,pending)?.argv.get(2)!=Some(expected) {return Err("The underlying approval changed.".into())}
+            let underlying=permissions::delegated_operation(operation,pending)?;
+            if underlying.argv.get(2)!=Some(expected) {return Err("The underlying approval changed.".into())}
+            if permissions::full_access(assistant) {permissions::full_delegated_authority(assistant,&underlying,pending["action"]["risky"]==true)?;}
             let result=handle.approvals.resolve(request,apex_core::Decision::Approve);
             let audit=assistant.permissions.audit.iter_mut().rev().find(|a|Some(&a.operation_hash)==audit_hash.as_ref()).ok_or("Audit intent unavailable.")?;
             audit.result=if result {"approved"} else {"request no longer waiting"}.into();
@@ -5441,6 +5446,51 @@ fn combine_result<T>(result: Result<T, String>, saved: Result<(), String>) -> Re
 mod assistant_permission_delivery_tests {
     use super::*;
     use crate::personal::{permissions::*, *};
+    #[tokio::test]
+    async fn full_access_delegates_only_current_typed_native_actions_without_extra_grants() {
+        for (kind,title,detail,risky,allowed) in [
+            ("command","Run command","true",false,true),
+            ("edit","Edit note.txt","new content",false,true),
+            ("spend","Reply cost","model reply",true,true),
+            ("spend","Reply cost","exhausted budget",true,false),
+            ("spend","Reply cost","unknown cost",true,false),
+            ("spend","Reply cost","unknown cost accepted",true,true),
+            ("plan","Change access","enable full",false,false),
+            ("other","Unknown permission","grant computer",false,false),
+            ("edit","Edit ../outside","new content",false,false),
+            ("command","Run risky command","opaque payload",true,true),
+        ] {
+            let root=std::env::temp_dir().join(format!("apex-full-delegated-{}-{}-{kind}",std::process::id(),now_millis()));
+            let cwd=root.join("project");std::fs::create_dir_all(&cwd).unwrap();let cwd=cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+            let host=Host::new(HostPaths{data:root.join("data"),downloads:None},tokio::runtime::Handle::current());std::fs::write(root.join("data/host-id"),"h\n").unwrap();
+            let worker:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"worker","display_name":"Worker","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"m"}})).unwrap();
+            host.room_create("r".into(),vec![worker.clone()],RoomOptions::default(),Some(cwd.clone())).unwrap();
+            host.store.save_session(&serde_json::json!({"workspaces":[{"id":"w","path":cwd}],"panes":[{"kind":"chat","id":"r","title":"Room","workspaceId":"w"}]})).unwrap();
+            let handle=host.handle("r").unwrap();let (request,mut answer)=handle.approvals.open_for(ParticipantId::new("worker"));
+            let action:apex_core::ProposedAction=serde_json::from_value(serde_json::json!({"kind":kind,"title":title,"detail":detail,"risky":risky})).unwrap();
+            host.room_event("r",RoomEvent::ApprovalRequested{id:ParticipantId::new("worker"),request:request.clone(),action});
+            let base=OperationSpec{tool:"room.approve".into(),host:"h".into(),cwd:cwd.clone(),argv:vec!["r".into()],plan:None};
+            let pending=host.room_pending_approvals("r").unwrap()[0].clone();
+            let binding=delegated_operation(&base,&pending).map(|o|o.argv[2].clone()).unwrap_or_else(|_|"unsupported".into());
+            let operation=OperationSpec{argv:vec!["r".into(),request.clone(),binding],..base};
+            let mut profile=worker;profile.access=apex_core::Access::Full;
+            let mut assistant:PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":profile,"workspaceConfigVersion":4,"allowedFolders":[cwd],"projects":[{"project":{"hostId":"h","workspaceId":"w","cwd":cwd},"tools":"full"}],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+            match detail {
+                "exhausted budget" => assistant.budget.daily_limit_micros=Some(0),
+                "unknown cost"|"unknown cost accepted" => {assistant.budget.daily_limit_micros=Some(1_000_000);assistant.budget.unknown_cost_ok=detail=="unknown cost accepted";},
+                _ => {},
+            }
+            for cap in [Capability::CommandRun,Capability::FileEdit,Capability::Spend,Capability::ApprovalDelegate] {assistant.permissions.set(cap,Scope::AllProjects,GrantMode::Ask,false).unwrap();}
+            let mut task:PersonalTask=serde_json::from_value(serde_json::json!({"id":"pt-1","goal":"Approve","completionCriteria":[],"targetHost":"h","status":"running","operation":operation,"fromEvent":"pe-1","maxAttempts":1,"createdAt":0,"updatedAt":0,"decision":{"id":"pd-1","kind":"approve","paramsHash":operation.hash(),"prompt":"Approve","status":"approved","openedAt":0}})).unwrap();
+            task.decision.as_mut().unwrap().decided_by_event=marker(&assistant,&task,false,true).unwrap();
+            assistant.tasks.push(task);host.change_personal(|a|{a.push(assistant);Ok(())}).unwrap();
+            let result=host.personal_room_approve("a","pt-1",&operation);
+            assert_eq!(result.is_ok(),allowed,"{kind} / {title}: {result:?}");
+            if allowed {assert_eq!(answer.await.unwrap(),apex_core::Decision::Approve);assert_eq!(host.personal_get("a").unwrap().permissions.audit[0].result,"approved");assert!(host.personal_room_approve("a","pt-1",&operation).is_err());}
+            else {assert!(matches!(answer.try_recv(),Ok(None)));}
+            drop(host);let _=std::fs::remove_dir_all(root);
+        }
+    }
     #[tokio::test]
     async fn delegated_native_approval_consumes_only_its_exact_current_request_and_audits_grants() {
         let root=std::env::temp_dir().join(format!("apex-delegated-{}-{}",std::process::id(),now_millis()));
