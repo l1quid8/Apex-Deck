@@ -629,3 +629,27 @@ fn curator_usage_is_counted_even_when_it_hides_nothing() {
         }
     )));
 }
+
+#[test]
+fn picks_refuse_the_prompt_example_even_when_its_ids_are_offered() {
+    let example = r#"{"hide":["120-340","355"],"reason":"one short line"}"#;
+    assert!(CURATE_SYSTEM.contains(example), "update the rejection guard if the prompt example changes");
+    let offered = (0..400).collect::<Vec<_>>();
+    assert!(parse_picks(example, &offered).is_err());
+    assert!(parse_picks(&format!("```json\n{example}\n```"), &offered).is_err());
+    assert!(parse_picks(&format!("{example}\n{{\"hide\":[],\"reason\":\"\"}}"), &offered).unwrap().hidden.is_empty());
+    assert_eq!(parse_picks(r#"{"hide":["120-340","355"],"reason":"completed tests"}"#, &offered).unwrap().hidden.len(), 2);
+}
+
+#[test]
+fn copied_schema_example_leaves_curation_state_and_transcript_unchanged() {
+    let mut room = seed(400).0;
+    let before = room.snapshot();
+    let writer = ScriptedParticipant::new("null", &[r#"{"hide":["120-340","355"],"reason":"one short line"}"#]);
+    let (result, events) = curate(&mut room, &writer);
+    assert!(result.is_err());
+    assert_eq!(room.transcript(), before.transcript);
+    assert_eq!(room.snapshot().curations, before.curations);
+    assert!(!events.iter().any(|event| matches!(event, RoomEvent::CurationsChanged { .. })));
+    assert!(events.iter().any(|event| matches!(event, RoomEvent::ParticipantIdle { .. })));
+}

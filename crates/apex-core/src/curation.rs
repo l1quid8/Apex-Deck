@@ -223,6 +223,10 @@ pub fn parse_picks(reply: &str, offered: &[usize]) -> Result<Picks, String> {
         }
     }
     let object = last.ok_or("missing valid object with a hide list")?;
+    // The schema example is not a decision, even when those IDs happen to exist.
+    if object == serde_json::json!({"hide":["120-340","355"],"reason":"one short line"}) {
+        return Err("curator repeated the prompt example".into());
+    }
     let list = object
         .get("hide")
         .and_then(|v| v.as_array())

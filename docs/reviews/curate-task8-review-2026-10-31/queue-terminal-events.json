@@ -1,0 +1,38 @@
+[
+  {
+    "event": "room-event",
+    "payload": {
+      "event": {
+        "error": "`grok` exited with exit status: 1: Not signed in. To authenticate without a browser, run: | grok login --device-code | Alternatively, set the XAI_API_KEY environment variable or run `grok login` on a machine with a browser. To fix: run `grok login` in a terminal pane, then send your message again.",
+        "id": "gronk",
+        "type": "failed"
+      },
+      "recovery_seq": 25,
+      "room": "pane-mvwtcdzq-0"
+    },
+    "seq": 11136
+  },
+  {
+    "event": "room-event",
+    "payload": {
+      "event": {
+        "id": "gronk",
+        "type": "participant_idle"
+      },
+      "recovery_seq": 26,
+      "room": "pane-mvwtcdzq-0"
+    },
+    "seq": 11137
+  },
+  {
+    "event": "room-event",
+    "payload": {
+      "event": {
+        "type": "idle"
+      },
+      "recovery_seq": 27,
+      "room": "pane-mvwtcdzq-0"
+    },
+    "seq": 11141
+  }
+]

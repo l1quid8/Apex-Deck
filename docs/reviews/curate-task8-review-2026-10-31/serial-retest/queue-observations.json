@@ -1,0 +1,52 @@
+{
+  "room": "pane-mvwtcdzq-0",
+  "source": "Native protected desktop UI observations; queue is renderer-local, not a captured JS object",
+  "without_failed_send": {
+    "before": [
+      "Grok failed at sign-in",
+      "/curate: Paused for Gronk"
+    ],
+    "action": "Resume",
+    "after": [
+      "curator dispatched",
+      "curator failed at sign-in",
+      "no queued command"
+    ],
+    "turn_started_event": 17717
+  },
+  "with_failed_send": {
+    "setup": "Edit a paused queued message to @null !qa-missing-curate-server rejected queued send; host rejects after tool discovery",
+    "before": [
+      {
+        "kind": "message",
+        "failed": true,
+        "label": "Send unconfirmed for Null",
+        "control": "Retry send"
+      },
+      {
+        "kind": "curate",
+        "label": "Paused for Null",
+        "control": "Resume"
+      }
+    ],
+    "action": "Resume on the curate item",
+    "after": [
+      {
+        "kind": "message",
+        "failed": true,
+        "label": "Send unconfirmed for Null",
+        "control": "Retry send"
+      },
+      {
+        "kind": "curate",
+        "label": "Queued for Null",
+        "control": null
+      }
+    ],
+    "queued_count": 2,
+    "active": [],
+    "curator_started": false
+  },
+  "cleanup": "Removed curate first, then failed send; queue badge cleared. Both QA panes closed.",
+  "historical_incident": "Matching symptom reproduced; original local queue state unavailable, so historical cause is not established."
+}
