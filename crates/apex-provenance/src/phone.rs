@@ -97,7 +97,8 @@ impl Journal {
             _ if crate::protected(name)
                 && (name.starts_with("personal_")
                     || name.starts_with("assistant_")
-                    || name.starts_with("project_memory_")) =>
+                    || name.starts_with("project_memory_")
+                    || name == "project_task_lifecycle") =>
             {
                 (2, None)
             }

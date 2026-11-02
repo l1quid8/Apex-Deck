@@ -302,6 +302,9 @@ struct Document {
     handoffs: BTreeMap<String, HandoffReceipt>,
     #[serde(default)]
     purged_tasks: BTreeMap<String, AssistantLineage>,
+    /// Ownership survives deletion even for tasks predating assistant lineage.
+    #[serde(default)]
+    purged_task_owners: BTreeMap<String, TaskOwner>,
     /// The one legacy source this ledger imported, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     legacy_import: Option<crate::legacy_import::LedgerImport>,
@@ -435,10 +438,40 @@ impl AssistantTasks {
         if ids != expected.iter().cloned().collect() || ids.len() != expected.len() { return Err(TaskError::new(TaskErrorKind::StaleRevision, "Deleted tasks changed. Review the new exact count before emptying.")); }
         for id in &ids {
             let task = &document.tasks[id];
-            if !matches!(task.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Wait for cancellation to finish before emptying deleted tasks.")); }
+            ensure_purge_settled(task)?;
         }
         for id in &ids { if let Some(lineage)=document.tasks.get(id).and_then(|task|task.lineage.clone()) {document.purged_tasks.insert(id.clone(),lineage);} document.tasks.remove(id); }
         for entry in document.executions.values_mut().filter(|entry| ids.contains(&entry.task_id)) { entry.tombstoned_at_ms.get_or_insert(now_ms()); }
+        save_mutation(&self.inner, &mut document, before)
+    }
+
+    /// Validate the entire confirmed set before removing anything. No worker,
+    /// checkout, notebook or conversation storage is touched by this operation.
+    pub(crate) fn purge_exact(&self, expected: &[(String, u64, TaskOwner)], assistant: Option<&crate::personal_workspace::AssistantRef>) -> Result<(), TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let ids: std::collections::BTreeSet<_> = expected.iter().map(|(id, _, _)| id.clone()).collect();
+        if expected.is_empty() || ids.len() != expected.len() {
+            return Err(TaskError::new(TaskErrorKind::InvalidRequest, "Confirm a nonempty set of distinct tasks."));
+        }
+        for (id, revision, owner) in expected {
+            let task = document.tasks.get(id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+            if &task.owner != owner || task.revision != *revision {
+                return Err(TaskError::new(TaskErrorKind::StaleRevision, "Task ownership or revision changed. Refresh before deleting."));
+            }
+            if assistant.is_some_and(|a| !task.lineage.as_ref().is_some_and(|lineage| &lineage.assistant == a)) {
+                return Err(TaskError::new(TaskErrorKind::NotOwner, "Task belongs to a different assistant or machine."));
+            }
+            ensure_purge_settled(task)?;
+        }
+        let before = document.clone();
+        for id in &ids {
+            let task = document.tasks.remove(id).unwrap();
+            document.purged_task_owners.insert(id.clone(), task.owner);
+            if let Some(lineage) = task.lineage { document.purged_tasks.insert(id.clone(), lineage); }
+        }
+        for entry in document.executions.values_mut().filter(|entry| ids.contains(&entry.task_id)) {
+            entry.tombstoned_at_ms.get_or_insert(now_ms());
+        }
         save_mutation(&self.inner, &mut document, before)
     }
 
@@ -1594,6 +1627,19 @@ fn write_document(path: &Path, document: &Document) -> Result<(), TaskError> {
     crate::authority_file::write(path,&bytes).map_err(|e|TaskError::new(TaskErrorKind::Storage,format!("Could not save protected assistant tasks: {e}")))
 }
 
+fn ensure_purge_settled(task: &AssistantTask) -> Result<(), TaskError> {
+    if !matches!(task.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted)
+        || task.attempts.iter().any(|attempt| attempt.finished_at_ms.is_none())
+        || task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true)
+    {
+        return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Wait for the task, checkout lease and final worker receipts to settle before deleting."));
+    }
+    if crate::assistant_service::has_pending_integration(task) {
+        return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Reconcile the interrupted project integration before deleting this task."));
+    }
+    Ok(())
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1637,6 +1683,39 @@ mod tests {
         let reopened=AssistantTasks::open(ledger(&path)).unwrap();assert_eq!(reopened.purged_for_assistant(&assistant),vec![task.id.clone()]);
         assert!(restarted.prepare_handoff(input).is_err(),"old preparation cannot recreate purged task");
         assert!(restarted.lifecycle(&task.id,deleted.revision,&owner(),true).is_err());
+    }
+
+    #[test]
+    fn lifecycle_exact_project_purge_validates_whole_batch_and_preserves_ownership() {
+        let path=folder();let store=AssistantTasks::open(ledger(&path)).unwrap();
+        let make=|key| {let task=store.submit_human_request(request(key,"Inspect"),"Inspect".into(),Some(destination())).unwrap();store.transition(&task.id,task.revision,&owner(),TaskStatus::Cancelled,None).unwrap()};
+        let selected=make("selected");let untouched=make("untouched");
+        for data in [serde_json::json!({"leaseHeld":true}),serde_json::json!({"leaseHeld":false})] {
+            let task=store.set_result_data(&selected.id,store.get(&selected.id).unwrap().unwrap().revision,&owner(),Some(data.clone())).unwrap();
+            if data["leaseHeld"]==true { assert!(store.purge_exact(&[(task.id.clone(),task.revision,owner())],None).is_err()); }
+        }
+        let selected=store.get(&selected.id).unwrap().unwrap();
+        assert!(store.purge_exact(&[(selected.id.clone(),selected.revision,owner()),(untouched.id.clone(),untouched.revision-1,owner())],None).is_err());
+        assert!(store.get(&selected.id).unwrap().is_some());
+        let mut wrong=owner();wrong.conversation_id="wrong".into();
+        assert!(store.purge_exact(&[(selected.id.clone(),selected.revision,wrong)],None).is_err());
+        store.purge_exact(&[(selected.id.clone(),selected.revision,owner())],None).unwrap();
+        let reopened=AssistantTasks::open(ledger(&path)).unwrap();
+        assert!(reopened.get(&selected.id).unwrap().is_none());assert!(reopened.get(&untouched.id).unwrap().is_some());
+        assert_eq!(reopened.inner.document.lock().unwrap().purged_task_owners[&selected.id],owner());
+        assert!(reopened.submit_human_request(request("selected","Inspect"),"Inspect".into(),Some(destination())).is_err());
+    }
+
+    #[test]
+    fn lifecycle_exact_purge_refuses_open_attempt_and_pending_integration() {
+        let path=folder();let store=AssistantTasks::open(ledger(&path)).unwrap();
+        let task=store.submit_human_request(request("pending-purge","Inspect"),"Inspect".into(),Some(destination())).unwrap();
+        let task=store.transition(&task.id,task.revision,&owner(),TaskStatus::Cancelled,None).unwrap();
+        {let mut doc=store.inner.document.lock().unwrap();let saved=doc.tasks.get_mut(&task.id).unwrap();saved.mode=TaskMode::Isolated;saved.status=TaskStatus::Interrupted;saved.result_data=Some(serde_json::json!({"integrationPlan":{},"applyJournal":"pending.json"}));}
+        assert!(store.purge_exact(&[(task.id.clone(),task.revision,owner())],None).unwrap_err().message.contains("integration"));
+        {let mut doc=store.inner.document.lock().unwrap();let saved=doc.tasks.get_mut(&task.id).unwrap();saved.result_data=None;saved.attempts.push(TaskAttempt{result:None,number:1,run_id:"live".into(),status:TaskStatus::Running,started_at_ms:1,finished_at_ms:None,review_revision:None,usage:None});}
+        assert!(store.purge_exact(&[(task.id.clone(),task.revision,owner())],None).is_err());
+        assert!(store.get(&task.id).unwrap().is_some());
     }
 
     fn folder() -> PathBuf {

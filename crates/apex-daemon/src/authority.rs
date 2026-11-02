@@ -59,8 +59,8 @@ pub fn command_needs(command: &Command) -> Need {
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
         ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
-        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalApprovalOptions { .. } | PersonalDecideAlways { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
-        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
+        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalApprovalOptions { .. } | PersonalDecideAlways { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalTodo { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
+        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalProjectProposeUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
         | PersonalMachineResult { .. } | PersonalMachineAllow { .. } | PersonalMachineAllowed {} | PersonalExecuteLocal { .. }
@@ -68,7 +68,7 @@ pub fn command_needs(command: &Command) -> Need {
         // A device that can drive the shared browser reaches every signed-in site in it.
         | BrowserTabs { .. } | BrowserTabOpen { .. } | BrowserTabClose { .. } | BrowserTabControl { .. } | BrowserTabShare { .. } | BrowserTabFrame { .. }
         | BrowserTabInput { .. } | BrowserTabResize { .. } | BrowserTabUpload { .. } | BrowserTabStop { .. } => full(Global),
-        AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
+        AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } | ProjectTaskLifecycle { .. } => full(Global),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } | RoomGitStatus { id } => read(thread(id)),
         RoomGitAction { .. } => full(Global),
@@ -380,6 +380,8 @@ mod tests {
             ("personal_decide_always",Some((Full,"global")),json!({"assistantId":"a","requestId":"r","decisionId":"pd-1","paramsHash":"hash","expectedRevision":0,"capability":"threadDelete","scope":{"kind":"allProjects"}})),
             ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
             ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),
+            ("personal_todo", Some((Full, "global")), json!({"assistantId":"a","expectedRevision":1,"action":"add","text":"To do"})),
+            ("project_task_lifecycle", Some((Full, "global")), json!({"taskId":"t","revision":1,"owner":{"workspaceId":"w","cwd":"/p","hostId":"local","conversationId":"c"},"action":"purge"})),
             ("personal_task_lifecycle", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "action": "delete", "task": { "source": "personal", "taskId": "pt-1" } })),
             ("personal_archive", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "archived": true })),
             ("personal_reply_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "eventId": "ev-1" })),
@@ -388,6 +390,7 @@ mod tests {
             ("personal_schedule_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "scheduleId": "ps-1" })),
             ("personal_project_delegate", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"pe-1","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
             ("personal_project_delegate_ui", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
+            ("personal_project_propose_ui", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
             ("personal_workspace_configure", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "settings": {} })),
             ("personal_configure", Some((Full, "global")), json!({ "assistantId": "asst-1", "settings": {} })),
             ("personal_rule_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "ask", "class": "write", "mode": "ask" })),

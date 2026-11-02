@@ -732,7 +732,8 @@ impl Host {
             return Ok(());
         }
         let tools_on = if snapshot.privacy.local_only { vec![] } else { connectors::available() };
-        let room_budget = (snapshot.context_budget_chars as usize / 3).clamp(2_000, 12_000);
+        // Small contexts must leave room for fixed instructions and private task context.
+        let room_budget = (snapshot.context_budget_chars as usize / 3).clamp(1_000, 12_000);
         let view = match &event.source { EventSource::Human { view_context, .. } => view_context.as_ref(), _ => None };
         let (catalog, outside) = self.personal_room_context(&snapshot, &text, view, room_budget)?;
         let (mut system, mut seen) = context::assemble_seen_reserved(&snapshot, &text, at, &tools_on, catalog.chars().count());

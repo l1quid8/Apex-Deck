@@ -278,3 +278,31 @@ fn held_standing_delegation_resumes_on_personal_worker_wake_without_manual_retry
     assert_eq!(finished.status,TaskStatus::ReadyForReview,"{:?}",finished.result);
     assert_eq!(finished.attempts.len(),1);
 }
+
+#[test]
+fn verified_ui_full_proposal_never_dispatches_and_replays_stably() {
+    let f=fixture(Access::Full,ProjectTools::Full,Some(4));
+    let mut input=f.input.clone();input.source_event_id.clear();input.delegation_id="ui-proposal".into();
+    let command=||crate::command::Command::PersonalProjectProposeUi {input:input.clone()};
+    let receipt=f._runtime.block_on(f.host.call_assuming_verified_ui_for_test(command())).unwrap();
+    assert_eq!(receipt["status"],"proposed");assert_eq!(receipt["standingTrust"],false);
+    assert_eq!(f._runtime.block_on(f.host.call_assuming_verified_ui_for_test(command())).unwrap(),receipt);
+    let recovered=Host::try_new(HostPaths {data:f.base.join("data"),downloads:None},f._runtime.handle().clone()).unwrap();
+    assert_eq!(f._runtime.block_on(recovered.call_assuming_verified_ui_for_test(command())).unwrap(),receipt);
+    recovered.redispatch_recovered_queued().unwrap();
+    assert!(recovered.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap().attempts.is_empty());
+    f.host.redispatch_recovered_queued().unwrap();
+    let proposed=task(&f,&receipt);
+    assert_eq!(proposed.status,TaskStatus::Proposed);assert!(proposed.attempts.is_empty());
+    assert!(proposed.execution_thread_id.is_none());assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
+}
+
+#[test]
+fn proposal_command_refuses_reusing_executable_standing_receipt() {
+    let f=fixture(Access::Full,ProjectTools::Full,Some(4));
+    // Save ordinary Full authority without redispatch, then retry proposal-only admission.
+    let receipt=f.host.prepare_personal_delegation(f.input.clone()).unwrap();
+    assert_eq!(receipt["standingTrust"],true);
+    assert!(f.host.prepare_personal_delegation_internal(f.input.clone(),None,true).unwrap_err().contains("executable"));
+    let queued=task(&f,&receipt);assert_eq!(queued.status,TaskStatus::Queued);assert!(queued.attempts.is_empty());
+}
