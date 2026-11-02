@@ -1,7 +1,7 @@
 //! Assistant conversation inference. Task execution stays in personal_worker.
 use apex_core::{Backend, ParticipantConfig, Reply, TurnRequest};
 
-/// A computer reply can wait on the human's app prompts and on slow apps.
+/// A computer reply can wait on the user's app prompts and on slow apps.
 const COMPUTER_LIMIT_SECONDS: u64 = 15 * 60;
 
 /// What a reply did with its computer tools.

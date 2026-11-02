@@ -2,7 +2,7 @@
 //! tasks: the gateway, approvals and receipts apply, and the room's own
 //! durable send is the only way in. Ids carry authority, re-derived from the
 //! assistant's current project bindings before every operation; titles and
-//! names are data for the model and the human.
+//! names are data for the model and the user.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -101,7 +101,7 @@ impl Target {
         ids.iter().find(|id| !self.workers.iter().any(|(worker, _)| worker == *id)).map(|id| format!("{id} isn't in that chat"))
     }
 
-    /// Outside words in the prompt always mean asking: a name in the human's
+    /// Outside words in the prompt always mean asking: a name in the user's
     /// message can't tell their request from a planted one. "On request" runs
     /// only what that message points at: the bots acted on, or the chat itself.
     pub fn gate(&self, gate: Gate, class: ToolClass, mode: ActionMode, argv: &[String], asked: &str, outside: bool) -> Gate {
@@ -171,7 +171,7 @@ fn bounded_catalog(rooms: &[Value], limit: usize) -> Result<String,String> {
 }
 
 impl Host {
-    /// Thread titles as the human sees them. Data only.
+    /// Thread titles as the user sees them. Data only.
     fn room_titles(&self) -> Result<HashMap<String, String>, String> {
         let session = self.store().session()?;
         Ok(session.as_ref().and_then(|s| s["panes"].as_array()).into_iter().flatten()
@@ -305,7 +305,7 @@ impl Host {
         Ok(Target { project: binding.project, thread: thread.to_owned(), title, workers, tools: binding.tools })
     }
 
-    /// Ask mode does not reconfirm a routine change the human just requested.
+    /// Ask mode does not reconfirm a routine change the user just requested.
     /// This binds that one request to checked native parameters, not an Always grant.
     pub(super) fn personal_routine_request(&self, assistant: &PersonalAssistant, room: &Target, event_id: &str, asked: &str, proposed: &super::ProposedTask) -> Option<String> {
         use crate::personal::{EventSource,permissions::{capability,direct_request_text}};
@@ -439,7 +439,7 @@ impl Host {
         // Punctuated/suffix-shaped titles can still be addressed by ID or focus.
         if tool == DELETE && other_names.iter().any(|name| body == name || body == format!("{name} permanently")) { return None; }
         // More than one structural separator can change the source/destination
-        // split. Complex names stay with the human instead of guessing.
+        // split. Complex names stay with the user instead of guessing.
         let separator = match tool { RENAME | ADD => Some(" to "), REMOVE => Some(" from "), CREATE => Some(" in "), _ => None };
         if separator.is_some_and(|separator| body.to_lowercase().matches(separator).count() > 1) { return None; }
         let focused = view_context.as_ref().is_some_and(|v| v.host_id == room.project.host_id && v.focused_thread_id.as_deref() == Some(&room.thread));
@@ -660,7 +660,7 @@ impl Host {
         let targets: Vec<ParticipantId> = split(op.argv.get(1).map(String::as_str).unwrap_or_default()).into_iter().map(ParticipantId::new).collect();
         let said = op.argv.get(2).map(|text| text.trim()).filter(|text| !text.is_empty()).unwrap_or(RESUME_TEXT);
         // The chat's history stays honest about who wrote this.
-        let text = format!("{} (assistant, for the human; {task_id}): {said}", assistant.name);
+        let text = format!("{} (assistant, for the user; {task_id}): {said}", assistant.name);
         let request = format!("assistant:{}:{task_id}", assistant.id);
         let saved = self.store().room(&room.thread)?.ok_or("That chat has no saved data.")?;
         let already = saved.snapshot.client_messages.contains_key(&request)

@@ -227,7 +227,7 @@ fn missing_saved_chat_never_downgrades_client_posts_to_legacy_delivery() {
         std::fs::rename(&rooms, &backup).unwrap();
         std::fs::create_dir(&rooms).unwrap();
         // A missing room reads as None on every platform. A legacy send
-        // would append the human message before this replacement fails.
+        // would append the user message before this replacement fails.
         std::fs::create_dir(rooms.join("72.tmp")).unwrap();
         let post = json!({"command":command,"id":"r","text":"hello","targets":["a"],"clientMessageId":"m"});
         runtime.block_on(async {

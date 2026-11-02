@@ -34,7 +34,7 @@ pub use types::{
     Access, AgentTool, Backend, ContextUse, MediaSettings, Message, MessageOrigin, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage, Speed,
     PlanWindow, ResetCredit, ResetCredits, Speaker, TokenTotals,
 };
-pub use view::{render_prompt, render_view, render_view_after, system_prompt, Role, ViewTurn, PASS_TOKEN};
+pub use view::{render_prompt, render_view, render_view_after, set_user_identity, system_prompt, user_identity, Role, ViewTurn, PASS_TOKEN};
 pub use view::{ClientCapabilities, GeneratedUiClientCapability, GeneratedUiCapability};
 
 pub mod server_request;

@@ -169,11 +169,11 @@ pub enum Gate {
     Run(ActionMode),
     Ask,
     HandOff,
-    /// Never allowed, whatever the human approves.
+    /// Never allowed, whatever the user approves.
     Refuse(&'static str),
 }
 
-/// What to do with a task's operation right now. `asked` is the human
+/// What to do with a task's operation right now. `asked` is the user
 /// message that started it, for "only when I say so".
 pub fn gate(assistant: &PersonalAssistant, task: &PersonalTask, asked: Option<&str>) -> Gate {
     let Some(op) = &task.operation else { return Gate::Refuse("The task has no operation.") };

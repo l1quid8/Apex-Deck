@@ -1,4 +1,4 @@
-//! The human's direct controls for a personal assistant: identity and
+//! The user's direct controls for a personal assistant: identity and
 //! style, rules, budget, privacy, memory, notices, push devices, linked
 //! machines, connected apps and the browser's Take over. Each one is a
 //! client command from a Full-access device, never something text can do.
@@ -167,7 +167,7 @@ impl crate::Host {
         })
     }
 
-    /// Something the human tells it to remember, so it's explicit.
+    /// Something the user tells it to remember, so it's explicit.
     pub fn personal_memory_add(&self, id: &str, text: &str) -> Result<Changed, String> {
         self.personal_memory_add_at_revision(id, text, None)
     }

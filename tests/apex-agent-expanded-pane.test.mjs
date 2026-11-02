@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
 const app = await fs.readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
-test('assistant routing keeps the human pane tree mounted inside a hidden workspace container', () => {
+test('assistant routing keeps the user pane tree mounted inside a hidden workspace container', () => {
  assert.match(app,/workspace-canvas-content/);
  assert.match(app,/display:mainView.kind==='workspace'/);
  assert.match(app,/<div ref=\{gridArea\}/);

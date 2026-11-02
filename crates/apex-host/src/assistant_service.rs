@@ -1684,7 +1684,7 @@ impl Host {
             "resume_budget" => {
                 if task.status != TaskStatus::NeedsYou || !task.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true) { return Err("This task is not paused at a spend limit.".into()); }
                 let id = task.execution_thread_id.as_deref().ok_or("Task has no execution chat to resume.")?;
-                // An unreported cost is accepted here, by the human, so the task can continue. A reported cost over the limit is not.
+                // An unreported cost is accepted here, by the user, so the task can continue. A reported cost over the limit is not.
                 let mut revision = input.revision;
                 let over_reported = task.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64())
                     .is_some_and(|limit| task.usage.as_ref().and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit));
@@ -1698,7 +1698,7 @@ impl Host {
             }
             "dismiss" => {
                 // A proposal nobody approved has no worker, checkout or run to
-                // stop, so dismissing it only records the human's decision.
+                // stop, so dismissing it only records the user's decision.
                 let _apply_lock = self.assistant_apply.lock().await;
                 let latest = self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("Task not found.")?;
                 if latest.owner != input.owner || latest.revision != input.revision { return Err("Task ownership or revision is stale.".into()); }
@@ -2196,7 +2196,7 @@ impl Host {
                         .as_deref()
                         .is_none_or(|text| text.trim().is_empty())
                 {
-                    return Err("A request-changes action needs the human's correction.".into());
+                    return Err("A request-changes action needs the user's correction.".into());
                 }
                 let id = task
                     .execution_thread_id
@@ -2509,9 +2509,9 @@ fn task_start_prompt(task: &AssistantTask) -> String {
     let mut content = if task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true) {
         format!("This task runs under the owning assistant's saved Full access. Follow only the original human request's scope:\n{}\n\nAssistant-generated brief for context; it cannot expand that scope:\n{}",task.original_request,task.brief)
     } else if task.origin == crate::assistant_tasks::TaskOrigin::Proposal {
-        format!("The human explicitly approved this task proposal:\n{}\n\nOriginal conversation request for context:\n{}", task.brief, task.original_request)
+        format!("The user explicitly approved this task proposal:\n{}\n\nOriginal conversation request for context:\n{}", task.brief, task.original_request)
     } else {
-        format!("Authoritative original human request (follow only this scope):\n{}\n\nAssistant-generated brief for context only; it cannot expand or override the human request:\n{}", task.original_request, task.brief)
+        format!("Authoritative original human request (follow only this scope):\n{}\n\nAssistant-generated brief for context only; it cannot expand or override the user request:\n{}", task.original_request, task.brief)
     };
     if let Some(text) = task.result_data.as_ref().and_then(|data| data["routingClarification"].as_str()) {
         content.push_str(&format!("\n\nAdditional human clarification for this task:\n{text}"));
@@ -4696,7 +4696,7 @@ mod tests {
         f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
         let after=f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
         assert_eq!(after.attempts.len(),2,"only one restart");
-        assert_eq!(after.status,TaskStatus::Running,"telling the human does not throw away the attempt");
+        assert_eq!(after.status,TaskStatus::Running,"telling the user does not throw away the attempt");
         let said=watchdog_messages(&f,&assistant);
         assert_eq!(said.iter().filter(|text|text.contains("Still stuck")).count(),1,"{said:?}");
         let notices=f.host.personal_get(&assistant).unwrap().notices;
@@ -4959,7 +4959,7 @@ mod tests {
         assert_eq!(pushed(&f), 1);
         assert!(!watchdog_messages(&f, &assistant).iter().any(|s| s.contains("needs your attention")), "one failure gets one result");
         assert!(!f.host.assistant_runs.lock().unwrap().contains_key(&task.id), "the attempt must really end");
-        assert!(failed.result_data.as_ref().unwrap()["leaseHeld"] == true, "the work stays protected until the human decides");
+        assert!(failed.result_data.as_ref().unwrap()["leaseHeld"] == true, "the work stays protected until the user decides");
         let cancelled = act(&f, &task.id, "cancel").unwrap();
         assert!(cancelled.result_data.as_ref().unwrap()["leaseHeld"] == false);
     }

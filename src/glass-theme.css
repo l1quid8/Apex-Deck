@@ -425,7 +425,7 @@
 :where(:root[data-deck-theme="glass"]) .pane-ws { background: var(--deck-raised-fill); }
 :where(:root[data-deck-theme="glass"]) .pane-ws .fold { --cut: transparent; }
 
-/* The empty-thread card, its emblem and the human bubble had fixed dark
+/* The empty-thread card, its emblem and the user bubble had fixed dark
    greens; tie them to the accent so they read on Frost too. */
 :where(:is(:root[data-deck-theme="glass"], :root[data-deck-theme="flat"])) .empty-emblem {
   background: color-mix(in srgb, var(--accent) 14%, var(--deck-raised-fill, var(--panel-2)));

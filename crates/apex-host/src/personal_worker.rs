@@ -341,7 +341,7 @@ pub(crate) fn clock(ms: u64) -> String {
     format!("{:02}:{:02} UTC", minutes / 60 % 24, minutes % 60)
 }
 
-/// "14:05" in the human's time zone.
+/// "14:05" in the user's time zone.
 fn local(assistant: &PersonalAssistant, ms: u64) -> String {
     let minutes = assistant.local_minutes(ms);
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
@@ -452,7 +452,7 @@ fn dollars(micros: u64) -> String {
     format!("${:.2}", micros as f64 / 1e6)
 }
 
-/// Why this reply needs the human's OK to spend, if it does.
+/// Why this reply needs the user's OK to spend, if it does.
 fn spend_hold(assistant: &PersonalAssistant, profile: &ParticipantConfig, event: &PersonalEvent, spent: u64) -> Option<String> {
     if let Some(prompt) = crate::personal::permissions::reply_spend_hold(assistant,event) { return Some(prompt); }
     let limit = assistant.budget.daily_limit_micros?;
@@ -712,7 +712,7 @@ impl Host {
         }
     }
 
-    /// Answer the human: privacy and spend checks in code, then one model
+    /// Answer the user: privacy and spend checks in code, then one model
     /// call with the assembled context. It has no tools, apart from any
     /// computer turn the helper accepts for this reply.
     async fn personal_answer(self: &Arc<Self>, tools: &WorkerTools, snapshot: PersonalAssistant, event: &PersonalEvent, text: String) -> Result<(), String> {
@@ -955,7 +955,7 @@ impl Host {
             else { assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at); }
             for note in delegation_notes { assistant.post("system", "update", note, None, Some(event_id.to_owned()), at); }
             // Outside words in the prompt could have planted a "remember";
-            // only the human's own words may forget.
+            // only the user's own words may forget.
             let outside = seen.any();
             if outside && !reply.remember.is_empty() {
                 assistant.post("system", "update", "I didn't save that to memory, because outside content is in this conversation. Add it in Memory, or say it again in a new conversation.".into(), None, Some(event_id.to_owned()), at);
@@ -1142,7 +1142,7 @@ enum Claimed {
 }
 
 /// Re-check a queued task in the gateway and, if it may run, save the
-/// attempt. Everything the human or a rule allowed is checked again here.
+/// attempt. Everything the user or a rule allowed is checked again here.
 fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &str, local: &str, at: u64) -> Option<Claimed> {
     if assistant.archived_at.is_some(){return None;}
     let task = assistant.tasks.iter().find(|t| t.id == task_id && t.status == TaskStatus::Queued).cloned()?;
@@ -1542,7 +1542,7 @@ fn block_standing_task(assistant:&mut PersonalAssistant,task_id:&str,why:&str,at
 /// The clock's work for one assistant, in code with no model call.
 fn tick_assistant(assistant: &mut PersonalAssistant, local_id: &str, at: u64) -> (Option<u64>, Vec<crate::personal::Notice>) {
     assistant.prune_tasks();
-    // Schedules retain either the human confirmation or the original Full stamp.
+    // Schedules retain either the user confirmation or the original Full stamp.
     for index in 0..assistant.schedules.len() {
         let schedule = assistant.schedules[index].clone();
         if schedule.status != ScheduleStatus::Active || assistant.paused { continue; }
@@ -1831,7 +1831,7 @@ fn propose_schedule(assistant: &mut PersonalAssistant, event_id: &str, proposed:
     assistant.post("system", "approval", line, None, Some(event_id.to_owned()), at);
 }
 
-/// Save, correct and forget facts the model proposed in answer to the human.
+/// Save, correct and forget facts the model proposed in answer to the user.
 fn apply_memory(assistant: &mut PersonalAssistant, remember: &[ProposedFact], forget: &[String], event_id: &str, at: u64) {
     let mut said = Vec::new();
     for id in forget.iter().take(20) {
@@ -1905,7 +1905,7 @@ fn approval_line(assistant: &PersonalAssistant, decision: &PendingDecision, oper
     format!("Approval needed: {}{plan}", decision.prompt)
 }
 
-/// Hold a reply until the human OKs its cost.
+/// Hold a reply until the user OKs its cost.
 fn hold_for_spend(assistant: &mut PersonalAssistant, event_id: &str, prompt: String, at: u64) {
     let Some(source) = assistant.events.iter().find(|e| e.id == event_id && e.state == EventState::Processing).cloned() else { return };
     let scoped = crate::personal::permissions::reply_spend_operation(assistant,&source);
@@ -2039,7 +2039,7 @@ pub(crate) fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalE
     stop
 }
 
-/// The human's answer to one decision, on a task or a schedule.
+/// The user's answer to one decision, on a task or a schedule.
 pub(crate) fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &str, approve: bool, event_id: &str, local: &str, at: u64) -> Result<Option<(Option<String>, String)>, String> {
     if let Some(result) = computer::decide_permission(assistant,decision_id,params_hash,approve,event_id,at) { return result; }
     if let Some(index) = assistant.schedules.iter().position(|s| s.decision.as_ref().is_some_and(|d| d.id == decision_id)) {

@@ -363,7 +363,7 @@ impl Host {
                 {
                     return Err("That scratch note does not match this assistant's result.".into());
                 }
-                // This explicit Full/global RPC is the human's review action.
+                // This explicit Full/global RPC is the user's review action.
                 // Task completion/acceptance never calls it automatically.
                 self.project_memory
                     .promote(request)

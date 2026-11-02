@@ -21,7 +21,7 @@ function messageOf(cause: unknown): string {
 /** Per-project sources: which chats and files ApexAgent watches, and the AI profile it uses. Replaces the old per-project chat window. */
 export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, onClose, onMonitorChange, assistantName }: {
   workspace: Workspace;
-  /** The name the human gave this assistant, for labels that name it. */
+  /** The name the user gave this assistant, for labels that name it. */
   assistantName?: string;
   backend: Backend;
   profiles: ParticipantConfig[];

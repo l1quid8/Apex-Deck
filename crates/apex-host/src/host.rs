@@ -72,6 +72,12 @@ pub struct CurateReply {
     pub outcome: apex_core::CurateOutcome,
 }
 
+/// Tell every room's bots who they work for, from the saved settings.
+fn apply_user_identity(settings: &serde_json::Value) {
+    let field = |name: &str| settings[name].as_str().unwrap_or_default().to_string();
+    apex_core::set_user_identity(&field("userName"), &field("userNickname"));
+}
+
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
     /// Serializes snapshot reads with persistence and numbered event emission.
@@ -288,6 +294,7 @@ impl Host {
         let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
         let runner_service = Arc::new(Mutex::new(crate::runner::service::RunnerService::new(paths.data.clone())));
         let computer = crate::computer::Computer::new(&paths.data);
+        apply_user_identity(&store.settings().ok().flatten().unwrap_or_default());
         let host = Arc::new(Host {
             paths,
             computer,
@@ -1421,7 +1428,7 @@ impl Host {
         Ok(self.handle(&id)?.runtime.targets(&text).await)
     }
 
-    /// Saves the human message once, then runs targets in the background.
+    /// Saves the user message once, then runs targets in the background.
     pub async fn room_post_to(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>) -> Result<(), String> {
         self.room_post_to_with_answer_guidance(id, text, targets, None, apex_core::GeneratedUiCapability::Unsupported).await
     }
@@ -2631,6 +2638,7 @@ impl Host {
         let settings = Settings::from_value(settings)?;
         let settings = settings.to_value();
         self.store.save_settings(&settings)?;
+        apply_user_identity(&settings);
         // Card guidance stays on across settings saves.
         for handle in self.rooms.lock().unwrap().values() {
             handle.answers.store(true, Ordering::SeqCst);
@@ -5169,7 +5177,7 @@ done
             effort_override: None,
             access: None,
             system: "You are Codex.".into(),
-            turns: vec![ViewTurn { role: Role::User, content: "[Human]: run pwd".into() }],
+            turns: vec![ViewTurn { role: Role::User, content: "[User]: run pwd".into() }],
             unseen: vec![],
             plan: false,
             cwd: None,

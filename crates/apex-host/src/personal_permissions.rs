@@ -117,8 +117,8 @@ pub fn delegated_operation(room:&OperationSpec,pending:&serde_json::Value)->Resu
     }
     let tool=match kind {"edit"=>"room.delegateEdit","command"=>"room.delegateCommand","spend"=>"room.delegateSpend",
         // A plan can enable a wider runtime profile. Unknown tool payloads and
-        // permission changes must remain with the human until typed adapters exist.
-        _=>return Err("This approval has no typed underlying operation. The human must decide it.".into())};
+        // permission changes must remain with the user until typed adapters exist.
+        _=>return Err("This approval has no typed underlying operation. The user must decide it.".into())};
     let request=pending["request"].as_str().ok_or("Approval request unavailable.")?;
     let participant=pending["id"].as_str().ok_or("Approval actor unavailable.")?;
     let epoch=APPROVAL_EPOCH.get_or_init(||format!("{}:{}",super::now(),std::process::id()));
@@ -186,7 +186,7 @@ impl PermissionPolicy {
         let action=self.resolve(op,requested,outside).ok_or("Missing underlying grant.")?;
         if !action.delegate {return Err("Approval for this capability is not delegated.".into())}
         let delegation=self.grants.iter().filter(|g|g.capability==Capability::ApprovalDelegate && g.scope.matches(op)).max_by_key(|g|g.scope.rank()).ok_or("Approval delegation is off.")?;
-        if delegation.revoked || delegation.mode==GrantMode::Ask || (delegation.mode==GrantMode::OnRequest && (!requested || outside)) {return Err("Approval delegation requires the human.".into())}
+        if delegation.revoked || delegation.mode==GrantMode::Ask || (delegation.mode==GrantMode::OnRequest && (!requested || outside)) {return Err("Approval delegation requires the user.".into())}
         Ok((underlying,delegation.id.clone()))
     }
 }

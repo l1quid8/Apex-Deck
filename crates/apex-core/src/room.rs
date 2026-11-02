@@ -161,9 +161,9 @@ pub enum RoomEvent {
     /// The models now see `summary` in place of the first `upto` messages.
     Compacted { id: ParticipantId, summary: String, upto: usize },
     CurationsChanged { curations: Vec<Curation> },
-    /// The human pressed stop.
+    /// The user pressed stop.
     Stopped,
-    /// The room finished handling the human message.
+    /// The room finished handling the user message.
     Idle,
     /// This participant has released its turn slot.
     ParticipantIdle { id: ParticipantId },
@@ -1482,7 +1482,7 @@ impl Room {
 
     /// Add a human message and let the room answer it.
     ///
-    /// The human's message is answered by the participants it @mentions, or
+    /// The user's message is answered by the participants it @mentions, or
     /// by the room's turn policy if it mentions nobody. If a reply @mentions
     /// another participant, that participant answers next, up to
     /// `max_bot_hops` rounds (`None` keeps going until no reply addresses

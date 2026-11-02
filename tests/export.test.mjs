@@ -82,7 +82,7 @@ test('empty markdown uses fallback title and participants and omits pins', () =>
   assert.ok(!md.includes('## Pinned'));
 });
 
-test('the PDF page draws bot avatars inline and keeps the human side plain', () => {
+test('the PDF page draws bot avatars inline and keeps the user side plain', () => {
   const html = exportHtml({
     title: 'T', participants: [{ id: 'jigga', display_name: 'Jigga', appearance: { seed: 's', color: '#22c55e' } }],
     transcript: [{ speaker: { kind: 'human' }, text: 'hi' }, { speaker: { kind: 'agent', id: 'jigga' }, text: 'yo' }],

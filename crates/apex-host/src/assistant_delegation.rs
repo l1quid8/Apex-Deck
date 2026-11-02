@@ -130,7 +130,7 @@ fn check_standing_delegation(host: &crate::host::Host, assistant: &PersonalAssis
 
 /// Validate a delegation and turn it into a handoff preparation.
 ///
-/// `event` is the assistant's own record of the human plan this work came from.
+/// `event` is the assistant's own record of the user plan this work came from.
 /// It is the only proof of origin, so it is checked field by field: the same
 /// project, the same host, not imported history, and not a request this
 /// machine never answered.
@@ -202,7 +202,7 @@ pub fn plan_delegation(
         source_event_id: input.source_event_id.clone(),
         delegation_id: input.delegation_id.clone(),
     };
-    // The owner tuple is the event's own, so the task keeps the human context
+    // The owner tuple is the event's own, so the task keeps the user context
     // it came from. It is verified above, not constructed speculatively.
 
     let preparation = HandoffPreparation {
@@ -210,7 +210,7 @@ pub fn plan_delegation(
         batch_id: input.delegation_id.clone(),
         owner: owner.clone(),
         revision: monitor_revision,
-        // The human's words, kept verbatim. The brief is the assistant's
+        // The user's words, kept verbatim. The brief is the assistant's
         // restatement and never replaces it.
         original_request: text.clone(),
         brief: input.brief.clone(),
@@ -387,7 +387,7 @@ impl crate::host::Host {
 
     /// A model reply's actual cost is recorded once with the completed reply.
     /// Reserve after that pending debit without inserting a duplicate cost or
-    /// changing the human's saved daily limit before the reply is committed.
+    /// changing the user's saved daily limit before the reply is committed.
     pub(crate) fn prepare_personal_delegation_with_reply_cost(&self, input: DelegationInput, pending_actual_micros: u64) -> Result<Value, String> {
         self.prepare_personal_delegation_internal(input,Some(pending_actual_micros))
     }

@@ -349,7 +349,7 @@ impl ProjectMonitor {
     }
 
     /// A background check's message, kept apart from chat replies so later
-    /// checks see their own earlier updates and never the human's questions.
+    /// checks see their own earlier updates and never the user's questions.
     pub fn append_update(&mut self, text: &str, at: u64, evidence: Vec<EvidenceRef>) -> Result<(), String> {
         self.append_message("assistant", text, at, evidence)?;
         if let Some(last) = self.messages.last_mut() { last.kind = "update".into(); }

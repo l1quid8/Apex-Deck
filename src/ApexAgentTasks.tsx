@@ -36,7 +36,7 @@ type Props = {
   focused?: boolean;
 };
 
-/** Shown when ApexAgent proposed no chat that can run this task. The human answers in the main conversation. */
+/** Shown when ApexAgent proposed no chat that can run this task. The user answers in the main conversation. */
 const objectText = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 const taskFinal = (status: string) => isTerminalTask(status);
 const formatBytes = (bytes: number): string => bytes < 1024 * 1024 ? `${Math.max(0, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;

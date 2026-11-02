@@ -31,7 +31,7 @@ fn request(text: &str) -> TurnRequest {
         effort_override: None,
         access: None,
         system: "You are a test bot.".into(),
-        turns: vec![ViewTurn { role: Role::User, content: format!("[Human]: {text}") }],
+        turns: vec![ViewTurn { role: Role::User, content: format!("[User]: {text}") }],
         unseen: vec![],
         plan: false,
         cwd: None,
@@ -77,7 +77,7 @@ async fn cli_receives_the_system_prompt_and_conversation_on_stdin() {
     let (result, _) = ask(&bot, "what is 2+2?").await;
     let echoed = result.unwrap().text;
     assert!(echoed.starts_with("You are a test bot."));
-    assert!(echoed.contains("[Human]: what is 2+2?"));
+    assert!(echoed.contains("[User]: what is 2+2?"));
     assert!(echoed.ends_with("--- Your reply ---"));
 }
 
@@ -524,7 +524,7 @@ async fn api_streams_text_even_when_events_are_split_mid_line_and_mid_character(
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][0]["content"], "You are a test bot.");
     assert_eq!(body["messages"][1]["role"], "user");
-    assert_eq!(body["messages"][1]["content"], "[Human]: is it open?");
+    assert_eq!(body["messages"][1]["content"], "[User]: is it open?");
     assert!(!sent.to_ascii_lowercase().contains("authorization:"));
 }
 
@@ -1116,7 +1116,7 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
                 effort_override: None,
                 access: None,
                 system: "You are a test bot.".into(),
-                turns: vec![ViewTurn { role: Role::User, content: "[Human]: please fail".into() }],
+                turns: vec![ViewTurn { role: Role::User, content: "[User]: please fail".into() }],
                 unseen: vec![],
                 plan: false,
                 cwd: None,
@@ -2828,7 +2828,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let req_nodir = TurnRequest {
         computer: None,
         system: "sys".into(),
-        turns: vec![ViewTurn { role: Role::User, content: "[Human]: bare first turn".into() }],
+        turns: vec![ViewTurn { role: Role::User, content: "[User]: bare first turn".into() }],
         unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: Speaker::Human, text: "bare first turn".into(), servers: vec![], at: None }],
         access: None,
         effort_override: None,
@@ -2864,9 +2864,9 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let mut req2 = request("second message");
     req2.cwd = Some(dir2.clone());
     req2.turns = vec![
-        ViewTurn { role: Role::User, content: "[Human]: first message".into() },
+        ViewTurn { role: Role::User, content: "[User]: first message".into() },
         ViewTurn { role: Role::Assistant, content: "ok".into() },
-        ViewTurn { role: Role::User, content: "[Human]: second message".into() },
+        ViewTurn { role: Role::User, content: "[User]: second message".into() },
     ];
     req2.unseen = vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 1, speaker: Speaker::Human, text: "second message".into(), servers: vec![], at: None }];
     let res2 = bot.respond(req2, &|_| {}).await;
@@ -2882,11 +2882,11 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let mut req3 = request("third message");
     req3.cwd = Some(dir1.clone());
     req3.turns = vec![
-        ViewTurn { role: Role::User, content: "[Human]: first message".into() },
+        ViewTurn { role: Role::User, content: "[User]: first message".into() },
         ViewTurn { role: Role::Assistant, content: "ok".into() },
-        ViewTurn { role: Role::User, content: "[Human]: second message".into() },
+        ViewTurn { role: Role::User, content: "[User]: second message".into() },
         ViewTurn { role: Role::Assistant, content: "ok".into() },
-        ViewTurn { role: Role::User, content: "[Human]: third message".into() },
+        ViewTurn { role: Role::User, content: "[User]: third message".into() },
     ];
     req3.unseen = vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 2, speaker: Speaker::Human, text: "third message".into(), servers: vec![], at: None }];
     let res3 = bot.respond(req3, &|_| {}).await;

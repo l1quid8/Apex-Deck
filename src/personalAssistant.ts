@@ -35,7 +35,7 @@ export type PersonalTask = {
 };
 export type Fact = {
   id: string; text: string; kind: "preference" | "fact" | "decision" | "commitment";
-  /** The human said it outright, rather than the assistant inferring it. */
+  /** The user said it outright, rather than the assistant inferring it. */
   explicit: boolean; confidence: number;
   source: { messageId?: string; taskId?: string }; createdAt: number;
   expiresAt?: number; supersededBy?: string; deletedAt?: number;
