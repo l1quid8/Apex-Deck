@@ -13,6 +13,7 @@ import { execFile } from 'node:child_process';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
+import { siteMemory } from './browserPermissions.mjs';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
 import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, assertHostUnused } from './hosts.mjs';
 import { openTauriApps, tauriStorage } from './legacy.mjs';
@@ -743,6 +744,10 @@ handle('browser:reload', async ({ browser }, pane) => browser.reload(String(pane
 handle('browser:back', async ({ browser }, pane) => browser.back(String(pane)));
 handle('browser:forward', async ({ browser }, pane) => browser.forward(String(pane)));
 handle('browser:close', async ({ browser }, pane) => browser.close(String(pane)));
+let siteAnswers = null;
+const sites = () => (siteAnswers ??= siteMemory(path.join(app.getPath('userData'), 'browser-sites.json')));
+handle('browser:sitePermissions', async () => sites().list());
+handle('browser:forgetSitePermission', async (_entry, origin, kind) => sites().forget(String(origin), String(kind)));
 ipcMain.on('browser:bounds', (event, pane, bounds) => {
   deckWindow(event)?.browser.bounds(String(pane), BOUNDS(bounds));
 });
@@ -837,6 +842,7 @@ function createWindow(host, beside) {
     return { action: 'deny' };
   });
   const browser = dockedBrowser({
+    memory: sites(),
     win,
     send: (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); },
     downloads: () => app.getPath('downloads'),
@@ -965,6 +971,7 @@ function createPopout(ownerEntry, snapshot, bounds) {
     return { action: 'deny' };
   });
   const browser = dockedBrowser({
+    memory: sites(),
     win,
     send: (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); },
     downloads: () => app.getPath('downloads'),
