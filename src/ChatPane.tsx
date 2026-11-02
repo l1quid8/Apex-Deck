@@ -105,7 +105,8 @@ import { createAnswerStore, discardAnswerSettingsAfter, flushAnswerStores, retai
 import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.ts";
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
-import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
+import { ParticipantQueues, queuedSticky, type ParticipantMessage, type QueueHold, type TurnKind } from "./turnQueue";
+import { queueSync } from "./phoneQueue";
 import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
 import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
@@ -458,6 +459,8 @@ interface TurnProgress {
 
 /** How long Copy reads "Copied". */
 const COPIED_MS = 1500;
+/** Said beside a paused queued message, so Resume is never a mystery. */
+const HOLD_REASON: Record<Exclude<QueueHold, "connection">, string> = { stopped: "you stopped this bot", failed: "its last reply failed" };
 
 function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   if (phase === "tool") return "Working";
@@ -736,7 +739,6 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const [caret, setCaret] = useState(0);
   const composerMenu = useRef<ComposerMenuHandle>(null);
   const [queued, setQueued] = useState<ParticipantMessage[]>([]);
-  const [queuePaused, setQueuePaused] = useState(false);
   const [editor, setEditor] = useState<string | null>(null);
   const [replies, setReplies] = useState<ReplyQuote[]>([]);
   /** Whether the quote's Send to ▾ menu is open. */
@@ -1295,7 +1297,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         }
         reportApprovals();
         setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], work: emptyTurnSteps, phase: "thinking" as const }])));
-        turnQueue.state = {}; state.active.forEach(id => turnQueue.started(id));
+        // A bot that finished while this pane was away sent no event it could hear, so this releases its queue too.
+        queueSync(turnQueue, state.active);
         setBusy(state.active.length > 0 || turnQueue.active);
         setDrafts(Object.fromEntries(state.active.map(id => [id, ""])));
         setChanges((saved.changes ?? []).map((c) => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
@@ -1673,7 +1676,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     },
     id => current.current.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
-    items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
+    items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused. Check whether it arrived before retrying.`, "error"); },
     () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
     true, // A failed send keeps its message here, so the thread shows it and can retry.
@@ -3887,6 +3890,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         {queued.map((item) => {
           const who = item.to.map((id) => names.get(id) ?? id).join(", ");
           const steerable = !item.failed && item.kind === "message" && item.to.some((id) => working[id]);
+          const hold = item.failed ? null : turnQueue.holdOf(item);
           return <div key={`q${item.id}`} className="queued-inline">
             {editingQueued === item.id
               ? <textarea className="q-edit" aria-label={`Edit queued message ${item.id}`} autoFocus rows={2} defaultValue={item.text}
@@ -3903,8 +3907,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                   }} />
               : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{splitTldr(item.text).text}</button>}
             <div className="q-meta">
-              <span className="q-for">{item.failed ? "Send unconfirmed for" : queuePaused ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span></span>
-              {queuePaused && !item.failed && <><i className="q-sep" /><button type="button" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume</button></>}
+              <span className="q-for">{item.failed ? "Send unconfirmed for" : hold === "connection" ? "Waiting for the connection for" : hold ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span>{hold && hold !== "connection" && <span className="q-why"> · {HOLD_REASON[hold]}</span>}</span>
+              {hold && <><i className="q-sep" /><button type="button" onClick={() => turnQueue.resume()}>Resume</button></>}
               {steerable && <><i className="q-sep" /><button type="button" title={`Send to ${who} now, mid-turn (⌘↵)`} onClick={() => askToSteer(item)}>Steer <SteerArrow /></button></>}
               <i className="q-sep" />
               {item.failed && <button type="button" title="The host may already have received this message. Check the chat before retrying." onClick={() => turnQueue.retry(item.id)}>Retry send</button>}
